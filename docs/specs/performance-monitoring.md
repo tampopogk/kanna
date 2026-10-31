@@ -65,7 +65,7 @@ The main thread **hangs** when one stretch of work between two run-loop transiti
 kanna: the main thread hung 312ms; open: message.layout, refresh, render; ran: DeskView.lay (40 rows) 290ms
 ```
 
-**The daemon** logs each request (from a client or the app) whose handling on its main loop takes over 50ms, to `daemon.log`: `kanna-daemon: tasks pick from the app took 72ms`. Work the request hands to other threads isn't counted. With `KANNA_DEBUG=1` it also answers **`debug.daemon.perf`** (`{"reset": true}` clears it) with the same fields for its own samples: a keystroke's stages and each kind of main-loop event ([input latency](input-latency.md#2-measuring-a-keystroke)).
+**The daemon** logs anything that holds its main loop over 20ms (an event, a request, the loop's chores, a poll of a local task) to `daemon.log`: `kanna-daemon: slow: tasks pick from the app held the loop 72ms` ([the daemon's runtime §4](daemon-runtime.md#4-the-guard)). Work handed to other threads, or awaited, isn't counted. With `KANNA_DEBUG=1` it also answers **`debug.daemon.perf`** (`{"reset": true}` clears it) with the same fields for its own samples: a keystroke's stages and each kind of main-loop event ([input latency](input-latency.md#2-measuring-a-keystroke)).
 
 ## 3. Reading it
 

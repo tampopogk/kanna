@@ -18,7 +18,6 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -127,7 +126,7 @@ pub const PROTOCOLS: (u64, u64) = (kanna_build::PROTOCOLS[0] as u64, kanna_build
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
-pub fn takeover(events: Sender<Event>, wire: Arc<Wire>) -> Takeover {
+pub fn takeover(events: crate::runtime::Events, wire: Arc<Wire>) -> Takeover {
     Arc::new(move |hello: Value, reader: BufReader<UnixStream>, stream: UnixStream| serve(events.clone(), wire.clone(), hello, reader, stream, None))
 }
 
@@ -152,7 +151,7 @@ fn on_the_wire(wire: &Wire, conn: u64, message: &Value, at: Instant) -> bool {
     }
 }
 
-pub fn serve(events: Sender<Event>, wire: Arc<Wire>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
+pub fn serve(events: crate::runtime::Events, wire: Arc<Wire>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
     let conn = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
     let out = Outbox::default();
     let (lines, caught_up) = (Outbox { queue: out.queue.clone() }, events.clone());

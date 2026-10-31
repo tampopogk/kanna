@@ -6,7 +6,6 @@ use kanna_vt::{ProgramState, ProgramStatus};
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -32,7 +31,7 @@ struct Watch {
 struct Shared {
     watches: Mutex<HashMap<String, Watch>>,
     store: Store,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     stop: AtomicBool,
     wake: (Mutex<bool>, Condvar),
 }
@@ -65,7 +64,7 @@ pub fn turn_ended(before: Option<ProgramState>, now: ProgramState) -> bool {
 }
 
 impl Detector {
-    pub fn start(store: Store, events: Sender<Event>) -> Detector {
+    pub fn start(store: Store, events: crate::runtime::Events) -> Detector {
         let shared = Arc::new(Shared { watches: Mutex::default(), store, events, stop: AtomicBool::new(false), wake: (Mutex::new(false), Condvar::new()) });
         let running = shared.clone();
         let thread = std::thread::Builder::new().name("kanna.status".into()).spawn(move || run(&running)).expect("start agent status");

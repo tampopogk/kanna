@@ -4,7 +4,6 @@ use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
-use crate::Event;
 use kanna_mux::json::{json, Map, Value};
 use kanna_mux::{terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -73,7 +72,7 @@ pub struct Terminals {
     pub core: RefCell<Option<WeakCore>>,
     spawner: Rc<dyn Spawner>,
     store: Store,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     env: Vec<(String, String)>,
     live: RefCell<HashMap<String, Terminal>>,
     serial: Cell<u64>,
@@ -86,7 +85,7 @@ pub struct Terminals {
 }
 
 impl Terminals {
-    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: Sender<Event>, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
+    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: crate::runtime::Events, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
         let settings = RefCell::new(store.load_settings());
         Terminals {
             settings,

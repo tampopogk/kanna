@@ -22,6 +22,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod reader;
+mod runtime;
 mod settings;
 mod shell;
 mod status;
@@ -45,7 +46,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use pty::Spawner;
@@ -72,7 +72,6 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 const LISTEN_FD: &str = "KANNA_LISTEN_FD";
 
 const STOP_GRACE: libc::c_uint = 5;
-const SLOW_REQUEST: Duration = Duration::from_millis(50);
 
 const SHUTDOWN_MARKER: &str = "daemon.shutdown";
 
@@ -229,7 +228,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
     }
 
-    let (events, inbox) = mpsc::channel::<Event>();
+    let (events, mut inbox) = runtime::channel();
     let db = Rc::new(db::Db::open(&state_dir));
     content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
@@ -537,7 +536,8 @@ fn run() -> Result<Option<PathBuf>, String> {
         crashes.stopping();
         app.quit();
     };
-    loop {
+    let runtime = runtime::build()?;
+    tokio::task::LocalSet::new().block_on(&runtime, async { loop {
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
@@ -583,18 +583,23 @@ fn run() -> Result<Option<PathBuf>, String> {
         };
         let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
         perf::since("loop.chores", chores);
+        runtime::check("the loop's chores", chores.elapsed());
         let event = match deadline {
-            Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => match tokio::time::timeout_at(at.into(), inbox.recv()).await {
+                Ok(event) => event,
+                Err(_) => continue,
+            },
+            None => inbox.recv().await,
         };
-        let event = match event {
-            Ok(event) => event,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
+        let Some(event) = event else { break };
         let (kind, handling) = (event.kind(), Instant::now());
+        let asked = match &event {
+            Event::Request(request, _) => Some(format!("{} from a client", request_name(request))),
+            Event::AppMessage { message, .. } => Some(format!("{} from the app", request_name(message))),
+            _ => None,
+        };
         match event {
-            Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
+            Event::Request(request, reply) => match request.get("cmd").and_then(Value::as_str) {
                 Some("shutdown") => {
                     begin("asked to", &mut shutdown);
                     reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": true, "stopping": true, "pid": std::process::id() }))
@@ -614,7 +619,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                     })
                 }
                 _ => core.handle(request, reply),
-            }),
+            },
             Event::Wake => {}
             Event::Output { terminal, serial } => {
                 let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
@@ -699,12 +704,10 @@ fn run() -> Result<Option<PathBuf>, String> {
                         continue;
                     }
                     let link = Rc::downgrade(&app);
-                    timed(request_name(&request), "the app", || {
-                        core.handle(request, move |reply| {
-                            if let Some(link) = link.upgrade() {
-                                link.answer_app(conn, reply);
-                            }
-                        })
+                    core.handle(request, move |reply| {
+                        if let Some(link) = link.upgrade() {
+                            link.answer_app(conn, reply);
+                        }
                     });
                 }
             }
@@ -742,7 +745,9 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
         perf::since(kind, handling);
-    }
+        runtime::check(asked.as_deref().unwrap_or(kind), handling.elapsed());
+    } });
+    drop(runtime);
 
     let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();
@@ -765,15 +770,6 @@ fn run() -> Result<Option<PathBuf>, String> {
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(restart),
-    }
-}
-
-fn timed(name: String, from: &str, handle: impl FnOnce()) {
-    let started = Instant::now();
-    handle();
-    let took = started.elapsed();
-    if took > SLOW_REQUEST {
-        log!("kanna-daemon: {name} from {from} took {}ms", took.as_millis());
     }
 }
 

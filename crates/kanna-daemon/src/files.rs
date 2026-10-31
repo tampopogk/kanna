@@ -80,7 +80,7 @@ impl Watch {
 }
 
 pub struct Files {
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     watches: RefCell<HashMap<String, Watch>>,
     pub on_file: RefCell<Option<Box<dyn Fn(&[String], &Value)>>>,
 }
@@ -111,7 +111,7 @@ pub fn absolute(path: &str) -> String {
 }
 
 impl Files {
-    pub fn new(events: Sender<Event>) -> Files {
+    pub fn new(events: crate::runtime::Events) -> Files {
         Files { events, watches: RefCell::new(HashMap::new()), on_file: RefCell::new(None) }
     }
 
@@ -257,7 +257,7 @@ impl Place {
     }
 }
 
-fn work(id: String, path: PathBuf, kind: Kind, inbox: Receiver<Control>, changes: Sender<Control>, events: Sender<Event>) {
+fn work(id: String, path: PathBuf, kind: Kind, inbox: Receiver<Control>, changes: Sender<Control>, events: crate::runtime::Events) {
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if let Ok(event) = event {
             let _ = changes.send(Control::Changed(event.paths));
@@ -310,8 +310,8 @@ fn work(id: String, path: PathBuf, kind: Kind, inbox: Receiver<Control>, changes
 mod tests {
     use super::*;
 
-    fn files() -> (Files, Receiver<Event>) {
-        let (events, inbox) = mpsc::channel();
+    fn files() -> (Files, crate::runtime::Inbox) {
+        let (events, inbox) = crate::runtime::channel();
         (Files::new(events), inbox)
     }
 
@@ -391,15 +391,15 @@ mod tests {
 
     #[test]
     fn the_watcher_follows_a_file_through_a_symlinked_folder_deleted_and_made_again() {
-        let (files, inbox) = files();
+        let (files, mut inbox) = files();
         let dir = PathBuf::from(format!("/tmp/kanna-files-{}-watch", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.rs");
         std::fs::write(&file, "one").unwrap();
         files.subscribe("app1:v1", &json!({ "path": file, "kind": "code" })).unwrap();
-        let next = || loop {
-            match inbox.recv_timeout(Duration::from_secs(5)) {
+        let mut next = || loop {
+            match crate::runtime::next(&mut inbox, Duration::from_secs(5)) {
                 Ok(Event::File { read, .. }) => return read,
                 Ok(_) => continue,
                 Err(_) => panic!("no file event"),

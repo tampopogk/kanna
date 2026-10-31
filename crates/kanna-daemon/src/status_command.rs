@@ -8,7 +8,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
 
 pub fn rules_config(state_dir: &Path) -> Config {
     let mut config = Config::new(state_dir.join("agent-rules"));
@@ -30,7 +29,7 @@ pub fn rules_config(state_dir: &Path) -> Config {
 
 pub struct StatusCommand {
     detector: Rc<Detector>,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     pending: RefCell<HashMap<u64, Responder>>,
     next: Cell<u64>,
 }
@@ -40,7 +39,7 @@ fn bad(message: impl Into<String>) -> KmuxError {
 }
 
 impl StatusCommand {
-    pub fn new(detector: Rc<Detector>, events: Sender<Event>) -> StatusCommand {
+    pub fn new(detector: Rc<Detector>, events: crate::runtime::Events) -> StatusCommand {
         StatusCommand { detector, events, pending: RefCell::default(), next: Cell::new(0) }
     }
 
