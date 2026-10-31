@@ -69,5 +69,11 @@ mkdir -p "$root/repo/repo" && ln -s "$root/repo/repo" "$main/target"
 teardown "$main" || fail "main checkout: exit $?"
 [[ -d "$root/repo/repo" && -L "$main/target" ]] || fail "main checkout: removed its target/"
 
+targets "$dir/outside"
+git -C "$main" add -f build.local.json && git -C "$main" -c user.email=e@e -c user.name=e commit -q -m tracked
+wt="$(worktree task-tracked)" && mkdir -p "$dir/outside/repo/task-tracked" && ln -s "$dir/outside/repo/task-tracked" "$wt/target"
+teardown "$wt" || fail "committed build.local.json: exit $?"
+[[ -d "$dir/outside/repo/task-tracked" ]] || fail "committed build.local.json: used it"
+
 [[ $failed == 0 ]] && echo "teardown: ok"
 exit "$failed"

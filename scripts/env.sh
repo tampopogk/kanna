@@ -180,7 +180,12 @@ kanna_targets_config() {
 
 kanna_targets_setting() {
   config="$(kanna_targets_config "$1")"
-  [ -f "$config" ] && command -v plutil >/dev/null 2>&1 && plutil -extract "$2" raw -o - "$config" 2>/dev/null
+  [ -f "$config" ] || return 1
+  if git -C "$(dirname "$config")" ls-files --error-unmatch build.local.json >/dev/null 2>&1; then
+    echo "==> $config is committed to git: ignoring it, since it says what builds may delete" >&2
+    return 1
+  fi
+  command -v plutil >/dev/null 2>&1 && plutil -extract "$2" raw -o - "$config" 2>/dev/null
 }
 
 kanna_targets_root() {
