@@ -118,6 +118,14 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         from_place = case from_place when 'shelf' then 'desk' when 'backlog' then 'shelf' else from_place end,
         to_place = case to_place when 'shelf' then 'desk' when 'backlog' then 'shelf' else to_place end,
         what = case what when 'shelved' then 'picked' when 'deferred' then 'shelved' when 'pulled' then 'activated' when 'parked' then 'left' else what end;
+"), Step::Sql("
+    create table crashes (
+        file text primary key,
+        signature text not null,
+        at real not null,
+        dismissed real,
+        reported real
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -643,6 +651,24 @@ impl Db {
         self.conn.execute("delete from projects", []).map(|_| ())
     }
 
+    pub fn crashes(&self) -> rusqlite::Result<Vec<(String, String, bool, bool)>> {
+        let mut statement = self.conn.prepare("select file, signature, dismissed is not null, reported is not null from crashes order by file")?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect()
+    }
+
+    pub fn put_crash(&self, file: &str, signature: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert or ignore into crashes (file, signature, at) values (?1, ?2, ?3)", params![file, signature, now()]).map(|_| ())
+    }
+
+    pub fn crash_reported(&self, signature: &str) -> rusqlite::Result<()> {
+        self.conn.execute("update crashes set reported = ?2 where signature = ?1 and reported is null", params![signature, now()]).map(|_| ())
+    }
+
+    pub fn dismiss_crashes(&self, through: &str) -> rusqlite::Result<usize> {
+        self.conn.execute("update crashes set dismissed = ?2 where file <= ?1 and dismissed is null", params![through, now()])
+    }
+
     pub fn never_import(&self, path: &str) -> rusqlite::Result<()> {
         self.conn.execute("insert or replace into never_import (path, at) values (?1, ?2)", params![path, now()]).map(|_| ())
     }
@@ -921,10 +947,10 @@ mod tests {
         let dir = folder("done");
         let db = Db::open(&dir);
         for (id, made, done) in [("t1", 1.0, Some(30.0)), ("t2", 2.0, Some(20.0)), ("t3", 3.0, None), ("t4", 4.0, Some(40.0))] {
-            let row = Row { id: id.into(), repo: "/r".into(), place: Place::Backlog, terminal: None, made_at: made, doc: json!({ "name": id }) };
+            let row = Row { id: id.into(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at: made, doc: json!({ "name": id }) };
             db.put(&row, Some(&Change::new("made"))).unwrap();
             if let Some(at) = done {
-                let mut change = Change::new("done").moved(Place::Backlog, Place::Done);
+                let mut change = Change::new("done").moved(Place::Shelf, Place::Done);
                 change.at = Some(at);
                 db.put(&Row { place: Place::Done, ..row }, Some(&change)).unwrap();
             }
@@ -1084,13 +1110,14 @@ mod tests {
     fn a_db_from_before_the_desk_and_shelf_names_moves_each_task_and_event_to_the_place_it_was_in() {
         let dir = folder("place-names");
         let conn = connect(&dir.join(FILE)).unwrap();
-        for step in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+        let renaming = MIGRATIONS.iter().position(|step| matches!(step, Step::Sql(sql) if sql.contains("when 'shelved' then 'picked'"))).unwrap();
+        for step in &MIGRATIONS[..renaming] {
             match step {
                 Step::Sql(sql) => conn.execute_batch(sql).unwrap(),
                 Step::Run(run) => run(&conn).unwrap(),
             }
         }
-        conn.pragma_update(None, "user_version", version() - 1).unwrap();
+        conn.pragma_update(None, "user_version", renaming as i64).unwrap();
         conn.execute_batch(r#"
             insert into tasks (id, repo, place, terminal, made_at, doc) values
                 ('task-00000001', '/r', 'shelf', 'term-4', 1.0, '{"name": "On the Desk"}'),

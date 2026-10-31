@@ -15,7 +15,7 @@ When your session starts (once per session):
 
 1. `git log --oneline main --since=1.day` (`master` if there's no `main`). With nothing, say nothing about a quiz.
 2. Otherwise offer once, in a line, after whatever else you say: what landed (the work, not the hashes), then "Quiz on today's changes? Five questions, about two minutes."
-3. On yes: `kanna quiz open`, from the repo, with the agent you are (`--agent codex` for Codex; Claude is the default). It brings the repo's Quiz window forward if it's open, else opens one: the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it. It isn't a task. Say it's open, and carry on.
+3. On yes: `kanna quiz open`, from the repo, with the agent you are (`--agent codex` for Codex; Claude is the default). It brings the repo's Quiz window forward if it's open, else opens one: the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it. It isn't a task, but it asks permission or not as a task's agent does (`agents.prompts` in `~/.kanna-v4/config.json`). Say it's open, and carry on.
 
 ## Asking (the quiz agent)
 

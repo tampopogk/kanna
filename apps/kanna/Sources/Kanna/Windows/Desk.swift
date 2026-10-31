@@ -255,7 +255,7 @@ extension AppController {
             if let location = location(ofEntry: entry), let project = entry["project"]?.string { identities[location] = project }
         }
         shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
-        refresh()
+        refreshSoon()
     }
 
     func location(ofEntry entry: JSON) -> String? {

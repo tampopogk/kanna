@@ -20,7 +20,7 @@ Find a Shelf task by typing part of its name or first message, and start it from
 
 ## CLI
 
-`kanna task list QUERY` lists only the tasks that match QUERY the same way: every word in the name, or in a Shelf task's first message. `kanna task list` alone lists every task, as before; `--json` is filtered too. With `--done` it searches the done tasks as well, so an agent can see whether the work was done already before it makes a task.
+`kanna task list QUERY` lists only the tasks that match QUERY the same way: every word in the name, or in a Shelf task's first message. `kanna task list` alone lists every task of the caller's repo ([task list](task-list.md#4-which-tasks)); `--json` is filtered too. With `--done` it searches the done tasks as well, so an agent can see whether the work was done already before it makes a task.
 
 ```sh
 kanna task list resume agent
