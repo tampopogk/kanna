@@ -21,6 +21,27 @@ struct DocThreadsTests {
         #expect(DocStore.line(of: "missing", in: source, near: 4) == 4)
     }
 
+    @Test func aQueuedCommentKeepsTheStatusTheDaemonGaveIt() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("doc-delivered-\(UUID().uuidString)").path
+        try FileManager.default.createDirectory(atPath: root + "/.git", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let store = DocStore(file: root + "/a.md")
+        try store.update { record in
+            record.threads = ["x", "y", "z"].map { id in
+                var t = thread(id)
+                (t.id, t.status) = (id, id == "x" ? "sent" : "waiting")
+                return t
+            }
+        }
+        store.delivered("x", .waiting, line: 7)
+        store.delivered("y", .sent, line: 2)
+        store.delivered("z", .failed("not connected to the daemon"), line: 3)
+        let threads = store.read().threads
+        #expect(threads.map(\.status) == ["sent", "sent", "unsent"])
+        #expect(threads.map(\.line) == [7, 2, 3])
+        #expect(threads[2].error == "not connected to the daemon")
+    }
+
     @Test func aThreadWaitsWhileItsLastMessageIsYours() {
         let posted = DocStore.date("2026-10-16T10:00:00")!
         var t = thread("x")
@@ -32,6 +53,9 @@ struct DocThreadsTests {
         #expect(DocWait.of(t, agent: "p1", status: "needs-you", now: later) == .note("Not answered · the agent is waiting on you", warn: true))
         #expect(DocWait.of(t, agent: nil, status: nil, now: later) == .note("Not answered · no agent", warn: false))
         #expect(DocWait.of(t, agent: "p1", status: "idle", now: posted.addingTimeInterval(2)) == .typing)
+        t.status = "waiting"
+        #expect(DocWait.of(t, agent: "p1", status: "working", now: later) == .note("Waiting · it goes to the agent when its turn is over", warn: false))
+        #expect(DocWait.of(t, agent: "p1", status: nil, now: later) == .note("Waiting · it goes to the agent when its turn is over", warn: false))
         t.status = "unsent"
         t.error = "no agent"
         #expect(DocWait.of(t, agent: nil, status: nil, now: later) == .note("Not sent · no agent", warn: false))

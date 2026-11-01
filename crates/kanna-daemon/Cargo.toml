@@ -12,6 +12,7 @@ kanna-mux = { path = "../kanna-mux" }
 kanna-keeper = { path = "../kanna-keeper" }
 kanna-vt = { path = "../kanna-vt" }
 kanna-detect = { path = "../kanna-detect" }
+kanna-threads = { path = "../kanna-threads" }
 kanna-diff = { path = "../kanna-diff" }
 kanna-net = { path = "../kanna-net" }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }

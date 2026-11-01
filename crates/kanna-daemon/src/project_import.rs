@@ -660,7 +660,7 @@ mod tests {
         let row = |id: &str, repo: &str, folder: &str| crate::db::Row { id: id.into(), repo: repo.into(), place: crate::db::Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": id, "folder": folder }) };
         db.put(&row("task-00000001", "/w/app", "/w/app/.kanna-worktrees/task-00000001"), None).unwrap();
         db.put(&row("task-00000002", "/w/app-old", "/w/app-old/.kanna-worktrees/task-00000002"), None).unwrap();
-        db.put_message("task-00000001", "/w/app", "user", "hi", None).unwrap();
+        db.put_message("task-00000001", "/w/app", "user", "hi", None, None).unwrap();
         db.touch_project("/w/app").unwrap();
         db.touch_project("/r/a/app").unwrap();
         db.put_planner("/w/app", &json!({ "agent": "claude", "session": "s" })).unwrap();

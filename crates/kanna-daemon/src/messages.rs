@@ -77,8 +77,12 @@ impl Ready {
     }
 }
 
-pub fn prompt(messages: &[(String, String)]) -> String {
-    messages.iter().map(|(from, text)| format!("[message from {from}] {}", text.trim())).collect::<Vec<_>>().join("\n\n")
+pub fn prompt(messages: &[(Option<String>, String)]) -> String {
+    let one = |(from, text): &(Option<String>, String)| match from {
+        Some(from) => format!("[message from {from}] {}", text.trim()),
+        None => text.trim().to_string(),
+    };
+    messages.iter().map(one).collect::<Vec<_>>().join("\n\n")
 }
 
 pub const RETRY: Duration = Duration::from_secs(5);
@@ -293,8 +297,14 @@ mod tests {
 
     #[test]
     fn messages_go_in_one_prompt_oldest_first_each_with_its_sender() {
-        let one = prompt(&[("task-5e2c \"Send\"".into(), "Is your spec final?\n".into()), ("user".into(), "Also rebase.".into())]);
+        let one = prompt(&[(Some("task-5e2c \"Send\"".into()), "Is your spec final?\n".into()), (Some("user".into()), "Also rebase.".into())]);
         assert_eq!(one, "[message from task-5e2c \"Send\"] Is your spec final?\n\n[message from user] Also rebase.");
+    }
+
+    #[test]
+    fn a_comment_keeps_its_own_header_in_the_prompt() {
+        let one = prompt(&[(None, "[kanna comment c2 · docs/a.md:18]\n> the strip scrolls\nSay what ⌃Tab does.\n".into()), (Some("user".into()), "Also rebase.".into())]);
+        assert_eq!(one, "[kanna comment c2 · docs/a.md:18]\n> the strip scrolls\nSay what ⌃Tab does.\n\n[message from user] Also rebase.");
     }
 
     #[test]

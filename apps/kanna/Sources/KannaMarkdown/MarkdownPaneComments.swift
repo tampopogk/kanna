@@ -291,7 +291,7 @@ extension MarkdownPaneView {
             let id = "c\(record.next)"
             record.next += 1
             record.threads.append(DocThread(id: id, quote: DocStore.clean(pending.quote), prefix: pending.prefix, suffix: pending.suffix,
-                                            line: pending.line, state: "open", status: "sent",
+                                            line: pending.line, state: "open", status: "waiting",
                                             messages: [DocMessage(who: "you", text: text, at: DocStore.now())], error: nil))
             return id
         }
@@ -307,6 +307,7 @@ extension MarkdownPaneView {
             guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
             record.threads[index].messages.append(DocMessage(who: "you", text: text, at: DocStore.now()))
             record.threads[index].state = "open"
+            (record.threads[index].status, record.threads[index].error) = ("waiting", nil)
         }
         reloadThreads()
         deliver(id, text)
@@ -340,17 +341,12 @@ extension MarkdownPaneView {
         thread.line = DocStore.line(of: thread.quote, in: source, near: thread.line)
         let shown = anchors[id] != nil
         let message = DocStore.clean(DocStore.message(thread, file: store.relativeName, text: text, quoted: shown))
-        let finish: (String?) -> Void = { [weak self] error in
+        let finish: (DocDelivery) -> Void = { [weak self] delivery in
             guard let self else { return }
-            try? store.update { record in
-                guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-                record.threads[index].status = error == nil ? "sent" : "unsent"
-                record.threads[index].error = error
-                record.threads[index].line = thread.line
-            }
+            store.delivered(id, delivery, line: thread.line)
             reloadThreads()
         }
-        guard let agent, let onSend else { return finish("no agent") }
-        onSend(agent, message, finish)
+        guard let agent, let onSend else { return finish(.failed("no agent")) }
+        onSend(agent, message, store.file, id, finish)
     }
 }

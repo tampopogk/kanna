@@ -62,7 +62,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     var forcedThreads = false
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { refreshPanel() } } }
-    public var onSend: ((String, String, @escaping (String?) -> Void) -> Void)?
+    public var onSend: DocSend?
     public var onTourStep: ((String) -> Void)?
     var tourUnrevealed = false
     public var tour: DocTourStep? {

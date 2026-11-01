@@ -797,7 +797,7 @@ pub static COMMANDS: &[Command] = &[
             ("--all", "comments: resolved ones too."),
             ("--doc FILE", "The doc a comment is on. Default: found from the comment's ID, the docs whose comments come to this pane first."),
         ],
-        notes: "A markdown or web pane like `kanna open md FILE` or `kanna open web FILE`, with a thread list and a comment box: select text and press ⌘↵, ⌘-click a part, or ⌘-drag a box. Each comment is sent to the terminal that ran markup (or the one --to names), with the part or box and, for a page or an image, a screenshot with it marked up. `kanna open` shows the doc without comments; `kanna markup PANE` turns them on there.",
+        notes: "A markdown or web pane like `kanna open md FILE` or `kanna open web FILE`, with a thread list and a comment box: select text and press ⌘↵, ⌘-click a part, or ⌘-drag a box. Each comment is sent to the terminal that ran markup (or the one --to names), with the part or box and, for a page or an image, a screenshot with it marked up: to a task's or planner's Claude or Codex as a message once its turn is over (`kanna task messages` lists it), and typed into any other agent at once. `kanna open` shows the doc without comments; `kanna markup PANE` turns them on there.",
         examples: &[
             ("kanna markup references/mockups/desk.html --split right", "Review a mockup beside this pane."),
             ("kanna markup docs/specs/desk.md --tab", "Review a spec in a new tab."),

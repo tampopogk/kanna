@@ -53,7 +53,7 @@ flowchart LR
 | `by` | text | a pane, `user`, or `daemon` |
 | `doc` | JSON | window, exit code, old name, … |
 
-**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)).
+**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)); a doc's comment names its doc and thread in `comment` (migration 16).
 
 | Column | Type | Holds |
 |---|---|---|

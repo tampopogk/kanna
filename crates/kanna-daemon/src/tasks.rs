@@ -1,4 +1,4 @@
-use crate::db::{self, Change, Db, Message, Place, Row};
+use crate::db::{self, Change, Comment, Db, Message, Place, Row};
 use crate::messages::{self, Channel, Ready, PLANNER, USER};
 use crate::project_import;
 use crate::stacks::{self, Base, Conflict, Made, Mark, Step, Where, KANNA};
@@ -1641,8 +1641,9 @@ impl Tasks {
                     Some("events") => responder.reply(this.events(&args)),
                     Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
+                    Some("comment") => this.comment(&args, responder),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send or messages"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send, comment or messages"))),
                 }
             }),
         );
@@ -1880,7 +1881,7 @@ impl Tasks {
             (id, entry.repo, Some(program(&entry.agent).to_string()))
         };
         let mode = if from == USER { None } else { who(args).and_then(|pane| self.permissions(pane)) };
-        let message = self.queue(&recipient, &repo, &from, text, mode)?;
+        let message = self.queue(&recipient, &repo, &from, text, mode, None)?;
         let pane = self.recipient_pane(&message, &self.planners());
         let state = match &pane {
             Some(pane) => self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
@@ -1898,8 +1899,72 @@ impl Tasks {
         Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state)), ("warning".to_string(), opt(warning.as_deref()))]))
     }
 
-    fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>) -> Result<Message, KmuxError> {
-        let message = self.db.put_message(recipient, repo, from, text, mode).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
+    fn comment(&self, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let (Some(pane), Some(text)) = (string(args, "pane").map(|pane| core.pane(pane).map_or_else(|| pane.to_string(), |p| p.id)), string(args, "text").filter(|t| !t.trim().is_empty())) else {
+            return responder.reply(Err(bad("a comment needs the agent's pane and its text")));
+        };
+        let comment = match (string(args, "doc"), string(args, "thread")) {
+            (Some(file), Some(thread)) if Path::new(file).is_absolute() => Comment { file: file.into(), thread: thread.into() },
+            _ => return responder.reply(Err(bad("a comment needs its doc (an absolute path) and its thread"))),
+        };
+        if let Some((recipient, repo)) = self.comment_recipient(&pane) {
+            let reply = self.queue(&recipient, &repo, USER, text, None, Some(&comment)).map(|message| {
+                log!("kanna-daemon: {}'s comment {} waits for {}", comment.file, comment.thread, self.label_of(&recipient));
+                Map::from_iter([("state".to_string(), json!("waiting")), ("message".to_string(), json!(message.id)), ("to".to_string(), json!(self.label_of(&recipient)))])
+            });
+            return responder.reply(reply);
+        }
+        core.handle(json!({ "cmd": "send", "args": { "pane": pane, "text": text } }), move |reply| {
+            responder.reply(match failed(&reply) {
+                Some(error) => Err(error),
+                None => Ok(Map::from_iter([("state".to_string(), json!("sent"))])),
+            })
+        });
+    }
+
+    fn comment_recipient(&self, pane: &str) -> Option<(String, String)> {
+        let core = self.core.upgrade()?;
+        let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none());
+        if let Some(id) = self.task_of(pane).filter(|id| self.is_open(id)) {
+            let entry = self.known(&id)?;
+            let takes = if alive(&core, pane) { door(pane) } else { messages::AGENTS.contains(&program(&entry.agent)) };
+            return takes.then_some((id, entry.repo));
+        }
+        if !self.planners().iter().any(|p| p == pane) || !door(pane) {
+            return None;
+        }
+        let repo = core.pane(pane).and_then(|p| project(p.cwd.as_deref()))?.to_string_lossy().into_owned();
+        let probe = Message { id: 0, recipient: PLANNER.into(), repo: repo.clone(), sender: USER.into(), at: 0.0, delivered: None, text: String::new(), mode: None, comment: None };
+        (self.recipient_pane(&probe, &self.planners()).as_deref() == Some(pane)).then_some((PLANNER.into(), repo))
+    }
+
+    fn mark_sent(&self, list: &[Message]) {
+        let waiting = self.waiting.borrow();
+        for comment in list.iter().filter_map(|m| m.comment.as_ref()) {
+            if waiting.iter().any(|m| m.comment.as_ref() == Some(comment)) {
+                continue;
+            }
+            let marked = kanna_threads::update(
+                Path::new(&comment.file),
+                |doc| {
+                    let thread = doc["threads"].as_array_mut().and_then(|threads| threads.iter_mut().find(|t| t["id"] == json!(comment.thread)));
+                    if let Some(thread) = thread.filter(|t| t["status"] == json!("waiting")) {
+                        thread["status"] = json!("sent");
+                        thread["error"] = Value::Null;
+                    }
+                    Ok(())
+                },
+                |why| why,
+            );
+            if let Err(why) = marked {
+                log!("kanna-daemon: couldn't mark {}'s comment {} sent: {why}", comment.file, comment.thread);
+            }
+        }
+    }
+
+    fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> Result<Message, KmuxError> {
+        let message = self.db.put_message(recipient, repo, from, text, mode, comment).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
         log!("kanna-daemon: a message from {from} waits for {recipient}");
         self.waiting.borrow_mut().push(message.clone());
         self.refill();
@@ -1927,7 +1992,7 @@ impl Tasks {
                 self.known(id).ok_or_else(|| not_found(id))?.repo
             }
         };
-        Ok(self.queue(recipient, &repo, from, text, None)?.id)
+        Ok(self.queue(recipient, &repo, from, text, None, None)?.id)
     }
 
     pub fn waiting(&self, message: i64) -> bool {
@@ -2042,7 +2107,7 @@ impl Tasks {
 
     fn hand_over(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel) {
         let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
-        let text = messages::prompt(&list.iter().map(|m| (named(&m.sender), m.text.clone())).collect::<Vec<_>>());
+        let text = messages::prompt(&list.iter().map(|m| (m.comment.is_none().then(|| named(&m.sender)), m.text.clone())).collect::<Vec<_>>());
         let theirs = self.permissions(&pane);
         let modes: Option<Vec<&str>> = list.iter().map(|m| if messages::yours(&m.sender) { theirs } else { m.mode.as_deref() }).collect();
         let mode = modes.map(|modes| if modes.iter().all(|mode| *mode == messages::BYPASS) { messages::BYPASS } else { messages::PROMPTING });
@@ -2078,6 +2143,7 @@ impl Tasks {
             log!("kanna-daemon: couldn't mark {pane}'s messages delivered in {}: {error}", db::FILE);
         }
         self.waiting.borrow_mut().retain(|m| !ids.contains(&m.id));
+        self.mark_sent(&list);
         if let Some(turn) = self.turns.borrow_mut().get_mut(&pane) {
             let status = self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status);
             *turn = Turn::underway();
@@ -3149,7 +3215,7 @@ impl Tasks {
 
     fn tell(&self, id: &str, text: String) {
         let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == id) else { return };
-        match self.db.put_message(id, &entry.repo, KANNA, &text, Some(messages::PROMPTING)) {
+        match self.db.put_message(id, &entry.repo, KANNA, &text, Some(messages::PROMPTING), None) {
             Ok(message) => {
                 log!("kanna-daemon: a message from {KANNA} waits for {id}");
                 self.waiting.borrow_mut().push(message);
@@ -4277,6 +4343,71 @@ mod tests {
         tasks.status("term-7", Some("working"), false);
         tasks.status("term-7", Some("idle"), true);
         assert!(tasks.turns.borrow()["term-7"].ended(Instant::now(), TURN_SETTLE).is_some(), "its next turn is tracked again");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_comment_to_claude_waits_for_its_turn_then_arrives_with_its_own_header_and_its_thread_says_sent() {
+        let state = std::env::temp_dir().join(format!("kanna-comment-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        fs::create_dir_all(state.join(".git")).unwrap();
+        fs::write(state.join(".kanna/config.json"), r#"{"shelf": {"runners": 0}}"#).unwrap();
+        let doc = state.join("a.md");
+        fs::write(&doc, "# A\n\nThe strip scrolls.\n").unwrap();
+        kanna_threads::update(&doc, |d| -> Result<(), String> {
+            d["threads"] = json!([{ "id": "c1", "quote": "The strip scrolls.", "line": 3, "state": "open", "status": "waiting", "messages": [] }]);
+            Ok(())
+        }, |why| why).unwrap();
+        let socket = Path::new("/tmp").join(format!("kanna-comment-{}.sock", std::process::id()));
+        let _ = fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut panes = vec![];
+        for (id, status) in [("term-7", "working"), ("term-8", "idle")] {
+            let mut pane = Pane::new(id, None, kanna_mux::PaneType::Term);
+            pane.state = PaneState::Running;
+            pane.status = Some(status.into());
+            panes.push(pane);
+        }
+        core.install_panes(panes, 0, 8);
+        let (events, posted) = std::sync::mpsc::channel();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
+        tasks.install(&core);
+        let at = socket.clone();
+        *tasks.permissions.borrow_mut() = Some(Box::new(|_| Some(messages::BYPASS)));
+        *tasks.channel.borrow_mut() = Some(Box::new(move |pane| Some(if pane == "term-7" { Channel::Claude(Ok(at.clone())) } else { Channel::Other("copilot".into()) })));
+        for (id, pane, agent) in [("task-1dfb12c2", "term-7", "claude"), ("task-2e0c34bb", "term-8", "copilot")] {
+            tasks.entries.borrow_mut().push(Entry { id: id.into(), repo: state.to_str().unwrap().into(), agent: agent.into(), held: Some(pane.into()), ..Default::default() });
+        }
+        let text = "[kanna comment c1 · a.md:3]\n> The strip scrolls.\nSay what ⌃Tab does.";
+        let comment = |pane: &str| core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": pane, "text": text, "doc": doc, "thread": "c1" } }));
+        let status = || kanna_threads::read(&doc)["threads"][0]["status"].clone();
+
+        let reply = comment("term-7");
+        assert_eq!((reply["ok"].clone(), reply["state"].clone()), (json!(true), json!("waiting")), "{reply}");
+        tasks.status("term-7", Some("working"), false);
+        tasks.tick();
+        assert_eq!(tasks.waiting.borrow().len(), 1, "it waits while the agent works");
+        assert_eq!(status(), json!("waiting"));
+
+        tasks.status("term-7", Some("idle"), true);
+        tasks.tick();
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line).unwrap();
+        let content: Value = serde_json::from_str::<Value>(&line).unwrap()["message"]["content"].clone();
+        assert_eq!(content, json!(format!("<cross-session-message from-mode=\"bypass\">\n{text}\n</cross-session-message>")), "its own header, no [message from], and the agent's own permissions, since it's yours");
+        let Ok(Event::Posted { token, result }) = posted.recv_timeout(Duration::from_secs(5)) else { panic!("never posted") };
+        tasks.posted(token, result);
+        assert_eq!(status(), json!("sent"), "delivered, its thread says so");
+        let listed = tasks.db.messages(Some("task-1dfb12c2")).unwrap();
+        assert_eq!(listed.iter().map(|m| (m.sender.as_str(), m.delivered.is_some(), m.comment.as_ref().map(|c| c.thread.as_str()))).collect::<Vec<_>>(), [("user", true, Some("c1"))], "kanna task messages shows it from you");
+
+        let typed = comment("term-8");
+        assert_ne!(typed["state"], json!("waiting"), "a copilot has no door, so it's typed: {typed}");
+        assert!(tasks.waiting.borrow().is_empty() && tasks.db.messages(Some("task-2e0c34bb")).unwrap().is_empty(), "and not queued");
+        let _ = fs::remove_file(&socket);
         fs::remove_dir_all(&state).unwrap();
     }
 

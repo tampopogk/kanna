@@ -155,6 +155,14 @@ public struct DocRecord: Codable, Equatable {
     }
 }
 
+public enum DocDelivery: Equatable, Sendable {
+    case sent
+    case waiting
+    case failed(String)
+}
+
+public typealias DocSend = (_ agent: String, _ text: String, _ doc: String, _ thread: String, _ done: @escaping (DocDelivery) -> Void) -> Void
+
 public struct DocStore {
     public let file: String
     public let path: String
@@ -203,6 +211,18 @@ public struct DocStore {
         if mkdir(path, 0o755) != 0, errno != EEXIST { throw CocoaError(.fileWriteNoPermission) }
         var info = stat()
         guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw CocoaError(.fileWriteInvalidFileName) }
+    }
+
+    package func delivered(_ id: String, _ delivery: DocDelivery, line: Int) {
+        try? update { record in
+            guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
+            switch delivery {
+            case .sent: (record.threads[index].status, record.threads[index].error) = ("sent", nil)
+            case .waiting: record.threads[index].error = nil
+            case .failed(let why): (record.threads[index].status, record.threads[index].error) = ("unsent", why)
+            }
+            record.threads[index].line = line
+        }
     }
 
     @discardableResult

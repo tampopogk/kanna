@@ -34,7 +34,7 @@ public final class PageMarkupView: NSView {
     public let webView: WKWebView
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { drawMarks() } } }
-    public var onSend: ((String, String, @escaping (String?) -> Void) -> Void)?
+    public var onSend: DocSend?
 
     let bar = DocBar()
     let panel = ThreadPanel()
@@ -403,7 +403,7 @@ public final class PageMarkupView: NSView {
             let id = try? store.update { record -> String in
                 let id = "c\(record.next)"
                 record.next += 1
-                record.threads.append(DocThread(id: id, quote: quote, prefix: "", suffix: "", line: line, state: "open", status: "sent",
+                record.threads.append(DocThread(id: id, quote: quote, prefix: "", suffix: "", line: line, state: "open", status: "waiting",
                                                 messages: [DocMessage(who: "you", text: text, at: DocStore.now())], error: nil, page: spot))
                 return id
             }
@@ -447,6 +447,7 @@ public final class PageMarkupView: NSView {
             guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
             record.threads[index].messages.append(DocMessage(who: "you", text: text, at: DocStore.now()))
             record.threads[index].state = "open"
+            (record.threads[index].status, record.threads[index].error) = ("waiting", nil)
         }
         reloadThreads()
         deliver(id, text)
@@ -483,18 +484,13 @@ public final class PageMarkupView: NSView {
         let source = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
         if let page = thread.page, !page.text.isEmpty { thread.line = DocStore.line(of: page.text, in: source, near: thread.line) }
         let message = DocStore.clean(DocStore.message(thread, file: store.relativeName, text: text, mark: store.mark(id)))
-        let finish: (String?) -> Void = { [weak self] error in
+        let finish: (DocDelivery) -> Void = { [weak self] delivery in
             guard let self else { return }
-            try? store.update { record in
-                guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-                record.threads[index].status = error == nil ? "sent" : "unsent"
-                record.threads[index].error = error
-                record.threads[index].line = thread.line
-            }
+            store.delivered(id, delivery, line: thread.line)
             reloadThreads()
         }
-        guard let agent, let onSend else { return finish("no agent") }
-        onSend(agent, message, finish)
+        guard let agent, let onSend else { return finish(.failed("no agent")) }
+        onSend(agent, message, store.file, id, finish)
     }
 
     static let script = #"""
