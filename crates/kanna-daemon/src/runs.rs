@@ -975,7 +975,6 @@ impl Runs {
             live.doc.starts.entry(name.to_string()).or_insert(head.clone());
             live.doc.visits = n;
             live.doc.sessions += sessions;
-            live.doc.next = None;
             live.visit = Some(Visit { row: visit_row, work: work.clone(), within, opening: true, ending: false });
             None
         });
@@ -1007,6 +1006,7 @@ impl Runs {
                     visit.row = stage_row.clone();
                     visit.opening = false;
                 }
+                live.doc.next = None;
                 Some(("stage", Some("daemon".into()), event))
             });
             this.soon.set(true);
