@@ -3757,31 +3757,31 @@ mod tests {
         fs::create_dir_all(&state).unwrap();
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
-        let backlog = Rc::new(Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
         let repo = state.to_str().unwrap();
         let mut made = vec![];
         for (at, name) in [(3.0, "Newest"), (1.0, "Oldest"), (2.0, "Middle")] {
-            let entry = Entry { made_at: at, ..backlog.mint(&json!({ "repo": repo }), Some(name.into()), None).unwrap() };
-            backlog.store(&entry, Place::Backlog, None, Some(Change::new("made"))).unwrap();
+            let entry = Entry { made_at: at, ..tasks.mint(&json!({ "repo": repo }), Some(name.into()), None).unwrap() };
+            tasks.store(&entry, Place::Shelf, None, Some(Change::new("made"))).unwrap();
             made.push((at, entry.id.clone()));
-            insert_in_order(&mut backlog.entries.borrow_mut(), entry);
+            insert_in_order(&mut tasks.entries.borrow_mut(), entry);
         }
         made.sort_by(|a, b| a.0.total_cmp(&b.0));
         let made: Vec<String> = made.into_iter().map(|(_, id)| id).collect();
-        let listed = |backlog: &Backlog| backlog.list(&json!({}))["tasks"].as_array().unwrap().iter().map(|t| string(t, "id").unwrap().to_string()).collect::<Vec<_>>();
-        assert_eq!(listed(&backlog), made);
+        let listed = |tasks: &Tasks| tasks.list(&json!({}))["shelf"].as_array().unwrap().iter().map(|t| string(t, "id").unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(listed(&tasks), made);
         let opened = core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left", "task": made[0] } }));
         let pane = core.pane("agent").unwrap_or_else(|| panic!("{opened}")).id;
-        let oldest = backlog.take(&made[0]).unwrap();
-        backlog.store(&oldest, Place::Shelf, Some(&pane), Some(Change::new("shelved"))).unwrap();
-        backlog.record(&pane, oldest, Place::Shelf);
+        let oldest = tasks.take(&made[0]).unwrap();
+        tasks.store(&oldest, Place::Desk, Some(&pane), Some(Change::new("picked"))).unwrap();
+        tasks.record(&pane, oldest, Place::Desk);
         let (responder, answer) = kanna_mux::responder();
-        backlog.defer(&json!({ "task": pane }), responder);
-        let std::task::Poll::Ready(deferred) = std::future::Future::poll(std::pin::pin!(answer), &mut std::task::Context::from_waker(std::task::Waker::noop())) else { panic!("defer didn't answer") };
-        let deferred = deferred.unwrap();
-        assert_eq!(deferred["pane"], pane, "{deferred:?}");
-        assert_eq!(listed(&backlog), made, "the oldest task is listed first again");
-        let again = Backlog::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        tasks.shelve(&json!({ "task": pane }), responder);
+        let std::task::Poll::Ready(shelved) = std::future::Future::poll(std::pin::pin!(answer), &mut std::task::Context::from_waker(std::task::Waker::noop())) else { panic!("shelve didn't answer") };
+        let shelved = shelved.unwrap();
+        assert_eq!(shelved["pane"], pane, "{shelved:?}");
+        assert_eq!(listed(&tasks), made, "the oldest task is listed first again");
+        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
         assert_eq!(listed(&again), made, "and after a restart");
         fs::remove_dir_all(&state).unwrap();
     }

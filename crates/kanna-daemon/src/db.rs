@@ -876,7 +876,7 @@ mod tests {
         let dir = folder("order");
         let db = Db::open(&dir);
         for (id, made_at) in [("task-0000000c", 2.0), ("task-0000000b", 1.0), ("task-0000000d", 3.0), ("task-0000000a", 1.0)] {
-            db.put(&Row { id: id.into(), repo: "/r".into(), place: Place::Backlog, terminal: None, made_at, doc: json!({}) }, None).unwrap();
+            db.put(&Row { id: id.into(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at, doc: json!({}) }, None).unwrap();
         }
         let ids = Db::open(&dir).tasks().unwrap().into_iter().map(|row| row.id).collect::<Vec<_>>();
         assert_eq!(ids, ["task-0000000a", "task-0000000b", "task-0000000c", "task-0000000d"]);
