@@ -2,6 +2,8 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 
+pub const LONGEST: usize = 16 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
     Rx,
@@ -84,7 +86,13 @@ impl Splitter {
                     out.push(self.partial.take().unwrap_or(Line { t, bytes: Vec::new() }));
                     self.after_cr = true;
                 }
-                byte => self.partial.get_or_insert_with(|| Line { t, bytes: Vec::new() }).bytes.push(byte),
+                byte => {
+                    let line = self.partial.get_or_insert_with(|| Line { t, bytes: Vec::new() });
+                    line.bytes.push(byte);
+                    if line.bytes.len() >= LONGEST {
+                        out.extend(self.partial.take());
+                    }
+                }
             }
         }
         out
@@ -208,6 +216,14 @@ mod tests {
         assert_eq!(texts(s.feed(2, b"ee\r")), ["three"]);
         assert_eq!(texts(s.feed(3, b"\nfour\rfive\n")), ["four", "five"]);
         assert!(s.partial().is_none());
+    }
+
+    #[test]
+    fn a_line_with_no_end_is_cut_at_the_longest() {
+        let mut s = Splitter::default();
+        let lines = s.feed(1, &vec![b'a'; LONGEST * 2 + 5]);
+        assert_eq!(lines.iter().map(|l| l.bytes.len()).collect::<Vec<_>>(), [LONGEST, LONGEST]);
+        assert_eq!(s.partial().unwrap().bytes.len(), 5);
     }
 
     #[test]

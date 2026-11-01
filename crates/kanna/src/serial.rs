@@ -139,13 +139,18 @@ pub fn unescape(text: &str) -> Vec<u8> {
     out
 }
 
+fn only_colours(text: &str) -> String {
+    let Ok(re) = Regex::new(r"\x1b(\[[0-9;]*m)|\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)?|[ -~]?)") else { return strip_ansi(text) };
+    re.replace_all(text, |found: &regex::Captures| if found.get(1).is_some() { found[0].to_string() } else { String::new() }).into_owned()
+}
+
 fn strip_ansi(text: &str) -> String {
     Regex::new(r"\x1b(\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])").map(|re| re.replace_all(text, "").into_owned()).unwrap_or_else(|_| text.to_string())
 }
 
 pub fn row_line(row: &Value, colour: bool) -> String {
     let text = row["text"].as_str().unwrap_or("");
-    let text = if colour { text.to_string() } else { strip_ansi(text) };
+    let text = if colour { only_colours(text) } else { strip_ansi(text) };
     let t = clock(row["t"].as_i64().unwrap_or(0));
     match row["d"].as_str() {
         Some(">") => format!("{t} → {text}"),
@@ -369,6 +374,11 @@ mod tests {
         assert_eq!(clock(at), "14:37:40.118");
         assert_eq!(clock(since_ms("09:05").unwrap()), "09:05:00.000");
         assert!(since_ms("soon").is_none());
+    }
+
+    #[test]
+    fn a_terminal_gets_only_colours_from_the_device() {
+        assert_eq!(only_colours("\x1b[0;31mE\x1b[0m \x1b]0;title\x07x\x1b[2Jy\x1bcz"), "\x1b[0;31mE\x1b[0m xyz");
     }
 
     #[test]
