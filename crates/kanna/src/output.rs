@@ -1391,3 +1391,89 @@ pub fn machine(request: &Value, reply: &Value) -> String {
         }
     }
 }
+
+fn span(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    match (s / 3600, s % 3600 / 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m {s:02}s"),
+        (h, m, _) => format!("{h}h {m:02}m"),
+    }
+}
+
+fn run_line(run: &Value, now: f64) -> String {
+    let id = run["run"].as_str().unwrap_or("?");
+    let task: String = run["task"].as_str().unwrap_or("?").chars().take(9).collect();
+    let state = run["state"].as_str().unwrap_or("?");
+    let stage = match (run["stageOpen"].as_bool(), run["stage"].as_str(), run["next"].as_str()) {
+        (Some(true), Some(stage), _) => stage.to_string(),
+        (_, _, Some(next)) => format!("next {next}"),
+        (_, Some(stage), _) => format!("last {stage}"),
+        _ => "-".into(),
+    };
+    let ended = run["endedAt"].as_f64().unwrap_or(now);
+    let took = span(ended - run["startedAt"].as_f64().unwrap_or(ended));
+    let outcome = run["outcome"].as_str().map_or(String::new(), |o| format!("  {o}"));
+    let why = run["why"].as_str().filter(|_| state != "landed").map_or(String::new(), |w| format!(": {w}"));
+    format!("{id}  {task}  {:<10} {:<8} {stage}  {} visits  {took}{outcome}{why}", run["pipeline"].as_str().unwrap_or("?"), state, run["visits"].as_u64().unwrap_or(0))
+}
+
+pub fn run(request: &Value, reply: &Value) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    match request["action"].as_str() {
+        Some("start") => format!(
+            "{} runs {} for {} on {} (worst case {} sessions); `kanna run show {}` follows it",
+            reply["run"].as_str().unwrap_or("?"),
+            reply["pipeline"].as_str().unwrap_or("?"),
+            reply["task"].as_str().unwrap_or("?"),
+            reply["branch"].as_str().unwrap_or("?"),
+            reply["worst"],
+            reply["run"].as_str().unwrap_or("?")
+        ),
+        Some("stop") => format!("{} is stopped; its branch is kept", reply["run"].as_str().unwrap_or("?")),
+        Some("list") => {
+            let runs = reply["runs"].as_array().cloned().unwrap_or_default();
+            if runs.is_empty() {
+                return "no runs".into();
+            }
+            runs.iter().map(|r| run_line(r, now)).collect::<Vec<_>>().join("\n")
+        }
+        Some("log") => reply["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| {
+                let at = e["at"].as_f64().unwrap_or(0.0);
+                let doc = &e["doc"];
+                let detail = match e["what"].as_str() {
+                    Some("stage") => format!("{} (visit {}) in {}", doc["stage"].as_str().unwrap_or("?"), doc["visit"], doc["terminal"].as_str().unwrap_or("-")),
+                    Some("verdict") => format!("{} {} → {}", doc["stage"].as_str().unwrap_or("?"), doc["verdict"].as_str().unwrap_or("?"), doc["next"].as_str().unwrap_or("no arrow")),
+                    Some("started") => format!("{} on {}", doc["pipeline"].as_str().unwrap_or("?"), doc["branch"].as_str().unwrap_or("?")),
+                    Some("handed_back") => doc["note"].as_str().unwrap_or("").to_string(),
+                    _ => doc["why"].as_str().unwrap_or("").to_string(),
+                };
+                format!("{}  {:<11} {detail}", ago(now - at), e["what"].as_str().unwrap_or("?"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => {
+            let run = &reply["run"];
+            let mut out = vec![run_line(run, now)];
+            out.push(format!("branch {}  worktree {}", run["branch"].as_str().unwrap_or("?"), tilde(run["worktree"].as_str().unwrap_or("?"))));
+            if let Some(note) = run["note"].as_str() {
+                out.push(format!("handed back: {note}"));
+            }
+            for visit in reply["visits"].as_array().into_iter().flatten() {
+                let ended = visit["endedAt"].as_f64().unwrap_or(now);
+                let took = span(ended - visit["startedAt"].as_f64().unwrap_or(ended));
+                let verdict = visit["verdict"].as_str().unwrap_or("running");
+                let answer = visit["doc"]["answer"].as_str().or(visit["doc"]["feedback"].as_str()).unwrap_or("").lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(72).collect::<String>();
+                out.push(format!("  {:<10} {:<2} {:<8} {:<11} {took:>8}  {answer}", visit["stage"].as_str().unwrap_or("?"), visit["visit"], visit["kind"].as_str().unwrap_or("?"), verdict));
+            }
+            for worker in reply["workers"].as_array().into_iter().flatten() {
+                out.push(format!("worker: {} in {}", worker["stage"].as_str().unwrap_or("?"), worker["terminal"].as_str().unwrap_or("-")));
+            }
+            out.join("\n")
+        }
+    }
+}
