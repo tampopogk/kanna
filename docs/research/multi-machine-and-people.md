@@ -60,7 +60,7 @@ Stated by the user; numbered as other docs cite them.
 | 5 | **Agents draft, a person approves.** Every message that leaves a Kanna was approved by its user. | agents talking to other people's agents on their own |
 | 6 | **Remote terminals over ssh-style byte streams were laggy in Kanna v2.** Prefer the agent CLI as client/server (local UI, agent remote) and/or mosh-style screen state (the daemon already keeps every screen). | a plain ssh bridge as the design (the [fleet research §2.5](./fleet.md#25-terminal-latency) later found v2's lag was its units, not the stream) |
 | 7 | **Tasks move only at boundaries:** not started, or stopped at a turn's end, branch pushed, transcript carried. Never a live process. | process migration, moving an agent mid-turn |
-| 8 | **Machines advertise capabilities.** The user wants a stack of Linux boxes for cloud agents and one Mac with a display as the Xcode build and e2e server. | one shape of machine; see [§4.3](#43-capabilities-two-shapes) |
+| 8 | **Machines advertise capabilities.** Anyone may have several machines. For Kanna Cloud, the user (as its operator) wants a stack of Linux boxes for dev boxes and a Mac with a display for Xcode builds and e2e. | one shape of machine; see [§4.3](#43-capabilities-xcode-on-a-linux-dev-box) |
 | 9 | **iOS is for quick checks:** brainstorming, simple work, quizzes, answering a task that needs you. Not deep work. | a phone terminal, editing on the phone |
 
 ## 3. Scenarios A–H
@@ -118,9 +118,16 @@ sequenceDiagram
 
 The same loop with a doc instead of a task is H, and with a thread reply instead of a task record it's the stakeholder's answer. Inside one Kanna this exists: `kanna task send` queues a message in `kanna.db` and the daemon hands it to the agent when its turn is over ([agent messaging](../specs/agent-messaging.md), [its research](./agent-messaging.md)). Across Kannas it needs three things it doesn't have: a recipient that isn't on this daemon, an approval step on the way out (5), and a way to carry a task, a doc or a thread reply rather than text. No terminal is shared at any point (3).
 
-### 4.3 Capabilities: two shapes
+### 4.3 Capabilities: Xcode on a Linux dev box
 
-Principle 8's fleet: Linux boxes for agents, one Mac for Xcode and e2e. Two ways to use it.
+Two different sets of machines, easy to mix up:
+
+| | Whose | What it is |
+|---|---|---|
+| **Your machines** | any user's | a laptop, a desktop, a mini, a Linux box, paired; a task runs whole on one of them ([your machines](../specs/machines.md)) |
+| **The fleet** | the user's, as Kanna Cloud's operator | how Kanna Cloud is provisioned: Linux servers that host users' dev boxes, and Mac Studios or minis that build ([fleet research](./fleet.md), [Kanna Cloud](../specs/kanna-cloud.md)) |
+
+A Kanna Cloud dev box looks like it can build Xcode projects: its `xcodebuild` is a shim that quietly sends the build to a Mac Studio or mini and streams the output back ([build Macs](../specs/build-macs.md)). Two shapes were compared:
 
 | | Shape 1: the task goes to a machine that can run it | Shape 2: a Linux task borrows the Mac for builds and e2e |
 |---|---|---|
@@ -128,7 +135,7 @@ Principle 8's fleet: Linux boxes for agents, one Mac for Xcode and e2e. Two ways
 | Moving parts | capabilities and a match; nothing new in the task | a shim in the task's PATH, the worktree synced both ways, a job queue, products back |
 | For kanna-v4 | nearly every task touches Swift, so almost all go to the one Mac and the Linux boxes sit idle | agents run on the Linux boxes; the Mac is shared for the Swift parts |
 | Fails when | the Mac is busy: tasks queue whole | the sync or the queue breaks mid-build; a job's output differs from a local run |
-| Since then | [machines §2](../specs/machines.md#2-machines-and-roles): a task runs whole on one machine, by preference | [build Macs](../specs/build-macs.md) in Kanna Cloud: both shapes, shape 2 for Apple builds |
+| Chosen | no: a dev box doesn't need to be a Mac to build Apple code | yes, invisibly: the task never knows; its `xcodebuild` runs on a build Mac |
 
 ## 5. Paths and sessions
 
@@ -154,7 +161,7 @@ So the fixed path buys consistency for Kanna's own records (a project's place fr
 | E, H | cheap | no remote terminal: a record or a doc travels, agents and people already have the message loop; the new parts are reach, identity and the approval step | two Kannas on one LAN (two instances on one Mac would do): `kanna task send` with a recipient on the other daemon, the message held until its user approves; then carry a task record instead of text and see the receiver's planner triage it |
 | G | cheap once E exists | events back over the same channel | the receiver's `picked`, `done` and a decline sent back as messages the sender's planner reads out |
 | F | cheap | a file in the repo and a lookup | an `owners` map read by the planning skill before it drafts a recipient |
-| D | medium | a second app per daemon and reach from away are the fleet's; the phone UI is new but small (9) | lift one-app-per-daemon; show the Desk's tasks and statuses in a second client; send one message from it |
+| D | medium | a second app per daemon and reach from away are [your machines](../specs/machines.md)'; the phone UI is new but small (9) | lift one-app-per-daemon; show the Desk's tasks and statuses in a second client; send one message from it |
 | A | big | the app link over a network, every pane kind over it, and latency work | the app on the laptop attached to the desktop's daemon over the LAN; type into an agent; measure echo delay, then again through a relay |
 | B | big | a Shelf shared by machines with exactly one starter, plus repos and logins on each machine | two daemons, one repo cloned on both, one Shelf: the second machine takes the oldest task and the first shows it running |
 | C | big | the whole stop-move-resume chain across agents, durable | stop a Claude task, copy branch and transcript to another machine by hand, resume by ID, and check the conversation carries on; then the same for Codex |
@@ -181,7 +188,7 @@ Beyond each scenario's column in [§3](#3-scenarios-ah):
 1. **Which comes first, machines or people?** A–C and E–H share only identity and reach; building one doesn't bring the other.
 2. **Is a sent task (E) a task or a message?** A record on the receiver's Shelf is a task; the receiver's planner would still read about it as a message. One table or two.
 3. **Approval (5) as a Kanna step or an agent step?** The daemon holding every outbound message until the user approves in the app, or the skill telling the agent to ask first. Only the first is enforceable.
-4. **Identity for people** isn't identity for machines: the fleet's peer log is one person's devices ([identity](../specs/machine-identity.md)). Another person's Kanna is a peer of a different kind, trusted for messages and never for tasks running on it.
+4. **Identity for people** isn't identity for machines: your machines' peer log is one person's devices ([identity](../specs/machine-identity.md)). Another person's Kanna is a peer of a different kind, trusted for messages and never for tasks running on it.
 5. **Thread files across Kannas (H):** merge two writers into `<repo>/.kanna/docs/PATH.json`, or keep the stakeholder's threads as a separate file the task's agent reads.
 
 ## 9. Glossary
