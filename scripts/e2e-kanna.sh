@@ -721,6 +721,46 @@ markdown_diff_overview() {
   check wait_for 5 eval '(( $(mdo overview.marks_by_kind.added) > added && $(mdo pictures) > pictures ))' || { echo "the marks didn't follow the edit: $(mdo overview.marks_by_kind), pictures $pictures then $(mdo pictures)"; return 1; }
 }
 
+scenario markdown_overview_height M4
+markdown_overview_height() {
+  start_daemon && start_app || return 1
+  local repo="$KANNA_STATE_DIR/mdovh" git=(git -C "$KANNA_STATE_DIR/mdovh" -c user.name=e2e -c user.email=e2e@example.invalid) name
+  mkdir -p "$repo" && "${git[@]}" init -q -b main || return 1
+  {
+    printf '# Factory\n\nHow the factory runs.\n\n'
+    for i in $(seq 12); do
+      printf '## Part %s\n\nPart %s explains a stage of the pipeline and what it hands to the next one.\n\n' "$i" "$i"
+      printf '```mermaid\nflowchart TD\n    A%s[plan] --> B%s[build] --> C%s[check]\n    C%s --> D%s[review] --> E%s[merge]\n    C%s --> B%s\n```\n\n' "$i" "$i" "$i" "$i" "$i" "$i" "$i" "$i"
+      for j in $(seq 4); do printf 'Paragraph %s.%s says what the stage reads, writes and checks before it passes the work on.\n\n' "$i" "$j"; done
+    done
+  } >"$repo/factory.md"
+  "${git[@]}" add factory.md && "${git[@]}" commit -qm base || return 1
+  perl -0pi -e 's/(Paragraph 2\.2 [^\n]*\n\n)/$1## Added\n\nA new part.\n\n```mermaid\nflowchart LR\n    X[new] --> Y[stage] --> Z[done]\n```\n\n/; s/Paragraph 9\.3 says/Paragraph 9.3 now says/' "$repo/factory.md"
+  mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$1\"${3:-}}}" | field "$2"; }
+  covers() {
+    python3 -c 'import sys; p, c, s, d = map(float, sys.argv[1:]); sys.exit(0 if c > 0 and abs(p - c) * s <= 1 and d >= c - 1 else 1)' "$(mdo "$1" overview.picture_height)" "$(mdo "$1" overview.content_height)" "$(mdo "$1" overview.scale)" "$(mdo "$1" overview.document_height)"
+  }
+  kanna open --window new md "$repo/factory.md" --name plain >/dev/null || return 1
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[2200,800]}}' >/dev/null
+  kanna open --window win-1 md "$repo/factory.md" --name diffed --diff main --split right >/dev/null || return 1
+  for name in plain diffed; do
+    check wait_for 5 eval "[[ \"\$(mdo $name overview.shown)\" == True ]]" || { echo "$name: no overview: wanted $(mdo $name overview.wanted), width $(mdo $name width)"; return 1; }
+    check wait_for 5 covers $name || { echo "$name: picture $(mdo $name overview.picture_height) for content $(mdo $name overview.content_height), document $(mdo $name overview.document_height)"; return 1; }
+  done
+  kanna zoom diffed >/dev/null || return 1
+  check wait_for 5 covers diffed || { echo "pane zoomed with the diff: picture $(mdo diffed overview.picture_height) for content $(mdo diffed overview.content_height)"; return 1; }
+  mdo diffed zoom ',"zoom":1' >/dev/null
+  mdo diffed zoom ',"zoom":1' >/dev/null
+  check wait_for 5 covers diffed || { echo "text zoomed with the diff: picture $(mdo diffed overview.picture_height) for content $(mdo diffed overview.content_height)"; return 1; }
+  mdo diffed scroll ',"scroll":0' >/dev/null; sleep 0.3
+  check python3 -c 'import sys; y = float(sys.argv[1]); assert y < 20, y' "$(mdo diffed overview.box_y)" || { echo "at the top the box is at $(mdo diffed overview.box_y)"; return 1; }
+  kanna zoom diffed >/dev/null || return 1
+  check wait_for 5 covers diffed || { echo "unzoomed with the diff: picture $(mdo diffed overview.picture_height) for content $(mdo diffed overview.content_height)"; return 1; }
+  kanna zoom plain >/dev/null || return 1
+  mdo plain zoom ',"zoom":-1' >/dev/null
+  check wait_for 5 covers plain || { echo "zoomed without the diff: picture $(mdo plain overview.picture_height) for content $(mdo plain overview.content_height)"; return 1; }
+}
+
 scenario cli_commands M4
 cli_commands() {
   start_daemon && start_app || return 1
