@@ -9,6 +9,7 @@ kanna-build = { path = "../kanna-build" }
 kanna-crash = { path = "../kanna-crash" }
 kanna-client = { path = "../kanna-client" }
 kanna-merman = { path = "../kanna-merman" }
+kanna-pipe = { path = "../kanna-pipe" }
 kanna-threads = { path = "../kanna-threads" }
 libc = "0.2"
 serde_json = "1"

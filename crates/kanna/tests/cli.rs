@@ -426,11 +426,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 32);
+    assert_eq!(commands.lines().count(), 33);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 32);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 33);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 
@@ -462,6 +462,42 @@ const GOOD: &str = "# Plan\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\n```m
 const BAD: &str = "# Plan\n\n```mermaid\nflowchart LR\n    A --> B\n```\n\nText.\n\n```mermaid\nerDiagram\n    A ||--o{ B : has\n```\n\n```mermaid\nflowchart LR\n    A --> --> B\n```\n";
 
 const ER: &str = "bad.md:10: unsupported diagram type: er (Kanna draws flowchart, sequence, state, class and gitGraph)";
+
+#[test]
+fn pipeline_check_prints_the_worst_case_or_each_error_at_its_line() {
+    let dir = scratch("pipeline");
+    let nowhere = dir.join("nothing.sock");
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::fs::create_dir_all(dir.join(".kanna/pipelines")).unwrap();
+    std::fs::create_dir_all(dir.join(".kanna/prompts")).unwrap();
+    for name in ["plan", "build", "fix", "review"] {
+        std::fs::copy(repo.join(format!(".kanna/prompts/{name}.md")), dir.join(format!(".kanna/prompts/{name}.md"))).unwrap();
+    }
+    std::fs::copy(repo.join(".kanna/pipelines/feature.pipe"), dir.join(".kanna/pipelines/feature.pipe")).unwrap();
+    std::fs::write(dir.join(".kanna/pipelines/broken.pipe"), "budget = 2 sessions\nb = claude prompt build\nb -> c\n").unwrap();
+    assert!(std::process::Command::new("git").arg("init").arg("-q").current_dir(&dir).status().unwrap().success());
+    let checked = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "feature"]).ok();
+    assert_eq!(checked.lines().collect::<Vec<_>>(), [
+        ".kanna/pipelines/feature.pipe:11: warning: no such machine 'mini': use here, any, or one of your machines or roles",
+        ".kanna/pipelines/feature.pipe: valid: 9 stages, worst case 21 sessions of 40, 8h (counting 2 parts for each fan-out: build)",
+    ]);
+    assert_eq!(kanna_at(&dir, Some(&nowhere), &["pipeline", "check", ".kanna/pipelines/feature.pipe"]).ok(), checked);
+    let run = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "broken"]);
+    let out = run.out.clone();
+    run.fails(1, "kanna: .kanna/pipelines/broken.pipe: 2 errors");
+    assert_eq!(out.lines().collect::<Vec<_>>(), [".kanna/pipelines/broken.pipe:3: no stage named 'c'", ".kanna/pipelines/broken.pipe:3: no flow from 'b' reaches done, so the run could only end stuck"]);
+    let list = kanna_at(&dir, Some(&nowhere), &["pipeline", "list"]).ok();
+    assert_eq!(list.lines().collect::<Vec<_>>(), [
+        "broken   invalid: 2 errors (kanna pipeline check broken)",
+        "feature  9 stages, worst case 21 sessions of 40, 8h (counting 2 parts for each fan-out: build) · 1 warning (kanna pipeline check feature)",
+    ]);
+    let reply = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "feature", "--json"]).json();
+    assert_eq!((reply["valid"].clone(), reply["worst"].clone(), reply["sessions"].clone()), (json!(true), json!(21), json!(40)));
+    kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "nope"]).fails(4, "no pipeline nope");
+    kanna_at(&dir, Some(&nowhere), &["pipeline", "check"]).fails(2, "check needs a NAME or a FILE");
+    assert!(!nowhere.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 #[test]
 fn diagrams_check_needs_no_kanna_and_exits_1_when_one_does_not_draw() {

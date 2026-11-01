@@ -16,7 +16,7 @@ What was looked at before designing Kanna's pipelines: kojo's factory language a
 
 [jemdiggity/kojo](https://github.com/jemdiggity/kojo) is the user's own benchmark harness: it runs coding agents (Codex CLI, Claude Code) through SlopCodeBench's multi-checkpoint problems and grades every stage's code. Its **factory language** (`configs/factories/*.factory`, `src/kojo/factory_spec.py`, 353 lines; the runner `src/kojo/factory.py`, 648 lines; `docs/factory-language.md`) is the closest thing to what Kanna needs, and the sweeps it was built for (`fx-01` to `fx-06`, 30 factories) are the only runs of such pipelines on hand.
 
-**Licence.** kojo has no `LICENSE` file yet; its 109 commits are all the user's, and the user has decided on MIT (2026-11-01), as kmux. The first build task adds it to kojo before porting the parser and validator, and records the provenance in `NOTICE`. This task copied no code.
+**Licence.** kojo is MIT (its `LICENSE`, added at 90c4e23 on 2026-11-01), as kmux. `crates/kanna-pipe` ports its parser and validator, and `NOTICE` records that.
 
 ### The language
 

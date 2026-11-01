@@ -1,6 +1,6 @@
 # Pipeline language
 
-**Status:** designed, not built · **Part of:** [software factory](software-factory.md) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#define`) · **Examples:** [`.kanna/pipelines/`](../../.kanna/pipelines/) · **From:** kojo's factory language ([research](../research/software-factory.md#1-kojo))
+**Status:** the language is built (`crates/kanna-pipe`: parse, check, `pick`, `worst`, revisions; `kanna pipeline check` and `list`); runs are not · **Part of:** [software factory](software-factory.md) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#define`) · **Examples:** [`.kanna/pipelines/`](../../.kanna/pipelines/) · **From:** kojo's factory language ([research](../research/software-factory.md#1-kojo))
 
 A pipeline is a short text file, `.kanna/pipelines/NAME.pipe`, that names its **stages** and joins them with **arrows**. A stage is an agent session, a command, a question for you, or a merge. Arrows carry conditions and bounds, so a pipeline always ends and its worst-case cost is known before it runs. The daemon reads, checks and runs it ([software factory](software-factory.md)).
 
@@ -47,7 +47,8 @@ ship   -> land -> done
 
 - **Lines** are a stage (`NAME = …`), a flow (`a -> b -> c`), the budget, a comment (`#` to the end of the line) or blank, in any order. Names are `[a-z][a-z0-9_]*`; `done` and `budget` are reserved.
 - **`budget = N sessions, DURATION`** bounds a run: at most N agent sessions (a fan-out instance or an attempt is one each) and DURATION of wall time (`8h`, `90m`). The file's worst case must fit, and so must every revision ([7](#7-changing-a-pipeline-while-it-runs)).
-- **The first stage named in a flow line starts the run.** A file with one stage needs no flow line.
+- **The first stage named in a flow line starts the run.** A file with one stage needs no flow line: it goes to `done`.
+- **The budget line is optional:** without it, nothing bounds the worst case but the loops' `max`.
 - **Prompts** live beside the pipelines: `.kanna/prompts/NAME.md`, the stage's name by default.
 
 ## 2. Stages
@@ -110,15 +111,24 @@ flowchart LR
 
 ## 6. Checks on the file
 
-Read when the run starts and on every revision, with errors as `FILE:LINE: message`, and from the CLI with `kanna pipeline check NAME`:
+Read when the run starts and on every revision, with errors as `FILE:LINE: message`, and from the CLI with `kanna pipeline check NAME|FILE` (`kanna pipeline list` checks them all). Every error is reported, in line order, not only the first:
 
 - every stage named in a flow is defined, and `done` has nothing after it;
 - `pass` and `fail` only leave a stage with a verdict; `progress` only a `run` stage; `reset` only reaches an agent stage;
 - every stage is reachable from the start, and `done` is reachable;
 - every loop has a `max` on at least one of its arrows, so the run ends;
 - `each` names a stage that runs before it, `merge STAGE` names a stage with `each`, `by` and `guard` name `run` stages, prompts exist;
-- `on` names `here`, `any`, this machine, or a machine or role in your peer log ([your machines](machines.md)); until machines are built, anything else is `no such machine`;
-- the worst case over every verdict sequence fits the budget (kojo's `max_sessions`: checks and asks cost nothing, `xN` costs N, `each` costs the budget's `sessions` as its bound since the list's length isn't known).
+- `on` names `here`, `any`, this machine, or a machine or role in your peer log ([your machines](machines.md)); anything else is `no such machine`. `kanna pipeline check` shows that as a warning (`FILE:LINE: warning: …`) and exits 0, since you may write a pipeline for a machine you haven't paired yet; a run refuses it;
+- the worst case over every verdict sequence fits the budget (kojo's `max_sessions`: checks and asks cost nothing, `xN` costs N, `each` costs its list's length). The walk tries pass and fail at every verdict stage, and a stalled fail too where a `progress` arrow leaves it, taking arrows as `pick` does.
+
+```
+plan -> build (each plan.parts) -> join -> check
+                 counted as 2 parts until plan answers: feature.pipe is 21 of 40
+                 plan answered 3 parts:                  22 of 40
+                 plan answered 30 parts:                 49 of 40, over: the run stops, waiting on you
+```
+
+- **A fan-out counts 2 parts** until the run knows its list, since a list's length isn't known before its stage answers; the file's check uses 2. When the stage named by `each` answers, the daemon checks the worst case again with the list's real length, as it does for a revision, and a run that no longer fits stops as waiting on you. The budget is there to bound fan-out and loops, not to price a run. Counting the budget's sessions instead, as first written here, made any pipeline with a fan-out fail its own check.
 
 ## 7. Changing a pipeline while it runs
 
@@ -141,6 +151,20 @@ sequenceDiagram
 ```
 
 - **A stage with `emits`** may put a fenced block with the info string `pipe` in its answer: stage lines and flow lines in this language. New stages are added; a flow line from the emitting stage goes **ahead** of that stage's own arrows (so what it emits is taken first, and its static arrow is the fallback when it emits nothing); every other flow line is appended. A stage name that exists already is an error, so a run can't redefine a stage behind your back.
+- **The merged revision is text,** so it can be shown with a diff and edited: the block's stage lines go after the last stage line; each emitted arrow from the emitter becomes a line of its own just above the line with the emitter's first arrow; every other emitted arrow becomes a line at the end. A block may not set the budget, and only a stage with `emits` may emit. Errors in the block name the block's lines; errors in the merged pipeline name the revision's lines.
+
+```
+land    = merge main
+lint    = run scripts/lint.sh        ← the block's stage line
+
+plan -> lint                          ← plan's emitted arrow, ahead of its own
+plan -> build -> join -> check
+…
+ship   -> land -> done
+lint -> build                         ← the rest of the block, appended
+```
+
+- **Arrow counts carry over** to the new revision: an emitted revision keeps every arrow it didn't add, so each keeps its count; an edit keeps the count of every arrow it left exactly as it was (same ends and options), matched in file order, and an arrow you changed starts at 0.
 - **You** (or the task's agent, when you tell it to) edit the run's current revision in a code pane (`kanna run edit RUN`, or Edit pipeline on the Run tab); saving it makes a revision if it's valid, else the pane shows the errors. Editing the file in the repo changes the next run, not this one.
 - **Every revision is kept** with who made it and when ([software factory §6](software-factory.md#6-how-its-built)), shown on the Run tab with its diff, and counted as an intervention when it's yours.
 - **Why not child runs or a free-form rewrite:** a child run would be a second task with its own view and metrics for what is one change; a free-form rewrite could drop the gates. Adding stages and arrows under the same validation and budget keeps one graph the user can read, and nothing the file promised can be removed by a stage.
