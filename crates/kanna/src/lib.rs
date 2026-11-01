@@ -680,11 +680,11 @@ mod tests {
     }
 
     #[test]
-    fn ready_and_unready_name_a_task_or_the_one_they_run_in() {
-        assert_eq!(parse("kanna task ready 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
-        assert_eq!(parse("kanna task unready 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
+    fn ready_set_and_clear_name_a_task_or_the_one_they_run_in() {
+        assert_eq!(parse("kanna task ready set 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
+        assert_eq!(parse("kanna task ready clear 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
         assert!(parse("kanna task ready").is_err(), "outside a task's terminal it needs a TASK");
-        assert!(parse("kanna task ready 3f9a --after 1dfb").is_err());
+        assert!(parse("kanna task ready 3f9a").is_err(), "it says set or clear");
     }
 
     #[test]

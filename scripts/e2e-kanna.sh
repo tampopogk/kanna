@@ -4209,13 +4209,13 @@ print("ready" if t.get("ready") else "-", "stale:" + names("stale"), "bases:" + 
   [[ "$(in_repo task start "$b" 2>&1)" == *"waits for $(sid 1) \"A\": it can start once it's ready or done"* ]] || { echo "stacked_tasks: B started before A was ready"; return 1; }
   local fa fb fc said; fa="$(folder "$a")"
   git -C "$fa" commit -q --allow-empty -m a1 || return 1
-  said="$(in_repo task ready "$a" 2>&1)"
+  said="$(in_repo task ready set "$a" 2>&1)"
   [[ "$said" == "$(sid 1) is ready at "*$'\n'"$(sid 2) \"B\" can start now: nothing it waits for is left" ]] || { echo "stacked_tasks: ready said $said"; return 1; }
   in_repo task start "$b" >/dev/null || { echo "stacked_tasks: B didn't start on A's ready work"; return 1; }
   fb="$(folder "$b")"
   check test "$(head "$fb")" == "$(head "$fa")" || { echo "stacked_tasks: B didn't start from A's branch"; return 1; }
   check test "$(of "$b")" == "- stale: bases:A" || { of "$b"; return 1; }
-  git -C "$fb" commit -q --allow-empty -m b1 && in_repo task ready "$b" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
+  git -C "$fb" commit -q --allow-empty -m b1 && in_repo task ready set "$b" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
   in_repo task start "$c" >/dev/null || { echo "stacked_tasks: C didn't start on B's ready work"; return 1; }
   fc="$(folder "$c")"
   check test "$(head "$fc")" == "$(head "$fb")" || { echo "stacked_tasks: C didn't start from B's branch"; return 1; }
@@ -4236,16 +4236,16 @@ print(next((r["stack"] for r in json.load(sys.stdin) if r["task"] == sys.argv[1]
   sleep 0.5; snap "$w" stacked_tasks-stale >/dev/null
   in_repo task messages "$b" | grep -q "kanna .*\"A\" moved since this task was built on it" || { echo "stacked_tasks: B wasn't told to catch up"; in_repo task messages "$b"; return 1; }
   in_repo task messages "$c" | grep -q "kanna .*\"B\" is stale, so this task is too" || { echo "stacked_tasks: C wasn't told to wait"; in_repo task messages "$c"; return 1; }
-  [[ "$(in_repo task ready "$b" 2>&1)" == *"\"A\" isn't in this branch yet: merge it first (git merge $(head "$fa"))"* ]] || { echo "stacked_tasks: B was let be ready without A's new work"; return 1; }
-  [[ "$(in_repo task ready "$c" 2>&1)" == *"\"B\" is stale itself"* ]] || { echo "stacked_tasks: C caught up before B"; return 1; }
+  [[ "$(in_repo task ready set "$b" 2>&1)" == *"\"A\" isn't in this branch yet: merge it first (git merge $(head "$fa"))"* ]] || { echo "stacked_tasks: B was let be ready without A's new work"; return 1; }
+  [[ "$(in_repo task ready set "$c" 2>&1)" == *"\"B\" is stale itself"* ]] || { echo "stacked_tasks: C caught up before B"; return 1; }
 
-  git -C "$fb" merge -q --no-edit "$(head "$fa")" && in_repo task ready "$b" >/dev/null || { echo "stacked_tasks: B couldn't catch up"; return 1; }
+  git -C "$fb" merge -q --no-edit "$(head "$fa")" && in_repo task ready set "$b" >/dev/null || { echo "stacked_tasks: B couldn't catch up"; return 1; }
   check test "$(of "$b")" == "ready stale: bases:A" || { of "$b"; return 1; }
   sleep 3
   check test "$(of "$c")" == "- stale:B bases:B" || { echo "stacked_tasks: C stopped being stale before it caught up"; of "$c"; return 1; }
-  [[ "$(in_repo task ready "$c" 2>&1)" == *"\"B\" isn't in this branch yet"* ]] || { echo "stacked_tasks: C was let be ready without B's new work"; return 1; }
+  [[ "$(in_repo task ready set "$c" 2>&1)" == *"\"B\" isn't in this branch yet"* ]] || { echo "stacked_tasks: C was let be ready without B's new work"; return 1; }
   in_repo task list | placed | grep -qE '^'"$(sid 2)"' +B +Shelf +ready +merges after "A"$' || { echo "stacked_tasks: B doesn't say it waits for A to merge"; in_repo task list; return 1; }
-  git -C "$fc" merge -q --no-edit "$(head "$fb")" && in_repo task ready "$c" >/dev/null || { echo "stacked_tasks: C couldn't catch up"; return 1; }
+  git -C "$fc" merge -q --no-edit "$(head "$fb")" && in_repo task ready set "$c" >/dev/null || { echo "stacked_tasks: C couldn't catch up"; return 1; }
   check test "$(of "$c")" == "ready stale: bases:B" || { of "$c"; return 1; }
   check wait_for 10 eval '[[ "$(desk scroll.stacked)" != *"waits for"* ]]' || { echo "stacked_tasks: a started task's row says it waits"; desk scroll.stacked; return 1; }
 

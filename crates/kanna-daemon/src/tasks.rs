@@ -3148,7 +3148,7 @@ impl Tasks {
         log!("kanna-daemon: {id} is ready at {head}");
         let behind: Vec<String> = self.open_tasks().into_iter().filter(|e| !e.stale.is_empty() && e.bases.iter().any(|b| b.id == id)).map(|e| e.id).collect();
         for task in behind {
-            self.tell(&task, format!("{} is ready again: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready`.", self.label(&id)));
+            self.tell(&task, format!("{} is ready again: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready set`.", self.label(&id)));
         }
         let freed: Vec<Value> = blocked.iter().filter_map(|e| self.known(&e.id)).filter(|e| self.waits(e).is_empty()).map(|e| json!({ "id": e.id, "name": opt(e.name.as_deref()) })).collect();
         self.changed();
@@ -3228,11 +3228,11 @@ impl Tasks {
                     if !behind.is_empty() {
                         let names: Vec<String> = behind.iter().map(|b| self.label(b)).collect();
                         let merges: Vec<String> = behind.iter().map(|b| format!("git merge {}", self.merge_target(b))).collect();
-                        said.push(format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready`.", names.join(", "), merges.join("; ")));
+                        said.push(format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready set`.", names.join(", "), merges.join("; ")));
                     }
                     if !waiting.is_empty() {
                         let names: Vec<String> = waiting.iter().map(|b| self.label(b)).collect();
-                        said.push(format!("{} is stale, so this task is too: what it builds on moved. Wait for it: you get a message when it's ready again; then merge its branch, rerun the tests and run `kanna task ready`.", names.join(", ")));
+                        said.push(format!("{} is stale, so this task is too: what it builds on moved. Wait for it: you get a message when it's ready again; then merge its branch, rerun the tests and run `kanna task ready set`.", names.join(", ")));
                     }
                     self.tell(&id, said.join(" "));
                 }

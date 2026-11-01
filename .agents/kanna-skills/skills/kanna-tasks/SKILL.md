@@ -50,9 +50,9 @@ kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ...
 
 ## Ready and stale
 
-- **Mark your work ready** with `kanna task ready` once it's finished, committed, and its tests pass: tasks waiting for yours can then start on your branch. Don't mark it before: they build on what's there. Uncommitted changes are refused.
+- **Mark your work ready** with `kanna task ready set` once it's finished, committed, and its tests pass: tasks waiting for yours can then start on your branch. Don't mark it before: they build on what's there. Uncommitted changes are refused.
 - **Your branch moving un-readies it:** a new commit, a merge, a rebase. Every task built on yours then goes stale, so mark it ready again when you're done.
-- **When you're stale,** you get a message from `kanna` saying which task you build on moved. Merge its branch into yours (the message names it), rerun your tests, commit, then `kanna task ready`. If the message says what you build on is stale itself, wait: you get another once it's ready again. `kanna task ready` is refused until you've merged what moved.
+- **When you're stale,** you get a message from `kanna` saying which task you build on moved. Merge its branch into yours (the message names it), rerun your tests, commit, then `kanna task ready set`. If the message says what you build on is stale itself, wait: you get another once it's ready again. `kanna task ready set` is refused until you've merged what moved.
 - **Don't merge into main while `kanna task list` says your task `merges after` another:** the work you build on isn't in main yet. When it lands, you get a message to merge main, and you're an ordinary task again.
 
 ## Show it in a tab
@@ -105,8 +105,8 @@ If you stop to ask the user something before presenting the work, use that first
 | `kanna task name [TASK] NAME` | Rename a task, running or waiting on the Shelf (only when the user asks) |
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's Shelf; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: it can't start until those tasks are ready or done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a Shelf task waits for (only when the user asks to unblock it) |
-| `kanna task ready [TASK]` | Mark your work finished and tested, at your branch's head: the tasks waiting for it can start on it |
-| `kanna task unready [TASK]` | Take that back (only when the user asks) |
+| `kanna task ready set [TASK]` | Mark your work finished and tested, at your branch's head: the tasks waiting for it can start on it |
+| `kanna task ready clear [TASK]` | Take that back (only when the user asks) |
 | `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's then the Shelf's: ID, name, state (working, idle, needs you, stopped, merged, replied, ready, stale with what it's behind, or blocked with what it waits for; `merges after` a task whose work isn't in main yet), an agent other than the default; `--all`: every repo's; QUERY keeps those whose name or first message has every word; `--include-done` adds done tasks under Done, newest first: with QUERY every one that matches, without it the 5 done last |
 | `kanna task start TASK` | Run a task where it is: a Shelf task gets its worktree, branch and agent with the first message, and stays on the Shelf; a stopped task resumes its conversation |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (only when the user asks) |

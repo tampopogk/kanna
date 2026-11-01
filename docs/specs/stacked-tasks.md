@@ -13,7 +13,7 @@ A blocked task can start building on its blockers' work once that work is **read
 
 ## Ready
 
-A task's agent marks its own work ready once it's finished and its tests pass: `kanna task ready`. You can mark or clear it too (`kanna task ready TASK`, `kanna task unready TASK`). Kanna never guesses it from the agent's status or from git.
+A task's agent marks its own work ready once it's finished and its tests pass: `kanna task ready set`. You can mark or clear it too (`kanna task ready set TASK`, `kanna task ready clear TASK`). Kanna never guesses it from the agent's status or from git.
 
 - **Ready records the task's head:** the commit its worktree is on. Refused with uncommitted changes to tracked files (they wouldn't reach the tasks stacked on it), and for a task that hasn't started.
 - **It stops being ready when its branch moves:** a new commit, a merge of main, a rebase. Kanna watches every ready task's head.
@@ -56,24 +56,24 @@ sequenceDiagram
     participant A
     participant B as B (on A)
     participant C as C (on B)
-    A->>A: kanna task ready
+    A->>A: kanna task ready set
     Note over B: starts from A's head
-    B->>B: kanna task ready
+    B->>B: kanna task ready set
     Note over C: starts from B's head
     A->>A: new commit: not ready
     Note over B,C: B stale, C stale
     Note over C: keeps working, can't mark ready while B is stale
-    B->>B: merges A, tests, kanna task ready
+    B->>B: merges A, tests, kanna task ready set
     Note over B: ready again
     Note over C: still stale: B moved, told to merge B
-    C->>C: merges B, tests, kanna task ready
+    C->>C: merges B, tests, kanna task ready set
     Note over C: ready again
 ```
 
 ![A new commit on A: B and C are stale on the Shelf](stacked-tasks-stale.png)
 
-- **A stale task gets a message** from `kanna` saying which base moved and what to do: merge its branch, rerun the tests, `kanna task ready`. A task stale only because its base is stale is told to wait, and gets another message once that base is ready again.
-- **Staleness clears only with `kanna task ready`,** which is refused while a base's head isn't in the task's branch (`"A" isn't in this branch yet: merge it first (git merge COMMIT)…`) or while a base is stale itself. So C can't clear its staleness before B has cleared its own.
+- **A stale task gets a message** from `kanna` saying which base moved and what to do: merge its branch, rerun the tests, `kanna task ready set`. A task stale only because its base is stale is told to wait, and gets another message once that base is ready again.
+- **Staleness clears only with `kanna task ready set`,** which is refused while a base's head isn't in the task's branch (`"A" isn't in this branch yet: merge it first (git merge COMMIT)…`) or while a base is stale itself. So C can't clear its staleness before B has cleared its own.
 - **Shown** as `stale` in `kanna task list` (with what it's behind), `"stale"` in `--json`, and on the row in the Desk view.
 
 ## Merging
@@ -88,8 +88,8 @@ A stacked task shouldn't merge into main before its bases have. Kanna doesn't me
 
 | Command | Does |
 |---|---|
-| `kanna task ready [TASK]` | Mark a started task's work ready at its head; from its own terminal, TASK is that task |
-| `kanna task unready [TASK]` | Clear it; tasks already stacked on it aren't affected |
+| `kanna task ready set [TASK]` | Mark a started task's work ready at its head; from its own terminal, TASK is that task |
+| `kanna task ready clear [TASK]` | Clear it; tasks already stacked on it aren't affected |
 | `kanna task list` | STATE `ready` or `stale`; last part `merges after "A"`, or `behind "A"` for a stale task |
 | `kanna task start`, `pick` | Refused while a blocker is neither ready nor Done, as before |
 
@@ -97,7 +97,7 @@ A stacked task shouldn't merge into main before its bases have. Kanna doesn't me
 
 ```mermaid
 flowchart LR
-    CLI["kanna task ready / unready"] --> D["daemon: the task's doc in kanna.db<br/>ready: {head, branch}<br/>bases: [{id, branch, head}]<br/>stale"]
+    CLI["kanna task ready set / clear"] --> D["daemon: the task's doc in kanna.db<br/>ready: {head, branch}<br/>bases: [{id, branch, head}]<br/>stale"]
     W["head watcher<br/>every 2s, off the main thread"] -->|"heads and ancestry"| D
     D -->|"make_worktree from the bases"| G["git worktree"]
     D -->|"tasks message"| APP["Kanna.app: Desk view rows"]
