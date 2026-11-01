@@ -61,10 +61,10 @@ sequenceDiagram
     Note over C: starts from B's head
     A->>A: new commit: not ready
     Note over B,C: B stale, C stale
-    Note over C: keeps working, but kanna task ready is refused while B is stale
+    Note over C: keeps working, can't mark ready while B is stale
     B->>B: merges A, tests, kanna task ready
     Note over B: ready again
-    Note over C: still stale: B moved; told to merge B
+    Note over C: still stale: B moved, told to merge B
     C->>C: merges B, tests, kanna task ready
     Note over C: ready again
 ```
