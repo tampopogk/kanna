@@ -188,7 +188,7 @@ Beyond each scenario's column in [§3](#3-scenarios-ah):
 1. **Machines come first** (decided 2026-11-01): A–C before E–H. They share only identity and reach, so building one doesn't bring the other.
 2. **What E sends is a message, not a task** (decided 2026-11-01). Tasks stay local to one person's identity: their own machines share them, other people never do. The receiver's planner turns a message into a task.
 3. **The agent asks for approval** (decided 2026-11-01): its skill tells it to show the user each draft bound for another person and wait for a yes before sending (principle 5). Kanna doesn't hold outgoing messages; the step rests on the skill, not on the daemon.
-4. **Identity for people** isn't identity for machines: your machines' peer log is one person's devices ([identity](../specs/machine-identity.md)). Another person's Kanna is a peer of a different kind, trusted for messages and never for tasks running on it.
+4. **How does a Kanna know another person?** Your machines' peer log lists one person's own devices ([identity](../specs/machine-identity.md)), trusted to run your tasks. Another person needs a separate list, trusted only to exchange messages. How do two people get on each other's lists: pairing by code as machines do, or something else? And once on the list, how does a message find the person: by machine, or by a directory?
 5. **Thread files across Kannas (H):** merge two writers into `<repo>/.kanna/docs/PATH.json`, or keep the stakeholder's threads as a separate file the task's agent reads.
 
 ## 9. Glossary
