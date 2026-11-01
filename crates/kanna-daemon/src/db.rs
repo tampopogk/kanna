@@ -2,6 +2,7 @@ use kanna_mux::json::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -440,13 +441,15 @@ impl Db {
     }
 
     pub fn tasks(&self) -> rusqlite::Result<Vec<Row>> {
-        let mut statement = self.conn.prepare("select id, repo, place, terminal, made_at, doc from tasks where place != 'done' order by made_at, rowid")?;
+        let mut statement = self.conn.prepare("select id, repo, place, terminal, made_at, doc from tasks where place != 'done'")?;
         let rows = statement.query_map([], |r| {
             let place: String = r.get(2)?;
             let doc: String = r.get(5)?;
             Ok(Row { id: r.get(0)?, repo: r.get(1)?, place: Place::parse(&place).unwrap_or(Place::Shelf), terminal: r.get(3)?, made_at: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
         })?;
-        rows.collect()
+        let mut rows = rows.collect::<rusqlite::Result<Vec<Row>>>()?;
+        rows.sort_by(|a, b| oldest_first((a.made_at, &a.id), (b.made_at, &b.id)));
+        Ok(rows)
     }
 
     pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, f64)>> {
@@ -795,6 +798,10 @@ fn renumber(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+pub fn oldest_first(a: (f64, &str), b: (f64, &str)) -> Ordering {
+    a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1))
+}
+
 fn read_backlog(file: &Path) -> Result<Value, String> {
     let size = fs::metadata(file).map_err(|e| e.to_string())?.len();
     if size > MAX_BACKLOG {
@@ -899,6 +906,18 @@ mod tests {
         let rows = Db::open(&dir).tasks().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].place, rows[0].terminal.as_deref()), (Place::Shelf, Some("p9")));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tasks_load_oldest_first_with_the_id_breaking_a_tie() {
+        let dir = folder("order");
+        let db = Db::open(&dir);
+        for (id, made_at) in [("task-0000000c", 2.0), ("task-0000000b", 1.0), ("task-0000000d", 3.0), ("task-0000000a", 1.0)] {
+            db.put(&Row { id: id.into(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at, doc: json!({}) }, None).unwrap();
+        }
+        let ids = Db::open(&dir).tasks().unwrap().into_iter().map(|row| row.id).collect::<Vec<_>>();
+        assert_eq!(ids, ["task-0000000a", "task-0000000b", "task-0000000c", "task-0000000d"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

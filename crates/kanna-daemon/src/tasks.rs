@@ -526,12 +526,17 @@ fn who(args: &Value) -> Option<&str> {
     Some(string(args, "by").filter(|by| !by.is_empty()).unwrap_or("user"))
 }
 
+fn insert_in_order(entries: &mut Vec<Entry>, entry: Entry) {
+    let at = entries.partition_point(|e| db::oldest_first((e.made_at, &e.id), (entry.made_at, &entry.id)).is_le());
+    entries.insert(at, entry);
+}
+
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64().floor())
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
 fn bad(message: impl Into<String>) -> KmuxError {
@@ -789,9 +794,9 @@ impl Tasks {
                     if let Err(error) = db.put(&entry.row(Place::Shelf, None), Some(&back)) {
                         log!("kanna-daemon: couldn't put {} back on the Shelf: {error}", entry.id);
                     }
-                    entries.push(entry);
+                    insert_in_order(&mut entries, entry);
                 }
-                _ => entries.push(Entry::from_row(row)),
+                _ => insert_in_order(&mut entries, Entry::from_row(row)),
             }
         }
         let waiting = db.waiting_messages().unwrap_or_else(|error| {
@@ -1379,7 +1384,7 @@ impl Tasks {
             let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
             let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
             let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane))).collect();
-            woken.sort_by(|a, b| a.made_at.total_cmp(&b.made_at));
+            woken.sort_by(|a, b| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id)));
             for entry in woken {
                 if busy >= slots {
                     break;
@@ -1389,7 +1394,7 @@ impl Tasks {
                 self.wake(core, (*entry).clone());
             }
             let mut waiting: Vec<&&Entry> = mine.iter().filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty()).collect();
-            waiting.sort_by(|a, b| mail.contains(&b.id).cmp(&mail.contains(&a.id)).then(a.made_at.total_cmp(&b.made_at)));
+            waiting.sort_by(|a, b| mail.contains(&b.id).cmp(&mail.contains(&a.id)).then_with(|| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id))));
             for entry in waiting {
                 if busy >= slots {
                     break;
@@ -2015,7 +2020,7 @@ impl Tasks {
         let entry = Entry { after, ..self.mint(args, Some(name), message)? };
         self.store(&entry, Place::Shelf, None, Some(Change { to: Some(Place::Shelf), ..Change::new("made") }.by(entry.by.as_deref().or(who(args)))))?;
         let value = self.described(&entry);
-        self.entries.borrow_mut().push(entry);
+        insert_in_order(&mut self.entries.borrow_mut(), entry);
         self.changed();
         self.refill();
         Ok(Map::from_iter([("task".to_string(), value)]))
@@ -2797,7 +2802,7 @@ impl Tasks {
             let change = Change { from: Some(from), to: Some(Place::Shelf), ..Change::new("shelved") }.by(by.as_deref());
             let saved = this.store(&entry, Place::Shelf, Some(&id), Some(change));
             let value = entry.to_value();
-            this.entries.borrow_mut().push(entry);
+            insert_in_order(&mut this.entries.borrow_mut(), entry);
             this.changed();
             if let Err(error) = saved {
                 return responder.reply(Err(error));
@@ -3925,6 +3930,42 @@ mod tests {
         assert_eq!(*again.running.borrow(), vec![Running { pane: "p4".into(), entry: ran, place: Place::Desk }], "a running task's way back survives a restart");
         let ids: HashSet<String> = (0..20).map(|_| again.mint(&args, None, None).unwrap().id).collect();
         assert!(!ids.contains("task-00000009"), "and its ID isn't handed out again");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_task_moved_back_to_the_shelf_is_listed_by_when_it_was_made() {
+        let state = std::env::temp_dir().join(format!("kanna-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
+        let core = kanna_mux::Core::default();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+        let repo = state.to_str().unwrap();
+        let mut made = vec![];
+        for (at, name) in [(3.0, "Newest"), (1.0, "Oldest"), (2.0, "Middle")] {
+            let entry = Entry { made_at: at, ..tasks.mint(&json!({ "repo": repo }), Some(name.into()), None).unwrap() };
+            tasks.store(&entry, Place::Shelf, None, Some(Change::new("made"))).unwrap();
+            made.push((at, entry.id.clone()));
+            insert_in_order(&mut tasks.entries.borrow_mut(), entry);
+        }
+        made.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let made: Vec<String> = made.into_iter().map(|(_, id)| id).collect();
+        let listed = |tasks: &Tasks| tasks.list(&json!({}))["shelf"].as_array().unwrap().iter().map(|t| string(t, "id").unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(listed(&tasks), made);
+        let opened = core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left", "task": made[0] } }));
+        let pane = core.pane("agent").unwrap_or_else(|| panic!("{opened}")).id;
+        let oldest = tasks.take(&made[0]).unwrap();
+        tasks.store(&oldest, Place::Desk, Some(&pane), Some(Change::new("picked"))).unwrap();
+        tasks.record(&pane, oldest, Place::Desk);
+        let (responder, answer) = kanna_mux::responder();
+        tasks.shelve(&json!({ "task": pane }), responder);
+        let std::task::Poll::Ready(shelved) = std::future::Future::poll(std::pin::pin!(answer), &mut std::task::Context::from_waker(std::task::Waker::noop())) else { panic!("shelve didn't answer") };
+        let shelved = shelved.unwrap();
+        assert_eq!(shelved["pane"], pane, "{shelved:?}");
+        assert_eq!(listed(&tasks), made, "the oldest task is listed first again");
+        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        assert_eq!(listed(&again), made, "and after a restart");
         fs::remove_dir_all(&state).unwrap();
     }
 
