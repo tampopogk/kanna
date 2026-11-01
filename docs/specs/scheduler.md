@@ -28,7 +28,6 @@ stateDiagram-v2
 ```
 
 - **One message waiting, never a pile.** A time that comes while the schedule's last message is still waiting leaves no second one.
-- **A schedule's message is yours:** it carries your permissions, as one you send yourself, since you made the schedule (or asked an agent to).
 
 ## 2. Rules
 
