@@ -44,6 +44,7 @@ gitGraph
 ```
 
 - **Its bases** are the blockers it was built on whose work isn't in main yet. A blocker Done but not merged (a branch waiting on review) is a base too, if it was ready when it was Done.
+- **A blocker that stops being ready** (its branch moved, it went stale, or it was cleared) blocks again every task on it that hasn't started: Shelf runners skip it until the blocker is ready again. A task that has started isn't stopped; it goes stale.
 - **If the merges conflict,** nothing is left behind (worktree and branch are removed) and the task stays blocked, saying so: `blocked  its blockers' branches conflict`. It tries again when one of them is marked ready at a new head.
 
 ## Stale
