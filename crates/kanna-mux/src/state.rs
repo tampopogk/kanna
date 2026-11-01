@@ -34,6 +34,9 @@ pub fn pane_record(pane: &Pane) -> Map {
             out.insert("cmd".into(), opt(pane.command.as_deref()));
             out.insert("cwd".into(), opt(pane.cwd.as_deref()));
             out.insert("session".into(), opt(pane.session.as_deref()));
+            if pane.hidden {
+                out.insert("hidden".into(), Value::Bool(true));
+            }
         }
         PaneType::Web => {
             out.insert("url".into(), opt(pane.url.as_deref()));
@@ -102,6 +105,7 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
             pane.cwd = field("cwd");
             pane.session = field("session");
             pane.terminal = field("terminal");
+            pane.hidden = is_true(item, "hidden");
         }
         PaneType::Web => {
             pane.url = field("url");

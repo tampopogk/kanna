@@ -369,6 +369,7 @@ impl Terminals {
                         keeper: terminal.keeper.clone(),
                         size: sizes.get(&pane.id).copied(),
                         hung_up: pane.hung_up,
+                        hidden: pane.hidden,
                     })
                 })
                 .collect(),
@@ -426,7 +427,7 @@ impl Terminals {
         let mut exits = Vec::new();
         for record in saved.records {
             let mut pane = Pane::new(&record.pane, record.name.clone(), PaneType::Term);
-            (pane.command, pane.cwd, pane.pid, pane.hung_up) = (record.cmd.clone(), record.cwd.clone(), Some(record.pid), record.hung_up);
+            (pane.command, pane.cwd, pane.pid, pane.hung_up, pane.hidden) = (record.cmd.clone(), record.cwd.clone(), Some(record.pid), record.hung_up, record.hidden);
             pane.terminal = Some(record.id.clone());
             let terminal = match ptys.remove(&record.keeper) {
                 Some(pty) => {

@@ -1786,6 +1786,7 @@ dependencies = [
  "kanna-keeper",
  "kanna-mux",
  "kanna-net",
+ "kanna-pipe",
  "kanna-vt",
  "libc",
  "notify",

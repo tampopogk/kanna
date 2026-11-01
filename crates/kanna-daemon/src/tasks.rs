@@ -233,6 +233,10 @@ pub fn runners(files: &[PathBuf]) -> usize {
         .unwrap_or(RUNNERS)
 }
 
+pub fn land(files: &[PathBuf]) -> Option<String> {
+    configured(files, "tasks", "land", |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from), "a shell command")
+}
+
 pub fn scripts(files: &[PathBuf]) -> Scripts {
     let command = |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from);
     let timeout = |value: &Value| value.as_u64().filter(|t| (1..=task_scripts::TIMEOUT_MAX).contains(t));
@@ -441,7 +445,7 @@ fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime
     None
 }
 
-fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
+pub fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
     match agent(program)?.names[0] {
         "codex" => {
             let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
@@ -517,6 +521,33 @@ fn asking(agent: &str, prompts: Prompts) -> String {
     match self::agent(agent).and_then(|a| a.unprompted) {
         Some(flag) if prompts == Prompts::Skip && !chooses => format!("{agent} {flag}"),
         _ => agent.to_string(),
+    }
+}
+
+pub fn program_name(command: &str) -> &str {
+    agent(command).map_or_else(|| program(command), |a| a.names[0])
+}
+
+pub fn names_its_session(command: &str) -> bool {
+    agent(command).is_some_and(|a| a.named.is_some())
+}
+
+pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, prompts: Prompts, session: Option<&str>, first: &str) -> String {
+    let mut line = asking(command, prompts);
+    let name = agent(command).map(|a| a.names[0]);
+    if let Some(model) = model {
+        line += &format!(" --model {}", quote(model));
+    }
+    if let (Some("codex"), Some(effort)) = (name, effort) {
+        line += &format!(" -c model_reasoning_effort={}", quote(effort));
+    }
+    let mut line = in_its_terminal(&line);
+    if let Some((session, flag)) = session.zip(agent(command).and_then(|a| a.named)) {
+        line += &format!(" {flag} {}", quote(session));
+    }
+    match agent(command).and_then(|a| a.prompt) {
+        Some(flag) => format!("{line} {flag} {first}"),
+        None => format!("{line} {first}"),
     }
 }
 
@@ -623,6 +654,10 @@ pub fn branch_of(folder: &str) -> Option<String> {
 /// Makes a worktree in `.kanna-worktrees/NAME` on a new branch NAME, and returns its folder and branch.
 /// In a repo with no commits yet, the branch starts empty (an orphan), so its first commit is the project's.
 pub fn make_worktree(repo: &Path, name: &str, start: Option<&str>) -> Result<(String, String), String> {
+    add_worktree(repo, name, name, start)
+}
+
+pub fn add_worktree(repo: &Path, name: &str, branch: &str, start: Option<&str>) -> Result<(String, String), String> {
     let git = |args: &[&str]| git(repo, args);
     git(&["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} isn't a git repo", repo.display()))?;
     let born = git(&["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
@@ -636,19 +671,19 @@ pub fn make_worktree(repo: &Path, name: &str, start: Option<&str>) -> Result<(St
         let text = format!("{listed}{start}{}\n", missing.join("\n"));
         fs::write(&exclude, text).map_err(|e| format!("can't write {}: {e}", exclude.display()))?;
     }
-    if taken(repo, name) {
-        return Err(format!("{WORKTREES}/{name} or the branch {name} is there already"));
+    if taken(repo, name) || taken(repo, branch) {
+        return Err(format!("{WORKTREES}/{name} or the branch {branch} is there already"));
     }
     let folder = repo.join(WORKTREES).join(name).to_string_lossy().to_string();
     if let (true, Some(start)) = (born, start) {
-        git(&["worktree", "add", "-b", name, &folder, start])?;
+        git(&["worktree", "add", "-b", branch, &folder, start])?;
     } else if born {
-        git(&["worktree", "add", "-b", name, &folder])?;
+        git(&["worktree", "add", "-b", branch, &folder])?;
     } else {
-        git(&["worktree", "add", "--orphan", "-b", name, &folder])?;
+        git(&["worktree", "add", "--orphan", "-b", branch, &folder])?;
     }
     task_scripts::record_base(Path::new(&folder));
-    Ok((folder, name.to_string()))
+    Ok((folder, branch.to_string()))
 }
 
 enum Answer {
@@ -1189,6 +1224,16 @@ impl Tasks {
         }
     }
 
+    pub fn entry(&self, id: &str) -> Option<Entry> {
+        self.known(id)
+    }
+
+    pub fn task_in_folder(&self, folder: &Path) -> Option<Entry> {
+        let inside = |entry: &Entry| entry.folder.as_deref().is_some_and(|f| folder.starts_with(f) || same_folder(Path::new(f), folder));
+        let running: Vec<Entry> = self.running.borrow().iter().map(|r| r.entry.clone()).collect();
+        running.into_iter().chain(self.entries.borrow().iter().cloned()).find(inside)
+    }
+
     pub fn task_of(&self, pane: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.id.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
@@ -1344,7 +1389,7 @@ impl Tasks {
         core.hang_up(pane, |_| {});
     }
 
-    fn end_agent(self: &Rc<Self>, pane: &str, agent: &str, then: impl FnOnce(Option<String>) + 'static) {
+    pub fn end_agent(self: &Rc<Self>, pane: &str, agent: &str, then: impl FnOnce(Option<String>) + 'static) {
         let Some(core) = self.core.upgrade().filter(|core| alive(core, pane)) else { return then(None) };
         if let Some(quitting) = self.quitting.borrow_mut().get_mut(pane) {
             return quitting.then.push(Box::new(then));

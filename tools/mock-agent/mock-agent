@@ -107,6 +107,35 @@ def first(args):
     return told[-1].split("Your task: ", 1)[1] if told else None
 
 
+def stage_prompt(args):
+    if not os.environ.get("KANNA_STAGE") or not args or args[-1].startswith("-"):
+        return None
+    return args[-1]
+
+
+def transcript(id, prompt, said):
+    home = os.environ.get("KANNA_AGENTS_HOME") or os.environ.get("HOME")
+    if PROGRAM != "claude" or not home:
+        return
+    folder = os.path.join(home, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, f"{id}.jsonl"), "a") as f:
+        f.write(json.dumps({"type": "user", "sessionId": id, "cwd": os.getcwd(), "message": {"role": "user", "content": prompt}}) + "\n")
+        f.write(json.dumps({"type": "assistant", "sessionId": id, "message": {"role": "assistant", "content": [{"type": "text", "text": said}]}}) + "\n")
+
+
+def stage(id, prompt):
+    said = []
+    for line in prompt.splitlines():
+        if line.startswith("mock: "):
+            answer(line[len("mock: "):])
+        elif line.startswith("say: "):
+            said.append(line[len("say: "):])
+    transcript(id, prompt, "\n".join(said) or "done")
+    out("\x1b[J\r\n" + "\r\n".join(said or ["done"]) + "\r\n")
+    composer()
+
+
 def inbox():
     home = os.environ.get("KANNA_AGENTS_HOME")
     if PROGRAM != "claude" or not home:
@@ -243,7 +272,10 @@ def main():
     inbox()
     remote(sys.argv[1:])
     try:
-        talk(None if resumed else first(sys.argv[1:]))
+        prompt = None if resumed else stage_prompt(sys.argv[1:])
+        if prompt is not None:
+            stage(id, prompt)
+        talk(None if resumed or prompt is not None else first(sys.argv[1:]))
     except KeyboardInterrupt:
         pass
     bye(id)

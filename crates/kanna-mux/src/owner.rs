@@ -171,7 +171,7 @@ impl LayoutOwner {
         self.model.tidy();
         let placed: HashSet<String> = self.placed().into_iter().collect();
         let mut added = vec![];
-        for pane in live.iter().filter(|p| !placed.contains(&p.id)) {
+        for pane in live.iter().filter(|p| !p.hidden && !placed.contains(&p.id)) {
             self.model.place(&pane.id, &Placement::default(), &self.panes)?;
             added.push(pane.id.clone());
         }

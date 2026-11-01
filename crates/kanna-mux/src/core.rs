@@ -852,6 +852,10 @@ impl CoreHandle {
         if shelf && claimed.is_some() {
             return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
+        let hidden = is_true(args, "hidden");
+        if hidden && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || shelf || claimed.is_some() || ["window", "workspace", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
+            return Err(bad_request("a hidden terminal is in no window, workspace, dock or tab"));
+        }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
             return Err(bad_request("a window's lead is a terminal in a window, with no dock, split, size or tab"));
@@ -899,7 +903,7 @@ impl CoreHandle {
             lead,
             planner,
         };
-        let placed = self.layout(place_request(&Pane::new(&id, name.clone(), kind), &at)).await?;
+        let placed = if hidden { Map::new() } else { self.layout(place_request(&Pane::new(&id, name.clone(), kind), &at)).await? };
         let placed = Value::Object(placed);
         {
             let mut s = self.state();
@@ -915,6 +919,7 @@ impl CoreHandle {
             pane.line = line;
             pane.agent = agent.clone();
             pane.markup = is_true(args, "markup");
+            pane.hidden = hidden;
             pane.diff_base = field("diff");
             if kind == PaneType::Code {
                 pane.comment = args.get("comment").and_then(Comment::from_json);
