@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const TICK: Duration = Duration::from_secs(2);
 
 const SCRATCH: &str = ".kanna/tmp";
 
@@ -375,6 +374,14 @@ impl Runs {
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
+        let watching = Rc::downgrade(self);
+        core.on_ended(Rc::new(move |pane| {
+            let Some(this) = watching.upgrade() else { return };
+            let ours = this.live.try_borrow().map_or(true, |live| live.iter().any(|l| l.visit.as_ref().is_some_and(|v| v.row.terminal.as_deref() == Some(pane))));
+            if ours {
+                this.soon.set(true);
+            }
+        }));
         let this = Rc::downgrade(self);
         core.add_command(
             "run",
@@ -629,16 +636,23 @@ impl Runs {
     }
 
     pub fn tick(self: &Rc<Self>) -> Option<Instant> {
-        let now = Instant::now();
-        self.soon.set(false);
-        let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.state == "running" || (l.row.state == "waiting" && l.visit.is_some())).map(|l| l.row.id.clone()).collect();
-        for id in &ids {
-            self.step(id);
+        if self.soon.replace(false) || self.deadline().is_some_and(|at| at <= now()) {
+            let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.state == "running" || (l.row.state == "waiting" && l.visit.is_some())).map(|l| l.row.id.clone()).collect();
+            for id in &ids {
+                self.step(id);
+            }
+            self.live.borrow_mut().retain(|l| LIVE.contains(&l.row.state.as_str()));
         }
-        self.live.borrow_mut().retain(|l| LIVE.contains(&l.row.state.as_str()));
-        let busy = self.live.borrow().iter().any(|l| l.row.state == "running" || l.visit.is_some());
-        let soon = self.soon.get().then_some(now);
-        [busy.then(|| now + TICK), soon].into_iter().flatten().min()
+        if self.soon.get() {
+            return Some(Instant::now());
+        }
+        self.deadline().map(|at| Instant::now() + Duration::from_secs_f64((at - now()).max(0.0)))
+    }
+
+    fn deadline(&self) -> Option<f64> {
+        let live = self.live.borrow();
+        let visits = live.iter().filter_map(|l| l.visit.as_ref()).filter(|v| !v.opening && !v.ending);
+        visits.filter_map(|v| v.reported.as_ref().map(|(_, at)| at + QUIT_AFTER).or_else(|| v.within.map(|w| v.row.started_at + w.as_secs_f64()))).min_by(f64::total_cmp)
     }
 
     fn update(&self, id: &str, edit: impl FnOnce(&mut Live) -> Option<(&'static str, Option<String>, Value)>) {

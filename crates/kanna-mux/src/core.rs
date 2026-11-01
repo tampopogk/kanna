@@ -105,6 +105,7 @@ struct Inner {
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
     renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
+    ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
 }
 
 pub struct Core(CoreHandle);
@@ -153,6 +154,7 @@ impl Core {
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
             renamed: RefCell::new(vec![]),
+            ended: RefCell::new(vec![]),
         })))
     }
 }
@@ -208,6 +210,17 @@ impl CoreHandle {
 
     pub fn on_renamed(&self, renamed: Rc<dyn Fn(&str, &str)>) {
         self.0.renamed.borrow_mut().push(renamed);
+    }
+
+    pub fn on_ended(&self, ended: Rc<dyn Fn(&str)>) {
+        self.0.ended.borrow_mut().push(ended);
+    }
+
+    fn notify_ended(&self, id: &str) {
+        let hooks: Vec<Rc<dyn Fn(&str)>> = self.0.ended.borrow().clone();
+        for hook in hooks {
+            hook(id);
+        }
     }
 
     pub fn set_wakeup(&self, wakeup: Option<Wakeup>) {
@@ -495,6 +508,9 @@ impl CoreHandle {
         }
         if state != PaneState::Starting {
             self.resume(id);
+        }
+        if matches!(state, PaneState::Exited | PaneState::Failed) {
+            self.notify_ended(id);
         }
         self.changed();
         self.0.exec.run();
@@ -1184,6 +1200,9 @@ impl CoreHandle {
             host.stop(pane);
         }
         self.resume(id);
+        if pane.is_some() {
+            self.notify_ended(id);
+        }
     }
 
     async fn reload(&self, id: &str, clear_exit: bool) -> Pane {
