@@ -342,6 +342,11 @@ fn machine() -> String {
     host.split('.').next().filter(|h| !h.is_empty()).unwrap_or("here").to_string()
 }
 
+pub fn agent_command(agent: &str, overrides: Option<&str>) -> String {
+    let found = overrides.into_iter().flat_map(str::split_whitespace).find_map(|pair| pair.split_once('=').filter(|(name, _)| *name == agent).map(|(_, command)| command.to_string()));
+    found.unwrap_or_else(|| agent.to_string())
+}
+
 fn bad(message: impl Into<String>) -> KmuxError {
     KmuxError::new("bad_request", message)
 }
@@ -924,7 +929,8 @@ impl Runs {
                 let session = tasks::names_its_session(&agent.agent).then(uuid).flatten();
                 let first = format!("\"$(cat {})\"", quote(&format!("{SCRATCH}/stage-{n}.md")));
                 let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
-                let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&agent.agent, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), &first));
+                let command = agent_command(&agent.agent, std::env::var("KANNA_PIPELINE_AGENTS").ok().as_deref());
+                let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), &first));
                 stage_row.kind = "agent".into();
                 stage_row.agent = Some(agent.agent.clone());
                 stage_row.session = session;
@@ -1342,6 +1348,13 @@ mod tests {
     fn a_pipeline_with_parts_runs_can_t_do_yet_is_refused_by_line() {
         let p = pipeline("plan = claude\nbuild = claude each plan.parts\nship = ask \"Land?\"\njoin = merge build\nplan -> build -> join -> ship -> done\n");
         assert_eq!(unbuilt(&p), vec!["2: build uses each, which runs can't do yet", "3: ship uses ask, which runs can't do yet", "4: join uses merge STAGE, which runs can't do yet"]);
+    }
+
+    #[test]
+    fn a_stage_s_agent_is_its_name_unless_a_test_points_it_elsewhere() {
+        assert_eq!(agent_command("claude", None), "claude");
+        assert_eq!(agent_command("claude", Some("codex=/x/codex claude=/fake/claude")), "/fake/claude");
+        assert_eq!(agent_command("copilot", Some("claude=/fake/claude")), "copilot");
     }
 
     #[test]

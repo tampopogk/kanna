@@ -125,15 +125,17 @@ def transcript(id, prompt, said):
 
 
 def stage(id, prompt):
+    reported("working")
     said = []
     for line in prompt.splitlines():
         if line.startswith("mock: "):
-            answer(line[len("mock: "):])
+            answering(line[len("mock: "):])
         elif line.startswith("say: "):
             said.append(line[len("say: "):])
     transcript(id, prompt, "\n".join(said) or "done")
     out("\x1b[J\r\n" + "\r\n".join(said or ["done"]) + "\r\n")
     composer()
+    reported("idle")
 
 
 def inbox():
@@ -327,7 +329,20 @@ def typed():
                 out(c)
 
 
+def reported(state):
+    if os.environ.get("KANNA_MOCK_REPORTS") == "1":
+        out(f"\x1b]7501;state={state}\x1b\\")
+
+
 def answer(line):
+    reported("working")
+    try:
+        return answering(line)
+    finally:
+        reported("idle")
+
+
+def answering(line):
     words = line.split()
     out("\x1b[J\r\n")
     if words[:1] == ["exit"]:

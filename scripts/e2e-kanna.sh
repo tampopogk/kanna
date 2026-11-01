@@ -4568,6 +4568,99 @@ print(" ".join(t["pane"] + ":" + t["about"] for t in json.load(sys.stdin)["toast
   check wait_for 15 eval '[[ "$(in_repo task messages "$(tid 4)")" == *"held for $(sid 4): copilot can'"'"'t take messages"* ]]' || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
 }
 
+scenario pipeline_run M4
+pipeline_run() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/factory" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s KANNA_MOCK_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  KANNA_PIPELINE_AGENTS="claude=$fake/claude" start_daemon && start_app || { echo "pipeline_run line $LINENO"; return 1; }
+  mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_run line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  cat >"$repo/.kanna/pipelines/demo.pipe" <<'PIPE'
+budget = 4 sessions, 30m
+build  = claude
+check  = run sh check.sh
+land   = merge main
+
+build -> check
+check -[fail, max 2]-> build
+check -> land -> done
+PIPE
+  cat >"$repo/.kanna/prompts/build.md" <<'PROMPT'
+Build the change.
+mock: run echo visit >> built.txt && git add built.txt && git commit -qm build
+say: Built it.
+PROMPT
+  cat >"$repo/check.sh" <<'CHECK'
+n=$(cat .kanna/tmp/checks 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >.kanna/tmp/checks
+if [ "$n" -eq 1 ]; then echo "FAILED: first try"; exit 1; fi
+touch .kanna/tmp/checking; sleep 8
+grep -c visit built.txt
+CHECK
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "pipeline_run line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Factory" "run $bin/kanna run start demo --request 'Count the visits'" --agent "$fake/claude") >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
+  local task; task="$(tid 1)"
+  rows() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = json.load(sys.stdin); print(len(t["shelf"]), len(t.get("desk") or []))'; }
+  held() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+print([t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0].get("held") or "-")' "$task"; }
+  runs() { kanna run list --all --json | python3 -c 'import json, sys
+r = json.load(sys.stdin)["runs"]; print(" ".join(x[sys.argv[1]] if isinstance(x[sys.argv[1]], str) else json.dumps(x[sys.argv[1]]) for x in r))' "$1"; }
+  check wait_for 20 eval '[[ "$(runs run)" == run-* ]]' || { echo "pipeline_run: the task's agent didn't start a run"; kanna read "$(held)"; tail -20 "$out/daemon.log"; return 1; }
+  local run term; run="$(runs run)"; term="$(held)"
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select task from runs where id = '$run'")" == "$task" || { echo "pipeline_run: the run isn't the task's"; return 1; }
+  local worker="$repo/.kanna-worktrees/$task-run-1"
+  check test "$(git -C "$worker" branch --show-current)" == "run/$task-1" || { echo "pipeline_run: no worker on run/$task-1"; return 1; }
+  placed() { kanna workspace list --all --json | python3 -c 'import json, sys
+def ids(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k in ("pane", "panes", "focused") and isinstance(v, str): yield v
+            yield from ids(v)
+    elif isinstance(node, list):
+        for v in node:
+            if isinstance(v, str) and v.startswith("term-"): yield v
+            else: yield from ids(v)
+view = json.load(sys.stdin); view.pop("panes", None); print(" ".join(sorted(set(ids(view)))))'; }
+  workers() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from run_stages where run = '$run' and terminal is not null" | tr '\n' ' '; }
+  local bad=""
+  watch_rows() {
+    [[ "$(rows)" == "1 0" ]] || bad="the Shelf and Desk showed $(rows) rows during the run"
+    local w; for w in $(workers); do [[ " $(placed) " != *" $w "* ]] || bad="worker $w is in a window or workspace"; done
+    [[ -n "$bad" || -f "$worker/.kanna/tmp/checking" ]]
+  }
+  check wait_for 60 watch_rows || { echo "pipeline_run: the second check never started"; kanna run show "$run"; for w in $(workers) "$term"; do echo "== $w"; kanna read "$w"; kanna status explain "$w"; done; tail -30 "$out/daemon.log"; return 1; }
+  [[ -z "$bad" ]] || { echo "pipeline_run: $bad"; return 1; }
+  check test "$(held)" == "$term" || { echo "pipeline_run: the task's docked pane changed from $term to $(held)"; return 1; }
+  grep -q "# Feedback from check" "$worker/.kanna/tmp/stage-3.md" && grep -q "FAILED: first try" "$worker/.kanna/tmp/stage-3.md" || { echo "pipeline_run: build's second visit didn't get check's failure"; cat "$worker/.kanna/tmp/stage-3.md"; return 1; }
+  grep -q "Count the visits" "$worker/.kanna/tmp/stage-1.md" || { echo "pipeline_run: the request isn't in the stage's prompt"; return 1; }
+  stop_daemon; start_daemon || { echo "pipeline_run: the daemon didn't come back"; return 1; }
+  check wait_for 60 eval '[[ "$(runs state)" == landed ]]' || { echo "pipeline_run: the run didn't land after the restart: $(runs state)"; kanna run show "$run"; tail -30 "$out/daemon.log"; return 1; }
+  check test "$(rows)" == "1 0" || { echo "pipeline_run: $(rows) rows after the run"; return 1; }
+  local shown; shown="$(kanna run show "$run" --json)"
+  python3 -c 'import json, sys
+v = json.loads(sys.argv[1])["visits"]
+got = [(x["stage"], x["verdict"]) for x in v]
+want = [("build", "done"), ("check", "fail"), ("build", "done"), ("check", "pass"), ("land", "pass")]
+assert got == want, got
+assert v[0]["doc"]["answer"] == "Built it.", v[0]["doc"]
+assert all(x["machine"] for x in v)' "$shown" || { echo "pipeline_run: the visits were: $shown"; return 1; }
+  check test "$(git -C "$repo" log -1 --format=%s main)" == "Merge run/$task-1 (run $run, pipeline demo)" || { echo "pipeline_run: main has no merge of the run"; git -C "$repo" log --oneline -3 main; return 1; }
+  local folder="$repo/.kanna-worktrees/$task"
+  check test "$(git -C "$folder" rev-parse HEAD)" == "$(git -C "$repo" rev-parse "run/$task-1")" || { echo "pipeline_run: the task's branch wasn't fast-forwarded to the run's"; return 1; }
+  check test "$(grep -c visit "$folder/built.txt")" -eq 2 || { echo "pipeline_run: the task's worktree didn't move to the run's work"; return 1; }
+  check test ! -d "$worker" || { echo "pipeline_run: the worker's worktree is still there"; return 1; }
+  check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "peer: \[message from $run\] landed: 5 visits of 3 stages"' || { echo "pipeline_run: the task didn't get the run's message"; kanna read "$(held)"; (cd "$repo" && kanna task messages "$task"); return 1; }
+  local events; events="$(kanna run log "$run" --json | python3 -c 'import json, sys; print(" ".join(e["what"] for e in json.load(sys.stdin)["events"]))')"
+  [[ "$events" == "started stage verdict stage verdict stage verdict stage verdict stage verdict landed handed_back" ]] || { echo "pipeline_run: the run's events were: $events"; return 1; }
+  local again; again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start demo 2>&1)" || { echo "pipeline_run: a second run didn't start: $again"; return 1; }
+  [[ "$again" == run-*" runs demo for "task-*" on run/$task-2 "* ]] || { echo "pipeline_run: the second run said: $again"; return 1; }
+  (cd "$folder" && KANNA_TERMINAL="$(held)" kanna run stop) >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(runs state)" == "landed stopped" ]]' || { echo "pipeline_run: the second run wasn't stopped: $(runs state)"; return 1; }
+}
+
 scenario task_scripts M4
 task_scripts() {
   start_daemon && start_app || { echo "task_scripts line $LINENO"; return 1; }
