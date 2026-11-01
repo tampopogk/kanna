@@ -56,7 +56,7 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 
 | Command | Does |
 |---|---|
-| `kanna open serial [PORT] [--baud N] [--line-ending lf\|crlf\|cr] [--tab\|--split …]` | open a serial pane on PORT (a path, a name like `usbmodem1101`, or a USB `vid:pid[:serial]`); with no PORT, the one port plugged in, or, with several, an `ambiguous_port` error listing them as `kanna serial list` (none: `no_port`). Baud defaults to 115200. A port already open in another pane is shared: both panes show it |
+| `kanna open serial PORT [--baud N] [--line-ending lf\|crlf\|cr] [--tab\|--split …]` | open a serial pane on PORT (a path, a name like `usbmodem1101`, or a USB `vid:pid[:serial]`). `kanna serial list` shows the ports plugged in. Baud defaults to 115200. A port already open in another pane is shared: both panes show it |
 | `kanna serial list` | ports plugged in: path, USB vid:pid, name (product, vendor), serial number, and the pane that has it open |
 | `kanna serial read PANE [--since T\|--last N] [--follow] [--until REGEX --timeout S] [--raw]` | print rows from the log as `HH:MM:SS.mmm TEXT` (`→` for sent, `#` for events). Default: everything since the pane opened. `--until` follows until a line matches, prints it and exits 0, or exits 1 after `S` seconds (default 30). `--since` takes a time (`14:37:40.118`) or a duration (`10s`); `--raw` prints the bytes |
 | `kanna serial send PANE TEXT [--hex] [--no-ending]` | send TEXT plus the pane's line ending, or bytes from hex (`--hex '1b 5b 41'`); prints the time it went, for a later `--since` |

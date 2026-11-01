@@ -147,7 +147,7 @@ mark.on { background: var(--hit-on); }
       <button data-scene="hex">Hex view</button>
       <button data-scene="find">Find</button>
       <button data-scene="pause">Pause</button>
-      <button data-scene="noport">Open with no PORT</button>
+      <button data-scene="noport">List, then open</button>
       <button data-scene="decode">Decode backtrace (later)</button>
       <span class="sep"></span>
       <button id="theme">Light / dark</button>
@@ -350,8 +350,7 @@ const TERM = {
   unplug: `<span class="g">  Bash(</span><span class="c">kanna serial read serial-1 --follow</span><span class="g">)</span>
 <span class="g">  ⎿ …</span>
 <span class="e">     unplugged at 14:37:52.400; waiting (--follow keeps going)</span>`,
-  noport: `<span class="c">~/work/blinky</span> <span class="p">❯</span> kanna open serial
-<span class="e">kanna: 3 ports plugged in; name one [ambiguous_port]</span>
+  noport: `<span class="c">~/work/blinky</span> <span class="p">❯</span> kanna serial list
 <span class="g">PORT                    USB        OPEN</span>
 /dev/cu.usbmodem1101    303a:1001
   USB JTAG/serial debug unit (Espressif)
