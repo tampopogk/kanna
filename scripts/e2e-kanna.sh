@@ -4236,7 +4236,7 @@ print(next((r["stack"] for r in json.load(sys.stdin) if r["task"] == sys.argv[1]
   sleep 0.5; snap "$w" stacked_tasks-stale >/dev/null
   in_repo task messages "$b" | grep -q "kanna .*\"A\" moved since this task was built on it" || { echo "stacked_tasks: B wasn't told to catch up"; in_repo task messages "$b"; return 1; }
   in_repo task messages "$c" | grep -q "kanna .*\"B\" is stale, so this task is too" || { echo "stacked_tasks: C wasn't told to wait"; in_repo task messages "$c"; return 1; }
-  [[ "$(in_repo task ready "$b" 2>&1)" == *"\"A\" isn't in this branch yet: merge its branch first"* ]] || { echo "stacked_tasks: B was let be ready without A's new work"; return 1; }
+  [[ "$(in_repo task ready "$b" 2>&1)" == *"\"A\" isn't in this branch yet: merge it first (git merge $(head "$fa"))"* ]] || { echo "stacked_tasks: B was let be ready without A's new work"; return 1; }
   [[ "$(in_repo task ready "$c" 2>&1)" == *"\"B\" is stale itself"* ]] || { echo "stacked_tasks: C caught up before B"; return 1; }
 
   git -C "$fb" merge -q --no-edit "$(head "$fa")" && in_repo task ready "$b" >/dev/null || { echo "stacked_tasks: B couldn't catch up"; return 1; }

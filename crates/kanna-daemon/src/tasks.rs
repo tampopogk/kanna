@@ -3065,7 +3065,7 @@ impl Tasks {
 
     fn tell(&self, id: &str, text: String) {
         let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == id) else { return };
-        match self.db.put_message(id, &entry.repo, KANNA, &text, None) {
+        match self.db.put_message(id, &entry.repo, KANNA, &text, Some(messages::PROMPTING)) {
             Ok(message) => {
                 log!("kanna-daemon: a message from {KANNA} waits for {id}");
                 self.waiting.borrow_mut().push(message);
@@ -3082,10 +3082,18 @@ impl Tasks {
         }
     }
 
+    fn merge_target(&self, id: &str) -> String {
+        let known = self.known(id);
+        let ready = known.as_ref().and_then(|e| e.ready.clone()).unwrap_or_default();
+        let now = known.as_ref().and_then(|e| stacks::head(Path::new(&e.repo), &self.where_of(&Base { id: id.to_string(), branch: ready.branch.clone(), head: String::new() })));
+        let head = now.or(Some(ready.head));
+        head.filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_else(|| self.branch_name(id))
+    }
+
     fn branch_name(&self, id: &str) -> String {
         let known = self.known(id);
         let ready = known.as_ref().and_then(|e| e.ready.as_ref()).map(|m| m.branch.clone()).filter(|b| !b.is_empty());
-        ready.or_else(|| known.and_then(|e| e.folder).and_then(|f| git(Path::new(&f), &["branch", "--show-current"]).ok())).unwrap_or_else(|| id.to_string())
+        ready.or_else(|| known.and_then(|e| e.folder).and_then(|f| git(Path::new(&f), &["branch", "--show-current"]).ok())).filter(|b| b.bytes().all(|c| c.is_ascii_alphanumeric() || b"._/-".contains(&c))).unwrap_or_else(|| id.to_string())
     }
 
     fn stack_fields(&self, entry: &Entry, value: &mut Value) {
@@ -3125,7 +3133,7 @@ impl Tasks {
                 return Err(KmuxError::new("stale", format!("{} is stale itself: it catches up first, and you get a message when it's ready again", self.label(&base.id))));
             }
             if !stacks::contains(&repo, &now, &head) {
-                return Err(KmuxError::new("behind", format!("{} isn't in this branch yet: merge its branch first (git merge {}), rerun the tests, then mark it ready", self.label(&base.id), self.branch_name(&base.id))));
+                return Err(KmuxError::new("behind", format!("{} isn't in this branch yet: merge it first (git merge {now}), rerun the tests, then mark it ready", self.label(&base.id))));
             }
             bases.push(Base { head: now, branch: self.branch_name(&base.id), ..base.clone() });
         }
@@ -3140,8 +3148,7 @@ impl Tasks {
         log!("kanna-daemon: {id} is ready at {head}");
         let behind: Vec<String> = self.open_tasks().into_iter().filter(|e| !e.stale.is_empty() && e.bases.iter().any(|b| b.id == id)).map(|e| e.id).collect();
         for task in behind {
-            let shown = if branch.is_empty() { head.clone() } else { branch.clone() };
-            self.tell(&task, format!("{} is ready again: merge its branch into yours (git merge {shown}), rerun the tests, then run `kanna task ready`.", self.label(&id)));
+            self.tell(&task, format!("{} is ready again: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready`.", self.label(&id)));
         }
         let freed: Vec<Value> = blocked.iter().filter_map(|e| self.known(&e.id)).filter(|e| self.waits(e).is_empty()).map(|e| json!({ "id": e.id, "name": opt(e.name.as_deref()) })).collect();
         self.changed();
@@ -3220,7 +3227,7 @@ impl Tasks {
                     let mut said = vec![];
                     if !behind.is_empty() {
                         let names: Vec<String> = behind.iter().map(|b| self.label(b)).collect();
-                        let merges: Vec<String> = behind.iter().map(|b| format!("git merge {}", self.branch_name(b))).collect();
+                        let merges: Vec<String> = behind.iter().map(|b| format!("git merge {}", self.merge_target(b))).collect();
                         said.push(format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready`.", names.join(", "), merges.join("; ")));
                     }
                     if !waiting.is_empty() {
@@ -4271,6 +4278,9 @@ mod tests {
         assert!(entry(&b).ready.is_none(), "a stale task isn't ready");
         assert_eq!(entry(&c).stale, vec![b.clone()], "the staleness ripples down the chain");
         assert_eq!((mail(&b), mail(&c)), (1, 1), "each stale task is told");
+        let told = tasks.waiting.borrow().iter().find(|m| m.recipient == b).cloned().unwrap();
+        assert!(told.text.contains(&format!("git merge {}", head(&fa))), "it merges A's commit, never a branch name: {}", told.text);
+        assert_eq!(told.mode.as_deref(), Some(messages::PROMPTING), "Kanna's messages come in the envelope");
         watch();
         assert_eq!((mail(&b), mail(&c)), (1, 1), "once");
         assert_eq!(ready(&b).unwrap_err().code, "behind", "B hasn't merged A's new work");
