@@ -158,7 +158,7 @@ So the fixed path buys consistency for Kanna's own records (a project's place fr
 
 | Scenario | Size | Why | Smallest experiment that shows it's real |
 |---|---|---|---|
-| E, H | cheap | no remote terminal: a message or a doc travels, agents and people already have the message loop; the new parts are reach and identity, plus a skill step asking for approval | two Kannas on one LAN (two instances on one Mac would do): `kanna task send` with a recipient on the other daemon, the agent showing its user the draft first; then see the receiver's planner triage one into a task |
+| E, H | cheap | no remote terminal: a message or a doc travels, agents and people already have the message loop; the new parts are reach and identity (Kanna Cloud accounts and its directory), plus a skill step asking for approval | two Kannas on one LAN (two instances on one Mac would do): `kanna task send` with a recipient on the other daemon, the agent showing its user the draft first; then see the receiver's planner triage one into a task |
 | G | cheap once E exists | events back over the same channel | the receiver's `picked`, `done` and a decline sent back as messages the sender's planner reads out |
 | F | cheap | a file in the repo and a lookup | an `owners` map read by the planning skill before it drafts a recipient |
 | D | medium | a second app per daemon and reach from away are [your machines](../specs/machines.md)'; the phone UI is new but small (9) | lift one-app-per-daemon; show the Desk's tasks and statuses in a second client; send one message from it |
@@ -188,7 +188,7 @@ Beyond each scenario's column in [§3](#3-scenarios-ah):
 1. **Machines come first** (decided 2026-11-01): A–C before E–H. They share only identity and reach, so building one doesn't bring the other.
 2. **What E sends is a message, not a task** (decided 2026-11-01). Tasks stay local to one person's identity: their own machines share them, other people never do. The receiver's planner turns a message into a task.
 3. **The agent asks for approval** (decided 2026-11-01): its skill tells it to show the user each draft bound for another person and wait for a yes before sending (principle 5). Kanna doesn't hold outgoing messages; the step rests on the skill, not on the daemon.
-4. **How does a Kanna know another person?** Your machines' peer log lists one person's own devices ([identity](../specs/machine-identity.md)), trusted to run your tasks. Another person needs a separate list, trusted only to exchange messages. How do two people get on each other's lists: pairing by code as machines do, or something else? And once on the list, how does a message find the person: by machine, or by a directory?
+4. **People are known through Kanna Cloud** (decided 2026-11-01): its accounts and [directory](../specs/kanna-cloud.md#5-directory-and-relays) handle who a person is, finding their Kanna, and admin. Your machines' peer log stays one person's own devices ([identity](../specs/machine-identity.md)), trusted to run your tasks; another person's account is trusted only to exchange messages. So E–H need Kanna Cloud, while A–C don't.
 5. **Thread files across Kannas (H):** merge two writers into `<repo>/.kanna/docs/PATH.json`, or keep the stakeholder's threads as a separate file the task's agent reads.
 
 ## 9. Glossary
