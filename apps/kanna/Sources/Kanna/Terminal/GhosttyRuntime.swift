@@ -79,7 +79,7 @@ final class GhosttyRuntime {
     static func options(for view: TerminalSurfaceView) -> ghostty_surface_config_s {
         var options = ghostty_surface_config_new()
         options.platform_tag = GHOSTTY_PLATFORM_MACOS
-        options.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(view).toOpaque()))
+        options.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(view.canvas).toOpaque()))
         options.userdata = UnsafeMutableRawPointer(bitPattern: view.surfaceID)
         options.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
         return options
@@ -90,7 +90,12 @@ final class GhosttyRuntime {
         live[view.surfaceID] = view
         view.surface = surface
         ghostty_surface_set_color_scheme(surface, scheme)
+        view.updateMargin(opacity: settings.opacity)
         return true
+    }
+
+    private func updateMargins() {
+        for view in live.values { view.updateMargin(opacity: settings.opacity) }
     }
 
     func detach(_ view: TerminalSurfaceView) {
@@ -115,6 +120,7 @@ final class GhosttyRuntime {
         var next = settings
         next.dark = TerminalSettings.appearanceIsDark
         publish(next)
+        updateMargins()
     }
 
     func reloadConfig() {
@@ -133,6 +139,7 @@ final class GhosttyRuntime {
             return TerminalSettings.hex(colors.cursor)
         }.first
         publish(TerminalSettings(source, dark: TerminalSettings.appearanceIsDark, cursor: cursor))
+        updateMargins()
     }
 
     private func publish(_ next: TerminalSettings) {
@@ -162,7 +169,10 @@ final class GhosttyRuntime {
         guard target.tag == GHOSTTY_TARGET_SURFACE, let userdata = target.target.surface.flatMap({ ghostty_surface_userdata($0) }),
               let view = live[UInt(bitPattern: userdata)] else { return false }
         switch action.tag {
-        case GHOSTTY_ACTION_PWD, GHOSTTY_ACTION_COLOR_CHANGE:
+        case GHOSTTY_ACTION_PWD:
+            return true
+        case GHOSTTY_ACTION_COLOR_CHANGE:
+            view.updateMargin(opacity: settings.opacity)
             return true
         case GHOSTTY_ACTION_SET_TITLE:
             let title = action.action.set_title.title.map { String(cString: $0) } ?? ""
