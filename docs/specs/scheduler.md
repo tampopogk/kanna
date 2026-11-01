@@ -27,7 +27,7 @@ stateDiagram-v2
     message_waiting --> waiting_for_time: its agent takes the message
 ```
 
-- **One message waiting, never a pile.** A time that comes while the schedule's last message is still waiting leaves no second one.
+- **One message waiting per schedule, never a pile.** A time that comes while the schedule's last message is still waiting leaves no second one. Different schedules' messages for the same agent each wait, and arrive together in one prompt, as any waiting messages do.
 
 ## 2. Rules
 
