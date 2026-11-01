@@ -108,7 +108,7 @@ pub enum Event {
     File { id: String, read: files::Read },
     Serial(serial::SerialEvent),
     KeeperReadable,
-    KeeperExits,
+    KeeperHeard,
     KeeperLost(String),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
@@ -135,7 +135,7 @@ impl Event {
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::File { .. } => "loop.file",
             Event::Serial(_) => "loop.serial",
-            Event::KeeperReadable | Event::KeeperExits | Event::KeeperLost(_) => "loop.keeper",
+            Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) => "loop.machines",
@@ -667,18 +667,15 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::DiffUpdating { id } => diffs.updating(&id),
             Event::File { id, read } => files.loaded(&id, read),
             Event::Serial(event) => serial.event_in(event),
-            Event::KeeperReadable | Event::KeeperExits => {
-                let exits = keeper.take_exits();
+            Event::KeeperReadable | Event::KeeperHeard => {
+                let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {
                     keeper.resume_watch();
                 }
-                match exits {
-                    Ok(exits) => {
-                        for exit in exits {
-                            let code = exit.status.shell_status();
-                            if let Some((terminal, code)) = terminals.exited(&exit.id, exit.pid, code) {
-                                ended(&terminals, &tasks, &app, &terminal, code);
-                            }
+                match heard {
+                    Ok(heard) => {
+                        for (terminal, code) in terminals.heard(heard) {
+                            ended(&terminals, &tasks, &app, &terminal, code);
                         }
                     }
                     Err(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {

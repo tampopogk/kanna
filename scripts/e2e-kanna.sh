@@ -3305,6 +3305,65 @@ sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for 
   check wait_for 5 grep -qE 'kanna: the main thread hung [0-9]{3}ms; open: .*command\.debug\.hang' "$out/app.log" || { echo "perf_intervals: the hang isn't in the app's log"; tail -5 "$out/app.log"; return 1; }
 }
 
+scenario pick_keeper_paused M4
+pick_keeper_paused() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" keeper task seen took listed
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "pick_keeper_paused: no planning terminal"; return 1; }
+  (cd "$repo" && kanna task new "Line tables" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  check wait_for 5 shows "Line tables" "say hi" || { echo "pick_keeper_paused: the task didn't start"; return 1; }
+  task="$(pane "Line tables" id)"
+  KANNA_TERMINAL="$task" kanna open --tab --name lines --cmd 'exec cat' >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  kanna task stop $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  check wait_for 5 is "Line tables" state exited && check is lines state exited || { echo "pick_keeper_paused: the task didn't stop"; return 1; }
+  check wait_for 5 eval '[[ "$(desk shelf)" == "[\"$(tid 1)\"]" ]]' || { desk shelf; return 1; }
+  keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
+  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "pick_keeper_paused: $keeper isn't this run's keeper"; return 1; }
+  kill -STOP "$keeper"
+  seen="$(python3 -c 'import json, socket, subprocess, sys, time
+def ask(cmd, args):
+    s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+    s.sendall(json.dumps({"id": 1, "cmd": cmd, "args": args}).encode() + b"\n")
+    return json.loads(s.makefile().readline())
+start = time.monotonic()
+ask("debug.click", {"shelf": sys.argv[2], "window": "d1"})
+while time.monotonic() - start < 10:
+    d = ask("debug.desk", {"window": "d1"})
+    d = d.get("result", d)
+    if not d["shelf"] and [t["title"] for t in d["tasks"]] == ["Line tables"]:
+        took = round((time.monotonic() - start) * 1000)
+        asked = time.monotonic()
+        try:
+            listed = subprocess.run([sys.argv[3], "task", "list"], cwd=sys.argv[4], capture_output=True, text=True, timeout=2).stdout
+        except subprocess.TimeoutExpired:
+            listed = "no answer"
+        place, row = "", []
+        for line in listed.splitlines():
+            place = line.strip() if line.strip() in ("Desk", "Shelf") else place
+            row += [place + "  " + line] if "Line tables" in line else []
+        print(took, round((time.monotonic() - asked) * 1000), *(row or [listed])); sys.exit(0)
+    time.sleep(0.005)
+print("never")' "$KANNA_SOCKET" "$(tid 1)" "$bin/kanna" "$repo")"
+  sleep 0.5
+  kill -CONT "$keeper"
+  took="${seen%% *}" listed="${seen#* }"
+  [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_keeper_paused: with the keeper paused, the task never reached the Desk"; desk tasks; desk note; return 1; }
+  echo "pick_keeper_paused: on the Desk ${took}ms after the click, the keeper paused; task list (ms, row): $listed"
+  (( took <= 200 )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
+  [[ "$listed" =~ ^([0-9]+)\ Desk\ .*Line\ tables ]] && (( BASH_REMATCH[1] <= 200 )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
+  check wait_for 5 shows "Line tables" "--resume" || { echo "pick_keeper_paused: its agent didn't come back once the keeper went on"; kanna read "Line tables"; return 1; }
+  check wait_for 5 is lines state running || { echo "pick_keeper_paused: its tab didn't run again"; kanna workspace list --all; return 1; }
+  check test "$(desk note)" == "" || { echo "pick_keeper_paused: $(desk note)"; return 1; }
+  kill -0 "$(cat "$KANNA_STATE_DIR/daemon.pid")" || { echo "pick_keeper_paused: the daemon stopped"; tail -5 "$out/daemon.log"; return 1; }
+}
+
 scenario task_list_speed M4
 task_list_speed() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" n=40 i started ms worst=0
