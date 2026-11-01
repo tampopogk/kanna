@@ -1,0 +1,10 @@
+[package]
+name = "kanna-calltree"
+version.workspace = true
+edition.workspace = true
+license = "FSL-1.1-MIT"
+description = "Kanna's call trees: a ```calltree block in a markdown doc parsed into processes, calls and hops, checked against the repo, and handed to Kanna.app's markdown pane behind one C call."
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }
+serde_json = "1"

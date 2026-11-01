@@ -187,7 +187,7 @@ Received masters are close-on-exec and blocking; the daemon sets what it needs.
 | From fork to exec | 5 s, then the child is killed and the spawn fails | `KANNA_KEEPER_SPAWN_TIMEOUT_MS` |
 | Ptys held, counting closed processes not yet gone | 256 | `KANNA_KEEPER_MAX_PTYS` |
 | Connections | 16 | — |
-| Out of descriptors when accepting | stops polling the socket for 100 ms (Linux leaves the connection queued, so the socket stays readable; macOS drops it) | — |
+| Out of descriptors when accepting | stops polling the socket for 100 ms, or until a connection closes (Linux leaves the connection queued, so the socket stays readable; macOS drops it, so the keeper closes the connections that ended before it accepts again) | — |
 | Request line | 1 MiB | — |
 | Unsent replies per connection | 8 MiB, or 2 × the pty limit + 16 descriptors, then it's dropped | — |
 

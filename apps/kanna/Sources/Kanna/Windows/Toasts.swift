@@ -7,6 +7,8 @@ struct Toast {
     let pane: String?
     let task: String?
     let about: String?
+    let sticky: Bool
+    let recordPath: String?
 
     init?(_ record: JSON) {
         guard let id = record["id"]?.string, let title = record["title"]?.string else { return nil }
@@ -16,13 +18,16 @@ struct Toast {
         pane = record["pane"]?.string
         task = record["task"]?.string
         about = record["about"]?.string
+        sticky = record["sticky"]?.bool == true
+        recordPath = record["record"]?.string
     }
 
-    var opens: Bool { pane != nil || task != nil }
+    var opens: Bool { pane != nil || task != nil || recordPath != nil }
 
     var record: JSON {
         let text = { (value: String?) in value.map { JSON.string($0) } ?? .null }
-        return ["id": .string(id), "title": .string(title), "detail": text(detail), "pane": text(pane), "task": text(task), "about": text(about)]
+        return ["id": .string(id), "title": .string(title), "detail": text(detail), "pane": text(pane), "task": text(task), "about": text(about),
+                "sticky": .bool(sticky), "record": text(recordPath)]
     }
 }
 
@@ -38,6 +43,7 @@ final class ToastStack: NSView {
     static let fade: TimeInterval = 0.4
 
     var onOpen: ((Toast) -> Void)?
+    var onClosed: ((Toast) -> Void)?
     private(set) var views: [ToastView] = []
 
     override init(frame frameRect: NSRect) {
@@ -56,7 +62,11 @@ final class ToastStack: NSView {
 
     func show(_ toast: Toast) {
         let view = ToastView(toast)
-        view.onClose = { [weak self, weak view] in if let view { self?.remove(view) } }
+        view.onClose = { [weak self, weak view] in
+            guard let self, let view else { return }
+            remove(view)
+            onClosed?(view.toast)
+        }
         view.onOpen = { [weak self, weak view] in
             guard let self, let view else { return }
             remove(view)
@@ -72,7 +82,7 @@ final class ToastStack: NSView {
             context.duration = 0.2
             view.animator().alphaValue = 1
         }
-        view.start(after: toast.opens ? Self.aboutLife : Self.life)
+        if !toast.sticky { view.start(after: toast.opens ? Self.aboutLife : Self.life) }
     }
 
     func toast(_ id: String) -> ToastView? { views.first { $0.toast.id == id } }
@@ -164,8 +174,8 @@ final class ToastView: NSView {
         layer?.shadowOpacity = 0.35
         layer?.shadowRadius = 12
         layer?.shadowOffset = CGSize(width: 0, height: -4)
-        icon.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Warning")
-        icon.contentTintColor = .systemOrange
+        icon.image = NSImage(systemSymbolName: toast.recordPath == nil ? "exclamationmark.triangle.fill" : "xmark.octagon.fill", accessibilityDescription: "Warning")
+        icon.contentTintColor = toast.recordPath == nil ? .systemOrange : .systemRed
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
         title.stringValue = toast.title
         title.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -177,11 +187,11 @@ final class ToastView: NSView {
         detail.lineBreakMode = .byWordWrapping
         detail.cell?.truncatesLastVisibleLine = true
         detail.isHidden = toast.detail == nil
-        about.stringValue = toast.about ?? ""
+        about.stringValue = toast.recordPath == nil ? toast.about ?? "" : "Open the crash record"
         about.font = .systemFont(ofSize: 11)
         about.textColor = .controlAccentColor
         about.lineBreakMode = .byTruncatingTail
-        about.isHidden = !toast.opens || toast.about == nil
+        about.isHidden = !toast.opens || (toast.about == nil && toast.recordPath == nil)
         close.bezelStyle = .inline
         close.isBordered = false
         close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
@@ -192,7 +202,7 @@ final class ToastView: NSView {
         close.isHidden = true
         close.toolTip = "Close"
         for view in [icon, title, detail, about, close] { addSubview(view) }
-        toolTip = toast.opens ? "Click to show \(toast.about ?? "it")" : nil
+        toolTip = toast.recordPath ?? (toast.opens ? "Click to show \(toast.about ?? "it")" : nil)
         paint()
         measure()
     }
@@ -253,6 +263,7 @@ final class ToastView: NSView {
 
     private func resume() {
         stop()
+        guard !toast.sticky else { return }
         dueAt = Date().addingTimeInterval(left)
         timer = Timer.scheduledTimer(withTimeInterval: left, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.onExpire?() }
@@ -309,6 +320,7 @@ extension AppController {
 
     func installToasts() {
         toasts.onOpen = { [weak self] toast in self?.open(toast) }
+        toasts.onClosed = { [weak self] toast in self?.dismissCrashes(toast) }
         guard debugCommands else { return }
         commands["debug.toasts"] = { [weak self] args in
             guard let self else { return [:] }
@@ -354,6 +366,7 @@ extension AppController {
     }
 
     func open(_ toast: Toast) {
+        if toast.recordPath != nil { return openCrashRecord(toast) }
         let ws = toast.pane.flatMap(workspace(holding:))
         if let ws, claimed(ws, as: "desk"), let task = ws["dock"]?["pane"]?.string {
             activateTask(task, into: frontDesk?.id)

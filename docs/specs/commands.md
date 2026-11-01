@@ -10,7 +10,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 |---|---|---|
 | Panes | `kanna open [term] [--cmd CMD] [--cwd DIR]` | Open a terminal pane (the default type, as in kmux). |
 | | `kanna open web URL [--history]` | Open a web pane; `--history` gives it back/forward. |
-| | `kanna open md FILE` | Show a markdown file, rendered natively with mermaid diagrams; it reloads when the file changes. |
+| | `kanna open md FILE` | Show a markdown file, rendered natively with mermaid diagrams; it reloads when the file or a local image it shows changes. |
 | | `kanna open ios --app APP [--device NAME]` | Launch an iOS app in a simulator pane. |
 | | `kanna close PANE` / `--tab TAB` / `--window WINDOW` | Close a pane, or a tab or window with everything in it. |
 | | `kanna focus PANE` / `--tab TAB` / `--window WINDOW` | Bring a pane, tab or window to the front. |
@@ -29,13 +29,15 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | | `kanna window assign WINDOW TASK` / `kanna window free WINDOW` | Make a window one of a task's, shown and hidden with it, or free it ([workspaces](workspaces.md)). |
 | | `kanna workspace list [--all]` | Your workspace (from `$KANNA_TERMINAL`): its dock, tabs and panes, the shown tab, focus and zoom, also off screen; `--all`: every window, workspace and pane ([workspace list](workspace-list.md)). |
 | Information | `kanna capabilities` | Show what the running mux supports (and, for Kanna, whether the app is attached). |
-| | `kanna diagrams check FILE...` | Check that a markdown file's mermaid diagrams draw in Kanna, without the app; `open md` prints the same failures ([diagram check](diagram-check.md)). Kanna's. |
+| | `kanna schedule add RULE TARGET PROMPT… [--name NAME] [--repo DIR]`, `schedule list`, `schedule remove NAME\|ID` | Leave a task or the planner a message at set times ([scheduler](scheduler.md)). Kanna's. |
+| | `kanna diagrams check FILE...` | Check that a markdown file's mermaid diagrams and [call trees](call-tree.md) draw in Kanna, without the app; `open md` prints the same failures ([diagram check](diagram-check.md)). Kanna's. |
+| | `kanna pipeline list`, `kanna pipeline check NAME\|FILE` | Check a software-factory pipeline, or list the repo's, each with its worst case, without the app ([pipeline language](pipeline-language.md#6-checks-on-the-file)). Kanna's. |
 | | `kanna machine [list\|pair [CODE]\|name\|ping\|addr\|revoke]` | Your machines: pair one with a code, list them, check one's link, give it an address, or revoke it ([machine identity](machine-identity.md#5-interfaces)). Kanna's. |
 | More | `kanna help [COMMAND\|instances\|raw]`, `kanna commands [--json]`, `kanna raw REQUEST` | Help; every command, for scripts; one control-protocol request as JSON. |
 | | `kanna instances [--json]`, `kanna instances prune` | For developing Kanna: list the running instances of every channel, or delete the folders of dev instances whose worktree is gone ([instances](instances.md)). |
 | Planned | `kanna up [FILE]` | Open a whole setup from a file, `kanna.yaml` by default ([layout files](arranging-panes.md#3-layout-files)). |
 
-Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `toast` ([toasts](toasts.md)), `diagrams`, `completions`, `kanna PATH`), and how its `window` differs from kmux's, which assigns to a kmux workspace (of kmux's `workspace` command Kanna has only `list`): [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux).
+Kanna's own commands beyond these (`markup`, `rename-pane`, `task`, `status`, `toast` ([toasts](toasts.md)), `diagrams`, `schedule`, `completions`, `kanna PATH`), and how its `window` differs from kmux's, which assigns to a kmux workspace (of kmux's `workspace` command Kanna has only `list`): [the CLI's differences](cli.md#2-where-kanna-differs-from-kmux).
 
 ## 2. Options
 

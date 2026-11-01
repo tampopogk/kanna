@@ -38,7 +38,7 @@ sequenceDiagram
 - **A failed spawn** fails the pane with the keeper's error (`could not start CMD: cannot run …`), as before.
 - **Ten seconds:** a pane still `Starting` after core's start timeout (10 s) fails (`did not start within 10 seconds`). A reply that comes later still starts the terminal and reports it running.
 - **Stopped while starting** (closed, restarted, its task stopped): when the reply comes, the daemon closes the keeper's pty and starts nothing. **Hung up while starting** (`end`): the program gets `SIGHUP` as soon as it has started.
-- **Resized while starting:** the size is kept and set on the pty when it arrives; the app gets the grid as for a running terminal.
+- **Resized while starting:** the size is kept and set on the pty when it arrives, and the app gets it in the grid that comes with the terminal's screen when it attaches.
 - **Input** to a terminal that hasn't started is dropped, as for one that has none.
 
 ## 3. How it's built
