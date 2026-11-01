@@ -188,15 +188,27 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        if let Ok(found) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
+        let mut asked = json!({ "action": "list", "merged": true, "done": request["done"] == true });
+        if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
+            asked["repo"] = json!(repo);
+        }
+        if let Ok(found) = mux.call("tasks", asked.clone()) {
             reply["shelf"] = found["shelf"].clone();
+            reply["agent"] = found["agent"].clone();
             output::name_out(&mut reply, &found["desk"]);
+            if asked["repo"].is_string() {
+                output::keep_named(&mut reply);
+            }
             shorts.extend(output::shorts(&found));
             listed = true;
             reply["script"] = found["script"].clone();
+            if request["done"] == true {
+                reply["done"] = found["done"].clone();
+            }
         }
-        if let Some(query) = request["query"].as_str() {
-            output::keep_matching(&mut reply, query);
+        match request["query"].as_str() {
+            Some(query) => output::keep_matching(&mut reply, query),
+            None => output::keep_recent_done(&mut reply),
         }
     }
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {
@@ -341,7 +353,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n(agents.prompts, whether agents skip permission prompts, is read only from ~/.kanna-v4/config.json.)\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 

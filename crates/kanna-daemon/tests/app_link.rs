@@ -9,6 +9,50 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 #[test]
+fn a_stalled_app_gets_one_chunk_of_a_flood_and_the_rest_waits_for_its_ack() {
+    let instance = Instance::start();
+    let pane = instance.open("flood", Some("yes"));
+    let mut app = instance.app();
+    app.acks = false;
+    app.tell("attach", json!({"terminal": pane}));
+    app.until("the view to start", |m| is(m, "snapshot", &pane));
+    let first = app.until("a chunk", |m| is(m, "output", &pane));
+    assert!(data(&first).len() <= 64 << 10, "a chunk of {} bytes", data(&first).len());
+    app.stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut more = 0;
+    while let Some(message) = app.next() {
+        more += usize::from(is(&message, "output", &pane) || is(&message, "snapshot", &pane));
+    }
+    assert_eq!(more, 0, "the daemon sent more before the app took the first chunk");
+    assert!(instance.rss_mb() < 150, "with a stalled app the daemon grew to {} MB", instance.rss_mb());
+    app.stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    app.acks = true;
+    app.tell("taken", json!({"terminal": pane}));
+    app.until("the view to start over past what it missed", |m| is(m, "snapshot", &pane));
+    app.until("more output", |m| is(m, "output", &pane));
+}
+
+#[test]
+fn an_echo_is_not_held_behind_another_terminals_flood() {
+    let instance = Instance::start();
+    let flood = instance.open("flood", Some("yes"));
+    let typed = instance.open("typed", Some("exec cat"));
+    let mut app = instance.app();
+    app.acks = false;
+    for pane in [&flood, &typed] {
+        app.tell("attach", json!({"terminal": pane}));
+        app.until("the view to start", |m| is(m, "snapshot", pane));
+    }
+    app.until("the flood's first chunk", |m| is(m, "output", &flood));
+    std::thread::sleep(Duration::from_millis(500));
+    let asked = Instant::now();
+    app.tell("input", json!({"terminal": typed, "data": BASE64.encode("k")}));
+    let echo = app.until("the echo", |m| is(m, "output", &typed));
+    assert_eq!(data(&echo), b"k");
+    assert!(asked.elapsed() < Duration::from_millis(500), "the echo took {:?}", asked.elapsed());
+}
+
+#[test]
 fn a_flood_is_held_back_at_the_pty() {
     let mut instance = Instance::start();
     let pane = instance.open("flood", Some("yes"));
@@ -16,7 +60,7 @@ fn a_flood_is_held_back_at_the_pty() {
     let alone = instance.rss_mb();
     assert!(alone < 150, "with no app the daemon grew to {alone} MB");
 
-    let mut app = instance.app();
+    let mut app = instance.app_speaking([2, 2]);
     app.tell("attach", json!({"terminal": pane}));
     app.until("the view to start", |m| is(m, "snapshot", &pane));
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -106,9 +150,12 @@ fn a_replica_misses_nothing_and_repeats_nothing() {
 fn a_snapshot_mid_sequence_waits_for_more_output() {
     let instance = Instance::start();
     let osc = format!("python3 -c 'import sys; sys.stdout.buffer.write(b\"\\033]2;\" + b\"x\" * {})'", kanna_vt::MAX_UNFINISHED_SEQUENCE_BYTES + 1);
-    let pane = instance.open("osc", Some(&format!("printf 'before\\n'; {osc}; read line; printf '\\007after\\n'; exec cat")));
-    wait_for("the output", || instance.screen(&pane).contains("before"));
+    let written = std::env::temp_dir().join(format!("kanna-osc-written-{}", std::process::id()));
+    let _ = std::fs::remove_file(&written);
+    let pane = instance.open("osc", Some(&format!("printf 'before\\n'; {osc}; touch '{}'; read line; printf '\\007after\\n'; exec cat", written.display())));
+    wait_for("the sequence to be written", || written.exists());
     std::thread::sleep(Duration::from_millis(500));
+    let _ = std::fs::remove_file(&written);
     let mut app = instance.app();
     app.tell("attach", json!({"terminal": pane}));
     app.stream.set_read_timeout(Some(Duration::from_millis(700))).unwrap();

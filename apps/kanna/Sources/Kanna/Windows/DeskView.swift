@@ -204,8 +204,9 @@ final class DeskStrip: NSView {
         hint.frame.origin = NSPoint(x: 8, y: (Self.height - hint.frame.height) / 2)
         let start = hint.frame.maxX + (items.isEmpty ? 0 : 9)
         var room = bounds.width - start - gaps - chrome - metas.reduce(0, +)
+        let titleFloors = titles.map { min($0, Self.titleFloor) }.reduce(0, +)
         count.isHidden = waiting == 0
-        if !count.isHidden, room - count.frame.width - 20 < titles.map { min($0, Self.titleFloor) }.reduce(0, +) {
+        if !count.isHidden, room - count.frame.width - 20 < titleFloors {
             count.isHidden = true
         }
         if !count.isHidden { room -= count.frame.width + 20 }
@@ -379,6 +380,8 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     private(set) var selected = 0
     private var started: String?
     private var ticker: Timer?
+    private var deskKept: [String: DeskRow] = [:]
+    private var shelfKept: [String: ShelfRow] = [:]
 
     override var isFlipped: Bool { true }
 
@@ -420,15 +423,15 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     private func paint() { layer?.backgroundColor = resolved(.textBackgroundColor) }
 
     var rows: [(task: String, center: NSPoint)] {
-        document.subviews.compactMap { $0 as? DeskRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
+        rowViews.compactMap { $0 as? DeskRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
     }
 
     var shelfRows: [(task: String, center: NSPoint)] {
-        document.subviews.compactMap { $0 as? ShelfRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
+        rowViews.compactMap { $0 as? ShelfRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
     }
 
     var blockedShelf: [JSON] {
-        document.subviews.compactMap { $0 as? ShelfRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
+        rowViews.compactMap { $0 as? ShelfRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
     }
 
     var visibleShelf: [String] {
@@ -530,8 +533,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         document.subviews.forEach { ($0 as? DeskRow)?.refresh() ?? ($0 as? ShelfRow)?.refresh() }
     }
 
+    private var rowViews: [NSView] { document.subviews.filter { $0 is DeskRow || $0 is ShelfRow }.sorted { $0.frame.minY < $1.frame.minY } }
+
     var times: JSON {
-        .array(document.subviews.compactMap { view -> JSON? in
+        .array(rowViews.compactMap { view -> JSON? in
             if let row = view as? DeskRow { return ["task": .string(row.task.id), "sub": .string(row.subText)] }
             if let row = view as? ShelfRow { return ["task": .string(row.task.id), "sub": .string(row.subText)] }
             return nil
@@ -539,7 +544,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     }
 
     var deskRows: JSON {
-        .array(document.subviews.compactMap { $0 as? DeskRow }.map { row in
+        .array(rowViews.compactMap { $0 as? DeskRow }.map { row in
             ["task": .string(row.task.id), "go": .string(row.goText), "goShown": .bool(row.goShown), "active": .bool(row.active), "highlit": .bool(row.highlit)]
         })
     }
@@ -553,7 +558,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     private func lay(_ page: DeskPage, top: CGFloat) {
         let span = Perf.begin(.desk, "DeskView.lay")
-        document.subviews.filter { $0 !== search && $0 !== searchKey }.forEach { $0.removeFromSuperview() }
+        document.subviews.filter { $0 !== search && $0 !== searchKey && !($0 is DeskRow) && !($0 is ShelfRow) }.forEach { $0.removeFromSuperview() }
+        let (deskBefore, shelfBefore) = (deskKept, shelfKept)
+        (deskKept, shelfKept) = ([:], [:])
+        var made = 0
         let left: CGFloat = 48, width = min(760, scroller.contentSize.width - left * 2)
         var y: CGFloat = 40
         let line = label(page.cheer, size: 13, color: .secondaryLabelColor)
@@ -566,10 +574,15 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             y += none.frame.height + 12
         }
         for task in page.tasks {
-            let row = DeskRow(task: task, key: page.keys[task.id], width: width + 20, active: task.id == page.active)
-            row.onPress = { [weak self] in self?.onActivate?(task.id) }
+            let row = deskBefore[task.id].flatMap { $0.shows(task, key: page.keys[task.id], width: width + 20, active: task.id == page.active) ? $0 : nil } ?? {
+                made += 1
+                let row = DeskRow(task: task, key: page.keys[task.id], width: width + 20, active: task.id == page.active)
+                row.onPress = { [weak self] in self?.onActivate?(task.id) }
+                return row
+            }()
+            deskKept[task.id] = row
             row.frame.origin = NSPoint(x: left - 10, y: y)
-            document.addSubview(row)
+            if row.superview !== document { document.addSubview(row) }
             y += row.frame.height
         }
         y += 28
@@ -589,18 +602,26 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             y += none.frame.height + 12
         }
         for (index, task) in hits.enumerated() {
-            let row = ShelfRow(task: task, full: page.full, width: width + 20, query: query, selected: !query.isEmpty && index == selected)
-            row.onPress = { [weak self] in self?.start(task.id) }
+            let chosen = !query.isEmpty && index == selected
+            let row = shelfBefore[task.id].flatMap { $0.shows(task, full: page.full, width: width + 20, query: query, selected: chosen) ? $0 : nil } ?? {
+                made += 1
+                let row = ShelfRow(task: task, full: page.full, width: width + 20, query: query, selected: chosen)
+                row.onPress = { [weak self] in self?.start(task.id) }
+                return row
+            }()
+            shelfKept[task.id] = row
             row.frame.origin = NSPoint(x: left - 10, y: y)
-            document.addSubview(row)
+            if row.superview !== document { document.addSubview(row) }
             y += row.frame.height
         }
+        for (id, row) in deskBefore where deskKept[id] !== row { row.removeFromSuperview() }
+        for (id, row) in shelfBefore where shelfKept[id] !== row { row.removeFromSuperview() }
         let note = label(page.note, color: .systemOrange)
         note.identifier = NSUserInterfaceItemIdentifier("note")
         note.frame.origin = NSPoint(x: left, y: y + 8)
         document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 8 + note.frame.height + 40)
         scroll(toY: top)
-        Perf.end(span, "\(page.tasks.count + hits.count) rows")
+        Perf.end(span, "\(page.tasks.count + hits.count) rows, \(made) new")
         Clicks.laid(desk: page.tasks.map(\.id), shelf: page.shelf.map(\.id))
     }
 
@@ -656,6 +677,10 @@ private final class ShelfRow: NSView {
     private let query: String
 
     override var isFlipped: Bool { true }
+
+    func shows(_ task: ShelfTask, full: Bool, width: CGFloat, query: String, selected: Bool) -> Bool {
+        task == self.task && full == self.full && width == frame.width && query == self.query && selected == self.selected
+    }
 
     init(task: ShelfTask, full: Bool, width: CGFloat, query: String, selected: Bool) {
         self.task = task
@@ -738,10 +763,16 @@ private final class DeskRow: NSView {
     override var isFlipped: Bool { true }
 
     let active: Bool
+    private let key: String?
+
+    func shows(_ task: DeskTask, key: String?, width: CGFloat, active: Bool) -> Bool {
+        task == self.task && key == self.key && width == frame.width && active == self.active
+    }
 
     init(task: DeskTask, key: String?, width: CGFloat, active: Bool) {
         self.task = task
         self.active = active
+        self.key = key
         go = NSTextField(labelWithString: active ? "⌘. · Back to it" : (key.map { "\($0) · " } ?? "") + "Make active →")
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 52))
         wantsLayer = true

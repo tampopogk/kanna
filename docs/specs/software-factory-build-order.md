@@ -1,0 +1,17 @@
+# Software factory: build order
+
+**Status:** proposed · **Part of:** [software factory](software-factory.md), [pipeline language](pipeline-language.md)
+
+The tasks that build the factory, in order; each builds on the ones before and is testable alone. Nothing here is built yet.
+
+For the planner, in order; each builds on the ones before and is testable alone.
+
+1. **Pipeline language crate** (`kanna-pipe`): parser, validator, worst case, `pick`, revisions; port of kojo's `factory_spec.py` with the licence settled and `NOTICE` written; `kanna pipeline check` and `list`. Tests on the two example files and every rule.
+2. **Runs in the daemon, sequential stages:** `runs` tables and migration; `kanna run start` from a task's terminal, the run's branch and first worker (a worktree and a terminal with no pane); `runs.rs` starts agent and `run` stages in the worker, reads answers from session files, picks arrows, bounds loops, `progress`, `reset`, the budget, `merge main`, hands back to the task's branch and messages the task's agent; `kanna run list`, `show`, `log`, `stop`. e2e `pipeline_run` with the mock agent: the task's docked pane untouched, one Shelf row throughout.
+3. **Gates and steering:** `ask` stages as a message to the task's agent and a waiting run, `kanna run answer` from you or the agent, `pause`, `resume`, `skip`, `retry`; a Shelf runner stopping the agent while the run goes on, the end-of-run message waking it; stop and start of the task mid-stage; daemon restart mid-stage; the `kanna-tasks` skill's section on building with the pipeline.
+4. **The Run tab and the watch tab:** `kanna open run`: graph, numbers, revision, visits, workers; its buttons and the `ask` card; `kanna open run --watch`: a terminal pane viewing the current worker's terminal and following stage changes, typing recorded as an intervention; `kanna task list` saying the run's stage.
+5. **Fan-out and join:** `each`, workers from a stage's named output, each a worktree and hidden terminal, `pipelines.workers`, `merge STAGE`, conflicts as a fail, `xN by`, `guard`; `on` parsed, resolved to `here` only, and the visit's `machine` recorded; the Shelf, Desk view, strip and `kanna task list` checked to show one row for the run throughout.
+6. **Revisions:** `emits` blocks merged and validated, `kanna run edit` in a code pane, revisions on the Run tab with diffs.
+7. **Metrics:** tokens, turns, tool calls and cost from Claude's and Codex's session files per visit; lines and files; findings and failures parsed; `kanna stats pipelines`; the Pipelines section of the Stats tab with the dataviz rules (after "Stats tab on the Desk"); the quality columns joined by merge commit (after "Code quality metrics").
+8. **Stages on other machines** (after the Machines tasks for the replicated Shelf and task transfer): `on` resolved against the peer log and roles, the worker on a peer through transfer (its branch over, a pane and worktree there, no Shelf row anywhere), its record and commits back, an offline placement waiting; e2e `pipeline_remote` between two daemons as `machine.rs`'s tests pair them.
+9. **Dogfood:** run `feature.pipe` on a real feature whose spec and mockup were approved in the task's chat, and `bugfix.pipe` on a real bug, with `scripts/check.sh` written for stage use; compare with the numbers; tune the prompts and arrows; write up what changed and why in the pipeline files' comments.

@@ -153,6 +153,7 @@ fn what_the_keeper_has_and_the_disk_does_not_is_taken_back_and_the_reverse_dropp
     let panes = instance.call("list", json!({}))["panes"].clone();
     let panes = panes.as_array().unwrap();
     assert_eq!(panes.len(), 1, "{panes:?}");
+    assert_eq!(panes[0]["id"].as_str(), Some(kept.as_str()), "{panes:?}");
     assert_eq!((panes[0]["terminal"].as_str(), panes[0]["pid"].as_i64(), panes[0]["cmd"].as_str()), (Some(kept.as_str()), Some(kept_pid), Some("echo kept; exec sleep 600")));
     assert!(panes[0]["name"].is_null());
     let new = instance.open("new", None);
@@ -264,4 +265,74 @@ fn a_terminal_started_again_after_a_restart_keeps_its_size_even_without_its_scre
     wait_for("the program again", || instance.pane("sized")["state"] == "running");
     instance.call("send", json!({"pane": "sized", "text": ""}));
     wait_for("the size again", || shows(&instance, "sized", "31 101"));
+}
+
+fn hello_keeping_the_socket(instance: &Instance, build: &str) -> (Value, Option<std::os::fd::OwnedFd>, UnixStream) {
+    use std::os::fd::AsRawFd;
+    let stream = UnixStream::connect(instance.socket()).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let hello = json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocols": kanna_build::PROTOCOLS, "keepsSocket": true}});
+    (&stream).write_all(format!("{hello}\n").as_bytes()).unwrap();
+    let (mut line, mut listener) = (Vec::new(), None);
+    while !line.contains(&b'\n') {
+        let mut buf = [0u8; 65536];
+        let (count, fds) = kanna_keeper::fdpass::recv(stream.as_raw_fd(), &mut buf, false).unwrap();
+        assert!(count > 0, "the daemon closed the link before replying");
+        listener = listener.or(fds.into_iter().next());
+        line.extend_from_slice(&buf[..count]);
+    }
+    let end = line.iter().position(|b| *b == b'\n').unwrap();
+    (serde_json::from_slice(&line[..end]).unwrap(), listener, stream)
+}
+
+#[test]
+fn an_app_that_keeps_the_socket_gets_it_and_a_call_made_while_no_daemon_runs_is_answered_by_the_next() {
+    let mut instance = Instance::start();
+    let pane = instance.open("shell", None);
+    let build = instance.call("capabilities", json!({}))["build"].as_str().unwrap().to_string();
+    let (reply, listener, _app) = hello_keeping_the_socket(&instance, &build);
+    assert_eq!((reply["ok"].as_bool(), reply["listener"].as_bool()), (Some(true), Some(true)), "{reply}");
+    let listener = listener.expect("the hello reply carried no listener");
+
+    instance.stop(libc::SIGTERM);
+    assert!(instance.socket().exists(), "a daemon whose app keeps the socket unlinked it");
+    let mut waiting = UnixStream::connect(instance.socket()).expect("the kept socket doesn't answer while no daemon runs");
+    waiting.write_all(b"{\"id\":1,\"cmd\":\"list\",\"args\":{}}\n").unwrap();
+
+    instance.start_on(listener);
+    waiting.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut answer = String::new();
+    BufReader::new(waiting).read_line(&mut answer).unwrap();
+    let answer: Value = serde_json::from_str(&answer).unwrap_or_else(|_| panic!("no answer: {}", instance.log()));
+    assert!(answer["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str()), "{answer}");
+    assert!(!instance.log().contains("KANNA_LISTEN_FD"), "{}", instance.log());
+}
+
+#[test]
+fn a_daemon_refusing_an_app_of_another_build_hands_it_the_socket_and_leaves_it() {
+    let mut instance = Instance::start();
+    let (reply, listener, _app) = hello_keeping_the_socket(&instance, "0000");
+    assert_eq!((reply["error"]["code"].as_str(), reply["listener"].as_bool()), (Some("other_build"), Some(true)), "{reply}");
+    assert!(listener.is_some(), "the refusal carried no listener");
+    wait_for("the daemon to stop", || instance.daemon.try_wait().unwrap().is_some());
+    assert!(instance.socket().exists(), "the daemon unlinked the socket it handed over");
+    let mut waiting = UnixStream::connect(instance.socket()).expect("the handed socket doesn't answer");
+    waiting.write_all(b"{\"id\":1,\"cmd\":\"capabilities\",\"args\":{}}\n").unwrap();
+    instance.start_on(listener.unwrap());
+    waiting.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut answer = String::new();
+    BufReader::new(waiting).read_line(&mut answer).unwrap();
+    assert!(answer.contains("\"ok\":true"), "{answer}");
+}
+
+#[test]
+fn an_app_that_does_not_keep_the_socket_gets_none_and_the_daemon_unlinks_it() {
+    let mut instance = Instance::start();
+    let build = instance.call("capabilities", json!({}))["build"].as_str().unwrap().to_string();
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocols": kanna_build::PROTOCOLS}}));
+    let hello = app.next().unwrap();
+    assert_eq!((hello["ok"].as_bool(), hello["listener"].as_bool()), (Some(true), Some(false)), "{hello}");
+    instance.stop(libc::SIGTERM);
+    assert!(!instance.socket().exists(), "the daemon left its socket with no app keeping it");
 }
