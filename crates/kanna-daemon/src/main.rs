@@ -29,6 +29,7 @@ mod status_command;
 mod diffs;
 mod machines;
 mod files;
+mod serial;
 mod store;
 mod task_scripts;
 mod terminals;
@@ -101,6 +102,7 @@ pub enum Event {
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
     File { id: String, read: files::Read },
+    Serial(serial::SerialEvent),
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
@@ -128,6 +130,7 @@ impl Event {
             Event::Worktree { .. } | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::File { .. } => "loop.file",
+            Event::Serial(_) => "loop.serial",
             Event::KeeperReadable | Event::KeeperExits | Event::KeeperLost(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
@@ -356,7 +359,9 @@ fn run() -> Result<Option<PathBuf>, String> {
     perf::install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
     files.install(&core);
-    let host = Rc::new(Host::new(terminals.clone()));
+    let serial = Rc::new(serial::Serial::new(events.clone(), &state_dir));
+    serial.install(&core);
+    let host = Rc::new(Host::new(terminals.clone(), serial.clone()));
     core.set_host(Some(host.clone()));
     let noted = core.weak();
     let on_change = Rc::downgrade(&terminals);
@@ -396,6 +401,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     core.note_numbers(&layout.content_numbers());
     core.install_panes(layout.saved_panes(), 0, 0);
     layout.restore(&core.with_panes(kanna_mux::pane_table));
+    serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -403,7 +409,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -436,6 +442,12 @@ fn run() -> Result<Option<PathBuf>, String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    let serial_link = Rc::downgrade(&app);
+    *serial.on_serial.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = serial_link.upgrade() {
+            app.serial(views, payload);
         }
     }));
     let file_link = Rc::downgrade(&app);
@@ -646,6 +658,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
             Event::File { id, read } => files.loaded(&id, read),
+            Event::Serial(event) => serial.event_in(event),
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();
                 if matches!(event, Event::KeeperReadable) {

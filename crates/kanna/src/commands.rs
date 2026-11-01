@@ -23,8 +23,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "open",
         group: "Panes",
-        summary: "Open a terminal, web, iOS, markdown, code or diff pane and wait until it is running.",
-        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]",
+        summary: "Open a terminal, web, iOS, markdown, code, diff or serial pane and wait until it is running.",
+        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]",
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
@@ -50,6 +50,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna open md docs/specs/presenting.md --diff main --tab", "Show a spec with what this branch changed in it marked."),
             ("kanna open code src/main.rs:42", "Show a source file, highlighted, at line 42; it follows the file on disk."),
             ("kanna open diff --merge-base main", "Show everything this branch changed since it left main, committed or not, with untracked files; it follows the worktree."),
+            ("kanna open serial usbmodem1101 --tab", "Show what the device on /dev/cu.usbmodem1101 sends, at 115200; `kanna serial` reads and writes the same port."),
         ],
         parse: parse_open,
         show: output::opened,
@@ -598,6 +599,32 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_toast,
         show: output::toast,
+    },
+    Command {
+        name: "serial",
+        group: "Panes",
+        summary: "List serial ports, and read, write, reset or borrow the port a serial pane has open.",
+        usage: "kanna serial list\n       kanna serial read PANE [--since T|--last N] [--follow] [--until REGEX [--timeout S]] [--raw]\n       kanna serial send PANE TEXT [--hex] [--no-ending]\n       kanna serial reset PANE [--hold MS]\n       kanna serial set PANE [--baud N] [--line-ending lf|crlf|cr]\n       kanna serial borrow PANE|PORT -- CMD...\n       kanna serial log PANE",
+        options: &[
+            ("--since T", "read: rows from T on, a time today (14:37:40.118, as send and reset print) or a duration back (10s, 2m)."),
+            ("--last N", "read: the last N rows."),
+            ("--follow", "read: keep printing rows as they come, through unplugging, until interrupted."),
+            ("--until REGEX", "read: follow until a line the device sent matches, print it and exit 0; exit 1 after --timeout."),
+            ("--timeout S", "read --until: seconds to wait (default 30)."),
+            ("--raw", "read: only what the device sent, as its bytes."),
+            ("--hex", "send: TEXT is hex bytes (1b 5b 41), sent with no line ending."),
+            ("--no-ending", "send: leave off the pane's line ending."),
+            ("--hold MS", "reset: how long to hold reset (default 100)."),
+        ],
+        notes: "Kanna's daemon owns each port, so a serial pane (kanna open serial PORT), these commands and an agent share one connection. Rows print as TIME TEXT; → marks a line sent to the device and # one from Kanna (connected, unplugged, back, reset, lent). read without --since or --last prints the rows kept in memory (the last 10,000); with --follow or --until and neither, it starts from now, so an old boot banner doesn't match. Bytes that aren't text show as \\xNN. Every row is also appended to the port's log file in the state folder (kanna serial log PANE), to grep a whole session.\nborrow lends the port to CMD, a flash for example: the pane lets go of the port, CMD runs here, and the pane takes the port back when CMD exits (or this command is killed); it exits with CMD's code. With PORT (a path or USB vid:pid), a script needn't know the pane; with no pane open on the port it just runs CMD.\nsend, reset and set fail with unplugged or lent while the port isn't there to use.",
+        examples: &[
+            ("kanna serial list", "The ports plugged in, by USB name, and the panes that have each open."),
+            ("kanna serial read serial-1 --until 'app: ready|Guru Meditation' --timeout 20", "Wait for the firmware to boot, or to crash."),
+            ("kanna serial send serial-1 'wifi status'", "Type a line to the device's console."),
+            ("kanna serial borrow serial-1 -- idf.py flash", "Flash while the pane lends the port, and watch it boot again after."),
+        ],
+        parse: crate::serial::parse,
+        show: |_, _| String::new(),
     },
     Command {
         name: "crashes",
@@ -1441,12 +1468,12 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     let diff = args.optional("--diff", |word| !word.starts_with('-') && !is_markdown(word));
     let kind = match args.positional() {
         None => "term".to_string(),
-        Some(kind) if ["term", "web", "ios", "md", "code", "diff"].contains(&kind.as_str()) => kind,
+        Some(kind) if ["term", "web", "ios", "md", "code", "diff", "serial"].contains(&kind.as_str()) => kind,
         Some(other) if is_markdown(&other) => {
             return Err(usage("open", &format!("to show a markdown file use: kanna open md {other}")));
         }
         Some(other) => {
-            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code or diff). To run a command use --cmd \"{other}\"")));
+            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code, diff or serial). To run a command use --cmd \"{other}\"")));
         }
     };
     if kind == "web" {
@@ -1469,6 +1496,22 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
         let folder = out.remove("cwd").and_then(|cwd| cwd.as_str().map(String::from)).unwrap_or_else(|| absolute("."));
         out.insert("path".into(), json!(folder));
         out.insert("args".into(), json!(args.remaining()));
+    }
+    let (baud, ending) = (args.option("--baud")?, args.option("--line-ending")?);
+    if kind == "serial" {
+        let port = args.positional().ok_or_else(|| usage("open", "serial panes need a port: kanna open serial PORT (kanna serial list shows them)"))?;
+        out.insert("path".into(), json!(port));
+        if let Some(baud) = baud {
+            out.insert("baud".into(), json!(baud.parse::<u32>().map_err(|_| usage("open", "--baud takes a number, like 115200"))?));
+        }
+        if let Some(ending) = ending {
+            if !["lf", "crlf", "cr"].contains(&ending.as_str()) {
+                return Err(usage("open", "--line-ending is lf, crlf or cr"));
+            }
+            out.insert("lineEnding".into(), json!(ending));
+        }
+    } else if baud.is_some() || ending.is_some() {
+        return Err(usage("open", "--baud and --line-ending are only for serial panes: kanna open serial PORT --baud N"));
     }
     if kind == "ios" && !out.contains_key("app") {
         return Err(usage("open", "iOS panes need an app: kanna open ios --app MyApp.app (or a bundle ID)"));

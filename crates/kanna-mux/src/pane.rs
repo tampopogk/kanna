@@ -10,10 +10,11 @@ pub enum PaneType {
     Md,
     Code,
     Diff,
+    Serial,
 }
 
 impl PaneType {
-    pub const ALL: [PaneType; 6] = [PaneType::Term, PaneType::Web, PaneType::Ios, PaneType::Md, PaneType::Code, PaneType::Diff];
+    pub const ALL: [PaneType; 7] = [PaneType::Term, PaneType::Web, PaneType::Ios, PaneType::Md, PaneType::Code, PaneType::Diff, PaneType::Serial];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -23,6 +24,7 @@ impl PaneType {
             PaneType::Md => "md",
             PaneType::Code => "code",
             PaneType::Diff => "diff",
+            PaneType::Serial => "serial",
         }
     }
 
@@ -211,6 +213,8 @@ pub struct Pane {
     pub agent: Option<String>,
     pub markup: bool,
     pub diff_base: Option<String>,
+    pub baud: Option<u32>,
+    pub line_ending: Option<String>,
     pub history: Option<History>,
     pub session: Option<String>,
     pub pid: Option<i64>,
@@ -245,6 +249,8 @@ impl Pane {
             agent: None,
             markup: false,
             diff_base: None,
+            baud: None,
+            line_ending: None,
             history: None,
             session: None,
             pid: None,
@@ -284,6 +290,7 @@ impl Pane {
             (None, PaneType::Md | PaneType::Code) => self.path.as_deref().and_then(file_name),
             (None, PaneType::Web) => self.title.clone().filter(|t| !t.trim().is_empty()).or_else(|| self.url.as_deref().and_then(host)),
             (None, PaneType::Diff) => Some(std::iter::once("diff").chain(self.diff.iter().flatten().map(String::as_str)).collect::<Vec<_>>().join(" ")),
+            (None, PaneType::Serial) => self.title.clone().filter(|t| !t.trim().is_empty()).or_else(|| self.path.as_deref().and_then(file_name).map(|n| n.trim_start_matches("cu.").to_string())),
             (None, PaneType::Term | PaneType::Ios) => None,
         };
         name.map(|n| n.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string()).filter(|n| !n.is_empty())
@@ -342,6 +349,7 @@ impl Pane {
                 out.insert("args".into(), diff_args(self.diff.as_deref()));
                 out.insert("view".into(), Value::String(self.view.clone().unwrap_or_else(|| "unified".into())));
             }
+            PaneType::Serial => serial_fields(self, &mut out),
         }
         if let Some(stop) = &self.stop {
             out.insert("tour".into(), stop.to_json());
@@ -387,7 +395,7 @@ pub struct Panes {
     numbers: HashMap<&'static str, usize>,
 }
 
-pub const CONTENT_PREFIXES: [&str; 5] = ["term", "file", "page", "ios", "diff"];
+pub const CONTENT_PREFIXES: [&str; 6] = ["term", "file", "page", "ios", "diff", "serial"];
 
 pub fn content_prefix(kind: PaneType) -> &'static str {
     match kind {
@@ -396,6 +404,7 @@ pub fn content_prefix(kind: PaneType) -> &'static str {
         PaneType::Web => "page",
         PaneType::Ios => "ios",
         PaneType::Diff => "diff",
+        PaneType::Serial => "serial",
     }
 }
 
@@ -532,7 +541,7 @@ impl Panes {
 
     pub fn note_numbers(&mut self, numbers: &HashMap<String, usize>) {
         for (prefix, n) in numbers {
-            if let Some(prefix) = ["file", "page", "ios", "diff"].into_iter().find(|p| p == prefix) {
+            if let Some(prefix) = ["file", "page", "ios", "diff", "serial"].into_iter().find(|p| p == prefix) {
                 let at = self.numbers.entry(prefix).or_insert(0);
                 *at = (*at).max(*n);
             }
@@ -674,5 +683,33 @@ pub fn read_view(value: Option<&Value>) -> Result<Option<String>, KmuxError> {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(view)) if view == "unified" || view == "split" => Ok(Some(view.clone())),
         Some(_) => Err(KmuxError::new("bad_request", "view must be unified or split")),
+    }
+}
+
+pub const LINE_ENDINGS: [&str; 3] = ["lf", "crlf", "cr"];
+
+pub fn serial_fields(pane: &Pane, out: &mut Map) {
+    out.insert("path".into(), opt(pane.path.as_deref()));
+    out.insert("device".into(), opt(pane.device.as_deref()));
+    out.insert("title".into(), opt(pane.title.as_deref()));
+    out.insert("baud".into(), num(pane.baud.unwrap_or(115_200) as f64));
+    out.insert("lineEnding".into(), Value::String(pane.line_ending.clone().unwrap_or_else(|| "lf".into())));
+}
+
+pub fn read_baud(value: Option<&Value>) -> Result<Option<u32>, KmuxError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => match value.as_f64() {
+            Some(n) if n >= 50.0 && n <= 20_000_000.0 && n.fract() == 0.0 => Ok(Some(n as u32)),
+            _ => Err(KmuxError::new("bad_request", "baud must be a whole number of bits a second, from 50 to 20000000")),
+        },
+    }
+}
+
+pub fn read_line_ending(value: Option<&Value>) -> Result<Option<String>, KmuxError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(ending)) if LINE_ENDINGS.contains(&ending.as_str()) => Ok(Some(ending.clone())),
+        Some(_) => Err(KmuxError::new("bad_request", "lineEnding must be lf, crlf or cr")),
     }
 }

@@ -11,6 +11,7 @@ kanna-client = { path = "../kanna-client" }
 kanna-merman = { path = "../kanna-merman" }
 kanna-threads = { path = "../kanna-threads" }
 libc = "0.2"
+regex = "1"
 serde_json = "1"
 
 [dev-dependencies]

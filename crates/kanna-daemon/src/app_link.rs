@@ -1,5 +1,6 @@
 use crate::diffs::Diffs;
 use crate::files::Files;
+use crate::serial::Serial;
 use crate::layout::DaemonLayout;
 use crate::perf;
 use crate::wire::{Wire, FLOW_PROTOCOL};
@@ -227,6 +228,7 @@ pub struct AppLink {
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
     files: Rc<Files>,
+    serial: Rc<Serial>,
     layout: Rc<DaemonLayout>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
@@ -243,7 +245,7 @@ pub struct AppLink {
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, serial: Rc<Serial>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
         AppLink {
             build,
             listener,
@@ -252,6 +254,7 @@ impl AppLink {
             terminals,
             diffs,
             files,
+            serial,
             layout,
             app: RefCell::new(None),
             pending: RefCell::default(),
@@ -485,6 +488,7 @@ impl AppLink {
         let prefix = view_prefix(conn);
         self.diffs.leave(|view| view.starts_with(&prefix));
         self.files.leave(|view| view.starts_with(&prefix));
+        self.serial.leave_views(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
@@ -533,6 +537,15 @@ impl AppLink {
             ("file.subscribe", Some(view)) => {
                 let reply = self.files.subscribe(&view, &args);
                 self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("serial.subscribe", Some(view)) => {
+                let reply = self.serial.subscribe(&view, &args);
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("serial.unsubscribe", Some(view)) => {
+                self.serial.unsubscribe(&view);
                 return None;
             }
             ("file.unsubscribe", Some(view)) => {
@@ -631,6 +644,14 @@ impl AppLink {
         let prefix = view_prefix(conn);
         if views.iter().any(|view| view.starts_with(&prefix)) {
             self.notify("file", payload.clone());
+        }
+    }
+
+    pub fn serial(&self, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify("serial", payload.clone());
         }
     }
 
