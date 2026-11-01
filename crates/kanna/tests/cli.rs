@@ -250,7 +250,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, capabilities, close, comment, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, tasks, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff\ncommands: agents, arrange, capabilities, close, comment, crashes, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, screenshot, send, send-key, status, task, tasks, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -289,9 +289,10 @@ fn every_command_works_through_the_daemon_and_the_app() {
     wait_for("the task's agent", || daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["workspaces"][0]["dock"]["pane"] == "agent");
     let notes = daemon.kanna_as("term-6", &["open", "--name", "notes", "--no-wait"]).ok();
     assert!(notes.starts_with(&format!("opened term-7 (notes) in ws-1 ({task}, on the Desk), tab-")), "{notes}");
-    let listed = daemon.kanna(&["task", "list"]).ok();
-    assert_eq!(listed, format!("TASK       NAME   WHERE  STATE    AGENT\n{task}  agent  Desk   running  exec   just now"));
-    assert_eq!(daemon.kanna(&["task", "list", "AGE"]).ok(), listed);
+    let listed = daemon.kanna_in(&repo, &["task", "list"]).ok();
+    assert_eq!(listed, format!("Desk\n{task}  agent  running  exec  just now\n\nShelf\n(empty)"));
+    assert_eq!(daemon.kanna_in(&repo, &["task", "list", "AGE"]).ok(), format!("Desk\n{task}  agent  running  exec  just now"));
+    assert_eq!(daemon.kanna(&["task", "list", "--all"]).ok(), format!("Desk\n{task}  agent  running  exec  ~/.kanna-v4/repos/local/repo  just now\n\nShelf\n(empty)"));
     assert_eq!(daemon.kanna(&["task", "list", "agent", "notes"]).ok(), "no task matches \"agent notes\"");
     assert_eq!(daemon.kanna(&["--json", "task", "list", "nothing"]).json()["tasks"], json!([]));
     assert_eq!(daemon.kanna(&["task", "activate", "notes"]).ok(), "term-6 is active on d1", "a task's pane names its task, and the app is told its agent");
@@ -338,11 +339,12 @@ fn task_list_finds_a_task_by_its_id_pane_or_branch_and_says_when_one_is_done() {
     let picked = kanna(&["--json", "task", "pick", &first]).json();
     let (pane, folder) = (picked["pane"].as_str().unwrap().to_string(), std::path::PathBuf::from(picked["folder"].as_str().unwrap()));
     git(&folder, &["branch", "-m", "planner-save-default-yes"]);
+    git(&folder, &["-c", "user.email=e@e", "-c", "user.name=e", "commit", "-q", "--allow-empty", "-m", "work"]);
 
     let only_first = |query: &[&str]| {
         let listed = kanna(&[&["task", "list"], query].concat()).ok();
         let row = listed.lines().nth(1).unwrap_or("");
-        assert!(listed.lines().count() == 2 && row.starts_with(&short(&first)) && row.contains("Planner save prompt defaults to yes  Desk"), "kanna task list {query:?}:\n{listed}");
+        assert!(listed.lines().count() == 2 && listed.starts_with("Desk\n") && row.starts_with(&short(&first)) && row.contains("Planner save prompt defaults to yes"), "kanna task list {query:?}:\n{listed}");
     };
     only_first(&[&first]);
     only_first(&[&short(&first)]);
@@ -352,7 +354,7 @@ fn task_list_finds_a_task_by_its_id_pane_or_branch_and_says_when_one_is_done() {
     only_first(&["save-default"]);
     only_first(&[&short(&first), "planner"]);
     let listed = kanna(&["task", "list", &short(&third), "RENAME"]).ok();
-    assert!(listed.lines().count() == 2 && listed.lines().nth(1).unwrap().starts_with(&short(&third)) && listed.contains("Rename tasks  Shelf"), "{listed}");
+    assert!(listed.lines().count() == 2 && listed.starts_with("Shelf\n") && listed.lines().nth(1).unwrap().starts_with(&short(&third)) && listed.contains("Rename tasks"), "{listed}");
     let mixed = format!("{} flaky", short(&third));
     assert_eq!(kanna(&["task", "list", &short(&third), "flaky"]).ok(), format!("no task matches \"{mixed}\""));
     let json = kanna(&["--json", "task", "list", "default-yes"]).json();
@@ -364,12 +366,59 @@ fn task_list_finds_a_task_by_its_id_pane_or_branch_and_says_when_one_is_done() {
     kanna(&["task", "done", &pane]).ok();
     wait_for("the first task done", || kanna(&["task", "list", &first]).ok().contains("is done"));
     assert_eq!(kanna(&["task", "list", &first]).ok(), format!("{} \"Planner save prompt defaults to yes\" is done (just now); its branch planner-save-default-yes is still there", short(&first)));
-    assert_eq!(kanna(&["--json", "task", "list", &first]).json()["done"]["place"], json!("done"));
+    assert_eq!(kanna(&["--json", "task", "list", &first]).json()["found"]["place"], json!("done"));
     git(&repo, &["worktree", "remove", "--force", folder.to_str().unwrap()]);
     git(&repo, &["branch", "-D", "planner-save-default-yes"]);
     assert_eq!(kanna(&["task", "list", &first]).ok(), format!("{} \"Planner save prompt defaults to yes\" is done (just now)", short(&first)));
     let never = (0..16).map(|d| format!("task-{d:x}0000000")).find(|id| ![&first, &second, &third].iter().any(|t| t[..6] == id[..6])).unwrap();
     assert_eq!(kanna(&["task", "list", &never]).ok(), format!("no task matches \"{never}\""));
+}
+
+#[test]
+fn task_list_done_also_lists_done_tasks_and_searches_them() {
+    let daemon = Daemon::start();
+    let _app = daemon.app();
+    let repo = daemon.dir.join("home/.kanna-v4/repos/local/repo");
+    std::fs::create_dir_all(repo.join(".kanna")).unwrap();
+    std::fs::write(repo.join(".kanna/config.json"), r#"{ "shelf": { "runners": 0 } }"#).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+    let kanna = |args: &[&str]| daemon.kanna_in(&repo, args);
+    let made = |name: &str, message: &str| kanna(&["--json", "task", "new", name, message, "--agent", "/bin/cat"]).json()["task"]["id"].as_str().unwrap().to_string();
+    let send = made("Send presses Enter", "fix: kanna send submits in codex");
+    let rate = made("Rate limiting", "fix: limit the login endpoint");
+    made("Diff viewer", "fix: show a diff");
+    kanna(&["task", "done", &send]).ok();
+    kanna(&["task", "done", &rate]).ok();
+    let open = kanna(&["task", "list"]).ok();
+    assert!(open.contains("Diff viewer") && !open.contains("Send presses") && !open.contains("Done"), "{open}");
+    for n in 1..=5 {
+        let old = made(&format!("Old {n}"), "an older one");
+        kanna(&["task", "done", &old]).ok();
+    }
+    let recent = kanna(&["task", "list", "--include-done"]).ok();
+    let recent = recent.split("\n\nDone\n").nth(1).unwrap_or_else(|| panic!("a Done heading last: {recent}"));
+    let names: Vec<&str> = recent.lines().map(|l| l.split("  ").nth(1).unwrap_or("").trim()).collect();
+    assert_eq!(names, ["Old 5", "Old 4", "Old 3", "Old 2", "Old 1", ""], "the 5 done last, newest first: {recent}");
+    assert_eq!(recent.lines().last(), Some("… 2 more done: add words to search them"), "{recent}");
+    let json = kanna(&["--json", "task", "list", "--include-done"]).json();
+    assert_eq!((json["done"].as_array().unwrap().len(), json["moreDone"].clone()), (5, json!(2)), "{json}");
+    let all = kanna(&["task", "list", "fix", "--include-done"]).ok();
+    let done = all.split("\n\nDone\n").nth(1).unwrap_or_else(|| panic!("a Done heading last: {all}"));
+    assert!(all.split("\n\nDone\n").next().unwrap().contains("Diff viewer"), "{all}");
+    let lines: Vec<&str> = done.lines().collect();
+    assert_eq!(lines.len(), 2, "{all}");
+    assert!(lines[0].contains("Rate limiting") && lines[0].ends_with("done just now"), "newest done first: {all}");
+    assert!(lines[1].contains("Send presses Enter"), "{all}");
+    let found = kanna(&["task", "list", "codex", "SEND", "--include-done"]).ok();
+    assert_eq!(found.lines().count(), 2, "{found}");
+    assert!(found.starts_with("Done\n"), "{found}");
+    assert!(found.lines().nth(1).unwrap().contains("Send presses Enter"), "{found}");
+    assert_eq!(kanna(&["task", "list", "codex"]).ok(), "no task matches \"codex\"", "done tasks only with --include-done");
+    let json = kanna(&["--json", "task", "list", "login", "--include-done"]).json();
+    assert_eq!(json["done"].as_array().unwrap().iter().map(|t| t["name"].clone()).collect::<Vec<_>>(), [json!("Rate limiting")]);
+    assert!(json["done"][0]["doneAt"].is_number() && json["shelf"] == json!([]), "{json}");
+    assert!(kanna(&["--json", "task", "list"]).json().get("done").is_none(), "no done key without --include-done");
+    assert!(kanna(&["--json", "task", "list", "fix"]).json().get("done").is_none(), "nor with a QUERY alone");
 }
 
 #[test]
@@ -481,11 +530,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 31);
+    assert_eq!(commands.lines().count(), 32);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 31);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 32);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 
@@ -738,4 +787,58 @@ fn a_shelf_task_is_renamed_and_starts_with_its_new_name() {
     assert_eq!(daemon.kanna(&["task", "name", &id, "Newer name"]).ok(), format!("named task-{short} \"Newer name\""));
     assert!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str() && p["name"] == "Newer name"));
     assert_eq!(daemon.kanna(&["--json", "task", "list"]).json()["shelf"][0]["name"], json!("Newer name"));
+}
+
+#[test]
+fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_planner_hears_of_once() {
+    let reports = scratch("reports");
+    let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1"), ("KANNA_DIAGNOSTIC_REPORTS", reports.to_str().unwrap())]);
+    assert_eq!(daemon.kanna(&["crashes"]).ok(), "no crashes (kanna crashes --all lists the dismissed ones)");
+    let _ = daemon.kanna(&["raw", r#"{"cmd":"debug.panic"}"#]);
+    assert!(!daemon.exited().success());
+    let records = daemon.crash_records();
+    assert_eq!(records.len(), 1, "one record");
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+    assert_eq!((record["process"].as_str(), record["kind"].as_str(), record["executable"].as_str()), (Some("daemon"), Some("panic"), Some("kanna-daemon")));
+    assert!(record["reason"].as_str().unwrap().starts_with("debug.panic in the daemon's main loop at crates/kanna-daemon/src/crashes.rs:"), "{}", record["reason"]);
+    assert!(records[0].file_name().unwrap().to_string_lossy().ends_with("Z-daemon.json"));
+    let top = kanna_crash::site(record["stack"].as_array().unwrap())[0]["symbol"].as_str().unwrap().to_string();
+    assert!(top.contains("kanna_daemon::crashes"), "{top}");
+    assert_eq!(record["signature"].as_str().map(str::len), Some(16));
+
+    let ips = reports.join("kanna-daemon-2026-10-31-083119.ips");
+    std::fs::write(&ips, format!("{{\"app_name\":\"kanna-daemon\",\"bug_type\":\"309\"}}\n{}", json!({ "pid": record["pid"], "procName": "kanna-daemon" }))).unwrap();
+    std::fs::write(reports.join("kanna-daemon-2026-10-31-083120.ips"), format!("{{}}\n{}", json!({ "pid": 1 }))).unwrap();
+    daemon.again();
+    let listed = daemon.kanna(&["crashes"]).ok();
+    let lines: Vec<&str> = listed.lines().collect();
+    assert!(lines[0].contains("  daemon (pid ") && lines[0].contains("  debug.panic in the daemon's main loop at "), "{listed}");
+    assert_eq!(lines[1], format!("  record  {}", records[0].display()));
+    assert_eq!(lines[2], format!("  report  {}", ips.display()));
+    assert!(lines[3].contains("kanna_daemon::crashes"), "{listed}");
+    let json = daemon.kanna(&["crashes", "--json"]).json();
+    assert_eq!(json["crashes"][0]["file"], json!(records[0].to_string_lossy()));
+    assert_eq!(json["crashes"][0]["dismissed"], json!(false));
+    let told = |daemon: &Daemon| -> Vec<serde_json::Value> {
+        let messages = daemon.kanna(&["raw", r#"{"cmd":"tasks","args":{"action":"messages"}}"#]).json()["messages"].as_array().cloned().unwrap();
+        messages.into_iter().filter(|m| m["from"] == "kanna" && m["to"] == "planner").collect()
+    };
+    let messages = told(&daemon);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    let text = messages[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("Kanna crashed: daemon (pid "), "{text}");
+    assert!(text.contains(&format!("record: {}", records[0].display())) && text.contains(&format!("signature: {}", record["signature"].as_str().unwrap())) && text.contains(&format!("report: {}", ips.display())) && text.contains("kanna_daemon::crashes"), "{text}");
+
+    let _ = daemon.kanna(&["raw", r#"{"cmd":"debug.panic"}"#]);
+    daemon.exited();
+    daemon.again();
+    assert_eq!(daemon.crash_records().len(), 2);
+    assert_eq!(told(&daemon).len(), 1, "a second crash of the same signature isn't sent");
+    assert_eq!(daemon.kanna(&["crashes", "dismiss"]).ok(), "dismissed 2 crash records");
+    assert_eq!(daemon.kanna(&["crashes"]).ok(), "no crashes (kanna crashes --all lists the dismissed ones)");
+    assert!(daemon.kanna(&["crashes", "--all"]).ok().contains("(dismissed)"));
+    for record in daemon.crash_records() {
+        std::fs::remove_file(record).unwrap();
+    }
+    std::fs::remove_dir_all(reports).unwrap();
 }

@@ -46,7 +46,7 @@ kanna task edit 3f9a --after none        # waits for nothing
 | `kanna task new NAME [MSG] [--after TASK,…]` | Make a task that waits for others |
 | `kanna task edit TASK --after TASK,…\|none` | Change what a Shelf task waits for |
 | `kanna task start TASK`, `kanna task pick TASK` | Refused for a blocked task, saying what it waits for |
-| `kanna task list` | STATE is `blocked` for a blocked Shelf task, and its last part says `waits for task-1dfb, task-c0ff` |
+| `kanna task list` | STATE is `blocked` for a blocked Shelf task, and its last part says what it waits for by name: `waits for "Fix login", "Diff viewer"` ([task list](task-list.md)) |
 | `kanna task done TASK` | Also names the tasks that can start now because of it |
 
 ## How it's built

@@ -11,8 +11,10 @@ mod db;
 mod host;
 mod keeper;
 mod content_ids;
+mod crashes;
 mod layout;
 mod lifeline;
+mod perf;
 mod pty;
 mod codex_remote;
 mod messages;
@@ -31,6 +33,7 @@ mod store;
 mod task_scripts;
 mod terminals;
 mod toasts;
+mod wire;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
 use kanna_mux::json::{Map, Value};
@@ -45,7 +48,6 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use reader::Taken;
 use pty::Spawner;
 use store::Store;
 use terminals::{Restored, Terminals};
@@ -59,13 +61,15 @@ $KANNA_STATE_DIR (default: that socket's folder). Gets its ptys from the
 keeper of that folder, starting $KANNA_KEEPER (default: the kanna-keeper
 beside this binary) if none runs. Stopping the daemon leaves the terminals
 running in the keeper; it saves them in that folder (terminals/), and the
-next daemon takes them back.
+next daemon takes them back. With $KANNA_LISTEN_FD (Kanna.app sets it), it
+serves on that listening socket, which the app keeps, instead of binding one.
 
   --uses-keeper   exits 0: this daemon gets its ptys from a keeper";
 
 const APP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const LOCK_WAIT: Duration = Duration::from_secs(5);
+const LISTEN_FD: &str = "KANNA_LISTEN_FD";
 
 const STOP_GRACE: libc::c_uint = 5;
 const SLOW_REQUEST: Duration = Duration::from_millis(50);
@@ -102,6 +106,7 @@ pub enum Event {
     KeeperLost(String),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
+    AppBehind { conn: u64, queued: usize },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
@@ -109,6 +114,27 @@ pub enum Event {
     Restart,
     Quit(i32),
     Shutdown(String),
+}
+
+impl Event {
+    fn kind(&self) -> &'static str {
+        match self {
+            Event::Request(..) => "loop.request",
+            Event::Wake => "loop.wake",
+            Event::Output { .. } => "loop.output",
+            Event::Drained { .. } => "loop.drained",
+            Event::Status { .. } => "loop.status",
+            Event::RulesUpdated { .. } => "loop.rules",
+            Event::Worktree { .. } | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
+            Event::File { .. } => "loop.file",
+            Event::KeeperReadable | Event::KeeperExits | Event::KeeperLost(_) => "loop.keeper",
+            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
+            Event::AppMessage { .. } => "loop.app.message",
+            Event::MachineConfirm { .. } | Event::MachinesSave(_) => "loop.machines",
+            Event::Restart | Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
+        }
+    }
 }
 
 fn main() {
@@ -193,6 +219,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         return Ok(None);
     }
     let _ = std::fs::remove_file(&marker);
+    kanna_crash::install("daemon", state_dir.clone());
     let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
@@ -225,8 +252,14 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
         }),
     );
-    server.take_over(HELLO, app_link::takeover(events.clone()));
-    server.start().map_err(|e| e.message)?;
+    let wire = Arc::new(wire::Wire::new(events.clone()));
+    server.take_over(HELLO, app_link::takeover(events.clone(), wire.clone()));
+    let server = std::mem::ManuallyDrop::new(server);
+    match inherited_listener()? {
+        Some(listener) => server.start_with(listener),
+        None => server.start(),
+    }
+    .map_err(|e| e.message)?;
 
     let keeper_bin = keeper::binary();
     let keeper = match keeper::Keeper::connect(&state_dir, &keeper_bin, events.clone()) {
@@ -247,7 +280,7 @@ fn run() -> Result<Option<PathBuf>, String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
-    let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env));
+    let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
     let renaming = Rc::downgrade(&terminals);
     core.on_renamed(Rc::new(move |from, to| {
@@ -303,7 +336,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
-    let machines = match machines::Machines::start(&state_dir, &db, events.clone()) {
+    let machines = match machines::Machines::start(&state_dir, &db, events.clone(), wire.clone()) {
         Ok(machines) => {
             log!("kanna-daemon: {}", machines.describe());
             let machines = Rc::new(machines);
@@ -320,16 +353,21 @@ fn run() -> Result<Option<PathBuf>, String> {
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
+    perf::install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
     files.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
+    let noted = core.weak();
     let on_change = Rc::downgrade(&terminals);
     let tasks_changed = Rc::downgrade(&tasks);
     let layout_changed = Rc::downgrade(&layout);
     core.set_on_change(Some(Rc::new(move || {
         if let Some(terminals) = on_change.upgrade() {
             terminals.mark_changed();
+        }
+        if let Some(core) = noted.upgrade() {
+            kanna_crash::note_panes(core.with_panes(|panes| panes.iter().map(|p| json!({ "id": p.id, "name": p.name, "type": p.kind.as_str() })).collect()));
         }
         if let Some(layout) = layout_changed.upgrade() {
             layout.panes_changed();
@@ -365,7 +403,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -387,6 +425,13 @@ fn run() -> Result<Option<PathBuf>, String> {
     let toast_link = Rc::downgrade(&app);
     *toasts.on_toast.borrow_mut() = Some(Box::new(move |record| toast_link.upgrade().is_some_and(|app| app.toast(record))));
     host.connect(&app);
+    let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
+    crashes.install(&core);
+    let posting = Rc::downgrade(&tasks);
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post("kanna", repo, text)));
+    let banner_link = Rc::downgrade(&app);
+    *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
+    crashes.scan();
     let diff_link = Rc::downgrade(&app);
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
@@ -489,6 +534,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         log!("kanna-daemon: shutting down: {why}");
         let _ = std::fs::write(state_dir.join(SHUTDOWN_MARKER), format!("{why}\n"));
         *shutdown = Some(Shutdown::App(Instant::now() + APP_QUIT_WAIT));
+        crashes.stopping();
         app.quit();
     };
     loop {
@@ -524,16 +570,19 @@ fn run() -> Result<Option<PathBuf>, String> {
             Some(Shutdown::Done) => break,
             _ => {}
         }
+        let chores = Instant::now();
         app.expire(Instant::now());
         terminals.save_if_changed();
         layout.flush();
         let ticks = if shutdown.is_none() {
+            crashes.tick(Instant::now(), app.attached());
             tasks.sweep();
             tasks.tick()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
-        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline()].into_iter().flatten().min();
+        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
+        perf::since("loop.chores", chores);
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -543,6 +592,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        let (kind, handling) = (event.kind(), Instant::now());
         match event {
             Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
                 Some("shutdown") => {
@@ -567,14 +617,12 @@ fn run() -> Result<Option<PathBuf>, String> {
             }),
             Event::Wake => {}
             Event::Output { terminal, serial } => {
-                let (taken, cwd) = terminals.output(&terminal, serial);
-                if let (Some(cwd), Some(pane)) = (cwd, terminals.pane_of(&terminal)) {
+                let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
+                if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
                     app.folder(&pane, &cwd);
                 }
-                match taken {
-                    Some(Taken::Bytes(bytes)) => app.output(&terminal, &bytes),
-                    Some(Taken::Overflowed) => app.resync(&terminal),
-                    None => {}
+                if noticed.overflowed {
+                    app.resync(&terminal);
                 }
             }
             Event::Drained { terminal, serial } => {
@@ -631,10 +679,18 @@ fn run() -> Result<Option<PathBuf>, String> {
                 break;
             }
             Event::AppHello { conn, hello, out, stream, remote } => {
-                if app.hello(conn, hello, out, stream, remote) {
+                if app.hello(conn, hello.clone(), out, stream, remote) {
                     break;
                 }
                 toasts.attached();
+                if app.is_here(conn) {
+                    crashes.attached(&hello);
+                }
+            }
+            Event::AppMessage { conn, message } if message.get("cmd").and_then(Value::as_str) == Some("app.goodbye") => {
+                if app.is_here(conn) {
+                    crashes.goodbye();
+                }
             }
             Event::AppMessage { conn, message } => {
                 if let Some(request) = app.message(conn, message) {
@@ -652,8 +708,19 @@ fn run() -> Result<Option<PathBuf>, String> {
                     });
                 }
             }
-            Event::AppGone { conn } => app.gone(conn),
+            Event::AppGone { conn } => {
+                let here = app.is_here(conn);
+                app.gone(conn);
+                if here {
+                    crashes.gone();
+                }
+            }
             Event::AppCaughtUp { conn } => app.caught_up(conn),
+            Event::AppBehind { conn, queued } => {
+                if app.is_current(conn) {
+                    app.fell_behind(queued);
+                }
+            }
             Event::MachineConfirm { question, answer } => match &machines {
                 Some(machines) => machines.confirm(&app, question, answer),
                 None => answer(Err("this daemon has no endpoint".into())),
@@ -674,8 +741,10 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
+        perf::since(kind, handling);
     }
 
+    let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();
     layout.flush();
     layout.save_now();
@@ -685,7 +754,11 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
     let _ = std::fs::remove_file(&pid_file);
     std::mem::forget(rules_updater);
-    server.stop();
+    if keep_socket {
+        server.stop_leaving_path();
+    } else {
+        server.stop();
+    }
     if shutdown.is_some() {
         let _ = std::fs::File::options().write(true).open(state_dir.join(SHUTDOWN_MARKER)).and_then(|file| file.set_modified(std::time::SystemTime::now()));
     }
@@ -718,6 +791,24 @@ fn ended(terminals: &Terminals, tasks: &Rc<tasks::Tasks>, app: &AppLink, termina
         tasks.exited(&pane, code);
         app.status(&pane, Some("exited"));
     }
+}
+
+fn inherited_listener() -> Result<Option<std::os::unix::net::UnixListener>, String> {
+    use std::os::fd::FromRawFd;
+    let Some(value) = std::env::var_os(LISTEN_FD) else { return Ok(None) };
+    std::env::remove_var(LISTEN_FD);
+    let fd: libc::c_int = value.to_str().and_then(|v| v.parse().ok()).filter(|fd| *fd > 2).ok_or_else(|| format!("{LISTEN_FD} isn't a descriptor: {value:?}"))?;
+    let mut kind: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    let stream = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&mut kind as *mut libc::c_int).cast(), &mut size) } == 0 && kind == libc::SOCK_STREAM;
+    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+    let local = unsafe { libc::getsockname(fd, (&mut address as *mut libc::sockaddr_storage).cast(), &mut length) } == 0 && address.ss_family as libc::c_int == libc::AF_UNIX;
+    if !stream || !local {
+        return Err(format!("{LISTEN_FD}={fd} isn't a Unix stream socket"));
+    }
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    Ok(Some(unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd) }))
 }
 
 fn instance_name(socket: &Path) -> String {

@@ -60,6 +60,7 @@ flowchart TB
 | [Kanna Cloud](specs/kanna-cloud.md) · [build Macs](specs/build-macs.md) | A service that hands you machines: Kanna-run VMs, enrollment by token, its directory and relays, build Macs; open source, so anyone can run one |
 | [Restarting the daemon](specs/daemon-restart.md) | Terminals on disk, adopting the keeper's ptys |
 | [Pane sizes](specs/pane-sizes.md) | A program sees its view's size across a relaunch and a restart, and on the Shelf and in the backlog |
+| [The daemon's socket](specs/daemon-socket.md) | The app keeps `kanna.sock`'s listener, so it answers through a daemon restart |
 | [The layout](specs/layout.md) | One layout model in the app; layout steps; saving, restoring; working with the app closed |
 | [Windows, tabs and splits](specs/windows.md) · [menus](specs/menus.md) · [zoom](specs/zoom.md) · [docked pane](specs/docked-pane.md) | The windows, their actions and debug commands |
 | [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) · [markdown diff](specs/markdown-diff.md) | The app's panes, lent to the daemon |
@@ -88,11 +89,13 @@ flowchart TB
 
 | Spec | What it covers |
 |---|---|
-| [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [internal names](specs/internal-names.md) · [new Desk](specs/new-desk.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
+| [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [internal names](specs/internal-names.md) · [new Desk](specs/new-desk.md) · [a Desk's project](specs/desk-project.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
 | [Project folder](specs/project-folder.md) | Every project lives in `~/.kanna-v4/repos/OWNER/NAME`; `kanna project import` copies one there |
-| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the Shelf |
+| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [task IDs](specs/task-ids.md) · [task list](specs/task-list.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the Shelf |
+| [Software factory](specs/software-factory.md) · [pipeline language](specs/pipeline-language.md) · [build order](specs/software-factory-build-order.md) | Any task's agent builds a change through a pipeline of stages (agents, commands, your approval, merges), driven by the daemon in hidden workers, with every run measured |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Toasts](specs/toasts.md) | Notices the daemon raises in the app, such as messages that wait |
+| [Crashes](specs/crashes.md) | Crash records from the app, daemon and keeper; relaunching a crashed app; the banner, `kanna crashes`, and telling the planner |
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
 | [Codex's app-server](specs/codex-app-server.md) | Every Codex runs attached to a server of its own, Kanna's door for messages |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |

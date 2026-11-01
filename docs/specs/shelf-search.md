@@ -20,7 +20,7 @@ Find a Shelf task by typing part of its name, first message or branch, or its ID
 
 ## CLI
 
-`kanna task list QUERY` lists only the tasks that match QUERY the same way: every word starts the task's ID or is its agent's pane ID (`term-12`), or is in its name, first message or branch. `kanna task list` alone lists every task, as before; `--json` is filtered too, and gives Desk tasks their `task` ID and `branch`.
+`kanna task list QUERY` lists only the tasks that match QUERY the same way: every word starts the task's ID or is its agent's pane ID (`term-12`), or is in its name, first message or branch. `kanna task list` alone lists every task of the caller's repo ([task list](task-list.md#4-which-tasks)); `--json` is filtered too, and gives Desk tasks their `task` ID and `branch`. With `--include-done` it searches the done tasks as well, so an agent can see whether the work was done already before it makes a task.
 
 ```sh
 kanna task list resume agent
@@ -28,7 +28,7 @@ kanna task list task-1dfb
 kanna task list term-12 save-default
 ```
 
-A done task leaves the list, so a query that is only a task ID and matches nothing says what happened to it rather than "no task matches":
+A done task leaves the list (`--include-done` brings done ones back, and they match the same way), so without it a query that is only a task ID and matches nothing says what happened to it rather than "no task matches" (`found` in `--json`):
 
 ```
 $ kanna task list task-1dfb
@@ -45,4 +45,4 @@ Only an ID that never existed gets `no task matches "task-1dfb"`. The daemon's `
 
 ## Checked by
 
-e2e `shelf_search`: ⌘F from the planning terminal, filtering by name and by a first message's words in any case, no match, esc twice, ↑↓ at the ends, ↩ starting the selected task and clearing the search, an ID alone and with a word in ⌘F, `kanna task list QUERY`, `kanna task list TASK` for a waiting task and a done one, and snapshots in light and dark; the CLI's own tests for QUERY and `--json`, and for an ID, a pane ID, a branch, an ID with a word, and a done task's ID with and without its branch.
+e2e `shelf_search`: ⌘F from the planning terminal, filtering by name and by a first message's words in any case, no match, esc twice, ↑↓ at the ends, ↩ starting the selected task and clearing the search, an ID alone and with a word in ⌘F, `kanna task list QUERY`, `kanna task list TASK` for a waiting task and a done one, and snapshots in light and dark; the CLI's own tests for QUERY and `--json`, and for an ID, a pane ID, a branch, an ID with a word, and a done task's ID with and without its branch, and for `--include-done` with QUERY and without (the 5 done last).

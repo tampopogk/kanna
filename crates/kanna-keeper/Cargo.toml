@@ -12,5 +12,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 kanna-build = { path = "../kanna-build" }
+kanna-crash = { path = "../kanna-crash" }
 libc = "0.2"
 serde_json = "1"
