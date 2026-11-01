@@ -24,11 +24,11 @@ sequenceDiagram
     participant M as messages (kanna.db)
     participant T as the target's agent
     Note over S: 09:00, the rule's time
-    S->>M: a message from "schedule quiz" for planner (repo); next = tomorrow 09:00
+    S->>M: a message from "schedule quiz" for planner (repo), next = tomorrow 09:00
     Note over T: working, or needs you: the message waits
     T-->>M: its turn is over (idle)
     M->>T: [message from schedule quiz] Morning quiz check …
-    M->>M: delivered
+    Note over M: delivered
 ```
 
 ```mermaid
