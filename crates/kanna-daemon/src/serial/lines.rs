@@ -129,6 +129,12 @@ pub fn escape(bytes: &[u8]) -> String {
                 '\\' => out.push_str("\\\\"),
                 '\t' | '\x1b' => out.push(c),
                 c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+                c if (0x80..0xa0).contains(&(c as u32)) => {
+                    let mut utf8 = [0u8; 2];
+                    for byte in c.encode_utf8(&mut utf8).bytes() {
+                        out.push_str(&format!("\\x{byte:02x}"));
+                    }
+                }
                 c => out.push(c),
             }
         }
@@ -239,6 +245,14 @@ mod tests {
         let raw: Vec<u8> = vec![b'a', 0, 0xff, 0xfe, b'\\', 0x1b, b'[', b'0', b'm', b'\t', 0x7f, 0xc3, 0xa9, 0xe2, 0x82];
         let text = escape(&raw);
         assert_eq!(text, "a\\x00\\xff\\xfe\\\\\x1b[0m\t\\x7fé\\xe2\\x82");
+        assert_eq!(unescape(&text), raw);
+    }
+
+    #[test]
+    fn c1_controls_are_escaped_as_their_bytes() {
+        let raw = "a\u{9b}2Jb".as_bytes().to_vec();
+        let text = escape(&raw);
+        assert_eq!(text, "a\\xc2\\x9b2Jb");
         assert_eq!(unescape(&text), raw);
     }
 
