@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call Tree Mockup</title>
+<style>
+:root {
+  --page: #111214; --ctl: #2a2c31; --ctl-line: #3a3d44; --ctl-text: #e6e6e6; --ctl-dim: #8b8f98; --ctl-accent: #3478f6;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+.window.dark {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --fg: #e6e8eb; --muted: #8b93a0; --accent: #7aa2ff;
+  --function: #7aa2ff; --code-bg: #1b1e24; --guide: #3a404a; --row-hover: rgba(255,255,255,.04);
+  --tint: rgba(52,120,246,.2); --card: #23252b; --edge: #3a3d44;
+  --p1: #7aa2ff; --p1-bg: rgba(122,162,255,.10); --p2: #c792ea; --p2-bg: rgba(199,146,234,.10); --p3: #e5c07b; --p3-bg: rgba(229,192,123,.10);
+}
+.window.light {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --fg: #1d2026; --muted: #6b7280; --accent: #2f63d8;
+  --function: #2f63d8; --code-bg: #f4f5f7; --guide: #c9cdd4; --row-hover: rgba(0,0,0,.03);
+  --tint: rgba(47,111,228,.14); --card: #ffffff; --edge: #c9cbd1;
+  --p1: #2f63d8; --p1-bg: rgba(47,99,216,.07); --p2: #8839c4; --p2-bg: rgba(136,57,196,.07); --p3: #a15c00; --p3-bg: rgba(161,92,0,.07);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ctl-text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+h1.t { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--ctl-dim); margin: 0 0 12px; max-width: 940px; }
+.intro code { font: 12px var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
+.controls .sep { width: 1px; height: 18px; background: var(--ctl-line); margin: 0 4px; }
+button { font: 12px var(--sans); color: var(--ctl-text); background: var(--ctl); border: 1px solid var(--ctl-line); border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+button:hover { border-color: var(--ctl-accent); }
+button.on { background: var(--ctl-accent); border-color: var(--ctl-accent); }
+
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: 0 20px 50px rgba(0,0,0,.5); background: var(--bg); color: var(--fg); min-height: 640px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; min-height: 100vh; }
+.phead { height: 34px; flex: none; display: flex; align-items: center; padding: 0 16px; font: 12px var(--mono); color: var(--muted); border-bottom: 1px solid var(--line); background: var(--bg); }
+.page { flex: 1; overflow: auto; }
+.doc { max-width: 900px; margin: 0 auto; padding: 28px 40px 40px; font: 15px/1.6 var(--sans); }
+.doc h1 { font-size: 26px; margin: 0 0 18px; }
+.doc p { margin: 0 0 14px; }
+
+.calls { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font: 13px/1 var(--mono); }
+.calls .legend { display: flex; gap: 14px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); font: 12px var(--sans); color: var(--muted); }
+.calls .legend span { display: flex; align-items: center; gap: 6px; }
+.calls .legend i { width: 10px; height: 10px; border-radius: 3px; display: block; }
+.row { position: relative; display: flex; align-items: center; height: 34px; padding-right: 12px; }
+.row:hover { background: var(--row-hover); }
+.row .lane { width: 110px; flex: none; align-self: stretch; display: flex; align-items: center; padding-left: 12px; font: 11px var(--sans); letter-spacing: .02em; text-transform: uppercase; border-left: 3px solid; }
+.row .tree { display: flex; align-self: stretch; flex: none; }
+.row .tree b { width: 22px; position: relative; display: block; }
+.row .tree b.v::before { content: ""; position: absolute; left: 10px; top: 0; bottom: 0; border-left: 1px solid var(--guide); }
+.row .tree b.t::before { content: ""; position: absolute; left: 10px; top: 0; height: 50%; border-left: 1px solid var(--guide); }
+.row .tree b.tv::before { content: ""; position: absolute; left: 10px; top: 0; bottom: 0; border-left: 1px solid var(--guide); }
+.row .tree b.t::after, .row .tree b.tv::after { content: ""; position: absolute; left: 10px; top: 50%; width: 9px; border-top: 1px solid var(--guide); }
+.row .n { color: var(--muted); font: 11px var(--sans); width: 18px; flex: none; text-align: right; margin-right: 8px; }
+.row .fn { color: var(--function); white-space: nowrap; }
+.row .note { color: var(--muted); font: 13px var(--sans); margin-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .loc { margin-left: auto; padding-left: 16px; color: var(--muted); white-space: nowrap; text-decoration: none; }
+.row .loc .crate { color: var(--muted); opacity: .6; }
+.row .loc { color: var(--fg); }
+.row .loc:hover { color: var(--accent); text-decoration: underline; }
+.row.p1 { background: var(--p1-bg); } .row.p1 .lane { border-color: var(--p1); color: var(--p1); }
+.row.p2 { background: var(--p2-bg); } .row.p2 .lane { border-color: var(--p2); color: var(--p2); }
+.row.p3 { background: var(--p3-bg); } .row.p3 .lane { border-color: var(--p3); color: var(--p3); }
+.row .lane.cont { color: transparent; }
+.hop { display: flex; align-items: center; height: 24px; font: 12px var(--sans); color: var(--muted); }
+.hop .lane { width: 110px; flex: none; align-self: stretch; }
+.hop .tree { display: flex; align-self: stretch; } .hop .tree b { width: 22px; position: relative; display: block; } .hop .tree b.v::before { content: ""; position: absolute; left: 10px; top: 0; bottom: 0; border-left: 1px solid var(--guide); }
+.hop .arrow { display: flex; align-items: center; gap: 8px; }
+.hop .arrow::before { content: "⇣"; font-size: 14px; color: var(--fg); }
+.hop.p1p2 { background: linear-gradient(var(--p1-bg), var(--p2-bg)); }
+.hop.p1p2 .lane { border-left: 3px solid; border-image: linear-gradient(var(--p1), var(--p2)) 1; }
+.row.on { box-shadow: inset 0 0 0 1px var(--accent); background: var(--tint); }
+.cmtrow { display: flex; background: var(--p2-bg); } .cmtrow .lane { width: 110px; flex: none; border-left: 3px solid var(--p2); } .cmtrow .tree { position: relative; width: 22px; flex: none; } .cmtrow .tree::before { content: ""; position: absolute; left: 10px; top: 0; bottom: 0; border-left: 1px solid var(--guide); }
+.cmt { flex: 1; margin: 6px 12px 6px 8px; background: var(--card); border: 1px solid var(--edge); border-left: 3px solid var(--accent); border-radius: 6px; padding: 8px 12px; font: 13px/1.45 var(--sans); color: var(--fg); }
+.cmt small { display: block; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+
+.src { margin-top: 26px; }
+.src pre { background: var(--code-bg); border-radius: 6px; padding: 12px 14px; font: 12.5px/1.55 var(--mono); margin: 0; overflow: auto; color: var(--fg); }
+.src .k { color: var(--muted); }
+.src h3 { font: 600 13px var(--sans); color: var(--muted); margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<main>
+<div class="intro">
+  <h1 class="t">Call tree mockup: a <code>calls</code> block in the markdown pane</h1>
+  <p>A fenced <code>calls</code> block draws as a waterfall: an indented row per call, a coloured lane per process, a hop row where a call crosses processes, and <code>file:line</code> on the right that opens the code there. <code>kanna comment DOC:LINE</code> on a row's source line tints that row and shows the comment above it, so a walkthrough steps down the tree.</p>
+  <div class="controls">
+    <button data-theme="dark" class="on">Dark</button><button data-theme="light">Light</button>
+    <span class="sep"></span>
+    <button data-cmt="none" class="on">No comment</button><button data-cmt="r3">Comment on Tasks::name</button>
+    <span class="sep"></span>
+    <button data-src="on" class="on">Show source</button><button data-src="off">Hide source</button>
+  </div>
+</div>
+<div class="window dark" id="win">
+  <div class="phead">.kanna/tmp/rename-task.md</div>
+  <div class="page"><div class="doc">
+    <h1>Rename a Shelf task</h1>
+    <div class="calls">
+      <div class="legend"><span><i style="background:var(--p1)"></i>kanna CLI</span><span><i style="background:var(--p2)"></i>kanna-daemon</span></div>
+      <div class="row p1" id="r0"><div class="lane">kanna CLI</div><div class="tree"></div><span class="n"></span><span class="fn">main</span><span class="note">kanna task name t12 "New name"</span><a class="loc" href="#" title="crates/kanna/src/lib.rs:17"><span class="crate">kanna</span> lib.rs:17</a></div>
+      <div class="row p1" id="r1"><div class="lane cont">kanna CLI</div><div class="tree"><b class="tv"></b></div><span class="n">1</span><span class="fn">parse</span><span class="note">task name TASK NAME → request</span><a class="loc" href="#" title="crates/kanna/src/commands.rs:440"><span class="crate">kanna</span> commands.rs:440</a></div>
+      <div class="row p1" id="r2"><div class="lane cont">kanna CLI</div><div class="tree"><b class="t"></b></div><span class="n">2</span><span class="fn">wire</span><span class="note">task name with a TASK → tasks</span><a class="loc" href="#" title="crates/kanna/src/lib.rs:316"><span class="crate">kanna</span> lib.rs:316</a></div>
+      <div class="hop p1p2"><div class="lane"></div><div class="tree hopt"><b class="v"></b></div><span class="arrow">socket · <code>{"cmd":"tasks","action":"name"}</code></span></div>
+      <div id="c3"></div>
+      <div class="row p2" id="r3"><div class="lane">kanna-daemon</div><div class="tree"><b class="t"></b></div><span class="n"></span><span class="fn">Tasks::name</span><span class="note">finds the task on the Shelf</span><a class="loc" href="#" title="crates/kanna-daemon/src/tasks.rs:1043"><span class="crate">kanna-daemon</span> tasks.rs:1043</a></div>
+      <div class="row p2" id="r4"><div class="lane cont">kanna-daemon</div><div class="tree"><b></b><b class="tv"></b></div><span class="n">1</span><span class="fn">rename_pane</span><span class="note">its held agent's pane</span><a class="loc" href="#" title="crates/kanna-mux/src/core.rs:1371"><span class="crate">kanna-mux</span> core.rs:1371</a></div>
+      <div class="row p2" id="r5"><div class="lane cont">kanna-daemon</div><div class="tree"><b></b><b class="t"></b></div><span class="n">2</span><span class="fn">store</span><span class="note">on the reply: the new name</span><a class="loc" href="#" title="crates/kanna-daemon/src/tasks.rs:1067"><span class="crate">kanna-daemon</span> tasks.rs:1067</a></div>
+    </div>
+    <div class="src" id="src">
+      <h3>Its source</h3>
+<pre><span class="k">```calls</span>
+kanna CLI
+main          crates/kanna/src/lib.rs:17                kanna task name t12 "New name"
+  parse       crates/kanna/src/commands.rs:440          task name TASK NAME → request
+  wire        crates/kanna/src/lib.rs:316               task name with a TASK → tasks
+    -> socket {"cmd":"tasks","action":"name"}
+kanna-daemon
+    Tasks::name    crates/kanna-daemon/src/tasks.rs:1043  finds the task on the Shelf
+      rename_pane  crates/kanna-mux/src/core.rs:1371      its held agent's pane
+      store        crates/kanna-daemon/src/tasks.rs:1067  on the reply: the new name
+<span class="k">```</span></pre>
+    </div>
+  </div></div>
+</div>
+</main>
+<script>
+const win = document.getElementById('win');
+const q = new URLSearchParams(location.search);
+function pick(attr, val) {
+  document.querySelectorAll(`[data-${attr}]`).forEach(b => b.classList.toggle('on', b.dataset[attr] === val));
+  if (attr === 'theme') win.className = 'window ' + val;
+  if (attr === 'src') document.getElementById('src').style.display = val === 'on' ? '' : 'none';
+  if (attr === 'cmt') {
+    document.querySelectorAll('.row').forEach(r => r.classList.remove('on'));
+    document.getElementById('c3').innerHTML = '';
+    if (val === 'r3') {
+      document.getElementById('r3').classList.add('on');
+      document.getElementById('c3').innerHTML = '<div class="cmtrow"><div class="lane"></div><div class="tree"></div><div class="cmt"><small>kanna comment · rename-task.md:5</small>The daemon\'s side starts here: it finds the task on the Shelf, renames its agent\'s pane, and only on that reply stores the name.</div></div>';
+    }
+  }
+}
+document.querySelectorAll('button').forEach(b => b.onclick = () => { const [k, v] = Object.entries(b.dataset)[0]; pick(k, v); });
+if (q.has('picture')) document.body.classList.add('picture');
+['theme', 'cmt', 'src'].forEach(k => q.has(k) && pick(k, q.get(k)));
+</script>
+</body>
