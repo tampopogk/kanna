@@ -60,14 +60,18 @@ On a page, marks name parts by CSS path and text, with boxes in page pixels, as 
 | circle, underline | this: see the note, or the writing beside it; with neither, ask what should change |
 | writing | read it from the picture: a word, a `?`, a correction |
 
-Answer mark by mark, by number, naming what each touched and how you read it, so a misread shows in your reply: `kanna markup reply c2 "1, 2: you circled \"Panes only\" with a ? … 3: moved \"The panes inside…\" after the opening. 4: cut \"middle-click or ×\"."`. Marks whose text you changed leave the doc by themselves.
+Answer mark by mark, by number, naming what each touched and how you read it, so a misread shows in your first reply: `kanna markup reply c2 "1, 2: you circled \"Panes only\" with a ? … 3: I'll move \"The panes inside…\" after the opening. 4: I'll cut \"middle-click or ×\"."`. Marks whose text you changed leave the doc by themselves.
 
 ## Answering a comment
 
-1. Read the passage in the file (the line is where it is now) and do what the comment asks: change the doc, or answer the question.
-2. Reply in the thread, briefly, saying what you changed or answering:
-   `kanna markup reply c2 "Added: ⌃Tab scrolls the next tab into view."`
-3. **Leave it open.** The user resolves a thread once they've read your reply; resolving it yourself hides the reply from them. Resolve only when they ask you to.
+Kanna types the next comment in only when your turn ends, so a turn spent working holds up every comment after it. Answer first, work after:
+
+1. **Reply first, right away.** Read the passage in the file (the line is where it is now), then reply in the thread before anything else: answer the question, or say what you'll change and how you read the comment, so a misread shows before the work:
+   `kanna markup reply c2 "I'll add that ⌃Tab scrolls the next tab into view, under Keys."`
+2. **Do the work without holding the turn.** A quick doc edit you make now. Anything longer (code, builds, tests) goes to a subagent or a background command, and your turn ends so the next comment can come in.
+3. **Reply again in the same thread when it's done,** saying what landed:
+   `kanna markup reply c2 "Added under Keys: ⌃Tab scrolls the next tab into view."`
+4. **Leave it open.** The user resolves a thread once they've read your reply; resolving it yourself hides the reply from them. Resolve only when they ask you to.
 
 Reply in the thread, not only in the chat: the user reads replies beside the doc.
 
