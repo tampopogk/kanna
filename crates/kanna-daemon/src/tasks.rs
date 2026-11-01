@@ -543,12 +543,17 @@ fn who(args: &Value) -> Option<&str> {
     Some(string(args, "by").filter(|by| !by.is_empty()).unwrap_or("user"))
 }
 
+fn insert_in_order(entries: &mut Vec<Entry>, entry: Entry) {
+    let at = entries.partition_point(|e| db::oldest_first((e.made_at, &e.id), (entry.made_at, &entry.id)).is_le());
+    entries.insert(at, entry);
+}
+
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64().floor())
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
 fn bad(message: impl Into<String>) -> KmuxError {
@@ -602,6 +607,17 @@ fn uuid() -> Result<String, String> {
 
 fn taken(repo: &Path, name: &str) -> bool {
     repo.join(WORKTREES).join(name).exists() || git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok()
+}
+
+/// The branch checked out in a worktree, read from its HEAD without running git.
+pub fn branch_of(folder: &str) -> Option<String> {
+    let dot = Path::new(folder).join(".git");
+    let git_dir = match fs::read_to_string(&dot) {
+        Ok(link) => PathBuf::from(link.strip_prefix("gitdir:")?.trim()),
+        Err(_) => dot,
+    };
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    head.trim().strip_prefix("ref: refs/heads/").map(String::from)
 }
 
 /// Makes a worktree in `.kanna-worktrees/NAME` on a new branch NAME, and returns its folder and branch.
@@ -812,9 +828,9 @@ impl Tasks {
                     if let Err(error) = db.put(&entry.row(Place::Shelf, None), Some(&back)) {
                         log!("kanna-daemon: couldn't put {} back on the Shelf: {error}", entry.id);
                     }
-                    entries.push(entry);
+                    insert_in_order(&mut entries, entry);
                 }
-                _ => entries.push(Entry::from_row(row)),
+                _ => insert_in_order(&mut entries, Entry::from_row(row)),
             }
         }
         let waiting = db.waiting_messages().unwrap_or_else(|error| {
@@ -1044,6 +1060,7 @@ impl Tasks {
         let waits = self.waits(entry).iter().map(|id| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()), "pane": opt(self.pane_of(id).as_deref()) })).collect();
         value["waits"] = Value::Array(waits);
         self.stack_fields(entry, &mut value);
+        value["branch"] = opt(entry.folder.as_deref().and_then(branch_of).as_deref());
         value["project"] = opt(kanna_mux::project(Some(&entry.repo)).and_then(|main| crate::projects::identity(&main)).as_deref());
         value
     }
@@ -1433,7 +1450,7 @@ impl Tasks {
             let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
             let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
             let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane))).collect();
-            woken.sort_by(|a, b| a.made_at.total_cmp(&b.made_at));
+            woken.sort_by(|a, b| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id)));
             for entry in woken {
                 if busy >= slots {
                     break;
@@ -1443,7 +1460,7 @@ impl Tasks {
                 self.wake(core, (*entry).clone());
             }
             let mut waiting: Vec<&&Entry> = mine.iter().filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && self.conflicted(e).is_none()).collect();
-            waiting.sort_by(|a, b| mail.contains(&b.id).cmp(&mail.contains(&a.id)).then(a.made_at.total_cmp(&b.made_at)));
+            waiting.sort_by(|a, b| mail.contains(&b.id).cmp(&mail.contains(&a.id)).then_with(|| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id))));
             for entry in waiting {
                 if busy >= slots {
                     break;
@@ -1506,7 +1523,7 @@ impl Tasks {
         for r in gone {
             log!("kanna-daemon: {}'s agent {} is closed, so {} is done", r.entry.id, r.pane, r.entry.id);
             self.running.borrow_mut().retain(|x| x.pane != r.pane);
-            let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some("daemon")).with("pane", json!(r.pane))));
+            let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some("daemon")).with("pane", json!(r.pane)).with("branch", opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()))));
             self.setting_up.borrow_mut().remove(&r.pane);
             self.tearing_down.borrow_mut().remove(&r.pane);
             self.finish(&r.entry);
@@ -1622,9 +1639,10 @@ impl Tasks {
                     Some("plan") => this.plan(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
+                    Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send or messages"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send or messages"))),
                 }
             }),
         );
@@ -2073,7 +2091,7 @@ impl Tasks {
         let entry = Entry { after, ..self.mint(args, Some(name), message)? };
         self.store(&entry, Place::Shelf, None, Some(Change { to: Some(Place::Shelf), ..Change::new("made") }.by(entry.by.as_deref().or(who(args)))))?;
         let value = self.described(&entry);
-        self.entries.borrow_mut().push(entry);
+        insert_in_order(&mut self.entries.borrow_mut(), entry);
         self.changed();
         self.refill();
         Ok(Map::from_iter([("task".to_string(), value)]))
@@ -2131,7 +2149,7 @@ impl Tasks {
             .iter()
             .filter(|r| repo.is_none_or(|repo| r.entry.repo == repo))
             .map(|r| {
-                let mut value = json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id) });
+                let mut value = json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id), "branch": opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()) });
                 self.stack_fields(&r.entry, &mut value);
                 value
             })
@@ -2166,6 +2184,37 @@ impl Tasks {
             reply.insert("done".to_string(), Value::Array(done));
         }
         reply
+    }
+
+    /// A task by its ID, wherever it is, done ones too: where it is, and for a done one, when it was done and its branch if that's still there.
+    fn show(&self, args: &Value) -> Result<Map, KmuxError> {
+        let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
+        let start = reference.to_lowercase();
+        let start = if start.starts_with(db::TASK) { start } else { format!("{}{start}", db::TASK) };
+        let failed = |error: rusqlite::Error| KmuxError::new("failed", format!("couldn't read {reference}: {error}"));
+        let id = match self.db.ids_starting(&start).map_err(failed)?.as_slice() {
+            [] => return Err(KmuxError::new("not_found", format!("no task \"{reference}\""))),
+            [one] => one.clone(),
+            many => return Err(KmuxError::new("ambiguous", format!("{reference} could be {} tasks: {}; say more of its ID", many.len(), many.iter().map(|id| self.label(id)).collect::<Vec<_>>().join(", ")))),
+        };
+        let id = id.as_str();
+        let row = self.db.task(id).map_err(failed)?.ok_or_else(|| KmuxError::new("not_found", format!("no task \"{reference}\"")))?;
+        let entry = Entry::from_row(&row);
+        let mut task = entry.to_value();
+        task["short"] = json!(self.short(id));
+        task["place"] = json!(row.place.as_str());
+        task["pane"] = opt(row.terminal.as_deref());
+        if row.place == Place::Done {
+            let events = self.db.events(id).unwrap_or_default();
+            let done = events.iter().rev().find(|e| e.what == "done");
+            task["doneAt"] = done.map_or(Value::Null, |e| num(e.at));
+            let branch = done.and_then(|e| string(&e.doc, "branch").map(String::from)).or_else(|| entry.folder.as_deref().and_then(branch_of));
+            let kept = branch.filter(|b| git(Path::new(&row.repo), &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok());
+            task["branch"] = opt(kept.as_deref());
+        } else {
+            task["branch"] = opt(entry.folder.as_deref().and_then(branch_of).as_deref());
+        }
+        Ok(Map::from_iter([("task".to_string(), task)]))
     }
 
     fn take(&self, id: &str) -> Option<Entry> {
@@ -2225,7 +2274,7 @@ impl Tasks {
 
     /// Takes a task off the Shelf, ending its agent and tabs if it was moved there still running.
     fn take_off(self: &Rc<Self>, entry: Entry, by: Option<String>, responder: Answer) {
-        if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()))) {
+        if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()).with("branch", opt(entry.folder.as_deref().and_then(branch_of).as_deref())))) {
             return responder.reply(Err(error));
         }
         let short = self.short(&entry.id);
@@ -2871,7 +2920,7 @@ impl Tasks {
             let change = Change { from: Some(from), to: Some(Place::Shelf), ..Change::new("shelved") }.by(by.as_deref());
             let saved = this.store(&entry, Place::Shelf, Some(&id), Some(change));
             let value = entry.to_value();
-            this.entries.borrow_mut().push(entry);
+            insert_in_order(&mut this.entries.borrow_mut(), entry);
             this.changed();
             if let Err(error) = saved {
                 return responder.reply(Err(error));
@@ -4218,6 +4267,42 @@ mod tests {
         assert_eq!(*again.running.borrow(), vec![Running { pane: "p4".into(), entry: ran, place: Place::Desk }], "a running task's way back survives a restart");
         let ids: HashSet<String> = (0..20).map(|_| again.mint(&args, None, None).unwrap().id).collect();
         assert!(!ids.contains("task-00000009"), "and its ID isn't handed out again");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_task_moved_back_to_the_shelf_is_listed_by_when_it_was_made() {
+        let state = std::env::temp_dir().join(format!("kanna-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
+        let core = kanna_mux::Core::default();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+        let repo = state.to_str().unwrap();
+        let mut made = vec![];
+        for (at, name) in [(3.0, "Newest"), (1.0, "Oldest"), (2.0, "Middle")] {
+            let entry = Entry { made_at: at, ..tasks.mint(&json!({ "repo": repo }), Some(name.into()), None).unwrap() };
+            tasks.store(&entry, Place::Shelf, None, Some(Change::new("made"))).unwrap();
+            made.push((at, entry.id.clone()));
+            insert_in_order(&mut tasks.entries.borrow_mut(), entry);
+        }
+        made.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let made: Vec<String> = made.into_iter().map(|(_, id)| id).collect();
+        let listed = |tasks: &Tasks| tasks.list(&json!({}))["shelf"].as_array().unwrap().iter().map(|t| string(t, "id").unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(listed(&tasks), made);
+        let opened = core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "name": "agent", "dock": "left", "task": made[0] } }));
+        let pane = core.pane("agent").unwrap_or_else(|| panic!("{opened}")).id;
+        let oldest = tasks.take(&made[0]).unwrap();
+        tasks.store(&oldest, Place::Desk, Some(&pane), Some(Change::new("picked"))).unwrap();
+        tasks.record(&pane, oldest, Place::Desk);
+        let (responder, answer) = kanna_mux::responder();
+        tasks.shelve(&json!({ "task": pane }), responder);
+        let std::task::Poll::Ready(shelved) = std::future::Future::poll(std::pin::pin!(answer), &mut std::task::Context::from_waker(std::task::Waker::noop())) else { panic!("shelve didn't answer") };
+        let shelved = shelved.unwrap();
+        assert_eq!(shelved["pane"], pane, "{shelved:?}");
+        assert_eq!(listed(&tasks), made, "the oldest task is listed first again");
+        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        assert_eq!(listed(&again), made, "and after a restart");
         fs::remove_dir_all(&state).unwrap();
     }
 

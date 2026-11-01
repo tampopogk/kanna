@@ -2347,6 +2347,7 @@ desk_planner_stays() {
 scenario move_to_shelf M4
 move_to_shelf() {
   start_daemon && start_app || { echo "move_to_shelf line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"${2:-d1}\"}}" | field "$1"; }
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "move_to_shelf line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
@@ -2355,12 +2356,18 @@ move_to_shelf() {
   [[ "$started" =~ " in "([^ ]+)" (" ]] && wt="${BASH_REMATCH[1]/#\~/$HOME}" || { echo "move_to_shelf line $LINENO: $started"; return 1; }
   check wait_for 5 eval '[[ "$(pane Later id)" == term-1 ]]' || { echo "move_to_shelf line $LINENO"; return 1; }
   touch "$wt/work-in-progress"
+  (cd "$repo" && kanna task new "Newer" "say hi" --agent "$agent") >/dev/null || { echo "move_to_shelf line $LINENO"; return 1; }
   local pid; pid="$(pane Later pid)"
   expected="moved term-1 to the Shelf as $(sid 1), still running: \`kanna task pick $(sid 1)\` brings it back"; says kanna task shelve Later || { echo "move_to_shelf line $LINENO"; return 1; }
   check test "$(ws $(tid 1) where)" == shelf || { echo "move_to_shelf: $(sid 1)'s workspace isn't on the Shelf"; state; return 1; }
   check test "$(pane Later pid)" == "$pid" || { echo "move_to_shelf: the deferred agent stopped"; kanna workspace list --all; return 1; }
   (cd "$repo" && kanna task list) | placed | grep -qE '^'"$(sid 1)"' +Later +Shelf' || { (cd "$repo" && kanna task list); return 1; }
   (cd "$repo" && kanna task list) | placed | grep -qE '^'"$(sid 1)"' .* Desk ' && { echo "move_to_shelf: the deferred task is still on the Shelf"; (cd "$repo" && kanna task list); return 1; }
+  check test "$( (cd "$repo" && kanna task list) | grep -oE '^task-[0-9a-f]+' | tr '\n' ' ')" == "$(sid 1) $(sid 2) " || { echo "move_to_shelf: the shelved task isn't listed first, though it's the oldest"; (cd "$repo" && kanna task list); return 1; }
+  local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^(opened|brought\ forward)\ (d[0-9]+) ]] || { echo "move_to_shelf line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[2]}"
+  check wait_for 5 eval '[[ "$(desk empty "$w")" == True && "$(desk shelf "$w")" == "[\"$(tid 1)\", \"$(tid 2)\"]" ]]' || { echo "move_to_shelf: the empty Desk doesn't list the oldest first"; desk shelf "$w"; return 1; }
+  (cd "$repo" && kanna task done $(tid 2)) >/dev/null || { echo "move_to_shelf line $LINENO"; return 1; }
   check test -f "$wt/work-in-progress" || { echo "move_to_shelf line $LINENO"; return 1; }
   started="$(kanna task pick $(tid 1))" || { echo "move_to_shelf line $LINENO"; return 1; }
   [[ "$started" == "moved $(sid 1) to the Desk: term-1 in ${wt/#$HOME/\~} ("* ]] || { echo "move_to_shelf: it didn't come back as it was: $started"; return 1; }
@@ -3130,6 +3137,10 @@ shelf_search() {
   check test "$(search found)" == '["'"$(tid 2)"'"]' || { echo "shelf_search: no match on a first message, ignoring case"; desk search; return 1; }
   type " nothing"
   check test "$(search found)" == '[]' || { desk search; return 1; }
+  key escape; type "$(sid 12 | tr a-z A-Z)"
+  check test "$(search found)" == '["'"$(tid 12)"'"]' || { echo "shelf_search: ⌘F didn't find a task by its ID"; desk search; return 1; }
+  type " hello"
+  check test "$(search found)" == '["'"$(tid 12)"'"]' || { echo "shelf_search: ⌘F didn't find a task by its ID and a word"; desk search; return 1; }
   key escape; type shelf
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.3; snap d1 shelf_search-light >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.3; snap d1 shelf_search-dark >/dev/null
@@ -3145,6 +3156,12 @@ shelf_search() {
   local listed; listed="$(cd "$repo" && kanna task list shelf | placed)"
   check test "$(wc -l <<<"$listed" | tr -d ' ')" == 2 || { echo "$listed"; return 1; }
   [[ "$listed" == *"Start tasks past the Shelf"*"Desk"* && "$listed" == *"$(sid 3)"*"Shelf"* ]] || { echo "shelf_search: kanna task list QUERY"; echo "$listed"; return 1; }
+  listed="$(cd "$repo" && kanna task list "$(sid 12)")"
+  [[ "$(wc -l <<<"$listed" | tr -d ' ')" == 2 && "$listed" == "Shelf"*"$(sid 12)"*"Task 12"* ]] || { echo "shelf_search: kanna task list TASK"; echo "$listed"; return 1; }
+  local done; done="$(sid 11)"
+  (cd "$repo" && kanna task done "$done") >/dev/null || { echo "shelf_search line $LINENO"; return 1; }
+  listed="$(cd "$repo" && kanna task list "$done")"
+  [[ "$listed" == "$done \"Task 11\" is done (just now)" ]] || { echo "shelf_search: kanna task list on a done task's ID"; echo "$listed"; return 1; }
 }
 
 scenario task_start_stop M4
@@ -3870,7 +3887,12 @@ planner_choice() {
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
   planner="$(desk lead d3)"
   check wait_for 10 shows "$planner" "Folder, repo, name or number \[1\]:" || { echo "planner_choice: a Desk in ~ didn't ask where"; kanna read "$planner"; return 1; }
-  kanna send "$planner" "$repo" >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
+  local typo="${repo%?}q${repo: -1}" keys=() i
+  for ((i = 0; i < ${#typo}; i++)); do keys+=("${typo:i:1}"); done
+  kanna send-key "$planner" "${keys[@]}" left backspace >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(kanna read "$planner" | tr -d "\n")" == *"Folder, repo, name or number [1]: $repo" ]]' || { echo "planner_choice: ← and Backspace didn't fix the answer"; kanna read "$planner"; return 1; }
+  ! kanna read "$planner" | tr -d '\n' | grep -qF '^[[' || { echo "planner_choice: the prompt printed raw escapes"; kanna read "$planner"; return 1; }
+  kanna send-key "$planner" return >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk header d3)" == "Planning · "*"${repo#/private} · main" ]]' || { echo "planner_choice: the Desk didn't follow to the folder"; desk header d3; return 1; }
   check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: the Desk didn't start the folder's planner"; kanna read "$planner"; return 1; }
   spaceless "$planner" "The planner in another window is in repo's planning conversation, so this one starts a new one." || { echo "planner_choice: a second Desk on the project didn't say why it starts a new conversation"; kanna read "$planner"; return 1; }

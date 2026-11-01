@@ -64,7 +64,9 @@ struct ShelfTask: Equatable {
     let madeAt: Double?
     var waits: [String] = []
     var agent: String?
-    var stack: String?
+    var pane: String? = nil
+    var branch: String? = nil
+    var stack: String? = nil
 
     static func stack(_ entry: JSON) -> String? {
         func names(_ key: String) -> String {
@@ -95,7 +97,18 @@ struct ShelfTask: Equatable {
     static func words(_ query: String) -> [String] { query.split(whereSeparator: \.isWhitespace).map(String.init) }
 
     func matches(_ query: String) -> Bool {
-        Self.words(query).allSatisfy { word in [name, message ?? ""].contains { $0.range(of: word, options: .caseInsensitive) != nil } }
+        Self.words(query).allSatisfy { word in
+            Self.idStart(word).map { id.lowercased().hasPrefix($0) } == true || pane?.caseInsensitiveCompare(word) == .orderedSame
+                || [name, message, branch].contains { $0?.range(of: word, options: .caseInsensitive) != nil }
+        }
+    }
+
+    static func idStart(_ word: String) -> String? {
+        let word = word.lowercased()
+        let prefixed = word.hasPrefix("task-")
+        let hex = prefixed ? String(word.dropFirst(5)) : word
+        guard (prefixed ? 1 : 4)...8 ~= hex.count, hex.allSatisfy(\.isHexDigit) else { return nil }
+        return "task-" + hex
     }
 
     static func marked(_ text: String, _ query: String, font: NSFont, color: NSColor) -> NSMutableAttributedString {
