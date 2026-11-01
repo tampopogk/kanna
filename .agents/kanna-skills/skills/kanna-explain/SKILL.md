@@ -34,26 +34,30 @@ kanna comment .kanna/tmp/shelf.md:3 "The daemon owns the Shelf; the app only sho
 - **Then look at it:** take `kanna screenshot PANE` of the markdown pane, read the PNG, and fix labels that overlap or are cut off.
 - **Big picture first,** then the code it points to.
 
-## A change: the call stack first
+## A change: its call tree first
 
-To walk the user through a change (yours, or a diff) that crosses more than one function or layer (CLI, daemon, app…), first write `.kanna/tmp/<topic>.md` with the call stack as a `sequenceDiagram` or `flowchart`: who calls whom, which process each step runs in, and `file:line` for each step. Comment on it, then go through the code one part at a time with `kanna comment`, in call order. A change in one function goes straight to `kanna comment`.
+To walk the user through a change (yours, or a diff) that crosses more than one function or layer (CLI, daemon, app…), first write `.kanna/tmp/<topic>.md` with a ` ```calltree ` block: the calls the change runs through, in the process each runs in, each with its `file:line`. Kanna draws it as a call tree, a lane per process, each `file:line` opening the code. Open it, comment on it, then go through the code one part at a time with `kanna comment`, in call order. A change in one function goes straight to `kanna comment`.
 
 ````markdown
 # Rename a Shelf task
 
-```mermaid
-sequenceDiagram
-    participant P as CLI: parse<br/>kanna commands.rs:440
-    participant W as CLI: wire()<br/>kanna lib.rs:316
-    participant B as daemon: Tasks::name<br/>tasks.rs:1043
-    participant C as daemon: rename_pane<br/>kanna-mux core.rs:1371
-    P->>W: task name TASK NAME
-    W->>B: tasks, action name
-    B->>C: rename-pane (its held agent)
-    C-->>B: ok
-    B->>B: stores the task's name
+```calltree
+kanna CLI
+main          crates/kanna/src/lib.rs:17                kanna task name t12 "New name"
+  parse       crates/kanna/src/commands.rs:440          task name TASK NAME → request
+  wire        crates/kanna/src/lib.rs:316               task name with a TASK → tasks
+    -> socket {"cmd":"tasks","action":"name"}
+kanna-daemon
+    Tasks::name    crates/kanna-daemon/src/tasks.rs:1043  finds the task on the Shelf
+      rename_pane  crates/kanna-mux/src/core.rs:1371      its held agent's pane
+      store        crates/kanna-daemon/src/tasks.rs:1067  on the reply: the new name
 ```
 ````
+
+- **A line with no `PATH:LINE` names a process;** the calls under it are in its lane. **A call** is `NAME  PATH:LINE  NOTE`, fields split by two spaces, its depth its indent (two spaces a level), its path repo-relative. **`-> LABEL`** is a hop into the next process.
+- **A call stack is one call a level:** a backtrace goes in the same way.
+- **`kanna open md` checks it** like a diagram: a path or line that doesn't exist, an indent that jumps. Fix what it prints.
+- **Comment on a row** with `kanna comment DOC:LINE` at that call's line.
 
 ## Not code: a doc in a tab
 

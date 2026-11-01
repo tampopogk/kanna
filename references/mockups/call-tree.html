@@ -88,8 +88,8 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; min-height
 <body>
 <main>
 <div class="intro">
-  <h1 class="t">Call tree mockup: a <code>calls</code> block in the markdown pane</h1>
-  <p>A fenced <code>calls</code> block draws as a waterfall: an indented row per call, a coloured lane per process, a hop row where a call crosses processes, and <code>file:line</code> on the right that opens the code there. <code>kanna comment DOC:LINE</code> on a row's source line tints that row and shows the comment above it, so a walkthrough steps down the tree.</p>
+  <h1 class="t">Call tree mockup: a <code>calltree</code> block in the markdown pane</h1>
+  <p>A fenced <code>calltree</code> block draws as a waterfall: an indented row per call, a coloured lane per process, a hop row where a call crosses processes, and <code>file:line</code> on the right that opens the code there. <code>kanna comment DOC:LINE</code> on a row's source line tints that row and shows the comment above it, so a walkthrough steps down the tree.</p>
   <div class="controls">
     <button data-theme="dark" class="on">Dark</button><button data-theme="light">Light</button>
     <span class="sep"></span>
@@ -115,7 +115,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; min-height
     </div>
     <div class="src" id="src">
       <h3>Its source</h3>
-<pre><span class="k">```calls</span>
+<pre><span class="k">```calltree</span>
 kanna CLI
 main          crates/kanna/src/lib.rs:17                kanna task name t12 "New name"
   parse       crates/kanna/src/commands.rs:440          task name TASK NAME → request

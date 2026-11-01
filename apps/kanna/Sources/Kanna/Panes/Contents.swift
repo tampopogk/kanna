@@ -177,6 +177,9 @@ final class Contents {
             }
             markdown.contextMenu = { [weak self] in self?.contextMenu?() }
             markdown.onOpenMarkdown = { [weak self] target in self?.onRequest?("navigate", ["pane": .string(id), "path": .string(target)]) }
+            markdown.onOpenCode = { [weak self] path, line in
+                self?.onCall?("open", ["type": "code", "path": .string(path), "line": .number(Double(line)), "from": .string(id)]) { _ in }
+            }
             fileSources[id] = (pane["path"]?.string ?? "", "md")
             slot(id).content = markdown
             subscribe(file: id)

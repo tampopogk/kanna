@@ -1724,6 +1724,7 @@ name = "kanna"
 version = "0.1.0"
 dependencies = [
  "kanna-build",
+ "kanna-calltree",
  "kanna-client",
  "kanna-merman",
  "kanna-mux",
@@ -1740,6 +1741,14 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "kanna-calltree"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "serde_json",
 ]
 
 [[package]]
@@ -1804,6 +1813,7 @@ dependencies = [
 name = "kanna-ffi"
 version = "0.1.0"
 dependencies = [
+ "kanna-calltree",
  "kanna-layout",
  "kanna-merman",
  "kanna-net",
@@ -1893,6 +1903,7 @@ dependencies = [
 name = "kanna-threads"
 version = "0.1.0"
 dependencies = [
+ "kanna-calltree",
  "libc",
  "serde_json",
 ]

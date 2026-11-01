@@ -4,20 +4,28 @@ use std::path::Path;
 
 pub struct Report {
     pub count: usize,
+    pub failed: usize,
     pub failures: Vec<Value>,
 }
 
 pub fn check(path: &str) -> Result<Report, Failure> {
     let text = std::fs::read_to_string(path).map_err(|e| fail(exit::NOT_FOUND, format!("diagrams: can't read {}: {e}", shown(path))))?;
     let checked = kanna_merman::check(&text);
-    let failures = checked
+    let mut failures: Vec<Value> = checked
         .iter()
         .filter_map(|c| {
             let message = c.failure.as_ref()?;
             Some(json!({ "file": shown(path), "line": c.line, "type": c.diagram_type, "message": message }))
         })
         .collect();
-    Ok(Report { count: checked.len(), failures })
+    let mut failed = failures.len();
+    let trees = kanna_calltree::check(&text, &kanna_calltree::repo_root(Path::new(path)));
+    for (_, found) in &trees {
+        failed += usize::from(!found.is_empty());
+        failures.extend(found.iter().map(|(line, message)| json!({ "file": shown(path), "line": line, "type": kanna_calltree::FENCE, "message": message })));
+    }
+    failures.sort_by_key(|f| f["line"].as_u64());
+    Ok(Report { count: checked.len() + trees.len(), failed, failures })
 }
 
 pub fn line(failure: &Value) -> String {
@@ -25,11 +33,12 @@ pub fn line(failure: &Value) -> String {
 }
 
 pub fn run(request: &Value, json_output: bool) -> Result<(), Failure> {
-    let mut count = 0;
+    let (mut count, mut failed) = (0, 0);
     let mut failures = Vec::new();
     for file in request["files"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         let report = check(file)?;
         count += report.count;
+        failed += report.failed;
         failures.extend(report.failures);
     }
     if json_output {
@@ -39,7 +48,7 @@ pub fn run(request: &Value, json_output: bool) -> Result<(), Failure> {
             println!("{}", line(failure));
         }
     }
-    match failures.len() {
+    match failed {
         0 if json_output => Ok(()),
         0 => {
             println!("{}", all_draw(count));
