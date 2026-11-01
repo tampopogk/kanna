@@ -234,10 +234,11 @@ pub struct SeenBase {
 }
 
 pub fn look(probes: Vec<Probe>) -> Vec<Seen> {
+    let mut heads: HashMap<String, Option<String>> = probes.iter().map(|p| (p.id.clone(), head(&p.repo, &p.at))).collect();
     probes
         .into_iter()
         .map(|probe| {
-            let head = head(&probe.repo, &probe.at);
+            let head = heads[&probe.id].clone();
             let main = git(&probe.repo, &["branch", "--show-current"]).ok().filter(|b| !b.is_empty());
             let bases = match &head {
                 None => vec![],
@@ -245,7 +246,7 @@ pub fn look(probes: Vec<Probe>) -> Vec<Seen> {
                     .bases
                     .iter()
                     .map(|(base, at)| {
-                        let now = self::head(&probe.repo, at).unwrap_or_else(|| base.head.clone());
+                        let now = heads.entry(base.id.clone()).or_insert_with(|| self::head(&probe.repo, at)).clone().unwrap_or_else(|| base.head.clone());
                         let merged = in_main(&probe.repo, &now);
                         SeenBase { id: base.id.clone(), contained: merged || contains(&probe.repo, &now, tip), merged, head: now }
                     })
