@@ -51,6 +51,7 @@ flowchart LR
 | `tasks.setup` | none | A shell command run in a new task's worktree before its agent starts, once per worktree ([task scripts](task-scripts.md#2-setup)) |
 | `tasks.teardown` | none | A shell command run in a task's agent pane, in its worktree, when it's Done: the task is Done once it succeeds, and Kanna cleans it up ([task scripts](task-scripts.md#3-teardown-and-cleanup)) |
 | `tasks.timeout` | `600` | Seconds `tasks.setup` and `tasks.teardown` each get, from 1 to 86400, before Kanna stops them |
+| `pipelines.agents` | none | The command each agent a [pipeline](software-factory.md)'s stages name runs as, when it isn't the agent's own name on your PATH: `{"claude": "~/bin/claude-wrapper"}`. Only `~/.kanna-v4/config.json` sets it: a repo's file that sets it is ignored and logged, so a cloned repo's pipeline can't make a run start a command. |
 
 <a id="agent-prompts"></a>
 ## 4. Agent prompts
@@ -79,6 +80,7 @@ flowchart LR
 - **`shelf.runners`** is read for each repo with Shelf tasks every 2s, and as a task's turn ends, so a change applies within seconds.
 - **`tasks.setup`, `tasks.teardown` and `tasks.timeout`** are read as a task's worktree is set up and as it's Done, for its repo.
 - **`planning.context`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and becomes an `export` in that command, and a `-c model_auto_compact_token_limit` in codex's start (the `compact` flag in `AGENTS`, `tasks.rs`), which Kanna's codex wrapper hands to codex's app-server, where compaction happens, as it does every `-c`. Checked against the mock model through the wrapper: with a limit below a turn, codex compacts before its next one.
+- **`pipelines.agents`** is read (`pipeline_agent` in `tasks.rs`) as a run's agent stage starts, from your file only, as `agents.prompts` is. e2e `pipeline_run` sets it in its private home to run `tools/mock-agent` as `claude`, which a daemon the app restarts reads as the first one did.
 - **`agents.prompts`** is read (`prompts` in `tasks.rs`) from the last of a folder's settings files, yours; the repo's file is only checked so its setting can be logged as ignored. A task's agent reads it each time its command is built: as it starts or starts again. The quiz agent reads it as `kanna quiz open` builds its command. `planner.sh` asks and saves your answer before it asks the daemon for the planner's command (`backlog` `planner`, which starts or resumes the project's conversation), and the daemon reads the setting then, and again for the command that resumes it after you quit. The commands passed to the script on its command line, for when the daemon doesn't answer, come in both forms for each agent: a name, the program, the command that asks and the command that skips. The script reads `~/.kanna-v4/config.json` (with `jq`) and writes it as it writes a repo's `planning.agent`: refusing a symlinked `~/.kanna-v4` or `config.json`, and a file for a newer Kanna (then the answer holds for that agent, and the next terminal asks again).
 
 ## 6. Rejected
@@ -87,6 +89,7 @@ flowchart LR
 - **One file per feature** (`planning.json`): one `config.json` with a section per feature has room for the settings to come.
 - **Settings without a schema** (documented only in this spec): an agent in another repo can't read this spec, but it can run `kanna config schema`.
 - **`$KANNA_AGENT` beside `tasks.agent`:** it was the daemon's environment, not the shell's that runs `kanna task new`, so you couldn't set it per terminal; the setting replaces it.
+- **An environment variable pointing a pipeline's agents elsewhere** (`KANNA_PIPELINE_AGENTS`, for tests): a daemon the app restarts doesn't have it, so a run started the real agent; the setting is read by every daemon.
 - **Passing claude `--autocompact`:** an environment variable in the planning terminal also reaches a claude you start there yourself.
 - **Agents always skipping prompts** (as Kanna did from 5d721dcb): with prompts off an agent in a cloned repo runs commands and edits files unasked, so it has to be your choice.
 - **A repo setting `agents.prompts`,** like every other key: the repo would decide how much its own agents may do on your machine.

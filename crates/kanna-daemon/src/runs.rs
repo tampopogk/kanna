@@ -1,12 +1,11 @@
 use crate::db::{Db, RunRow, StageRow};
 use crate::task_scripts;
 use crate::tasks::{self, git, Entry, Tasks};
-use kanna_detect::{Status, Turn, TURN_SETTLE};
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, PaneState, Responder, WeakCore};
 use kanna_pipe::{Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -23,6 +22,8 @@ const FEEDBACK_CHARS: usize = 8000;
 const FAILURE_MARKS: &[&str] = &["FAILED", "error[", "panic", "✗", "failed"];
 
 const ANSWER_CHARS: usize = 64 << 10;
+
+const QUIT_AFTER: f64 = 1.0;
 
 pub const LIVE: &[&str] = &["running", "waiting", "paused"];
 
@@ -167,7 +168,7 @@ pub fn unbuilt(pipeline: &Pipeline) -> Vec<String> {
     out
 }
 
-pub fn prompt(stage: &Stage, file: &str, request: &str, feedback: Option<&Feedback>, answers: &BTreeMap<String, String>) -> String {
+pub fn prompt(stage: &Stage, file: &str, request: &str, feedback: Option<&Feedback>, answers: &BTreeMap<String, String>, answer: &str) -> String {
     let named = regex::Regex::new(r"\{\{([a-z][a-z0-9_]*)\.([A-Za-z0-9_]+)\}\}").expect("pattern");
     let mut out = named
         .replace_all(file, |c: &regex::Captures| {
@@ -180,9 +181,8 @@ pub fn prompt(stage: &Stage, file: &str, request: &str, feedback: Option<&Feedba
     if let Some(feedback) = feedback {
         out += &format!("\n# Feedback from {}\n\n{}\n", feedback.stage, feedback.text.trim_end());
     }
-    if stage.agent().is_some_and(|a| a.verdict) {
-        out += "\n# Your verdict\n\nEnd your answer with a line of its own: `VERDICT: PASS` if it passes, or `VERDICT: FAIL` if it doesn't.\n";
-    }
+    let done = if stage.verdicts() { "`\"$KANNA_CLI\" run done pass` if it passes, or `\"$KANNA_CLI\" run done fail` if it doesn't" } else { "`\"$KANNA_CLI\" run done`" };
+    out += &format!("\n# When you're done\n\nWrite your final answer to `{answer}`, then run {done}. Kanna ends this session once you've reported. If you need something from the user before you can finish, run `\"$KANNA_CLI\" run need \"WHAT YOU NEED\"` and wait for their answer.\n");
     out
 }
 
@@ -232,70 +232,6 @@ pub fn command_feedback(output: &str) -> String {
     out
 }
 
-pub fn claude_answer(config: &Path, session: &str) -> Option<String> {
-    let name = format!("{session}.jsonl");
-    let file = fs::read_dir(config.join("projects")).ok()?.flatten().map(|d| d.path().join(&name)).find(|f| f.is_file())?;
-    Some(claude_text(&fs::read_to_string(file).ok()?))
-}
-
-pub fn claude_text(jsonl: &str) -> String {
-    let mut texts: Vec<String> = vec![];
-    for line in jsonl.lines() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
-        match string(&entry, "type") {
-            Some("user") if !entry.get("isMeta").and_then(Value::as_bool).unwrap_or(false) => texts.clear(),
-            Some("assistant") => {
-                let content = entry.get("message").and_then(|m| m.get("content"));
-                match content {
-                    Some(Value::String(text)) => texts.push(text.clone()),
-                    Some(Value::Array(blocks)) => texts.extend(blocks.iter().filter(|b| string(b, "type") == Some("text")).filter_map(|b| string(b, "text")).map(String::from)),
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-    texts.join("\n\n")
-}
-
-pub fn codex_answer(sessions: &Path, folder: &Path, since: SystemTime) -> Option<String> {
-    let listed = |dir: &Path| fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>();
-    let touched = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).is_ok_and(|at| at >= since);
-    let mut found: Vec<(SystemTime, PathBuf)> = listed(sessions)
-        .into_iter()
-        .flat_map(|year| listed(&year))
-        .flat_map(|month| listed(&month))
-        .filter(|day| day.is_dir() && touched(day))
-        .flat_map(|day| listed(&day))
-        .filter(|f| f.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-") && n.ends_with(".jsonl")) && touched(f))
-        .filter_map(|f| {
-            let first = fs::read_to_string(&f).ok()?.lines().next()?.to_string();
-            let meta = serde_json::from_str::<Value>(&first).ok()?;
-            let cwd = meta.get("payload").and_then(|p| string(p, "cwd"))?;
-            let same = Path::new(cwd) == folder || fs::canonicalize(cwd).ok() == fs::canonicalize(folder).ok();
-            same.then(|| (fs::metadata(&f).and_then(|m| m.created().or_else(|_| m.modified())).unwrap_or(since), f))
-        })
-        .collect();
-    found.sort();
-    let (_, file) = found.into_iter().next()?;
-    Some(codex_text(&fs::read_to_string(file).ok()?))
-}
-
-pub fn codex_text(jsonl: &str) -> String {
-    let mut last = String::new();
-    for line in jsonl.lines() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
-        let Some(payload) = entry.get("payload") else { continue };
-        if string(&entry, "type") == Some("response_item") && string(payload, "type") == Some("message") && string(payload, "role") == Some("assistant") {
-            let text: Vec<&str> = payload.get("content").and_then(Value::as_array).into_iter().flatten().filter(|b| string(b, "type") == Some("output_text")).filter_map(|b| string(b, "text")).collect();
-            if !text.is_empty() {
-                last = text.join("\n\n");
-            }
-        }
-    }
-    last
-}
-
 pub fn hash(text: &str) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for byte in text.bytes() {
@@ -339,9 +275,19 @@ fn machine() -> String {
     host.split('.').next().filter(|h| !h.is_empty()).unwrap_or("here").to_string()
 }
 
-pub fn agent_command(agent: &str, overrides: Option<&str>) -> String {
-    let found = overrides.into_iter().flat_map(str::split_whitespace).find_map(|pair| pair.split_once('=').filter(|(name, _)| *name == agent).map(|(_, command)| command.to_string()));
-    found.unwrap_or_else(|| agent.to_string())
+fn reported(value: &Value) -> Ended {
+    let shown = match string(value, "verdict") {
+        Some("pass") => "pass",
+        Some("fail") => "fail",
+        _ => "done",
+    };
+    let verdict = match shown {
+        "pass" => Some(Verdict::Pass),
+        "fail" => Some(Verdict::Fail),
+        _ => None,
+    };
+    let answer = string(value, "answer").unwrap_or("").to_string();
+    Ended { verdict, shown, answer: answer.clone(), feedback: answer, full: String::new(), failures: None, note: None }
 }
 
 fn bad(message: impl Into<String>) -> KmuxError {
@@ -369,6 +315,7 @@ struct Visit {
     within: Option<Duration>,
     opening: bool,
     ending: bool,
+    reported: Option<(Ended, f64)>,
 }
 
 struct Live {
@@ -378,6 +325,7 @@ struct Live {
     visit: Option<Visit>,
 }
 
+#[derive(Clone, Debug)]
 struct Ended {
     verdict: Option<Verdict>,
     shown: &'static str,
@@ -393,14 +341,12 @@ pub struct Runs {
     core: WeakCore,
     tasks: Weak<Tasks>,
     live: RefCell<Vec<Live>>,
-    turns: RefCell<HashMap<String, Turn>>,
     soon: Cell<bool>,
     host: String,
-    home: PathBuf,
 }
 
 impl Runs {
-    pub fn open(db: Rc<Db>, core: WeakCore, tasks: Weak<Tasks>, home: PathBuf) -> Runs {
+    pub fn open(db: Rc<Db>, core: WeakCore, tasks: Weak<Tasks>) -> Runs {
         let mut live = vec![];
         for row in db.live_runs().unwrap_or_else(|error| {
             log!("kanna-daemon: can't read the runs in kanna.db: {error}");
@@ -419,12 +365,13 @@ impl Runs {
                     _ => Work::Command { log: PathBuf::from(string(&row.doc, "log").unwrap_or("")), exit: PathBuf::from(string(&row.doc, "exit").unwrap_or("")) },
                 };
                 let within = pipeline.stage(&row.stage).and_then(|s| s.within);
-                Visit { row, work, within, opening: false, ending: false }
+                let reported = row.doc.get("reported").filter(|r| r.is_object()).map(|r| (reported(r), now()));
+                Visit { row, work, within, opening: false, ending: false, reported }
             });
             log!("kanna-daemon: {} carries on ({}, {})", row.id, row.state, visit.as_ref().map_or("between stages".to_string(), |v| format!("in {}", v.row.stage)));
             live.push(Live { row, doc, pipeline, visit });
         }
-        Runs { db, core, tasks, live: RefCell::new(live), turns: RefCell::default(), soon: Cell::new(true), host: machine(), home }
+        Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine() }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -446,7 +393,9 @@ impl Runs {
             Some("show") => self.show(args),
             Some("log") => self.log(args),
             Some("stop") => self.stop_run(args),
-            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log or stop)"))),
+            Some("done") => self.done(args),
+            Some("need") => self.need(args),
+            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, done or need)"))),
         }
     }
 
@@ -620,28 +569,63 @@ impl Runs {
         Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("state".to_string(), json!("stopped"))]))
     }
 
-    pub fn status(self: &Rc<Self>, pane: &str, status: Option<&str>, ended: bool) {
-        let status = status.and_then(Status::parse);
-        let now = Instant::now();
-        let mut turns = self.turns.borrow_mut();
-        let Some(turn) = turns.get_mut(pane) else { return };
-        if ended {
-            turn.reported_end(status, now);
-        } else {
-            turn.see(status, now);
+    fn reporting(&self, args: &Value) -> Result<(String, Visit, bool, String), KmuxError> {
+        let not_a_stage = || KmuxError::new("not_a_stage", "kanna run done and need are for a stage's agent, in its worker's terminal");
+        let by = string(args, "by").ok_or_else(not_a_stage)?;
+        let live = self.live.borrow();
+        let found = live.iter().find(|l| l.visit.as_ref().is_some_and(|v| v.row.terminal.as_deref() == Some(by) && matches!(v.work, Work::Agent { .. })));
+        let live = found.ok_or_else(not_a_stage)?;
+        let visit = live.visit.clone().ok_or_else(not_a_stage)?;
+        if visit.ending || visit.reported.is_some() {
+            return Err(KmuxError::new("ended", format!("{} has reported already", visit.row.stage)));
         }
-        drop(turns);
-        if status == Some(Status::Working) {
-            let waiting = self.live.borrow().iter().find(|l| l.row.state == "waiting" && l.visit.as_ref().and_then(|v| v.row.terminal.as_deref()) == Some(pane)).map(|l| l.row.id.clone());
-            if let Some(id) = waiting {
-                self.update(&id, |live| {
-                    live.row.state = "running".into();
-                    live.doc.why = None;
-                    Some(("resumed", None, json!({ "stage": live.visit.as_ref().map(|v| v.row.stage.clone()) })))
-                });
+        let verdicts = live.pipeline.stage(&visit.row.stage).is_some_and(Stage::verdicts);
+        Ok((live.row.id.clone(), visit, verdicts, live.row.state.clone()))
+    }
+
+    fn done(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let (id, visit, verdicts, state) = self.reporting(args)?;
+        let stage = visit.row.stage.clone();
+        let verdict = match (string(args, "verdict"), verdicts) {
+            (Some("pass"), true) => Some(Verdict::Pass),
+            (Some("fail"), true) => Some(Verdict::Fail),
+            (None, false) => None,
+            (_, true) => return Err(bad(format!("{stage} gives a verdict: kanna run done pass, or kanna run done fail"))),
+            (Some(_), false) => return Err(bad(format!("{stage} gives no verdict: kanna run done"))),
+        };
+        let answer = string(args, "answer").unwrap_or("").to_string();
+        let ended = Ended { verdict, shown: verdict.map_or("done", Verdict::name), answer: answer.clone(), feedback: answer.clone(), full: String::new(), failures: None, note: None };
+        let mut row = visit.row.clone();
+        row.doc = json!({ "reported": { "verdict": ended.shown, "answer": answer } });
+        let _ = self.db.put_stage(&row);
+        log!("kanna-daemon: {id}'s {stage} reports {}", ended.shown);
+        self.update(&id, |live| {
+            if let Some(visit) = live.visit.as_mut() {
+                visit.reported = Some((ended.clone(), now()));
             }
-        }
+            if state == "waiting" {
+                live.row.state = "running".into();
+                live.doc.why = None;
+                return Some(("resumed", None, json!({ "stage": stage })));
+            }
+            None
+        });
         self.soon.set(true);
+        Ok(Map::from_iter([("run".to_string(), json!(id)), ("stage".to_string(), json!(stage)), ("verdict".to_string(), json!(ended.shown))]))
+    }
+
+    fn need(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let (id, visit, _, _) = self.reporting(args)?;
+        let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what you need: kanna run need TEXT"))?.to_string();
+        let (stage, pane) = (visit.row.stage.clone(), visit.row.terminal.clone().unwrap_or_default());
+        log!("kanna-daemon: {id}'s {stage} needs: {text}");
+        self.update(&id, |live| {
+            live.row.state = "waiting".into();
+            live.doc.why = Some(format!("{stage} needs: {text}"));
+            Some(("waiting", Some(pane.clone()), json!({ "stage": stage, "need": text })))
+        });
+        self.tell(&id, &format!("{stage} needs you: {text}\nIts agent waits in {pane}: `kanna read {pane}` shows it, and `kanna send {pane} \"…\"` answers it."));
+        Ok(Map::from_iter([("run".to_string(), json!(id)), ("stage".to_string(), json!(stage)), ("state".to_string(), json!("waiting"))]))
     }
 
     pub fn tick(self: &Rc<Self>) -> Option<Instant> {
@@ -653,9 +637,8 @@ impl Runs {
         }
         self.live.borrow_mut().retain(|l| LIVE.contains(&l.row.state.as_str()));
         let busy = self.live.borrow().iter().any(|l| l.row.state == "running" || l.visit.is_some());
-        let turns = self.turns.borrow().values().filter_map(|t| t.due(TURN_SETTLE)).min();
         let soon = self.soon.get().then_some(now);
-        [busy.then(|| now + TICK), turns, soon].into_iter().flatten().min()
+        [busy.then(|| now + TICK), soon].into_iter().flatten().min()
     }
 
     fn update(&self, id: &str, edit: impl FnOnce(&mut Live) -> Option<(&'static str, Option<String>, Value)>) {
@@ -697,33 +680,22 @@ impl Runs {
         let late = visit.within.is_some_and(|within| now() - visit.row.started_at >= within.as_secs_f64());
         match &visit.work {
             Work::Agent { agent } => {
+                if let Some((ended, at)) = visit.reported.clone() {
+                    if now() - at >= QUIT_AFTER {
+                        self.mark_ending(id);
+                        self.quit_then(id, &pane, agent, ended);
+                    }
+                    return;
+                }
                 if core.pane(&pane).is_none() {
                     return self.interrupted(id, &visit);
                 }
                 if !alive(&core, &pane) {
-                    return self.agent_ended(id, &pane, agent);
+                    self.close(&pane);
+                    return self.stop(id, "stopped", &format!("{}'s agent exited without reporting it was done", visit.row.stage), Some("daemon"), true);
                 }
                 if late {
-                    return self.timed_out(id, &pane, agent);
-                }
-                let ended = {
-                    let mut turns = self.turns.borrow_mut();
-                    let turn = turns.entry(pane.clone()).or_insert_with(|| {
-                        let mut turn = Turn::underway();
-                        turn.see(core.pane(&pane).and_then(|p| p.status).as_deref().and_then(Status::parse), Instant::now());
-                        turn
-                    });
-                    turn.ended(Instant::now(), TURN_SETTLE)
-                };
-                match ended {
-                    Some(Status::NeedsYou) if state != "waiting" => {
-                        self.turns.borrow_mut().insert(pane.clone(), Turn::default());
-                        let why = format!("{}'s agent needs you", visit.row.stage);
-                        self.wait(id, &why);
-                    }
-                    Some(Status::NeedsYou) => {}
-                    Some(_) => self.agent_ended(id, &pane, agent),
-                    None => {}
+                    self.timed_out(id, &pane, agent);
                 }
             }
             Work::Command { log, exit } => {
@@ -753,49 +725,12 @@ impl Runs {
     }
 
     fn close(&self, pane: &str) {
-        self.turns.borrow_mut().remove(pane);
         if let Some(core) = self.core.upgrade() {
             core.handle(json!({ "cmd": "close", "args": { "pane": pane } }), |_| {});
         }
     }
 
-    fn agent_ended(self: &Rc<Self>, id: &str, pane: &str, agent: &str) {
-        if !self.mark_ending(id) {
-            return;
-        }
-        let (session, worker, started) = {
-            let live = self.live.borrow();
-            let Some(visit) = live.iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref()) else { return };
-            (visit.row.session.clone(), visit.row.worktree.clone().unwrap_or_default(), visit.row.started_at)
-        };
-        let since = UNIX_EPOCH + Duration::from_secs_f64((started - 1.0).max(0.0));
-        let read = match (tasks::program_name(agent), &session) {
-            ("claude", Some(session)) => claude_answer(&self.home.join(".claude"), session),
-            ("codex", _) => {
-                let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| self.home.join(".codex"), PathBuf::from);
-                codex_answer(&codex.join("sessions"), Path::new(&worker), since)
-            }
-            _ => None,
-        };
-        let note = read.is_none().then(|| format!("{agent}'s session file couldn't be read, so its answer is empty"));
-        if let Some(note) = &note {
-            log!("kanna-daemon: {id}: {note}");
-        }
-        let answer = read.unwrap_or_default();
-        let ended = Ended { verdict: None, shown: "done", answer: answer.clone(), feedback: answer, full: String::new(), failures: None, note };
-        self.quit_then(id, pane, agent, ended);
-    }
-
-    fn quit_then(self: &Rc<Self>, id: &str, pane: &str, agent: &str, mut ended: Ended) {
-        let verdicts = {
-            let live = self.live.borrow();
-            live.iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref().and_then(|v| l.pipeline.stage(&v.row.stage)).map(Stage::verdicts)).unwrap_or(false)
-        };
-        if verdicts && ended.verdict.is_none() {
-            let verdict = kanna_pipe::verdict_of(&ended.answer);
-            ended.verdict = Some(verdict);
-            ended.shown = verdict.name();
-        }
+    fn quit_then(self: &Rc<Self>, id: &str, pane: &str, agent: &str, ended: Ended) {
         let (this, id, closing) = (Rc::downgrade(self), id.to_string(), pane.to_string());
         let finish = move |_: Option<String>| {
             let Some(this) = this.upgrade() else { return };
@@ -812,13 +747,33 @@ impl Runs {
         if !self.mark_ending(id) {
             return;
         }
-        let (worker, start) = {
+        let (worker, start, stage, verdicts) = {
             let live = self.live.borrow();
-            let Some(visit) = live.iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref()) else { return };
-            (visit.row.worktree.clone().unwrap_or_default(), string(&visit.row.doc, "start").unwrap_or("").to_string())
+            let Some(l) = live.iter().find(|l| l.row.id == id) else { return };
+            let Some(visit) = l.visit.as_ref() else { return };
+            let verdicts = l.pipeline.stage(&visit.row.stage).is_some_and(Stage::verdicts);
+            (visit.row.worktree.clone().unwrap_or_default(), string(&visit.row.doc, "start").unwrap_or("").to_string(), visit.row.stage.clone(), verdicts)
         };
         if !start.is_empty() {
             let _ = git(Path::new(&worker), &["reset", "--hard", &start]);
+        }
+        if !verdicts {
+            if let Some(tasks) = self.tasks.upgrade() {
+                let (this, closing) = (Rc::downgrade(self), pane.to_string());
+                tasks.end_agent(pane, agent, move |_| {
+                    if let Some(this) = this.upgrade() {
+                        this.close(&closing);
+                    }
+                });
+            }
+            let why = format!("{stage} timed out before its agent reported it was done");
+            self.update(id, |live| {
+                if let Some(visit) = live.visit.as_mut() {
+                    visit.ending = true;
+                }
+                None
+            });
+            return self.stop(id, "stopped", &why, Some("daemon"), true);
         }
         let ended = Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()) };
         self.quit_then(id, pane, agent, ended);
@@ -918,7 +873,10 @@ impl Runs {
             Kind::Agent(agent) => {
                 let prompts = self.db.revisions(id).ok().and_then(|r| r.last().and_then(|r| r.doc.get("prompts").cloned())).unwrap_or(Value::Null);
                 let file = stage.prompt().and_then(|p| string(&prompts, p).map(String::from)).or_else(|| stage.prompt().and_then(|p| fs::read_to_string(worker.join(format!(".kanna/prompts/{p}.md"))).ok())).unwrap_or_default();
-                let text = prompt(&stage, &file, &doc.request, doc.feedback.as_ref(), &doc.answers);
+                let answer = format!("{SCRATCH}/answer-{n}.md");
+                let text = prompt(&stage, &file, &doc.request, doc.feedback.as_ref(), &doc.answers, &answer);
+                vars.push(("KANNA_ANSWER", worker.join(&answer).to_string_lossy().into_owned()));
+                vars.push(("KANNA_CLI", tasks::cli_path()));
                 let path = scratch.join(format!("stage-{n}.md"));
                 if let Err(error) = fs::write(&path, &text) {
                     return self.stop(id, "stopped", &format!("can't write {}: {error}", path.display()), Some("daemon"), true);
@@ -926,7 +884,7 @@ impl Runs {
                 let session = tasks::names_its_session(&agent.agent).then(uuid).flatten();
                 let first = format!("\"$(cat {})\"", quote(&format!("{SCRATCH}/stage-{n}.md")));
                 let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
-                let command = agent_command(&agent.agent, std::env::var("KANNA_PIPELINE_AGENTS").ok().as_deref());
+                let command = tasks::pipeline_agent(&files, &agent.agent);
                 let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), &first));
                 stage_row.kind = "agent".into();
                 stage_row.agent = Some(agent.agent.clone());
@@ -955,7 +913,7 @@ impl Runs {
             live.doc.starts.entry(name.to_string()).or_insert(head.clone());
             live.doc.visits = n;
             live.doc.sessions += sessions;
-            live.visit = Some(Visit { row: visit_row, work: work.clone(), within, opening: true, ending: false });
+            live.visit = Some(Visit { row: visit_row, work: work.clone(), within, opening: true, ending: false, reported: None });
             None
         });
         let Some(core) = self.core.upgrade() else { return };
@@ -975,9 +933,6 @@ impl Runs {
             let saved = this.db.put_stage(&stage_row);
             if let Ok(row_id) = saved {
                 stage_row.id = row_id;
-            }
-            if matches!(work, Work::Agent { .. }) {
-                this.turns.borrow_mut().insert(pane.clone(), Turn::default());
             }
             log!("kanna-daemon: {id} starts {} (visit {}) in {pane}", stage_row.stage, stage_row.visit);
             let event = json!({ "stage": stage_row.stage, "visit": stage_row.visit, "kind": stage_row.kind, "terminal": pane });
@@ -1167,68 +1122,26 @@ impl Runs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
 
     fn pipeline(text: &str) -> Pipeline {
         kanna_pipe::parse(text).unwrap_or_else(|e| panic!("{e:?}"))
     }
 
-    fn mock() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/mock-agent/mock-agent").canonicalize().unwrap()
+    #[test]
+    fn a_stage_is_told_to_report_done_with_its_verdict_or_that_it_needs_you() {
+        let p = pipeline("build = claude\nreview = claude verdict\nbuild -> review -> done\n");
+        let build = prompt(p.stage("build").unwrap(), "Build it.", "Add a button", None, &BTreeMap::new(), ".kanna/tmp/answer-1.md");
+        assert!(build.ends_with("# When you're done\n\nWrite your final answer to `.kanna/tmp/answer-1.md`, then run `\"$KANNA_CLI\" run done`. Kanna ends this session once you've reported. If you need something from the user before you can finish, run `\"$KANNA_CLI\" run need \"WHAT YOU NEED\"` and wait for their answer.\n"), "{build}");
+        let review = prompt(p.stage("review").unwrap(), "Review it.", "Add a button", None, &BTreeMap::new(), ".kanna/tmp/answer-2.md");
+        assert!(review.contains("then run `\"$KANNA_CLI\" run done pass` if it passes, or `\"$KANNA_CLI\" run done fail` if it doesn't."), "{review}");
     }
 
     #[test]
-    fn a_visit_s_answer_is_read_from_the_mock_agent_s_session_file() {
-        let dir = std::env::temp_dir().join(format!("kanna-runs-answer-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let (home, bin, work) = (dir.join("home"), dir.join("bin"), dir.join("work"));
-        for folder in [&home, &bin, &work] {
-            fs::create_dir_all(folder).unwrap();
-        }
-        std::os::unix::fs::symlink(mock(), bin.join("claude")).unwrap();
-        let session = "11111111-2222-4333-8444-555555555555";
-        let stage = "Review it.\nmock: work 0.1\nsay: Looks right.\nsay: VERDICT: PASS\n";
-        let out = Command::new(bin.join("claude"))
-            .args(["--session-id", session, stage])
-            .current_dir(&work)
-            .env("HOME", &home)
-            .env_remove("KANNA_AGENTS_HOME")
-            .env("KANNA_STAGE", "review")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                child.stdin.take().unwrap().write_all(b"exit\n")?;
-                child.wait()
-            })
-            .unwrap();
-        assert!(out.success());
-        let answer = claude_answer(&home.join(".claude"), session).expect("the session file");
-        assert_eq!(answer, "Looks right.\nVERDICT: PASS");
-        assert_eq!(kanna_pipe::verdict_of(&answer), Verdict::Pass);
-        assert_eq!(claude_answer(&home.join(".claude"), "00000000-0000-4000-8000-000000000000"), None, "an unknown session gives no answer");
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_answer_is_the_last_turn_s_text_after_its_last_tool_result() {
-        let jsonl = [
-            r#"{"type":"user","message":{"role":"user","content":"Build it."}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","id":"t1"}]}}"#,
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Done: it builds."}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"VERDICT: PASS"}]}}"#,
-        ]
-        .join("\n");
-        assert_eq!(claude_text(&jsonl), "Done: it builds.\n\nVERDICT: PASS");
-        let rollout = [
-            r#"{"type":"session_meta","payload":{"id":"x","cwd":"/w"}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"}]}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"VERDICT: FAIL"}]}}"#,
-        ]
-        .join("\n");
-        assert_eq!(codex_text(&rollout), "VERDICT: FAIL");
+    fn a_report_kept_on_the_visit_comes_back_after_a_restart() {
+        let back = reported(&json!({ "verdict": "fail", "answer": "two tests fail" }));
+        assert_eq!((back.verdict, back.shown, back.feedback.as_str()), (Some(Verdict::Fail), "fail", "two tests fail"));
+        let back = reported(&json!({ "verdict": "done", "answer": "built" }));
+        assert_eq!((back.verdict, back.shown), (None, "done"));
     }
 
     #[test]
@@ -1240,8 +1153,8 @@ mod tests {
         assert_eq!(decide(&p, &mut doc, "fix", None, None), Next::Stage { name: "check".into(), reset: false });
         assert_eq!(decide(&p, &mut doc, "check", Some(Verdict::Pass), Some(vec![])), Next::Done);
         let stage = p.stage("fix").unwrap();
-        let text = prompt(stage, "Fix what failed.\n{{build.answer}}", "Add a button", Some(&Feedback { stage: "check".into(), text: "FAILED a".into(), full: String::new() }), &BTreeMap::from([("build".into(), "built it".into())]));
-        assert_eq!(text, "Fix what failed.\nbuilt it\n\n# The task\n\nAdd a button\n\n# Feedback from check\n\nFAILED a\n");
+        let text = prompt(stage, "Fix what failed.\n{{build.answer}}", "Add a button", Some(&Feedback { stage: "check".into(), text: "FAILED a".into(), full: String::new() }), &BTreeMap::from([("build".into(), "built it".into())]), "a.md");
+        assert!(text.starts_with("Fix what failed.\nbuilt it\n\n# The task\n\nAdd a button\n\n# Feedback from check\n\nFAILED a\n\n# When you're done\n"), "{text}");
     }
 
     #[test]
@@ -1294,13 +1207,6 @@ mod tests {
     fn a_pipeline_with_parts_runs_can_t_do_yet_is_refused_by_line() {
         let p = pipeline("plan = claude\nbuild = claude each plan.parts\nok = ask \"Is the plan right?\"\njoin = merge build\nplan -> ok -> build -> join -> done\n");
         assert_eq!(unbuilt(&p), vec!["2: build uses each, which runs can't do yet", "3: ok uses ask, which runs can't do yet", "4: join uses merge STAGE, which runs can't do yet"]);
-    }
-
-    #[test]
-    fn a_stage_s_agent_is_its_name_unless_a_test_points_it_elsewhere() {
-        assert_eq!(agent_command("claude", None), "claude");
-        assert_eq!(agent_command("claude", Some("codex=/x/codex claude=/fake/claude")), "/fake/claude");
-        assert_eq!(agent_command("copilot", Some("claude=/fake/claude")), "copilot");
     }
 
     #[test]

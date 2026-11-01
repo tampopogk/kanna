@@ -7,7 +7,7 @@ plan    = claude prompt plan emits             # splits the work; may add stages
 build   = claude prompt build each plan.parts  # a worktree and pane per part, inside the run
 join    = merge build                          # the parts' branches into the run's
 check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
-review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
+review  = codex:high prompt review verdict     # fresh reviewer; reports pass or fail
 fix     = claude prompt fix guard check        # rolled back if check gets worse
 e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
 

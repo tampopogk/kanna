@@ -1,4 +1,4 @@
-use kanna_pipe::{edited, emitted, parse, pipe_block, verdict_of, Context, Rule, Sizes, Verdict};
+use kanna_pipe::{edited, emitted, parse, pipe_block, Context, Rule, Sizes, Verdict};
 use std::path::PathBuf;
 
 fn repo() -> PathBuf {
@@ -117,15 +117,6 @@ fn an_edit_keeps_the_counts_of_arrows_it_didnt_change() {
     assert_eq!(after[5], 6);
     assert_eq!(after[7], 8);
     assert!(edited(&pipeline, "plan = claude\nplan -> nowhere", &context()).is_err());
-}
-
-#[test]
-fn verdicts_come_from_the_last_line() {
-    assert_eq!(verdict_of("All good.\n\nVERDICT: PASS\n"), Verdict::Pass);
-    assert_eq!(verdict_of("**Verdict: pass**"), Verdict::Pass);
-    assert_eq!(verdict_of("VERDICT: FAIL"), Verdict::Fail);
-    assert_eq!(verdict_of("VERDICT: PASS\nbut one more thing"), Verdict::Fail);
-    assert_eq!(verdict_of(""), Verdict::Fail);
 }
 
 #[test]

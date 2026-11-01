@@ -258,17 +258,6 @@ pub fn load(text: &str, context: &Context) -> Result<Pipeline, Vec<Error>> {
     Ok(pipeline)
 }
 
-pub fn verdict_of(answer: &str) -> Verdict {
-    let last = answer.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("");
-    let word = last.trim_matches(|c: char| !c.is_alphanumeric());
-    let Some((head, value)) = word.split_once(':') else { return Verdict::Fail };
-    if head.trim().eq_ignore_ascii_case("verdict") && value.trim().eq_ignore_ascii_case("pass") {
-        Verdict::Pass
-    } else {
-        Verdict::Fail
-    }
-}
-
 pub fn pipe_block(answer: &str) -> Option<String> {
     let mut lines = answer.lines();
     while let Some(line) = lines.next() {

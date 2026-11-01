@@ -342,7 +342,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
     }));
-    let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks), agents::home()));
+    let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks)));
     runs.install(&core);
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
@@ -656,7 +656,6 @@ fn run() -> Result<Option<PathBuf>, String> {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
                     app.status(&pane, status);
                     tasks.status(&pane, status, ended);
-                    runs.status(&pane, status, ended);
                 }
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),

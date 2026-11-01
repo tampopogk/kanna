@@ -29,7 +29,7 @@ plan    = claude prompt plan emits             # splits the work; may add stages
 build   = claude prompt build each plan.parts  # a worktree and pane per part, inside the run
 join    = merge build                          # the parts' branches into the run's
 check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
-review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
+review  = codex:high prompt review verdict     # fresh reviewer; reports pass or fail
 fix     = claude prompt fix guard check        # rolled back if check gets worse
 e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
 
@@ -52,7 +52,7 @@ e2e    -> done
 
 | Form | Runs | Verdict | Feedback it leaves |
 |---|---|---|---|
-| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `copilot`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, its answer's last line, `VERDICT: PASS` or `VERDICT: FAIL` (missing counts as fail) | its final answer |
+| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `copilot`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, the one it reports: `kanna run done pass` or `kanna run done fail` | the answer it reports with `kanna run done` |
 | `NAME = run COMMAND…` | the command in the run's worker with your login shell, as [task scripts](task-scripts.md) run, with the same variables plus `KANNA_RUN`, `KANNA_STAGE` and `KANNA_FEEDBACK` (a file holding the previous feedback) | exit 0 passes | its output's tail, lines matching the repo's failure pattern first |
 | `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers (`ok = ask "Is the plan right?"` after `plan`) | yes passes, no fails | your note |
 | `NAME = merge STAGE` | joins every instance of a fanned-out STAGE into the run's branch | a clean merge passes | the conflicts |
@@ -69,7 +69,7 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 | Attribute | Does |
 |---|---|
 | `prompt NAME` | `.kanna/prompts/NAME.md` is the stage's prompt instead of the stage's own name |
-| `verdict` | the stage ends with `VERDICT: PASS` or `FAIL`; the request is appended to its prompt |
+| `verdict` | the stage reports `pass` or `fail` when it's done; the request is appended to its prompt |
 | `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a worker of the run (a worktree branched from the run's and a hidden terminal, never a task of its own); the next stage waits for them all ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)) |
 | `xN by STAGE` | N attempts of the stage from the same code (2 to 10), each a worker in its own worktree; the `run` stage named scores each (its output's last line `score: 0.83`, else pass 1 and fail 0) and the best is kept, ties to the first |
 | `guard STAGE` | that `run` stage scores the code before and after; a result that scores lower is discarded and the code before carries on, recorded as a rollback |
@@ -100,9 +100,9 @@ flowchart LR
     A -->|"fenced json named KEY"| N["STAGE.KEY<br/>for each and {{STAGE.KEY}}"]
 ```
 
-- **An agent stage's prompt** is, in order: the stage's prompt file, the request under `# The task`, the feedback under `# Feedback from STAGE` (a review's text, a command's output tail, your note, the conflicts), and the verdict request when the stage has `verdict`. `{{STAGE.answer}}` and `{{STAGE.KEY}}` in a prompt file are replaced by that stage's last answer or named output; a prompt that names a stage that hasn't run is an error at validation.
+- **An agent stage's prompt** is, in order: the stage's prompt file, the request under `# The task`, the feedback under `# Feedback from STAGE` (a review's text, a command's output tail, your note, the conflicts), and how to report it's done (with its verdict when the stage has `verdict`). `{{STAGE.answer}}` and `{{STAGE.KEY}}` in a prompt file are replaced by that stage's last answer or named output; a prompt that names a stage that hasn't run is an error at validation.
 - **Named outputs:** a fenced block in an agent's answer whose info string is `json name=KEY` (or any fenced JSON block when the stage has one `each` consumer) is kept as `STAGE.KEY`. `each` wants a list; each item is given to the instance as `# Your part`, and an object with `name` names the worker.
-- **The answer** is read from the agent's own session file when its turn ends (Claude's JSONL, Codex's rollout), as [agent messaging](agent-messaging.md) finds the session; an agent whose session Kanna can't read gives an empty answer and the Run tab says so.
+- **The stage reports its own end:** every agent stage's prompt ends with how to report, writing its final answer to `$KANNA_ANSWER` and running `kanna run done` (with `pass` or `fail` at a `verdict` stage), or `kanna run need TEXT` when it needs you. The answer is what it wrote; the daemon reads nothing from the screen or the agent's session files ([software factory §6.1](software-factory.md#61-sequential-runs-as-built)).
 - **A command's feedback** is its last 80 lines, with lines matching the failure pattern (`FAILED|error\[|panic|✗|failed`) moved first, capped at 8000 characters; `KANNA_FEEDBACK` holds the full text for the next command.
 - **Nothing else is shared between stages but the worktree.** A stage that wants a plan reads it from the branch, or from `{{plan.answer}}`.
 

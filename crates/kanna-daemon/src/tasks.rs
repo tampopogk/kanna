@@ -218,6 +218,17 @@ pub fn task_agent(files: &[PathBuf]) -> String {
         .unwrap_or_else(|| DEFAULT_AGENT.into())
 }
 
+pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
+    let Some((mine, repos)) = files.split_last() else { return agent.into() };
+    for file in repos {
+        if configured(std::slice::from_ref(file), "pipelines", "agents", |_| Some(()), "").is_some() {
+            log!("kanna-daemon: {}: pipelines.agents is ignored here: only ~/.kanna-v4/config.json sets it", file.display());
+        }
+    }
+    let read = |value: &Value| value.as_object().map(|map| map.get(agent).and_then(Value::as_str).map(str::trim).filter(|c| !c.is_empty()).map(String::from));
+    configured(std::slice::from_ref(mine), "pipelines", "agents", read, "an object of agent names to commands").flatten().unwrap_or_else(|| agent.into())
+}
+
 pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;
@@ -347,6 +358,10 @@ fn comeback(kept: Option<&Value>, agent: &str, pane: &str, live: impl Fn(&str) -
     }
 }
 
+pub fn cli_path() -> String {
+    cli().map_or_else(|| "kanna".to_string(), |cli| cli.to_string_lossy().into_owned())
+}
+
 fn cli() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(|dir| dir.join("kanna")).filter(|cli| cli.is_file())
 }
@@ -441,7 +456,7 @@ fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime
     None
 }
 
-pub fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
+fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
     match agent(program)?.names[0] {
         "codex" => {
             let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
@@ -518,10 +533,6 @@ fn asking(agent: &str, prompts: Prompts) -> String {
         Some(flag) if prompts == Prompts::Skip && !chooses => format!("{agent} {flag}"),
         _ => agent.to_string(),
     }
-}
-
-pub fn program_name(command: &str) -> &str {
-    agent(command).map_or_else(|| program(command), |a| a.names[0])
 }
 
 pub fn names_its_session(command: &str) -> bool {
@@ -3979,8 +3990,28 @@ mod tests {
         assert_eq!((prompts["enum"].clone(), prompts["default"].clone()), (json!(["ask", "skip"]), json!("ask")));
         let keys: Vec<&String> = schema["properties"]["agents"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["prompts"]);
+        let keys: Vec<&String> = schema["properties"]["pipelines"]["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["agents"]);
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
+        assert_eq!(schema["properties"]["pipelines"]["properties"]["agents"]["propertyNames"]["enum"], json!(names));
         assert_eq!((tasks["agent"]["default"].clone(), tasks["agent"]["examples"].clone()), (json!(DEFAULT_AGENT), json!(names)));
+    }
+
+    #[test]
+    fn a_pipeline_agent_command_comes_only_from_your_config() {
+        let dir = std::env::temp_dir().join(format!("kanna-pipeline-agents-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (repo, mine) = (dir.join("repo.json"), dir.join("mine.json"));
+        let files = [repo.clone(), mine.clone()];
+        assert_eq!(pipeline_agent(&files, "claude"), "claude");
+        fs::write(&repo, r#"{"pipelines": {"agents": {"claude": "/repo/evil"}}}"#).unwrap();
+        assert_eq!(pipeline_agent(&files, "claude"), "claude");
+        fs::write(&mine, r#"{"pipelines": {"agents": {"claude": "/fake/claude", "codex": " "}}}"#).unwrap();
+        assert_eq!(pipeline_agent(&files, "claude"), "/fake/claude");
+        assert_eq!(pipeline_agent(&files, "codex"), "codex");
+        assert_eq!(pipeline_agent(&files, "copilot"), "copilot");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

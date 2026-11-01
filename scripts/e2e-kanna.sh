@@ -4573,7 +4573,8 @@ pipeline_run() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/factory" fake="$KANNA_STATE_DIR/agents"
   mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
   printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s KANNA_MOCK_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
-  KANNA_PIPELINE_AGENTS="claude=$fake/claude" start_daemon && start_app || { echo "pipeline_run line $LINENO"; return 1; }
+  python3 -c 'import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["pipelines"] = {"agents": {"claude": sys.argv[2]}}; json.dump(c, open(p, "w"))' "$KANNA_AGENTS_HOME/.kanna-v4/config.json" "$fake/claude" || { echo "pipeline_run line $LINENO"; return 1; }
+  start_daemon && start_app || { echo "pipeline_run line $LINENO"; return 1; }
   mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_run line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
@@ -4589,9 +4590,10 @@ check -> done
 PIPE
   cat >"$repo/.kanna/prompts/build.md" <<'PROMPT'
 Build the change.
-mock: run echo visit >> built.txt && git add built.txt && git commit -qm build
-say: Built it.
+mock: run echo visit >> built.txt && git add built.txt && git commit -qm build && echo 'Built it.' >"$KANNA_ANSWER" && "$KANNA_CLI" run done
 PROMPT
+  printf 'needy = claude\nneedy -> done\n' >"$repo/.kanna/pipelines/needy.pipe"
+  printf 'Ask first.\nmock: run "$KANNA_CLI" run need "Which colour?"\n' >"$repo/.kanna/prompts/needy.md"
   cat >"$repo/check.sh" <<'CHECK'
 n=$(cat .kanna/tmp/checks 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >.kanna/tmp/checks
 if [ "$n" -eq 1 ]; then echo "FAILED: first try"; exit 1; fi
@@ -4645,7 +4647,7 @@ v = json.loads(sys.argv[1])["visits"]
 got = [(x["stage"], x["verdict"]) for x in v]
 want = [("build", "done"), ("check", "fail"), ("build", "done"), ("check", "pass")]
 assert got == want, got
-assert v[0]["doc"]["answer"] == "Built it.", v[0]["doc"]
+assert v[0]["doc"]["answer"] == "Built it.\n", v[0]["doc"]
 assert all(x["machine"] for x in v)' "$shown" || { echo "pipeline_run: the visits were: $shown"; return 1; }
   check test "$(git -C "$repo" rev-parse main)" == "$main" || { echo "pipeline_run: the run changed main"; git -C "$repo" log --oneline -3 main; return 1; }
   local folder="$repo/.kanna-worktrees/$task"
@@ -4655,8 +4657,13 @@ assert all(x["machine"] for x in v)' "$shown" || { echo "pipeline_run: the visit
   check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "peer: \[message from $run\] handed back: 4 visits of 2 stages"' || { echo "pipeline_run: the task didn't get the run's message"; kanna read "$(held)"; (cd "$repo" && kanna task messages "$task"); return 1; }
   local events; events="$(kanna run log "$run" --json | python3 -c 'import json, sys; print(" ".join(e["what"] for e in json.load(sys.stdin)["events"]))')"
   [[ "$events" == "started stage verdict stage verdict stage verdict stage verdict handed_back" ]] || { echo "pipeline_run: the run's events were: $events"; return 1; }
-  local again; again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start demo 2>&1)" || { echo "pipeline_run: a second run didn't start: $again"; return 1; }
-  [[ "$again" == run-*" runs demo for "task-*" on run/$task-2 "* ]] || { echo "pipeline_run: the second run said: $again"; return 1; }
+  local said; said="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run done 2>&1)" && { echo "pipeline_run: the task's own terminal reported a stage done"; return 1; }
+  [[ "$said" == *"for a stage's agent, in its worker's terminal"* ]] || { echo "pipeline_run: run done outside a stage said: $said"; return 1; }
+  local again; again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start needy 2>&1)" || { echo "pipeline_run: a second run didn't start: $again"; return 1; }
+  [[ "$again" == run-*" runs needy for "task-*" on run/$task-2 "* ]] || { echo "pipeline_run: the second run said: $again"; return 1; }
+  check wait_for 20 eval '[[ "$(runs state)" == "done waiting" ]]' || { echo "pipeline_run: a stage's need didn't make the run wait: $(runs state)"; return 1; }
+  [[ "$(runs why)" == *"needy needs: Which colour?"* ]] || { echo "pipeline_run: the waiting run says: $(runs why)"; return 1; }
+  check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "needy needs you: Which colour?"' || { echo "pipeline_run: the task wasn't told what the stage needs"; kanna read "$(held)"; return 1; }
   (cd "$folder" && KANNA_TERMINAL="$(held)" kanna run stop) >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(runs state)" == "done stopped" ]]' || { echo "pipeline_run: the second run wasn't stopped: $(runs state)"; return 1; }
 }

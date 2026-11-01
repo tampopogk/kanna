@@ -113,17 +113,6 @@ def stage_prompt(args):
     return args[-1]
 
 
-def transcript(id, prompt, said):
-    home = os.environ.get("KANNA_AGENTS_HOME") or os.environ.get("HOME")
-    if PROGRAM != "claude" or not home:
-        return
-    folder = os.path.join(home, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
-    os.makedirs(folder, exist_ok=True)
-    with open(os.path.join(folder, f"{id}.jsonl"), "a") as f:
-        f.write(json.dumps({"type": "user", "sessionId": id, "cwd": os.getcwd(), "message": {"role": "user", "content": prompt}}) + "\n")
-        f.write(json.dumps({"type": "assistant", "sessionId": id, "message": {"role": "assistant", "content": [{"type": "text", "text": said}]}}) + "\n")
-
-
 def stage(id, prompt):
     reported("working")
     said = []
@@ -132,7 +121,6 @@ def stage(id, prompt):
             answering(line[len("mock: "):])
         elif line.startswith("say: "):
             said.append(line[len("say: "):])
-    transcript(id, prompt, "\n".join(said) or "done")
     out("\x1b[J\r\n" + "\r\n".join(said or ["done"]) + "\r\n")
     composer()
     reported("idle")

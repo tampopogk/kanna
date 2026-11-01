@@ -1431,6 +1431,8 @@ pub fn run(request: &Value, reply: &Value) -> String {
             reply["run"].as_str().unwrap_or("?")
         ),
         Some("stop") => format!("{} is stopped; its branch is kept", reply["run"].as_str().unwrap_or("?")),
+        Some("done") => format!("{}: {} reported {}; Kanna ends this session now", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?"), reply["verdict"].as_str().unwrap_or("done")),
+        Some("need") => format!("{}: {} waits; the task's agent is told what it needs", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
         Some("list") => {
             let runs = reply["runs"].as_array().cloned().unwrap_or_default();
             if runs.is_empty() {
