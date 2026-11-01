@@ -1,0 +1,5 @@
+module KannaCrashC {
+    header "../../../../crates/kanna-ffi/include/kanna_crash.h"
+    link "kanna_ffi"
+    export *
+}

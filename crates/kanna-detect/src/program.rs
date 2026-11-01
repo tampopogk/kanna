@@ -431,6 +431,18 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn a_group_s_members_are_every_process_in_it_not_only_its_leader() {
+        let group = unsafe { libc::getpgrp() };
+        let me = std::process::id() as i32;
+        let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
+        let members = group_members(group);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(members.contains(&group) && members.contains(&(child.id() as i32)), "{members:?}");
+        assert!(group == me || members.contains(&me), "{members:?}");
+    }
+
+    #[test]
     fn this_process_reads_its_own_arguments() {
         let me = process(std::process::id() as i32).unwrap();
         assert!(me.executable.is_some());

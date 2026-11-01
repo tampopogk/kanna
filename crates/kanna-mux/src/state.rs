@@ -1,6 +1,6 @@
 use crate::error::KmuxError;
 use crate::json::{encode, is_true, json, num, opt, string, Map, Value};
-use crate::pane::{content_prefix, diff_args, CONTENT_PREFIXES, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes, StopMark, Tour};
+use crate::pane::{content_prefix, diff_args, read_baud, read_line_ending, serial_fields, CONTENT_PREFIXES, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes, StopMark, Tour};
 use std::collections::{HashMap, HashSet};
 
 pub const STATE_VERSION: u32 = 2;
@@ -78,6 +78,7 @@ pub fn pane_record(pane: &Pane) -> Map {
             out.insert("app".into(), opt(pane.app.as_deref()));
             out.insert("device".into(), opt(pane.device.as_deref()));
         }
+        PaneType::Serial => serial_fields(pane, &mut out),
     }
     if let Some(tour) = &pane.tour {
         out.insert("tour".into(), tour.to_json());
@@ -133,6 +134,13 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
             pane.app = field("app");
             pane.device = field("device");
         }
+        PaneType::Serial => {
+            pane.path = field("path");
+            pane.device = field("device");
+            pane.title = field("title");
+            pane.baud = read_baud(item.get("baud")).ok().flatten();
+            pane.line_ending = read_line_ending(item.get("lineEnding")).ok().flatten();
+        }
     }
     match kind {
         PaneType::Term => pane.tour = item.get("tour").and_then(Tour::from_json),
@@ -182,7 +190,7 @@ pub(crate) fn upgrade(state: &Value) -> Value {
     let count = |key: &str| counters.and_then(|c| c.get(key)).cloned().unwrap_or(Value::Null);
     let pane = count("pane");
     out["version"] = num(STATE_VERSION as f64);
-    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
+    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "serial": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
     out
 }
 
@@ -248,7 +256,7 @@ pub(crate) fn import_versions(state: &Value, versions: &[u32], reader: &str) -> 
         }
         let needed = match kind {
             PaneType::Web => Some("url"),
-            PaneType::Md | PaneType::Code | PaneType::Diff => Some("path"),
+            PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Serial => Some("path"),
             PaneType::Ios => Some("app"),
             PaneType::Term => None,
         };

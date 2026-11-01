@@ -11,11 +11,13 @@ flowchart LR
     CLI["kanna CLI, agents"] -->|"socket: tasks …"| D
     CLI -->|"socket: quiz …"| Q
     APP["Kanna app<br/>Desks, Desk view, menus"] -->|"socket: commands"| OWN
+    CLI -->|"socket: schedule …"| S
     subgraph DP["Kanna daemon (the only writer)"]
         D["tasks.rs<br/>tasks · events"] --> DB["db.rs<br/>migrations · recovery"]
         Q["quiz.rs<br/>rounds · answers"] --> DB
         OWN["layout.rs<br/>park · activate · hold · release"] -->|"moved: task, from, to, by"| D
         OWN --> DB
+        S["schedule.rs<br/>schedules"] --> DB
     end
     DB --> F[("kanna.db<br/>WAL")]
     DB -. "first run" .-> J[("backlog.json")]
@@ -23,7 +25,7 @@ flowchart LR
     classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
     classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
     classDef ext fill:#6b4f2f,stroke:#e0a960,color:#ffffff
-    class APP,D,Q,DB kanna
+    class APP,D,Q,S,DB kanna
     class OWN kmux
     class CLI ext
 ```
@@ -148,6 +150,10 @@ sequenceDiagram
 
 - **The app writes them** (`projects touch`, through `projects.rs`) whenever one of its Desks' project changes; the eleventh drops the oldest. Listing forgets a folder that's gone; `projects clear` empties the table.
 
+## Schedules
+
+**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, and a JSON `doc` (who made it). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
+
 ## Planners
 
 **Built.** Each project's planning conversation ([planner resume](planner-resume.md)).
@@ -173,6 +179,20 @@ sequenceDiagram
 | `at` | real | when you answered never |
 
 - **The daemon writes them** (`project` `never`, from `planner.sh`) and reads them (`project` `asked`); importing the project deletes its row.
+
+## Crashes
+
+**Built.** Each crash record the daemon has seen in `crashes/` ([crashes](crashes.md)).
+
+**crashes**: one row per record.
+
+| Column | Type | Holds |
+|---|---|---|
+| `file` | text, key | the record's file name in `crashes/` (they sort by time) |
+| `signature` | text | the record's signature |
+| `at` | real | when the daemon first saw it |
+| `dismissed` | real | when its banner was dismissed (it and every older one), or null |
+| `reported` | real | when the planner was told of its signature, or null: a signature is told once |
 
 **Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
 
