@@ -22,6 +22,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod reader;
+mod schedule;
 mod settings;
 mod shell;
 mod status;
@@ -31,6 +32,7 @@ mod machines;
 mod files;
 mod serial;
 mod store;
+mod stacks;
 mod task_scripts;
 mod terminals;
 mod toasts;
@@ -94,7 +96,9 @@ pub enum Event {
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
-    Worktree { token: u64, result: Result<(String, String), String> },
+    Worktree { token: u64, result: Result<stacks::Made, String> },
+    Stacks { seen: Vec<stacks::Seen> },
+    Heads,
     Branch { token: u64, branch: String },
     Turn { token: u64 },
     Posted { token: u64, result: Result<(), String> },
@@ -127,7 +131,7 @@ impl Event {
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::RulesUpdated { .. } => "loop.rules",
-            Event::Worktree { .. } | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::File { .. } => "loop.file",
             Event::Serial(_) => "loop.serial",
@@ -339,6 +343,8 @@ fn run() -> Result<Option<PathBuf>, String> {
     }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
+    let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
+    scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
     let machines = match machines::Machines::start(&state_dir, &db, events.clone(), wire.clone()) {
         Ok(machines) => {
             log!("kanna-daemon: {}", machines.describe());
@@ -434,7 +440,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
     crashes.install(&core);
     let posting = Rc::downgrade(&tasks);
-    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post("kanna", repo, text)));
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), "kanna", text).map_err(|error| error.message)));
     let banner_link = Rc::downgrade(&app);
     *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
     crashes.scan();
@@ -589,7 +595,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         let ticks = if shutdown.is_none() {
             crashes.tick(Instant::now(), app.attached());
             tasks.sweep();
-            tasks.tick()
+            [tasks.tick(), scheduler.tick()].into_iter().flatten().min()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
@@ -651,6 +657,8 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => tasks.worktree_made(token, result),
+            Event::Stacks { seen } => tasks.watched(seen),
+            Event::Heads => tasks.heads_moved(),
             Event::Branch { token, branch } => tasks.branch_found(token, branch),
             Event::Turn { token } => tasks.next_turn(token),
             Event::Posted { token, result } => tasks.posted(token, result),

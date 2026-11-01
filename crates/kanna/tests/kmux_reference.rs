@@ -15,7 +15,7 @@ mod commands {
 use kanna::args::Argv;
 use serde_json::{json, Value};
 
-const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "project", "toast", "diagrams", "machine", "crashes", "serial"];
+const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "project", "toast", "diagrams", "machine", "crashes", "schedule", "serial"];
 
 const KMUX_ONLY: &[&str] = &[];
 

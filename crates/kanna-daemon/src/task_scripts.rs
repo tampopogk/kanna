@@ -265,7 +265,7 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         let repo = fs::canonicalize(&repo).unwrap();
         sh(&repo, "git init -q -b main && printf 'target\\n' > .gitignore && git add .gitignore && git -c user.email=e@e -c user.name=e commit -q -m first");
-        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2").unwrap();
+        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2", None).unwrap();
         (fs::canonicalize(dir).unwrap(), PathBuf::from(folder))
     }
 
