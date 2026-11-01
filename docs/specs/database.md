@@ -84,6 +84,8 @@ flowchart LR
 
 **What stays where it is.** Each app's physical state (window frames, text sizes) stays in its own `app-state.json` ([windows](windows.md#2-what-the-app-keeps)). Doc threads stay beside their docs ([doc markup](doc-markup.md)), where an agent reads them. Settings stay JSON files people edit.
 
+**runs, run_revisions, run_stages, run_events**: the software factory's runs, one row per run, revision, stage visit and event ([software factory §6](software-factory.md#6-how-its-built)).
+
 ## Quiz results
 
 **Built.** Every [quiz](quiz.md) round and answer is kept, so misses can come back in a later round and a round can cover what's new since the last one.
