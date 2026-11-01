@@ -129,23 +129,6 @@ mark.on { background: var(--hit-on); }
 .status .sp { flex: 1; }
 .status .file { font-family: var(--mono); }
 
-.picker-back { position: absolute; inset: 34px 0 0 0; background: var(--bg); display: none; align-items: flex-start; justify-content: center; padding-top: 60px; }
-.picker-back.on { display: flex; }
-.picker { width: 560px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); box-shadow: 0 12px 40px var(--shadow); overflow: hidden; }
-.picker h2 { font-size: 13px; margin: 0; padding: 12px 14px 4px; }
-.picker p { margin: 0; padding: 0 14px 10px; color: var(--muted); font-size: 12px; }
-.port { display: flex; gap: 10px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); cursor: pointer; }
-.port:hover, .port.on { background: var(--hover); }
-.port.on { box-shadow: inset 3px 0 0 var(--link); }
-.port .ic { width: 28px; height: 28px; border-radius: 6px; background: var(--chip); display: flex; align-items: center; justify-content: center; color: var(--muted); flex: none; }
-.port .nm { font-weight: 600; }
-.port .meta { color: var(--muted); font: 11px var(--mono); }
-.port .tag { margin-left: auto; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
-.port .tag.live { color: var(--ok); border-color: var(--ok); }
-.picker .foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--bar-bg); font-size: 12px; }
-.picker .foot .sp { flex: 1; }
-.btn { font: 12px var(--sans); border-radius: 5px; padding: 4px 12px; border: 1px solid var(--line); background: var(--chip); color: var(--fg); cursor: pointer; }
-.btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
 </style>
 </head>
 <body>
@@ -164,7 +147,7 @@ mark.on { background: var(--hit-on); }
       <button data-scene="hex">Hex view</button>
       <button data-scene="find">Find</button>
       <button data-scene="pause">Pause</button>
-      <button data-scene="picker">Picker (no PORT)</button>
+      <button data-scene="noport">Open with no PORT</button>
       <button data-scene="decode">Decode backtrace (later)</button>
       <span class="sep"></span>
       <button id="theme">Light / dark</button>
@@ -206,16 +189,6 @@ mark.on { background: var(--hit-on); }
             <span class="hint">↩ sends + LF · ⌥↩ without</span>
           </div>
           <div class="status" id="status"></div>
-        </div>
-        <div class="picker-back" id="picker">
-          <div class="picker">
-            <h2>Open a serial port</h2>
-            <p>What's plugged in, by its USB name. A port already open in another pane is shared, not opened twice.</p>
-            <div class="port on"><span class="ic">⌁</span><div><div class="nm">USB JTAG/serial debug unit <span style="font-weight:400;color:var(--muted)">· Espressif</span></div><div class="meta">/dev/cu.usbmodem1101 · 303a:1001 · SN 48:27:E2:4C:91:A0</div></div><span class="tag live">open in fix-wifi-reconnect</span></div>
-            <div class="port"><span class="ic">⌁</span><div><div class="nm">CP2102N USB to UART Bridge <span style="font-weight:400;color:var(--muted)">· Silicon Labs</span></div><div class="meta">/dev/cu.usbserial-0001 · 10c4:ea60 · SN 0001</div></div></div>
-            <div class="port"><span class="ic">⌁</span><div><div class="nm">J-Link VCOM <span style="font-weight:400;color:var(--muted)">· SEGGER (nRF52840 DK)</span></div><div class="meta">/dev/cu.usbmodem0006834651291 · 1366:1015</div></div></div>
-            <div class="foot"><span>Baud</span><span class="sel-chip">115200</span><span>Line ending</span><span class="sel-chip">LF</span><span class="sp"></span><button class="btn">Cancel</button><button class="btn pri">Open</button></div>
-          </div>
         </div>
       </div>
     </div>
@@ -377,16 +350,17 @@ const TERM = {
   unplug: `<span class="g">  Bash(</span><span class="c">kanna serial read serial-1 --follow</span><span class="g">)</span>
 <span class="g">  ⎿ …</span>
 <span class="e">     unplugged at 14:37:52.400; waiting (--follow keeps going)</span>`,
-  picker: `<span class="c">~/work/blinky</span> <span class="p">❯</span> kanna open serial
-<span class="g">opened serial-1 in ws-3 (fix-wifi-reconnect, on the Desk), tab-4: picking a port</span>
-<span class="c">~/work/blinky</span> <span class="p">❯</span> kanna serial list
+  noport: `<span class="c">~/work/blinky</span> <span class="p">❯</span> kanna open serial
+<span class="e">kanna: 3 ports plugged in; name one [ambiguous_port]</span>
 <span class="g">PORT                    USB        OPEN</span>
-/dev/cu.usbmodem1101    303a:1001  serial-1
+/dev/cu.usbmodem1101    303a:1001
   USB JTAG/serial debug unit (Espressif)
 /dev/cu.usbserial-0001  10c4:ea60
   CP2102N USB to UART Bridge (Silicon Labs)
 /dev/cu.usbmodem000683… 1366:1015
-  J-Link VCOM (SEGGER)`,
+  J-Link VCOM (SEGGER)
+<span class="c">~/work/blinky</span> <span class="p">❯</span> kanna open serial usbmodem1101
+<span class="g">opened serial-1 in ws-3 (fix-wifi-reconnect, on the Desk), tab-4: connected at 115200</span>`,
   zephyr: `<span class="c">~/work/node-7</span> <span class="p">❯</span> kanna open serial /dev/cu.usbmodem0006834651291
 <span class="g">opened serial-2 in ws-5 (ble-bonding), tab-2: connected at 115200</span>
 <span class="c">~/work/node-7</span> <span class="p">❯</span> kanna serial send serial-2 'sensor get bme280'`,
@@ -406,9 +380,9 @@ const scenes = {
   hex() { scenes.reset(); s.hex = true; },
   find() { fresh(); boot(); s.find = true; term("boot"); },
   pause() { fresh(); boot(); render(); s.paused = true; for (let i = 0; i < 7; i++) add("rx", `D (${7000 + i * 500}) mqtt: ping`, 0.5); term("boot"); },
-  picker() { fresh(); term("picker"); },
+  noport() { fresh(); boot(); term("noport"); },
 };
-function play(name) { scenes[name](); $("picker").classList.toggle("on", name === "picker"); render(); }
+function play(name) { scenes[name](); render(); }
 
 document.querySelectorAll("[data-scene]").forEach(b => b.onclick = () => { play(b.dataset.scene); location.hash = b.dataset.scene + (document.body.classList.contains("picture") ? ",picture" : "") + ($("window").classList.contains("light") ? ",light" : ""); });
 $("theme").onclick = () => { const w = $("window"); w.classList.toggle("light"); w.classList.toggle("dark"); };
@@ -421,7 +395,6 @@ $("findq").onkeydown = e => { if (e.key === "Escape") { s.find = false; render()
 $("b-reset").onclick = () => { s.t += 3; ev("<b>reset</b> · DTR/RTS"); add("rx", "ESP-ROM:esp32s3-20210327", 0.05); BOOT.slice(0, 4).forEach(l => add("rx", l, 0.02)); render(); };
 $("v-text").onclick = () => { s.hex = false; render(); };
 $("v-hex").onclick = () => { s.hex = true; render(); };
-$("picker").addEventListener("click", e => { if (e.target.closest(".pri") || e.target.closest(".port")) { scenes.boot(); $("picker").classList.remove("on"); render(); } else if (e.target.closest(".btn")) $("picker").classList.remove("on"); });
 $("sendq").onkeydown = e => {
   const q = $("sendq");
   if (e.key === "Enter" && q.value) {

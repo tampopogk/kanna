@@ -27,7 +27,7 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 | **tio** | reconnects by itself when the device comes back; names ports by USB ID; timestamps per line; hex mode | its key-prefix menu (the pane has buttons) |
 | **pyserial-miniterm** | line ending choice (LF, CRLF, CR); `\xNN` for bytes that aren't text | asserting DTR/RTS on open, which holds an ESP32 in reset |
 | **idf.py monitor** | ESP-IDF levels; backtrace decoding with the project's ELF (§8); reset by toggling RTS with DTR clear; DTR and RTS left clear on open | owning the flash step: a flash borrows the port instead (§4) |
-| **Arduino IDE / PlatformIO** | a picker of what's plugged in by board name; letting go of the port for an upload and taking it back after | one monitor per IDE window |
+| **Arduino IDE / PlatformIO** | ports listed by board name; letting go of the port for an upload and taking it back after | one monitor per IDE window |
 
 ## 2. The pane
 
@@ -36,10 +36,8 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 | ![](serial-monitor-light.png) | ![](serial-monitor-unplugged.png) |
 | **Hex view** | **Zephyr shell** |
 | ![](serial-monitor-hex.png) | ![](serial-monitor-zephyr.png) |
-| **Picker** (`kanna open serial` with no port) | **Find** |
-| ![](serial-monitor-picker.png) | ![](serial-monitor-find.png) |
-| **Lent to a flash** (`kanna serial borrow`) | **Reset** |
-| ![](serial-monitor-lent.png) | ![](serial-monitor-reset.png) |
+| **Lent to a flash** (`kanna serial borrow`) | **Find** |
+| ![](serial-monitor-lent.png) | ![](serial-monitor-find.png) |
 
 - **Rows** are lines the device sent (`rx`), lines sent to it (`tx`, shown with `→`), and events from Kanna (connected, unplugged, back, reset, lent, cleared). Each has the host time its first byte arrived.
 - **Levels:** a line that matches ESP-IDF (`E (5341) tag: …`), Zephyr (`[00:00:02.001,220] <err> tag: …`) or Arduino-ESP32 (`[E][file.cpp:12] fn(): …`) takes its level's colour (E, W, I, D/V), and an E or W line a mark in the gutter; a level colour replaces the line's own ANSI colours. ESP-IDF panics (`Guru Meditation`, `abort()`, `assert failed`) count as E. The status line names the format it has seen most.
@@ -58,7 +56,7 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 
 | Command | Does |
 |---|---|
-| `kanna open serial [PORT] [--baud N] [--line-ending lf\|crlf\|cr] [--tab\|--split …]` | open a serial pane on PORT (a path, a name like `usbmodem1101`, or a USB `vid:pid[:serial]`); with no PORT the pane opens on the picker. Baud defaults to 115200. A port already open in another pane is shared: both panes show it |
+| `kanna open serial [PORT] [--baud N] [--line-ending lf\|crlf\|cr] [--tab\|--split …]` | open a serial pane on PORT (a path, a name like `usbmodem1101`, or a USB `vid:pid[:serial]`); with no PORT, the one port plugged in, or, with several, an `ambiguous_port` error listing them as `kanna serial list` (none: `no_port`). Baud defaults to 115200. A port already open in another pane is shared: both panes show it |
 | `kanna serial list` | ports plugged in: path, USB vid:pid, name (product, vendor), serial number, and the pane that has it open |
 | `kanna serial read PANE [--since T\|--last N] [--follow] [--until REGEX --timeout S] [--raw]` | print rows from the log as `HH:MM:SS.mmm TEXT` (`→` for sent, `#` for events). Default: everything since the pane opened. `--until` follows until a line matches, prints it and exits 0, or exits 1 after `S` seconds (default 30). `--since` takes a time (`14:37:40.118`) or a duration (`10s`); `--raw` prints the bytes |
 | `kanna serial send PANE TEXT [--hex] [--no-ending]` | send TEXT plus the pane's line ending, or bytes from hex (`--hex '1b 5b 41'`); prints the time it went, for a later `--since` |
@@ -119,7 +117,6 @@ Each Port appends to `<state folder>/serial/<port name>.log` (`usbmodem1101.log`
 | `serial.state {pane, state, port, device, baud, lineEnding, rx, format}` | daemon | connected, unplugged or lent (with the borrowing command), the settings, bytes received, the log format seen most |
 | `serial.send {pane, data, ending}`, `serial.reset {pane}`, `serial.set {pane, baud?, lineEnding?}` | app | the pane's controls, answered as the CLI's |
 | `serial.unsubscribe {view}` | app | the view closed |
-| `serial.ports` (with an `id`) | app | the picker's list, as `kanna serial list`; the daemon then sends `serial.ports {ports}` on every hotplug while the picker is open |
 
 ## 7. Tests
 
