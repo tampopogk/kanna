@@ -160,7 +160,7 @@ mark.on { background: var(--hit-on); }
       <button data-scene="unplug">Unplug</button>
       <button data-scene="replug">Plug back in</button>
       <button data-scene="reset">Reset button</button>
-      <button data-scene="released">Released</button>
+      <button data-scene="flashing">Flashing</button>
       <button data-scene="hex">Hex view</button>
       <button data-scene="find">Find</button>
       <button data-scene="pause">Pause</button>
@@ -194,7 +194,6 @@ mark.on { background: var(--hit-on); }
             <button class="tb" id="b-pause" title="Pause scrolling (the log keeps recording)"><svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>Pause</button>
             <button class="tb" id="b-clear" title="Clear the view (the log file keeps everything)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"/><path d="M4.2 11.8l7.6-7.6"/></svg>Clear</button>
             <button class="tb" id="b-find" title="Find (⌘F)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14" stroke-linecap="round"/></svg></button>
-            <button class="tb" id="b-release" title="Close the port so another program can use it; click again to take it back"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 4h-2.5v8h2.5M10 5l3 3-3 3M13 8h-7"/></svg>Release</button>
             <button class="tb" id="b-reset" title="Reset the device (toggles DTR/RTS)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8a5 5 0 1 0 1.5-3.5"/><path d="M3 2.5v3h3"/></svg>Reset</button>
           </div>
           <div class="findbar" id="findbar"><input id="findq" value="wifi" spellcheck="false"><span class="n" id="findn"></span><span class="n">↩ next · ⇧↩ previous · esc</span></div>
@@ -339,19 +338,19 @@ function render() {
   $("v-text").classList.toggle("on", !s.hex); $("v-hex").classList.toggle("on", s.hex);
   $("tabled").className = "led" + (s.conn === "up" ? "" : " off");
   $("tabname").textContent = s.tab; $("dev").textContent = s.dev;
-  $("sendq").disabled = s.conn !== "up"; $("b-release").classList.toggle("on", s.conn === "released");
-  $("sendq").placeholder = s.conn === "up" ? "Send a line to the device (↑ for history)" : s.conn === "released" ? "Released: the port is closed until you take it back" : "Unplugged: lines can't be sent until the device is back";
-  const st = { up: `<span class="st"><i></i>connected</span>`, down: `<span class="st off"><i></i>unplugged · waiting for 303a:1001 SN 48:27:E2:4C:91:A0</span>`, released: `<span class="st wait"><i></i>released · click Release to take the port back</span>` }[s.conn];
+  $("sendq").disabled = s.conn !== "up";
+  $("sendq").placeholder = s.conn === "up" ? "Send a line to the device (↑ for history)" : s.conn === "lent" ? "Lent to idf.py flash: back when it exits" : "Unplugged: lines can't be sent until the device is back";
+  const st = { up: `<span class="st"><i></i>connected</span>`, down: `<span class="st off"><i></i>unplugged · waiting for 303a:1001 SN 48:27:E2:4C:91:A0</span>`, lent: `<span class="st wait"><i></i>lent to idf.py flash (pid 51234) · back when it exits</span>` }[s.conn];
   $("status").innerHTML = `${st}<span>${s.port}</span><span>115200 8N1</span><span>LF</span><span>${s.fmt} log levels</span><span>rx ${(s.rx / 1024).toFixed(1)} KB</span><span class="sp"></span><span class="file" title="~/Library/Application Support/kanna-dev/serial/usbmodem1101.log: the whole session, for grep">serial/usbmodem1101.log</span><span>serial-1</span>`;
 }
 
 const TERM = {
   boot: `<span class="c">~/work/blinky</span> <span class="p">❯</span> claude
 <span class="a">●</span> I'll flash the reconnect fix and watch it boot.
-<span class="g">  Bash(</span><span class="c">kanna serial run serial-1 -- idf.py flash</span><span class="g">)</span>
-<span class="ok">  ⎿ released serial-1 for idf.py flash</span>
+<span class="g">  Bash(</span><span class="c">kanna serial borrow serial-1 -- idf.py flash</span><span class="g">)</span>
+<span class="ok">  ⎿ lent serial-1 to idf.py flash</span>
 <span class="ok">    … Hard resetting via RTS pin... Done</span>
-<span class="ok">    serial-1 connected again</span>
+<span class="ok">    serial-1 back</span>
 <span class="g">  Bash(</span><span class="c">kanna serial read serial-1 --until 'app: ready|Guru Meditation' --timeout 30</span><span class="g">)</span>
 <span class="ok">  ⎿ 14:37:12.071 I (24) boot: ESP-IDF v5.3.1 2nd stage bootloader</span>
 <span class="g">     … 16 lines</span>
@@ -367,6 +366,11 @@ const TERM = {
   is a NULL netif. Decoding the backtrace:
 <span class="g">  Bash(</span><span class="c">xtensa-esp32s3-elf-addr2line -e build/blinky.elf 0x42008a1b</span><span class="g">)</span>
 <span class="ok">  ⎿ main/wifi.c:118</span>`,
+  flashing: `<span class="c">~/work/blinky</span> <span class="p">❯</span> claude
+<span class="a">●</span> Flashing the fix; the monitor lends the port meanwhile.
+<span class="g">  Bash(</span><span class="c">kanna serial borrow serial-1 -- idf.py flash</span><span class="g">)</span>
+<span class="g">  ⎿ lent serial-1 to idf.py flash</span>
+<span class="g">    Writing at 0x00034000... (42 %)</span>`,
   reset: `<span class="g">  Bash(</span><span class="c">kanna serial reset serial-1</span><span class="g">)</span>
 <span class="ok">  ⎿ reset serial-1 (DTR/RTS) at 14:37:40.118</span>
 <span class="g">  Bash(</span><span class="c">kanna serial read serial-1 --since 14:37:40.118 --until 'app: ready' --timeout 15</span><span class="g">)</span>`,
@@ -391,14 +395,14 @@ function term(k) { $("term").innerHTML = TERM[k] || TERM.boot; }
 
 function boot() { ev(`connected <b>${s.port}</b> at 115200`); BOOT.forEach((l, i) => add("rx", l, i === 9 ? 0.1 : i === 13 ? 5 : 0.02)); }
 const scenes = {
-  boot() { fresh(); s.t -= 9; ev("<b>released</b> · idf.py flash (pid 51234)"); s.t += 9; boot(); term("boot"); },
+  boot() { fresh(); s.t -= 9; ev("<b>lent</b> · idf.py flash (pid 51234)"); s.t += 9; boot(); term("boot"); },
   zephyr() { fresh(); Object.assign(s, { port: "/dev/cu.usbmodem0006834651291", dev: "J-Link VCOM", tab: "nRF52840 · usbmodem0006…", fmt: "Zephyr" }); ev(`connected <b>${s.port}</b> at 115200`); ZEPHYR.forEach(l => add("rx", l, 0.25)); add("tx", "sensor get bme280", 3); add("rx", "temp: 21.84 C  press: 101.3 kPa  hum: 41.2 %", 0.02); add("rx", "uart:~$ ", 0.001); term("zephyr"); },
   crash() { fresh(); boot(); add("tx", "wifi drop", 14); CRASH.forEach((l, i) => add("rx", l, i === 1 ? 2.3 : 0.003)); term("crash"); },
   decode() { scenes.crash(); s.decode = true; },
   unplug() { fresh(); boot(); add("rx", "\x1b[0;32mI (21843) wifi_station: disconnected, reason 8\x1b[0m", 15); ev("<b>unplugged</b> · waiting for the device to come back", true); s.conn = "down"; term("unplug"); },
   replug() { scenes.unplug(); s.conn = "up"; s.t += 6.2; ev(`back <b>${s.port}</b> after 6.2 s`); add("rx", "ESP-ROM:esp32s3-20210327", 0.05); BOOT.slice(0, 5).forEach(l => add("rx", l, 0.02)); term("unplug"); },
   reset() { fresh(); boot(); s.t += 21; ev("<b>reset</b> · DTR/RTS"); add("rx", "ESP-ROM:esp32s3-20210327", 0.05); add("rx", "rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)", 0.001); add("rx", "\x00\x00\xff\xfe\x1b[0mload:0x3fce3818,len:0x109c", 0.002); BOOT.slice(0, 6).forEach(l => add("rx", l, 0.02)); term("reset"); },
-  released() { fresh(); boot(); s.t += 30; s.conn = "released"; ev("<b>released</b> · from the pane"); term("boot"); },
+  flashing() { fresh(); boot(); s.t += 30; s.conn = "lent"; ev("<b>lent</b> · idf.py flash (pid 51234)"); term("flashing"); },
   hex() { scenes.reset(); s.hex = true; },
   find() { fresh(); boot(); s.find = true; term("boot"); },
   pause() { fresh(); boot(); render(); s.paused = true; for (let i = 0; i < 7; i++) add("rx", `D (${7000 + i * 500}) mqtt: ping`, 0.5); term("boot"); },
@@ -415,7 +419,6 @@ $("b-find").onclick = () => { s.find = !s.find; render(); if (s.find) $("findq")
 $("findq").oninput = render;
 $("findq").onkeydown = e => { if (e.key === "Escape") { s.find = false; render(); } };
 $("b-reset").onclick = () => { s.t += 3; ev("<b>reset</b> · DTR/RTS"); add("rx", "ESP-ROM:esp32s3-20210327", 0.05); BOOT.slice(0, 4).forEach(l => add("rx", l, 0.02)); render(); };
-$("b-release").onclick = () => { if (s.conn === "released") { s.t += 4; s.conn = "up"; ev(`connected <b>${s.port}</b> at 115200`); } else if (s.conn === "up") { s.t += 1; s.conn = "released"; ev("<b>released</b> · from the pane"); } render(); };
 $("v-text").onclick = () => { s.hex = false; render(); };
 $("v-hex").onclick = () => { s.hex = true; render(); };
 $("picker").addEventListener("click", e => { if (e.target.closest(".pri") || e.target.closest(".port")) { scenes.boot(); $("picker").classList.remove("on"); render(); } else if (e.target.closest(".btn")) $("picker").classList.remove("on"); });

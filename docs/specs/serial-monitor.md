@@ -26,8 +26,8 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 |---|---|---|
 | **tio** | reconnects by itself when the device comes back; names ports by USB ID; timestamps per line; hex mode | its key-prefix menu (the pane has buttons) |
 | **pyserial-miniterm** | line ending choice (LF, CRLF, CR); `\xNN` for bytes that aren't text | asserting DTR/RTS on open, which holds an ESP32 in reset |
-| **idf.py monitor** | ESP-IDF levels; backtrace decoding with the project's ELF (§8); reset by toggling RTS with DTR clear; DTR and RTS left clear on open | owning the flash step: Kanna lends the port instead (§4) |
-| **Arduino IDE / PlatformIO** | a picker of what's plugged in by board name; releasing the port for an upload and taking it back after | one monitor per IDE window |
+| **idf.py monitor** | ESP-IDF levels; backtrace decoding with the project's ELF (§8); reset by toggling RTS with DTR clear; DTR and RTS left clear on open | owning the flash step: a flash borrows the port instead (§4) |
+| **Arduino IDE / PlatformIO** | a picker of what's plugged in by board name; letting go of the port for an upload and taking it back after | one monitor per IDE window |
 
 ## 2. The pane
 
@@ -38,8 +38,10 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 | ![](serial-monitor-hex.png) | ![](serial-monitor-zephyr.png) |
 | **Picker** (`kanna open serial` with no port) | **Find** |
 | ![](serial-monitor-picker.png) | ![](serial-monitor-find.png) |
+| **Lent to a flash** (`kanna serial borrow`) | **Reset** |
+| ![](serial-monitor-lent.png) | ![](serial-monitor-reset.png) |
 
-- **Rows** are lines the device sent (`rx`), lines sent to it (`tx`, shown with `→`), and events from Kanna (connected, unplugged, back, reset, released, cleared). Each has the host time its first byte arrived.
+- **Rows** are lines the device sent (`rx`), lines sent to it (`tx`, shown with `→`), and events from Kanna (connected, unplugged, back, reset, lent, cleared). Each has the host time its first byte arrived.
 - **Levels:** a line that matches ESP-IDF (`E (5341) tag: …`), Zephyr (`[00:00:02.001,220] <err> tag: …`) or Arduino-ESP32 (`[E][file.cpp:12] fn(): …`) takes its level's colour (E, W, I, D/V), and an E or W line a mark in the gutter; a level colour replaces the line's own ANSI colours. ESP-IDF panics (`Guru Meditation`, `abort()`, `assert failed`) count as E. The status line names the format it has seen most.
 - **ANSI:** SGR colours and bold show; other escape sequences are dropped. A byte that's neither text nor a recognised sequence shows as a faint `\xNN`.
 - **A partial line** (a shell prompt like `uart:~$ `) shows as soon as it arrives and grows until its newline.
@@ -47,9 +49,9 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 - **Pause** stops the view following, not the recording; a pill counts new lines and resumes on click. Scrolling up pauses the same way.
 - **Clear** empties this view only; the log and other views keep everything.
 - **Find** (⌘F) marks every match in the view; Return and ⇧Return step.
-- **Send line:** Return sends the text plus the line ending, ⌥Return without it; ↑ and ↓ walk this port's history (kept in the state folder, shared by the CLI's `send`). Disabled while the port is unplugged or released.
+- **Send line:** Return sends the text plus the line ending, ⌥Return without it; ↑ and ↓ walk this port's history (kept in the state folder, shared by the CLI's `send`). Disabled while the port is unplugged or lent.
 - **Baud and line ending** change from their chips; a baud change reopens the port at once.
-- **Reset** pulses the device's reset (§4). **Release** closes the port so another program can use it; pressing it again takes it back.
+- **Reset** pulses the device's reset (§4).
 - **The tab** is named after the device (`ESP32-S3 · usbmodem1101`), with a dot that's filled while connected.
 
 ## 3. The CLI
@@ -61,11 +63,10 @@ A **serial pane** shows a serial port (`/dev/cu.*`) for debugging embedded firmw
 | `kanna serial read PANE [--since T\|--last N] [--follow] [--until REGEX --timeout S] [--raw]` | print rows from the log as `HH:MM:SS.mmm TEXT` (`→` for sent, `#` for events). Default: everything since the pane opened. `--until` follows until a line matches, prints it and exits 0, or exits 1 after `S` seconds (default 30). `--since` takes a time (`14:37:40.118`) or a duration (`10s`); `--raw` prints the bytes |
 | `kanna serial send PANE TEXT [--hex] [--no-ending]` | send TEXT plus the pane's line ending, or bytes from hex (`--hex '1b 5b 41'`); prints the time it went, for a later `--since` |
 | `kanna serial reset PANE [--hold MS]` | pulse reset; prints the time |
-| `kanna serial run PANE -- CMD…` | release the port, run CMD (a flash), take the port back when it exits, and exit with CMD's code |
-| `kanna serial release PANE` / `kanna serial take PANE` | release or take the port, as the button |
+| `kanna serial borrow PANE\|PORT -- CMD…` | lend the port to CMD (a flash script): close it, run CMD, reopen it when CMD exits, and exit with CMD's code. By PORT, a script needn't know the pane; with no pane open on the port it just runs CMD |
 | `kanna serial log PANE` | the path of the port's log file, to grep |
 
-`read`, `send`, `reset` and `run` print `unplugged` or `released` and exit 2 when the port isn't there to use, except `read --follow` and `--until`, which wait through it. `send`, `read` and friends answer `wrong_type` for any other pane, and the generic `send`/`read` answer `wrong_type` for a serial pane.
+`read`, `send` and `reset` print `unplugged` or `lent` and exit 2 when the port isn't there to use, except `read --follow` and `--until`, which wait through it. `send`, `read` and friends answer `wrong_type` for any other pane, and the generic `send`/`read` answer `wrong_type` for a serial pane.
 
 ## 4. The daemon owns the port
 
@@ -91,7 +92,7 @@ flowchart LR
 - **Identity:** a Port remembers its device's USB vendor, product, serial number and location (from IOKit), not just its path, so it finds the device again under a new `cu.` name.
 - **Unplug and replug:** a read error or IOKit's removal closes the fd; the pane shows `unplugged` and the Port waits for IOKit to announce a matching device, then reopens it with the same settings and logs `back after N s`. No polling.
 - **Reset:** DTR clear, RTS set for `--hold` (100 ms default), then RTS clear: esptool's hard reset, which pulls EN low on boards with the ESP auto-reset circuit. On boards that don't wire RTS to reset it does nothing.
-- **Release:** the Port closes the fd and keeps its record; `take` (or `run`'s command exiting) reopens it. While released, IOKit events are ignored.
+- **Borrowing:** `borrow` asks the daemon to lend the Port, which closes the fd (the pane shows `lent to idf.py flash`), runs CMD from the CLI with the caller's environment and terminal, and tells the daemon when CMD exits; the daemon then reopens the port, waiting up to 10 s for a device that re-enumerates after the flash's reset. If the CLI dies first, the daemon takes the port back when its connection closes. A second `borrow` of a lent port waits for the first. While lent, IOKit events are ignored.
 - **The app restarting** changes nothing: the views resubscribe after `app.hello` and get the backlog. A **daemon restart** reopens every Port from the layout, logging `connected` again.
 - **Remote machines:** a pane on a task on another machine opens that machine's ports; nothing more to do, since the daemon is the one with the device.
 
@@ -115,8 +116,8 @@ Each Port appends to `<state folder>/serial/<port name>.log` (`usbmodem1101.log`
 |---|---|---|
 | `serial.subscribe {view, pane}` (with an `id`) | app | this view shows the pane's Port; the reply has the last rows (up to 10,000), the partial line, the state and settings |
 | `serial {pane, rows, partial?}` | daemon | new rows, batched every 16 ms at most |
-| `serial.state {pane, state, port, device, baud, lineEnding, rx, format}` | daemon | connected, unplugged or released, the settings, bytes received, the log format seen most |
-| `serial.send {pane, data, ending}`, `serial.reset {pane}`, `serial.release {pane, release}`, `serial.set {pane, baud?, lineEnding?}` | app | the pane's controls, answered as the CLI's |
+| `serial.state {pane, state, port, device, baud, lineEnding, rx, format}` | daemon | connected, unplugged or lent (with the borrowing command), the settings, bytes received, the log format seen most |
+| `serial.send {pane, data, ending}`, `serial.reset {pane}`, `serial.set {pane, baud?, lineEnding?}` | app | the pane's controls, answered as the CLI's |
 | `serial.unsubscribe {view}` | app | the view closed |
 | `serial.ports` (with an `id`) | app | the picker's list, as `kanna serial list`; the daemon then sends `serial.ports {ports}` on every hotplug while the picker is open |
 
@@ -124,7 +125,7 @@ Each Port appends to `<state folder>/serial/<port name>.log` (`usbmodem1101.log`
 
 A pty pair stands in for the device: the test opens `/dev/ptmx`, gives the daemon the slave's path as the port (a test-only `--serial-path` ID map stands in for IOKit's identity and hotplug), and writes to and reads from the master. On a private instance (`scripts/e2e-kanna.sh`):
 
-- `crates/kanna-daemon/tests/serial.rs`: line splitting, partial lines, `\xNN` round trip, level detection for the three formats, `read --until` match and timeout, `send` with each ending and `--hex`, the log file and its rotation, closing the master (unplugged) and a new pty under the same identity (back), `run` releasing and taking back.
+- `crates/kanna-daemon/tests/serial.rs`: line splitting, partial lines, `\xNN` round trip, level detection for the three formats, `read --until` match and timeout, `send` with each ending and `--hex`, the log file and its rotation, closing the master (unplugged) and a new pty under the same identity (back), `borrow` lending and taking back, also when the CLI is killed mid-command.
 - `serial_pane` in `scripts/e2e-kanna.sh`: the pane opens, shows rows, sends a line the master reads, survives an app relaunch with its backlog; `debug.serial` returns the view's rows and state.
 - Hand-checked on hardware before merge: an ESP32-S3 (USB JTAG/serial), an ESP32 on a CP2102 (auto-reset circuit), and a Zephyr board, including unplug and replug.
 
