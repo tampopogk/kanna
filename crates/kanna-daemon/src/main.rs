@@ -30,6 +30,7 @@ mod diffs;
 mod machines;
 mod files;
 mod store;
+mod stacks;
 mod task_scripts;
 mod terminals;
 mod toasts;
@@ -93,7 +94,9 @@ pub enum Event {
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
-    Worktree { token: u64, result: Result<(String, String), String> },
+    Worktree { token: u64, result: Result<stacks::Made, String> },
+    Stacks { seen: Vec<stacks::Seen> },
+    Heads,
     Branch { token: u64, branch: String },
     Turn { token: u64 },
     Posted { token: u64, result: Result<(), String> },
@@ -125,7 +128,7 @@ impl Event {
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::RulesUpdated { .. } => "loop.rules",
-            Event::Worktree { .. } | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::File { .. } => "loop.file",
             Event::KeeperReadable | Event::KeeperExits | Event::KeeperLost(_) => "loop.keeper",
@@ -639,6 +642,8 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => tasks.worktree_made(token, result),
+            Event::Stacks { seen } => tasks.watched(seen),
+            Event::Heads => tasks.heads_moved(),
             Event::Branch { token, branch } => tasks.branch_found(token, branch),
             Event::Turn { token } => tasks.next_turn(token),
             Event::Posted { token, result } => tasks.posted(token, result),

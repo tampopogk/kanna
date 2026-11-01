@@ -329,7 +329,7 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
+        "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
         "task" if request["action"] == "done" => "tasks",
         "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",
         "task" if request["action"] == "name" => "rename-pane",
@@ -683,6 +683,14 @@ mod tests {
             return Err(commands::usage(command.name, &format!("unexpected argument \"{extra}\"")));
         }
         Ok((command.name.to_string(), request))
+    }
+
+    #[test]
+    fn ready_set_and_clear_name_a_task_or_the_one_they_run_in() {
+        assert_eq!(parse("kanna task ready set 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
+        assert_eq!(parse("kanna task ready clear 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
+        assert!(parse("kanna task ready").is_err(), "outside a task's terminal it needs a TASK");
+        assert!(parse("kanna task ready 3f9a").is_err(), "it says set or clear");
     }
 
     #[test]
