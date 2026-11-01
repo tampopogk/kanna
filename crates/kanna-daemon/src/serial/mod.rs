@@ -453,7 +453,7 @@ impl Serial {
                 for line in lines {
                     self.row(key, Dir::Rx, line.t, lines::escape(&line.bytes));
                 }
-                self.push(key, false);
+                self.push(key);
             }
             Read::Idle => {
                 let stale = self.ports.borrow().get(key).and_then(|p| p.splitter.partial().map(|l| l.t)).is_some_and(|t| now_ms() - t >= device::IDLE.as_millis() as i64);
@@ -461,7 +461,7 @@ impl Serial {
                     let line = self.ports.borrow_mut().get_mut(key).and_then(|p| p.splitter.take_partial());
                     if let Some(line) = line {
                         self.row(key, Dir::Rx, line.t, lines::escape(&line.bytes));
-                        self.push(key, false);
+                        self.push(key);
                     }
                 }
             }
@@ -497,14 +497,14 @@ impl Serial {
 
     fn event(&self, key: &str, text: String) {
         self.row(key, Dir::Event, now_ms(), text);
-        self.push(key, true);
+        self.push(key);
     }
 
     fn views_of(&self, key: &str) -> Vec<String> {
         self.views.borrow().iter().filter(|(_, k)| *k == key).map(|(v, _)| v.clone()).collect()
     }
 
-    fn push(&self, key: &str, with_state: bool) {
+    fn push(&self, key: &str) {
         self.wake(key);
         let views = self.views_of(key);
         if views.is_empty() {
@@ -513,11 +513,7 @@ impl Serial {
         let payload = {
             let ports = self.ports.borrow();
             let Some(port) = ports.get(key) else { return };
-            let mut payload = json!({ "content": key, "partial": port.partial(), "rx": port.rx });
-            if with_state {
-                payload["state"] = port.state_json();
-            }
-            payload
+            json!({ "content": key, "partial": port.partial(), "rx": port.rx, "state": port.state_json() })
         };
         let mut payload = payload;
         payload["rows"] = Value::Array(self.pending_rows(key));
@@ -830,7 +826,7 @@ impl Serial {
         if string(args, "text").is_some() && string(args, "hex").is_none() && !shown.is_empty() {
             self.remember(&key, &shown);
         }
-        self.push(&key, false);
+        self.push(&key);
         Ok(Map::from_iter([("at".to_string(), json!(t))]))
     }
 

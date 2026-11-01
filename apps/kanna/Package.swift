@@ -34,6 +34,8 @@ let package = Package(
         .testTarget(name: "KannaCodeTests", dependencies: ["KannaCode"]),
         .target(name: "KannaDiff", dependencies: ["KannaCode", "KannaOverview"], linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaDiffTests", dependencies: ["KannaDiff"]),
+        .target(name: "KannaSerial", linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
+        .testTarget(name: "KannaSerialTests", dependencies: ["KannaSerial"]),
         .target(name: "KannaLinks"),
         .target(name: "KannaDrop"),
         .target(name: "KannaStatus"),
@@ -47,7 +49,7 @@ let package = Package(
         .target(name: "SimBridge", linkerSettings: ["AppKit", "IOSurface", "QuartzCore"].map { .linkedFramework($0) }),
         .executableTarget(
             name: "Kanna",
-            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaCrashC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaOverview", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
+            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaCrashC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaSerial", "KannaOverview", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
             linkerSettings: [.linkedLibrary("c++"), kannaFFI]
                 + ["AppKit", "Carbon", "CoreText", "IOSurface", "Metal", "QuartzCore", "Security", "SystemConfiguration", "UniformTypeIdentifiers", "WebKit"].map { .linkedFramework($0) }
         ),
