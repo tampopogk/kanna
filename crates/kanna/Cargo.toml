@@ -8,6 +8,7 @@ license = "FSL-1.1-MIT"
 kanna-build = { path = "../kanna-build" }
 kanna-crash = { path = "../kanna-crash" }
 kanna-client = { path = "../kanna-client" }
+kanna-calltree = { path = "../kanna-calltree" }
 kanna-merman = { path = "../kanna-merman" }
 kanna-pipe = { path = "../kanna-pipe" }
 kanna-threads = { path = "../kanna-threads" }
