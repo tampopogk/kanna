@@ -9,6 +9,12 @@ pub const PLANNER: &str = "planner";
 
 pub const USER: &str = "user";
 
+pub const SCHEDULE: &str = "schedule ";
+
+pub fn yours(sender: &str) -> bool {
+    sender == USER || sender.starts_with(SCHEDULE)
+}
+
 pub const PICKUP: Duration = Duration::from_secs(5);
 
 pub const POST_TIMEOUT: Duration = Duration::from_secs(2);

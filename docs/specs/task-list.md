@@ -45,6 +45,32 @@ task-7804  Reload changed images in markdown            stopped
 task-151a  send-key                                     stopped  ~/work/kmux
 ```
 
+With `--include-done` and a QUERY, a third heading lists the done tasks of the same repos that match, newest first, each ending with when it was done, so an agent can check whether work was done already before it makes a task:
+
+```text
+$ kanna task list send enter --include-done
+Shelf
+task-7804  kanna send presses Enter                     stopped
+
+Done
+task-3c1a  kanna send submits in codex                           done 3d ago
+```
+
+Without a QUERY it lists the 5 tasks done last, a cheap look at what just finished, and says how many more there are:
+
+```text
+$ kanna task list --include-done
+…
+
+Done
+task-41bb  Rate limiting                                         done 2h ago
+task-3c1a  kanna send submits in codex                           done 3d ago
+task-9e02  Shelf history                                         done 3d ago
+task-77d0  Agent permission prompts setting                      done 4d ago
+task-0b5e  Crash capture and restart                             done 5d ago
+… 214 more done: add words to search them
+```
+
 An empty Desk says so under its heading (`(empty)`); with a QUERY, a heading with no match is left out, and nothing matching says `no task matches "QUERY"`.
 
 ## 2. Rows
@@ -80,6 +106,7 @@ flowchart TD
 - **The caller's repo by default:** the repo the CLI runs in (its git common dir, as `kanna task new` finds it). Outside a git repo, every repo's.
 - **`--all`:** every repo's, as the list was before.
 - **QUERY** filters as before ([Shelf search](shelf-search.md#cli)).
+- **`--include-done`:** done tasks too, from `kanna.db` ([database](database.md)), with `done` and `doneAt` in `--json`. With QUERY, every done task that matches; without it, only the 5 done last, and `moreDone` in `--json` says how many are left out: every task ever made would swamp an agent's context.
 
 ## 5. --json
 

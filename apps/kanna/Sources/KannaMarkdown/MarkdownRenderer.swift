@@ -156,7 +156,8 @@ struct MarkdownRenderer {
         let before = NSMutableAttributedString(), after = NSMutableAttributedString()
         asOld { $0.block(was, context, into: before) }
         block(node, context, into: after)
-        if let words = Self.compose(before, after) {
+        let tree = (node as? CodeBlock)?.language?.lowercased() == CallTree.fence
+        if !tree, let words = Self.compose(before, after) {
             out.append(words)
         } else {
             note("Before", color: MarkdownTheme.removedText, context, into: out)
@@ -291,6 +292,8 @@ struct MarkdownRenderer {
         case let code as CodeBlock:
             if code.language?.lowercased() == "mermaid" {
                 diagram(code.code, context, into: out)
+            } else if code.language?.lowercased() == CallTree.fence {
+                callTree(code.code, fenceLine: old ? nil : code.range?.lowerBound.line, context, into: out)
             } else {
                 codeBlock(code.code, context, into: out)
             }
@@ -414,6 +417,18 @@ struct MarkdownRenderer {
             note("Diagram error: \(error.message)", color: MarkdownTheme.bad, context, into: out)
             codeBlock(source, context, into: out)
         }
+    }
+
+    private mutating func callTree(_ source: String, fenceLine: Int?, _ context: Context, into out: NSMutableAttributedString) {
+        let tree = CallTree.parse(source, doc: folder.path)
+        for error in tree.errors {
+            note("Call tree error, line \((fenceLine ?? 0) + error.line): \(error.message)", color: MarkdownTheme.bad, context, into: out)
+        }
+        guard !tree.rows.isEmpty else { return codeBlock(source, context, into: out) }
+        let text = callTreeText(tree, fenceLine: fenceLine, indent: context.indent, firstID: blockCount * 1000)
+        blockCount += 1
+        text.addAttribute(.kannaSource, value: source, range: NSRange(location: 0, length: text.length))
+        out.append(text)
     }
 
     private func note(_ text: String, color: NSColor, _ context: Context, into out: NSMutableAttributedString) {

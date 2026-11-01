@@ -14,6 +14,7 @@ mod content_ids;
 mod crashes;
 mod layout;
 mod lifeline;
+mod perf;
 mod pty;
 mod codex_remote;
 mod messages;
@@ -21,6 +22,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod reader;
+mod schedule;
 mod settings;
 mod shell;
 mod status;
@@ -28,10 +30,13 @@ mod status_command;
 mod diffs;
 mod machines;
 mod files;
+mod serial;
 mod store;
+mod stacks;
 mod task_scripts;
 mod terminals;
 mod toasts;
+mod wire;
 
 use app_link::{AppLink, Outbox, APP_ASK, APP_PREFIX, HELLO};
 use kanna_mux::json::{Map, Value};
@@ -46,7 +51,6 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use reader::Taken;
 use pty::Spawner;
 use store::Store;
 use terminals::{Restored, Terminals};
@@ -92,7 +96,9 @@ pub enum Event {
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
-    Worktree { token: u64, result: Result<(String, String), String> },
+    Worktree { token: u64, result: Result<stacks::Made, String> },
+    Stacks { seen: Vec<stacks::Seen> },
+    Heads,
     Branch { token: u64, branch: String },
     Turn { token: u64 },
     Posted { token: u64, result: Result<(), String> },
@@ -100,11 +106,13 @@ pub enum Event {
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
     File { id: String, read: files::Read },
+    Serial(serial::SerialEvent),
     KeeperReadable,
-    KeeperExits,
+    KeeperHeard,
     KeeperLost(String),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
+    AppBehind { conn: u64, queued: usize },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
@@ -112,6 +120,28 @@ pub enum Event {
     Restart,
     Quit(i32),
     Shutdown(String),
+}
+
+impl Event {
+    fn kind(&self) -> &'static str {
+        match self {
+            Event::Request(..) => "loop.request",
+            Event::Wake => "loop.wake",
+            Event::Output { .. } => "loop.output",
+            Event::Drained { .. } => "loop.drained",
+            Event::Status { .. } => "loop.status",
+            Event::RulesUpdated { .. } => "loop.rules",
+            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
+            Event::File { .. } => "loop.file",
+            Event::Serial(_) => "loop.serial",
+            Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
+            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
+            Event::AppMessage { .. } => "loop.app.message",
+            Event::MachineConfirm { .. } | Event::MachinesSave(_) => "loop.machines",
+            Event::Restart | Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
+        }
+    }
 }
 
 fn main() {
@@ -229,7 +259,8 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
         }),
     );
-    server.take_over(HELLO, app_link::takeover(events.clone()));
+    let wire = Arc::new(wire::Wire::new(events.clone()));
+    server.take_over(HELLO, app_link::takeover(events.clone(), wire.clone()));
     let server = std::mem::ManuallyDrop::new(server);
     match inherited_listener()? {
         Some(listener) => server.start_with(listener),
@@ -256,7 +287,7 @@ fn run() -> Result<Option<PathBuf>, String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
-    let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env));
+    let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
     let renaming = Rc::downgrade(&terminals);
     core.on_renamed(Rc::new(move |from, to| {
@@ -312,7 +343,9 @@ fn run() -> Result<Option<PathBuf>, String> {
     }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
-    let machines = match machines::Machines::start(&state_dir, &db, events.clone()) {
+    let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
+    scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
+    let machines = match machines::Machines::start(&state_dir, &db, events.clone(), wire.clone()) {
         Ok(machines) => {
             log!("kanna-daemon: {}", machines.describe());
             let machines = Rc::new(machines);
@@ -329,9 +362,12 @@ fn run() -> Result<Option<PathBuf>, String> {
     agents.install(&core);
     let diffs = Rc::new(diffs::Diffs::new(events.clone()));
     diffs.install(&core);
+    perf::install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
     files.install(&core);
-    let host = Rc::new(Host::new(terminals.clone()));
+    let serial = Rc::new(serial::Serial::new(events.clone(), &state_dir));
+    serial.install(&core);
+    let host = Rc::new(Host::new(terminals.clone(), serial.clone()));
     core.set_host(Some(host.clone()));
     let noted = core.weak();
     let on_change = Rc::downgrade(&terminals);
@@ -371,6 +407,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     core.note_numbers(&layout.content_numbers());
     core.install_panes(layout.saved_panes(), 0, 0);
     layout.restore(&core.with_panes(kanna_mux::pane_table));
+    serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -378,7 +415,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -403,7 +440,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
     crashes.install(&core);
     let posting = Rc::downgrade(&tasks);
-    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post("kanna", repo, text)));
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), "kanna", text).map_err(|error| error.message)));
     let banner_link = Rc::downgrade(&app);
     *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
     crashes.scan();
@@ -411,6 +448,12 @@ fn run() -> Result<Option<PathBuf>, String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    let serial_link = Rc::downgrade(&app);
+    *serial.on_serial.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = serial_link.upgrade() {
+            app.serial(views, payload);
         }
     }));
     let file_link = Rc::downgrade(&app);
@@ -545,17 +588,19 @@ fn run() -> Result<Option<PathBuf>, String> {
             Some(Shutdown::Done) => break,
             _ => {}
         }
+        let chores = Instant::now();
         app.expire(Instant::now());
         terminals.save_if_changed();
         layout.flush();
         let ticks = if shutdown.is_none() {
             crashes.tick(Instant::now(), app.attached());
             tasks.sweep();
-            tasks.tick()
+            [tasks.tick(), scheduler.tick()].into_iter().flatten().min()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
         let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
+        perf::since("loop.chores", chores);
         let event = match deadline {
             Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -565,6 +610,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        let (kind, handling) = (event.kind(), Instant::now());
         match event {
             Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
                 Some("shutdown") => {
@@ -589,14 +635,12 @@ fn run() -> Result<Option<PathBuf>, String> {
             }),
             Event::Wake => {}
             Event::Output { terminal, serial } => {
-                let (taken, cwd) = terminals.output(&terminal, serial);
-                if let (Some(cwd), Some(pane)) = (cwd, terminals.pane_of(&terminal)) {
+                let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
+                if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
                     app.folder(&pane, &cwd);
                 }
-                match taken {
-                    Some(Taken::Bytes(bytes)) => app.output(&terminal, &bytes),
-                    Some(Taken::Overflowed) => app.resync(&terminal),
-                    None => {}
+                if noticed.overflowed {
+                    app.resync(&terminal);
                 }
             }
             Event::Drained { terminal, serial } => {
@@ -613,6 +657,8 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
             Event::Worktree { token, result } => tasks.worktree_made(token, result),
+            Event::Stacks { seen } => tasks.watched(seen),
+            Event::Heads => tasks.heads_moved(),
             Event::Branch { token, branch } => tasks.branch_found(token, branch),
             Event::Turn { token } => tasks.next_turn(token),
             Event::Posted { token, result } => tasks.posted(token, result),
@@ -620,18 +666,16 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
             Event::File { id, read } => files.loaded(&id, read),
-            Event::KeeperReadable | Event::KeeperExits => {
-                let exits = keeper.take_exits();
+            Event::Serial(event) => serial.event_in(event),
+            Event::KeeperReadable | Event::KeeperHeard => {
+                let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {
                     keeper.resume_watch();
                 }
-                match exits {
-                    Ok(exits) => {
-                        for exit in exits {
-                            let code = exit.status.shell_status();
-                            if let Some((terminal, code)) = terminals.exited(&exit.id, exit.pid, code) {
-                                ended(&terminals, &tasks, &app, &terminal, code);
-                            }
+                match heard {
+                    Ok(heard) => {
+                        for (terminal, code) in terminals.heard(heard) {
+                            ended(&terminals, &tasks, &app, &terminal, code);
                         }
                     }
                     Err(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
@@ -690,6 +734,11 @@ fn run() -> Result<Option<PathBuf>, String> {
                 }
             }
             Event::AppCaughtUp { conn } => app.caught_up(conn),
+            Event::AppBehind { conn, queued } => {
+                if app.is_current(conn) {
+                    app.fell_behind(queued);
+                }
+            }
             Event::MachineConfirm { question, answer } => match &machines {
                 Some(machines) => machines.confirm(&app, question, answer),
                 None => answer(Err("this daemon has no endpoint".into())),
@@ -710,6 +759,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
+        perf::since(kind, handling);
     }
 
     let keep_socket = shutdown.is_none() && app.holds_socket();

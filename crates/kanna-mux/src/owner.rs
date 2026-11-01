@@ -308,7 +308,7 @@ impl LayoutOwner {
 
 fn content_counters(state: &Value) -> HashMap<String, usize> {
     let counters = state.get("counters");
-    ["file", "page", "ios", "diff"].into_iter().filter_map(|prefix| Some((prefix.to_string(), counters?.get(prefix)?.as_f64().filter(|n| *n >= 0.0)? as usize))).collect()
+    ["file", "page", "ios", "diff", "serial"].into_iter().filter_map(|prefix| Some((prefix.to_string(), counters?.get(prefix)?.as_f64().filter(|n| *n >= 0.0)? as usize))).collect()
 }
 
 fn changed(changed: bool) -> Map {

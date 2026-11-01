@@ -35,7 +35,7 @@ This is step one of splitting the logical layout (the daemon's: panes, tabs, win
 | `arrange LAYOUT` | the caller's window's shown tab | refused: `add --window WINDOW` |
 | `screenshot` | the caller's window, if it's showing | refused: `say PANE or --window WINDOW` |
 | `task park` | the caller's task | refused: `park needs a TASK, or run it from the task's terminal` |
-| `task activate TASK` | active on the caller's Desk (the one showing its planning terminal or its task) | onto a Desk on the task's project ([2](#2-desks-by-project)), else a new Desk |
+| `task activate TASK` | active on the caller's Desk (the one showing its planning terminal or its task) if it's on the task's project | onto a Desk on the task's project ([2](#2-desks-by-project)), else a new Desk |
 | `focus`, `zoom`, `close`, `move`, `resize`, `send`, … | — | — (they always name their pane, tab or window) |
 
 - **An unknown caller** (`$KANNA_TERMINAL` names no pane of this Kanna, as from another machine with `--host`, or a pane in no window or workspace) is refused, never sent to the front window: the daemon says `no_caller` or `not_found`, the app's screenshot `not_shown`.
@@ -50,7 +50,7 @@ This is step one of splitting the logical layout (the daemon's: panes, tabs, win
 - **Several:** the one the app had in front last (its own front-to-back order: the Desk it last showed, else `NSApp.orderedWindows`), brought forward.
 - **None:** `kanna PATH` opens one; `task activate` opens a new one for the task.
 
-A Desk's project is its docked task's, else its planning terminal's, else the folder it was opened on, as before ([new Desk](new-desk.md#3-how-its-built)).
+A Desk's project is its planning terminal's, saved ([a Desk's project](desk-project.md)).
 
 ## 3. What stays
 
@@ -62,5 +62,5 @@ A Desk's project is its docked task's, else its planning terminal's, else the fo
 
 - **CLI** (`crates/kanna`): `from_caller` adds `from: $KANNA_TERMINAL` to `open`, `comment`, `markup`, `tour`, `screenshot` and now `arrange`; `unplaced` refuses those with no target and no caller; `task park` needs a task or a caller.
 - **Daemon** (`crates/kanna-mux`): `open` refuses a `from` that names no pane (`no_caller`); placing beside a caller in no window or workspace is refused (`not_found`), as is `arrange` from one; finding a pane already showing a file looks in the caller's window or the `window` given, never the key window; a new terminal with no caller and no window starts in `$HOME`, not the key window's task folder.
-- **App:** `screenshot` with no target needs `from` and refuses one that isn't showing; `desk {action: pull}` (`task activate`) picks the caller's Desk (`by`), else `projectDesk`, else a new one; `park` needs its task; `openDesk` picks `projectDesk`, the project's frontmost Desk.
+- **App:** `screenshot` with no target needs `from` and refuses one that isn't showing; `desk {action: pull}` (`task activate`) picks the caller's Desk (`by`) if it's on the task's project, else `projectDesk`, else a new one (`deskFor`); `park` needs its task; `openDesk` picks `projectDesk`, the project's frontmost Desk.
 - **Checked by** `crates/kanna/tests/cli.rs` (the refusals before connecting, `arrange` and `screenshot` from a caller), and e2e `cli_caller` (each command refused outside Kanna, an unknown caller, and from a terminal in win-1 while win-2 is in front: `open`, `comment` and its reuse, `comment --window`, `markup`, `arrange`), `screenshot` (the caller's window while another is in front, the refusals), and `path_last_in_front` (`task activate` from two Desks' planning terminals, `kanna PATH` with two Desks on one project bringing forward the one last in front, `task park` from a task's terminal).

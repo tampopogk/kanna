@@ -1,6 +1,6 @@
 use crate::{fdpass, paths, ExitStatus};
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -41,6 +41,12 @@ pub struct Exited {
     pub id: String,
     pub pid: i32,
     pub status: ExitStatus,
+}
+
+#[derive(Debug)]
+pub enum Heard {
+    Exited(Exited),
+    Spawned(u64, io::Result<Pty>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -92,12 +98,25 @@ pub struct Client {
     inbuf: Vec<u8>,
     readbuf: Box<[u8]>,
     fds: VecDeque<OwnedFd>,
-    events: VecDeque<Exited>,
+    heard: VecDeque<Heard>,
+    spawning: HashMap<u64, (String, String)>,
     next_req: u64,
 }
 
 fn strings(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default()
+}
+
+fn cwd_of(req: &SpawnRequest) -> String {
+    req.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn spawned(id: String, cwd: String, reply: &Value, mut fds: Vec<OwnedFd>) -> io::Result<Pty> {
+    if reply["ok"].as_bool() != Some(true) {
+        return Err(keeper_error(reply["error"].as_str().unwrap_or("keeper error").to_string()));
+    }
+    let master = fds.pop().ok_or_else(|| keeper_error("spawn: no pty in the reply"))?;
+    Ok(Pty { id, pid: reply["pid"].as_i64().unwrap_or(0) as i32, cmd: strings(&reply["cmd"]), cwd, master, exit: None })
 }
 
 fn keeper_error(msg: impl Into<String>) -> io::Error {
@@ -110,7 +129,7 @@ impl Client {
         if fdpass::peer_uid(&stream)? != unsafe { libc::getuid() } {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the keeper runs as another user"));
         }
-        Ok(Client { stream, inbuf: Vec::new(), readbuf: vec![0u8; 65536].into_boxed_slice(), fds: VecDeque::new(), events: VecDeque::new(), next_req: 1 })
+        Ok(Client { stream, inbuf: Vec::new(), readbuf: vec![0u8; 65536].into_boxed_slice(), fds: VecDeque::new(), heard: VecDeque::new(), spawning: HashMap::new(), next_req: 1 })
     }
 
     pub fn connect_or_start(state_dir: &Path, keeper_bin: &Path) -> io::Result<Self> {
@@ -171,16 +190,14 @@ impl Client {
     }
 
     pub fn spawn(&mut self, req: &SpawnRequest) -> io::Result<Pty> {
-        let (reply, mut fds) = self.request(req.to_json(), |_, _| {})?;
-        let master = fds.pop().ok_or_else(|| keeper_error("spawn: no pty in the reply"))?;
-        Ok(Pty {
-            id: req.id.clone(),
-            pid: reply["pid"].as_i64().unwrap_or(0) as i32,
-            cmd: strings(&reply["cmd"]),
-            cwd: req.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default(),
-            master,
-            exit: None,
-        })
+        let (reply, fds) = self.request(req.to_json(), |_, _| {})?;
+        spawned(req.id.clone(), cwd_of(req), &reply, fds)
+    }
+
+    pub fn send_spawn(&mut self, req: &SpawnRequest) -> io::Result<u64> {
+        let tag = self.send(req.to_json())?;
+        self.spawning.insert(tag, (req.id.clone(), cwd_of(req)));
+        Ok(tag)
     }
 
     pub fn adopt(&mut self) -> io::Result<Vec<Pty>> {
@@ -222,17 +239,31 @@ impl Client {
         self.request(json!({"op": "ack", "id": id}), |_, _| {}).map(|_| ())
     }
 
+    pub fn poll(&mut self) -> io::Result<Vec<Heard>> {
+        while self.fill(false)? {}
+        self.parse_lines(None, &mut |_, _| {});
+        Ok(self.heard.drain(..).collect())
+    }
+
     pub fn poll_events(&mut self) -> io::Result<Vec<Exited>> {
         while self.fill(false)? {}
         self.parse_lines(None, &mut |_, _| {});
-        Ok(self.events.drain(..).collect())
+        Ok(std::iter::from_fn(|| self.next_exit()).collect())
+    }
+
+    fn next_exit(&mut self) -> Option<Exited> {
+        let at = self.heard.iter().position(|heard| matches!(heard, Heard::Exited(_)))?;
+        match self.heard.remove(at) {
+            Some(Heard::Exited(exited)) => Some(exited),
+            _ => None,
+        }
     }
 
     pub fn wait_event(&mut self, timeout: Option<Duration>) -> io::Result<Option<Exited>> {
         let deadline = timeout.map(|t| Instant::now() + t);
         loop {
             self.parse_lines(None, &mut |_, _| {});
-            if let Some(e) = self.events.pop_front() {
+            if let Some(e) = self.next_exit() {
                 return Ok(Some(e));
             }
             let wait = match deadline {
@@ -280,8 +311,13 @@ impl Client {
             let mut fds: Vec<OwnedFd> = (0..n).filter_map(|_| self.fds.pop_front()).collect();
             if let Some(id) = v["exited"].as_str() {
                 if let Some(status) = ExitStatus::from_json(&v) {
-                    self.events.push_back(Exited { id: id.into(), pid: v["pid"].as_i64().unwrap_or(0) as i32, status });
+                    self.heard.push_back(Heard::Exited(Exited { id: id.into(), pid: v["pid"].as_i64().unwrap_or(0) as i32, status }));
                 }
+                continue;
+            }
+            let spawn = v["req"].as_u64().filter(|_| v.get("ok").is_some()).and_then(|tag| Some((tag, self.spawning.remove(&tag)?)));
+            if let Some((tag, (id, cwd))) = spawn {
+                self.heard.push_back(Heard::Spawned(tag, spawned(id, cwd, &v, fds)));
                 continue;
             }
             if req.is_some() && v["req"].as_u64() == req {
@@ -294,11 +330,7 @@ impl Client {
         None
     }
 
-    fn request(
-        &mut self,
-        mut body: Value,
-        mut on_line: impl FnMut(&Value, &mut Vec<OwnedFd>),
-    ) -> io::Result<(Value, Vec<OwnedFd>)> {
+    fn send(&mut self, mut body: Value) -> io::Result<u64> {
         let tag = self.next_req;
         self.next_req += 1;
         body["req"] = tag.into();
@@ -308,6 +340,15 @@ impl Client {
         while sent < bytes.len() {
             sent += fdpass::send(self.stream.as_raw_fd(), &bytes[sent..], &[], false)?;
         }
+        Ok(tag)
+    }
+
+    fn request(
+        &mut self,
+        body: Value,
+        mut on_line: impl FnMut(&Value, &mut Vec<OwnedFd>),
+    ) -> io::Result<(Value, Vec<OwnedFd>)> {
+        let tag = self.send(body)?;
         loop {
             if let Some((reply, fds)) = self.parse_lines(Some(tag), &mut on_line) {
                 if reply["ok"].as_bool() == Some(true) {

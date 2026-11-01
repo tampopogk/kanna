@@ -68,7 +68,7 @@ extension AppController {
             let ms = { (value: Double) -> JSON in .number((value * 10).rounded() / 10) }
             let intervals = Perf.stats().map { stats -> JSON in
                 ["name": .string(stats.name), "count": .number(Double(stats.count)), "recent": .number(Double(stats.recent)),
-                 "p50": ms(stats.p50), "p95": ms(stats.p95), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
+                 "p50": ms(stats.p50), "p95": ms(stats.p95), "p99": ms(stats.p99), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
             }
             let hangs = Perf.hangs().reversed().map { hang -> JSON in
                 ["at": .string(ISO8601DateFormatter().string(from: hang.at)), "ms": ms(hang.ms),
@@ -166,11 +166,11 @@ extension AppController {
             }
             let page = controller.deskView
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
-                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf)]
+                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf)]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
-            let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null] }
+            let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null, "stack": task.stack.map { .string($0) } ?? .null, "sub": .string(task.sub)] }
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "tasks": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
                     "strip": .bool(!controller.deskStrip.isHidden), "page": .bool(!controller.deskView.isHidden), "title": .string(controller.window.title),
                     "minimized": .bool(controller.window.isMiniaturized),
@@ -287,6 +287,19 @@ extension AppController {
             })
             out["captures"] = .array(code.highlights.spans.prefix(200).map { .array([.number(Double($0.range.location)), .number(Double($0.range.length)), .string($0.capture)]) })
             return out
+        }
+        commands["debug.serial"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let serial = contents.serial(id) else { throw KannaError("wrong_type", "not a running serial pane") }
+            if let text = args["type"]?.string { serial.type(text, ending: args["ending"]?.bool ?? true) }
+            if let hex = args["hex"]?.bool { serial.set(hex: hex) }
+            if args["time"]?.bool != nil, args["time"]?.bool != serial.showTime { serial.toggleTime() }
+            if args["pause"]?.bool == true, !serial.paused { serial.togglePause() }
+            if args["follow"]?.bool == true { serial.follow() }
+            if args["clear"]?.bool == true { serial.clear() }
+            return ["text": .string(serial.text), "rows": .number(Double(serial.rows.count)), "state": .string(serial.state.state), "path": .string(serial.state.path),
+                    "baud": .number(Double(serial.state.baud)), "send": .bool(serial.sendEnabled), "status": .string(serial.statusText), "hex": .bool(serial.hex),
+                    "time": .bool(serial.showTime), "paused": .bool(serial.paused), "following": .bool(serial.following), "unseen": .number(Double(serial.unseen)),
+                    "history": .array(serial.history.map { .string($0) }), "failure": serial.failure.map { .string($0) } ?? .null]
         }
         commands["debug.diff"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let diff = contents.diff(id) else { throw KannaError("wrong_type", "not a running diff pane") }

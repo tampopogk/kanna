@@ -9,6 +9,7 @@ final class DaemonLink: TerminalLink {
     private var terminals: [String: ExternalTerminal] = [:]
     private var sizes: [String: JSON] = [:]
     private(set) var attached = false
+    private var acks = false
     let machine: String?
     var client: String?
     private(set) var refusal: JSON?
@@ -27,6 +28,7 @@ final class DaemonLink: TerminalLink {
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
     var onFile: ((String, JSON) -> Void)?
+    var onSerial: ((String, JSON) -> Void)?
     var onLost: (() -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
@@ -123,6 +125,7 @@ final class DaemonLink: TerminalLink {
             }
             attached = ok
             if ok {
+                acks = (message["protocol"]?.number ?? 0) >= Double(Protocols.flow)
                 starter?.attached()
                 refusal = nil
                 daemonInfo = message["daemon"]
@@ -171,9 +174,20 @@ final class DaemonLink: TerminalLink {
         case "pane":
             if let pane = args["pane"] { onPane?(pane) }
         case "output":
+            let ack: () -> Void = { [weak self, acks] in
+                guard acks, let id = args["terminal"]?.string else { return }
+                self?.send("taken", ["terminal": .string(id)])
+            }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
                 consumed = false
-                terminal.output(data) { connection.consumed(delivery) }
+                let echo = Keys.echoing(terminal.id)
+                terminal.output(data) {
+                    connection.consumed(delivery)
+                    ack()
+                }
+                if let echo { Keys.echoed(echo) }
+            } else {
+                ack()
             }
         case "snapshot":
             if let id = args["terminal"]?.string { onSnapshot?(id) }
@@ -198,6 +212,8 @@ final class DaemonLink: TerminalLink {
             if let content = args["content"]?.string { onDiff?(content, args) }
         case "file":
             if let content = args["content"]?.string { onFile?(content, args) }
+        case "serial":
+            if let content = args["content"]?.string { onSerial?(content, args) }
         case "tasks":
             if case .array(let tasks)? = args["shelf"] { onShelf?(tasks, args["desk"]?.array ?? []) }
         case "toast":
@@ -238,7 +254,8 @@ final class DaemonLink: TerminalLink {
     }
 
     func input(_ bytes: Data, from terminal: ExternalTerminal) {
-        send("input", ["terminal": .string(terminal.id), "data": .string(bytes.base64EncodedString())])
+        let sent = terminal.view?.takeTyped().flatMap { Keys.typed(terminal.id, at: $0) }
+        connection.send(outbound(["cmd": "input", "args": ["terminal": .string(terminal.id), "data": .string(bytes.base64EncodedString())]]), sent: sent)
     }
 
     func resizeRequested(_ terminal: ExternalTerminal, cols: UInt16, rows: UInt16, width: UInt32, height: UInt32) {
@@ -255,6 +272,7 @@ final class DaemonLink: TerminalLink {
     func closed(_ terminal: ExternalTerminal) {
         terminals.removeValue(forKey: terminal.id)
         sizes.removeValue(forKey: terminal.id)
+        Keys.forget(terminal.id)
         send("detach", ["terminal": .string(terminal.id)])
     }
 }

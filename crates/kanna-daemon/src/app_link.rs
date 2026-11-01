@@ -1,6 +1,9 @@
 use crate::diffs::Diffs;
 use crate::files::Files;
+use crate::serial::Serial;
 use crate::layout::DaemonLayout;
+use crate::perf;
+use crate::wire::{Wire, FLOW_PROTOCOL};
 use crate::settings::Settings;
 use crate::terminals::Terminals;
 use crate::Event;
@@ -9,45 +12,109 @@ use base64::Engine;
 use kanna_mux::json::{encode, json, string, Map, Value};
 use kanna_mux::{pane_record, pane_table, write_all, KmuxError, Pane, PaneState, PaneType, Responder, Takeover, WeakCore};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 pub const HELLO: &str = "app.hello";
 
 const MAX_LINE: u64 = 16 << 20;
 
-const QUEUE_BEHIND: usize = 16 << 20;
+pub const QUEUE_BEHIND: usize = 16 << 20;
 
 const QUEUE_CAUGHT_UP: usize = 1 << 20;
 
 const QUEUE_LIMIT: usize = 64 << 20;
 
-pub struct Outbox {
-    lines: Sender<Vec<u8>>,
-    queue: Arc<Queue>,
+struct Line {
+    bytes: Vec<u8>,
+    typed: Option<Instant>,
+    terminal: Option<String>,
+}
+
+#[derive(Default)]
+struct Lanes {
+    urgent: VecDeque<Line>,
+    bulk: VecDeque<Line>,
+    queued: HashMap<String, usize>,
 }
 
 #[derive(Default)]
 struct Queue {
+    lanes: Mutex<Lanes>,
+    ready: Condvar,
     bytes: AtomicUsize,
     behind: AtomicBool,
 }
 
+#[derive(Clone, Default)]
+pub struct Outbox {
+    queue: Arc<Queue>,
+}
+
 impl Outbox {
-    fn push(&self, message: &Value) -> usize {
-        let mut line = encode(message).into_bytes();
-        line.push(b'\n');
-        let queued = self.queue.bytes.fetch_add(line.len(), Ordering::SeqCst) + line.len();
-        let _ = self.lines.send(line);
+    pub fn push(&self, message: &Value) -> usize {
+        self.push_for(None, message, None)
+    }
+
+    pub fn behind(&self) -> bool {
+        self.queue.behind.load(Ordering::SeqCst)
+    }
+
+    pub fn fell_behind(&self) -> bool {
+        !self.queue.behind.swap(true, Ordering::SeqCst)
+    }
+
+    pub fn push_for(&self, terminal: Option<&str>, message: &Value, typed: Option<Instant>) -> usize {
+        let mut bytes = encode(message).into_bytes();
+        bytes.push(b'\n');
+        let queued = self.queue.bytes.fetch_add(bytes.len(), Ordering::SeqCst) + bytes.len();
+        let mut lanes = self.queue.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+        let alone = terminal.is_none_or(|terminal| !lanes.queued.contains_key(terminal));
+        if let Some(terminal) = terminal {
+            *lanes.queued.entry(terminal.to_string()).or_default() += 1;
+        }
+        let line = Line { bytes, typed, terminal: terminal.map(String::from) };
+        if typed.is_some() && alone {
+            lanes.urgent.push_back(line);
+        } else {
+            lanes.bulk.push_back(line);
+        }
+        self.queue.ready.notify_one();
         queued
+    }
+
+    fn next(&self) -> Option<Line> {
+        let mut lanes = self.queue.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if let Some(line) = lanes.urgent.pop_front().or_else(|| lanes.bulk.pop_front()) {
+                return Some(line);
+            }
+            if Arc::strong_count(&self.queue) == 1 {
+                return None;
+            }
+            lanes = self.queue.ready.wait_timeout(lanes, Duration::from_millis(500)).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
+    fn written(&self, line: &Line) -> usize {
+        if let Some(terminal) = &line.terminal {
+            let mut lanes = self.queue.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(count) = lanes.queued.get_mut(terminal) {
+                *count -= 1;
+                if *count == 0 {
+                    lanes.queued.remove(terminal);
+                }
+            }
+        }
+        self.queue.bytes.fetch_sub(line.bytes.len(), Ordering::SeqCst) - line.bytes.len()
     }
 }
 
@@ -61,23 +128,46 @@ pub const PROTOCOLS: (u64, u64) = (kanna_build::PROTOCOLS[0] as u64, kanna_build
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
-pub fn takeover(events: Sender<Event>) -> Takeover {
-    Arc::new(move |hello: Value, reader: BufReader<UnixStream>, stream: UnixStream| serve(events.clone(), hello, reader, stream, None))
+pub fn takeover(events: Sender<Event>, wire: Arc<Wire>) -> Takeover {
+    Arc::new(move |hello: Value, reader: BufReader<UnixStream>, stream: UnixStream| serve(events.clone(), wire.clone(), hello, reader, stream, None))
 }
 
-pub fn serve(events: Sender<Event>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
+fn on_the_wire(wire: &Wire, conn: u64, message: &Value, at: Instant) -> bool {
+    if message.get("id").is_some() {
+        return false;
+    }
+    let args = message.get("args").unwrap_or(&Value::Null);
+    let terminal = string(args, "terminal").unwrap_or_default();
+    match string(message, "cmd") {
+        Some("input") => {
+            if let Some(bytes) = string(args, "data").and_then(|d| BASE64.decode(d).ok()) {
+                wire.input(conn, terminal, bytes, at);
+            }
+            true
+        }
+        Some("taken") => {
+            wire.taken(conn, terminal);
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn serve(events: Sender<Event>, wire: Arc<Wire>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
     let conn = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
-    let (sender, lines) = mpsc::channel::<Vec<u8>>();
-    let out = Outbox { lines: sender, queue: Arc::default() };
-    let (queue, caught_up) = (out.queue.clone(), events.clone());
+    let out = Outbox::default();
+    let (lines, caught_up) = (Outbox { queue: out.queue.clone() }, events.clone());
     let (Ok(writer), Ok(closer)) = (stream.try_clone(), stream.try_clone()) else { return };
     let spawned = std::thread::Builder::new().name("kanna.app.write".into()).spawn(move || {
-        for line in lines {
-            if !write_all(&writer, &line) {
+        while let Some(line) = lines.next() {
+            if !write_all(&writer, &line.bytes) {
                 break;
             }
-            let left = queue.bytes.fetch_sub(line.len(), Ordering::SeqCst) - line.len();
-            if left <= QUEUE_CAUGHT_UP && queue.behind.swap(false, Ordering::SeqCst) {
+            if let Some(typed) = line.typed {
+                perf::since("echo.sent", typed);
+            }
+            let left = lines.written(&line);
+            if left <= QUEUE_CAUGHT_UP && lines.queue.behind.swap(false, Ordering::SeqCst) {
                 let _ = caught_up.send(Event::AppCaughtUp { conn });
             }
         }
@@ -99,6 +189,10 @@ pub fn serve(events: Sender<Event>, hello: Value, mut reader: BufReader<UnixStre
         }
         match serde_json::from_slice::<Value>(&line) {
             Ok(message) => {
+                let at = Instant::now();
+                if on_the_wire(&wire, conn, &message, at) {
+                    continue;
+                }
                 if events.send(Event::AppMessage { conn, message }).is_err() {
                     break;
                 }
@@ -134,6 +228,7 @@ pub struct AppLink {
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
     files: Rc<Files>,
+    serial: Rc<Serial>,
     layout: Rc<DaemonLayout>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
@@ -150,7 +245,7 @@ pub struct AppLink {
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, serial: Rc<Serial>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
         AppLink {
             build,
             listener,
@@ -159,6 +254,7 @@ impl AppLink {
             terminals,
             diffs,
             files,
+            serial,
             layout,
             app: RefCell::new(None),
             pending: RefCell::default(),
@@ -173,16 +269,25 @@ impl AppLink {
     }
 
     fn send(&self, message: Value) {
-        let app = self.app.borrow();
-        let Some(app) = app.as_ref().filter(|app| !app.cut.get()) else { return };
+        let app_ref = self.app.borrow();
+        let Some(app) = app_ref.as_ref().filter(|app| !app.cut.get()) else { return };
         let queued = app.out.push(&message);
         if queued > QUEUE_LIMIT {
             log!("kanna-daemon: the app is {} MiB behind; dropping it", queued >> 20);
             app.cut.set(true);
             let _ = app.stream.shutdown(Shutdown::Both);
-        } else if queued > QUEUE_BEHIND && !app.behind.replace(true) {
-            log!("kanna-daemon: the app is {} MiB behind; its terminals start over when it catches up", queued >> 20);
+        } else if queued > QUEUE_BEHIND {
             app.out.queue.behind.store(true, Ordering::SeqCst);
+            drop(app_ref);
+            self.fell_behind(queued);
+        }
+    }
+
+    pub fn fell_behind(&self, queued: usize) {
+        let Some(app) = self.app.borrow().as_ref().map(|app| app.behind.replace(true)) else { return };
+        if !app {
+            log!("kanna-daemon: the app is {} MiB behind; its terminals start over when it catches up", queued >> 20);
+            self.terminals.hide_all();
         }
     }
 
@@ -290,6 +395,7 @@ impl AppLink {
         if let Some(tasks) = self.tasks.borrow().as_ref().and_then(|b| b.upgrade()) {
             *tasks.claimant.borrow_mut() = claimant.unwrap_or_else(|| kanna_mux::MAC_APP.into());
         }
+        self.terminals.wire().connect(conn, out.clone(), protocol >= FLOW_PROTOCOL);
         *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false), keeps: listener.is_some() });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
@@ -350,6 +456,10 @@ impl AppLink {
         self.app.borrow().is_some()
     }
 
+    pub fn is_current(&self, conn: u64) -> bool {
+        self.app.borrow().as_ref().is_some_and(|app| app.id == conn)
+    }
+
     pub fn is_here(&self, conn: u64) -> bool {
         self.app.borrow().as_ref().is_some_and(|app| app.id == conn && app.remote.is_none())
     }
@@ -368,6 +478,8 @@ impl AppLink {
         }
         log!("kanna-daemon: the app went away");
         self.app.borrow_mut().take();
+        self.terminals.wire().disconnect();
+        self.terminals.hide_all();
         if let Some(tasks) = self.tasks.borrow().as_ref().and_then(|b| b.upgrade()) {
             *tasks.claimant.borrow_mut() = kanna_mux::MAC_APP.into();
         }
@@ -376,6 +488,7 @@ impl AppLink {
         let prefix = view_prefix(conn);
         self.diffs.leave(|view| view.starts_with(&prefix));
         self.files.leave(|view| view.starts_with(&prefix));
+        self.serial.leave_views(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
@@ -389,6 +502,7 @@ impl AppLink {
     }
 
     pub fn close(&self) {
+        self.terminals.wire().disconnect();
         if let Some(app) = self.app.borrow_mut().take() {
             let _ = app.stream.shutdown(Shutdown::Both);
         }
@@ -426,6 +540,15 @@ impl AppLink {
                 self.answer_subscribe(&message, reply);
                 return None;
             }
+            ("serial.subscribe", Some(view)) => {
+                let reply = self.serial.subscribe(&view, &args);
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("serial.unsubscribe", Some(view)) => {
+                self.serial.unsubscribe(&view);
+                return None;
+            }
             ("file.unsubscribe", Some(view)) => {
                 self.files.unsubscribe(&view);
                 return None;
@@ -446,17 +569,11 @@ impl AppLink {
             "detach" => {
                 self.attached.borrow_mut().remove(&terminal);
                 self.unsent.borrow_mut().remove(&terminal);
-            }
-            "input" => {
-                if let Some(bytes) = string(&args, "data").and_then(|d| BASE64.decode(d).ok()) {
-                    self.terminals.write(&terminal, bytes);
-                }
+                self.terminals.hide(&terminal);
             }
             "resize" => {
                 let field = |key: &str| args.get(key).and_then(Value::as_u64).unwrap_or(0).min(u16::MAX as u64) as u16;
-                if let Some((cols, rows)) = self.terminals.resize(&terminal, field("cols"), field("rows"), field("width"), field("height")) {
-                    self.notify("grid", json!({ "terminal": terminal, "cols": cols, "rows": rows }));
-                }
+                self.terminals.resize(&terminal, field("cols"), field("rows"), field("width"), field("height"));
             }
             "update" => self.updated(&pane, &args),
             "settings" => self.terminals.set_settings(Settings::from_value(&args)),
@@ -531,6 +648,14 @@ impl AppLink {
         }
     }
 
+    pub fn serial(&self, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify("serial", payload.clone());
+        }
+    }
+
     pub fn layout(&self, view: &Value) {
         self.notify("layout", view.clone());
     }
@@ -545,35 +670,19 @@ impl AppLink {
 
     fn attach(&self, pane: &str) {
         self.attached.borrow_mut().insert(pane.into());
-        let Some(attach) = self.terminals.attach(pane) else { return };
-        let snapshot = match attach.snapshot {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                let retry = Instant::now() + SNAPSHOT_RETRY;
-                if self.unsent.borrow_mut().insert(pane.into(), retry).is_none() {
-                    log!("kanna-daemon: can't snapshot {pane} yet ({error}); trying again shortly");
-                }
-                return;
+        let shows = self.shows(pane) && self.app.borrow().as_ref().is_some_and(|app| !app.cut.get());
+        let Some(attach) = self.terminals.attach(pane, shows) else { return };
+        if let Err(error) = attach.snapshot {
+            let retry = Instant::now() + SNAPSHOT_RETRY;
+            if self.unsent.borrow_mut().insert(pane.into(), retry).is_none() {
+                log!("kanna-daemon: can't snapshot {pane} yet ({error}); trying again shortly");
             }
-        };
-        self.unsent.borrow_mut().remove(pane);
-        if self.shows(pane) {
-            self.notify("snapshot", json!({ "terminal": pane, "data": BASE64.encode(&snapshot) }));
-            self.notify("grid", json!({ "terminal": pane, "cols": attach.cols, "rows": attach.rows }));
+            return;
         }
+        self.unsent.borrow_mut().remove(pane);
         if let Some(code) = attach.exit_code {
             self.exited(pane, code);
         }
-    }
-
-    pub fn output(&self, pane: &str, bytes: &[u8]) {
-        if !self.shows(pane) {
-            return;
-        }
-        if self.unsent.borrow().contains_key(pane) {
-            return;
-        }
-        self.notify("output", json!({ "terminal": pane, "data": BASE64.encode(bytes) }));
     }
 
     pub fn exited(&self, pane: &str, code: i32) {
@@ -583,7 +692,7 @@ impl AppLink {
         if self.unsent.borrow().contains_key(pane) {
             return;
         }
-        self.notify("exited", json!({ "terminal": pane, "code": code }));
+        self.terminals.after_output(pane, &json!({ "cmd": "exited", "args": { "terminal": pane, "code": code } }));
     }
 
     pub fn started(&self, terminal: &str) {
@@ -591,6 +700,9 @@ impl AppLink {
         self.notify("pane", json!({ "pane": Value::Object(pane_record(&pane)) }));
         if let Some(cwd) = &pane.cwd {
             self.folder(&pane.id, cwd);
+        }
+        if self.shows(terminal) {
+            self.attach(terminal);
         }
     }
 
@@ -662,4 +774,40 @@ fn view_prefix(conn: u64) -> String {
 
 fn no_app(what: &str) -> KmuxError {
     KmuxError::new("no_app", format!("{what} needs Kanna.app, and none is attached to this daemon"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn order(out: &Outbox) -> Vec<String> {
+        let mut seen = vec![];
+        loop {
+            let waiting = {
+                let lanes = out.queue.lanes.lock().unwrap();
+                lanes.urgent.len() + lanes.bulk.len()
+            };
+            if waiting == 0 {
+                return seen;
+            }
+            let line = out.next().unwrap();
+            out.written(&line);
+            let message: Value = serde_json::from_slice(&line.bytes).unwrap();
+            seen.push(format!("{} {}", message["cmd"].as_str().unwrap(), message["args"]["terminal"].as_str().unwrap_or("-")));
+        }
+    }
+
+    #[test]
+    fn an_echo_goes_ahead_of_other_terminals_output_but_never_its_own() {
+        let out = Outbox::default();
+        let typed = Some(Instant::now());
+        out.push_for(Some("term-1"), &json!({ "cmd": "output", "args": { "terminal": "term-1" } }), None);
+        out.push(&json!({ "cmd": "layout", "args": {} }));
+        out.push_for(Some("term-2"), &json!({ "cmd": "output", "args": { "terminal": "term-2" } }), typed);
+        out.push_for(Some("term-3"), &json!({ "cmd": "snapshot", "args": { "terminal": "term-3" } }), None);
+        out.push_for(Some("term-3"), &json!({ "cmd": "output", "args": { "terminal": "term-3" } }), typed);
+        assert_eq!(order(&out), ["output term-2", "output term-1", "layout -", "snapshot term-3", "output term-3"]);
+        assert_eq!(out.queue.bytes.load(Ordering::SeqCst), 0);
+        assert!(out.queue.lanes.lock().unwrap().queued.is_empty());
+    }
 }
