@@ -163,7 +163,7 @@ mark.on { background: var(--hit-on); }
       <div class="docs">
         <div class="dtabs">
           <div class="dtab"><span>wifi.c</span><span class="x">✕</span></div>
-          <div class="dtab on"><span class="led" id="tabled"></span><span id="tabname">ESP32-S3 · usbmodem1101</span><span class="x">✕</span></div>
+          <div class="dtab on"><span id="tabname">ESP32-S3 · usbmodem1101</span><span class="x">✕</span></div>
           <span class="add">+</span>
         </div>
         <div class="serial" id="serial">
@@ -309,7 +309,6 @@ function render() {
   $("pill").classList.toggle("on", s.paused); $("pilln").textContent = s.pending;
   $("b-pause").classList.toggle("on", s.paused); $("b-ts").classList.toggle("on", s.ts);
   $("v-text").classList.toggle("on", !s.hex); $("v-hex").classList.toggle("on", s.hex);
-  $("tabled").className = "led" + (s.conn === "up" ? "" : " off");
   $("tabname").textContent = s.tab; $("dev").textContent = s.dev;
   $("sendq").disabled = s.conn !== "up";
   $("sendq").placeholder = s.conn === "up" ? "Send a line to the device (↑ for history)" : s.conn === "lent" ? "Lent to idf.py flash: back when it exits" : "Unplugged: lines can't be sent until the device is back";
