@@ -1731,6 +1731,7 @@ dependencies = [
  "kanna-net",
  "kanna-threads",
  "libc",
+ "regex",
  "serde_json",
  "tokio",
 ]
@@ -1776,6 +1777,7 @@ name = "kanna-daemon"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "core-foundation-sys",
  "kanna-build",
  "kanna-crash",
  "kanna-detect",
@@ -1786,6 +1788,7 @@ dependencies = [
  "kanna-vt",
  "libc",
  "notify",
+ "regex",
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",

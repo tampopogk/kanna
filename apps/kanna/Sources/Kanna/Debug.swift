@@ -288,6 +288,19 @@ extension AppController {
             out["captures"] = .array(code.highlights.spans.prefix(200).map { .array([.number(Double($0.range.location)), .number(Double($0.range.length)), .string($0.capture)]) })
             return out
         }
+        commands["debug.serial"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let serial = contents.serial(id) else { throw KannaError("wrong_type", "not a running serial pane") }
+            if let text = args["type"]?.string { serial.type(text, ending: args["ending"]?.bool ?? true) }
+            if let hex = args["hex"]?.bool { serial.set(hex: hex) }
+            if args["time"]?.bool != nil, args["time"]?.bool != serial.showTime { serial.toggleTime() }
+            if args["pause"]?.bool == true, !serial.paused { serial.togglePause() }
+            if args["follow"]?.bool == true { serial.follow() }
+            if args["clear"]?.bool == true { serial.clear() }
+            return ["text": .string(serial.text), "rows": .number(Double(serial.rows.count)), "state": .string(serial.state.state), "path": .string(serial.state.path),
+                    "baud": .number(Double(serial.state.baud)), "send": .bool(serial.sendEnabled), "status": .string(serial.statusText), "hex": .bool(serial.hex),
+                    "time": .bool(serial.showTime), "paused": .bool(serial.paused), "following": .bool(serial.following), "unseen": .number(Double(serial.unseen)),
+                    "history": .array(serial.history.map { .string($0) }), "failure": serial.failure.map { .string($0) } ?? .null]
+        }
         commands["debug.diff"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let diff = contents.diff(id) else { throw KannaError("wrong_type", "not a running diff pane") }
             if let keys = args["keys"]?.string { for key in keys { _ = diff.press(key == "~" ? "\r" : String(key)) } }

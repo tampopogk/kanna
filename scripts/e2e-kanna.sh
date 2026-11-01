@@ -5190,6 +5190,63 @@ print(t[0][sys.argv[1]] if t else "")' "$1"; }
   rm -f "$record"
 }
 
+scenario serial_pane M4
+serial_pane() {
+  local devices="$KANNA_STATE_DIR/serial-devices"
+  serial_device=""
+  mkdir -p "$devices"
+  export KANNA_SERIAL_PORTS="$devices/ports.json"
+  plug() {
+    : >"$devices/out"
+    python3 "$repo_root/tools/fake-serial/fake-serial.py" "$devices" >"$devices/out" 2>&1 &
+    serial_device=$!
+    wait_for 5 test -s "$devices/out"
+  }
+  trap 'stop_pid "$serial_device"' EXIT
+  plug || { echo "serial_pane: the fake device didn't start"; return 1; }
+  start_daemon && start_app || return 1
+  ser() { raw "{\"id\":1,\"cmd\":\"debug.serial\",\"args\":{\"pane\":\"esp\"${2:-}}}" | field "$1"; }
+  kanna open --window new serial 303a:1001 --name esp >/dev/null || return 1
+  check is esp type serial || return 1
+  check wait_for 5 eval '[[ "$(ser state)" == connected && "$(ser send)" == True ]]' || { echo "serial_pane: $(ser state)"; return 1; }
+  check test "$(pane esp title)" == "USB JTAG/serial debug unit · $(basename "$(cat "$devices/out")")" || { echo "serial_pane: title $(pane esp title)"; return 1; }
+  kanna serial send esp reboot >/dev/null || return 1
+  check wait_for 5 eval 'ser text | grep -q "app: ready, free heap"' || { echo "serial_pane: no boot in the view: $(ser text | tail -3)"; return 1; }
+  ser state ',"type":"wifi status"' >/dev/null
+  check wait_for 5 eval 'kanna serial read esp --last 3 | grep -q "rssi -58"' || { echo "serial_pane: the send line didn't reach the device"; return 1; }
+  check test "$(ser history)" == '["wifi status"]' || { echo "serial_pane: history $(ser history)"; return 1; }
+  check wait_for 5 eval 'ser text | grep -q "→ wifi status"' || return 1
+  check wait_for 5 eval 'ser status | grep -q "ESP-IDF log levels"' || { echo "serial_pane: status $(ser status)"; return 1; }
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"serial_pane-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/serial_pane-dark.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"serial_pane-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/serial_pane-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  kanna serial send esp binary >/dev/null || return 1
+  check wait_for 5 eval 'ser text | grep -qF "\\x00\\x01\\x02\\xfe\\xffraw"' || { echo "serial_pane: bytes that aren't text: $(ser text | tail -2)"; return 1; }
+  check test "$(ser hex ',"hex":true')" == True || return 1
+  check wait_for 5 eval 'ser text | grep -q "fe ff 72 61 77"' || { echo "serial_pane: hex view: $(ser text | tail -3)"; return 1; }
+  ser hex ',"hex":false' >/dev/null
+  check test "$(ser paused ',"pause":true')" == True || return 1
+  kanna serial send esp crash >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(ser unseen)" -gt 0 ]]' || { echo "serial_pane: paused, but no new lines counted"; return 1; }
+  check test "$(ser following ',"follow":true')" == True || return 1
+  check wait_for 5 eval 'ser text | grep -q "Guru Meditation"' || return 1
+  stop_pid "$serial_device"; serial_device=""
+  check wait_for 5 eval '[[ "$(ser state)" == unplugged && "$(ser send)" == False ]]' || { echo "serial_pane: unplugging left $(ser state)"; return 1; }
+  check wait_for 5 eval 'ser status | grep -q "unplugged · waiting for 303a:1001"' || { echo "serial_pane: status $(ser status)"; return 1; }
+  plug || return 1
+  check wait_for 10 eval '[[ "$(ser state)" == connected ]]' || { echo "serial_pane: plugging back in left $(ser state)"; return 1; }
+  check test "$(ser path)" == "$(cat "$devices/out")" || { echo "serial_pane: back on $(ser path)"; return 1; }
+  check wait_for 5 eval 'ser text | grep -q "── back "' || return 1
+  local rows; rows="$(ser rows)"
+  stop_app && start_app || return 1
+  check wait_for 10 eval '[[ "$(ser rows)" -ge "$rows" ]]' || { echo "serial_pane: after a relaunch the view has $(ser rows) rows, not $rows"; return 1; }
+  kanna close esp >/dev/null || return 1
+  check wait_for 5 eval 'kanna serial list | grep -q "serial-" && false || true' || return 1
+  unset KANNA_SERIAL_PORTS
+}
+
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
 if [[ ${#only[@]} -gt 0 ]]; then run=("${only[@]}"); else run=("${scenarios[@]%%:*}"); fi
 passed=0 failed=0 limit="${KANNA_E2E_TIMEOUT:-600}"
