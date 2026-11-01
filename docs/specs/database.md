@@ -152,7 +152,7 @@ sequenceDiagram
 
 ## Schedules
 
-**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 14): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, and a JSON `doc` (who made it). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
+**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, and a JSON `doc` (who made it). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
 
 ## Planners
 
@@ -179,6 +179,20 @@ sequenceDiagram
 | `at` | real | when you answered never |
 
 - **The daemon writes them** (`project` `never`, from `planner.sh`) and reads them (`project` `asked`); importing the project deletes its row.
+
+## Crashes
+
+**Built.** Each crash record the daemon has seen in `crashes/` ([crashes](crashes.md)).
+
+**crashes**: one row per record.
+
+| Column | Type | Holds |
+|---|---|---|
+| `file` | text, key | the record's file name in `crashes/` (they sort by time) |
+| `signature` | text | the record's signature |
+| `at` | real | when the daemon first saw it |
+| `dismissed` | real | when its banner was dismissed (it and every older one), or null |
+| `reported` | real | when the planner was told of its signature, or null: a signature is told once |
 
 **Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
 

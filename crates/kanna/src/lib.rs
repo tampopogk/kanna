@@ -188,15 +188,33 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        if let Ok(found) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
+        let mut asked = json!({ "action": "list", "merged": true, "done": request["done"] == true });
+        if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
+            asked["repo"] = json!(repo);
+        }
+        if let Ok(found) = mux.call("tasks", asked.clone()) {
             reply["shelf"] = found["shelf"].clone();
+            reply["agent"] = found["agent"].clone();
             output::name_out(&mut reply, &found["desk"]);
+            if asked["repo"].is_string() {
+                output::keep_named(&mut reply);
+            }
             shorts.extend(output::shorts(&found));
             listed = true;
             reply["script"] = found["script"].clone();
+            if request["done"] == true {
+                reply["done"] = found["done"].clone();
+            }
         }
         if let Some(query) = request["query"].as_str() {
             output::keep_matching(&mut reply, query);
+            if let Some(id) = output::lone_task(&reply, query) {
+                if let Ok(shown) = mux.call("tasks", serde_json::json!({ "action": "show", "task": id })) {
+                    reply["found"] = shown["task"].clone();
+                }
+            }
+        } else {
+            output::keep_recent_done(&mut reply);
         }
     }
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {
@@ -311,7 +329,7 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
+        "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
         "task" if request["action"] == "done" => "tasks",
         "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",
         "task" if request["action"] == "name" => "rename-pane",
@@ -341,7 +359,7 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
+const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n(agents.prompts, whether agents skip permission prompts, is read only from ~/.kanna-v4/config.json.)\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
@@ -665,6 +683,14 @@ mod tests {
             return Err(commands::usage(command.name, &format!("unexpected argument \"{extra}\"")));
         }
         Ok((command.name.to_string(), request))
+    }
+
+    #[test]
+    fn ready_set_and_clear_name_a_task_or_the_one_they_run_in() {
+        assert_eq!(parse("kanna task ready set 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
+        assert_eq!(parse("kanna task ready clear 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
+        assert!(parse("kanna task ready").is_err(), "outside a task's terminal it needs a TASK");
+        assert!(parse("kanna task ready 3f9a").is_err(), "it says set or clear");
     }
 
     #[test]

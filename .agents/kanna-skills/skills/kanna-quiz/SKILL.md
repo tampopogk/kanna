@@ -15,7 +15,7 @@ Kanna prompts you each morning: every repo has a schedule named `quiz` (`daily 0
 
 1. What's new since the last round: `kanna quiz history --json`, and the newest round's `head`; then `git log --oneline HEAD_OF_LAST_ROUND..main` (`master` if there's no `main`). With no round yet, `git log --oneline main --since=1.day`. With nothing new on a scheduled prompt, say nothing: end your turn without a word about it.
 2. Otherwise offer once, in a line: what landed (the work, not the hashes), then "Quiz on today's changes? Five questions, about two minutes."
-3. On yes: `kanna quiz open`, from the repo, with the agent you are (`--agent codex` for Codex; Claude is the default). It brings the repo's Quiz window forward if it's open, else opens one: the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it. It isn't a task. Say it's open, and carry on.
+3. On yes: `kanna quiz open`, from the repo, with the agent you are (`--agent codex` for Codex; Claude is the default). It brings the repo's Quiz window forward if it's open, else opens one: the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it. It isn't a task, but it asks permission or not as a task's agent does (`agents.prompts` in `~/.kanna-v4/config.json`). Say it's open, and carry on.
 4. If the user wants it at another time, or not at all, change the schedule: `kanna schedule remove quiz`, then, for another time, `kanna schedule add 'weekdays 13:00' planner "Morning quiz check: offer me a round if anything landed on main since the last one; if nothing has, say nothing." --name quiz`.
 
 ## Asking (the quiz agent)

@@ -21,6 +21,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     private var marked = NSMutableAttributedString()
     private var accumulating: [String]?
     private var suppressedKeyUps = Set<UInt16>()
+    private var typedAt: UInt64?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -166,6 +167,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func keyDown(with event: NSEvent) {
+        typedAt = Keys.pressed(event)
         guard let surface else {
             interpretKeyEvents([event])
             return
@@ -191,6 +193,11 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
             return
         }
         sendKeyPress(event, mods: mods, text: Self.keyEventText(translatedEvent))
+    }
+
+    func takeTyped() -> UInt64? {
+        defer { typedAt = nil }
+        return typedAt
     }
 
     override func keyUp(with event: NSEvent) {

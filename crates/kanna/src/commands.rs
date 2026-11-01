@@ -344,13 +344,15 @@ pub static COMMANDS: &[Command] = &[
         name: "task",
         group: "Tabs and windows",
         summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
+        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
         options: &[
             ("--agent CMD", "new: the agent to start (default: claude)."),
-            ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until they're all done. edit: replaces the list, and none clears it."),
+            ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
+            ("--include-done", "list: also the done tasks, newest first: with QUERY, every one that matches; without, the 5 done last."),
             ("--keep", "done: end it without the repo's tasks.teardown, keeping its worktree and branch."),
+            ("--all", "list: every repo's tasks, not only the one you're in."),
         ],
-        notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Each Kanna.app has its own Desk; the Shelf is every app's. Pick claims a task for Kanna.app's Desk, and shelve gives it back to the Shelf. A Desk holds up to three of a repo's tasks, one of them active. Activate and park are Kanna.app's, which the CLI starts if it isn't running: activating shows the task as it was on the Desk your terminal is on, else on its project's Desk (the one Kanna.app had in front last), else a new one, and the task active before stays on the Desk; activating a task a Desk shows brings that window forward instead. Parking (⌘.) shows its Desk's Desk view, the planning agent with the Desk's tasks and the Shelf, and the task stays active and running. Done closes the task's panes, ending its agent and terminals; its Desk shows the Desk view. Whether a task runs and where it is are separate. Start runs a task where it is: a Shelf task gets its worktree, branch and agent and stays on the Shelf, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Pick (Move to Desk) moves a Shelf task to the Desk, starting it if it's stopped; an app's Desk holds three tasks per repo. Shelve (Move to Shelf) moves a Desk task back to the Shelf as it is, running or stopped, freeing its place on the Desk. The old verbs defer and pull still work, as shelve and activate. A Shelf task can wait for other tasks (--after): it's blocked, and starting or picking it is refused until they're all done; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. A repo's tasks.setup (`kanna config schema`) runs in a new worktree's agent terminal before the agent starts, once per worktree; if it fails the task stops, `task start` starts the agent anyway, and `task setup` runs it again (in a Setup tab of a running task). Done runs tasks.teardown in the task's agent pane, its tabs closed: the task is Done once it succeeds, and a merged task's worktree and branch are removed (an unmerged one's kept); if it fails, the task stays where it is with its pane showing why, `task done` runs it again and `task done --keep` ends the task without it. A task's name is its docked pane's name, and a Shelf task's own until it starts; `task name` sets either, and a Shelf task keeps its new name when it starts. A Shelf task's first message never changes: to change it, make a new task and take the old one off with `task done`. Send leaves a message for a task's agent, or for the repo's planning agent (planner), from the task you run it in, the planner, or else you: Kanna types it into the agent's terminal as a prompt, [message from SENDER] TEXT, once the agent's turn is over and it's at its prompt (never while it asks you something, nor while you're typing there), several at once as one prompt, oldest first. A stopped Shelf task with a message runs for it, as one of the repo's shelf.runners, and a running one gets it rather than being stopped at its turn's end; a stopped Desk task gets it when you start it; a done task takes none. `task messages` lists a task's messages, sent and received, delivered or waiting, or every message. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own workspace, which a Desk shows while the task is active on it.",
+        notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Each Kanna.app has its own Desk; the Shelf is every app's. Pick claims a task for Kanna.app's Desk, and shelve gives it back to the Shelf. A Desk holds up to three of a repo's tasks, one of them active. Activate and park are Kanna.app's, which the CLI starts if it isn't running: activating shows the task as it was on the Desk your terminal is on, else on its project's Desk (the one Kanna.app had in front last), else a new one, and the task active before stays on the Desk; activating a task a Desk shows brings that window forward instead. Parking (⌘.) shows its Desk's Desk view, the planning agent with the Desk's tasks and the Shelf, and the task stays active and running. Done closes the task's panes, ending its agent and terminals; its Desk shows the Desk view. Whether a task runs and where it is are separate. Start runs a task where it is: a Shelf task gets its worktree, branch and agent and stays on the Shelf, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Pick (Move to Desk) moves a Shelf task to the Desk, starting it if it's stopped; an app's Desk holds three tasks per repo. Shelve (Move to Shelf) moves a Desk task back to the Shelf as it is, running or stopped, freeing its place on the Desk. The old verbs defer and pull still work, as shelve and activate. A Shelf task can wait for other tasks (--after): it's blocked, and starting or picking it is refused until each is done or ready; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. Ready marks a started task's work built, its tests passing, at its worktree's head (refused with uncommitted changes), and `task ready clear` clears it. A blocked task whose blockers are ready starts stacked on them: from the one blocker's ready head, or from main with each one's merged in (if they conflict, it stays blocked). When a ready task's branch moves it stops being ready, and every task stacked on it is stale, down the chain: each gets a message from kanna to merge what moved, rerun its tests and run `task ready set` again, which is refused until its bases are in its branch and none is stale. A stacked task merges after its bases, as `task list` says; once a base is in main, the task is told to merge main. A repo's tasks.setup (`kanna config schema`) runs in a new worktree's agent terminal before the agent starts, once per worktree; if it fails the task stops, `task start` starts the agent anyway, and `task setup` runs it again (in a Setup tab of a running task). Done runs tasks.teardown in the task's agent pane, its tabs closed: the task is Done once it succeeds, and a merged task's worktree and branch are removed (an unmerged one's kept); if it fails, the task stays where it is with its pane showing why, `task done` runs it again and `task done --keep` ends the task without it. A task's name is its docked pane's name, and a Shelf task's own until it starts; `task name` sets either, and a Shelf task keeps its new name when it starts. A Shelf task's first message never changes: to change it, make a new task and take the old one off with `task done`. Send leaves a message for a task's agent, or for the repo's planning agent (planner), from the task you run it in, the planner, or else you: Kanna types it into the agent's terminal as a prompt, [message from SENDER] TEXT, once the agent's turn is over and it's at its prompt (never while it asks you something, nor while you're typing there), several at once as one prompt, oldest first. A stopped Shelf task with a message runs for it, as one of the repo's shelf.runners, and a running one gets it rather than being stopped at its turn's end; a stopped Desk task gets it when you start it; a done task takes none. `task messages` lists a task's messages, sent and received, delivered or waiting, or every message. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own workspace, which a Desk shows while the task is active on it.",
         examples: &[
             ("kanna task new \"Fix the page_comments pinch\" \"The mark drifts when you pinch; find out why and add a test\"", "Add a task to this repo's Shelf."),
             ("kanna task new \"Release notes\" \"Write the 0.9 notes\" --after 1dfb,c0ff", "Add a task that can't start until task-1dfb and task-c0ff are done."),
@@ -359,8 +361,14 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task pick 3f9a", "Pick a task off the Shelf onto the Desk, starting it if it's stopped."),
             ("kanna task stop 3f9a", "End a task's agent and hang up its terminals, leaving it and its tabs where they are; start it again to resume its conversation and rerun its terminals."),
             ("kanna task setup 3f9a", "Run the repo's tasks.setup in task-3f9a's worktree again: then its agent, if it's stopped."),
-            ("kanna task list", "Every task, where it is (the Desk or the Shelf) and whether it runs."),
-            ("kanna task list resume agent", "Only the tasks with both words in their name or first message."),
+            ("kanna task list", "This repo's tasks, the Desk's then the Shelf's, and their state: working, idle, needs you, stopped, blocked, ready, stale (with what it's behind), merged (its branch is in main) or replied (its message to the planner waits); a stacked task says what it merges after."),
+            ("kanna task ready set task-3f9a", "Its work is finished and its tests pass (from its own terminal, plain `kanna task ready set`), so the tasks waiting for it can start on its branch."),
+            ("kanna task ready clear task-3f9a", "Its work isn't finished after all: tasks already stacked on it aren't affected."),
+            ("kanna task list --all", "Every repo's tasks, naming the repo of those that aren't this one's."),
+            ("kanna task list resume agent", "Only the tasks with both words in their name, first message or branch."),
+            ("kanna task list task-1dfb", "The task task-1dfb, found by a start of its ID (or its agent's pane ID, like term-12); if it's done, when, and its branch if that's still there."),
+            ("kanna task list send enter --include-done", "Also the done tasks with both words, to see if the work was done already."),
+            ("kanna task list --include-done", "Also the 5 tasks done last."),
             ("kanna task park agent", "Show the Desk view of the Desk the task docked as agent is active on; it stays active. From its terminal, leave out agent."),
             ("kanna task activate agent", "Make the task docked as agent the active one on your Desk (the one your terminal is on), else on its project's Desk."),
             ("kanna task name agent \"Tab bar light mode\"", "Name the task docked as agent; from its terminal, leave out agent."),
@@ -373,7 +381,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
         ],
         parse: |args| {
-            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done"))?;
+            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done"))?;
             let action = match action.as_str() {
                 "defer" => "shelve".to_string(),
                 "pull" => "activate".to_string(),
@@ -391,6 +399,15 @@ pub static COMMANDS: &[Command] = &[
             let mut out = json!({ "action": action });
             match action.as_str() {
                 "list" => {
+                    if args.flag("--all") {
+                        out["all"] = json!(true);
+                    }
+                    if let Ok(repo) = repo_here() {
+                        out["repo"] = json!(repo);
+                    }
+                    if args.flag("--include-done") {
+                        out["done"] = json!(true);
+                    }
                     if let Some(query) = args.rest() {
                         out["query"] = json!(query);
                     }
@@ -422,6 +439,15 @@ pub static COMMANDS: &[Command] = &[
                 "stop" => {
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
+                }
+                "ready" => {
+                    match args.positional().as_deref() {
+                        Some("set") => {}
+                        Some("clear") => out["action"] = json!("unready"),
+                        _ => return Err(usage("task", "ready needs set or clear: kanna task ready set|clear [TASK]")),
+                    }
+                    let task = args.positional().or_else(|| caller());
+                    out["task"] = json!(task.ok_or_else(|| usage("task", "ready set and ready clear need a TASK, or run them from the task's terminal"))?);
                 }
                 "setup" => {
                     let task = args.positional().or_else(|| caller());
@@ -467,9 +493,9 @@ pub static COMMANDS: &[Command] = &[
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "done needs a TASK (see `kanna task list`)"))?);
                 }
-                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done)"))),
+                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done)"))),
             }
-            if ["edit", "start", "stop", "setup", "pick", "shelve", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+            if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
                 if let Some(by) = caller() {
                     out["by"] = json!(by);
                 }
@@ -590,6 +616,17 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_toast,
         show: output::toast,
+    },
+    Command {
+        name: "crashes",
+        group: "Information",
+        summary: "List Kanna's crash records, newest first, with their stacks and the macOS crash report that matches each.",
+        usage: "kanna crashes [--all]\n       kanna crashes dismiss [RECORD]",
+        options: &[("--all", "Also list the records already dismissed (from the crash banner, or with dismiss).")],
+        notes: "Kanna.app, the daemon and the keeper each write a record in the state folder's crashes/ before they die of a bug: the reason, the crashing thread's stack, the build and the panes open. A record's report is the .ips in ~/Library/Logs/DiagnosticReports of the same process and pid, when macOS wrote one. dismiss takes away the crash banner: for RECORD and every older record, or all of them.",
+        examples: &[("kanna crashes", "The crashes not yet dismissed."), ("kanna crashes --all --json", "Every record, as the daemon has it.")],
+        parse: parse_crashes,
+        show: output::crashes,
     },
     Command {
         name: "quiz",
@@ -1203,6 +1240,21 @@ fn parse_status(args: &mut Argv) -> Result<Value, Failure> {
         },
         Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain or update)"))),
         None => Err(usage("status", "say what: explain PANE, explain --file SCREEN --agent AGENT, or update")),
+    }
+}
+
+fn parse_crashes(args: &mut Argv) -> Result<Value, Failure> {
+    let all = args.flag("--all");
+    match args.positional().as_deref() {
+        None | Some("list") => Ok(json!({ "action": "list", "all": all })),
+        Some("dismiss") => {
+            let mut out = json!({ "action": "dismiss" });
+            if let Some(file) = args.positional() {
+                out["file"] = json!(absolute(&file));
+            }
+            Ok(out)
+        }
+        Some(other) => Err(usage("crashes", &format!("unknown action \"{other}\" (list or dismiss)"))),
     }
 }
 

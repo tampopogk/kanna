@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** e2e `blocked_tasks` · **Mockup:** [`references/mockups/blocked-tasks.html`](../../references/mockups/blocked-tasks.html) (Screenshot command is done; or `#freed`) · **Builds on:** [tasks](tasks.md), [planning agent](planning-agent.md)
 
-A task can wait for other tasks: it's **blocked**, and can't start until they're all Done.
+A task can wait for other tasks: it's **blocked**, and can't start until each is Done or ready ([stacked tasks](stacked-tasks.md)).
 
 ![The planning agent makes two blocked tasks: Diff viewer waits for Screenshot command, Release notes for it and the `agent_status` fix](task-blocked.png)
 
@@ -12,7 +12,7 @@ A task can wait for other tasks: it's **blocked**, and can't start until they're
 stateDiagram-v2
     direction LR
     [*] --> blocked: kanna task new --after 1dfb
-    blocked --> startable: its last blocker is Done
+    blocked --> startable: its last blocker is Done or ready
     startable --> blocked: kanna task edit --after task-1dfb
     blocked --> startable: kanna task edit --after none
     startable --> started: start or Move to Desk
@@ -21,9 +21,9 @@ stateDiagram-v2
 - **A blocked Shelf row** has a dashed ring, an orange line naming what it waits for, and **Blocked** where Move to Desk usually is. Clicking the row, ↩ in search, `kanna task start` or `kanna task pick` is refused, and the note says what it waits for.
 - **A blocked task can't start,** from the app or the CLI. To start it before its blockers are Done, take them off: `kanna task edit TASK --after none` (or name fewer), which the planning agent runs when you ask it to.
 - **Done means Done in Kanna** (`kanna task done`, Done in the app, or its agent's pane closed), not merged. Kanna doesn't watch git for this.
-- **When the last blocker is Done, the task becomes startable,** and nothing starts by itself. The row loses its badge, and `kanna task done` says which tasks it freed (`t13 "Diff viewer" can start now`), so the planning agent can offer to start them.
+- **When the last blocker is Done (or ready: [stacked tasks](stacked-tasks.md)), the task becomes startable,** and nothing starts by itself. The row loses its badge, and `kanna task done` says which tasks it freed (`t13 "Diff viewer" can start now`), so the planning agent can offer to start them.
 - **A task can't wait for itself,** directly or through others: making that loop is refused.
-- **A started task starts from the repo's checkout** like any other. Work that builds on a blocker's starts once the blocker is merged and Done.
+- **A started task starts from the repo's checkout,** or from its ready blockers' branches when their work isn't in main yet ([stacked tasks](stacked-tasks.md)).
 
 ## Setting them
 
@@ -46,7 +46,7 @@ kanna task edit 3f9a --after none        # waits for nothing
 | `kanna task new NAME [MSG] [--after TASK,…]` | Make a task that waits for others |
 | `kanna task edit TASK --after TASK,…\|none` | Change what a Shelf task waits for |
 | `kanna task start TASK`, `kanna task pick TASK` | Refused for a blocked task, saying what it waits for |
-| `kanna task list` | STATE is `blocked` for a blocked Shelf task, and its last part says `waits for task-1dfb, task-c0ff` |
+| `kanna task list` | STATE is `blocked` for a blocked Shelf task, and its last part says what it waits for by name: `waits for "Fix login", "Diff viewer"` ([task list](task-list.md)) |
 | `kanna task done TASK` | Also names the tasks that can start now because of it |
 
 ## How it's built
@@ -68,4 +68,3 @@ flowchart LR
 - **Merged into main as "done":** Kanna would have to watch git, and squash or rebase merges hide it.
 - **Starting a freed task by itself:** starting tasks is the user's call, as everywhere else in Kanna.
 - **Start anyway:** a blocked task can't start; taking its blockers off is the explicit way.
-- **Stacked tasks** (a task's branch made from another task's branch, like a stacked PR): while both run, the stacked one keeps having to rebase onto its base. Worth another look once Kanna works with PRs, as starting from a Done blocker's branch that's waiting on review.

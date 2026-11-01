@@ -104,7 +104,7 @@ Once the reply is sent, the daemon leaves its main loop the way a SIGTERM does (
 
 ## 6. Protocols
 
-`kanna_build::PROTOCOLS` is the range of protocols this build speaks, `[lo, hi]`, now `[1, 1]`; Kanna.app's `Protocols.mine` must be the same (a test in `kanna-build` checks). A change that old peers can't follow raises `hi`; dropping the oldest raises `lo`. Two ends work together at the highest protocol both speak.
+`kanna_build::PROTOCOLS` is the range of protocols this build speaks, `[lo, hi]`, now `[2, 3]`; Kanna.app's `Protocols.mine` must be the same (a test in `kanna-build` checks). A change that old peers can't follow raises `hi`; dropping the oldest raises `lo`. Two ends work together at the highest protocol both speak.
 
 - **Between daemons:** every stream header carries `protocols` (a daemon from before this slice sends none and counts as `[1, 1]`). The ack carries `protocol`, the one chosen, and `release`; the opener checks it speaks that protocol, and takes an ack without one (a daemon from before this slice) as protocol 1. With none in common the stream is refused with `other_protocol` and the receiver's `release`, and the caller reports, for example, `vm runs Kanna 4.0.0 (aaaaaaaa), protocol 2–3, and this machine speaks 1; this machine is older: update it, or run kanna machine update on vm`. `pair` and `update` streams aren't negotiated.
 - **The app:** `app.hello` carries `protocols` and the daemon answers as [links §2](machine-links.md) says: with none in common, `other_protocol` with `mine`, `commit` and `version`, and the daemon **keeps running**. The Machines tab shows that machine as Offline, with a note that says which side is older and a tooltip that leads with the fix (`KannaMachines`'s `Protocols.otherProtocol`):

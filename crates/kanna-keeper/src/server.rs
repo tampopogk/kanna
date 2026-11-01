@@ -394,13 +394,17 @@ impl Keeper {
                 }
             }
             self.spawn_timeouts();
-            if fds[1].revents != 0 {
-                self.accept();
-            }
             for c in &mut self.conns {
                 c.flush();
             }
+            let before = self.conns.len();
             self.conns.retain(|c| !c.dead);
+            if self.conns.len() < before {
+                self.accept_paused_until = None;
+            }
+            if fds[1].revents != 0 {
+                self.accept();
+            }
             if self.run_kills() {
                 self.reap();
             }

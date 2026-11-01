@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kanna.dev/schemas/config/v1.schema.json",
   "title": "Kanna settings",
-  "description": "Kanna's settings, version 1: ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json. Print this with `kanna config schema`.",
+  "description": "Kanna's settings, version 1: ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json (except agents.prompts, which only yours sets). Print this with `kanna config schema`.",
   "type": "object",
   "properties": {
     "$schema": {
@@ -106,6 +106,18 @@
           "minimum": 1,
           "maximum": 86400,
           "default": 600
+        }
+      },
+      "additionalProperties": false
+    },
+    "agents": {
+      "description": "The agents Kanna starts: task agents, quiz agents and planning agents.",
+      "type": "object",
+      "properties": {
+        "prompts": {
+          "description": "Whether the agents Kanna starts ask permission before running commands and editing files (\"ask\"), or skip their permission prompts (\"skip\": claude --dangerously-skip-permissions, codex --yolo, copilot --yolo, agy --dangerously-skip-permissions). An agent command that already picks its own mode keeps it. Only ~/.kanna-v4/config.json sets this: a repo's .kanna/config.json that sets it is ignored, so a cloned repo can't turn your prompts off. Unset, agents ask, and the planning terminal asks you once and writes your answer here. Read when an agent's command is built.",
+          "enum": ["ask", "skip"],
+          "default": "ask"
         }
       },
       "additionalProperties": false

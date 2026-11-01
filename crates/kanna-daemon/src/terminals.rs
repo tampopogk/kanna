@@ -1,11 +1,14 @@
 use crate::pty::{self, Adopted, Spawned, Spawner, Spec};
-use crate::reader::{Feed, Reader, Taken};
+use crate::reader::{Feed, Noticed, Reader, Typing};
+use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
 use crate::Event;
-use kanna_mux::json::Map;
+use kanna_mux::json::{json, Map, Value};
 use kanna_mux::{terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use kanna_vt::{Key, KeyError};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -20,9 +23,7 @@ use std::time::Duration;
 pub type OnStart = Box<dyn Fn(&str)>;
 
 pub struct Attach {
-    pub cols: u16,
-    pub rows: u16,
-    pub snapshot: Result<Vec<u8>, kanna_vt::Error>,
+    pub snapshot: Result<(), kanna_vt::Error>,
     pub exit_code: Option<i32>,
 }
 
@@ -81,10 +82,11 @@ pub struct Terminals {
     settings: RefCell<Settings>,
     pub on_start: RefCell<Option<OnStart>>,
     pub detector: RefCell<Option<Rc<Detector>>>,
+    wire: Arc<Wire>,
 }
 
 impl Terminals {
-    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: Sender<Event>, env: Vec<(String, String)>) -> Terminals {
+    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: Sender<Event>, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
         let settings = RefCell::new(store.load_settings());
         Terminals {
             settings,
@@ -99,6 +101,7 @@ impl Terminals {
             changed: Cell::new(false),
             on_start: RefCell::new(None),
             detector: RefCell::new(None),
+            wire,
         }
     }
 
@@ -163,17 +166,17 @@ impl Terminals {
         self.live.borrow().get(id).is_some_and(|t| t.serial == serial && t.exit_code.is_none())
     }
 
-    pub fn output(&self, id: &str, serial: u64) -> (Option<Taken>, Option<String>) {
-        let (taken, cwd) = {
+    pub fn noticed(&self, id: &str, serial: u64) -> Option<Noticed> {
+        let noticed = {
             let live = self.live.borrow();
-            let Some(terminal) = live.get(id).filter(|t| t.serial == serial) else { return (None, None) };
-            let mut feed = Feed::lock(&terminal.feed);
-            (feed.take(), feed.take_cwd())
+            let terminal = live.get(id).filter(|t| t.serial == serial)?;
+            let noticed = Feed::lock(&terminal.feed).noticed();
+            noticed
         };
-        if let Some(cwd) = &cwd {
+        if let Some(cwd) = &noticed.cwd {
             self.moved(id, cwd.clone());
         }
-        (taken, cwd)
+        Some(noticed)
     }
 
     fn moved(&self, id: &str, cwd: String) {
@@ -209,6 +212,7 @@ impl Terminals {
             let found = live.iter_mut().find(|(_, t)| t.keeper == keeper && t.pid == pid && t.exit_code.is_none() && t.pty.is_some());
             found.map(|(id, terminal)| {
                 terminal.exit_code = Some(code);
+                self.wire.remove(id);
                 if let Some(detector) = self.detector.borrow().as_ref() {
                     detector.forget(id, terminal.serial);
                 }
@@ -248,18 +252,14 @@ impl Terminals {
         Some(code)
     }
 
-    pub fn write(&self, id: &str, bytes: Vec<u8>) {
-        if let Some(pty) = self.live.borrow().get(id).and_then(Terminal::running) {
-            let _ = pty.input.send(bytes);
-        }
-    }
-
     pub fn resize(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
         let mut live = self.live.borrow_mut();
         let terminal = live.get_mut(id)?;
         let mut feed = Feed::lock(&terminal.feed);
         if cols > MAX_SIDE || rows > MAX_SIDE {
             log!("kanna-daemon: refused to make {id} {cols}×{rows}: at most {MAX_SIDE} cells a side");
+            let grid = grid(id, feed.cols, feed.rows);
+            self.wire.after_output(id, &mut feed, &grid);
             return Some((feed.cols, feed.rows));
         }
         let (cols, rows) = (cols.max(1), rows.max(1));
@@ -274,15 +274,56 @@ impl Terminals {
                 let _ = pty.input.send(replies);
             }
         }
+        self.wire.after_output(id, &mut feed, &grid(id, cols, rows));
         Some((cols, rows))
     }
 
-    pub fn attach(&self, id: &str) -> Option<Attach> {
+    pub fn attach(&self, id: &str, shown: bool) -> Option<Attach> {
         let live = self.live.borrow();
         let t = live.get(id)?;
         let mut feed = Feed::lock(&t.feed);
-        let snapshot = feed.snapshot();
-        Some(Attach { cols: feed.cols, rows: feed.rows, snapshot, exit_code: t.exit_code.filter(|_| t.exit_reported) })
+        let snapshot = match feed.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                feed.shown = false;
+                feed.discard();
+                return Some(Attach { snapshot: Err(error), exit_code: None });
+            }
+        };
+        if shown {
+            let messages = [
+                json!({ "cmd": "snapshot", "args": { "terminal": id, "data": BASE64.encode(&snapshot) } }),
+                grid(id, feed.cols, feed.rows),
+            ];
+            self.wire.shown(id, &mut feed, &messages);
+        }
+        Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
+    }
+
+    pub fn hide(&self, id: &str) {
+        if let Some(terminal) = self.live.borrow().get(id) {
+            let mut feed = Feed::lock(&terminal.feed);
+            feed.shown = false;
+            feed.discard();
+        }
+    }
+
+    pub fn hide_all(&self) {
+        for terminal in self.live.borrow().values() {
+            let mut feed = Feed::lock(&terminal.feed);
+            feed.shown = false;
+            feed.discard();
+        }
+    }
+
+    pub fn after_output(&self, id: &str, message: &Value) {
+        if let Some(terminal) = self.live.borrow().get(id) {
+            self.wire.after_output(id, &mut Feed::lock(&terminal.feed), message);
+        }
+    }
+
+    pub fn wire(&self) -> &Arc<Wire> {
+        &self.wire
     }
 
     pub fn mark_changed(&self) {
@@ -341,6 +382,7 @@ impl Terminals {
         for (id, terminal) in self.live.borrow_mut().iter_mut().filter(|(_, t)| t.exit_code.is_none() && t.pty.is_some()) {
             terminal.exit_code = Some(code);
             terminal.exit_reported = true;
+            self.wire.remove(id);
             if let Some(detector) = self.detector.borrow().as_ref() {
                 detector.forget(id, terminal.serial);
             }
@@ -426,14 +468,7 @@ impl Terminals {
                     format!("term-{terminals}")
                 }
             };
-            let pane_id = match pane_number(&pty.id) {
-                Some(_) if !panes.iter().any(|p: &Pane| p.id == pty.id) => pty.id.clone(),
-                _ => {
-                    counter += 1;
-                    format!("p{counter}")
-                }
-            };
-            let mut pane = Pane::new(&pane_id, None, PaneType::Term);
+            let mut pane = Pane::new(&id, None, PaneType::Term);
             pane.terminal = Some(id.clone());
             pane.command = match pty.cmd.as_slice() {
                 [_, flags @ .., c, command] if c == "-c" && flags.first().is_some_and(|l| l == "-l") && flags.iter().all(|f| ["-l", "-i", "+m"].contains(&f.as_str())) => Some(command.clone()),
@@ -446,9 +481,9 @@ impl Terminals {
             pane.state = PaneState::Running;
             let keeper = pty.id.clone();
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
-            match self.adopt(&id, &pane_id, &keeper, pty, None) {
+            match self.adopt(&id, &id, &keeper, pty, None) {
                 Ok(terminal) => {
-                    log!("kanna-daemon: took back {id} as {pane_id}, which the keeper had and the disk didn't know");
+                    log!("kanna-daemon: took back the keeper's {keeper} as {id}, which the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
                     panes.push(pane);
                     restored.unknown += 1;
@@ -570,6 +605,7 @@ impl PaneHost for Terminals {
     fn stop(&self, pane: &Pane) {
         let id = Self::of(pane);
         let removed = self.live.borrow_mut().remove(id);
+        self.wire.remove(id);
         if let (Some(terminal), Some(detector)) = (&removed, self.detector.borrow().as_ref()) {
             detector.forget(id, terminal.serial);
         }
@@ -702,19 +738,23 @@ impl Terminals {
     fn run(&self, id: &str, pane: &str, keeper: &str, serial: u64, spawned: Spawned, feed: Arc<Mutex<Feed>>) -> std::io::Result<Terminal> {
         let Spawned { pid, master } = spawned;
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
-        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), input.clone(), self.events.clone())?;
+        let typing = Typing::default();
+        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone())?;
         let mut writer = File::from(master.try_clone()?);
+        let written = typing.clone();
         std::thread::Builder::new().name(format!("kanna.write.{id}")).spawn(move || {
             for bytes in inputs {
                 if writer.write_all(&bytes).is_err() {
                     return;
                 }
+                crate::reader::written(&written);
             }
         })?;
         self.store.track(id, feed.clone());
         if let Some(detector) = self.detector.borrow().as_ref() {
             detector.watch(id, serial, feed.clone(), master.try_clone()?);
         }
+        self.wire.add(id, serial, reader.resumer()?, input.clone(), typing, feed.clone());
         Ok(Terminal {
             pane: pane.into(),
             serial,
@@ -728,4 +768,8 @@ impl Terminals {
             drained: false,
         })
     }
+}
+
+fn grid(id: &str, cols: u16, rows: u16) -> Value {
+    json!({ "cmd": "grid", "args": { "terminal": id, "cols": cols, "rows": rows } })
 }
