@@ -3341,20 +3341,23 @@ while time.monotonic() - start < 10:
         took = round((time.monotonic() - start) * 1000)
         asked = time.monotonic()
         try:
-            listed = subprocess.run([sys.argv[3], "task", "list"], capture_output=True, text=True, timeout=2).stdout
+            listed = subprocess.run([sys.argv[3], "task", "list"], cwd=sys.argv[4], capture_output=True, text=True, timeout=2).stdout
         except subprocess.TimeoutExpired:
             listed = "no answer"
-        row = [line for line in listed.splitlines() if "Line tables" in line]
+        place, row = "", []
+        for line in listed.splitlines():
+            place = line.strip() if line.strip() in ("Desk", "Shelf") else place
+            row += [place + "  " + line] if "Line tables" in line else []
         print(took, round((time.monotonic() - asked) * 1000), *(row or [listed])); sys.exit(0)
     time.sleep(0.005)
-print("never")' "$KANNA_SOCKET" "$(tid 1)" "$bin/kanna")"
+print("never")' "$KANNA_SOCKET" "$(tid 1)" "$bin/kanna" "$repo")"
   sleep 0.5
   kill -CONT "$keeper"
   took="${seen%% *}" listed="${seen#* }"
   [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_keeper_paused: with the keeper paused, the task never reached the Desk"; desk tasks; desk note; return 1; }
   echo "pick_keeper_paused: on the Desk ${took}ms after the click, the keeper paused; task list (ms, row): $listed"
   (( took <= 200 )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
-  [[ "$listed" =~ ^([0-9]+)\ .*Desk ]] && (( BASH_REMATCH[1] <= 200 )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
+  [[ "$listed" =~ ^([0-9]+)\ Desk\ .*Line\ tables ]] && (( BASH_REMATCH[1] <= 200 )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
   check wait_for 5 shows "Line tables" "--resume" || { echo "pick_keeper_paused: its agent didn't come back once the keeper went on"; kanna read "Line tables"; return 1; }
   check wait_for 5 is lines state running || { echo "pick_keeper_paused: its tab didn't run again"; kanna workspace list --all; return 1; }
   check test "$(desk note)" == "" || { echo "pick_keeper_paused: $(desk note)"; return 1; }

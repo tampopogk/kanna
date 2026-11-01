@@ -896,10 +896,11 @@ mod tests {
         let fake = fake_keeper(UnixListener::bind(dir.join("keeper.sock")).unwrap(), spawns, released);
         let (events, _inbox) = mpsc::channel();
         let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
+        let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
         let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
         let core = kanna_mux::Core::default();
         *terminals.core.borrow_mut() = Some(core.weak());
-        core.set_host(Some(Rc::new(Host::new(terminals.clone()))));
+        core.set_host(Some(Rc::new(Host::new(terminals.clone(), serial))));
         let opened = Rc::new(RefCell::new(None));
         let answer = opened.clone();
         core.handle(json!({"cmd": "open", "args": {"type": "term", "cmd": "sleep 30"}}), move |reply| *answer.borrow_mut() = Some(reply));

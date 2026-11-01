@@ -135,7 +135,7 @@ impl Event {
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::File { .. } => "loop.file",
             Event::Serial(_) => "loop.serial",
-            Event::KeeperReadable | Event::KeeperExits | Event::KeeperLost(_) => "loop.keeper",
+            Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) => "loop.machines",
