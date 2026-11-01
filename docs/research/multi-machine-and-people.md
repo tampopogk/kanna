@@ -55,7 +55,7 @@ Stated by the user; numbered as other docs cite them.
 |---|---|---|
 | 1 | **The user is the bottleneck, and that's fine.** Kanna moves only as fast as they understand the system. | a planner-as-manager that takes decisions out of their hands |
 | 2 | **A task is abstracted from the machine it runs on.** | the app or the user tracking which box a task is on, except where it matters |
-| 3 | **No shared terminal sessions between people.** Send a task to someone's Shelf instead: the dev who owns UI receives UI issues and ideas from others. | pair-programming views, watching another person's agent type |
+| 3 | **No shared terminal sessions between people.** Send someone a message instead, which their planner can turn into a task on their Shelf: the dev who owns UI receives UI issues and ideas from others. | pair-programming views, watching another person's agent type |
 | 4 | **Everyone involved has Kanna.** | email, Slack or GitHub as the way in; any web view for non-users |
 | 5 | **Agents draft, a person approves.** Every message that leaves a Kanna was approved by its user. | agents talking to other people's agents on their own |
 | 6 | **Remote terminals over ssh-style byte streams were laggy in Kanna v2.** Prefer the agent CLI as client/server (local UI, agent remote) and/or mosh-style screen state (the daemon already keeps every screen). | a plain ssh bridge as the design (the [fleet research §2.5](./fleet.md#25-terminal-latency) later found v2's lag was its units, not the stream) |
@@ -71,9 +71,9 @@ Stated by the user; numbered as other docs cite them.
 | **B. Offload** | the user on the laptop; a bigger machine | tasks made on the laptop; the bigger machine has free runners | the next waiting task starts on the machine with a free runner; it shows on the laptop like a local task | one Shelf seen by several machines; exactly one machine starts a task; the repo cloned and set up there (`tasks.setup`, git and agent logins); a task that needs macOS goes to a Mac (8) | Who decides: machines asking, or a scheduler? Is a task made on the laptop owned by the laptop until a machine asks? An offline owner's tasks wait or time out? |
 | **C. Teleport** | the user | a stopped task on the laptop should continue on the desktop | at a boundary (7): WIP commit, branch to the other machine, transcript copied, the task re-made there; terminals restart, tabs reopen, the agent resumes its conversation | a clean stop that keeps the session ID; the branch moved (push, or a bundle); each agent's transcript found where it keeps it; resume at another path ([§5](#5-paths-and-sessions)); tabs whose paths still point at files; every step durable and resumable | Untracked files? Thread files in `.kanna/docs`? Which agents resume by ID at a new path and which don't? Does the worktree keep its name? |
 | **D. Phone check-in** | the user on the phone | a spare moment away from the desk | sees what finished and what needs them; answers a task with a message; brainstorms with the planner; takes a quiz (9) | a second app on a daemon; reach from away; a phone-sized view of the Desk's tasks, the Shelf and statuses; `kanna task send` from the phone (built on the daemon side); a quiz that fits a phone ([quiz](../specs/quiz.md)) | Push and reach from away need a server of someone's: whose? ([machines build order](../specs/machines-build-order.md) leaves both for later.) What of a task's presentation reads on a phone: markdown yes, a terminal no? A message or typing into the prompt? |
-| **E. Send someone a task** | a QA person (sender); a UI dev (receiver) | QA finds a UI bug | QA tells their planner; it drafts the task (name, first message, steps, screenshot); QA approves (5); the task lands on the UI dev's Shelf for that repo; the UI dev's planner triages it in its chat | Kanna-to-Kanna delivery (identity, reach, approval); a task record that travels, its repo named by origin, its ID unique across Kannas ([tasks §9](../specs/tasks.md#9-open-questions)); attachments; a triage skill for the receiving planner | Does a sent task run by itself as a runner, or wait for triage? Must the receiver accept before it lands? Which of the receiver's machines, when they have several? Can QA send to a repo they haven't cloned? |
-| **F. Routing** | the sender's planner | a task to send; who owns UI? | the planner looks up an area-to-person map (CODEOWNERS-like) in the repo and proposes a recipient; or the sender picks a person | a map kept in the repo; a directory from a person to a Kanna they can be reached at; a fallback when the map has no answer | Who maintains the map, and is it per repo or per team? What when the owner is away: it waits on their Shelf, or goes to a second? Is "a person" one Kanna or all of their machines? |
-| **G. Closing the loop** | the sender | the receiver takes, finishes or declines the task | the sender sees *taken*, *done* (with the PR or branch) or *declined* (with why), in their planner's chat or on the record they sent | task events that cross Kannas (sent, taken, done, declined); a link from the receiver's task back to the sender's copy; the PR URL or merged branch | How much does the sender see: events only, never the terminal (3)? What is *done* in a repo with no PRs (this one merges branches straight into main)? Can the sender reply or reopen? |
+| **E. Send someone a task** | a QA person (sender); a UI dev (receiver) | QA finds a UI bug | QA tells their planner; it drafts a message (what's wrong, steps, screenshot, the repo); QA approves (5); it reaches the UI dev's planner for that repo, which triages it with them and makes a task on their Shelf if they take it | Kanna-to-Kanna messages (identity, reach, approval); tasks stay local to one person's Kannas, so nothing but the message crosses; attachments; a triage skill for the receiving planner | Must the receiver approve before their planner makes the task? Which of the receiver's machines gets the message, when they have several? Can QA send about a repo they haven't cloned? |
+| **F. Routing** | the sender's planner | a message to send; who owns UI? | the planner looks up an area-to-person map (CODEOWNERS-like) in the repo and proposes a recipient; or the sender picks a person | a map kept in the repo; a directory from a person to a Kanna they can be reached at; a fallback when the map has no answer | Who maintains the map, and is it per repo or per team? What when the owner is away: it waits on their Shelf, or goes to a second? Is "a person" one Kanna or all of their machines? |
+| **G. Closing the loop** | the sender | the receiver takes, finishes or declines the task | the sender sees *taken*, *done* (with the PR or branch) or *declined* (with why), in their planner's chat or in reply to the message they sent | replies that cross Kannas (taken, done, declined), each a message the receiver approves; the receiver's task remembering the message it came from; the PR URL or merged branch | How much does the sender see: events only, never the terminal (3)? What is *done* in a repo with no PRs (this one merges branches straight into main)? Can the sender reply or reopen? |
 | **H. Stakeholder feedback** | a task's agent and its user; a designer, PM or client with Kanna (4) | the task has a mockup or spec that needs their view | the agent drafts a request carrying the doc; the user approves; the stakeholder opens it with doc markup and comments; their agent drafts the reply; they approve; it lands in the task's threads and the agent revises | the doc and its images delivered; threads from two Kannas merged into one file per doc; replies routed to the task's agent; the same approval step as E | Does the stakeholder need a clone, or only the doc and its assets? Who resolves threads? Thread IDs (`c1`, `c2`, per doc) collide between two Kannas. An HTML mockup with scripts and images: as a bundle? |
 
 ## 4. Two mechanisms
@@ -107,16 +107,16 @@ sequenceDiagram
     participant K1 as QA's Kanna
     participant K2 as the dev's Kanna
     participant P as the dev's planner
-    QA->>Q: drafts the task, shows it
+    QA->>Q: drafts the message, shows it
     Q->>K1: approve
-    K1->>K2: the task record (+ screenshot)
-    K2->>K2: on the repo's Shelf, from QA
-    K2->>P: [message from QA's Kanna] new task
-    P->>P: triages in its chat, at its turn's end
+    K1->>K2: the message (+ screenshot)
+    K2->>P: [message from QA] the bug
+    P->>P: triages with the dev, at its turn's end
+    P->>K2: a task on the dev's Shelf, if taken
     K2-->>K1: taken · done + PR · declined (G)
 ```
 
-The same loop with a doc instead of a task is H, and with a thread reply instead of a task record it's the stakeholder's answer. Inside one Kanna this exists: `kanna task send` queues a message in `kanna.db` and the daemon hands it to the agent when its turn is over ([agent messaging](../specs/agent-messaging.md), [its research](./agent-messaging.md)). Across Kannas it needs three things it doesn't have: a recipient that isn't on this daemon, an approval step on the way out (5), and a way to carry a task, a doc or a thread reply rather than text. No terminal is shared at any point (3).
+The same loop with a doc instead of a bug report is H, and with a thread reply it's the stakeholder's answer. Inside one Kanna this exists: `kanna task send` queues a message in `kanna.db` and the daemon hands it to the agent when its turn is over ([agent messaging](../specs/agent-messaging.md), [its research](./agent-messaging.md)). Across Kannas it needs three things it doesn't have: a recipient that isn't on this daemon, an approval step on the way out (5), and a way to carry a doc, a thread reply or a screenshot along with the text. Tasks never cross between people: they stay with one person's Kannas. No terminal is shared at any point (3).
 
 ### 4.3 Capabilities: Xcode on a Linux dev box
 
@@ -158,7 +158,7 @@ So the fixed path buys consistency for Kanna's own records (a project's place fr
 
 | Scenario | Size | Why | Smallest experiment that shows it's real |
 |---|---|---|---|
-| E, H | cheap | no remote terminal: a record or a doc travels, agents and people already have the message loop; the new parts are reach, identity and the approval step | two Kannas on one LAN (two instances on one Mac would do): `kanna task send` with a recipient on the other daemon, the message held until its user approves; then carry a task record instead of text and see the receiver's planner triage it |
+| E, H | cheap | no remote terminal: a message or a doc travels, agents and people already have the message loop; the new parts are reach, identity and the approval step | two Kannas on one LAN (two instances on one Mac would do): `kanna task send` with a recipient on the other daemon, the message held until its user approves; then see the receiver's planner triage one into a task |
 | G | cheap once E exists | events back over the same channel | the receiver's `picked`, `done` and a decline sent back as messages the sender's planner reads out |
 | F | cheap | a file in the repo and a lookup | an `owners` map read by the planning skill before it drafts a recipient |
 | D | medium | a second app per daemon and reach from away are [your machines](../specs/machines.md)'; the phone UI is new but small (9) | lift one-app-per-daemon; show the Desk's tasks and statuses in a second client; send one message from it |
@@ -176,7 +176,7 @@ For the user to fill: what problem each solves, in their words, and the order to
 | B. Offload | the laptop is too small, or too few runners, for the tasks planned | | |
 | C. Teleport | a task begun on one machine has to finish on another | | |
 | D. Phone check-in | tasks stop for an answer that takes ten seconds and an hour to notice | | |
-| E. Send someone a task | an issue reaches the right dev as a task, not a chat message | | |
+| E. Send someone a task | an issue reaches the right dev's planner, which makes it a task | | |
 | F. Routing | the sender doesn't know who owns the area | | |
 | G. Closing the loop | the sender never learns what became of it | | |
 | H. Stakeholder feedback | a spec or mockup waits on someone who isn't a developer | | |
@@ -186,7 +186,7 @@ For the user to fill: what problem each solves, in their words, and the order to
 Beyond each scenario's column in [§3](#3-scenarios-ah):
 
 1. **Machines come first** (decided 2026-11-01): A–C before E–H. They share only identity and reach, so building one doesn't bring the other.
-2. **Is a sent task (E) a task or a message?** A record on the receiver's Shelf is a task; the receiver's planner would still read about it as a message. One table or two.
+2. **What E sends is a message, not a task** (decided 2026-11-01). Tasks stay local to one person's identity: their own machines share them, other people never do. The receiver's planner turns a message into a task.
 3. **Approval (5) as a Kanna step or an agent step?** The daemon holding every outbound message until the user approves in the app, or the skill telling the agent to ask first. Only the first is enforceable.
 4. **Identity for people** isn't identity for machines: your machines' peer log is one person's devices ([identity](../specs/machine-identity.md)). Another person's Kanna is a peer of a different kind, trusted for messages and never for tasks running on it.
 5. **Thread files across Kannas (H):** merge two writers into `<repo>/.kanna/docs/PATH.json`, or keep the stakeholder's threads as a separate file the task's agent reads.
