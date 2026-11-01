@@ -4457,6 +4457,7 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   [[ "$said" == *$'\n'"warning: it waits: copilot can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to a copilot task said: $said"; return 1; }
   waits() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
 print(" ".join(t["pane"] + ":" + t["about"] for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Copilot"))'; }
+  check wait_for 10 eval '[[ "$(task_state $(tid 4))" == running* ]]' || { echo "agent_messaging: the copilot task didn't run"; task_state "$(tid 4)"; return 1; }
   local copilot; copilot="$(task_state "$(tid 4)" | cut -d' ' -f2)"
   check wait_for 15 eval '[[ "$(waits)" == "$copilot:Copilot" ]]' || { echo "agent_messaging: the waiting message raised no toast about $copilot: $(waits)"; return 1; }
   sleep 2
