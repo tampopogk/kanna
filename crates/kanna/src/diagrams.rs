@@ -57,7 +57,7 @@ fn all_draw(count: usize) -> String {
     }
 }
 
-fn shown(path: &str) -> String {
+pub fn shown(path: &str) -> String {
     let cwd = std::env::current_dir().ok();
     cwd.and_then(|dir| Path::new(path).strip_prefix(dir).ok().map(|p| p.to_string_lossy().into_owned())).unwrap_or_else(|| path.to_string())
 }

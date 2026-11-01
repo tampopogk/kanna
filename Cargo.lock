@@ -1729,6 +1729,7 @@ dependencies = [
  "kanna-merman",
  "kanna-mux",
  "kanna-net",
+ "kanna-pipe",
  "kanna-threads",
  "libc",
  "regex",
@@ -1880,6 +1881,10 @@ dependencies = [
  "spake2",
  "tokio",
 ]
+
+[[package]]
+name = "kanna-pipe"
+version = "0.1.0"
 
 [[package]]
 name = "kanna-syntax"

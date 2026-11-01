@@ -31,6 +31,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | Information | `kanna capabilities` | Show what the running mux supports (and, for Kanna, whether the app is attached). |
 | | `kanna schedule add RULE TARGET PROMPT… [--name NAME] [--repo DIR]`, `schedule list`, `schedule remove NAME\|ID` | Leave a task or the planner a message at set times ([scheduler](scheduler.md)). Kanna's. |
 | | `kanna diagrams check FILE...` | Check that a markdown file's mermaid diagrams draw in Kanna, without the app; `open md` prints the same failures ([diagram check](diagram-check.md)). Kanna's. |
+| | `kanna pipeline list`, `kanna pipeline check NAME\|FILE` | Check a software-factory pipeline, or list the repo's, each with its worst case, without the app ([pipeline language](pipeline-language.md#6-checks-on-the-file)). Kanna's. |
 | | `kanna machine [list\|pair [CODE]\|name\|ping\|addr\|revoke]` | Your machines: pair one with a code, list them, check one's link, give it an address, or revoke it ([machine identity](machine-identity.md#5-interfaces)). Kanna's. |
 | More | `kanna help [COMMAND\|instances\|raw]`, `kanna commands [--json]`, `kanna raw REQUEST` | Help; every command, for scripts; one control-protocol request as JSON. |
 | | `kanna instances [--json]`, `kanna instances prune` | For developing Kanna: list the running instances of every channel, or delete the folders of dev instances whose worktree is gone ([instances](instances.md)). |

@@ -1,0 +1,9 @@
+[package]
+name = "kanna-pipe"
+version.workspace = true
+edition.workspace = true
+publish = false
+license = "MIT"
+description = "The software factory's pipeline language: parse, check, pick an arrow, worst case, revisions. A port of kojo's factory_spec.py (MIT)."
+
+[dependencies]

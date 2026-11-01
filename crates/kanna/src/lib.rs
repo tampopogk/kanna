@@ -5,6 +5,7 @@ pub mod complete;
 pub mod diagrams;
 pub mod machine;
 pub mod output;
+pub mod pipeline;
 pub mod serial;
 pub mod target;
 pub mod threads;
@@ -151,6 +152,9 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     }
     if command.name == "diagrams" {
         return diagrams::run(&request, json_output);
+    }
+    if command.name == "pipeline" {
+        return pipeline::run(&request, json_output, &target);
     }
     let mut mux = Session::connect(&target, env)?;
     mux.host = host;
