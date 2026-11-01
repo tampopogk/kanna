@@ -470,10 +470,14 @@ fn run() -> Result<Option<PathBuf>, String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shelved = Rc::downgrade(&tasks);
     core.add_command(
         "screenshot",
-        Rc::new(move |args, responder| {
+        Rc::new(move |mut args, responder| {
             if let Some(link) = screenshot.upgrade() {
+                if args.get("pane").is_some() {
+                    args["stopped"] = Value::Array(shelved.upgrade().map(|tasks| tasks.stopped_on_shelf()).unwrap_or_default());
+                }
                 link.forward("screenshot", args, responder);
             }
         }),

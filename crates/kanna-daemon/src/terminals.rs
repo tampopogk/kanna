@@ -300,6 +300,23 @@ impl Terminals {
         Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
     }
 
+    pub fn picture(&self, id: &str) -> Result<Map, KmuxError> {
+        let live = self.live.borrow();
+        let Some(t) = live.get(id) else { return Err(KmuxError::new("stopped", format!("{id} isn't running"))) };
+        if t.running().is_none() {
+            return Err(KmuxError::new("stopped", format!("{id} isn't running")));
+        }
+        let feed = Feed::lock(&t.feed);
+        let snapshot = feed.save().map_err(|error| KmuxError::new("unavailable", format!("can't read {id}'s screen: {error}")))?;
+        Ok(Map::from_iter([
+            ("data".to_string(), json!(BASE64.encode(&snapshot))),
+            ("cols".to_string(), json!(feed.cols)),
+            ("rows".to_string(), json!(feed.rows)),
+            ("width".to_string(), json!(t.pixels.0)),
+            ("height".to_string(), json!(t.pixels.1)),
+        ]))
+    }
+
     pub fn hide(&self, id: &str) {
         if let Some(terminal) = self.live.borrow().get(id) {
             let mut feed = Feed::lock(&terminal.feed);

@@ -161,14 +161,15 @@ pub static COMMANDS: &[Command] = &[
         name: "screenshot",
         group: "Panes",
         summary: "Save a PNG of a pane or a window as it is drawn now, and print its path.",
-        usage: "kanna screenshot [PANE | --window WINDOW] [-o|--out FILE] [--force]",
+        usage: "kanna screenshot [PANE | --window WINDOW] [--size WxH] [-o|--out FILE] [--force]",
         options: &[
             ("--window WINDOW", "The whole window, e.g. win-2: its tab bar, every pane showing and the space between them."),
+            ("--size WxH", "Draw a hidden PANE at W×H points instead of the size it last had on screen, e.g. 800x500."),
             ("--out FILE", "Where to save it, relative to this folder. It must not exist yet, unless you add --force. Default: a new file in $TMPDIR."),
             ("-o FILE", "Same as --out."),
             ("--force", "Replace FILE if it exists."),
         ],
-        notes: "PANE gives just that pane, cut from its window; it must be showing (not in a tab that is behind another). With neither PANE nor --window: the window of the terminal you run it in, else the key (front) window.\nWorks for every kind of pane (terminal, web, markdown, code, iOS), also when the window is behind other windows. The image is at the screen's resolution: a 2x display gives twice the window's size in points.\nWith --json, the reply also has the window, the pane and the image's width and height in pixels. Starts Kanna.app if it isn't running, and shoots the window it opens with.",
+        notes: "PANE gives just that pane: cut from its window if it's showing; else drawn off-screen, as it would look shown, without showing it or changing focus, zoom or tabs. A hidden pane can be in a tab behind another, in a task that isn't active, in a running Shelf task or in a minimised window; it's drawn at the size it last had on screen (--size changes it), or a new window's if it never showed. A stopped Shelf task's panes are refused. With neither PANE nor --window: the window of the terminal you run it in.\nWorks for every kind of pane (terminal, web, markdown, code, iOS), also when the window is behind other windows. The image is at the screen's resolution: a 2x display gives twice the window's size in points.\nWith --json, the reply also has the window, the pane and the image's width and height in pixels. Starts Kanna.app if it isn't running, and shoots the window it opens with.",
         examples: &[
             ("kanna screenshot", "Save this window and print where."),
             ("kanna screenshot diff -o diff.png", "Save the pane named diff to diff.png."),
@@ -1396,6 +1397,7 @@ fn parse_screenshot(args: &mut Argv) -> Result<Value, Failure> {
         (out, short) => out.or(short),
     };
     let force = args.flag("--force");
+    let size = args.option("--size")?;
     let mut request = Map::new();
     match (args.option("--window")?, args.positional()) {
         (Some(_), Some(_)) => return Err(usage("screenshot", "give PANE or --window WINDOW, not both")),
@@ -1418,6 +1420,18 @@ fn parse_screenshot(args: &mut Argv) -> Result<Value, Failure> {
     }
     if force {
         request.insert("force".into(), json!(true));
+    }
+    if let Some(size) = size {
+        if !request.contains_key("pane") {
+            return Err(usage("screenshot", "--size is for a PANE"));
+        }
+        let parsed = size.split_once(['x', 'X']).and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
+        match parsed {
+            Some((width, height)) if (1..=10000).contains(&width) && (1..=10000).contains(&height) => {
+                request.insert("size".into(), json!({ "width": width, "height": height }));
+            }
+            _ => return Err(usage("screenshot", "--size is WxH in points, e.g. 800x500")),
+        }
     }
     Ok(Value::Object(request))
 }

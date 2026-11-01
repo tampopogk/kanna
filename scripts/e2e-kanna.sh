@@ -2996,8 +2996,7 @@ r = json.loads(sys.argv[1]); assert r["pane"] == "file-1" and r["window"] == "wi
   (cd "$shots" && kanna screenshot screenshot -o screenshot.png) 2>/dev/null && { echo "screenshot: it overwrote screenshot.png"; return 1; }
   (cd "$shots" && kanna screenshot screenshot -o screenshot.png --force) >/dev/null || { echo "screenshot line $LINENO"; return 1; }
   kanna open --window win-1 --tab --name other >/dev/null || return 1
-  local hidden; hidden="$(kanna screenshot screenshot 2>&1)" && { echo "screenshot: shot a pane that isn't showing"; return 1; }
-  [[ "$hidden" == *"is in tab tab-1, which isn't showing"* ]] || { echo "screenshot: $hidden"; return 1; }
+  check test "$(kanna screenshot screenshot --json | field hidden)" == True || { echo "screenshot: a pane in a hidden tab wasn't drawn off-screen"; return 1; }
   kanna open --window new --name elsewhere >/dev/null || return 1
   local caller; caller="$(KANNA_TERMINAL="$(pane other id)" kanna screenshot --json | field window)" || return 1
   check test "$caller" == win-1 || { echo "screenshot: from other's terminal, with win-2 in front, it shot $caller"; return 1; }
@@ -3005,6 +3004,117 @@ r = json.loads(sys.argv[1]); assert r["pane"] == "file-1" and r["window"] == "wi
   [[ "$refused" == *"screenshot: outside a Kanna terminal there's no window of yours: say PANE or --window WINDOW"* ]] || { echo "screenshot: $refused"; return 1; }
   refused="$(KANNA_TERMINAL=term-99 kanna screenshot 2>&1)" && { echo "screenshot: it shot for an unknown terminal"; return 1; }
   [[ "$refused" == *"term-99 isn't in a window that's showing: say PANE or --window WINDOW"* ]] || { echo "screenshot: $refused"; return 1; }
+}
+
+png_alike() { python3 -c 'import struct, sys, zlib
+def pixels(path):
+    d = open(path, "rb").read(); i = 8; idat = b""
+    while i < len(d):
+        n, kind = struct.unpack(">I4s", d[i:i + 8]); body = d[i + 8:i + 8 + n]; i += 12 + n
+        if kind == b"IHDR": w, h, depth, color = struct.unpack(">IIBB", body[:10])
+        if kind == b"IDAT": idat += body
+    assert depth == 8 and color in (2, 6)
+    bpp = 3 if color == 2 else 4; raw = zlib.decompress(idat); stride = w * bpp; prev = bytearray(stride); rows = []
+    for y in range(h):
+        f = raw[y * (stride + 1)]; line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for x in range(stride):
+            a = line[x - bpp] if x >= bpp else 0; b = prev[x]; c = prev[x - bpp] if x >= bpp else 0
+            if f == 1: line[x] = (line[x] + a) & 255
+            elif f == 2: line[x] = (line[x] + b) & 255
+            elif f == 3: line[x] = (line[x] + (a + b) // 2) & 255
+            elif f == 4:
+                p = a + b - c; pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(line); prev = line
+    return w, h, [[tuple(r[x:x + 3]) for x in range(0, stride, bpp * 2)] for r in rows[::2]]
+(w1, h1, a), (w2, h2, b) = pixels(sys.argv[1]), pixels(sys.argv[2])
+assert (w1, h1) == (w2, h2), f"{sys.argv[1]} is {w1}x{h1}, {sys.argv[2]} is {w2}x{h2}"
+total = sum(len(r) for r in a)
+off = sum(1 for ra, rb in zip(a, b) for p, q in zip(ra, rb) if sum(abs(p[k] - q[k]) for k in range(3)) > 60)
+assert off / total < float(sys.argv[3]), f"{sys.argv[1]} and {sys.argv[2]} differ in {off / total:.2%} of their pixels"' "$1" "$2" "${3:-0.02}"; }
+
+scenario screenshot_hidden M4
+screenshot_hidden() {
+  start_daemon && start_app || return 1
+  local shots="$KANNA_STATE_DIR/shots"; mkdir -p "$shots" && shots="$(cd "$shots" && pwd -P)"
+  minimized() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$1\"${2:-}}}" | field minimized; }
+  seen() { kanna workspace list --all --json | python3 -c 'import json, sys
+s = json.load(sys.stdin)
+print(json.dumps([[w.get(k) for k in ("id", "tab", "focused", "zoomed")] for w in s["windows"]] + [[ws.get(k) for k in ("id", "tab", "focused", "zoomed", "where")] for ws in s.get("workspaces", [])]))'; }
+  shot() { kanna screenshot "$1" -o "$shots/$2.png" "${@:3}" --json; }
+  hidden() { local said; said="$(shot "$@")" || { echo "screenshot_hidden: kanna screenshot $1 failed: $said"; return 1; }; [[ "$(field hidden <<<"$said")" == True ]] || { echo "screenshot_hidden: $1 wasn't drawn off-screen: $said"; return 1; }; }
+  alike() { cp "$shots/$1.png" "$shots/$2.png" "$out/" 2>/dev/null; png_alike "$shots/$1.png" "$shots/$2.png" "${3:-0.02}" || { echo "screenshot_hidden: $2 doesn't look like $1"; return 1; }; }
+
+  kanna open --window new --name lines --cmd 'for i in $(seq 40); do echo "hidden $i the quick brown fox jumps over the lazy dog"; done; exec cat' >/dev/null || return 1
+  check wait_for 5 shows lines "hidden 40" || return 1
+  sleep 0.5; shot lines lines-shown >/dev/null || { echo "screenshot_hidden line $LINENO"; return 1; }
+  kanna open --window win-1 --tab --name other >/dev/null || return 1
+  check wait_for 5 is other state running || return 1
+  sleep 0.5
+  local before; before="$(seen)"
+  hidden lines lines-hidden || return 1
+  check test "$(seen)" == "$before" || { echo "screenshot_hidden: shooting a hidden tab changed the layout: $before → $(seen)"; return 1; }
+  alike lines-shown lines-hidden || return 1
+  local sized w h; sized="$(shot lines lines-sized --size 400x300)" || return 1
+  w="$(field width <<<"$sized")"; h="$(field height <<<"$sized")"
+  check test "$w" == 400 -o "$w" == 800 || { echo "screenshot_hidden: --size 400x300 gave $w×$h"; return 1; }
+  check test $((h * 4)) == $((w * 3)) || { echo "screenshot_hidden: --size 400x300 gave $w×$h"; return 1; }
+  check test "$(png_size "$shots/lines-sized.png")" == "${w}x$h" || return 1
+  local shown; shown="$(kanna screenshot other --size 400x300 2>&1)" && { echo "screenshot_hidden: --size on a showing pane"; return 1; }
+  [[ "$shown" == *"--size is for a pane that isn't showing"* ]] || { echo "screenshot_hidden: $shown"; return 1; }
+
+  printf '# Hidden\n\nA markdown pane, drawn while its window is minimised.\n\n- one\n- two\n' >"$KANNA_STATE_DIR/hidden.md"
+  kanna open --window new md "$KANNA_STATE_DIR/hidden.md" --name doc >/dev/null || return 1
+  check wait_for 5 is doc state running || return 1
+  check wait_for 5 doc_text doc "drawn while its window" || return 1
+  local doc_window; sleep 0.5; doc_window="$(shot doc doc-shown | field window)" || { echo "screenshot_hidden line $LINENO"; return 1; }
+  minimized "$doc_window" ',"minimize":true' >/dev/null; check wait_for 5 eval '[[ "$(minimized "$doc_window")" == True ]]' || return 1
+  before="$(seen)"
+  hidden doc doc-hidden || return 1
+  check test "$(minimized "$doc_window")" == True || { echo "screenshot_hidden: shooting the minimised window's pane brought it back"; return 1; }
+  check test "$(seen)" == "$before" || return 1
+  alike doc-shown doc-hidden || return 1
+  minimized "$doc_window" ',"minimize":false' >/dev/null
+
+  printf '<!doctype html><body style="background:#f4efe6;font:24px sans-serif"><h1>Hidden page</h1><p style="color:#a33">drawn off-screen by WebKit</p></body>\n' >"$KANNA_STATE_DIR/hidden.html"
+  kanna open --window win-1 web "file://$KANNA_STATE_DIR/hidden.html" --name page --tab >/dev/null || return 1
+  check wait_for 5 page_text page "drawn off-screen" || return 1
+  sleep 0.5; shot page page-shown >/dev/null || { echo "screenshot_hidden line $LINENO"; return 1; }
+  kanna focus other >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(kanna screenshot page --json | field hidden)" == True ]]' || return 1
+  before="$(seen)"
+  hidden page page-hidden || return 1
+  check test "$(seen)" == "$before" || return 1
+  alike page-shown page-hidden || return 1
+
+  local probe_id; probe_id="$(new_task Probe "$(probe '\033[?1004hPROBE ' '\007' 0)")" || return 1
+  kanna task pick "$probe_id" >/dev/null || return 1
+  kanna task activate Probe >/dev/null || return 1
+  check wait_for 10 shows Probe READY || return 1
+  sleep 1; shot Probe probe-shown >/dev/null || { echo "screenshot_hidden line $LINENO"; return 1; }
+  kanna task park Probe >/dev/null || return 1
+  sleep 1
+  local reports; reports="$(kanna read Probe | grep -c '^IN ')"
+  before="$(seen)"
+  hidden Probe probe-hidden || return 1
+  hidden Probe probe-hidden-2 || return 1
+  sleep 1
+  check test "$(kanna read Probe | grep -c '^IN ')" == "$reports" || { echo "screenshot_hidden: shooting the parked agent reported focus to it"; kanna read Probe | tail -5; return 1; }
+  check test "$(seen)" == "$before" || { echo "screenshot_hidden: shooting the parked agent changed the layout: $before → $(seen)"; return 1; }
+  alike probe-shown probe-hidden 0.04 || return 1
+
+  local runner; runner="$(new_task Runner 'for i in $(seq 20); do echo "shelf $i the quick brown fox"; done; exec cat')" || return 1
+  kanna task pick "$runner" >/dev/null && kanna task activate Runner >/dev/null || return 1
+  check wait_for 10 shows Runner "shelf 20" || return 1
+  sleep 1; shot Runner runner-shown >/dev/null || { echo "screenshot_hidden line $LINENO"; return 1; }
+  kanna task shelve Runner >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(cd "$(e2e_repo)" && kanna task list | placed | grep -c "Runner  Shelf")" == 1 ]]' || { (cd "$(e2e_repo)" && kanna task list); return 1; }
+  hidden Runner runner-hidden || return 1
+  alike runner-shown runner-hidden || return 1
+
+  kanna task stop Runner >/dev/null || return 1
+  local refused; refused="$(kanna screenshot Runner 2>&1)" && { echo "screenshot_hidden: shot a stopped Shelf task's agent"; return 1; }
+  [[ "$refused" == *"which is stopped on the Shelf: nothing is running to draw"* ]] || { echo "screenshot_hidden: $refused"; return 1; }
 }
 
 scenario diagram_check M4

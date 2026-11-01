@@ -264,6 +264,9 @@ commands: agents, arrange, capabilities, close, comment, crashes, desk, diffs, f
     assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-5", "path": daemon.dir.join("shot.png").to_string_lossy(), "force": true } }));
     assert_eq!(daemon.kanna(&["screenshot", "--window", "win-1", "--json"]).json()["args"], json!({ "window": "win-1", "dir": std::env::temp_dir().to_string_lossy() }));
     daemon.kanna(&["screenshot", "a", "--window", "win-1"]).fails(2, "give PANE or --window WINDOW, not both");
+    assert_eq!(daemon.kanna(&["screenshot", "a", "--size", "800x500", "--json"]).json()["args"]["size"], json!({ "width": 800, "height": 500 }));
+    daemon.kanna(&["screenshot", "a", "--size", "800"]).fails(2, "--size is WxH in points, e.g. 800x500");
+    daemon.kanna(&["screenshot", "--window", "win-1", "--size", "800x500"]).fails(2, "--size is for a PANE");
     daemon.kanna(&["screenshot"]).fails(2, "screenshot: outside a Kanna terminal there's no window of yours: say PANE or --window WINDOW");
     assert_eq!(daemon.kanna_as("term-5", &["screenshot", "--json"]).json()["args"]["from"], json!("term-5"));
     assert_eq!(daemon.kanna(&["raw", r#"{"cmd":"list"}"#]).json()["panes"].as_array().unwrap().len(), 6);
