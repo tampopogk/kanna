@@ -22,13 +22,13 @@ sequenceDiagram
     participant K as keeper
     C->>D: open, restart, task start, pick …
     D-)K: spawn {req: 7, id: term-12, …}
-    Note over D: the pane is Starting; the request waits in core (settled)
+    Note over D: the pane is Starting, and the request waits in core (settled)
     C->>D: task list, debug.desk, attach …
     D-->>C: answered at once
     K-->>W: {ok, req: 7, pid, fds: 1} + master
     W-)D: Event::KeeperReadable
     D->>D: Heard::Spawned(7): reader, writer, report_running, on_start
-    D-->>C: the open's reply; the app attaches
+    D-->>C: the open's reply, and the app attaches
 ```
 
 ## 2. Rules
