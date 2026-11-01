@@ -592,6 +592,17 @@ fn taken(repo: &Path, name: &str) -> bool {
     repo.join(WORKTREES).join(name).exists() || git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok()
 }
 
+/// The branch checked out in a worktree, read from its HEAD without running git.
+pub fn branch_of(folder: &str) -> Option<String> {
+    let dot = Path::new(folder).join(".git");
+    let git_dir = match fs::read_to_string(&dot) {
+        Ok(link) => PathBuf::from(link.strip_prefix("gitdir:")?.trim()),
+        Err(_) => dot,
+    };
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    head.trim().strip_prefix("ref: refs/heads/").map(String::from)
+}
+
 /// Makes a worktree in `.kanna-worktrees/NAME` on a new branch NAME, and returns its folder and branch.
 /// In a repo with no commits yet, the branch starts empty (an orphan), so its first commit is the project's.
 pub fn make_worktree(repo: &Path, name: &str) -> Result<(String, String), String> {
@@ -1000,6 +1011,7 @@ impl Tasks {
         value["script"] = opt(self.script_said(entry, entry.held.as_deref(), running).as_deref());
         let waits = self.waits(entry).iter().map(|id| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()), "pane": opt(self.pane_of(id).as_deref()) })).collect();
         value["waits"] = Value::Array(waits);
+        value["branch"] = opt(entry.folder.as_deref().and_then(branch_of).as_deref());
         value["project"] = opt(kanna_mux::project(Some(&entry.repo)).and_then(|main| crate::projects::identity(&main)).as_deref());
         value
     }
@@ -1455,7 +1467,7 @@ impl Tasks {
         for r in gone {
             log!("kanna-daemon: {}'s agent {} is closed, so {} is done", r.entry.id, r.pane, r.entry.id);
             self.running.borrow_mut().retain(|x| x.pane != r.pane);
-            let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some("daemon")).with("pane", json!(r.pane))));
+            let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some("daemon")).with("pane", json!(r.pane)).with("branch", opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()))));
             self.setting_up.borrow_mut().remove(&r.pane);
             self.tearing_down.borrow_mut().remove(&r.pane);
             self.finish(&r.entry);
@@ -1569,9 +1581,10 @@ impl Tasks {
                     Some("plan") => this.plan(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
+                    Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, name, list, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send or messages"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send or messages"))),
                 }
             }),
         );
@@ -2077,7 +2090,7 @@ impl Tasks {
             .borrow()
             .iter()
             .filter(|r| repo.is_none_or(|repo| r.entry.repo == repo))
-            .map(|r| json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id) }))
+            .map(|r| json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id), "branch": opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()) }))
             .collect();
         let agent = task_agent(&repo.map_or_else(|| vec![crate::agents::home().join(".kanna-v4/config.json")], |repo| config_files(Path::new(repo))));
         let scripts: Map = self
@@ -2109,6 +2122,37 @@ impl Tasks {
             reply.insert("done".to_string(), Value::Array(done));
         }
         reply
+    }
+
+    /// A task by its ID, wherever it is, done ones too: where it is, and for a done one, when it was done and its branch if that's still there.
+    fn show(&self, args: &Value) -> Result<Map, KmuxError> {
+        let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
+        let start = reference.to_lowercase();
+        let start = if start.starts_with(db::TASK) { start } else { format!("{}{start}", db::TASK) };
+        let failed = |error: rusqlite::Error| KmuxError::new("failed", format!("couldn't read {reference}: {error}"));
+        let id = match self.db.ids_starting(&start).map_err(failed)?.as_slice() {
+            [] => return Err(KmuxError::new("not_found", format!("no task \"{reference}\""))),
+            [one] => one.clone(),
+            many => return Err(KmuxError::new("ambiguous", format!("{reference} could be {} tasks: {}; say more of its ID", many.len(), many.iter().map(|id| self.label(id)).collect::<Vec<_>>().join(", ")))),
+        };
+        let id = id.as_str();
+        let row = self.db.task(id).map_err(failed)?.ok_or_else(|| KmuxError::new("not_found", format!("no task \"{reference}\"")))?;
+        let entry = Entry::from_row(&row);
+        let mut task = entry.to_value();
+        task["short"] = json!(self.short(id));
+        task["place"] = json!(row.place.as_str());
+        task["pane"] = opt(row.terminal.as_deref());
+        if row.place == Place::Done {
+            let events = self.db.events(id).unwrap_or_default();
+            let done = events.iter().rev().find(|e| e.what == "done");
+            task["doneAt"] = done.map_or(Value::Null, |e| num(e.at));
+            let branch = done.and_then(|e| string(&e.doc, "branch").map(String::from)).or_else(|| entry.folder.as_deref().and_then(branch_of));
+            let kept = branch.filter(|b| git(Path::new(&row.repo), &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok());
+            task["branch"] = opt(kept.as_deref());
+        } else {
+            task["branch"] = opt(entry.folder.as_deref().and_then(branch_of).as_deref());
+        }
+        Ok(Map::from_iter([("task".to_string(), task)]))
     }
 
     fn take(&self, id: &str) -> Option<Entry> {
@@ -2168,7 +2212,7 @@ impl Tasks {
 
     /// Takes a task off the Shelf, ending its agent and tabs if it was moved there still running.
     fn take_off(self: &Rc<Self>, entry: Entry, by: Option<String>, responder: Answer) {
-        if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()))) {
+        if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()).with("branch", opt(entry.folder.as_deref().and_then(branch_of).as_deref())))) {
             return responder.reply(Err(error));
         }
         let short = self.short(&entry.id);

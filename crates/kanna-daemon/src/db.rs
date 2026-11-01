@@ -470,6 +470,12 @@ impl Db {
         ids.collect()
     }
 
+    pub fn ids_starting(&self, start: &str) -> rusqlite::Result<Vec<String>> {
+        let mut statement = self.conn.prepare("select id from tasks where substr(id, 1, length(?1)) = ?1 order by made_at, rowid")?;
+        let ids = statement.query_map([start], |r| r.get(0))?;
+        ids.collect()
+    }
+
     pub fn task(&self, id: &str) -> rusqlite::Result<Option<Row>> {
         self.conn
             .query_row("select id, repo, place, terminal, made_at, doc from tasks where id = ?1", [id], |r| {

@@ -183,7 +183,10 @@ pub fn task(request: &Value, reply: &Value) -> String {
             let waiting = reply["shelf"].as_array().cloned().unwrap_or_default();
             let done = reply["done"].as_array().cloned().unwrap_or_default();
             if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty(), request["query"].as_str()) {
-                return format!("no task matches \"{query}\"");
+                return match &reply["found"] {
+                    found if found["place"] == "done" => done_line(found),
+                    _ => format!("no task matches \"{query}\""),
+                };
             }
             if tasks.is_empty() && waiting.is_empty() && done.is_empty() {
                 return "no tasks: add one with `kanna task new NAME \"FIRST MESSAGE\"`".into();
@@ -349,7 +352,7 @@ pub fn name_out(reply: &mut Value, out: &Value) {
     for task in tasks {
         if let Some(known) = out.as_array().into_iter().flatten().find(|o| o["pane"] == task["id"]) {
             task["task"] = known["id"].clone();
-            for key in ["repo", "merged", "replied"] {
+            for key in ["repo", "merged", "replied", "branch"] {
                 if let Some(value) = known.get(key) {
                     task[key] = value.clone();
                 }
@@ -411,17 +414,45 @@ pub fn short_text(text: &str, shorts: &[(String, String)]) -> String {
     out
 }
 
-pub fn keep_matching(reply: &mut Value, query: &str) {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    let matches = |task: &Value| {
-        let text = [&task["name"], &task["message"]].iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n").to_lowercase();
-        words.iter().all(|word| text.contains(word.as_str()))
+/// Whether a query word picks out a task: a start of its task ID (`task-1dfb`, or 4 hex digits or more without `task-`), its pane ID exactly, or part of its name, first message or branch, ignoring case.
+pub fn task_matches(task: &Value, word: &str) -> bool {
+    let word = word.to_lowercase();
+    let start = id_start(&word);
+    let id = [&task["task"], &task["id"]].iter().filter_map(|v| v.as_str()).any(|id| start.as_ref().is_some_and(|start| id.to_lowercase().starts_with(start.as_str())));
+    let pane = [&task["id"], &task["held"]].iter().filter_map(|v| v.as_str()).any(|pane| pane.to_lowercase() == word);
+    id || pane || [&task["name"], &task["message"], &task["branch"]].iter().filter_map(|v| v.as_str()).any(|text| text.to_lowercase().contains(&word))
+}
+
+fn id_start(word: &str) -> Option<String> {
+    let (hex, least) = match word.strip_prefix("task-") {
+        Some(hex) => (hex, 1),
+        None => (word, 4),
     };
+    (hex.len() >= least && hex.len() <= 8 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| format!("task-{hex}"))
+}
+
+pub fn keep_matching(reply: &mut Value, query: &str) {
+    let words: Vec<&str> = query.split_whitespace().collect();
     for list in ["tasks", "shelf", "done"] {
         if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
-            tasks.retain(matches);
+            tasks.retain(|task| words.iter().all(|word| task_matches(task, word)));
         }
     }
+}
+
+/// The task ID a query is, when it's only that and nothing listed matches it: a task that's done, or never was.
+pub fn lone_task(reply: &Value, query: &str) -> Option<String> {
+    let none = ["tasks", "shelf", "done"].iter().all(|list| reply[list].as_array().is_none_or(Vec::is_empty));
+    let id = query.trim().to_lowercase();
+    id_start(&id).filter(|_| none && !id.contains(char::is_whitespace))
+}
+
+fn done_line(task: &Value) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    let when = task["doneAt"].as_f64().map_or(String::new(), |at| format!(" ({})", ago(now - at)));
+    let name = task["name"].as_str().map_or(String::new(), |n| format!(" \"{n}\""));
+    let branch = task["branch"].as_str().map_or(String::new(), |b| format!("; its branch {b} is still there"));
+    format!("{}{name} is done{when}{branch}", task["short"].as_str().or(task["id"].as_str()).unwrap_or("?"))
 }
 
 fn tilde(path: &str) -> String {

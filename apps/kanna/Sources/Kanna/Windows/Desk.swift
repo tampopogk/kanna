@@ -279,7 +279,7 @@ extension AppController {
             guard let id = entry["id"]?.string, let name = entry["name"]?.string else { return nil }
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string))
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string)
         }
     }
 
