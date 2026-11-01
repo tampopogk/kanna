@@ -697,6 +697,7 @@ impl CoreHandle {
         let windows = layout.remove("windows").unwrap_or(Value::Array(vec![]));
         let workspaces = layout.remove("workspaces");
         let hidden = layout.remove("hiddenWindows");
+        let desks = layout.remove("desks");
         if let (Some(book), Some(Value::Array(all))) = (self.book(), &workspaces) {
             book.sync(all);
         }
@@ -715,6 +716,9 @@ impl CoreHandle {
         }
         if let Some(hidden) = hidden {
             out.insert("hiddenWindows".into(), hidden);
+        }
+        if let Some(desks) = desks {
+            out.insert("desks".into(), desks);
         }
         Ok(out)
     }
