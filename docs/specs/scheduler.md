@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** `cargo test -p kanna-daemon` (schedule), e2e `scheduler` · **Builds on:** [database](database.md), [agent messaging](agent-messaging.md) · **First use:** the [quiz](quiz.md)'s morning offer
 
-**A schedule prompts an agent at set times.** At each time its rule gives, the daemon leaves a task or a repo's planning agent a message, as `kanna task send` does, from `schedule NAME`. [Agent messaging](agent-messaging.md) does the rest: the agent gets `[message from schedule NAME] PROMPT` when its turn is over, never mid-turn, through its own door. That's all a schedule does: no shell commands, no task starts of its own, no notifications.
+**A schedule prompts an agent at set times.** At each time its rule gives, the daemon leaves a task or a repo's planning agent a message, as `kanna task send` does, from `schedule NAME`. [Agent messaging](agent-messaging.md) delivers it, as `[message from schedule NAME] PROMPT`. That's all a schedule does: no shell commands, no task starts of its own, no notifications.
 
 The daemon runs it, since it's always running, and keeps schedules in [its database](database.md), so they survive restarts. There's no window for them: `kanna schedule` makes, lists and removes them, and agents make them when you ask in words.
 
@@ -19,19 +19,6 @@ The daemon runs it, since it's always running, and keeps schedules in [its datab
 ## 1. A schedule firing
 
 ```mermaid
-sequenceDiagram
-    participant S as scheduler (daemon)
-    participant M as messages (kanna.db)
-    participant T as the target's agent
-    Note over S: 09:00, the rule's time
-    S->>M: a message from "schedule quiz" for planner (repo), next = tomorrow 09:00
-    Note over T: working, or needs you: the message waits
-    T-->>M: its turn is over (idle)
-    M->>T: [message from schedule quiz] Morning quiz check …
-    Note over M: delivered
-```
-
-```mermaid
 stateDiagram-v2
     direction LR
     [*] --> waiting_for_time
@@ -40,7 +27,6 @@ stateDiagram-v2
     message_waiting --> waiting_for_time: its agent takes the message
 ```
 
-- **Delivered like any message:** at the agent's turn's end, never mid-turn or into your draft; a stopped Shelf task runs for it; with no planner open, it waits for one ([agent messaging](agent-messaging.md#2-delivery)). Only Claude and Codex take messages.
 - **One message waiting, never a pile.** A time that comes while the schedule's last message is still waiting leaves no second one.
 - **A schedule's message is yours:** it carries your permissions, as one you send yourself, since you made the schedule (or asked an agent to).
 
