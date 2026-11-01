@@ -187,7 +187,7 @@ Beyond each scenario's column in [§3](#3-scenarios-ah):
 
 1. **Machines come first** (decided 2026-11-01): A–C before E–H. They share only identity and reach, so building one doesn't bring the other.
 2. **What E sends is a message, not a task** (decided 2026-11-01). Tasks stay local to one person's identity: their own machines share them, other people never do. The receiver's planner turns a message into a task.
-3. **Approval (5) as a Kanna step or an agent step?** The daemon holding every outbound message until the user approves in the app, or the skill telling the agent to ask first. Only the first is enforceable.
+3. **Who makes sure a person approves each outgoing message (principle 5)?** Either Kanna does: the daemon holds every message bound for another person's Kanna until its user approves it in the app. Or the agent does: its skill tells it to show the draft and wait for a yes before sending. Only Kanna's way is enforced; an agent can skip a skill's step.
 4. **Identity for people** isn't identity for machines: your machines' peer log is one person's devices ([identity](../specs/machine-identity.md)). Another person's Kanna is a peer of a different kind, trusted for messages and never for tasks running on it.
 5. **Thread files across Kannas (H):** merge two writers into `<repo>/.kanna/docs/PATH.json`, or keep the stakeholder's threads as a separate file the task's agent reads.
 
