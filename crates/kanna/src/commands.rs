@@ -608,19 +608,20 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "run",
         group: "Information",
-        summary: "Build a task's change through a pipeline: start a run from the task's terminal, list runs, show one, read its log, or stop it.",
-        usage: "kanna run start PIPELINE [--request FILE|TEXT]\n       kanna run list [--all]\n       kanna run show [RUN] [--json]\n       kanna run log [RUN]\n       kanna run stop [RUN]\n       kanna run done [pass|fail] [--answer FILE]\n       kanna run need TEXT",
+        summary: "Build a task's change through a pipeline: start a run from the task's terminal, list runs, show one, read its log, resume a paused one, or stop it.",
+        usage: "kanna run start PIPELINE [--request FILE|TEXT]\n       kanna run list [--all]\n       kanna run show [RUN] [--json]\n       kanna run log [RUN]\n       kanna run stop [RUN]\n       kanna run resume [RUN] [TEXT]\n       kanna run done [pass|fail] [--answer FILE]\n       kanna run need TEXT",
         options: &[
             ("--request FILE|TEXT", "start: what the run builds, given to every agent stage: a file's text, or the text itself. Default: the task's first message."),
             ("--all", "list: every repo's runs, not only this repo's."),
             ("--answer FILE", "done: the stage's final answer. Default: the file in $KANNA_ANSWER, which the stage's prompt names."),
         ],
-        notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal nothing shows. The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: the task's branch is fast-forwarded to the run's (left as it is when its worktree has changes), and the task's agent gets a message from the run, as it does when the run is stuck, waits on you or stops. A run never merges to main: you review what it handed back in the task's worktree and merge it as any task's work.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna then quits the agent; need makes the run wait and tells the task's agent what the stage needs. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, the latest run of the task the terminal is in. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
+        notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal nothing shows. The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: the task's branch is fast-forwarded to the run's (left as it is when its worktree has changes), and the task's agent gets a message from the run, as it does when the run is stuck, waits on you or stops. A run never merges to main: you review what it handed back in the task's worktree and merge it as any task's work.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. Agent stages take claude or codex, which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, the latest run of the task the terminal is in. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
         examples: &[
             ("kanna run start feature", "Build this task's change through .kanna/pipelines/feature.pipe."),
             ("kanna run start bugfix --request notes/bug.md", "Run bugfix.pipe with the bug's write-up as the request."),
             ("kanna run show --json", "This task's latest run: its revision, every visit with its verdict and answer, and the worker running now."),
             ("kanna run log run-7f3a", "What happened in run-7f3a, oldest first."),
+            ("kanna run resume \"Use blue.\"", "Answer the stage this task's run paused on; its agent carries on with that."),
             ("kanna run stop", "Stop this task's run where it is; its branch is kept."),
         ],
         parse: parse_run,
@@ -1033,7 +1034,7 @@ fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
     let request = args.option("--request")?;
     let answer = args.option("--answer")?;
     let all = args.flag("--all");
-    let action = args.positional().ok_or_else(|| usage("run", "say what: start, list, show, log or stop"))?;
+    let action = args.positional().ok_or_else(|| usage("run", "say what: start, list, show, log, resume or stop"))?;
     let mut out = json!({ "action": action });
     if let Some(by) = caller() {
         out["by"] = json!(by);
@@ -1078,12 +1079,21 @@ fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
             }
         }
         "need" => out["text"] = json!(args.rest().ok_or_else(|| usage("run", "need says what: kanna run need TEXT"))?),
+        "resume" => {
+            let mut words = args.positionals();
+            if words.first().is_some_and(|w| w.starts_with("run-")) {
+                out["run"] = json!(words.remove(0));
+            }
+            if !words.is_empty() {
+                out["text"] = json!(words.join(" "));
+            }
+        }
         "show" | "log" | "stop" => {
             if let Some(run) = args.positional() {
                 out["run"] = json!(run);
             }
         }
-        other => return Err(usage("run", &format!("unknown action \"{other}\" (start, list, show, log, stop, done or need)"))),
+        other => return Err(usage("run", &format!("unknown action \"{other}\" (start, list, show, log, stop, resume, done or need)"))),
     }
     Ok(out)
 }

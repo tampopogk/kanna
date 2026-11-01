@@ -25,10 +25,10 @@ A **pipeline** says how a change gets built once its spec and mockup are approve
 stateDiagram-v2
     direction LR
     [*] --> running: the task's agent runs kanna run start feature
-    running --> waiting: ask, stuck, over budget, a stage's agent needs you
+    running --> waiting: ask, stuck, over budget
     waiting --> running: an answer, retry, skip, edit
-    running --> paused: Pause
-    paused --> running: Resume
+    running --> paused: a stage needs you, a stage's turn ends unreported, Pause
+    paused --> running: Resume, with your answer
     running --> done: done, handed back to the task's worktree
     running --> stopped: Stop, or no arrow left
     waiting --> stopped: Stop
@@ -61,7 +61,7 @@ flowchart LR
 ```
 
 - **The daemon, not an agent.** The task's agent starts a run, reads it (`kanna run show`), answers for you when you've told it to, and stops it; it never advances one. No agent sees the whole pipeline but through its stage's prompt and `{{STAGE.KEY}}` ([pipeline language §5](pipeline-language.md#5-inputs-and-outputs)); an `emits` stage proposes a revision that the daemon validates ([pipeline language §7](pipeline-language.md#7-changing-a-pipeline-while-it-runs)).
-- **Driven by events, not a clock:** a stage ends when its agent reports it's done (`kanna run done`, with its verdict and answer; the daemon then quits the agent), its command exits (the keeper's exit code), you answer, or its `within` passes. A stage's agent that needs something from you says so (`kanna run need TEXT`), and the run waits. Runs never guess from the screen: no turn's-end detection, no idle timer, and they share nothing with [Shelf runners](shelf-runners.md). Nothing polls: the daemon steps a run when one of these happens (a report, a worker's terminal exiting or closing, which the core announces, a visit opening or concluding, the daemon starting), and otherwise sleeps until the run's next deadline, a `within` or the second it gives a reporting agent before quitting it.
+- **Driven by events, not a clock:** a stage ends when its agent reports it's done (`kanna run done`, with its verdict and answer; the daemon then quits the agent), its command exits (the keeper's exit code), you answer, or its `within` passes. A stage's agent that needs something from you says so (`kanna run need TEXT`), and the run pauses. Nothing ends a stage but its report: no screen reading, no idle timer. Its agent's own status report (OSC 7501) says only when a turn ends, so Kanna knows when to quit an agent that reported, and when to pause a run whose stage stopped without reporting; so agent stages take agents that report (claude, codex). Nothing polls: the daemon steps a run when one of these happens (a report, a turn's end, a worker's terminal exiting or closing, which the core announces, a visit opening or concluding, the daemon starting), and otherwise sleeps until the run's next deadline: a `within`, or the 10s it gives an agent that reported to end its turn.
 - **Every visit runs in a worker,** and the run sees only visits ending: its verdict, answer and commits. Where the worker is (here, or a peer) changes nothing in the run's state machine, records or Run tab; every visit records its `machine`.
 - **A restart of the daemon loses nothing:** the run's state is the rows; a stage mid-visit carries on (its agent still runs in the keeper's pty; a command too), and a visit whose terminal is gone is recorded `interrupted` and run again.
 - **Several runs run at once** as their tasks do; within a run, one stage at a time, except a fan-out's instances.
@@ -169,6 +169,7 @@ sequenceDiagram
     loop each visit
         D->>W: open --hidden: the agent with stage-N.md, or the command under the timeout wrapper
         W->>D: kanna run done [pass|fail] (the answer from $KANNA_ANSWER), or stage-N.exit written
+        W-->>D: OSC 7501 idle: the turn's end
         D->>D: the verdict, the answer or the output's tail, the next arrow
         D->>W: quit keys, then close
     end
@@ -178,8 +179,11 @@ sequenceDiagram
 
 - **A worker's terminal is `open` with `hidden`:** a terminal pane the layout never places (no window, workspace, dock or tab), so no Desk, Shelf row or strip shows it, and a Shelf runner's hang-up of the task's terminals never reaches it (it hangs up what the task's workspace holds). The terminal store keeps `hidden`, so a worker stays unplaced across a daemon restart. The run closes it when its visit ends.
 - **An agent stage** runs `export KANNA_TASK=… KANNA_RUN=… KANNA_STAGE=… (the task scripts' variables); AGENT … "$(cat .kanna/tmp/stage-N.md)"` in the worker, the agent command built as a task's (`agents.prompts`, Codex in its own terminal, `--session-id` for Claude and Copilot), with `--model` and Codex's `model_reasoning_effort` from the stage line. N counts the run's visits. The prompts are the ones beside the pipeline when the run started, kept with revision 1.
-- **A visit ends when its agent reports it** with `kanna run done` (`kanna run done pass|fail` at a `verdict` stage), run from the worker's terminal. The stage's prompt ends with how: write the final answer to `$KANNA_ANSWER` (`.kanna/tmp/answer-N.md`), then run `"$KANNA_CLI" run done`. The daemon keeps the report on the visit's row, so a restart between the report and the quit loses nothing, waits a second for the agent to settle, and quits it with its quit keys (`Tasks::end_agent`). `done` from any other terminal, or without a verdict at a `verdict` stage, is refused.
-- **A stage that needs you** runs `kanna run need TEXT`: the run is `waiting` with `STAGE needs: TEXT` as its why, and the task's agent gets a message naming the worker's terminal, which `kanna read` shows and `kanna send` answers. The agent's next `done` ends the visit as usual.
+- **A visit ends when its agent reports it** with `kanna run done` (`kanna run done pass|fail` at a `verdict` stage), run from the worker's terminal. The stage's prompt ends with how: write the final answer to `$KANNA_ANSWER` (`.kanna/tmp/answer-N.md`), then run `"$KANNA_CLI" run done`. The daemon keeps the report on the visit's row, so a restart between the report and the quit loses nothing, and quits the agent with its quit keys (`Tasks::end_agent`) when its turn ends, or 10s after the report if no turn's end comes. `done` from any other terminal, or without a verdict at a `verdict` stage, is refused.
+- **A stage that needs you** runs `kanna run need TEXT` and ends its turn. The run is `paused` at once, with `STAGE needs: TEXT` as its why, and the task's agent gets a message saying what and how to answer. When the agent's turn ends (or 10s on), Kanna quits it as a Shelf runner would, keeping its session: Claude's the one Kanna gave it, Codex's the one it prints as it exits, else the worker's latest. A paused run holds no process.
+- **A turn that ends without a report** (the agent asked in its chat, or forgot to report) pauses the run the same way, as `STAGE stopped without reporting`, and the task's agent is told, with the last lines of the stage's screen. The turn's end is the agent's own report (working, then idle or done); the status watcher counts every such turn in the terminal's records as they arrive, so a turn shorter than its look is still seen ([agent status](agent-status.md#4-the-agents-own-report-osc-7501)).
+- **`kanna run resume [RUN] [TEXT]`** carries a paused stage on: its session starts again in a new hidden terminal (`claude --resume ID`, `codex resume ID`) with TEXT as its next message (written to `.kanna/tmp/reply-N-K.md`; `Carry on.` without one), and the visit goes on as before. Time paused doesn't count against the stage's `within`. From you, or from the task's agent answering for you.
+- **Only agents that report their status** take an agent stage: a stage naming copilot, opencode or agy is refused at start (`FILE:LINE: STAGE uses copilot, which doesn't report its status (OSC 7501), so a run can't tell when its turn ends: runs take claude or codex`). An older claude or codex that doesn't report runs, but a turn it ends unreported never pauses the run.
 - **An agent that exits without reporting** stops the run (`STAGE's agent exited without reporting it was done`); `within` resets the worktree to the visit's start and fails it as `timed out` at a `verdict` stage, and stops the run at any other.
 - **A `run` stage** runs under the task scripts' timeout wrapper (`within`, else `tasks.timeout`), its output in `.kanna/tmp/stage-N.log` and the exit code written to `stage-N.exit` when the command ends, so a restart of the daemon mid-command loses nothing: the keeper keeps the command running and the file says how it ended. `KANNA_FEEDBACK` is `feedback-N.txt`, the last failure's full output.
 - **Feedback goes forward only after a fail** that takes an arrow without `reset`: a pass hands nothing to the next stage.
@@ -187,8 +191,8 @@ sequenceDiagram
 - **Messages from the run** (`[message from run-ID] …`) are sent when it hands back, is stuck, waits on you (the budget, a stage's agent needing you) or stops by itself; they carry the recipient's permissions, as yours do, since the run acts for whoever started it. A stopped Shelf task runs for the message.
 - **The core announces a terminal's end** (`on_ended`, as it announces a rename): an exit, a failure to start, or a close. Runs watch it for their workers' terminals; a daemon that starts looks at every live run once, so a command that ended or a terminal the keeper lost while it was down is seen then.
 - **Events** add `waiting` and `resumed` to §6's list, and a run in `done` is handed back; a lost terminal is a `verdict` of `interrupted`, and the stage runs again.
-- **Not built yet, refused at start** by line (`FILE:LINE: STAGE uses each, which runs can't do yet`): `ask`, `each`, `xN by`, `guard`, `emits`, `resume`, `merge STAGE` and `on` anything but `here`. `pause`, `resume`, `skip`, `retry`, `answer` and `edit` come with them.
-- **Tested with the mock agent:** e2e points `pipelines.agents.claude` at `tools/mock-agent` in its private home's config. With `KANNA_STAGE` set, the mock takes its first message as a stage prompt and runs each `mock: …` line, so a fixture prompt writes its answer and runs `kanna run done` or `kanna run need` itself.
+- **Not built yet, refused at start** by line (`FILE:LINE: STAGE uses each, which runs can't do yet`): `ask`, `each`, `xN by`, `guard`, `emits`, `resume`, `merge STAGE` and `on` anything but `here`. Pausing a running run, `skip`, `retry`, `answer` and `edit` come with them.
+- **Tested with the mock agent:** e2e points `pipelines.agents.claude` at `tools/mock-agent` in its private home's config. With `KANNA_STAGE` set, the mock takes its first message as a stage prompt and runs each `mock: …` line, so a fixture prompt writes its answer and runs `kanna run done` or `kanna run need` itself, or ends its turn without either; resumed, it takes its message as the next prompt. With `KANNA_MOCK_REPORTS=1` it reports working and idle by OSC 7501, as claude does.
 
 ## 7. CLI
 
@@ -201,8 +205,9 @@ sequenceDiagram
 | `kanna open run [RUN] [--watch [WORKER]]` | The Run tab; with `--watch`, a terminal tab showing the current stage's worker |
 | `kanna run answer [RUN] yes\|no [NOTE]` | Answer the waiting `ask` |
 | `kanna run done [pass\|fail] [--answer FILE]` | From a stage's worker: the visit is done, with its verdict at a `verdict` stage and its answer (`$KANNA_ANSWER` by default) |
-| `kanna run need TEXT` | From a stage's worker: the stage needs something from you; the run waits and tells the task's agent |
-| `kanna run pause\|resume\|skip\|retry\|stop [RUN]` | The Run tab's buttons |
+| `kanna run need TEXT` | From a stage's worker: the stage needs something from you; the run pauses and tells the task's agent |
+| `kanna run resume [RUN] [TEXT]` | Carry a paused run's stage on: its session resumes with TEXT as its next message |
+| `kanna run pause\|skip\|retry\|stop [RUN]` | The Run tab's buttons |
 | `kanna run edit [RUN]` | The run's current revision in a code pane; saving validates and applies it |
 | `kanna run log [RUN]` | The run's events |
 | `kanna stats pipelines [--json] [--days N]` | Runs compared by pipeline and revision |

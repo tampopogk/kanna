@@ -22,7 +22,11 @@ const FAILURE_MARKS: &[&str] = &["FAILED", "error[", "panic", "✗", "failed"];
 
 const ANSWER_CHARS: usize = 64 << 10;
 
-const QUIT_AFTER: f64 = 1.0;
+const SETTLE: f64 = 10.0;
+
+const SCREEN_LINES: usize = 20;
+
+const CARRY_ON: &str = "Carry on.";
 
 pub const LIVE: &[&str] = &["running", "waiting", "paused"];
 
@@ -137,6 +141,11 @@ pub fn unbuilt(pipeline: &Pipeline) -> Vec<String> {
     let mut out = vec![];
     for stage in &pipeline.stages {
         let line = stage.line;
+        if let Kind::Agent(agent) = &stage.kind {
+            if !tasks::reports_status(&agent.agent) {
+                out.push(format!("{line}: {} uses {}, which doesn't report its status (OSC 7501), so a run can't tell when its turn ends: runs take claude or codex", stage.name, agent.agent));
+            }
+        }
         let mut say = |what: &str| out.push(format!("{line}: {} uses {what}, which runs can't do yet", stage.name));
         match &stage.kind {
             Kind::Agent(agent) => {
@@ -181,7 +190,7 @@ pub fn prompt(stage: &Stage, file: &str, request: &str, feedback: Option<&Feedba
         out += &format!("\n# Feedback from {}\n\n{}\n", feedback.stage, feedback.text.trim_end());
     }
     let done = if stage.verdicts() { "`\"$KANNA_CLI\" run done pass` if it passes, or `\"$KANNA_CLI\" run done fail` if it doesn't" } else { "`\"$KANNA_CLI\" run done`" };
-    out += &format!("\n# When you're done\n\nWrite your final answer to `{answer}`, then run {done}. Kanna ends this session once you've reported. If you need something from the user before you can finish, run `\"$KANNA_CLI\" run need \"WHAT YOU NEED\"` and wait for their answer.\n");
+    out += &format!("\n# When you're done\n\nWrite your final answer to `{answer}`, then run {done}. Kanna ends this session once your turn ends. If you need something from the user before you can finish, run `\"$KANNA_CLI\" run need \"WHAT YOU NEED\"` and end your turn: Kanna stops this session and resumes it with their answer.\n");
     out
 }
 
@@ -315,6 +324,32 @@ struct Visit {
     opening: bool,
     ending: bool,
     reported: Option<(Ended, f64)>,
+    needs: Option<f64>,
+    paused: bool,
+}
+
+impl Visit {
+    fn waited(&self) -> f64 {
+        self.row.doc.get("waited").and_then(Value::as_f64).unwrap_or(0.0)
+    }
+
+    fn due(&self) -> Option<f64> {
+        self.within.map(|within| self.row.started_at + self.waited() + within.as_secs_f64())
+    }
+}
+
+fn patch(doc: &mut Value, with: Value) {
+    if !doc.is_object() {
+        *doc = json!({});
+    }
+    let (Some(doc), Value::Object(with)) = (doc.as_object_mut(), with) else { return };
+    for (key, value) in with {
+        if value.is_null() {
+            doc.remove(&key);
+        } else {
+            doc.insert(key, value);
+        }
+    }
 }
 
 struct Live {
@@ -365,7 +400,14 @@ impl Runs {
                 };
                 let within = pipeline.stage(&row.stage).and_then(|s| s.within);
                 let reported = row.doc.get("reported").filter(|r| r.is_object()).map(|r| (reported(r), now()));
-                Visit { row, work, within, opening: false, ending: false, reported }
+                let paused = row.doc.get("paused").is_some_and(Value::is_object);
+                Visit { row, work, within, opening: false, ending: false, reported, needs: None, paused }
+            });
+            let visit = visit.map(|mut v| {
+                if row.state == "paused" && !v.paused && v.reported.is_none() {
+                    v.needs = Some(now());
+                }
+                v
             });
             log!("kanna-daemon: {} carries on ({}, {})", row.id, row.state, visit.as_ref().map_or("between stages".to_string(), |v| format!("in {}", v.row.stage)));
             live.push(Live { row, doc, pipeline, visit });
@@ -402,7 +444,8 @@ impl Runs {
             Some("stop") => self.stop_run(args),
             Some("done") => self.done(args),
             Some("need") => self.need(args),
-            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, done or need)"))),
+            Some("resume") => self.resume_run(args),
+            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, resume, done or need)"))),
         }
     }
 
@@ -583,7 +626,7 @@ impl Runs {
         let found = live.iter().find(|l| l.visit.as_ref().is_some_and(|v| v.row.terminal.as_deref() == Some(by) && matches!(v.work, Work::Agent { .. })));
         let live = found.ok_or_else(not_a_stage)?;
         let visit = live.visit.clone().ok_or_else(not_a_stage)?;
-        if visit.ending || visit.reported.is_some() {
+        if visit.ending || visit.reported.is_some() || visit.paused {
             return Err(KmuxError::new("ended", format!("{} has reported already", visit.row.stage)));
         }
         let verdicts = live.pipeline.stage(&visit.row.stage).is_some_and(Stage::verdicts);
@@ -609,8 +652,9 @@ impl Runs {
         self.update(&id, |live| {
             if let Some(visit) = live.visit.as_mut() {
                 visit.reported = Some((ended.clone(), now()));
+                visit.needs = None;
             }
-            if state == "waiting" {
+            if state == "waiting" || state == "paused" {
                 live.row.state = "running".into();
                 live.doc.why = None;
                 return Some(("resumed", None, json!({ "stage": stage })));
@@ -627,17 +671,19 @@ impl Runs {
         let (stage, pane) = (visit.row.stage.clone(), visit.row.terminal.clone().unwrap_or_default());
         log!("kanna-daemon: {id}'s {stage} needs: {text}");
         self.update(&id, |live| {
-            live.row.state = "waiting".into();
-            live.doc.why = Some(format!("{stage} needs: {text}"));
-            Some(("waiting", Some(pane.clone()), json!({ "stage": stage, "need": text })))
+            if let Some(visit) = live.visit.as_mut() {
+                visit.needs = Some(now());
+            }
+            None
         });
-        self.tell(&id, &format!("{stage} needs you: {text}\nIts agent waits in {pane}: `kanna read {pane}` shows it, and `kanna send {pane} \"…\"` answers it."));
-        Ok(Map::from_iter([("run".to_string(), json!(id)), ("stage".to_string(), json!(stage)), ("state".to_string(), json!("waiting"))]))
+        self.pause(&id, &format!("{stage} needs: {text}"), Some(&pane), &format!("{stage} needs you: {text}\nIts agent stops once its turn ends, and its session is kept: `kanna run resume {id} \"…\"` carries it on with your answer."));
+        self.soon.set(true);
+        Ok(Map::from_iter([("run".to_string(), json!(id)), ("stage".to_string(), json!(stage)), ("state".to_string(), json!("paused"))]))
     }
 
     pub fn tick(self: &Rc<Self>) -> Option<Instant> {
         if self.soon.replace(false) || self.deadline().is_some_and(|at| at <= now()) {
-            let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.state == "running" || (l.row.state == "waiting" && l.visit.is_some())).map(|l| l.row.id.clone()).collect();
+            let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.state == "running" || l.visit.as_ref().is_some_and(|v| !v.paused)).map(|l| l.row.id.clone()).collect();
             for id in &ids {
                 self.step(id);
             }
@@ -651,8 +697,8 @@ impl Runs {
 
     fn deadline(&self) -> Option<f64> {
         let live = self.live.borrow();
-        let visits = live.iter().filter_map(|l| l.visit.as_ref()).filter(|v| !v.opening && !v.ending);
-        visits.filter_map(|v| v.reported.as_ref().map(|(_, at)| at + QUIT_AFTER).or_else(|| v.within.map(|w| v.row.started_at + w.as_secs_f64()))).min_by(f64::total_cmp)
+        let visits = live.iter().filter_map(|l| l.visit.as_ref()).filter(|v| !v.opening && !v.ending && !v.paused);
+        visits.filter_map(|v| v.reported.as_ref().map(|(_, at)| at + SETTLE).or(v.needs.map(|at| at + SETTLE)).or_else(|| v.due())).min_by(f64::total_cmp)
     }
 
     fn update(&self, id: &str, edit: impl FnOnce(&mut Live) -> Option<(&'static str, Option<String>, Value)>) {
@@ -687,17 +733,22 @@ impl Runs {
             }
             return;
         };
-        if visit.opening || visit.ending {
+        if visit.opening || visit.ending || visit.paused {
             return;
         }
         let Some(pane) = visit.row.terminal.clone() else { return };
-        let late = visit.within.is_some_and(|within| now() - visit.row.started_at >= within.as_secs_f64());
+        let late = visit.due().is_some_and(|due| now() >= due);
         match &visit.work {
             Work::Agent { agent } => {
                 if let Some((ended, at)) = visit.reported.clone() {
-                    if now() - at >= QUIT_AFTER {
-                        self.mark_ending(id);
+                    if now() - at >= SETTLE && self.mark_ending(id) {
                         self.quit_then(id, &pane, agent, ended);
+                    }
+                    return;
+                }
+                if let Some(at) = visit.needs {
+                    if now() - at >= SETTLE {
+                        self.park(id);
                     }
                     return;
                 }
@@ -726,6 +777,188 @@ impl Runs {
                 }
             }
         }
+    }
+
+    pub fn status(self: &Rc<Self>, pane: &str, ended: bool) {
+        if !ended {
+            return;
+        }
+        let found = self.live.borrow().iter().find_map(|l| {
+            let visit = l.visit.as_ref().filter(|v| v.row.terminal.as_deref() == Some(pane) && matches!(v.work, Work::Agent { .. }) && !v.opening && !v.ending && !v.paused)?;
+            Some((l.row.id.clone(), visit.row.stage.clone(), visit.reported.clone(), visit.needs.is_some(), l.row.state.clone()))
+        });
+        let Some((id, stage, reported, needs, state)) = found else { return };
+        if let Some((ended, _)) = reported {
+            let agent = match self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref()).map(|v| v.work.clone()) {
+                Some(Work::Agent { agent }) => agent,
+                _ => return,
+            };
+            if self.mark_ending(&id) {
+                self.quit_then(&id, pane, &agent, ended);
+            }
+            return;
+        }
+        if needs {
+            return self.park(&id);
+        }
+        if state != "running" {
+            return;
+        }
+        let Some(core) = self.core.upgrade() else { return };
+        let (this, closing) = (Rc::downgrade(self), pane.to_string());
+        core.handle(json!({ "cmd": "read", "args": { "pane": pane, "lines": SCREEN_LINES } }), move |reply| {
+            let Some(this) = this.upgrade() else { return };
+            let screen = reply.get("text").and_then(Value::as_str).unwrap_or("").lines().map(str::trim_end).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n");
+            let still = this.live.borrow().iter().any(|l| l.row.id == id && l.visit.as_ref().is_some_and(|v| v.row.terminal.as_deref() == Some(closing.as_str()) && v.reported.is_none() && v.needs.is_none() && !v.ending && !v.paused));
+            if !still {
+                return;
+            }
+            let why = format!("{stage} stopped without reporting");
+            this.pause(&id, &why, None, &format!("{stage}'s turn ended without it reporting it was done or what it needs, so the run is paused and its session kept. Its screen ended:\n\n{screen}\n\n`kanna run resume {id} \"…\"` carries it on with your answer."));
+            this.park(&id);
+        });
+    }
+
+    fn pause(&self, id: &str, why: &str, by: Option<&str>, tell: &str) {
+        log!("kanna-daemon: {id} pauses: {why}");
+        let (why, by) = (why.to_string(), by.unwrap_or("daemon").to_string());
+        self.update(id, |live| {
+            let stage = live.visit.as_ref().map(|v| v.row.stage.clone());
+            live.row.state = "paused".into();
+            live.doc.why = Some(why.clone());
+            Some(("paused", Some(by), json!({ "stage": stage, "why": why })))
+        });
+        self.tell(id, tell);
+    }
+
+    fn park(self: &Rc<Self>, id: &str) {
+        let Some(visit) = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit.clone()) else { return };
+        let (Work::Agent { agent }, Some(pane)) = (visit.work.clone(), visit.row.terminal.clone()) else { return };
+        if visit.paused || visit.reported.is_some() || !self.mark_ending(id) {
+            return;
+        }
+        let (this, id) = (Rc::downgrade(self), id.to_string());
+        let closing = pane.clone();
+        let finish = move |said: Option<String>| {
+            let Some(this) = this.upgrade() else { return };
+            this.close(&closing);
+            let mut parked = None;
+            this.update(&id, |live| {
+                if let Some(visit) = live.visit.as_mut() {
+                    let session = visit.row.session.clone().or(said);
+                    patch(&mut visit.row.doc, json!({ "paused": { "at": now(), "session": session } }));
+                    visit.paused = true;
+                    visit.ending = false;
+                    visit.needs = None;
+                    parked = Some(visit.row.clone());
+                }
+                None
+            });
+            if let Some(row) = parked {
+                log!("kanna-daemon: {id}'s {} is parked, its session {}", row.stage, row.doc["paused"]["session"].as_str().unwrap_or("the folder's latest"));
+                let _ = this.db.put_stage(&row);
+            }
+        };
+        match self.tasks.upgrade() {
+            Some(tasks) => tasks.end_agent(&pane, &agent, finish),
+            None => finish(None),
+        }
+    }
+
+    fn resume_run(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let row = self.find(args)?;
+        let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).unwrap_or(CARRY_ON).to_string();
+        let (run, doc, visit, stage) = {
+            let live = self.live.borrow();
+            let live = live.iter().find(|l| l.row.id == row.id).ok_or_else(|| KmuxError::new("ended", format!("{} has ended ({})", row.id, row.outcome.as_deref().unwrap_or(&row.state))))?;
+            let visit = live.visit.clone().filter(|_| live.row.state == "paused").ok_or_else(|| KmuxError::new("not_paused", format!("{} isn't paused ({})", row.id, live.row.state)))?;
+            if !visit.paused {
+                return Err(KmuxError::new("busy", format!("{}'s agent is still stopping: try again in a moment", visit.row.stage)));
+            }
+            let stage = live.pipeline.stage(&visit.row.stage).cloned().ok_or_else(|| failed(format!("{} isn't in the pipeline any more", visit.row.stage)))?;
+            (live.row.clone(), live.doc.clone(), visit, stage)
+        };
+        let Kind::Agent(agent) = &stage.kind else { return Err(failed(format!("{} isn't an agent stage", stage.name))) };
+        let n = visit.row.doc.get("n").and_then(Value::as_u64).unwrap_or(u64::from(doc.visits));
+        let replies = visit.row.doc.get("replies").and_then(Value::as_u64).unwrap_or(0) + 1;
+        let worker = PathBuf::from(&doc.worker);
+        let reply = format!("{SCRATCH}/reply-{n}-{replies}.md");
+        fs::write(worker.join(&reply), &text).map_err(|e| failed(format!("can't write {reply}: {e}")))?;
+        let files = tasks::config_files(Path::new(&run.repo));
+        let mut vars = self.vars(&run, &doc, &stage.name);
+        vars.push(("KANNA_ANSWER", worker.join(format!("{SCRATCH}/answer-{n}.md")).to_string_lossy().into_owned()));
+        vars.push(("KANNA_CLI", tasks::cli_path()));
+        let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+        let session = visit.row.doc["paused"]["session"].as_str().map(String::from);
+        let command = tasks::pipeline_agent(&files, &agent.agent);
+        let first = format!("\"$(cat {})\"", quote(&reply));
+        let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), true, &first));
+        let paused_at = visit.row.doc["paused"]["at"].as_f64().unwrap_or_else(now);
+        let by = string(args, "by").unwrap_or("user").to_string();
+        self.update(&run.id, |live| {
+            live.row.state = "running".into();
+            live.doc.why = None;
+            if let Some(visit) = live.visit.as_mut() {
+                let waited = visit.waited() + (now() - paused_at).max(0.0);
+                patch(&mut visit.row.doc, json!({ "paused": null, "waited": waited, "replies": replies }));
+                visit.paused = false;
+                visit.opening = true;
+            }
+            Some(("resumed", Some(by.clone()), json!({ "stage": stage.name, "reply": text })))
+        });
+        log!("kanna-daemon: {} resumes {}", run.id, stage.name);
+        self.open_worker(&run.id, &doc.worker, &line, |this, id, pane| {
+            let mut saved = None;
+            this.update(id, |live| {
+                if let Some(visit) = live.visit.as_mut() {
+                    visit.row.terminal = Some(pane.to_string());
+                    visit.opening = false;
+                    saved = Some(visit.row.clone());
+                }
+                None
+            });
+            if let Some(mut row) = saved {
+                row.doc["paused"] = Value::Null;
+                let _ = this.db.put_stage(&row);
+            }
+        });
+        Ok(Map::from_iter([("run".to_string(), json!(run.id)), ("stage".to_string(), json!(stage.name)), ("state".to_string(), json!("running"))]))
+    }
+
+    fn open_worker(self: &Rc<Self>, id: &str, cwd: &str, command: &str, opened: impl FnOnce(&Rc<Self>, &str, &str) + 'static) {
+        let Some(core) = self.core.upgrade() else { return };
+        let (this, id) = (Rc::downgrade(self), id.to_string());
+        core.handle(json!({ "cmd": "open", "args": { "type": "term", "hidden": true, "cwd": cwd, "cmd": command, "wait": false } }), move |reply| {
+            let Some(this) = this.upgrade() else { return };
+            let pane = reply.get("pane").and_then(|p| string(p, "id")).map(String::from);
+            let Some(pane) = pane.filter(|_| reply.get("ok") == Some(&Value::Bool(true))) else {
+                let why = reply.get("error").and_then(|e| string(e, "message")).unwrap_or("it failed").to_string();
+                let stage = this.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref()).map(|v| v.row.stage.clone()).unwrap_or_default();
+                this.update(&id, |live| {
+                    if let Some(visit) = live.visit.as_mut() {
+                        visit.ending = true;
+                    }
+                    None
+                });
+                return this.stop(&id, "stopped", &format!("can't open a terminal for {stage}: {why}"), Some("daemon"), true);
+            };
+            opened(&this, &id, &pane);
+            this.soon.set(true);
+        });
+    }
+
+    fn vars(&self, row: &RunRow, doc: &Doc, stage: &str) -> Vec<(&'static str, String)> {
+        let task = self.tasks.upgrade().and_then(|t| t.entry(&row.task));
+        vec![
+            ("KANNA_TASK", row.task.clone()),
+            ("KANNA_TASK_NAME", task.as_ref().and_then(|t| t.name.clone()).unwrap_or_default()),
+            ("KANNA_REPO", row.repo.clone()),
+            ("KANNA_WORKTREE", doc.worker.clone()),
+            ("KANNA_BRANCH", row.branch.clone()),
+            ("KANNA_BASE", doc.base.clone()),
+            ("KANNA_RUN", row.id.clone()),
+            ("KANNA_STAGE", stage.to_string()),
+        ]
     }
 
     fn mark_ending(&self, id: &str) -> bool {
@@ -872,17 +1105,7 @@ impl Runs {
             doc: Value::Null,
         };
         let files = tasks::config_files(Path::new(&row.repo));
-        let task = self.tasks.upgrade().and_then(|t| t.entry(&row.task));
-        let mut vars: Vec<(&str, String)> = vec![
-            ("KANNA_TASK", row.task.clone()),
-            ("KANNA_TASK_NAME", task.as_ref().and_then(|t| t.name.clone()).unwrap_or_default()),
-            ("KANNA_REPO", row.repo.clone()),
-            ("KANNA_WORKTREE", doc.worker.clone()),
-            ("KANNA_BRANCH", row.branch.clone()),
-            ("KANNA_BASE", doc.base.clone()),
-            ("KANNA_RUN", id.to_string()),
-            ("KANNA_STAGE", name.to_string()),
-        ];
+        let mut vars = self.vars(&row, &doc, name);
         let (command, work, sessions) = match &stage.kind {
             Kind::Agent(agent) => {
                 let prompts = self.db.revisions(id).ok().and_then(|r| r.last().and_then(|r| r.doc.get("prompts").cloned())).unwrap_or(Value::Null);
@@ -899,7 +1122,7 @@ impl Runs {
                 let first = format!("\"$(cat {})\"", quote(&format!("{SCRATCH}/stage-{n}.md")));
                 let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
                 let command = tasks::pipeline_agent(&files, &agent.agent);
-                let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), &first));
+                let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), false, &first));
                 stage_row.kind = "agent".into();
                 stage_row.agent = Some(agent.agent.clone());
                 stage_row.session = session;
@@ -927,30 +1150,17 @@ impl Runs {
             live.doc.starts.entry(name.to_string()).or_insert(head.clone());
             live.doc.visits = n;
             live.doc.sessions += sessions;
-            live.visit = Some(Visit { row: visit_row, work: work.clone(), within, opening: true, ending: false, reported: None });
+            live.visit = Some(Visit { row: visit_row, work: work.clone(), within, opening: true, ending: false, reported: None, needs: None, paused: false });
             None
         });
-        let Some(core) = self.core.upgrade() else { return };
-        let (this, id) = (Rc::downgrade(self), id.to_string());
-        core.handle(json!({ "cmd": "open", "args": { "type": "term", "hidden": true, "cwd": doc.worker, "cmd": command, "wait": false } }), move |reply| {
-            let Some(this) = this.upgrade() else { return };
-            let pane = reply.get("pane").and_then(|p| string(p, "id")).map(String::from);
-            let Some(pane) = pane.filter(|_| reply.get("ok") == Some(&Value::Bool(true))) else {
-                let why = reply.get("error").and_then(|e| string(e, "message")).unwrap_or("it failed").to_string();
-                this.update(&id, |live| {
-                    live.visit = None;
-                    None
-                });
-                return this.stop(&id, "stopped", &format!("can't open a terminal for {}: {why}", stage_row.stage), Some("daemon"), true);
-            };
-            stage_row.terminal = Some(pane.clone());
-            let saved = this.db.put_stage(&stage_row);
-            if let Ok(row_id) = saved {
+        self.open_worker(id, &doc.worker, &command, move |this, id, pane| {
+            stage_row.terminal = Some(pane.to_string());
+            if let Ok(row_id) = this.db.put_stage(&stage_row) {
                 stage_row.id = row_id;
             }
             log!("kanna-daemon: {id} starts {} (visit {}) in {pane}", stage_row.stage, stage_row.visit);
             let event = json!({ "stage": stage_row.stage, "visit": stage_row.visit, "kind": stage_row.kind, "terminal": pane });
-            this.update(&id, |live| {
+            this.update(id, |live| {
                 if let Some(visit) = live.visit.as_mut() {
                     visit.row = stage_row.clone();
                     visit.opening = false;
@@ -958,7 +1168,6 @@ impl Runs {
                 live.doc.next = None;
                 Some(("stage", Some("daemon".into()), event))
             });
-            this.soon.set(true);
         });
     }
 
@@ -1055,7 +1264,7 @@ impl Runs {
                 row.verdict = Some("stopped".into());
                 let _ = self.db.put_stage(&row);
             }
-            if let (Some(pane), false) = (row.terminal.clone(), visit.ending) {
+            if let (Some(pane), false) = (row.terminal.clone(), visit.ending || visit.paused) {
                 match (&visit.work, self.tasks.upgrade()) {
                     (Work::Agent { agent }, Some(tasks)) => {
                         let (this, closing) = (Rc::downgrade(self), pane.clone());
@@ -1145,7 +1354,7 @@ mod tests {
     fn a_stage_is_told_to_report_done_with_its_verdict_or_that_it_needs_you() {
         let p = pipeline("build = claude\nreview = claude verdict\nbuild -> review -> done\n");
         let build = prompt(p.stage("build").unwrap(), "Build it.", "Add a button", None, &BTreeMap::new(), ".kanna/tmp/answer-1.md");
-        assert!(build.ends_with("# When you're done\n\nWrite your final answer to `.kanna/tmp/answer-1.md`, then run `\"$KANNA_CLI\" run done`. Kanna ends this session once you've reported. If you need something from the user before you can finish, run `\"$KANNA_CLI\" run need \"WHAT YOU NEED\"` and wait for their answer.\n"), "{build}");
+        assert!(build.ends_with("# When you're done\n\nWrite your final answer to `.kanna/tmp/answer-1.md`, then run `\"$KANNA_CLI\" run done`. Kanna ends this session once your turn ends. If you need something from the user before you can finish, run `\"$KANNA_CLI\" run need \"WHAT YOU NEED\"` and end your turn: Kanna stops this session and resumes it with their answer.\n"), "{build}");
         let review = prompt(p.stage("review").unwrap(), "Review it.", "Add a button", None, &BTreeMap::new(), ".kanna/tmp/answer-2.md");
         assert!(review.contains("then run `\"$KANNA_CLI\" run done pass` if it passes, or `\"$KANNA_CLI\" run done fail` if it doesn't."), "{review}");
     }
@@ -1215,6 +1424,24 @@ mod tests {
         assert_eq!(failure_lines(output), vec!["FAILED test_two", "test result: 1 failed"]);
         let long: String = (0..200).map(|i| format!("line {i}\n")).collect();
         assert!(command_feedback(&long).starts_with("line 120\n"), "the last 80 lines");
+    }
+
+    #[test]
+    fn a_stage_whose_agent_doesn_t_report_its_status_is_refused() {
+        let p = pipeline("a = claude\nb = codex\nc = copilot\na -> b -> c -> done\n");
+        assert_eq!(unbuilt(&p), vec!["3: c uses copilot, which doesn't report its status (OSC 7501), so a run can't tell when its turn ends: runs take claude or codex"]);
+    }
+
+    #[test]
+    fn time_paused_doesn_t_count_against_within() {
+        let row = StageRow { id: 1, run: "run-1".into(), stage: "s".into(), visit: 1, instance: None, kind: "agent".into(), agent: Some("claude".into()), machine: "here".into(), started_at: 100.0, ended_at: None, verdict: None, session: None, terminal: None, worktree: None, branch: None, doc: json!({ "n": 1 }) };
+        let mut visit = Visit { row, work: Work::Agent { agent: "claude".into() }, within: Some(Duration::from_secs(60)), opening: false, ending: false, reported: None, needs: None, paused: false };
+        assert_eq!(visit.due(), Some(160.0));
+        patch(&mut visit.row.doc, json!({ "paused": { "at": 120.0, "session": "s-1" } }));
+        assert_eq!(visit.row.doc["paused"]["session"], "s-1");
+        patch(&mut visit.row.doc, json!({ "paused": null, "waited": 30.0 }));
+        assert_eq!(visit.row.doc, json!({ "n": 1, "waited": 30.0 }));
+        assert_eq!(visit.due(), Some(190.0));
     }
 
     #[test]

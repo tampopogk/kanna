@@ -230,6 +230,10 @@ impl Feed {
         self.screen.program_status().filter(|_| group.is_some() && self.statuses_owner == group)
     }
 
+    pub fn turns(&self) -> u64 {
+        self.screen.program_turns()
+    }
+
     pub fn program_statuses(&self) -> Vec<ProgramStatus> {
         self.screen.program_statuses()
     }

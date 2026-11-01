@@ -262,7 +262,9 @@ def main():
     inbox()
     remote(sys.argv[1:])
     try:
-        prompt = None if resumed else stage_prompt(sys.argv[1:])
+        prompt = stage_prompt(sys.argv[1:])
+        if resumed and prompt == id:
+            prompt = None
         if prompt is not None:
             stage(id, prompt)
         talk(None if resumed or prompt is not None else first(sys.argv[1:]))

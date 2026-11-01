@@ -656,6 +656,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
                     app.status(&pane, status);
                     tasks.status(&pane, status, ended);
+                    runs.status(&pane, ended);
                 }
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),

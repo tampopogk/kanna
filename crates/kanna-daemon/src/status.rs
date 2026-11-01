@@ -27,6 +27,7 @@ struct Watch {
     fresh: bool,
     group: Option<i32>,
     reported: Option<ProgramState>,
+    turns: u64,
 }
 
 struct Shared {
@@ -77,7 +78,8 @@ impl Detector {
     }
 
     pub fn watch(&self, pane: &str, serial: u64, feed: Arc<Mutex<Feed>>, master: OwnedFd) {
-        let watch = Watch { serial, feed, master, program: None, version: None, version_known: false, generation: 0, looked: None, tracker: Tracker::default(), fresh: true, group: None, reported: None };
+        let turns = lock(&feed).turns();
+        let watch = Watch { serial, feed, master, program: None, version: None, version_known: false, generation: 0, looked: None, tracker: Tracker::default(), fresh: true, group: None, reported: None, turns };
         lock(&self.shared.watches).insert(pane.into(), watch);
         self.poke();
     }
@@ -210,10 +212,13 @@ fn tick(shared: &Shared, now: Instant) -> (bool, Option<Instant>) {
         }
         let mut feed = lock(&watch.feed);
         if let Some(record) = feed.reported(group) {
+            let turns = feed.turns();
             feed.settle();
             drop(feed);
             watch.fresh = false;
-            let ended = turn_ended(watch.reported.replace(record.state), record.state);
+            let missed = turns > watch.turns && record.state != ProgramState::Working;
+            watch.turns = turns;
+            let ended = turn_ended(watch.reported.replace(record.state), record.state) || missed;
             let changed = watch.tracker.set(from_record(record.state));
             if changed.is_some() || ended {
                 send(watch.tracker.status(), ended);

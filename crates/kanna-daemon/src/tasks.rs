@@ -380,14 +380,15 @@ struct Agent {
     latest: Option<&'static str>,
     find: Option<fn(&Path) -> Option<String>>,
     compact: Option<&'static str>,
+    reports: bool,
 }
 
 const AGENTS: &[Agent] = &[
-    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
-    Agent { names: &["copilot"], unprompted: Some("--yolo"), prompt: Some("-i"), named: Some("--session-id"), resume: "--session-id", latest: None, find: Some(copilot_session), compact: None },
-    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
-    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
+    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None, reports: true },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit="), reports: true },
+    Agent { names: &["copilot"], unprompted: Some("--yolo"), prompt: Some("-i"), named: Some("--session-id"), resume: "--session-id", latest: None, find: Some(copilot_session), compact: None, reports: false },
+    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None, reports: false },
+    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None, reports: false },
 ];
 
 fn agent(command: &str) -> Option<&'static Agent> {
@@ -539,7 +540,11 @@ pub fn names_its_session(command: &str) -> bool {
     agent(command).is_some_and(|a| a.named.is_some())
 }
 
-pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, prompts: Prompts, session: Option<&str>, first: &str) -> String {
+pub fn reports_status(command: &str) -> bool {
+    agent(command).is_some_and(|a| a.reports)
+}
+
+pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, prompts: Prompts, session: Option<&str>, resume: bool, first: &str) -> String {
     let mut line = asking(command, prompts);
     let name = agent(command).map(|a| a.names[0]);
     if let Some(model) = model {
@@ -549,8 +554,11 @@ pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, pro
         line += &format!(" -c model_reasoning_effort={}", quote(effort));
     }
     let mut line = in_its_terminal(&line);
-    if let Some((session, flag)) = session.zip(agent(command).and_then(|a| a.named)) {
-        line += &format!(" {flag} {}", quote(session));
+    match (resume, session, agent(command)) {
+        (true, Some(session), Some(agent)) => line += &format!(" {} {}", agent.resume, quote(session)),
+        (true, None, Some(Agent { latest: Some(latest), .. })) => line += &format!(" {latest}"),
+        (false, Some(session), Some(Agent { named: Some(flag), .. })) => line += &format!(" {flag} {}", quote(session)),
+        _ => {}
     }
     match agent(command).and_then(|a| a.prompt) {
         Some(flag) => format!("{line} {flag} {first}"),
@@ -3995,6 +4003,16 @@ mod tests {
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["pipelines"]["properties"]["agents"]["propertyNames"]["enum"], json!(names));
         assert_eq!((tasks["agent"]["default"].clone(), tasks["agent"]["examples"].clone()), (json!(DEFAULT_AGENT), json!(names)));
+    }
+
+    #[test]
+    fn a_stage_agent_starts_with_its_session_and_resumes_it() {
+        let first = "\"$(cat p.md)\"";
+        assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), false, first), format!("claude --session-id 'u-1' {first}"));
+        assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), true, first), format!("claude --resume 'u-1' {first}"));
+        assert!(stage_agent("codex", None, None, Prompts::Ask, Some("r-2"), true, first).ends_with(&format!(" resume 'r-2' {first}")));
+        assert!(stage_agent("codex", None, None, Prompts::Ask, None, true, first).ends_with(&format!(" resume --last {first}")));
+        assert!(reports_status("/x/claude") && reports_status("codex") && !reports_status("copilot"));
     }
 
     #[test]

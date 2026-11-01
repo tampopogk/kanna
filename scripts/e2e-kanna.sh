@@ -4592,8 +4592,9 @@ PIPE
 Build the change.
 mock: run echo visit >> built.txt && git add built.txt && git commit -qm build && echo 'Built it.' >"$KANNA_ANSWER" && "$KANNA_CLI" run done
 PROMPT
-  printf 'needy = claude\nneedy -> done\n' >"$repo/.kanna/pipelines/needy.pipe"
+  printf 'needy = claude\nquiet = claude\nneedy -> quiet -> done\n' >"$repo/.kanna/pipelines/needy.pipe"
   printf 'Ask first.\nmock: run "$KANNA_CLI" run need "Which colour?"\n' >"$repo/.kanna/prompts/needy.md"
+  printf 'Stop without reporting.\nsay: Not sure what to do.\n' >"$repo/.kanna/prompts/quiet.md"
   cat >"$repo/check.sh" <<'CHECK'
 n=$(cat .kanna/tmp/checks 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >.kanna/tmp/checks
 if [ "$n" -eq 1 ]; then echo "FAILED: first try"; exit 1; fi
@@ -4661,11 +4662,29 @@ assert all(x["machine"] for x in v)' "$shown" || { echo "pipeline_run: the visit
   [[ "$said" == *"for a stage's agent, in its worker's terminal"* ]] || { echo "pipeline_run: run done outside a stage said: $said"; return 1; }
   local again; again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start needy 2>&1)" || { echo "pipeline_run: a second run didn't start: $again"; return 1; }
   [[ "$again" == run-*" runs needy for "task-*" on run/$task-2 "* ]] || { echo "pipeline_run: the second run said: $again"; return 1; }
-  check wait_for 20 eval '[[ "$(runs state)" == "done waiting" ]]' || { echo "pipeline_run: a stage's need didn't make the run wait: $(runs state)"; return 1; }
-  [[ "$(runs why)" == *"needy needs: Which colour?"* ]] || { echo "pipeline_run: the waiting run says: $(runs why)"; return 1; }
+  local second; second="${again%% *}"
+  check wait_for 20 eval '[[ "$(runs state)" == "done paused" ]]' || { echo "pipeline_run: a stage's need didn't pause the run: $(runs state)"; return 1; }
+  [[ "$(runs why)" == *"needy needs: Which colour?"* ]] || { echo "pipeline_run: the paused run says: $(runs why)"; return 1; }
   check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "needy needs you: Which colour?"' || { echo "pipeline_run: the task wasn't told what the stage needs"; kanna read "$(held)"; return 1; }
+  local answered=""
+  resumed() { answered="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run resume "$second" "$1" 2>&1)"; }
+  check wait_for 20 resumed 'mock: run echo blue > colour.txt && git add colour.txt && git commit -qm colour && "$KANNA_CLI" run done' || { echo "pipeline_run: the needy stage didn't resume: $answered"; tail -20 "$out/daemon.log"; return 1; }
+  check wait_for 20 eval '[[ "$(runs why)" == *"quiet stopped without reporting"* ]]' || { echo "pipeline_run: a turn that ended without a report didn't pause the run: $(runs state) $(runs why)"; kanna run show "$second"; return 1; }
+  check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "kanna run resume $second"' || { echo "pipeline_run: the task wasn't told the quiet stage stopped"; kanna read "$(held)"; return 1; }
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from messages where sender = '$second' and text like 'quiet''s turn ended without it reporting%Not sure what to do.%'")" -eq 1 || { echo "pipeline_run: the task wasn't told the quiet stage stopped, with its screen"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select text from messages where sender = '$second'"; return 1; }
+  check wait_for 20 resumed 'mock: run "$KANNA_CLI" run done' || { echo "pipeline_run: the quiet stage didn't resume: $answered"; return 1; }
+  check wait_for 30 eval '[[ "$(runs state)" == "done done" ]]' || { echo "pipeline_run: the resumed run didn't hand back: $(runs state) $(runs why)"; kanna run show "$second"; tail -20 "$out/daemon.log"; return 1; }
+  check test "$(cat "$folder/colour.txt")" == blue || { echo "pipeline_run: the resumed stage's work didn't reach the task"; return 1; }
+  python3 -c 'import json, sys
+v = json.loads(sys.argv[1])["visits"]
+assert [(x["stage"], x["verdict"]) for x in v] == [("needy", "done"), ("quiet", "done")], v
+assert v[0]["doc"]["replies"] == 1 and "paused" not in v[0]["doc"], v[0]["doc"]' "$(kanna run show "$second" --json)" || { echo "pipeline_run: the resumed run's visits: $(kanna run show "$second" --json)"; return 1; }
+  events="$(kanna run log "$second" --json | python3 -c 'import json, sys; print(" ".join(e["what"] for e in json.load(sys.stdin)["events"]))')"
+  [[ "$events" == "started stage paused resumed verdict stage paused resumed verdict handed_back" ]] || { echo "pipeline_run: the resumed run's events were: $events"; return 1; }
+  again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start needy 2>&1)" || { echo "pipeline_run: a third run didn't start: $again"; return 1; }
+  check wait_for 20 eval '[[ "$(runs state)" == "done done paused" ]]' || { echo "pipeline_run: the third run didn't pause: $(runs state)"; return 1; }
   (cd "$folder" && KANNA_TERMINAL="$(held)" kanna run stop) >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
-  check wait_for 10 eval '[[ "$(runs state)" == "done stopped" ]]' || { echo "pipeline_run: the second run wasn't stopped: $(runs state)"; return 1; }
+  check wait_for 10 eval '[[ "$(runs state)" == "done done stopped" ]]' || { echo "pipeline_run: the paused run wasn't stopped: $(runs state)"; return 1; }
 }
 
 scenario task_scripts M4
