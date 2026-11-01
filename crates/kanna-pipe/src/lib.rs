@@ -38,13 +38,7 @@ pub enum Kind {
     Agent(Box<Agent>),
     Run { command: String },
     Ask { question: String },
-    Merge(Merge),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Merge {
-    Main,
-    Stage(String),
+    Merge(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

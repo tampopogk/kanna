@@ -4582,11 +4582,10 @@ pipeline_run() {
 budget = 4 sessions, 30m
 build  = claude
 check  = run sh check.sh
-land   = merge main
 
 build -> check
 check -[fail, max 2]-> build
-check -> land -> done
+check -> done
 PIPE
   cat >"$repo/.kanna/prompts/build.md" <<'PROMPT'
 Build the change.
@@ -4600,6 +4599,7 @@ touch .kanna/tmp/checking; sleep 8
 grep -c visit built.txt
 CHECK
   git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "pipeline_run line $LINENO"; return 1; }
+  local main; main="$(git -C "$repo" rev-parse main)"
   (cd "$repo" && kanna task new "Factory" "run $bin/kanna run start demo --request 'Count the visits'" --agent "$fake/claude") >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
   local task; task="$(tid 1)"
   rows() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
@@ -4637,28 +4637,28 @@ view = json.load(sys.stdin); view.pop("panes", None); print(" ".join(sorted(set(
   grep -q "# Feedback from check" "$worker/.kanna/tmp/stage-3.md" && grep -q "FAILED: first try" "$worker/.kanna/tmp/stage-3.md" || { echo "pipeline_run: build's second visit didn't get check's failure"; cat "$worker/.kanna/tmp/stage-3.md"; return 1; }
   grep -q "Count the visits" "$worker/.kanna/tmp/stage-1.md" || { echo "pipeline_run: the request isn't in the stage's prompt"; return 1; }
   stop_daemon; start_daemon || { echo "pipeline_run: the daemon didn't come back"; return 1; }
-  check wait_for 60 eval '[[ "$(runs state)" == landed ]]' || { echo "pipeline_run: the run didn't land after the restart: $(runs state)"; kanna run show "$run"; tail -30 "$out/daemon.log"; return 1; }
+  check wait_for 60 eval '[[ "$(runs state)" == done ]]' || { echo "pipeline_run: the run didn't hand back after the restart: $(runs state)"; kanna run show "$run"; tail -30 "$out/daemon.log"; return 1; }
   check test "$(rows)" == "1 0" || { echo "pipeline_run: $(rows) rows after the run"; return 1; }
   local shown; shown="$(kanna run show "$run" --json)"
   python3 -c 'import json, sys
 v = json.loads(sys.argv[1])["visits"]
 got = [(x["stage"], x["verdict"]) for x in v]
-want = [("build", "done"), ("check", "fail"), ("build", "done"), ("check", "pass"), ("land", "pass")]
+want = [("build", "done"), ("check", "fail"), ("build", "done"), ("check", "pass")]
 assert got == want, got
 assert v[0]["doc"]["answer"] == "Built it.", v[0]["doc"]
 assert all(x["machine"] for x in v)' "$shown" || { echo "pipeline_run: the visits were: $shown"; return 1; }
-  check test "$(git -C "$repo" log -1 --format=%s main)" == "Merge run/$task-1 (run $run, pipeline demo)" || { echo "pipeline_run: main has no merge of the run"; git -C "$repo" log --oneline -3 main; return 1; }
+  check test "$(git -C "$repo" rev-parse main)" == "$main" || { echo "pipeline_run: the run changed main"; git -C "$repo" log --oneline -3 main; return 1; }
   local folder="$repo/.kanna-worktrees/$task"
   check test "$(git -C "$folder" rev-parse HEAD)" == "$(git -C "$repo" rev-parse "run/$task-1")" || { echo "pipeline_run: the task's branch wasn't fast-forwarded to the run's"; return 1; }
   check test "$(grep -c visit "$folder/built.txt")" -eq 2 || { echo "pipeline_run: the task's worktree didn't move to the run's work"; return 1; }
   check test ! -d "$worker" || { echo "pipeline_run: the worker's worktree is still there"; return 1; }
-  check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "peer: \[message from $run\] landed: 5 visits of 3 stages"' || { echo "pipeline_run: the task didn't get the run's message"; kanna read "$(held)"; (cd "$repo" && kanna task messages "$task"); return 1; }
+  check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "peer: \[message from $run\] handed back: 4 visits of 2 stages"' || { echo "pipeline_run: the task didn't get the run's message"; kanna read "$(held)"; (cd "$repo" && kanna task messages "$task"); return 1; }
   local events; events="$(kanna run log "$run" --json | python3 -c 'import json, sys; print(" ".join(e["what"] for e in json.load(sys.stdin)["events"]))')"
-  [[ "$events" == "started stage verdict stage verdict stage verdict stage verdict stage verdict landed handed_back" ]] || { echo "pipeline_run: the run's events were: $events"; return 1; }
+  [[ "$events" == "started stage verdict stage verdict stage verdict stage verdict handed_back" ]] || { echo "pipeline_run: the run's events were: $events"; return 1; }
   local again; again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start demo 2>&1)" || { echo "pipeline_run: a second run didn't start: $again"; return 1; }
   [[ "$again" == run-*" runs demo for "task-*" on run/$task-2 "* ]] || { echo "pipeline_run: the second run said: $again"; return 1; }
   (cd "$folder" && KANNA_TERMINAL="$(held)" kanna run stop) >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
-  check wait_for 10 eval '[[ "$(runs state)" == "landed stopped" ]]' || { echo "pipeline_run: the second run wasn't stopped: $(runs state)"; return 1; }
+  check wait_for 10 eval '[[ "$(runs state)" == "done stopped" ]]' || { echo "pipeline_run: the second run wasn't stopped: $(runs state)"; return 1; }
 }
 
 scenario task_scripts M4

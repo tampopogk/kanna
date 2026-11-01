@@ -583,8 +583,8 @@ fn pipeline_check_prints_the_worst_case_or_each_error_at_its_line() {
     assert!(std::process::Command::new("git").arg("init").arg("-q").current_dir(&dir).status().unwrap().success());
     let checked = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "feature"]).ok();
     assert_eq!(checked.lines().collect::<Vec<_>>(), [
-        ".kanna/pipelines/feature.pipe:11: warning: no such machine 'mini': use here, any, or one of your machines or roles",
-        ".kanna/pipelines/feature.pipe: valid: 9 stages, worst case 21 sessions of 40, 8h (counting 2 parts for each fan-out: build)",
+        ".kanna/pipelines/feature.pipe:12: warning: no such machine 'mini': use here, any, or one of your machines or roles",
+        ".kanna/pipelines/feature.pipe: valid: 7 stages, worst case 17 sessions of 40, 8h (counting 2 parts for each fan-out: build)",
     ]);
     assert_eq!(kanna_at(&dir, Some(&nowhere), &["pipeline", "check", ".kanna/pipelines/feature.pipe"]).ok(), checked);
     let run = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "broken"]);
@@ -594,10 +594,10 @@ fn pipeline_check_prints_the_worst_case_or_each_error_at_its_line() {
     let list = kanna_at(&dir, Some(&nowhere), &["pipeline", "list"]).ok();
     assert_eq!(list.lines().collect::<Vec<_>>(), [
         "broken   invalid: 2 errors (kanna pipeline check broken)",
-        "feature  9 stages, worst case 21 sessions of 40, 8h (counting 2 parts for each fan-out: build) · 1 warning (kanna pipeline check feature)",
+        "feature  7 stages, worst case 17 sessions of 40, 8h (counting 2 parts for each fan-out: build) · 1 warning (kanna pipeline check feature)",
     ]);
     let reply = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "feature", "--json"]).json();
-    assert_eq!((reply["valid"].clone(), reply["worst"].clone(), reply["sessions"].clone()), (json!(true), json!(21), json!(40)));
+    assert_eq!((reply["valid"].clone(), reply["worst"].clone(), reply["sessions"].clone()), (json!(true), json!(17), json!(40)));
     kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "nope"]).fails(4, "no pipeline nope");
     kanna_at(&dir, Some(&nowhere), &["pipeline", "check"]).fails(2, "check needs a NAME or a FILE");
     assert!(!nowhere.exists());

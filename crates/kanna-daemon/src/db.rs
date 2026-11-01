@@ -149,7 +149,7 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         pipeline text not null,
         revision_hash text not null,
         branch text not null,
-        state text not null check (state in ('running', 'waiting', 'paused', 'landed', 'done', 'stopped')),
+        state text not null check (state in ('running', 'waiting', 'paused', 'done', 'stopped')),
         started_at real not null,
         ended_at real,
         outcome text,

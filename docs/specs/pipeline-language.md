@@ -2,7 +2,7 @@
 
 **Status:** the language is built (`crates/kanna-pipe`: parse, check, `pick`, `worst`, revisions; `kanna pipeline check` and `list`); runs are not · **Part of:** [software factory](software-factory.md) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#define`) · **Examples:** [`.kanna/pipelines/`](../../.kanna/pipelines/) · **From:** kojo's factory language ([research](../research/software-factory.md#1-kojo))
 
-A pipeline is a short text file, `.kanna/pipelines/NAME.pipe`, that names its **stages** and joins them with **arrows**. A stage is an agent session, a command, a question for you, or a merge. Arrows carry conditions and bounds, so a pipeline always ends and its worst-case cost is known before it runs. The daemon reads, checks and runs it ([software factory](software-factory.md)).
+A pipeline is a short text file, `.kanna/pipelines/NAME.pipe`, that names its **stages** and joins them with **arrows**. A stage is an agent session, a command, a question for you, or the join of a fan-out. A run never merges to main: it hands its branch back to the task's worktree, where you review it and merge it as any task's work ([software factory](software-factory.md#1-what-a-run-is)). Arrows carry conditions and bounds, so a pipeline always ends and its worst-case cost is known before it runs. The daemon reads, checks and runs it ([software factory](software-factory.md)).
 
 ![feature.pipe beside the graph the Run tab draws from it, with the worst-case session count](pipeline-language.png)
 
@@ -21,7 +21,8 @@ A pipeline is a short text file, `.kanna/pipelines/NAME.pipe`, that names its **
 
 ```
 # Kanna's usual flow, once the spec and mockup are approved in the task's chat:
-# plan, build, review, e2e, your go-ahead, merge.
+# plan, build, review, e2e; then the run hands its branch back to the task's
+# worktree, where you review it before it merges.
 budget  = 40 sessions, 8h
 
 plan    = claude prompt plan emits             # splits the work; may add stages
@@ -31,8 +32,6 @@ check   = run scripts/check.sh                 # build and unit tests; exit 0 pa
 review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
 fix     = claude prompt fix guard check        # rolled back if check gets worse
 e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
-ship    = ask "Land it on main?"               # you, with the diff in the tabs
-land    = merge main
 
 plan -> build -> join -> check
 check  -[fail, max 3, progress]-> fix -> check
@@ -40,9 +39,7 @@ check  -> review
 review -[fail, max 3]-> fix
 review -> e2e
 e2e    -[fail, max 2]-> fix
-e2e    -> ship
-ship   -[fail, max 2]-> fix
-ship   -> land -> done
+e2e    -> done
 ```
 
 - **Lines** are a stage (`NAME = …`), a flow (`a -> b -> c`), the budget, a comment (`#` to the end of the line) or blank, in any order. Names are `[a-z][a-z0-9_]*`; `done` and `budget` are reserved.
@@ -57,11 +54,11 @@ ship   -> land -> done
 |---|---|---|---|
 | `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `copilot`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, its answer's last line, `VERDICT: PASS` or `VERDICT: FAIL` (missing counts as fail) | its final answer |
 | `NAME = run COMMAND…` | the command in the run's worker with your login shell, as [task scripts](task-scripts.md) run, with the same variables plus `KANNA_RUN`, `KANNA_STAGE` and `KANNA_FEEDBACK` (a file holding the previous feedback) | exit 0 passes | its output's tail, lines matching the repo's failure pattern first |
-| `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers (`ship = ask "Land it on main?"` before `merge main`) | yes passes, no fails | your note |
-| `NAME = merge main` | lands the run's branch on the repo's checked-out branch (`git merge --no-ff`, or the repo's `tasks.land` command when set) | a clean merge passes | the conflicts |
+| `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers (`ok = ask "Is the plan right?"` after `plan`) | yes passes, no fails | your note |
 | `NAME = merge STAGE` | joins every instance of a fanned-out STAGE into the run's branch | a clean merge passes | the conflicts |
 
 - **Every agent session is fresh:** a new conversation with the stage's prompt, the request and the feedback. `resume STAGE` continues that stage's last session instead, for the rare case where the context is worth more than a clean start.
+- **There's no `merge main`:** the file is an error there (`` `merge main` isn't a stage``). Landing is yours: the run's end hands the change back to the task's worktree, the gate before main.
 - **A stage with a verdict** is one of `run`, `ask`, `merge` or an agent with `verdict`. Only those may have `pass` or `fail` arrows out of them.
 - **An agent's effort and model** are the agent's own flags (`claude --model`, `codex -c model_reasoning_effort`); `model NAME` names a model when the default isn't wanted.
 
@@ -123,9 +120,9 @@ Read when the run starts and on every revision, with errors as `FILE:LINE: messa
 
 ```
 plan -> build (each plan.parts) -> join -> check
-                 counted as 2 parts until plan answers: feature.pipe is 21 of 40
-                 plan answered 3 parts:                  22 of 40
-                 plan answered 30 parts:                 49 of 40, over: the run stops, waiting on you
+                 counted as 2 parts until plan answers: feature.pipe is 17 of 40
+                 plan answered 3 parts:                  18 of 40
+                 plan answered 30 parts:                 45 of 40, over: the run stops, waiting on you
 ```
 
 - **A fan-out counts 2 parts** until the run knows its list, since a list's length isn't known before its stage answers; the file's check uses 2. When the stage named by `each` answers, the daemon checks the worst case again with the list's real length, as it does for a revision, and a run that no longer fits stops as waiting on you. The budget is there to bound fan-out and loops, not to price a run. Counting the budget's sessions instead, as first written here, made any pipeline with a fan-out fail its own check.
@@ -154,13 +151,13 @@ sequenceDiagram
 - **The merged revision is text,** so it can be shown with a diff and edited: the block's stage lines go after the last stage line; each emitted arrow from the emitter becomes a line of its own just above the line with the emitter's first arrow; every other emitted arrow becomes a line at the end. A block may not set the budget, and only a stage with `emits` may emit. Errors in the block name the block's lines; errors in the merged pipeline name the revision's lines.
 
 ```
-land    = merge main
+e2e     = run scripts/e2e-kanna.sh on mini
 lint    = run scripts/lint.sh        ← the block's stage line
 
 plan -> lint                          ← plan's emitted arrow, ahead of its own
 plan -> build -> join -> check
 …
-ship   -> land -> done
+e2e    -> done
 lint -> build                         ← the rest of the block, appended
 ```
 
@@ -174,7 +171,7 @@ lint -> build                         ← the rest of the block, appended
 | Term | Meaning |
 |---|---|
 | **Pipeline** | A `.pipe` file: stages and arrows, with a budget |
-| **Stage** | One step: an agent session, a command, a question, or a merge |
+| **Stage** | One step: an agent session, a command, a question, or a fan-out's join |
 | **Verdict** | pass or fail from a stage that gives one; picks the arrow |
 | **Feedback** | What a verdict stage leaves for the next stage's prompt |
 | **Visit** | One run of a stage; a loop makes several |

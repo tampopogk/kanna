@@ -4,7 +4,7 @@ use crate::tasks::{self, git, Entry, Tasks};
 use kanna_detect::{Status, Turn, TURN_SETTLE};
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, PaneState, Responder, WeakCore};
-use kanna_pipe::{Context, Kind, Merge, Pipeline, Sizes, Stage, Verdict, DONE};
+use kanna_pipe::{Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -49,7 +49,6 @@ pub struct Doc {
     pub visits: u32,
     pub next: Option<String>,
     pub why: Option<String>,
-    pub landed: bool,
     pub note: Option<String>,
 }
 
@@ -70,7 +69,6 @@ impl Doc {
             "visits": self.visits,
             "next": opt(self.next.as_deref()),
             "why": opt(self.why.as_deref()),
-            "landed": self.landed,
             "note": opt(self.note.as_deref()),
         })
     }
@@ -95,7 +93,6 @@ impl Doc {
             visits: value.get("visits").and_then(Value::as_u64).unwrap_or(0) as u32,
             next: string(value, "next").map(String::from),
             why: string(value, "why").map(String::from),
-            landed: value.get("landed") == Some(&Value::Bool(true)),
             note: string(value, "note").map(String::from),
         }
     }
@@ -160,7 +157,7 @@ pub fn unbuilt(pipeline: &Pipeline) -> Vec<String> {
                 }
             }
             Kind::Ask { .. } => say("ask"),
-            Kind::Merge(Merge::Stage(_)) => say("merge STAGE"),
+            Kind::Merge(_) => say("merge STAGE"),
             _ => {}
         }
         if stage.on.as_deref().is_some_and(|on| on != "here") {
@@ -949,23 +946,6 @@ impl Runs {
                 row_doc["exit"] = json!(exit.to_string_lossy());
                 (task_scripts::stage_command(&vars, command, timeout, &log, &exit), Work::Command { log, exit }, 0)
             }
-            Kind::Merge(Merge::Main) => match tasks::land(&files) {
-                Some(land) => {
-                    let (log, exit) = (scratch.join(format!("stage-{n}.log")), scratch.join(format!("stage-{n}.exit")));
-                    let _ = fs::remove_file(&exit);
-                    let timeout = stage.within.map_or_else(|| tasks::scripts(&files).timeout, |w| w.as_secs().max(1));
-                    stage_row.kind = "merge".into();
-                    row_doc["log"] = json!(log.to_string_lossy());
-                    row_doc["exit"] = json!(exit.to_string_lossy());
-                    row_doc["land"] = json!(land);
-                    (task_scripts::stage_command(&vars, &land, timeout, &log, &exit), Work::Command { log, exit }, 0)
-                }
-                None => {
-                    stage_row.kind = "merge".into();
-                    stage_row.doc = row_doc;
-                    return self.merge_main(id, stage_row, &row);
-                }
-            },
             _ => return self.stop(id, "stopped", &format!("{name} is a kind of stage runs can't do yet"), Some("daemon"), true),
         };
         stage_row.doc = row_doc;
@@ -1013,37 +993,11 @@ impl Runs {
         });
     }
 
-    fn merge_main(self: &Rc<Self>, id: &str, mut stage_row: StageRow, row: &RunRow) {
-        let repo = Path::new(&row.repo);
-        let message = format!("Merge {} (run {id}, pipeline {})", row.branch, row.pipeline);
-        let merged = git(repo, &["merge", "--no-ff", "-m", &message, &row.branch]);
-        let ended = match merged {
-            Ok(_) => Ended { verdict: Some(Verdict::Pass), shown: "pass", answer: String::new(), feedback: String::new(), full: String::new(), failures: None, note: None },
-            Err(error) => {
-                let conflicts = git(repo, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
-                let _ = git(repo, &["merge", "--abort"]);
-                let feedback = if conflicts.is_empty() { format!("merging {} failed: {error}", row.branch) } else { format!("merging {} conflicts in:\n{conflicts}", row.branch) };
-                Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback, full: String::new(), failures: None, note: None }
-            }
-        };
-        if let Ok(row_id) = self.db.put_stage(&stage_row) {
-            stage_row.id = row_id;
-        }
-        let event = json!({ "stage": stage_row.stage, "visit": stage_row.visit, "kind": "merge" });
-        self.update(id, |live| {
-            live.doc.next = None;
-            live.doc.visits += 1;
-            live.visit = Some(Visit { row: stage_row.clone(), work: Work::Command { log: PathBuf::new(), exit: PathBuf::new() }, within: None, opening: false, ending: true });
-            Some(("stage", Some("daemon".into()), event))
-        });
-        self.conclude(id, ended);
-    }
-
     fn conclude(self: &Rc<Self>, id: &str, ended: Ended) {
         let worker_head = |worker: &str| git(Path::new(worker), &["rev-parse", "--verify", "HEAD"]).unwrap_or_default();
-        let Some((mut row, kind, pipeline, mut doc)) = ({
+        let Some((mut row, pipeline, mut doc)) = ({
             let live = self.live.borrow();
-            live.iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref().map(|v| (v.row.clone(), v.row.kind.clone(), l.pipeline.clone(), l.doc.clone())))
+            live.iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref().map(|v| (v.row.clone(), l.pipeline.clone(), l.doc.clone())))
         }) else {
             return;
         };
@@ -1070,9 +1024,6 @@ impl Runs {
             for (key, value) in outputs(&ended.answer) {
                 doc.answers.insert(format!("{stage}.{key}"), value);
             }
-        }
-        if kind == "merge" && ended.verdict == Some(Verdict::Pass) {
-            doc.landed = true;
         }
         let next = decide(&pipeline, &mut doc, &stage, ended.verdict, ended.failures.clone());
         let arrow = match &next {
@@ -1190,23 +1141,18 @@ impl Runs {
         let stages = self.db.stages(id).unwrap_or_default();
         let distinct: std::collections::BTreeSet<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
         let took = clock(Duration::from_secs_f64((now() - row.started_at).max(0.0)));
-        let (state, outcome, word) = if doc.landed { ("landed", "landed", "landed") } else { ("done", "handed back", "handed back") };
         let summary = format!("{} visits of {} stages, {took}, {} sessions", stages.len(), distinct.len(), doc.sessions);
-        let landed_line = if doc.landed { format!("{} is merged on main; ", row.branch) } else { String::new() };
-        log!("kanna-daemon: {id} {word}: {summary}; {note}");
+        log!("kanna-daemon: {id} handed back: {summary}; {note}");
         let note_saved = note.clone();
         self.update(id, |live| {
-            live.row.state = state.into();
+            live.row.state = "done".into();
             live.row.ended_at = Some(now());
-            live.row.outcome = Some(outcome.into());
+            live.row.outcome = Some("handed back".into());
             live.doc.note = Some(note_saved.clone());
             None
         });
-        if doc.landed {
-            let _ = self.db.run_event(id, "landed", Some("daemon"), &json!({ "branch": row.branch }));
-        }
         let _ = self.db.run_event(id, "handed_back", Some("daemon"), &json!({ "note": note }));
-        self.tell(id, &format!("{word}: {summary}. {landed_line}{note}. `kanna run show {id}` has its visits."));
+        self.tell(id, &format!("handed back: {summary}. {note}; review it there and merge it as any task's work. `kanna run show {id}` has its visits."));
     }
 
     fn tell(&self, id: &str, text: &str) {
@@ -1346,8 +1292,8 @@ mod tests {
 
     #[test]
     fn a_pipeline_with_parts_runs_can_t_do_yet_is_refused_by_line() {
-        let p = pipeline("plan = claude\nbuild = claude each plan.parts\nship = ask \"Land?\"\njoin = merge build\nplan -> build -> join -> ship -> done\n");
-        assert_eq!(unbuilt(&p), vec!["2: build uses each, which runs can't do yet", "3: ship uses ask, which runs can't do yet", "4: join uses merge STAGE, which runs can't do yet"]);
+        let p = pipeline("plan = claude\nbuild = claude each plan.parts\nok = ask \"Is the plan right?\"\njoin = merge build\nplan -> ok -> build -> join -> done\n");
+        assert_eq!(unbuilt(&p), vec!["2: build uses each, which runs can't do yet", "3: ok uses ask, which runs can't do yet", "4: join uses merge STAGE, which runs can't do yet"]);
     }
 
     #[test]

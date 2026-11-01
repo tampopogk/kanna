@@ -233,10 +233,6 @@ pub fn runners(files: &[PathBuf]) -> usize {
         .unwrap_or(RUNNERS)
 }
 
-pub fn land(files: &[PathBuf]) -> Option<String> {
-    configured(files, "tasks", "land", |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from), "a shell command")
-}
-
 pub fn scripts(files: &[PathBuf]) -> Scripts {
     let command = |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from);
     let timeout = |value: &Value| value.as_u64().filter(|t| (1..=task_scripts::TIMEOUT_MAX).contains(t));

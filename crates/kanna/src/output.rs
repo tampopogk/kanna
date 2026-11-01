@@ -1414,7 +1414,7 @@ fn run_line(run: &Value, now: f64) -> String {
     let ended = run["endedAt"].as_f64().unwrap_or(now);
     let took = span(ended - run["startedAt"].as_f64().unwrap_or(ended));
     let outcome = run["outcome"].as_str().map_or(String::new(), |o| format!("  {o}"));
-    let why = run["why"].as_str().filter(|_| state != "landed").map_or(String::new(), |w| format!(": {w}"));
+    let why = run["why"].as_str().filter(|_| state != "done").map_or(String::new(), |w| format!(": {w}"));
     format!("{id}  {task}  {:<10} {:<8} {stage}  {} visits  {took}{outcome}{why}", run["pipeline"].as_str().unwrap_or("?"), state, run["visits"].as_u64().unwrap_or(0))
 }
 

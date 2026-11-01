@@ -1,6 +1,6 @@
 # Software factory
 
-**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent, `run` and `merge main` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates, fan-out, revisions, the Run tab and metrics not yet (the build tasks: [build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, Watching a stage, Runs compared; `#light`) · **Language:** [pipeline language](pipeline-language.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
+**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates, fan-out, revisions, the Run tab and metrics not yet (the build tasks: [build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, Watching a stage, Runs compared; `#light`) · **Language:** [pipeline language](pipeline-language.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
 
 A **pipeline** says how a change gets built once its spec and mockup are approved: which stages it goes through (plan, build, review, tests, your go-ahead, merge), who does each one (an agent, a command, you, git), and what happens when a stage fails (a bounded loop back to a fix). Any task's agent can **run** one: it stays the agent you talk to, docked on the left with its tabs on the right, and the pipeline builds the software under the hood, in agent sessions and commands you don't see unless you look. The daemon drives the run; a **Run** tab shows where it is; a **watch** tab shows the stage's agent at work. Every stage's time, turns, tokens, verdicts and your interventions are kept in `kanna.db`, so pipelines can be compared on the Stats tab and tuned.
 
@@ -29,17 +29,17 @@ stateDiagram-v2
     waiting --> running: an answer, retry, skip, edit
     running --> paused: Pause
     paused --> running: Resume
-    running --> landed: merge main passes, then done
+    running --> done: done, handed back to the task's worktree
     running --> stopped: Stop, or no arrow left
     waiting --> stopped: Stop
 ```
 
-- **Any task, no new kind.** A task is what it is ([tasks](tasks.md)): one agent in one worktree. The spec and mockup are made the way they are now: iterated in the task's chat until you approve them ([reference-driven design](../../.claude/skills/reference-driven-design/SKILL.md)). Then its agent starts a run (`kanna run start PIPELINE`, from its terminal), as the `kanna-tasks` skill says to for an approved spec or an understood bug; you ask the agent for the feature, and the agent builds it through the pipeline, or you tell it to. The pipeline starts at the plan, with the spec as its input; its one question for you is the last gate, before the change lands on main.
+- **Any task, no new kind.** A task is what it is ([tasks](tasks.md)): one agent in one worktree. The spec and mockup are made the way they are now: iterated in the task's chat until you approve them ([reference-driven design](../../.claude/skills/reference-driven-design/SKILL.md)). Then its agent starts a run (`kanna run start PIPELINE`, from its terminal), as the `kanna-tasks` skill says to for an approved spec or an understood bug; you ask the agent for the feature, and the agent builds it through the pipeline, or you tell it to. The pipeline starts at the plan, with the spec as its input, and ends by handing its branch back to the task's worktree: that's your gate. You review the change there, as any task's, and it merges to main from there, never from the run.
 - **The task looks the same:** its agent docked on the left, its tabs on the right, its dot its own agent's status. The run adds tabs: the Run tab, and a watch tab when you want one ([4](#4-seeing-and-steering-a-run)).
 - **The run works on a branch of its own,** `run/<task>-N`, from the task's branch as it is when the run starts, in **workers**: worktrees and hidden terminals of the run's ([3](#3-workers-fan-out-join-and-other-machines)). The task's worktree and the agent's conversation are left alone while it runs, so you can keep talking to the agent, and nothing two agents do lands in one worktree.
 - **The request** is what `kanna run start` is given (`--request FILE` or text), else the task's first message; every agent stage gets it.
-- **The run ends by handing back:** when the flow reaches `done`, the task's branch is fast-forwarded to the run's and the task's worktree moved to it (left as it is, with a note, if it has changes), and the task's agent is told as a [message](agent-messaging.md): `[message from run-7f3a] landed: 14 stages, 3h 02m …`. A `merge main` stage lands the change on main first. A run that stops anywhere else keeps its branch for the agent to look at, and says why.
-- **A Shelf task's run outlives its agent's turn:** a [Shelf runner](shelf-runners.md) stops the agent when its turn ends, as it does now; the run goes on in its workers, and the message at the end wakes the task as any message does. By the time you move the task to the Desk, the run may have landed.
+- **The run ends by handing back:** when the flow reaches `done`, the task's branch is fast-forwarded to the run's and the task's worktree moved to it (left as it is, with a note, if it has changes), and the task's agent is told as a [message](agent-messaging.md): `[message from run-7f3a] handed back: 14 visits of 7 stages, 3h 02m …`. A run that stops anywhere else keeps its branch for the agent to look at, and says why.
+- **A Shelf task's run outlives its agent's turn:** a [Shelf runner](shelf-runners.md) stops the agent when its turn ends, as it does now; the run goes on in its workers, and the message at the end wakes the task as any message does. By the time you move the task to the Desk, the run may have handed back.
 - **One run at a time per task,** and the budget stops a run that would exceed its sessions or time, as waiting on you.
 
 ## 2. Who drives it
@@ -56,7 +56,7 @@ flowchart LR
     end
     RUN -->|"a worker: the stage's agent or command<br/>in its own worktree and terminal,<br/>here or on a peer"| W["workers"]
     W -->|"the visit ends: verdict, answer, commits"| RUN
-    RUN -->|"message: landed · waiting · stuck"| A
+    RUN -->|"message: handed back · waiting · stuck"| A
     RUN --> DB[("kanna.db<br/>runs · run_revisions · run_stages · run_events")]
 ```
 
@@ -109,7 +109,7 @@ sequenceDiagram
 - **An `ask` goes two ways:** the task's agent gets it as a message and asks you in its chat, where you answer in words and the agent runs `kanna run answer`; and the Run tab shows a card with **Yes**, **No** and a note. The task shows needs you either way. Which you use is yours; both are recorded as the answer, with who gave it.
 - **The Run tab's buttons** are the CLI's verbs ([7](#7-cli)): **Pause** finishes the current stage and starts no other; **Skip stage** ends the current visit as `pass` by you; **Retry stage** runs it again; **Edit pipeline** opens the run's revision in a code pane; **Stop** ends the run where it is. Each is recorded as an intervention.
 - **On the Desk and the Shelf nothing changes:** one task, its own agent's status, the Run tab's badge (`5/9`) the only sign. The strip, the Desk view and `kanna task list` show the task as they do now; `kanna task list` adds the run's stage after the state (`idle · run: review 5/9`).
-- **The agent you talk to presents the result** as any task does ([presenting](presenting.md)): when the run hands back, it opens the spec, the diff and the mockup, and tells you in its chat what landed and what the run cost.
+- **The agent you talk to presents the result** as any task does ([presenting](presenting.md)): when the run hands back, it opens the spec, the diff and the mockup, and tells you in its chat what the run built and what it cost, for you to review before it merges.
 
 ## 5. Metrics
 
@@ -126,21 +126,21 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 
 | Per run | Is |
 |---|---|
-| time to land; active time | started to landed; the sum of visits |
+| time to hand back; active time | started to handed back; the sum of visits |
 | sessions, turns, tokens, cost | sums |
 | rework loops | visits of any stage beyond its first, by stage |
 | review findings; test failures | sums; `run` visits that failed |
 | interventions | the sum, by kind |
-| outcome | landed, stopped (why), stuck |
-| bugs traced back; changed lines covered; quality delta | from [code quality metrics](code-quality-metrics.md): fix commits on main blamed to the run's merge (SZZ), lines its merge changed that a test executes, erosion and verbosity before and after, each sampled later and joined by the merge commit |
+| outcome | handed back, stopped (why), stuck |
+| bugs traced back; changed lines covered; quality delta | from [code quality metrics](code-quality-metrics.md): fix commits on main blamed to the run's commits (SZZ), lines the run changed that a test executes, erosion and verbosity before and after, each sampled later and joined by the run's commits once the task's branch merges |
 
-- **Compared by pipeline and revision:** runs, landed share, medians of the rest, and a dot per run over time, so a change to the pipeline shows as a step. A stage's times split by machine, so `e2e` on `mini` and on `here` compare. The Code quality metrics task's noise caveats (SZZ at F1 about 0.6) are shown with the column.
-- **`kanna run show RUN --json` and `kanna stats pipelines --json`** give the same numbers to agents, so the planning agent asked "which pipeline lands faster" can answer.
+- **Compared by pipeline and revision:** runs, handed-back share, medians of the rest, and a dot per run over time, so a change to the pipeline shows as a step. A stage's times split by machine, so `e2e` on `mini` and on `here` compare. The Code quality metrics task's noise caveats (SZZ at F1 about 0.6) are shown with the column.
+- **`kanna run show RUN --json` and `kanna stats pipelines --json`** give the same numbers to agents, so the planning agent asked "which pipeline hands back faster" can answer.
 
 ## 6. How it's built
 
 - **`crates/kanna-pipe`:** the language, a port of kojo's `factory_spec.py` ([research](../research/software-factory.md#1-kojo); kojo is MIT, and `NOTICE` records the port): parse, validate, `pick(stage, verdict, taken, stalled)`, `worst()` for the budget, revisions. Pure, tested on the example files and on every error.
-- **`runs.rs` in the daemon** owns runs as `tasks.rs` owns tasks: `kanna run start` from a task's terminal makes the run's branch and first worker; a stage starts in a worker's terminal (an agent command built as a task's is, with the stage prompt written to the worker's `.kanna/tmp/stage-N.md` and passed as the first message; a command under the task-script timeout wrapper), the daemon watches for the visit's end, reads the answer from the session file, picks the next arrow, starts workers, joins, lands, hands back, and messages the task's agent through [agent messaging](agent-messaging.md) with the run as the sender.
+- **`runs.rs` in the daemon** owns runs as `tasks.rs` owns tasks: `kanna run start` from a task's terminal makes the run's branch and first worker; a stage starts in a worker's terminal (an agent command built as a task's is, with the stage prompt written to the worker's `.kanna/tmp/stage-N.md` and passed as the first message; a command under the task-script timeout wrapper), the daemon watches for the visit's end, reads the answer from the session file, picks the next arrow, starts workers, joins, hands back, and messages the task's agent through [agent messaging](agent-messaging.md) with the run as the sender.
 - **A worker's terminal is a plain daemon terminal** with no pane: content without a view ([architecture §2](architecture.md#2-what-the-daemon-keeps-what-the-apps-keep)), so it has agent status, a turn's end, quit keys and resume like any terminal, and nothing draws it. The watch tab is a pane that views it; when the stage changes, the daemon points the pane at the new worker's terminal. Workers' terminals are stopped and started with the run's task.
 - **Tables** in `kanna.db` ([database](database.md)), the daemon the only writer:
 
@@ -149,10 +149,10 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 | `runs` | `id` (`run-7f3a1c2e`), `task`, `repo`, `pipeline`, `revision_hash`, `branch`, `state`, `started_at`, `ended_at`, `outcome` | request, budget, counts |
 | `run_revisions` | `run`, `n`, `at`, `by` (`file`, `stage:NAME`, `user`), `hash` | the text, the diff |
 | `run_stages` | `id`, `run`, `stage`, `visit`, `instance`, `kind`, `agent`, `machine`, `started_at`, `ended_at`, `verdict`, `session`, `terminal`, `worktree`, `branch` | answer path, feedback, tokens, turns, cost, lines, findings, failures, guard, score, interventions |
-| `run_events` | `id`, `run`, `at`, `what` (`started`, `stage`, `verdict`, `revision`, `paused`, `resumed`, `answered`, `skipped`, `retried`, `typed`, `stopped`, `landed`, `handed_back`), `by` | details |
+| `run_events` | `id`, `run`, `at`, `what` (`started`, `stage`, `verdict`, `revision`, `paused`, `resumed`, `answered`, `skipped`, `retried`, `typed`, `stopped`, `handed_back`), `by` | details |
 
-- **Settings:** `pipelines.workers` (how many of a run's workers run at once, default 3), `pipelines.pricing` (per-model token prices for agents that don't report cost), `tasks.land` (the command that lands a branch when a plain merge isn't the repo's way), in the repo's `.kanna/config.json` ([settings](settings.md)). Pipelines and prompts in a cloned repo run only agents Kanna knows and commands in their worktrees, as `tasks.setup` does.
-- **The skill:** `kanna-tasks` gets a section on building with the pipeline: start one once the spec and mockup are approved (or the bug reproduced), never before; open the Run tab; relay an `ask`; present what landed.
+- **Settings:** `pipelines.workers` (how many of a run's workers run at once, default 3), `pipelines.pricing` (per-model token prices for agents that don't report cost), in the repo's `.kanna/config.json` ([settings](settings.md)). Pipelines and prompts in a cloned repo run only agents Kanna knows and commands in their worktrees, as `tasks.setup` does.
+- **The skill:** `kanna-tasks` gets a section on building with the pipeline: start one once the spec and mockup are approved (or the bug reproduced), never before; open the Run tab; relay an `ask`; present what the run handed back for review.
 - **The app** draws the Run tab from a `run` message the daemon publishes (the graph from the revision's parsed form, the rows from `run_stages`), and the Stats section from `stats pipelines`.
 - **Tested** by `kanna-pipe` unit tests (the parser against the two example files and each rule's error), `runs.rs` tests with the mock agent (a visit's answer read, the arrow picked, a loop bounded, a guard rolled back, a budget stopping a run), and e2e `pipeline_run` on a private instance: a fixture repo with a two-stage pipeline (mock agent, then a command that fails once and then passes), started from a task's terminal, the task's docked pane untouched and the Shelf showing one row throughout, the run landing and handing back, the message to the task's agent, the Run tab's data and a watch tab following a stage change, a fan-out of two workers joined, an `ask` answered from the CLI and through the agent, a revision emitted and one edited, a daemon restart mid-stage.
 
@@ -172,21 +172,19 @@ sequenceDiagram
         D->>D: answer from the session file, or the output's tail, its verdict, the next arrow
         D->>W: quit keys (as a Shelf runner), then close
     end
-    D->>G: merge main: git merge --no-ff run/TASK-N
     D->>G: the task's worktree: git merge --ff-only run/TASK-N
-    D->>A: message from run-ID: landed: 5 visits of 3 stages …
+    D->>A: message from run-ID: handed back: 4 visits of 2 stages …
 ```
 
 - **A worker's terminal is `open` with `hidden`:** a terminal pane the layout never places (no window, workspace, dock or tab), so no Desk, Shelf row or strip shows it, and a Shelf runner's hang-up of the task's terminals never reaches it (it hangs up what the task's workspace holds). The terminal store keeps `hidden`, so a worker stays unplaced across a daemon restart. The run closes it when its visit ends.
 - **An agent stage** runs `export KANNA_TASK=… KANNA_RUN=… KANNA_STAGE=… (the task scripts' variables); AGENT … "$(cat .kanna/tmp/stage-N.md)"` in the worker, the agent command built as a task's (`agents.prompts`, Codex in its own terminal, `--session-id` for Claude and Copilot), with `--model` and Codex's `model_reasoning_effort` from the stage line. N counts the run's visits. The prompts are the ones beside the pipeline when the run started, kept with revision 1.
 - **A visit ends** at the agent's turn's end, as a Shelf runner judges it; a turn that ends needing you makes the run `waiting` until the agent works again. The daemon then reads the answer and quits the agent with its quit keys (`Tasks::end_agent`). An agent that exits by itself ends its visit too; `within` resets the worktree to the visit's start and fails it as `timed out`.
 - **The answer:** Claude's `~/.claude/projects/*/SESSION.jsonl` (the session Kanna gave it), the text of the assistant entries after the last user entry, so the final response after the last tool result; Codex's first rollout in the worker since the visit started, its last assistant message. Any other agent's answer is empty, and the visit's `note` says so.
-- **A `run` stage and `tasks.land`** run under the task scripts' timeout wrapper (`within`, else `tasks.timeout`), their output in `.kanna/tmp/stage-N.log` and the exit code written to `stage-N.exit` when the command ends, so a restart of the daemon mid-command loses nothing: the keeper keeps the command running and the file says how it ended. `KANNA_FEEDBACK` is `feedback-N.txt`, the last failure's full output.
+- **A `run` stage** runs under the task scripts' timeout wrapper (`within`, else `tasks.timeout`), its output in `.kanna/tmp/stage-N.log` and the exit code written to `stage-N.exit` when the command ends, so a restart of the daemon mid-command loses nothing: the keeper keeps the command running and the file says how it ended. `KANNA_FEEDBACK` is `feedback-N.txt`, the last failure's full output.
 - **Feedback goes forward only after a fail** that takes an arrow without `reset`: a pass hands nothing to the next stage.
-- **`merge main`** without `tasks.land` is `git merge --no-ff -m "Merge run/TASK-N (run ID, pipeline NAME)"` in the repo's main checkout; a conflict is aborted and fails the stage with the conflicting files as feedback.
-- **Hand-back:** the task's worktree is fast-forwarded (`git merge --ff-only`) when it has no changes to tracked files; with changes, or a branch that moved, it's left as it is and the message says how to merge. The worker's worktree is removed; the run's branch stays. A run that reached `done` through `merge main` is `landed`; one that reached it without is `done` (outcome `handed back`).
+- **Hand-back:** the task's worktree is fast-forwarded (`git merge --ff-only`) when it has no changes to tracked files; with changes, or a branch that moved, it's left as it is and the message says how to merge. The worker's worktree is removed; the run's branch stays; the run is `done` (outcome `handed back`). Nothing reaches main: you review the change in the task's worktree and merge it as any task's work.
 - **Messages from the run** (`[message from run-ID] …`) are sent when it hands back, is stuck, waits on you (the budget, a stage's agent needing you) or stops by itself; they carry the recipient's permissions, as yours do, since the run acts for whoever started it. A stopped Shelf task runs for the message.
-- **Events** add `waiting` and `resumed` to §6's list; a lost terminal is a `verdict` of `interrupted`, and the stage runs again.
+- **Events** add `waiting` and `resumed` to §6's list, and a run in `done` is handed back; a lost terminal is a `verdict` of `interrupted`, and the stage runs again.
 - **Not built yet, refused at start** by line (`FILE:LINE: STAGE uses each, which runs can't do yet`): `ask`, `each`, `xN by`, `guard`, `emits`, `resume`, `merge STAGE` and `on` anything but `here`. `pause`, `resume`, `skip`, `retry`, `answer` and `edit` come with them.
 - **For tests only:** `KANNA_PIPELINE_AGENTS` (`name=command` pairs, space-separated, in the daemon's environment) runs a stage's agent by another command, so e2e runs `tools/mock-agent` as `claude`. With `KANNA_STAGE` set, the mock takes its first message as a stage prompt: it runs each `mock: …` line, answers with the `say: …` lines in a Claude session file, and with `KANNA_MOCK_REPORTS=1` reports working and idle by OSC 7501.
 
@@ -214,6 +212,7 @@ RUN defaults to the run of the task the terminal is in.
 - **Headless agents** (`claude -p`, `codex exec`, as kojo runs them): nothing to watch, no resume, no typing into a stage. A worker is an interactive session in a daemon terminal, which the rest of Kanna already handles; only its pane is optional.
 - **Fan-out instances as tasks on the Shelf:** one change would show as four rows, eat `shelf.runners` and the Desk's three places, and leave parts to tidy after the join.
 - **A stage on another machine as a command over the link** (`kanna --host mini -- scripts/e2e-kanna.sh`): no terminal to watch, no worktree of its own, nothing to resume, and an agent stage couldn't run that way at all.
+- **A `merge main` stage, with an `ask` before it as the gate:** the run would land on main from a branch you never had in your worktree. Handing back to the task's worktree makes the review the same as any task's, and main moves only from there.
 - **YAML or JSON pipelines:** the arrows are the point; a flow line reads as the diagram. kojo's grammar is proven on 30 factories.
 - **A run that rewrites its own file:** revisions by a declared `emits` stage or by you, validated and bounded ([pipeline language §7](pipeline-language.md#7-changing-a-pipeline-while-it-runs)).
 - **Test count and pass rate as quality:** all tests must pass to land; the quality columns are the Code quality metrics task's.
@@ -233,6 +232,5 @@ The tasks for the planner, in order, are in [software factory build order](softw
 | **Run tab, watch tab** | The run's graph, numbers and log; a terminal tab showing the current stage's worker |
 | **Revision** | One version of a run's pipeline |
 | **Intervention** | Anything you did to a run: an answer, a pause, a skip, a retry, an edit, what you typed into a watch tab |
-| **Handed back** | The task's branch fast-forwarded to the run's, and its agent told |
-| **Landed** | The run's branch merged on main by its `merge main` stage |
+| **Handed back** | The task's branch fast-forwarded to the run's, and its agent told: the gate before main |
 | **Placement** | Where a stage's worker runs (`on`): `here`, `any`, a machine, or a role |

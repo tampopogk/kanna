@@ -49,8 +49,9 @@ fn syntax_errors_name_their_line() {
     only("b = claude x11 by c\nb -> done", Rule::Syntax, "t.pipe:1: xN takes 2 to 10 attempts");
     only("b = claude verdict verdict\nb -> done", Rule::Syntax, "t.pipe:1: verdict is given twice");
     only("budget = 3 tokens\nb = claude\nb -> done", Rule::Syntax, "t.pipe:1: expected `budget = N sessions, DURATION` (DURATION like 8h or 90m), got '3 tokens'");
-    only("b = ask Ship?\nb -> done", Rule::Syntax, "t.pipe:1: `ask` needs a question in double quotes: ask \"Land it on main?\"");
-    only("b = merge main verdict\nb -> done", Rule::Syntax, "t.pipe:1: a merge stage takes only `on PLACEMENT` and `within DURATION` after it, got 'verdict'");
+    only("b = ask Ship?\nb -> done", Rule::Syntax, "t.pipe:1: `ask` needs a question in double quotes: ask \"Is the plan right?\"");
+    only("b = claude each a.x\nj = merge b verdict\nb -> j -> done", Rule::Syntax, "t.pipe:2: a merge stage takes only `on PLACEMENT` and `within DURATION` after it, got 'verdict'");
+    only("b = merge main\nb -> done", Rule::Syntax, "t.pipe:1: `merge main` isn't a stage: a run hands its branch back to the task's worktree, and you merge from there");
     only("b = claude within soon\nb -> done", Rule::Syntax, "t.pipe:1: within takes a duration like 30m or 2h, got 'soon'");
     only("done = claude\n", Rule::Syntax, "t.pipe:1: 'done' is reserved: it ends the run");
     only("b = claude\nb -> \n", Rule::Syntax, "t.pipe:2: expected a stage name after an arrow");
