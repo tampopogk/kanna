@@ -16,7 +16,7 @@ A blocked task can start building on its blockers' work once that work is **read
 A task's agent marks its own work ready once it's finished and its tests pass: `kanna task ready set`. You can mark or clear it too (`kanna task ready set TASK`, `kanna task ready clear TASK`). Kanna never guesses it from the agent's status or from git.
 
 - **Ready records the task's head:** the commit its worktree is on. Refused with uncommitted changes to tracked files (they wouldn't reach the tasks stacked on it), and for a task that hasn't started.
-- **It stops being ready when its branch moves:** a new commit, a merge of main, a rebase. Kanna watches every ready task's head.
+- **It stops being ready when its branch moves:** a new commit, a merge of main, a rebase. Kanna follows every ready task's head through file events on the repo's refs.
 - **Shown** as `ready` in `kanna task list`, `"ready"` in `--json`, and on the task's row in the Desk view.
 
 ## Starting stacked
@@ -98,7 +98,7 @@ A stacked task shouldn't merge into main before its bases have. Kanna doesn't me
 ```mermaid
 flowchart LR
     CLI["kanna task ready set / clear"] --> D["daemon: the task's doc in kanna.db<br/>ready: {head, branch}<br/>bases: [{id, branch, head}]<br/>stale"]
-    W["head watcher<br/>every 2s, off the main thread"] -->|"heads and ancestry"| D
+    W["head follower<br/>file events on refs"] -->|"a head moved"| D
     D -->|"make_worktree from the bases"| G["git worktree"]
     D -->|"tasks message"| APP["Kanna.app: Desk view rows"]
     D -->|"message from kanna"| AG["stale task's agent"]
@@ -106,12 +106,13 @@ flowchart LR
 
 - **Kept in the task's row** in `kanna.db`, in its JSON doc, as `after` is: `ready` (head, branch, when), `bases` (each base's task ID, branch and the head this task has merged), `stale`. Events: `ready`, `unready` (with `why`: `cleared` or `moved`), `stale` (with `behind`), `base merged`, `conflict`.
 - **A blocker is satisfied** when it's Done, or open, ready and not stale. `waits` in the `tasks` message lists those that aren't.
-- **The watcher** runs every 2 seconds for every task that's ready or has bases. In a thread, it reads each one's head (its worktree's `HEAD`, or its branch once Done) and whether each base's head is in main and in the task's branch, and hands the result to the daemon's loop, which applies it: a ready task whose head moved becomes unready; a task with a base not in its branch, or with a stale base, becomes stale (and unready); a base in main is dropped.
+- **Kanna follows the heads, it doesn't poll them.** For each repo with a task that's ready or stacked, a thread watches the repo's git folder for file events (FSEvents) and wakes the daemon only when a head can have moved: a branch under `refs/heads`, `packed-refs`, a worktree's `HEAD` or the main checkout's `HEAD`. Objects, logs, indexes and locks are ignored, and events within 200ms are taken together. Then, off the main thread, it reads each such task's head (its worktree's `HEAD`, or its branch once Done) and whether each base's head is in main and in the task's branch, and the daemon's loop applies it: a ready task whose head moved becomes unready; a task with a base not in its branch, or with a stale base, becomes stale (and unready); a base in main is dropped. It also looks once when it starts following a repo (so at the daemon's start), and whenever FSEvents dropped events and asks for a rescan.
 - **Merges for several bases** run in the new worktree, one `git merge` per base; on a conflict the merge is aborted and the worktree and branch removed.
 - **Main** is the repo's main checkout's `HEAD`, as for `merged`. Squash and rebase merges hide a base's head from main: such a base stays until its task is taken off with `kanna task edit` or the user marks the task ready on a main that contains its changes.
 
 ## Rejected
 
+- **Polling the heads:** most looks would find nothing moved, each costing a few `git` processes per task; file events cost nothing until a ref is written.
 - **Ready guessed from an idle agent or green CI:** an agent stops for many reasons; only the agent knows its work is finished.
 - **Rebasing stacked tasks onto their moved base for them:** a conflicted rebase in an agent's worktree is the agent's to resolve; Kanna tells it, the agent merges.
 - **Refusing `git merge` with a hook:** Kanna would write into every repo's hooks and run on every ref update; showing `merges after` is enough while merges go through agents that read it.

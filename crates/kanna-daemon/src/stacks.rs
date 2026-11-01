@@ -1,8 +1,14 @@
 use crate::task_scripts;
 use crate::tasks::{git, make_worktree};
+use crate::Event;
 use kanna_mux::json::{json, num, string, Value};
+use notify::{RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
+
+const QUIET: Duration = Duration::from_millis(200);
 
 pub const KANNA: &str = "kanna";
 
@@ -98,6 +104,90 @@ pub fn make(repo: &Path, name: &str, bases: Vec<Base>) -> Result<Made, String> {
         task_scripts::record_base(here);
     }
     Ok(Made::Worktree { folder, branch, bases })
+}
+
+pub enum Heads {
+    Repos(HashSet<PathBuf>),
+    Changed(Option<Vec<PathBuf>>),
+}
+
+pub fn follow_heads(events: Sender<Event>) -> Sender<Heads> {
+    let (to, inbox) = mpsc::channel();
+    let changes = to.clone();
+    std::thread::spawn(move || {
+        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let _ = changes.send(Heads::Changed(event.ok().filter(|e| !e.need_rescan()).map(|e| e.paths)));
+        });
+        match watcher {
+            Ok(watcher) => heads(watcher, inbox, events),
+            Err(error) => log!("kanna-daemon: can't watch ready branches' heads: {error}"),
+        }
+    });
+    to
+}
+
+fn heads(mut watcher: impl Watcher, inbox: Receiver<Heads>, events: Sender<Event>) {
+    let mut dirs: HashMap<PathBuf, PathBuf> = HashMap::new();
+    loop {
+        let Ok(first) = inbox.recv() else { return };
+        let mut moved = take(first, &mut watcher, &mut dirs);
+        loop {
+            match inbox.recv_timeout(QUIET) {
+                Ok(next) => moved |= take(next, &mut watcher, &mut dirs),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        if moved && events.send(Event::Heads).is_err() {
+            return;
+        }
+    }
+}
+
+fn take(heads: Heads, watcher: &mut impl Watcher, dirs: &mut HashMap<PathBuf, PathBuf>) -> bool {
+    match heads {
+        Heads::Changed(None) => true,
+        Heads::Changed(Some(paths)) => paths.iter().any(|path| dirs.values().any(|dir| moves_a_head(dir, path))),
+        Heads::Repos(repos) => {
+            for (_, dir) in dirs.extract_if(|repo, _| !repos.contains(repo)) {
+                let _ = watcher.unwatch(&dir);
+            }
+            let mut added = false;
+            for repo in repos {
+                if dirs.contains_key(&repo) {
+                    continue;
+                }
+                let Some(dir) = common_dir(&repo) else { continue };
+                match watcher.watch(&dir, RecursiveMode::Recursive) {
+                    Ok(()) => {
+                        dirs.insert(repo, dir);
+                        added = true;
+                    }
+                    Err(error) => log!("kanna-daemon: can't watch {}: {error}", dir.display()),
+                }
+            }
+            added
+        }
+    }
+}
+
+fn common_dir(repo: &Path) -> Option<PathBuf> {
+    let dir = git(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
+    std::fs::canonicalize(dir).ok()
+}
+
+pub fn moves_a_head(dir: &Path, path: &Path) -> bool {
+    let Ok(inside) = path.strip_prefix(dir) else { return false };
+    if inside.extension().is_some_and(|e| e == "lock") {
+        return false;
+    }
+    let parts: Vec<&str> = inside.iter().filter_map(|c| c.to_str()).collect();
+    match parts.as_slice() {
+        ["HEAD"] | ["packed-refs"] => true,
+        ["refs", "heads", ..] => true,
+        ["worktrees", _, "HEAD"] => true,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -306,6 +396,39 @@ mod tests {
         let seen = look(vec![probe]);
         assert_eq!(seen[0].bases.iter().map(|b| (b.merged, b.contained)).collect::<Vec<_>>(), vec![(true, true), (false, false)]);
         assert_eq!(seen[0].main.as_deref(), Some("main"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_branch_or_head_moving_is_a_head_moving() {
+        let dir = Path::new("/r/.git");
+        for (path, moves) in [("refs/heads/task-1", true), ("refs/heads/a/b", true), ("HEAD", true), ("packed-refs", true), ("worktrees/task-1/HEAD", true), ("refs/heads/task-1.lock", false), ("objects/ab/cd", false), ("logs/refs/heads/task-1", false), ("worktrees/task-1/index", false), ("index", false), ("refs/remotes/origin/main", false)] {
+            assert_eq!(moves_a_head(dir, &dir.join(path)), moves, "{path}");
+        }
+        assert!(!moves_a_head(dir, Path::new("/elsewhere/HEAD")));
+    }
+
+    #[test]
+    fn a_commit_on_a_followed_repos_branch_says_heads_moved() {
+        let dir = std::env::temp_dir().join(format!("kanna-heads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        sh(&dir, "git init -q -b main && git config user.name e && git config user.email e@e && git commit -q --allow-empty -m first && git worktree add -q -b t wt");
+        let (events, inbox) = mpsc::channel();
+        let heads = follow_heads(events);
+        heads.send(Heads::Repos(HashSet::from([dir.clone()]))).unwrap();
+        assert!(matches!(inbox.recv_timeout(Duration::from_secs(5)), Ok(Event::Heads)), "following a repo looks at it once");
+        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "nothing moved");
+        sh(&dir.join("wt"), "echo x >x");
+        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "a file in a worktree isn't a head");
+        sh(&dir.join("wt"), "git add x && git commit -q -m x");
+        assert!(matches!(inbox.recv_timeout(Duration::from_secs(5)), Ok(Event::Heads)), "a commit moves its branch");
+        heads.send(Heads::Repos(HashSet::new())).unwrap();
+        std::thread::sleep(QUIET * 2);
+        while inbox.try_recv().is_ok() {}
+        sh(&dir.join("wt"), "git commit -q --allow-empty -m y");
+        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "an unfollowed repo is left alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

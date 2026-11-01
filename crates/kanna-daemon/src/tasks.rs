@@ -740,6 +740,9 @@ pub struct Tasks {
     pub repos: RefCell<Option<PathBuf>>,
     importing: RefCell<Option<project_import::Import>>,
     watching: Cell<bool>,
+    again: Cell<bool>,
+    heads: RefCell<Option<Sender<stacks::Heads>>>,
+    following: RefCell<HashSet<PathBuf>>,
 }
 
 #[derive(Clone)]
@@ -854,6 +857,9 @@ impl Tasks {
             repos: RefCell::default(),
             importing: RefCell::default(),
             watching: Cell::new(false),
+            again: Cell::new(false),
+            heads: RefCell::default(),
+            following: RefCell::default(),
         }
     }
 
@@ -1172,6 +1178,7 @@ impl Tasks {
     }
 
     fn changed(&self) {
+        self.follow();
         if let Some(on_change) = self.on_change.borrow().as_ref() {
             on_change(self.view());
         }
@@ -1299,7 +1306,7 @@ impl Tasks {
         if self.fill_at.get().is_some_and(|at| at <= now) {
             self.fill_at.set(Some(now + FILL_EVERY));
             self.fill(&core);
-            self.watch();
+            self.follow();
         }
         let turns = self.turns.borrow().values().filter_map(|t| t.due(TURN_SETTLE)).min();
         let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
@@ -3168,8 +3175,24 @@ impl Tasks {
         Ok(Map::from_iter([("task".to_string(), self.described(&entry))]))
     }
 
+    fn follow(&self) {
+        let repos: HashSet<PathBuf> = self.probes().into_iter().map(|p| p.repo).collect();
+        if *self.following.borrow() == repos {
+            return;
+        }
+        self.following.replace(repos.clone());
+        let mut heads = self.heads.borrow_mut();
+        let to = heads.get_or_insert_with(|| stacks::follow_heads(self.events.clone()));
+        let _ = to.send(stacks::Heads::Repos(repos));
+    }
+
+    pub fn heads_moved(&self) {
+        self.watch();
+    }
+
     fn watch(&self) {
         if self.watching.get() {
+            self.again.set(true);
             return;
         }
         let probes = self.probes();
@@ -3196,6 +3219,13 @@ impl Tasks {
 
     pub fn watched(&self, seen: Vec<stacks::Seen>) {
         self.watching.set(false);
+        self.settle(seen);
+        if self.again.replace(false) {
+            self.watch();
+        }
+    }
+
+    fn settle(&self, seen: Vec<stacks::Seen>) {
         let tasks: Vec<stacks::Task> = self.open_tasks().into_iter().map(|e| stacks::Task { id: e.id, ready: e.ready, bases: e.bases, stale: e.stale }).collect();
         let steps = stacks::settle(&tasks, &seen);
         if steps.is_empty() {
