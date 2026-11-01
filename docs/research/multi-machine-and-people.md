@@ -185,7 +185,7 @@ For the user to fill: what problem each solves, in their words, and the order to
 
 Beyond each scenario's column in [§3](#3-scenarios-ah):
 
-1. **Which comes first, machines or people?** A–C and E–H share only identity and reach; building one doesn't bring the other.
+1. **Machines come first** (decided 2026-11-01): A–C before E–H. They share only identity and reach, so building one doesn't bring the other.
 2. **Is a sent task (E) a task or a message?** A record on the receiver's Shelf is a task; the receiver's planner would still read about it as a message. One table or two.
 3. **Approval (5) as a Kanna step or an agent step?** The daemon holding every outbound message until the user approves in the app, or the skill telling the agent to ask first. Only the first is enforceable.
 4. **Identity for people** isn't identity for machines: your machines' peer log is one person's devices ([identity](../specs/machine-identity.md)). Another person's Kanna is a peer of a different kind, trusted for messages and never for tasks running on it.
