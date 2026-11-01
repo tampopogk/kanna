@@ -73,6 +73,8 @@ new_state_dir() {
   export KANNA_AGENTS_HOME="$KANNA_STATE_DIR/home"
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || { echo "e2e-kanna: mktemp gave no folder" >&2; exit 1; }
   export KANNA_STATE_DIR KANNA_SOCKET="$KANNA_STATE_DIR/kanna.sock"
+  export KANNA_GHOSTTY_CONFIG="$KANNA_STATE_DIR/ghostty/config"
+  mkdir -p "${KANNA_GHOSTTY_CONFIG%/*}" && : >"$KANNA_GHOSTTY_CONFIG"
   mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4" && echo '{"version": 2, "setup": false}' >"$KANNA_AGENTS_HOME/.kanna-v4/agents.json"
   printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}, "agents": {"prompts": "skip"}}\n' "$mock_agent" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
 }
@@ -899,8 +901,7 @@ desk_task() {
   kanna task pick "$id" >/dev/null
 }
 shown_windows() { state | python3 -c 'import json, sys; print(" ".join(w["id"] for w in json.load(sys.stdin)["windows"]))'; }
-xdg() { mkdir -p "$KANNA_STATE_DIR/xdg/ghostty"; printf '%s\n' "$@" >"$KANNA_STATE_DIR/xdg/ghostty/config"; }
-term_app() { XDG_CONFIG_HOME="$KANNA_STATE_DIR/xdg" start_app; }
+ghostty_config() { printf '%s\n' "$@" >"$KANNA_GHOSTTY_CONFIG"; }
 terminal() { raw "{\"id\":1,\"cmd\":\"debug.terminal\",\"args\":$2}" | python3 -c 'import json, sys; m = json.load(sys.stdin)
 assert m.get("ok"), m
 v = m
@@ -1210,11 +1211,11 @@ sys.exit(0 if max(abs(x - y) for x, y in zip(a, b)) <= 16 else 1)' "$1" "$2"; }
 
 scenario terminal_colours M4
 terminal_colours() {
-  xdg 'palette = 1=#0102fe' 'cursor-style = bar' \
+  ghostty_config 'palette = 1=#0102fe' 'cursor-style = bar' \
     'theme = light:'"$KANNA_STATE_DIR"'/light,dark:'"$KANNA_STATE_DIR"'/dark'
   printf 'background = #f0f0e0\nforeground = #202020\n' >"$KANNA_STATE_DIR/light"
   printf 'background = #123456\nforeground = #e5d4b0\n' >"$KANNA_STATE_DIR/dark"
-  start_daemon && term_app || return 1
+  start_daemon && start_app || return 1
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null || return 1
   kanna open --window new --name terminal_colours --cmd "$(probe '\033]11;?\007\033]10;?\007\033]4;1;?\007\033[?996n' n 1)" >/dev/null || return 1
   check wait_for 5 shows terminal_colours 'GOT ^]11;rgb:1212/3434/5656~^]10;rgb:e5e5/d4d4/b0b0~^]4;1;rgb:0101/0202/fefe~^\[?997;1n' || { kanna read terminal_colours; return 1; }
@@ -1254,8 +1255,8 @@ cwd_title() {
 
 scenario clipboard M4
 clipboard() {
-  xdg 'clipboard-read = allow'
-  start_daemon && term_app || return 1
+  ghostty_config 'clipboard-read = allow'
+  start_daemon && start_app || return 1
   kanna open --window new --name clipboard --cmd "$(probe '\033[?2004h' x 0)" >/dev/null || return 1
   check wait_for 5 shows clipboard READY || return 1
   terminal clipboard '{"pane":"clipboard","clipboard":"clipboard PASTE"}' >/dev/null || return 1
@@ -1271,7 +1272,7 @@ clipboard() {
   terminal selection '{"pane":"clipboards","action":"select_all"}' >/dev/null
   terminal clipboard '{"pane":"clipboards","action":"copy_to_clipboard"}' >/dev/null
   check wait_for 5 eval 'terminal clipboard "{\"pane\":\"clipboards\"}" | grep -q "clipboard SELECTED"' || return 1
-  stop_app; term_app || return 1
+  stop_app; start_app || return 1
   terminal clipboard '{"pane":"clipboard","clipboard":"AFTER"}' >/dev/null || return 1
   raw '{"id":1,"cmd":"debug.key","args":{"pane":"clipboard","key":"cmd+v"}}' >/dev/null
   check wait_for 5 eval 'kanna read clipboard | tr -d "\\n" | sed "s/IN //g" | grep -q "\\^\\[200~AFTER\\^\\[201~"' || return 1
