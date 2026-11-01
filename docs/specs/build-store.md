@@ -60,6 +60,7 @@ The main checkout keeps its `release/` profile and links to the store's GhosttyK
 
 - **Where:** `ROOT/_shared/NAME/KEY`, `ROOT` being `targets` in the main checkout's `build.local.json` ([build targets](build-targets.md#1-where-target-lives)). With `targets` unset or its volume unmounted, it's `MAIN/target/_shared` on the internal disk (`MAIN` the main checkout).
 - **Names and keys:** a key is the first 16 hex digits of the SHA-256 of what decides the output, so a Ghostty bump (or a change to a build script) is a new key and one build, and an old key is never overwritten.
+- **Every build asks the store:** `build.sh` and `build-kanna-app.sh` look GhosttyKit and libghostty-vt up by key each time, not only when `target/` lacks them, so a checkout whose link points at an older key moves to the new one (the `-Dsentry=false` in `build-ghosttykit.sh`, [crashes](crashes.md#2-capture), reached existing checkouts that way).
 
 | Name | Key from | Holds |
 |---|---|---|

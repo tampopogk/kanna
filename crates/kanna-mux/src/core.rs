@@ -5,7 +5,7 @@ use crate::json::{is_true, json, num, string, Map, Value};
 use crate::layout::{place_request, scope_request, Edge, LayoutHost, LayoutLink, LocalLayout, Placement, Scope, SplitSide};
 use crate::workspace::MAC_APP;
 use crate::model::{fraction, Model};
-use crate::pane::{read_diff_args, read_view, Comment, Pane, PaneState, PaneType, Panes, StopMark, CONTENT_PREFIXES};
+use crate::pane::{read_baud, read_line_ending, read_diff_args, read_view, Comment, Pane, PaneState, PaneType, Panes, StopMark, CONTENT_PREFIXES};
 use crate::state;
 
 #[path = "tour.rs"]
@@ -765,9 +765,17 @@ impl CoreHandle {
         if kind == PaneType::Diff && empty("path") {
             return Err(bad_request("diff panes need a path: the folder git runs in"));
         }
-        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff) {
-            return Err(bad_request("path is only for markdown, code and diff panes"));
+        if kind == PaneType::Serial && empty("path") {
+            return Err(bad_request("serial panes need a path: the port"));
         }
+        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Serial) {
+            return Err(bad_request("path is only for markdown, code, diff and serial panes"));
+        }
+        if (args.get("baud").is_some() || args.get("lineEnding").is_some()) && kind != PaneType::Serial {
+            return Err(bad_request("baud and lineEnding are only for serial panes"));
+        }
+        let baud = read_baud(args.get("baud"))?;
+        let line_ending = read_line_ending(args.get("lineEnding"))?;
         if (args.get("args").is_some() || args.get("view").is_some()) && kind != PaneType::Diff {
             return Err(bad_request("args and view are only for diff panes"));
         }
@@ -917,6 +925,10 @@ impl CoreHandle {
             if kind == PaneType::Diff {
                 pane.diff = Some(diff.unwrap_or_default());
                 pane.view = view;
+            }
+            if kind == PaneType::Serial {
+                pane.baud = baud;
+                pane.line_ending = line_ending;
             }
             if (kind == PaneType::Web && is_true(args, "history")) || matches!(kind, PaneType::Md | PaneType::Code) {
                 pane.history = Some(Default::default());

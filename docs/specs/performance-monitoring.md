@@ -1,6 +1,6 @@
 # Performance Monitoring
 
-**Status:** built · **Builds on:** [architecture](architecture.md), [app link](app-link.md) · **Measures:** [moving to the Desk at once](move-to-desk-latency.md)
+**Status:** built · **Builds on:** [architecture](architecture.md), [app link](app-link.md) · **Measures:** [moving to the Desk at once](move-to-desk-latency.md), [input latency](input-latency.md)
 
 Kanna.app measures where its main thread's time goes, from inside. Measuring from outside skews the result: polling `debug.desk` 50 times a second encodes every Shelf task's first message on the main thread, the thread being measured. So the app marks its own work as **intervals**, notices when its main thread stops answering (a **hang**), and keeps the recent numbers in a small ring buffer that `debug.perf` reads. The daemon logs any request it takes over 50ms to handle.
 
@@ -26,11 +26,12 @@ Each interval is an `OSSignposter` interval (subsystem `dev.kanna.app`, a catego
 | `click.pick.shown` | click | the click → the Desk's tasks drawn with the task among them and off the Shelf |
 | `click.pick.failed` | click | the click → the daemon refusing it |
 | `click.activate.wait`, `click.activate.shown` | click | a click on a Desk task's card (strip or Desk view) → handled; → the Desk drawn showing it active |
+| `key.wait`, `key.sent`, `key.echo`, `key.drawn` | keys | a key typed in a terminal (the key event's time) → handled; → its `input` written to the daemon's socket; → the terminal's next `output` handled; → drawn ([input latency](input-latency.md#2-measuring-a-keystroke)) |
 | `message.TYPE` | daemon | handling one daemon message: `layout`, `tasks`, `status`, `diff`, `output`, `reply`, … |
 | `command.NAME` | commands | one app command (`Commands.handle`), from the CLI or the daemon, e.g. `command.debug.click` |
 | `refresh`, `render` | render | `AppController.refresh` and its `render` of every window |
 | `WindowController.render` | render | one window's render |
-| `DeskView.lay` | desk | rebuilding the Desk view's tasks and Shelf; its detail is the row count (`42 rows`) |
+| `DeskView.lay` | desk | laying out the Desk view's tasks and Shelf; its detail is the row count and how many were rebuilt (`42 rows, 1 new`) |
 | `markdown.check`, `markdown.load` | markdown | a markdown pane's comments check (every 0.5s) and drawing the text the daemon sent ([file panes](file-panes.md)) |
 | `hang` (event) | hang | a main-thread hang, with what was open |
 
@@ -47,7 +48,7 @@ sequenceDiagram
     M->>W: tasks pick
     W->>D: written (click.pick.sent)
     D-->>M: layout, tasks messages (message.layout, message.tasks)
-    M->>M: refresh → render → DeskView.lay
+    M->>M: before sleeping, one refresh → render → DeskView.lay
     Note over M: next beforeWaiting: click.pick.shown
 ```
 
@@ -64,11 +65,11 @@ The main thread **hangs** when one stretch of work between two run-loop transiti
 kanna: the main thread hung 312ms; open: message.layout, refresh, render; ran: DeskView.lay (40 rows) 290ms
 ```
 
-**The daemon** logs each request (from a client or the app) whose handling on its main loop takes over 50ms, to `daemon.log`: `kanna-daemon: tasks pick from the app took 72ms`. Work the request hands to other threads isn't counted.
+**The daemon** logs each request (from a client or the app) whose handling on its main loop takes over 50ms, to `daemon.log`: `kanna-daemon: tasks pick from the app took 72ms`. Work the request hands to other threads isn't counted. With `KANNA_DEBUG=1` it also answers **`debug.daemon.perf`** (`{"reset": true}` clears it) with the same fields for its own samples: a keystroke's stages and each kind of main-loop event ([input latency](input-latency.md#2-measuring-a-keystroke)).
 
 ## 3. Reading it
 
-**`debug.perf`** (debug builds): per interval name, `count` (since the last reset), `recent` (samples kept, up to 200), `p50`, `p95`, `max` and `last` in ms over the recent samples, and the last sample's `detail`; then the last hangs, newest first, and what's open now. `{"reset": true}` clears it first.
+**`debug.perf`** (debug builds): per interval name, `count` (since the last reset), `recent` (samples kept, up to 200), `p50`, `p95`, `p99`, `max` and `last` in ms over the recent samples, and the last sample's `detail`; then the last hangs, newest first, and what's open now. `{"reset": true}` clears it first.
 
 ```sh
 kanna raw '{"cmd":"debug.perf","args":{"reset":true}}'   # then click
@@ -96,7 +97,8 @@ log show --last 10m --signpost --predicate 'subsystem == "dev.kanna.app" AND cat
 
 - `KannaPerfTests`: percentiles and the ring, a hang naming what was open and what ran, a hang the watchdog missed.
 - First reading (2026-10-21, dev build, 40 Shelf tasks with 82k characters of first messages, one `debug.click` on a Shelf task): `click.pick.sent` 0.2ms, `click.pick.shown` 141ms; in between `message.layout` 14ms, `message.tasks` 14ms and `message.status` 40ms, each a full `refresh` that ran `DeskView.lay` (40 rows, 12–33ms) again; no hang over 100ms.
-- e2e `perf_intervals`: a Shelf click records `click.pick.wait`, `.sent` and `.shown` with the messages, renders and `DeskView.lay`; a Desk card click records `click.activate.shown`; `debug.hang` 300ms shows in `debug.perf` and in the app's log with `command.debug.hang` open.
+- Second reading (2026-10-31, 50 Shelf tasks with the repo's real first messages): `click.pick.shown` 163ms before, 18–31ms after; see [moving to the Desk at once](move-to-desk-latency.md#readings-with-fifty-shelf-tasks) for what was slow.
+- e2e `perf_intervals`: with 50 Shelf tasks, a click on a stopped one shows within 100ms; a Shelf click records `click.pick.wait`, `.sent` and `.shown` with the messages, renders and `DeskView.lay`; a Desk card click records `click.activate.shown`; `debug.hang` 300ms shows in `debug.perf` and in the app's log with `command.debug.hang` open.
 
 ## 6. Glossary
 

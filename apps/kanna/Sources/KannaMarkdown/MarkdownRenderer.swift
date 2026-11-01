@@ -46,6 +46,26 @@ final class DiagramCache {
     func keep(only sources: Set<String>) { layouts = layouts.filter { sources.contains($0.key) } }
 }
 
+struct ImageStamp: Equatable {
+    var path: String?
+    var regular = false
+    var inode: UInt64 = 0
+    var size: Int64 = 0
+    var seconds = 0
+    var nanoseconds = 0
+
+    init(_ source: String, folder: URL) {
+        path = MarkdownRenderer.localImagePath(source, folder: folder)
+        var info = stat()
+        guard let path, stat(path, &info) == 0 else { return }
+        regular = info.st_mode & S_IFMT == S_IFREG
+        inode = info.st_ino
+        size = info.st_size
+        seconds = info.st_mtimespec.tv_sec
+        nanoseconds = info.st_mtimespec.tv_nsec
+    }
+}
+
 @MainActor
 struct MarkdownRenderer {
     var folder: URL
@@ -55,6 +75,7 @@ struct MarkdownRenderer {
     private var old = false
     private var slugs: [String: Int] = [:]
     private(set) var diagramSources: [String] = []
+    private(set) var images: [String: ImageStamp] = [:]
 
     init(folder: URL, diagrams: DiagramCache) {
         self.folder = folder
@@ -135,7 +156,8 @@ struct MarkdownRenderer {
         let before = NSMutableAttributedString(), after = NSMutableAttributedString()
         asOld { $0.block(was, context, into: before) }
         block(node, context, into: after)
-        if let words = Self.compose(before, after) {
+        let tree = (node as? CodeBlock)?.language?.lowercased() == CallTree.fence
+        if !tree, let words = Self.compose(before, after) {
             out.append(words)
         } else {
             note("Before", color: MarkdownTheme.removedText, context, into: out)
@@ -270,6 +292,8 @@ struct MarkdownRenderer {
         case let code as CodeBlock:
             if code.language?.lowercased() == "mermaid" {
                 diagram(code.code, context, into: out)
+            } else if code.language?.lowercased() == CallTree.fence {
+                callTree(code.code, fenceLine: old ? nil : code.range?.lowerBound.line, context, into: out)
             } else {
                 codeBlock(code.code, context, into: out)
             }
@@ -395,6 +419,18 @@ struct MarkdownRenderer {
         }
     }
 
+    private mutating func callTree(_ source: String, fenceLine: Int?, _ context: Context, into out: NSMutableAttributedString) {
+        let tree = CallTree.parse(source, doc: folder.path)
+        for error in tree.errors {
+            note("Call tree error, line \((fenceLine ?? 0) + error.line): \(error.message)", color: MarkdownTheme.bad, context, into: out)
+        }
+        guard !tree.rows.isEmpty else { return codeBlock(source, context, into: out) }
+        let text = callTreeText(tree, fenceLine: fenceLine, indent: context.indent, firstID: blockCount * 1000)
+        blockCount += 1
+        text.addAttribute(.kannaSource, value: source, range: NSRange(location: 0, length: text.length))
+        out.append(text)
+    }
+
     private func note(_ text: String, color: NSColor, _ context: Context, into out: NSMutableAttributedString) {
         out.append(NSAttributedString(string: text + "\n", attributes: [
             .font: NSFont.systemFont(ofSize: 12.5, weight: .medium), .foregroundColor: color, .paragraphStyle: paragraph(context, after: 0),
@@ -432,9 +468,8 @@ struct MarkdownRenderer {
                 default: style.alignment = .left
                 }
                 let font = head ? NSFontManager.shared.convert(bodyFont, toHaveTrait: .boldFontMask) : bodyFont
-                let renderer = self
-                let cell = { (node: (any Markup)?) in
-                    let text = renderer.inline(node.map { Array($0.children) } ?? [], renderer.attributes(context, font: font))
+                func cell(_ node: (any Markup)?) -> NSMutableAttributedString {
+                    let text = inline(node.map { Array($0.children) } ?? [], attributes(context, font: font))
                     text.append(NSAttributedString(string: "\n", attributes: [.font: font]))
                     text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: text.length))
                     return text
@@ -458,13 +493,13 @@ struct MarkdownRenderer {
         out.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 4), .paragraphStyle: paragraph(context, after: 6)]))
     }
 
-    private func inline(_ children: some Sequence<any Markup>, _ base: [NSAttributedString.Key: Any]) -> NSMutableAttributedString {
+    private mutating func inline(_ children: some Sequence<any Markup>, _ base: [NSAttributedString.Key: Any]) -> NSMutableAttributedString {
         let out = NSMutableAttributedString()
         for child in children { inline(child, base, into: out) }
         return out
     }
 
-    private func inline(_ markup: any Markup, _ base: [NSAttributedString.Key: Any], into out: NSMutableAttributedString) {
+    private mutating func inline(_ markup: any Markup, _ base: [NSAttributedString.Key: Any], into out: NSMutableAttributedString) {
         var attributes = base
         let font = base[.font] as? NSFont ?? bodyFont
         switch markup {
@@ -510,9 +545,12 @@ struct MarkdownRenderer {
         for child in markup.children { inline(child, attributes, into: out) }
     }
 
-    private func imageAttachment(_ source: String?) -> NSTextAttachment? {
-        guard let source, let path = Self.localImagePath(source, folder: folder),
-              let image = NSImage(contentsOf: URL(fileURLWithPath: path)) else { return nil }
+    private mutating func imageAttachment(_ source: String?) -> NSTextAttachment? {
+        guard let source else { return nil }
+        let stamp = ImageStamp(source, folder: folder)
+        images[source] = stamp
+        guard stamp.regular, let path = stamp.path, let data = FileManager.default.contents(atPath: path),
+              let image = NSImage(data: data) else { return nil }
         let attachment = NSTextAttachment()
         attachment.attachmentCell = ImageCell(image: image)
         return attachment

@@ -10,6 +10,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     public var onFocus: (() -> Void)? { didSet { textView.onFocus = onFocus } }
     public var onOpenMarkdown: ((String) -> Void)?
+    public var onOpenCode: ((String, Int) -> Void)?
     public var onHistory: ((Bool) -> Void)?
     public var onZoom: (() -> Void)?
     public var startScrollY: CGFloat?
@@ -40,6 +41,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     var overviewObservers: [NSObjectProtocol] = []
     private let diagrams = DiagramCache()
     private var document = Document(parsing: "")
+    private var imageStamps: [String: ImageStamp] = [:]
     private var entries: [DiffEntry]?
     private var baseCommit: String?
     private var ticks = 0
@@ -246,12 +248,18 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         defer { Perf.end(span) }
         reloadThreadsIfChanged()
         refreshPanel()
+        if pending == nil, imagesChanged() { render() }
         guard pending == nil, diffRange == nil, let diffBase, let disk else { return }
         ticks += 1
         if ticks % 4 == 0, let commit = baseCommit,
            MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
             load(disk)
         }
+    }
+
+    private func imagesChanged() -> Bool {
+        let folder = URL(fileURLWithPath: path).deletingLastPathComponent()
+        return imageStamps.contains { ImageStamp($0.key, folder: folder) != $0.value }
     }
 
     private func load(_ disk: String) {
@@ -298,6 +306,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         var renderer = MarkdownRenderer(folder: URL(fileURLWithPath: path).deletingLastPathComponent(), diagrams: diagrams)
         let text = entries.map { renderer.render($0) } ?? renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
+        imageStamps = renderer.images
         updateInset()
         textView.finder.noteClientStringWillChange()
         textView.textStorage?.setAttributedString(text)
@@ -400,6 +409,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         case scroll(String)
         case openWeb(URL)
         case showMarkdown(String)
+        case openCode(String, Int)
         case reveal(URL)
         case ignore
     }
@@ -410,6 +420,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
             return ["http", "https", "mailto"].contains(scheme) ? .openWeb(url) : .ignore
         }
         var file = target.hasPrefix("file://") ? (URL(string: target)?.path ?? "") : target
+        let fragment = target.firstIndex(of: "#").map { String(target[target.index(after: $0)...]) }
         if let hash = file.firstIndex(of: "#") { file = String(file[..<hash]) }
         file = file.removingPercentEncoding ?? file
         guard !file.isEmpty else { return .ignore }
@@ -417,6 +428,9 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
             : URL(fileURLWithPath: documentPath).deletingLastPathComponent().appendingPathComponent(file)).standardizedFileURL
         let real = url.resolvingSymlinksInPath()
         guard let type = (try? FileManager.default.attributesOfItem(atPath: real.path))?[.type] as? FileAttributeType else { return .ignore }
+        if type == .typeRegular, let fragment, fragment.hasPrefix("L"), let line = Int(fragment.dropFirst()), line > 0 {
+            return .openCode(real.path, line)
+        }
         if type == .typeRegular, ["md", "markdown", "mdown"].contains(real.pathExtension.lowercased()) {
             return .showMarkdown(real.path)
         }
@@ -436,6 +450,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         case .scroll(let fragment): scroll(toAnchor: fragment)
         case .openWeb(let url): openWeb(url)
         case .showMarkdown(let file): onOpenMarkdown?(file)
+        case .openCode(let file, let line): onOpenCode?(file, line)
         case .reveal(let url): reveal(url)
         case .ignore: break
         }
@@ -459,6 +474,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         var out: [(String, [String])] = []
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
             if let cell = (value as? NSTextAttachment)?.attachmentCell as? DiagramCell { out.append((cell.diagramType, cell.scene.texts)) }
+        }
+        return out
+    }
+
+    public var drawnImages: [NSSize] {
+        guard let storage = textView.textStorage else { return [] }
+        var out: [NSSize] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if let cell = (value as? NSTextAttachment)?.attachmentCell as? ImageCell { out.append(cell.picture.size) }
         }
         return out
     }

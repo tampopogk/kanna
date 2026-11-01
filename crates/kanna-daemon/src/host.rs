@@ -1,4 +1,5 @@
 use crate::app_link::AppLink;
+use crate::serial::Serial;
 use crate::terminals::Terminals;
 use kanna_mux::{KmuxError, Pane, PaneHost, PaneType, Responder};
 use std::cell::RefCell;
@@ -6,12 +7,13 @@ use std::rc::{Rc, Weak};
 
 pub struct Host {
     terminals: Rc<Terminals>,
+    serial: Rc<Serial>,
     app: RefCell<Weak<AppLink>>,
 }
 
 impl Host {
-    pub fn new(terminals: Rc<Terminals>) -> Host {
-        Host { terminals, app: RefCell::new(Weak::new()) }
+    pub fn new(terminals: Rc<Terminals>, serial: Rc<Serial>) -> Host {
+        Host { terminals, serial, app: RefCell::new(Weak::new()) }
     }
 
     pub fn connect(&self, app: &Rc<AppLink>) {
@@ -27,6 +29,12 @@ impl PaneHost for Host {
     fn start(&self, pane: &Pane) {
         match pane.kind {
             PaneType::Term => self.terminals.start(pane),
+            PaneType::Serial => {
+                self.serial.start(pane);
+                if let Some(app) = self.app().filter(|app| app.attached()) {
+                    app.show(pane);
+                }
+            }
             _ => match self.app().filter(|app| app.attached()) {
                 Some(app) => app.show(pane),
                 None => self.terminals.unshown(pane),
@@ -37,6 +45,12 @@ impl PaneHost for Host {
     fn stop(&self, pane: &Pane) {
         match pane.kind {
             PaneType::Term => self.terminals.stop(pane),
+            PaneType::Serial => {
+                self.serial.stop(pane);
+                if let Some(app) = self.app() {
+                    app.hide(&pane.id);
+                }
+            }
             _ => {
                 if let Some(app) = self.app() {
                     app.hide(&pane.id);

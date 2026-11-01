@@ -25,7 +25,7 @@ else
 fi
 mkdir -p "$work/macos"
 (cd "$work" && "$zig" build --build-file "$source_dir/build.zig" --cache-dir "$work/.zig-cache" -p "$work/zig-out" \
-  -Demit-xcframework=true -Demit-macos-app=false -Doptimize="$optimize")
+  -Demit-xcframework=true -Demit-macos-app=false -Doptimize="$optimize" -Dsentry=false)
 
 xcframework="$out/GhosttyKit.xcframework"
 mkdir -p "$out"
