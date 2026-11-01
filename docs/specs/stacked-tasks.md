@@ -68,6 +68,8 @@ sequenceDiagram
     Note over C: ready again
 ```
 
+![A new commit on A: B and C are stale on the Shelf](stacked-tasks-stale.png)
+
 - **A stale task gets a message** from `kanna` saying which base moved and what to do: merge its branch, rerun the tests, `kanna task ready`. A task stale only because its base is stale is told to wait, and gets another message once that base is ready again.
 - **Staleness clears only with `kanna task ready`,** which is refused while a base's head isn't in the task's branch (`merge a's branch first: git merge BRANCH`) or while a base is stale itself. So C can't clear its staleness before B has cleared its own.
 - **Shown** as `stale` in `kanna task list` (with what it's behind), `"stale"` in `--json`, and on the row in the Desk view.

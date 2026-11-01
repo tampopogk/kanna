@@ -195,8 +195,10 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 (Some(true) | None, Some("needs-you")) => "needs you".to_string(),
                 (Some(true) | None, Some("working")) => "working".to_string(),
                 _ if t["merged"] == true => "merged".to_string(),
+                _ if listed(&t["stale"]) => "stale".to_string(),
+                _ if t["ready"].is_object() => "ready".to_string(),
                 _ if t["replied"] == true => "replied".to_string(),
-                (Some(false), _) if !ids(&t["waits"]).is_empty() => "blocked".to_string(),
+                (Some(false), _) if !ids(&t["waits"]).is_empty() || t["conflict"].is_string() => "blocked".to_string(),
                 (Some(false), _) => "stopped".to_string(),
                 (_, Some(status)) if status != "exited" => status.to_string(),
                 _ => "running".to_string(),
@@ -210,8 +212,14 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 let named: Vec<String> = t["waits"].as_array().into_iter().flatten().filter_map(|w| w["name"].as_str().map(|n| format!("\"{n}\"")).or_else(|| w["id"].as_str().map(String::from))).collect();
                 Some(named.join(", ")).filter(|w| !w.is_empty() && t["running"] == false).map(|w| format!("waits for {w}"))
             };
+            let conflict = |t: &Value| t["conflict"].as_str().filter(|_| t["running"] == false).map(|_| "its blockers' branches conflict".to_string());
+            let stacked = |t: &Value| match (names(&t["stale"]), names(&t["bases"])) {
+                (stale, _) if !stale.is_empty() => Some(format!("behind {stale}")),
+                (_, bases) if !bases.is_empty() => Some(format!("merges after {bases}")),
+                _ => None,
+            };
             let row = |t: &Value, id: &str, last: Option<String>| -> [String; 4] {
-                let tail: Vec<String> = [agent(t), repo(t), waits(t).or(last)].into_iter().flatten().collect();
+                let tail: Vec<String> = [agent(t), repo(t), waits(t).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last)].into_iter().flatten().collect();
                 [id.into(), t["name"].as_str().unwrap_or("").into(), state(t), tail.join("  ")]
             };
             let desk: Vec<[String; 4]> = tasks.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)))).collect();
@@ -255,6 +263,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
             tilde(reply["folder"].as_str().unwrap_or("?")),
             reply["branch"].as_str().map_or(String::new(), |b| format!(" ({b})"))
         ),
+        Some("ready") => format!("{} is ready at {}{}{}", reply["task"]["id"].as_str().unwrap_or("?"), reply["task"]["ready"]["head"].as_str().map_or("?", |h| &h[..h.len().min(9)]), reply["task"]["ready"]["branch"].as_str().filter(|b| !b.is_empty()).map_or(String::new(), |b| format!(" ({b})")), freed_lines(reply)),
+        Some("unready") => format!("{} isn't ready", reply["task"]["id"].as_str().unwrap_or("?")),
         Some("setup") if reply["tab"].is_string() => format!("{id}'s setup runs again in {} (a Setup tab)", reply["pane"].as_str().unwrap_or("?")),
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
@@ -322,6 +332,14 @@ pub fn task(request: &Value, reply: &Value) -> String {
     }
 }
 
+fn listed(list: &Value) -> bool {
+    list.as_array().is_some_and(|l| !l.is_empty())
+}
+
+fn names(list: &Value) -> String {
+    list.as_array().into_iter().flatten().filter_map(|w| w["name"].as_str().map(|n| format!("\"{n}\"")).or_else(|| w["id"].as_str().map(String::from))).collect::<Vec<_>>().join(", ")
+}
+
 fn ids(list: &Value) -> String {
     list.as_array().map_or(vec![], |l| l.iter().filter_map(|w| w["id"].as_str()).collect::<Vec<_>>()).join(", ")
 }
@@ -349,7 +367,7 @@ pub fn name_out(reply: &mut Value, out: &Value) {
     for task in tasks {
         if let Some(known) = out.as_array().into_iter().flatten().find(|o| o["pane"] == task["id"]) {
             task["task"] = known["id"].clone();
-            for key in ["repo", "merged", "replied"] {
+            for key in ["repo", "merged", "replied", "ready", "stale", "bases"] {
                 if let Some(value) = known.get(key) {
                     task[key] = value.clone();
                 }
@@ -970,6 +988,25 @@ mod status_tests {
 mod blocked_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_stacked_task_lists_as_ready_or_stale_and_says_what_it_merges_after_or_is_behind() {
+        let mark = json!({ "head": "0123456789abcdef", "branch": "screenshot", "at": 1 });
+        let shelf = json!([
+            { "id": "t1", "name": "A", "repo": "/r", "running": false, "waits": [], "ready": mark, "stale": [], "bases": [] },
+            { "id": "t2", "name": "B", "repo": "/r", "running": false, "waits": [], "ready": null, "stale": [{ "id": "t1", "name": "A" }], "bases": [{ "id": "t1", "name": "A" }] },
+            { "id": "t3", "name": "C", "repo": "/r", "running": false, "waits": [], "ready": mark, "stale": [], "bases": [{ "id": "t2", "name": "B" }] },
+            { "id": "t4", "name": "D", "repo": "/r", "running": false, "waits": [], "conflict": "merging t1's branch a conflicts" }
+        ]);
+        let text = task(&json!({ "action": "list", "repo": "/r" }), &json!({ "tasks": [], "shelf": shelf }));
+        assert_eq!(text, "Desk\n(empty)\n\nShelf\nt1  A  ready\nt2  B  stale    behind \"A\"\nt3  C  ready    merges after \"B\"\nt4  D  blocked  its blockers' branches conflict");
+        let ready = task(&json!({ "action": "ready" }), &json!({ "task": { "id": "t1", "ready": mark }, "freed": [{ "id": "t2", "name": "B" }] }));
+        assert_eq!(ready, "t1 is ready at 012345678 (screenshot)\nt2 \"B\" can start now: nothing it waits for is left");
+        assert_eq!(task(&json!({ "action": "unready" }), &json!({ "task": { "id": "t1" } })), "t1 isn't ready");
+        let mut desk = json!({ "tasks": [{ "id": "p1" }] });
+        name_out(&mut desk, &json!([{ "id": "t3", "pane": "p1", "ready": mark, "stale": [], "bases": [{ "id": "t2", "name": "B" }] }]));
+        assert_eq!(desk["tasks"][0]["bases"][0]["name"], "B", "a Desk task's row gets its stack too");
+    }
 
     #[test]
     fn a_blocked_task_lists_as_blocked_with_what_it_waits_for_and_done_names_what_it_frees() {

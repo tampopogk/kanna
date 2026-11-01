@@ -16,6 +16,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var views: [String: JSON] = [:]
     var shelves: [String: [JSON]] = [:]
     var deskMade: [String: [String: Int]] = [:]
+    var deskStacks: [String: [String: String]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
     var identities: [String: String] = [:]
@@ -410,7 +411,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let tasks = deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
             return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
-                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id))
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id))
         }
         return DeskOrder.byRecency(tasks) { $0.status == "needs-you" }
     }
