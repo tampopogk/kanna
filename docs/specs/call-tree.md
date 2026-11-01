@@ -2,7 +2,7 @@
 
 **Status:** designed, not built · **Builds on:** [markdown pane](app-panes.md), [diagram check](diagram-check.md), [code tour](code-tour.md) · **Mockup:** [call-tree.html](../../references/mockups/call-tree.html) · **Why:** agents walking you through a change that crosses processes (CLI, daemon, app) drew the call stack as a mermaid `sequenceDiagram` or `flowchart`, and neither shows calls nested in calls, or which process each runs in
 
-A fenced `calls` block in a markdown doc draws as a call tree: one indented row per call, a coloured lane per process, a hop row where a call crosses into another process, and each row's `file:line` on the right, opening the code there. It's how the `kanna-explain` skill has agents show a change's call stack before commenting on each part.
+A fenced `calls` block in a markdown doc draws as a call tree: one indented row per call, a coloured lane per process, a hop row where a call crosses into another process, and each row's `file:line` on the right, opening the code there. A call stack is the same block with one call a level: the path one request takes through the layers, or a crash's backtrace. It's how the `kanna-explain` skill has agents show a change's calls before commenting on each part.
 
 | Dark, with a comment on a row | Light |
 |---|---|
@@ -40,9 +40,10 @@ kanna-daemon
 
 - **One lane per process,** in the order they first appear, each with its colour from a fixed set; the legend above the rows names them. A process can come back (a reply handled in the CLI again).
 - **Indent is nesting.** A call is a child of the nearest call above it with less indent; tree guides join them, through hop rows and comments. When a call has two or more children they're numbered 1, 2, …, in the order they run.
+- **A call stack is a call tree** with one call a level: it draws the same, with no numbers. A backtrace (a panic, a crash report, `lldb`'s `bt`) goes in as one, innermost call last. A frame outside the repo keeps its own path (absolute, or `~/.cargo/…`): it's drawn dimmed, isn't a link and isn't checked.
 - **Locations are repo-relative** (to the doc's repo). A row shows the location's package (the folder holding `src/`) dimmed, then `file:line`; the full path on hover. A click opens it in a code tab at that line, as `kanna open code PATH:LINE`.
 - **Comments:** `kanna comment DOC:LINE` on a call's source line outlines that row and shows the comment above it, like a comment on code. A walkthrough steps down the tree one row at a time.
-- **Checked** by `kanna diagrams check` and `kanna open md`, with mermaid's: each `FILE:LINE: message` for a path that doesn't exist, a line past the file's end, an indent that jumps more than one level, a call before any process, or a hop not followed by a process.
+- **Checked** by `kanna diagrams check` and `kanna open md`, with mermaid's: each `FILE:LINE: message` for a repo path that doesn't exist, a line past the file's end, an indent that jumps more than one level, a call before any process, or a hop not followed by a process.
 - **In a [markdown diff](markdown-diff.md),** a changed block shows before and after, like a diagram.
 
 ## 3. How it's built
