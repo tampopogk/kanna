@@ -53,6 +53,54 @@ struct MarkdownDiffTests {
         #expect(MarkdownPaneView.changes(in: text).count == 1)
     }
 
+    @Test func aTypoFixStaysWordByWord() {
+        let old = "Runners start tasks oldest first, a few at a time (3 by defualt). Each gets its own worktree.\n"
+        let new = "Runners start tasks oldest first, a few at a time (3 by default). Each gets its own worktree.\n"
+        let text = render(old, new)
+        #expect(text.string == "Runners start tasks oldest first, a few at a time (3 by defualtdefault). Each gets its own worktree.")
+        #expect(runs(text, .strikethroughStyle) == ["defualt"])
+        #expect(runs(text, .backgroundColor) == ["default"])
+    }
+
+    @Test func aRewrittenSentenceShowsWhole() {
+        let old = "A run belongs to one repo. Its stage runs in a worktree of the run's branch, and its agent sees only that. Its runs show on the Run tab. Runs start from the task's terminal and end by handing back.\n"
+        let new = "A run belongs to one repo. Each stage gets its own worktree, branched from the run's, so stages never share files. Its runs show on the Run tab. Runs start from the task's terminal and end by handing back.\n"
+        let text = render(old, new)
+        #expect(runs(text, .strikethroughStyle) == ["Its stage runs in a worktree of the run’s branch, and its agent sees only that."])
+        #expect(runs(text, .backgroundColor) == ["Each stage gets its own worktree, branched from the run’s, so stages never share files."])
+        #expect(text.string.hasPrefix("A run belongs to one repo. Its stage"))
+        #expect(text.string.contains("sees only that. Each stage"))
+        #expect(text.string.hasSuffix("share files. Its runs show on the Run tab. Runs start from the task’s terminal and end by handing back."))
+        #expect(MarkdownPaneView.changes(in: text).count == 1)
+    }
+
+    @Test func aRemovedLastSentenceStaysInItsParagraph() {
+        let text = render("Kept as it was. Gone now.\n\nNext.\n", "Kept as it was.\n\nNext.\n")
+        #expect(text.string == "Kept as it was. Gone now.\nNext.")
+        #expect(runs(text, .strikethroughStyle) == [" Gone now."])
+    }
+
+    @Test func aRewrittenParagraphShowsOldAboveNew() {
+        let old = "- **Driven by events, not a clock:** a stage ends when its agent's turn ends ([Shelf runners](shelf-runners.md#2-how-its-built): its own report, or idle for 3s; the daemon then reads the answer and quits the agent as a runner would), its command exits (the keeper's exit code), you answer, or its `within` passes. The runners' tick (every 2s) starts the next stage, so a run that was waiting moves within 2s of your answer.\n"
+        let new = "- **Driven by events, not a clock:** a stage ends when its agent reports it's done (`kanna run done`, with its verdict and answer; the daemon then quits the agent), its command exits (the keeper's exit code), you answer, or its `within` passes. A stage's agent that needs something from you says so (`kanna run need TEXT`), and the run waits. Runs never guess from the screen: no turn's-end detection, no idle timer, and they share nothing with [Shelf runners](shelf-runners.md). The runners' tick (every 2s) starts the next stage, so a run that was waiting moves within 2s of your answer.\n"
+        #expect(outline(diff(old, new)) == ["~ UnorderedList [~ ListItem [~ Paragraph]]"])
+        let text = render(old, new)
+        let lines = text.string.components(separatedBy: "\n")
+        #expect(lines.count == 2)
+        #expect(lines[0].hasSuffix("Driven by events, not a clock: a stage ends when its agent’s turn ends (Shelf runners: its own report, or idle for 3s; the daemon then reads the answer and quits the agent as a runner would), its command exits (the keeper’s exit code), you answer, or its within passes. The runners’ tick (every 2s) starts the next stage, so a run that was waiting moves within 2s of your answer."))
+        #expect(lines[1] == "Driven by events, not a clock: a stage ends when its agent reports it’s done (kanna run done, with its verdict and answer; the daemon then quits the agent), its command exits (the keeper’s exit code), you answer, or its within passes. A stage’s agent that needs something from you says so (kanna run need TEXT), and the run waits. Runs never guess from the screen: no turn’s-end detection, no idle timer, and they share nothing with Shelf runners. The runners’ tick (every 2s) starts the next stage, so a run that was waiting moves within 2s of your answer.")
+        #expect(runs(text, .strikethroughStyle).map { $0.hasPrefix("Driven by events") } == [true])
+        let newStart = text.length - (lines[1] as NSString).length
+        #expect(text.attribute(.backgroundColor, at: newStart, effectiveRange: nil) as? NSColor == MarkdownTheme.addedTint)
+        #expect(text.attribute(.backgroundColor, at: text.length - 1, effectiveRange: nil) as? NSColor == MarkdownTheme.addedTint)
+        #expect(text.attribute(.strikethroughStyle, at: newStart, effectiveRange: nil) == nil)
+        var kinds = Set<String>()
+        let body = (text.string as NSString).range(of: "Driven").location
+        text.enumerateAttribute(.kannaChange, in: NSRange(location: body, length: text.length - body)) { value, _, _ in kinds.insert(value as? String ?? "none") }
+        #expect(kinds == [ChangeKind.changed.rawValue])
+        #expect(MarkdownPaneView.changes(in: text).count == 1)
+    }
+
     @Test func anUnrelatedParagraphIsRemovedAndAdded() {
         #expect(outline(diff("Alpha beta gamma delta.\n", "Something else entirely here.\n")) == ["- Paragraph", "+ Paragraph"])
     }
