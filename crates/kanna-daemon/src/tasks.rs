@@ -1880,10 +1880,7 @@ impl Tasks {
             (id, entry.repo, Some(program(&entry.agent).to_string()))
         };
         let mode = if from == USER { None } else { who(args).and_then(|pane| self.permissions(pane)) };
-        let message = self.db.put_message(&recipient, &repo, &from, text, mode).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
-        log!("kanna-daemon: a message from {from} waits for {recipient}");
-        self.waiting.borrow_mut().push(message.clone());
-        self.refill();
+        let message = self.queue(&recipient, &repo, &from, text, mode)?;
         let pane = self.recipient_pane(&message, &self.planners());
         let state = match &pane {
             Some(pane) => self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
@@ -1901,13 +1898,44 @@ impl Tasks {
         Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state)), ("warning".to_string(), opt(warning.as_deref()))]))
     }
 
-    pub fn post(&self, from: &str, repo: &str, text: &str) -> Result<i64, String> {
-        let message = self.db.put_message(PLANNER, repo, from, text, None).map_err(|error| format!("couldn't save the message in {}: {error}", db::FILE))?;
-        log!("kanna-daemon: a message from {from} waits for {PLANNER} of {repo}");
-        let id = message.id;
-        self.waiting.borrow_mut().push(message);
+    fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>) -> Result<Message, KmuxError> {
+        let message = self.db.put_message(recipient, repo, from, text, mode).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
+        log!("kanna-daemon: a message from {from} waits for {recipient}");
+        self.waiting.borrow_mut().push(message.clone());
         self.refill();
+        Ok(message)
+    }
+
+    pub fn recipient(&self, to: &str) -> Result<String, KmuxError> {
+        if to == PLANNER {
+            return Ok(PLANNER.to_string());
+        }
+        let id = self.resolve(to)?.ok_or_else(|| not_found(to))?;
+        if !self.is_open(&id) {
+            return Err(KmuxError::new("done", format!("{} is done, so it takes no messages", self.short(&id))));
+        }
         Ok(id)
+    }
+
+    pub fn post(&self, recipient: &str, repo: Option<&str>, from: &str, text: &str) -> Result<i64, KmuxError> {
+        let repo = match recipient {
+            PLANNER => repo.map(String::from).ok_or_else(|| bad("which repo's planner?"))?,
+            id => {
+                if !self.is_open(id) {
+                    return Err(KmuxError::new("done", format!("{} is done, so it takes no messages", self.short(id))));
+                }
+                self.known(id).ok_or_else(|| not_found(id))?.repo
+            }
+        };
+        Ok(self.queue(recipient, &repo, from, text, None)?.id)
+    }
+
+    pub fn waiting(&self, message: i64) -> bool {
+        self.waiting.borrow().iter().any(|m| m.id == message)
+    }
+
+    pub fn label_of(&self, recipient: &str) -> String {
+        if recipient == PLANNER { recipient.to_string() } else { self.short(recipient) }
     }
 
     fn messages(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -2016,7 +2044,7 @@ impl Tasks {
         let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
         let text = messages::prompt(&list.iter().map(|m| (named(&m.sender), m.text.clone())).collect::<Vec<_>>());
         let theirs = self.permissions(&pane);
-        let modes: Option<Vec<&str>> = list.iter().map(|m| if m.sender == USER { theirs } else { m.mode.as_deref() }).collect();
+        let modes: Option<Vec<&str>> = list.iter().map(|m| if messages::yours(&m.sender) { theirs } else { m.mode.as_deref() }).collect();
         let mode = modes.map(|modes| if modes.iter().all(|mode| *mode == messages::BYPASS) { messages::BYPASS } else { messages::PROMPTING });
         self.delivering.borrow_mut().insert(pane.clone());
         let token = self.next.get() + 1;
