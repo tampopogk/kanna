@@ -5,5 +5,7 @@ target/
 .worktrees/
 /.kanna/*
 !/.kanna/config.json
+!/.kanna/pipelines/
+!/.kanna/prompts/
 .DS_Store
 /build.local.json

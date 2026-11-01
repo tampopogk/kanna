@@ -279,36 +279,44 @@ where() {
   moved
 }
 
+mine="${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
+
+current() {
+  [ -f "$1" ] || return 1
+  case $(jq -r '.version // empty' "$1" 2>/dev/null) in
+    ''|1) ;;
+    *) return 1 ;;
+  esac
+}
+
 setting() {
-  top=$(git rev-parse --show-toplevel 2>/dev/null)
-  for file in ${top:+"$top/.kanna/config.json"} "$HOME/.kanna-v4/config.json"; do
-    [ -f "$file" ] || continue
-    version=$(jq -r '.version // empty' "$file" 2>/dev/null)
-    case $version in
-      ''|1) ;;
-      *) continue ;;
-    esac
-    value=$(jq -er '.planning.agent // empty' "$file" 2>/dev/null) && [ -n "$value" ] && { echo "$value"; return; }
+  key=$1
+  shift
+  for file in "$@"; do
+    current "$file" || continue
+    value=$(jq -er --arg key "$key" 'getpath($key | split(".")) // empty' "$file" 2>/dev/null) && [ -n "$value" ] && { echo "$value"; return; }
   done
 }
 
 save() {
-  file="$1/.kanna/config.json"
-  [ -L "$1/.kanna" ] || [ -L "$file" ] && return 1
-  mkdir -p "$1/.kanna" || return 1
+  file=$1 section=${2%%.*} key=${2#*.}
+  dir=$(dirname "$file")
+  [ -L "$dir" ] || [ -L "$file" ] && return 1
+  mkdir -p "$dir" || return 1
   if [ ! -s "$file" ]; then
-    printf '{\n  "version": 1,\n  "planning": {\n    "agent": "%s"\n  }\n}\n' "$2" >"$file"
+    printf '{\n  "version": 1,\n  "%s": {\n    "%s": "%s"\n  }\n}\n' "$section" "$key" "$3" >"$file"
     return
   fi
-  json=$(jq --arg agent "$2" '.planning.agent = $agent' "$file") && printf '%s\n' "$json" >"$file"
+  current "$file" || return 1
+  json=$(jq --arg key "$2" --arg value "$3" 'setpath($key | split("."); $value)' "$file") && printf '%s\n' "$json" >"$file"
 }
 
 nl='
 '
 installed=
-while [ $# -ge 3 ]; do
-  command -v "$2" >/dev/null 2>&1 && installed="$installed$1	$3$nl"
-  shift 3
+while [ $# -ge 4 ]; do
+  command -v "$2" >/dev/null 2>&1 && installed="$installed$1	$3	$4$nl"
+  shift 4
 done
 
 if [ -n "$kanna" ]; then
@@ -334,7 +342,8 @@ fi
 
 count=$(printf '%s' "$installed" | grep -c .)
 chosen=
-wanted=$(setting)
+top=$(git rev-parse --show-toplevel 2>/dev/null)
+wanted=$(setting planning.agent ${top:+"$top/.kanna/config.json"} "$mine")
 if [ -n "$wanted" ]; then
   chosen=$(printf '%s' "$installed" | awk -F '\t' -v n="$wanted" '$1 == n { print; exit }')
   [ -n "$chosen" ] || say "planning.agent is $wanted, which isn't installed."
@@ -358,9 +367,8 @@ if [ -z "$chosen" ]; then
   done
   chosen=$(printf '%s' "$installed" | sed -n "${answer}p")
   name=${chosen%%	*}
-  top=$(git rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$top" ]; then
-    if save "$top" "$name"; then
+    if save "$top/.kanna/config.json" planning.agent "$name"; then
       say "$name plans $(basename "$top") from now on (planning.agent in .kanna/config.json)."
     else
       say "Couldn't write $top/.kanna/config.json."
@@ -368,6 +376,23 @@ if [ -z "$chosen" ]; then
   fi
   echo
 fi
+
+prompts=$(setting agents.prompts "$mine")
+case $prompts in
+  ask|skip) ;;
+  *)
+    ask "Let Kanna's agents work without permission prompts? They'll run commands and edit files without asking. [y/N]"
+    case $answer in
+      [yY]*) prompts=skip how="work without permission prompts" ;;
+      *) prompts=ask how="ask permission" ;;
+    esac
+    if save "$mine" agents.prompts "$prompts"; then
+      say "Kanna's agents $how from now on (agents.prompts in $(tilde "$mine"))."
+    else
+      say "Couldn't write $(tilde "$mine")."
+    fi
+    echo ;;
+esac
 
 planner() {
   [ -n "$kanna" ] && [ -n "$KANNA_TERMINAL" ] || return 1
@@ -378,6 +403,10 @@ planner() {
 
 command=${chosen#*	}
 command=${command%"$nl"}
+case $prompts in
+  skip) command=${command#*	} ;;
+  *) command=${command%%	*} ;;
+esac
 name=${chosen%%	*}
 reply=$(planner "$name" start)
 given=$(printf '%s' "$reply" | jq -er '.command // empty' 2>/dev/null) && command=$given

@@ -46,12 +46,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var focusing: String?
     private var focusCalls = 0
     private var rendering = false
+    private var refreshDue = false
+    private var layoutDue = false
     var paneMenu: NSMenu?
     var testingDrag = false
     var agentStatuses = AgentStatuses()
     var folders: [String: String] = [:]
     private var terminalIDs: [String: String] = [:]
-    private var names: [String: String] = [:]
+    private(set) var names: [String: String] = [:]
     var shelf: [JSON] = []
     var starting: Set<String> = []
     let toasts = ToastStack()
@@ -173,12 +175,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, let id = panes.id(of: view) else { return }
             closePane(id)
         }
+        commands.prepare = { [weak self] in self?.refreshIfDue() }
+        let due = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.refreshIfDue() }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), due, .commonModes)
         installAppCommands()
         installCommands()
         installScreenshot()
         installAgentStatus()
         installDesk()
         installToasts()
+        installCrashCommands()
         Darwin.signal(SIGALRM, SIG_DFL)
         for signal in [SIGTERM, SIGINT, SIGHUP] {
             Darwin.signal(signal) { _ in alarm(5) }
@@ -219,6 +227,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         for id in controllers.keys { recordFrame(id) }
         physical.save()
+        daemon?.goodbye()
         panes?.stopAll()
         links?.stop()
         daemon?.stop()
@@ -261,7 +270,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         views[machine ?? ""] = view
         published = merged()
         restate()
-        layoutChanged()
+        layoutDue = true
     }
 
     func merged() -> JSON {
@@ -440,11 +449,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         learn(pane)
         if let id = pane["id"]?.string { panes.restarted(id) }
         contents.start(pane)
-        refresh()
+        refreshSoon()
     }
 
     private func learn(_ pane: JSON) {
-        if learn(records: [pane]) { refresh() }
+        if learn(records: [pane]) { refreshSoon() }
     }
 
     @discardableResult
@@ -536,7 +545,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .object(fields)
     }
 
+    func refreshSoon() {
+        refreshDue = true
+    }
+
+    func refreshIfDue() {
+        if layoutDue {
+            layoutChanged()
+        } else if refreshDue {
+            refresh()
+        }
+    }
+
     func layoutChanged() {
+        layoutDue = false
         guard daemon != nil else { return }
         refresh()
         showToastPane()
@@ -546,6 +568,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func refresh() {
+        refreshDue = false
         guard daemon != nil else { return }
         Perf.measure(.render, "refresh") {
             rendering = true
@@ -560,6 +583,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         state = view
         defer {
             statusSeen()
+            notePanes()
             placeToasts()
         }
         let ids = Set(windows.compactMap { $0["id"]?.string })
@@ -577,12 +601,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let controller = controllers[id] ?? makeController(id, window)
             let docked = window["dock"]?["pane"]?.string
             let lead = window["lead"]?["pane"]?.string
-            if let root = docked.flatMap(projectRoot) ?? lead.flatMap(projectRoot) {
-                controller.projectRoot = root
-            } else if controller.projectRoot == nil, let folder = window["project"]?.string {
-                controller.projectRoot = rootLocation(folder)
-            }
-            if window["desk"]?.bool == true, let root = controller.projectRoot { deskMoved(id, to: root) }
+            if let root = lead.flatMap(projectRoot) { deskMoved(id, to: root) }
+            controller.projectRoot = physical.desk(id).flatMap(deskProject)
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.deskTasks = mine
             controller.active = docked == nil ? window["active"]?.string : nil

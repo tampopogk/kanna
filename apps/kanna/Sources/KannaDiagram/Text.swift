@@ -16,10 +16,26 @@ enum LabelText {
         var text = label.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
         text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: "\\*\\*|__|`", with: "", options: .regularExpression)
-        for (entity, character) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
-            text = text.replacingOccurrences(of: entity, with: character)
+        return decodeEntities(text).components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    static let namedEntities = ["lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": "\u{A0}", "amp": "&", "hash": "#", "semi": ";",
+                                "colon": ":", "comma": ",", "lpar": "(", "rpar": ")", "rarr": "→", "larr": "←", "harr": "↔", "uarr": "↑",
+                                "darr": "↓", "rArr": "⇒", "lArr": "⇐", "hellip": "…", "mdash": "—", "ndash": "–", "middot": "·",
+                                "bull": "•", "times": "×", "check": "✓", "hearts": "♥", "copy": "©", "deg": "°", "plusmn": "±"]
+
+    static func decodeEntities(_ label: String) -> String {
+        let text = label.replacingOccurrences(of: "\u{FB02}\u{B0}\u{B0}", with: "&#").replacingOccurrences(of: "\u{FB02}\u{B0}", with: "&")
+            .replacingOccurrences(of: "\u{B6}\u{DF}", with: ";")
+        return text.replacing(/&(#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);/) { match in
+            let name = String(match.1)
+            if name.hasPrefix("#") {
+                let hex = name.dropFirst().first.map { $0 == "x" || $0 == "X" } ?? false
+                let code = UInt32(name.dropFirst(hex ? 2 : 1), radix: hex ? 16 : 10)
+                return code.flatMap(Unicode.Scalar.init).map { String(Character($0)) } ?? String(match.0)
+            }
+            return namedEntities[name] ?? String(match.0)
         }
-        return text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     static func width(_ line: String, font: CTFont) -> CGFloat {
