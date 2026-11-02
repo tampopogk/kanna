@@ -419,9 +419,10 @@ struct MarkdownRenderer {
     }
 
     private mutating func table(_ table: Markdown.Table, rows: [DiffEntry], _ context: Context, into out: NSMutableAttributedString) {
-        let grid = NSTextTable()
+        let grid = MarkdownTable()
         grid.numberOfColumns = max(1, rows.map { $0.node.childCount }.max() ?? 1)
-        grid.layoutAlgorithm = .automaticLayoutAlgorithm
+        grid.layoutAlgorithm = .fixedLayoutAlgorithm
+        var natural = [CGFloat](repeating: 0, count: grid.numberOfColumns)
         grid.collapsesBorders = true
         grid.hidesEmptyCells = false
         let alignments = table.columnAlignments
@@ -456,12 +457,13 @@ struct MarkdownRenderer {
                     return text
                 }
                 let now = column < cells.count ? cells[column] : nil
+                var text = cell(now)
                 if case .changed = row {
                     let was = column < before.count ? before[column] : nil
-                    out.append(Self.compose(cell(was), cell(now)) ?? cell(now))
-                } else {
-                    out.append(cell(now))
+                    text = Self.compose(cell(was), text) ?? text
                 }
+                if column < natural.count { natural[column] = max(natural[column], Self.naturalWidth(text)) }
+                out.append(text)
             }
             let range = NSRange(location: rowStart, length: out.length - rowStart)
             switch row {
@@ -471,7 +473,15 @@ struct MarkdownRenderer {
             case .same: break
             }
         }
+        grid.natural = natural
         out.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 4), .paragraphStyle: paragraph(context, after: 6)]))
+    }
+
+    static func naturalWidth(_ cell: NSAttributedString) -> CGFloat {
+        let text = NSMutableAttributedString(attributedString: cell)
+        text.removeAttribute(.paragraphStyle, range: NSRange(location: 0, length: text.length))
+        let size = text.boundingRect(with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude), options: [.usesLineFragmentOrigin])
+        return ceil(size.width) + MarkdownTable.inset * 2 + 4
     }
 
     private mutating func inline(_ children: some Sequence<any Markup>, _ base: [NSAttributedString.Key: Any]) -> NSMutableAttributedString {
