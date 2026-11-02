@@ -576,10 +576,15 @@ impl Visit {
     }
 
     fn label(&self) -> String {
-        match &self.row.instance {
-            Some(instance) => format!("{} · {instance}", self.row.stage),
-            None => self.row.stage.clone(),
-        }
+        label(&self.row)
+    }
+}
+
+fn label(row: &StageRow) -> String {
+    match (&row.instance, row.kind.as_str()) {
+        (Some(instance), "score") if instance != "before" && instance != "after" => format!("{} · {instance} · score", row.stage),
+        (Some(instance), _) => format!("{} · {instance}", row.stage),
+        (None, _) => row.stage.clone(),
     }
 }
 
@@ -1640,7 +1645,7 @@ impl Runs {
             if let Ok(row_id) = this.db.put_stage(&stage_row) {
                 stage_row.id = row_id;
             }
-            let label = stage_row.instance.as_ref().map_or_else(|| stage_row.stage.clone(), |i| format!("{} · {i}", stage_row.stage));
+            let label = label(&stage_row);
             log!("kanna-daemon: {id} starts {label} (visit {}) in {pane}", stage_row.visit);
             let event = json!({ "stage": stage_row.stage, "visit": stage_row.visit, "instance": opt(stage_row.instance.as_deref()), "kind": stage_row.kind, "terminal": pane });
             this.update(id, |live| {
@@ -1675,7 +1680,7 @@ impl Runs {
         if let Err(error) = self.db.put_stage(&row) {
             log!("kanna-daemon: couldn't save {id}'s {} visit: {error}", visit.label());
         }
-        log!("kanna-daemon: {id}: {} ended {}{}", visit.label(), ended.shown, score.map_or(String::new(), |s| format!(", score {s}")));
+        log!("kanna-daemon: {id}: {}'s visit ended {}{}", visit.label(), ended.shown, score.map_or(String::new(), |s| format!(", score {s}")));
         self.update(id, |live| {
             live.visits.retain(|v| v.n != n);
             let step = live.doc.step.as_mut()?;
