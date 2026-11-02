@@ -16,6 +16,7 @@ description: Use when the user asks to draft, write, or update a spec, design do
 
 ## Writing a spec
 Write in plain English.
+State what a thing does. Don't define it by what it isn't ("the daemon, not an agent", "driven by events, not a clock"); a contrast earns its place only where a reader would otherwise assume the opposite, and then as its own sentence, or under Rejected.
 Start with what it is and why, in a few lines, so a reader sees the high-level items at a glance and can dig further in for the details.
 Include a table of contents when the spec has more than a few sections.
 Include non-common technical terms in a glossary.
