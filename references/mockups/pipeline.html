@@ -251,7 +251,7 @@ function graphSVG(state, taken) {
         `<text class="elabel loop" x="${(cx(A) + cx(B)) / 2}" y="${y - 4}" text-anchor="middle">${e.label}</text>`;
     }
     if (e.back) return `<path class="${cls}" d="M${A.x} ${A.y + H / 2} L${B.x + B.w / 2 - 6} ${A.y + H / 2} L${B.x + B.w / 2 - 6} ${B.y + H + 3}"/>` +
-      `<text class="elabel" x="${A.x - 8}" y="${A.y + H / 2 - 6}" text-anchor="end">then check again</text>`;
+      `<text class="elabel" x="${B.x + B.w / 2 - 14}" y="${A.y + H / 2 + 4}" text-anchor="end">then check again</text>`;
     // loop into fix (below): straight down, or down to a level, across, then down
     const sx = cx(A), tx = cx(B) + (e.dx || 0), ty = B.y;
     const path = e.level
@@ -274,7 +274,7 @@ function graphSVG(state, taken) {
   return `<svg viewBox="0 0 880 205"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="context-stroke"/></marker></defs>` +
     EDGES.map(seg).join("") + NODES.map(node).join("") + `</svg>`;
 }
-const LEGEND = `<div class="legend"><span><i></i>agent session</span><span><i class="cmd"></i>command</span><span><i class="ask"></i>asks you</span><span><i style="background:var(--panel2)"></i>merge</span><span><i class="ok"></i>passed</span><span><i class="bad"></i>failed</span><span><i class="now"></i>running</span><span><i class="wait"></i>waiting on you</span><span>×N visits</span></div>`;
+const LEGEND = `<div class="legend"><span><i></i>agent session</span><span><i class="cmd"></i>command</span><span><i class="ok"></i>passed</span><span><i class="bad"></i>failed</span><span><i class="now"></i>running</span><span><i class="wait"></i>waiting on you</span><span>×N visits</span></div>`;
 
 // ---------- scene: definition ----------
 function defineHTML() {
