@@ -4670,8 +4670,11 @@ assert v[0]["doc"]["answer"] == "Built it.\n", v[0]["doc"]
 assert all(x["machine"] for x in v)' "$shown" || { echo "pipeline_run: the visits were: $shown"; return 1; }
   check test "$(git -C "$repo" rev-parse main)" == "$main" || { echo "pipeline_run: the run changed main"; git -C "$repo" log --oneline -3 main; return 1; }
   local folder="$repo/.kanna-worktrees/$task"
-  check test "$(git -C "$folder" rev-parse HEAD)" == "$(git -C "$repo" rev-parse "run/$task-1")" || { echo "pipeline_run: the task's branch wasn't fast-forwarded to the run's"; return 1; }
-  check test "$(grep -c visit "$folder/built.txt")" -eq 2 || { echo "pipeline_run: the task's worktree didn't move to the run's work"; return 1; }
+  check test "$(git -C "$folder" rev-parse HEAD)" == "$main" || { echo "pipeline_run: the hand-back moved the task's branch"; return 1; }
+  check test ! -e "$folder/built.txt" || { echo "pipeline_run: the hand-back changed the task's worktree"; return 1; }
+  check test "$(git -C "$repo" show "run/$task-1:built.txt" | grep -c visit)" -eq 2 || { echo "pipeline_run: the run's branch doesn't have its work"; return 1; }
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from messages where sender = '$run' and text like 'handed back: 4 visits of 2 stages%run/$task-1 is ready: take it with \`git merge --ff-only run/$task-1\` in your worktree%'")" -eq 1 || { echo "pipeline_run: the task wasn't told how to take the run's branch"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select text from messages where sender = '$run'"; return 1; }
+  git -C "$folder" merge -q --ff-only "run/$task-1" || { echo "pipeline_run: the task's agent couldn't take the run's branch"; return 1; }
   check test ! -d "$worker" || { echo "pipeline_run: the worker's worktree is still there"; return 1; }
   check wait_for 30 eval 'term="$(held)"; [[ "$term" != - ]] && shows "$term" "peer: \[message from $run\] handed back: 4 visits of 2 stages"' || { echo "pipeline_run: the task didn't get the run's message"; kanna read "$(held)"; (cd "$repo" && kanna task messages "$task"); return 1; }
   local events; events="$(kanna run log "$run" --json | python3 -c 'import json, sys; print(" ".join(e["what"] for e in json.load(sys.stdin)["events"]))')"
@@ -4692,7 +4695,8 @@ assert all(x["machine"] for x in v)' "$shown" || { echo "pipeline_run: the visit
   check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from messages where sender = '$second' and text like 'quiet''s turn ended without it reporting%Not sure what to do.%'")" -eq 1 || { echo "pipeline_run: the task wasn't told the quiet stage stopped, with its screen"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select text from messages where sender = '$second'"; return 1; }
   check wait_for 20 resumed 'mock: run "$KANNA_CLI" run done' || { echo "pipeline_run: the quiet stage didn't resume: $answered"; return 1; }
   check wait_for 30 eval '[[ "$(runs state)" == "done done" ]]' || { echo "pipeline_run: the resumed run didn't hand back: $(runs state) $(runs why)"; kanna run show "$second"; tail -20 "$out/daemon.log"; return 1; }
-  check test "$(cat "$folder/colour.txt")" == blue || { echo "pipeline_run: the resumed stage's work didn't reach the task"; return 1; }
+  check test "$(git -C "$repo" show "run/$task-2:colour.txt")" == blue || { echo "pipeline_run: the resumed stage's work isn't on the run's branch"; return 1; }
+  check test ! -e "$folder/colour.txt" || { echo "pipeline_run: the second hand-back changed the task's worktree"; return 1; }
   python3 -c 'import json, sys
 v = json.loads(sys.argv[1])["visits"]
 assert [(x["stage"], x["verdict"]) for x in v] == [("needy", "done"), ("quiet", "done")], v

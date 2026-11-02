@@ -1319,18 +1319,8 @@ impl Runs {
 
     fn hand_back(self: &Rc<Self>, id: &str) {
         let Some((row, doc)) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| (l.row.clone(), l.doc.clone())) else { return };
-        let folder = self.tasks.upgrade().and_then(|t| t.entry(&row.task)).and_then(|e| e.folder);
-        let note = match folder.as_deref().map(Path::new) {
-            None => format!("the task has no worktree, so {} is there for you to merge", row.branch),
-            Some(folder) => match git(folder, &["status", "--porcelain", "--untracked-files=no"]) {
-                Ok(changes) if !changes.is_empty() => format!("your worktree has changes, so it's left as it is: `git merge --ff-only {}` when you're ready", row.branch),
-                Err(error) => format!("git status failed in your worktree ({error}), so it's left as it is: `git merge --ff-only {}`", row.branch),
-                Ok(_) => match git(folder, &["merge", "--ff-only", &row.branch]) {
-                    Ok(_) => format!("your branch is fast-forwarded to {}", row.branch),
-                    Err(_) => format!("your branch has moved since the run started, so it's left as it is: merge {} yourself", row.branch),
-                },
-            },
-        };
+        let branch = &row.branch;
+        let note = format!("{branch} is ready: take it with `git merge --ff-only {branch}` in your worktree, or look first with `git log HEAD..{branch}` and `git diff HEAD...{branch}`");
         let worker = Path::new(&doc.worker);
         if worker.is_dir() {
             if let Err(error) = git(Path::new(&row.repo), &["worktree", "remove", &doc.worker]) {
@@ -1351,7 +1341,7 @@ impl Runs {
             None
         });
         let _ = self.db.run_event(id, "handed_back", Some("daemon"), &json!({ "note": note }));
-        self.tell(id, &format!("handed back: {summary}. {note}; review it there and merge it as any task's work. `kanna run show {id}` has its visits."));
+        self.tell(id, &format!("handed back: {summary}. {note}. `kanna run show {id}` has its visits."));
     }
 
     fn tell(&self, id: &str, text: &str) {
