@@ -74,6 +74,7 @@ sequenceDiagram
 
 | The receiver has | Then |
 |---|---|
+| the task's branch is this clone's default branch, or the one its main checkout is on | refused: `B is this clone's own branch, not a task's` |
 | nothing of that name | a new worktree on a new branch at the WIP commit |
 | the branch, at the task's commit before the move or behind it | fast-forwarded to the WIP commit, and a worktree made on it |
 | the branch, not containing the task's base | refused: `this clone's branch B (at X) isn't this task's: it doesn't contain the task's base Y` |
@@ -142,5 +143,5 @@ stateDiagram-v2
 - Claude's and Codex's transcripts only: not Claude's per-session folder (subagents, large tool results), compacted history beyond the one file, attachments, or opencode and agy.
 - Ignored files (builds, `node_modules`), Git LFS objects and submodules don't move; the repo's `tasks.setup` runs on the receiver as for any first start there.
 - One task at a time per move; the CLI moves a Shelf task, not a Desk one, and the app has no gesture for it yet.
-- A forged epoch from a paired machine isn't checked beyond the peer log's admission, as for grants: your machines trust each other. What a peer sends is still checked where it becomes a path or a command: task IDs, branch names, transcript names, and tabs (no commands, paths only inside the worktree, web pages only http and https).
+- A forged epoch from a paired machine isn't checked beyond the peer log's admission, as for grants: your machines trust each other. What a peer sends is still checked where it becomes a path or a command: task IDs, branch names, transcript names, and tabs (no commands, paths only inside the worktree and without `..`, web pages only http and https, a diff's arguments only revisions, `--merge-base`, `--cached` and `--staged`).
 - The handoff costs one agent turn per move.

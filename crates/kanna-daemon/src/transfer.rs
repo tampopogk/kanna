@@ -149,6 +149,11 @@ pub fn unbundle(repo: &Path, id: &str, bundle: &Path, name: &str, branch: &str, 
         return Err(format!("the bundle's branch is at {fetched}, not {}", packed.wip));
     }
     let refname = format!("refs/heads/{branch}");
+    let default = git(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).ok().and_then(|d| d.split_once('/').map(|(_, b)| b.to_string())).unwrap_or_else(|| "main".into());
+    if branch == default || git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok().as_deref() == Some(branch) {
+        let _ = git(repo, &["update-ref", "-d", &private]);
+        return Err(format!("{branch} is this clone's own branch, not a task's"));
+    }
     let tip = git(repo, &["rev-parse", "--verify", "--quiet", &refname]).ok();
     if let Some(tip) = &tip {
         if *tip != packed.wip && !contains(&packed.pre, tip) {
@@ -490,6 +495,16 @@ mod tests {
         let (file, packed, base) = moved(&origin, &folder, &other);
         let refused = unbundle(&other, "t8", &file, "task-0000beef", "fix-notes", &packed, Some(&base)).unwrap_err();
         assert!(refused.contains("uncommitted changes of its own"), "{refused}");
+
+        let (origin, other, folder) = sender_and_receiver();
+        let mut main = pack(&folder, "task-0000beef").unwrap();
+        main.branch = "main".into();
+        let file = origin.join("main.bundle");
+        bundle(&folder, "fix-notes", &heads(&other), &file).unwrap();
+        let before = branch_at(&other, "main");
+        let refused = unbundle(&other, "t9", &file, "task-0000beef", "main", &main, None).unwrap_err();
+        assert!(refused.contains("this clone's own branch"), "{refused}");
+        assert_eq!(branch_at(&other, "main"), before);
         assert_eq!(fs::read_to_string(mine.join("tracked.txt")).unwrap(), "local edit\n", "nothing is overwritten");
     }
 

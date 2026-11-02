@@ -697,13 +697,19 @@ impl Tasks {
         let Some(core) = self.core.upgrade() else { return };
         for tab in tabs {
             let mut args = moved_path(tab, from, to);
-            let inside = |key: &str| string(&args, key).is_none_or(|path| path == to || path.starts_with(&format!("{to}/")));
+            let inside = |key: &str| string(&args, key).is_none_or(|path| (path == to || path.starts_with(&format!("{to}/"))) && !Path::new(path).components().any(|c| c == std::path::Component::ParentDir));
             let kind = string(&args, "type").unwrap_or("?").to_string();
             if !["term", "md", "code", "diff", "web"].contains(&kind.as_str()) || !inside("path") || !inside("cwd") || (kind == "web" && !string(&args, "url").is_some_and(|u| u.starts_with("http://") || u.starts_with("https://"))) {
                 continue;
             }
             if let Some(fields) = args.as_object_mut() {
                 fields.remove("cmd");
+                if let Some(Value::Array(diff)) = fields.get("args") {
+                    let safe = diff.iter().all(|a| a.as_str().is_some_and(|a| ["--merge-base", "--cached", "--staged"].contains(&a) || !a.starts_with('-')));
+                    if !safe {
+                        fields.remove("args");
+                    }
+                }
             }
             args["from"] = json!(pane);
             args["tab"] = json!(true);
