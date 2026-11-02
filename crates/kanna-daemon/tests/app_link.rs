@@ -39,11 +39,11 @@ fn an_echo_is_not_held_behind_another_terminals_flood() {
     let typed = instance.open("typed", Some("exec cat"));
     let mut app = instance.app();
     app.acks = false;
-    for pane in [&flood, &typed] {
-        app.tell("attach", json!({"terminal": pane}));
-        app.until("the view to start", |m| is(m, "snapshot", pane));
-    }
+    app.tell("attach", json!({"terminal": flood}));
+    app.until("the flood's view to start", |m| is(m, "snapshot", &flood));
     app.until("the flood's first chunk", |m| is(m, "output", &flood));
+    app.tell("attach", json!({"terminal": typed}));
+    app.until("the typed terminal's view to start", |m| is(m, "snapshot", &typed));
     std::thread::sleep(Duration::from_millis(500));
     let asked = Instant::now();
     app.tell("input", json!({"terminal": typed, "data": BASE64.encode("k")}));
