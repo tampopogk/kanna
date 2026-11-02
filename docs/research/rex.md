@@ -259,6 +259,7 @@ Ranked by what each buys for what it costs. Where it would go names the spec; no
 | 8 | **Search in a terminal pane** ([note](#notes-to-31)) | [terminal §3](../specs/terminal.md#3-what-each-behaviour-does) | small |
 | 9 | **[call]** **Skill text read from the binary**, for the command cookbook ([note](#notes-to-31)) | [agent setup §4](../specs/agent-setup.md#4-updates-and-your-files) | small |
 | 10 | **[call]** **Rex's CLI shape for the kmux layer** ([note](#notes-to-31)) | [CLI §1](../specs/cli.md#1-a-port-of-kmuxs-cli), [commands](../specs/commands.md) | medium |
+| 11 | **A control connection, plus a data connection per terminal** ([note](#notes-to-31)) | [app link](../specs/app-link.md), [machines §7](../specs/machines.md#7-terminals-and-panes) | medium |
 
 #### Notes to 3.1
 
@@ -299,6 +300,13 @@ Rex has the same shape (a token, an exact count, a grace period, `1013` to force
 | `rex events`, `rex api describe` | none; `commands --json`, `raw` | `events` (#3); `api describe` from the command table |
 
 Keep Kanna's targets: a pane named, else the caller ([CLI caller](../specs/cli-caller.md)), never Rex's fallback to the focused block (3.2). The conflict is with [CLI §1](../specs/cli.md#1-a-port-of-kmuxs-cli): Kanna's CLI is a port of kmux's, and a conformance test keeps every command, usage and example the same as kmux's. **[call]** The better design is for Kanna to own the shape, check its conformance at the protocol (the requests `--mux kmux` sends, which is what has to match), and leave kmux as it is. Keep kmux's verbs as aliases until the skills and scripts move over. *Cost:* the command table and its help, the conformance test, the skills' command lines and the e2e scripts. *Evidence:* `rex --help`, `rex run --help`, `rex block --help`.
+
+**11. Control and data apart.** Added in review. Kanna's app link is one socket: requests, layout, input and every terminal's `output` all travel as JSON lines on it. Each terminal's output is held to 64 KiB until the app sends `taken` ([app link](../specs/app-link.md)), but with several busy terminals their chunks still queue in front of a keystroke's reply or a layout change. Rex and v2 both split the link:
+
+- **Rex:** a control WebSocket (`/api/control`) for requests, events and typing (`client.key`, `terminal.write`), and one data WebSocket per terminal (`/api/data`), opened with a one-time ticket from the control side (§1.4).
+- **v2:** the daemon had a shared control connection for commands and input, and a dedicated connection per attached terminal, on which `AttachSnapshot` sent the snapshot and then the live output (`kanna2/crates/daemon/SPEC.md`, invariant 7; `kanna2/crates/daemon/tests/reconnect.rs`: "Send input on the SHARED connection", "Output should arrive on the DEDICATED connection").
+
+Take the same split. Keep one control connection for requests, replies, layout, input and resize. Give each attached terminal its own data connection that carries the snapshot and then raw bytes, with no JSON escaping. Locally that's a second Unix-socket connection per terminal; remotely, an iroh stream per terminal on the same connection, which iroh makes cheap and gives each stream its own flow control. A flood in one terminal then slows only that terminal. The data connection is also where the resume (#1) lives: its cursor belongs to it, and losing it doesn't touch the control side. *Cost:* the app link's attach and `output`/`taken`, the app's reader, and the e2e that count app-link messages. *Evidence:* §1.4; v2's daemon spec and tests above.
 
 ### 3.2 What Kanna already does better
 
@@ -344,6 +352,7 @@ Keep Kanna's targets: a pane named, else the caller ([CLI caller](../specs/cli-c
 - **[terminal §3](../specs/terminal.md#3-what-each-behaviour-does)**, "Search: none, as kmux": Rex has it (3.1 #8).
 - **[machines §7](../specs/machines.md#7-terminals-and-panes)** and **[fleet §2.5](./fleet.md#25-terminal-latency)**, "reconnect by offset" and "bounded snapshots": v2's terminal taps already decided the resume's rules (stream IDs that change at every snapshot, a fresh-attach cap, bringing a lagging viewer up to date rather than cutting it off); Rex adds nonce-tagged in-band messages and a stream per terminal (3.1 #1).
 - **[CLI §1](../specs/cli.md#1-a-port-of-kmuxs-cli)**, "a port of kmux's CLI" with a conformance test against kmux's: taking Rex's shape for the kmux layer means Kanna owns the shape, and the test checks the protocol rather than the help text (3.1 #10).
+- **[app link](../specs/app-link.md)**, one socket for everything: split it into a control connection and a data connection per terminal, as Rex and v2 did (3.1 #11).
 - **[machines §1](../specs/machines.md#1-rules)**, "Versions are compatible, not identical": needs a mechanism like Rex's revisions (3.1 #4).
 - **[agent status §4](../specs/agent-status.md#4-the-agents-own-report-osc-7501)**: confirmed, no change. Claude Code 2.1.312 probes and reports as described.
 - **[app link](../specs/app-link.md)**, one app per daemon: if it's ever lifted, Rex's per-terminal owner with each client's requested size is a worked model ([fleet §2.3](./fleet.md#23-the-app-link-over-the-network) left it "a later slice").
