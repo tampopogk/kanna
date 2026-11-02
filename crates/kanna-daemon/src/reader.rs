@@ -1,4 +1,6 @@
+use crate::perf;
 use crate::settings::Settings;
+use crate::wire::Wire;
 use crate::Event;
 use kanna_detect::{Activity, Screen};
 use kanna_vt::{Key, Lines, Mode, ProgramStatus, Terminal};
@@ -9,7 +11,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-const OUTBOX: usize = 1 << 20;
+const OUTBOX: usize = 4 << 20;
 
 const QUIET: Duration = Duration::from_millis(50);
 
@@ -18,6 +20,39 @@ const DRAIN_LIMIT: Duration = Duration::from_millis(500);
 const DRAIN: u8 = 1;
 
 const STOP: u8 = 2;
+
+const RESUME: u8 = 3;
+
+const HOLD: usize = 1 << 20;
+
+const HOLD_LIMIT: Duration = Duration::from_secs(1);
+
+const ECHO_LIMIT: Duration = Duration::from_secs(1);
+
+pub struct Keystroke {
+    typed: Instant,
+    written: Option<Instant>,
+}
+
+pub type Typing = Arc<Mutex<Option<Keystroke>>>;
+
+pub fn typed(typing: &Typing, at: Instant) {
+    typing.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(Keystroke { typed: at, written: None });
+}
+
+pub fn written(typing: &Typing) {
+    if let Some(keystroke) = typing.lock().unwrap_or_else(PoisonError::into_inner).as_mut().filter(|k| k.written.is_none()) {
+        keystroke.written = Some(Instant::now());
+        perf::since("input.written", keystroke.typed);
+    }
+}
+
+fn echoed(typing: &Typing) -> Option<Instant> {
+    let mut pending = typing.lock().unwrap_or_else(PoisonError::into_inner);
+    let typed = pending.as_ref().filter(|k| k.written.is_some())?.typed;
+    *pending = None;
+    (typed.elapsed() < ECHO_LIMIT).then_some(typed)
+}
 
 pub struct Feed {
     screen: Terminal,
@@ -31,11 +66,14 @@ pub struct Feed {
     activity: Activity,
     statuses_serial: u64,
     statuses_owner: Option<i32>,
+    echo: Option<Instant>,
+    pub shown: bool,
+    pub inflight: bool,
 }
 
-pub enum Taken {
-    Bytes(Vec<u8>),
-    Overflowed,
+pub struct Noticed {
+    pub overflowed: bool,
+    pub cwd: Option<String>,
 }
 
 impl Feed {
@@ -54,7 +92,7 @@ impl Feed {
 
     fn with(screen: Terminal, unsaved: bool) -> io::Result<Arc<Mutex<Feed>>> {
         let (cols, rows) = screen.size();
-        Ok(Arc::new(Mutex::new(Feed { screen, outbox: Vec::new(), overflowed: false, posted: false, unsaved, cols, rows, cwd: None, activity: Activity::default(), statuses_serial: 0, statuses_owner: None })))
+        Ok(Arc::new(Mutex::new(Feed { screen, outbox: Vec::new(), overflowed: false, posted: false, unsaved, cols, rows, cwd: None, activity: Activity::default(), statuses_serial: 0, statuses_owner: None, echo: None, shown: false, inflight: false })))
     }
 
     pub fn apply(&mut self, settings: &Settings) -> Vec<u8> {
@@ -63,9 +101,6 @@ impl Feed {
         self.screen.take_replies()
     }
 
-    pub fn take_cwd(&mut self) -> Option<String> {
-        self.cwd.take()
-    }
 
     pub fn encode_key(&self, key: &Key) -> Result<Vec<u8>, kanna_vt::Error> {
         self.screen.encode_key(key)
@@ -103,22 +138,52 @@ impl Feed {
         } else {
             self.outbox.extend_from_slice(bytes);
         }
-        (!std::mem::replace(&mut self.posted, true), replies)
+        let post = (self.overflowed || self.cwd.is_some()) && !std::mem::replace(&mut self.posted, true);
+        (post, replies)
     }
 
-    pub fn take(&mut self) -> Option<Taken> {
-        self.posted = false;
-        if std::mem::take(&mut self.overflowed) {
-            return Some(Taken::Overflowed);
+    pub fn noticed(&mut self) -> Noticed {
+        let waiting = self.overflowed && self.inflight;
+        self.posted = waiting;
+        Noticed { overflowed: self.overflowed && !waiting, cwd: self.cwd.take() }
+    }
+
+    pub fn holds(&self) -> bool {
+        self.shown && self.inflight && self.outbox.len() >= HOLD
+    }
+
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    pub fn chunk(&mut self, most: usize) -> Option<(Vec<u8>, Option<Instant>)> {
+        if self.outbox.is_empty() {
+            return None;
         }
-        let bytes = std::mem::take(&mut self.outbox);
-        (!bytes.is_empty()).then_some(Taken::Bytes(bytes))
+        let bytes = if self.outbox.len() <= most {
+            std::mem::take(&mut self.outbox)
+        } else {
+            let rest = self.outbox.split_off(most);
+            std::mem::replace(&mut self.outbox, rest)
+        };
+        if let Some(typed) = self.echo.filter(|_| self.outbox.is_empty()) {
+            perf::since("echo.taken", typed);
+        }
+        Some((bytes, if self.outbox.is_empty() { self.echo.take() } else { None }))
+    }
+
+    pub fn discard(&mut self) {
+        self.outbox = Vec::new();
+        self.overflowed = false;
+        self.echo = None;
+        self.inflight = false;
     }
 
     pub fn snapshot(&mut self) -> Result<Vec<u8>, kanna_vt::Error> {
         let snapshot = self.screen.snapshot()?;
         self.outbox = Vec::new();
         self.overflowed = false;
+        self.echo = None;
         Ok(snapshot)
     }
 
@@ -163,6 +228,10 @@ impl Feed {
 
     pub fn reported(&self, group: Option<i32>) -> Option<ProgramStatus> {
         self.screen.program_status().filter(|_| group.is_some() && self.statuses_owner == group)
+    }
+
+    pub fn turns(&self) -> u64 {
+        self.screen.program_turns()
     }
 
     pub fn program_statuses(&self) -> Vec<ProgramStatus> {
@@ -245,12 +314,12 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, replies: Sender<Vec<u8>>, events: Sender<Event>) -> io::Result<Reader> {
+    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, typing: Typing, wire: Arc<Wire>, replies: Sender<Vec<u8>>, events: Sender<Event>) -> io::Result<Reader> {
         let (asleep, wake) = pipe()?;
         let pane = id.to_string();
         let thread = std::thread::Builder::new()
             .name(format!("kanna.read.{id}"))
-            .spawn(move || read(Pty { pane, serial, master: File::from(master), wake: File::from(asleep), feed, replies, events }))?;
+            .spawn(move || read(Pty { pane, serial, master: File::from(master), wake: File::from(asleep), feed, typing, wire, replies, events }))?;
         Ok(Reader { wake: File::from(wake), thread: Some(thread) })
     }
 
@@ -262,10 +331,22 @@ impl Reader {
         let _ = (&self.wake).write(&[STOP]);
     }
 
+    pub fn resumer(&self) -> io::Result<Resumer> {
+        self.wake.try_clone().map(Resumer)
+    }
+
     pub fn join(&mut self) {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+pub struct Resumer(File);
+
+impl Resumer {
+    pub fn resume(&self) {
+        let _ = (&self.0).write(&[RESUME]);
     }
 }
 
@@ -275,6 +356,8 @@ struct Pty {
     master: File,
     wake: File,
     feed: Arc<Mutex<Feed>>,
+    typing: Typing,
+    wire: Arc<Wire>,
     replies: Sender<Vec<u8>>,
     events: Sender<Event>,
 }
@@ -288,12 +371,18 @@ impl Pty {
 fn read(mut pty: Pty) {
     let mut buffer = vec![0u8; 65536];
     let mut draining: Option<Instant> = None;
+    let mut held: Option<Instant> = None;
+    let mut released = false;
     loop {
         let mut fds = [
-            libc::pollfd { fd: pty.master.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: pty.master.as_raw_fd(), events: if held.is_some() { 0 } else { libc::POLLIN }, revents: 0 },
             libc::pollfd { fd: pty.wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
         ];
-        let timeout = if draining.is_some() { QUIET.as_millis() as libc::c_int } else { -1 };
+        let timeout = match (held, draining) {
+            (Some(until), _) => until.saturating_duration_since(Instant::now()).as_millis() as libc::c_int,
+            (None, Some(_)) => QUIET.as_millis() as libc::c_int,
+            (None, None) => -1,
+        };
         let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
         if ready < 0 {
             if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
@@ -305,12 +394,27 @@ fn read(mut pty: Pty) {
             let mut asked = [0u8; 64];
             match pty.wake.read(&mut asked) {
                 Ok(n @ 1..) if asked[..n].contains(&STOP) => return,
-                Ok(1..) => {
-                    draining.get_or_insert_with(|| Instant::now() + DRAIN_LIMIT);
+                Ok(n @ 1..) => {
+                    if asked[..n].contains(&RESUME) {
+                        held = None;
+                        released = false;
+                    }
+                    if asked[..n].contains(&DRAIN) {
+                        held = None;
+                        draining.get_or_insert_with(|| Instant::now() + DRAIN_LIMIT);
+                    }
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 _ => return,
             }
+            continue;
+        }
+        if held.is_some_and(|until| Instant::now() >= until) {
+            held = None;
+            released = true;
+            continue;
+        }
+        if held.is_some() {
             continue;
         }
         if draining.is_some_and(|limit| ready == 0 || Instant::now() >= limit) {
@@ -331,12 +435,26 @@ fn read(mut pty: Pty) {
                 return;
             }
         };
+        let echo = echoed(&pty.typing);
+        if let Some(typed) = echo {
+            perf::since("echo.read", typed);
+        }
         let (post, replies) = {
             let mut feed = Feed::lock(&pty.feed);
             let pushed = feed.push(&buffer[..n]);
             feed.claim_statuses(|| kanna_detect::program::foreground_group(pty.master.as_raw_fd()));
+            if echo.is_some() {
+                feed.echo = feed.echo.or(echo);
+            }
+            pty.wire.deliver(&pty.pane, &mut feed);
+            if !released && draining.is_none() && feed.holds() {
+                held = Some(Instant::now() + HOLD_LIMIT);
+            }
             pushed
         };
+        if let Some(typed) = echo {
+            perf::since("echo.parsed", typed);
+        }
         if !replies.is_empty() {
             let _ = pty.replies.send(replies);
         }
@@ -389,10 +507,11 @@ pub(crate) mod tests {
     #[test]
     fn a_shell_reporting_its_folder_changes_the_cwd() {
         let f = feed(20, 5, "\x1b]7;file://localhost/tmp/a%20b\x07");
-        assert_eq!(Feed::lock(&f).take_cwd().as_deref(), Some("/tmp/a b"));
-        assert_eq!(Feed::lock(&f).take_cwd(), None);
-        Feed::lock(&f).push(b"\x1b]7;file://elsewhere.example/etc\x07\x1b]7;kitty-shell-cwd:///x%y\x07");
-        assert_eq!(Feed::lock(&f).take_cwd().as_deref(), Some("/x%y"));
+        assert_eq!(Feed::lock(&f).noticed().cwd.as_deref(), Some("/tmp/a b"));
+        assert_eq!(Feed::lock(&f).noticed().cwd, None);
+        let (posted, _) = Feed::lock(&f).push(b"\x1b]7;file://elsewhere.example/etc\x07\x1b]7;kitty-shell-cwd:///x%y\x07");
+        assert!(posted, "a new folder is the main loop's to publish");
+        assert_eq!(Feed::lock(&f).noticed().cwd.as_deref(), Some("/x%y"));
         assert_eq!(cwd_from_url("file:///a%2"), None);
         assert_eq!(cwd_from_url("http://localhost/a"), None);
         assert_eq!(cwd_from_url("file://"), None);
@@ -402,7 +521,7 @@ pub(crate) mod tests {
     fn queries_are_answered() {
         let f = Feed::new(20, 5, &Settings::default()).unwrap();
         let (posted, replies) = Feed::lock(&f).push(b"\x1b[2;3H\x1b[6n");
-        assert!(posted);
+        assert!(!posted, "plain output goes to the app from the reader, not through the main loop");
         assert_eq!(replies, b"\x1b[2;3R");
     }
 
@@ -412,11 +531,24 @@ pub(crate) mod tests {
         let mut f = Feed::lock(&f);
         f.push(&overlong_osc());
         assert!(f.snapshot().is_err());
-        assert!(matches!(f.take(), Some(Taken::Overflowed)));
+        assert!(f.chunk(16).is_some_and(|(bytes, _)| bytes.len() == 16), "the outbox is kept, and taken a chunk at a time");
         f.push(b"\x07after");
         let snapshot = f.snapshot().unwrap();
-        assert!(f.take().is_none());
+        assert!(f.chunk(usize::MAX).is_none());
         assert_eq!(Terminal::from_snapshot(&snapshot).unwrap().text(Lines::Screen), "beforeafter");
+    }
+
+    #[test]
+    fn an_outbox_past_its_limit_overflows_and_a_snapshot_starts_it_over() {
+        let f = Feed::new(80, 24, &Settings::default()).unwrap();
+        let mut f = Feed::lock(&f);
+        let line = vec![b'x'; 1 << 20];
+        let posts: Vec<bool> = (0..5).map(|_| f.push(&line).0).collect();
+        assert_eq!(posts, [false, false, false, false, true], "the main loop hears once, when it overflows");
+        assert!(f.overflowed());
+        assert!(f.noticed().overflowed);
+        f.snapshot().unwrap();
+        assert!(!f.overflowed() && f.chunk(usize::MAX).is_none());
     }
 
     #[test]

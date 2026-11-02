@@ -4,6 +4,7 @@ use base64::Engine;
 use kanna_mux::json::{string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError};
 use serde_json::json;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -39,6 +40,7 @@ pub fn read(args: &Value) -> Result<Map, KmuxError> {
     out.insert("path".into(), json!(real.to_string_lossy()));
     out.insert("type".into(), json!(kind));
     out.insert("size".into(), json!(meta.len()));
+    out.insert("stamp".into(), json!(format!("{}:{}:{}:{}.{}", meta.dev(), meta.ino(), meta.len(), meta.mtime(), meta.mtime_nsec())));
     if args.get("data") == Some(&Value::Bool(true)) && kind == "file" {
         let too_big = || KmuxError::new("too_big", format!("{path} is over {} MiB", MAX_BYTES >> 20));
         if meta.len() > MAX_BYTES as u64 {
@@ -232,6 +234,8 @@ mod tests {
         let read = read(&json!({ "path": dir.join("link.png"), "data": true })).unwrap();
         assert_eq!(read["path"], json!(dir.join("a.png")));
         assert_eq!((read["type"].clone(), read["size"].clone()), (json!("file"), json!(4)));
+        let stamp = read["stamp"].as_str().unwrap().to_string();
+        assert_eq!(super::read(&json!({ "path": dir.join("link.png") })).unwrap()["stamp"], json!(stamp));
         assert_eq!(BASE64.decode(read["data"].as_str().unwrap()).unwrap(), b"\x89PNG");
         let folder = super::read(&json!({ "path": dir, "data": true })).unwrap();
         assert_eq!((folder["type"].clone(), folder.get("data")), (json!("folder"), None));

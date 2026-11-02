@@ -41,7 +41,7 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 
 | Message | From | What it says |
 |---|---|---|
-| `file.read {view, path, data?}` | app | `path` resolved on the daemon's machine (`~`, symlinks); reply `{path, type: file\|folder\|other, size}`, with `data` (base64) when asked for a file. Refusals: `not_found`, `not_local` (an automount or network path), `too_big` (over 8 MiB) |
+| `file.read {view, path, data?}` | app | `path` resolved on the daemon's machine (`~`, symlinks); reply `{path, type: file\|folder\|other, size, stamp}`, `stamp` changing whenever the file does, with `data` (base64) when asked for a file. Refusals: `not_found`, `not_local` (an automount or network path), `too_big` (over 8 MiB) |
 | `file.subscribe {view, path, kind: md, diff: REF}` | app | as [file panes](file-panes.md#2-messages), plus the comparison: `base {commit, text?}` against REF's merge base, `old` (text or null) for a range `A..B` (then `text` is B's), or `diff_error` |
 | `markup.subscribe {view, path}` | app | show me this doc's threads. Reply and every change after: `markup {content, path, name, serial, record}`, `name` being the doc's path in its repo, `record` the thread file (empty if there's none) |
 | `markup.unsubscribe {view}` | app | that view is gone |
@@ -58,7 +58,7 @@ On the [app link](app-link.md#2-messages). Requests name the pane as `view` (or 
 
 ## 3. Rules
 
-- **Images** load from the daemon on every render of new text; a pane keeps the last bytes per path and redraws only when they change, so an edited image shows and an unchanged one doesn't flicker. A failed read draws the alt text, as a missing file did.
+- **Images** load from the daemon on every render of new text, and every half second the pane asks for each image's `stamp` (no bytes); a changed stamp reads the image again. A pane keeps the last bytes per path and redraws only when they change, so an edited, deleted or new image shows within a second, where the reader was, and an unchanged one doesn't flicker. A failed read draws the alt text, as a missing file did.
 - **What counts as local** is the daemon's to decide: on macOS a path is refused before it is touched if it passes through an automount root (`/net`, `/Network`, `/home`, also under `/private` and `/System/Volumes/Data`) or lands on a filesystem that isn't local, as the renderer refused before; symlinks are followed by hand, at most 32. Linux has no automount roots.
 - **Links.** A link to a markdown file shows it in the pane (`navigate`); to anything else, on this Mac, reveals it in Finder; on another machine, does nothing.
 - **Screenshots** over 11 MiB of PNG are refused by the app (`too_big`): in base64 with its reply that stays under the link's 16 MiB line. `--force` replaces a file; without it an existing file is refused, as before.

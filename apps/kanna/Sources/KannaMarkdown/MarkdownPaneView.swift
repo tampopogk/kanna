@@ -10,6 +10,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     public var onFocus: (() -> Void)? { didSet { textView.onFocus = onFocus } }
     public var onOpenMarkdown: ((String) -> Void)?
+    public var onOpenCode: ((String, Int) -> Void)?
     public var onHistory: ((Bool) -> Void)?
     public var onZoom: (() -> Void)?
     public var startScrollY: CGFloat?
@@ -56,6 +57,9 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     var source = ""
     private var images: [String: (data: Data, image: NSImage)] = [:]
     private var fetchImages = false
+    private var imagePaths: Set<String> = []
+    private var imageStamps: [String: String] = [:]
+    private var probing = 0
     private var rerender = false
     var anchors: [String: NSRange] = [:]
     var active: String?
@@ -255,6 +259,20 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let span = Perf.begin(.markdown, "markdown.check")
         defer { Perf.end(span) }
         refreshPanel()
+        if pending == nil { probeImages() }
+    }
+
+    private func probeImages() {
+        guard probing == 0, let readFile else { return }
+        for path in imagePaths {
+            probing += 1
+            readFile(path, false) { [weak self] result in
+                guard let self else { return }
+                probing -= 1
+                let stamp = try? result.get().stamp
+                if stamp != imageStamps[path] { fetch([path]) }
+            }
+        }
     }
 
     private func load(_ text: String, compared: MarkdownComparison?) {
@@ -297,9 +315,10 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         renderer.images = images.mapValues(\.image)
         let text = entries.map { renderer.render($0) } ?? renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
+        imagePaths = Set(renderer.imagePaths)
         if fetchImages {
             fetchImages = false
-            fetch(Set(renderer.imagePaths))
+            fetch(imagePaths)
         }
         updateInset()
         textView.finder.noteClientStringWillChange()
@@ -320,6 +339,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
                 guard let self else { return }
                 switch result {
                 case .success(let file):
+                    imageStamps[path] = file.stamp
                     guard let data = file.data, images[path]?.data != data else { return }
                     guard let image = NSImage(data: data) else {
                         guard images.removeValue(forKey: path) != nil else { return }
@@ -327,6 +347,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
                     }
                     images[path] = (data, image)
                 case .failure:
+                    imageStamps.removeValue(forKey: path)
                     guard images.removeValue(forKey: path) != nil else { return }
                 }
                 renderSoon()
@@ -433,7 +454,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public enum LinkAction: Equatable {
         case scroll(String)
         case openWeb(URL)
-        case file(URL)
+        case file(URL, line: Int?)
         case ignore
     }
 
@@ -443,11 +464,13 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
             return ["http", "https", "mailto"].contains(scheme) ? .openWeb(url) : .ignore
         }
         var file = target.hasPrefix("file://") ? (URL(string: target)?.path ?? "") : target
+        let fragment = target.firstIndex(of: "#").map { String(target[target.index(after: $0)...]) }
         if let hash = file.firstIndex(of: "#") { file = String(file[..<hash]) }
         file = file.removingPercentEncoding ?? file
         guard !file.isEmpty else { return .ignore }
+        let line = fragment.flatMap { $0.hasPrefix("L") ? Int($0.dropFirst()) : nil }.flatMap { $0 > 0 ? $0 : nil }
         return .file((file.hasPrefix("/") ? URL(fileURLWithPath: file)
-            : URL(fileURLWithPath: documentPath).deletingLastPathComponent().appendingPathComponent(file)).standardizedFileURL)
+            : URL(fileURLWithPath: documentPath).deletingLastPathComponent().appendingPathComponent(file)).standardizedFileURL, line: line)
     }
 
     var openWeb: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -462,10 +485,12 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         switch Self.action(for: target, from: path) {
         case .scroll(let fragment): scroll(toAnchor: fragment)
         case .openWeb(let url): openWeb(url)
-        case .file(let url):
+        case .file(let url, let line):
             readFile?(url.path, false) { [weak self] result in
                 guard let self, case .success(let file) = result else { return }
-                if file.type == "file", ["md", "markdown", "mdown"].contains((file.path as NSString).pathExtension.lowercased()) {
+                if file.type == "file", let line {
+                    onOpenCode?(file.path, line)
+                } else if file.type == "file", ["md", "markdown", "mdown"].contains((file.path as NSString).pathExtension.lowercased()) {
                     onOpenMarkdown?(file.path)
                 } else if canReveal {
                     reveal(url)
@@ -497,6 +522,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         return out
     }
 
+    public var drawnImages: [NSSize] {
+        guard let storage = textView.textStorage else { return [] }
+        var out: [NSSize] = []
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if let cell = (value as? NSTextAttachment)?.attachmentCell as? ImageCell { out.append(cell.picture.size) }
+        }
+        return out
+    }
+
     public var layoutWidth: CGFloat { textView.textContainer?.size.width ?? 0 }
 
     public var scrollTop: CGFloat { scrollView.contentView.bounds.minY }
@@ -508,11 +542,13 @@ public struct MarkdownFile: Equatable, Sendable {
     public var path: String
     public var type: String
     public var data: Data?
+    public var stamp: String?
 
-    public init(path: String, type: String, data: Data?) {
+    public init(path: String, type: String, data: Data?, stamp: String? = nil) {
         self.path = path
         self.type = type
         self.data = data
+        self.stamp = stamp
     }
 
     public struct Failure: Error, Equatable {

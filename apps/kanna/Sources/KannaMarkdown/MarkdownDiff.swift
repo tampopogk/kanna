@@ -83,7 +83,8 @@ enum MarkdownDiff {
     static func pairable(_ old: any Markup, _ new: any Markup, cheap: Bool = false) -> Double? {
         guard type(of: old) == type(of: new) else { return nil }
         if children(of: new) != nil, !(new is ListItem) { return 1 }
-        if let a = old as? CodeBlock, let b = new as? CodeBlock, a.language?.lowercased() == "mermaid", b.language?.lowercased() == "mermaid" { return 1 }
+        if let a = old as? CodeBlock, let b = new as? CodeBlock, let kind = a.language?.lowercased(), kind == b.language?.lowercased(),
+           ["mermaid", CallTree.fence].contains(kind) { return 1 }
         guard !cheap else { return nil }
         let score = similarity(words(of: old), words(of: new))
         return score >= similar ? score : nil

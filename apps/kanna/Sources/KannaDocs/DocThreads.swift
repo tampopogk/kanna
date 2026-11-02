@@ -32,6 +32,81 @@ public struct PageSpot: Codable, Equatable {
     }
 }
 
+public enum InkKind: String, Codable, CaseIterable, Sendable {
+    case circle, underline, strike, cross, arrow, writing
+
+    public init(from decoder: Decoder) throws {
+        self = InkKind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .writing
+    }
+}
+
+public enum InkSide: String, Codable, Sendable {
+    case before, after
+
+    public init(from decoder: Decoder) throws {
+        self = InkSide(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .after
+    }
+}
+
+public struct InkPlace: Codable, Equatable, Sendable {
+    public var line: Int
+    public var text: String
+    public var selector: String?
+    public var box: [Int]?
+
+    public init(line: Int, text: String, selector: String? = nil, box: [Int]? = nil) {
+        self.line = line
+        self.text = text
+        self.selector = selector
+        self.box = box
+    }
+}
+
+public struct InkMark: Codable, Equatable, Sendable {
+    public var kind: InkKind
+    public var strokes: [[[Double]]]
+    public var anchor: InkPlace
+    public var words: String?
+    public var to: InkPlace?
+    public var side: InkSide?
+    public var tip: Int?
+    public var note: String?
+
+    public init(kind: InkKind, strokes: [[[Double]]], anchor: InkPlace, words: String? = nil, to: InkPlace? = nil, side: InkSide? = nil,
+                tip: Int? = nil, note: String? = nil) {
+        self.kind = kind
+        self.strokes = strokes
+        self.anchor = anchor
+        self.words = words
+        self.to = to
+        self.side = side
+        self.tip = tip
+        self.note = note
+    }
+}
+
+public struct InkView: Codable, Equatable, Sendable {
+    public var hash: String
+    public var viewport: [Int]
+    public var scroll: [Int]
+
+    public init(hash: String, viewport: [Int], scroll: [Int]) {
+        self.hash = hash
+        self.viewport = viewport
+        self.scroll = scroll
+    }
+}
+
+public struct DocInk: Codable, Equatable, Sendable {
+    public var view: InkView?
+    public var marks: [InkMark]
+
+    public init(view: InkView? = nil, marks: [InkMark]) {
+        self.view = view
+        self.marks = marks
+    }
+}
+
 public struct DocThread: Codable, Equatable {
     public var id: String
     public var quote: String
@@ -46,9 +121,10 @@ public struct DocThread: Codable, Equatable {
     public var region: [Double]?
     public var page: PageSpot?
     public var mark: String?
+    public var ink: DocInk?
 
     package init(id: String, quote: String, prefix: String?, suffix: String?, line: Int, state: String, status: String?, messages: [DocMessage],
-                 error: String?, page: PageSpot? = nil) {
+                 error: String?, page: PageSpot? = nil, ink: DocInk? = nil) {
         self.id = id
         self.quote = quote
         self.prefix = prefix
@@ -59,6 +135,7 @@ public struct DocThread: Codable, Equatable {
         self.messages = messages
         self.error = error
         self.page = page
+        self.ink = ink
     }
 
     public var isOpen: Bool { state == "open" }
@@ -147,6 +224,11 @@ public enum Doc {
 
     public static func message(_ thread: DocThread, file: String, text: String, quoted: Bool = true, mark: String? = nil) -> String {
         let header = "[kanna comment \(oneLine(thread.id)) · \(oneLine(file)):\(thread.line)]"
+        if let ink = thread.ink {
+            var lines = DocInk.lines(ink)
+            if let mark { lines.append("> marked up: " + oneLine(mark)) }
+            return ([header] + lines + (text.isEmpty ? [] : [text])).joined(separator: "\n")
+        }
         if let page = thread.page {
             var lines = ["> " + describe(page)]
             if page.box.count == 4, page.viewport.count == 2, page.scroll.count == 2 {

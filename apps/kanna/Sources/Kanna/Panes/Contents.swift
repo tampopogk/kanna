@@ -5,6 +5,7 @@ import KannaDiff
 import KannaDocs
 import KannaLinks
 import KannaMarkdown
+import KannaSerial
 import WebKit
 
 @MainActor
@@ -61,6 +62,7 @@ final class Contents {
     private var threadSources: [String: String] = [:]
     private var threadContents: [String: String] = [:]
     private var threadLatest: [String: JSON] = [:]
+    private var serialContents: [String: String] = [:]
 
     func slot(_ id: String) -> PaneSlot {
         if let slot = slots[id] { return slot }
@@ -107,7 +109,8 @@ final class Contents {
     func markdown(_ id: String) -> MarkdownPaneView? { slots[id]?.content as? MarkdownPaneView }
     func code(_ id: String) -> CodePaneView? { slots[id]?.content as? CodePaneView }
     func diff(_ id: String) -> DiffPaneView? { slots[id]?.content as? DiffPaneView }
-    func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView }
+    func serial(_ id: String) -> SerialPaneView? { slots[id]?.content as? SerialPaneView }
+    func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? serial(id)?.keyView }
     func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
     private func send(_ text: String, to agent: String, done: @escaping (String?) -> Void) {
@@ -188,6 +191,9 @@ final class Contents {
             }
             markdown.contextMenu = { [weak self] in self?.contextMenu?() }
             markdown.onOpenMarkdown = { [weak self] target in self?.onRequest?("navigate", ["pane": .string(id), "path": .string(target)]) }
+            markdown.onOpenCode = { [weak self] path, line in
+                self?.onCall?("open", ["type": "code", "path": .string(path), "line": .number(Double(line)), "from": .string(id)]) { _ in }
+            }
             fileSources[id] = (pane["path"]?.string ?? "", "md", pane["diff"]?.string)
             slot(id).content = markdown
             subscribe(file: id)
@@ -239,6 +245,29 @@ final class Contents {
             diffSources[id] = (pane["path"]?.string ?? "", diffArgs)
             content = diff
             subscribe(diff: diff, id)
+        case "serial":
+            let serial = SerialPaneView()
+            serial.onFocus = { [weak self] in self?.onFocus?(id) }
+            serial.contextMenu = { [weak self] in self?.contextMenu?() }
+            serial.onSend = { [weak self, weak serial] text, ending in
+                self?.onCall?("serial", ["action": "send", "pane": .string(id), "text": .string(text), "ending": .bool(ending)]) { answer in
+                    if answer["ok"]?.bool != true { serial?.flash(answer["error"]?["message"]?.string ?? "couldn't send") }
+                }
+            }
+            serial.onReset = { [weak self, weak serial] in
+                self?.onCall?("serial", ["action": "reset", "pane": .string(id)]) { answer in
+                    if answer["ok"]?.bool != true { serial?.flash(answer["error"]?["message"]?.string ?? "couldn't reset") }
+                }
+            }
+            serial.onSet = { [weak self] baud, ending in
+                var args: [String: JSON] = ["action": "set", "pane": .string(id)]
+                if let baud { args["baud"] = .number(Double(baud)) }
+                if let ending { args["lineEnding"] = .string(ending) }
+                self?.onCall?("serial", args) { _ in }
+            }
+            slot(id).content = serial
+            subscribe(serial: id)
+            return
         case "web":
             var url = pane["url"]?.string ?? "about:blank"
             var unmap: (URL) -> URL = { $0 }
@@ -326,6 +355,11 @@ final class Contents {
             diffContents.removeValue(forKey: id)
             diffLatest = diffLatest.filter { diffContents.values.contains($0.key) }
             onNotice?("diff.unsubscribe", ["view": .string(id)])
+        }
+        if let serial = content as? SerialPaneView {
+            serial.stop()
+            serialContents.removeValue(forKey: id)
+            onNotice?("serial.unsubscribe", ["view": .string(id)])
         }
         if fileSources.removeValue(forKey: id) != nil {
             fileContents.removeValue(forKey: id)
@@ -425,7 +459,7 @@ final class Contents {
             guard answer["ok"]?.bool == true, let real = answer["path"]?.string else {
                 return done(.failure(.init(answer["error"]?["message"]?.string ?? "can't read \(path)")))
             }
-            done(.success(MarkdownFile(path: real, type: answer["type"]?.string ?? "other", data: answer["data"]?.string.flatMap { Data(base64Encoded: $0) })))
+            done(.success(MarkdownFile(path: real, type: answer["type"]?.string ?? "other", data: answer["data"]?.string.flatMap { Data(base64Encoded: $0) }, stamp: answer["stamp"]?.string)))
         }
     }
 
@@ -535,6 +569,61 @@ final class Contents {
         if let base = message["base"] { return .base(base["text"]?.string) }
         if let old = message["old"] { return .range(old.string) }
         return nil
+    }
+
+    func subscribeSerials(on machine: String?) {
+        for id in ids where serial(id) != nil && MachineIDs.machine(of: id) == machine { subscribe(serial: id) }
+    }
+
+    private func subscribe(serial id: String) {
+        guard let view = serial(id) else { return }
+        guard let onCall else { return view.show(failure: "Kanna.app isn't connected to its daemon") }
+        onCall("serial.subscribe", ["view": .string(id), "pane": .string(id)]) { [weak self, weak view] answer in
+            guard let self, let view, serial(id) === view else { return }
+            guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
+                let message = answer["error"]?["message"]?.string ?? "The daemon couldn't open this port"
+                view.show(failure: message)
+                return report(id, ["state": "failed", "error": .string(message)])
+            }
+            serialContents[id] = content
+            view.load(rows: Self.serialRows(answer["rows"]), partial: Self.serialRow(answer["partial"]), state: Self.serialState(answer["state"]) ?? SerialState(),
+                      history: answer["history"]?.array?.compactMap(\.string) ?? [])
+            if states[id] != "running" { report(id, ["state": "running"]) }
+        }
+    }
+
+    func received(serial message: JSON, content: String) {
+        for (id, shown) in serialContents where shown == content {
+            serial(id)?.receive(rows: Self.serialRows(message["rows"]), partial: Self.serialRow(message["partial"]), state: Self.serialState(message["state"]), rx: message["rx"]?.number.map { Int($0) })
+        }
+    }
+
+    static func serialRow(_ json: JSON?) -> SerialRow? {
+        guard let json, let text = json["text"]?.string, let t = json["t"]?.number else { return nil }
+        return SerialRow(n: Int(json["n"]?.number ?? 0), t: t, dir: json["d"]?.string ?? "<", text: text, level: json["l"]?.string)
+    }
+
+    static func serialRows(_ json: JSON?) -> [SerialRow] {
+        json?.array?.compactMap { serialRow($0) } ?? []
+    }
+
+    static func serialState(_ json: JSON?) -> SerialState? {
+        guard let json, json != .null, let name = json["state"]?.string else { return nil }
+        var state = SerialState()
+        state.state = name
+        state.cmd = json["cmd"]?.string
+        state.why = json["why"]?.string
+        state.path = json["path"]?.string ?? ""
+        state.name = json["name"]?.string ?? ""
+        state.title = json["title"]?.string ?? ""
+        state.product = json["product"]?.string
+        state.device = json["device"]?.string
+        state.baud = Int(json["baud"]?.number ?? 115_200)
+        state.lineEnding = json["lineEnding"]?.string ?? "lf"
+        state.rx = Int(json["rx"]?.number ?? 0)
+        state.format = json["format"]?.string
+        state.log = json["log"]?.string ?? ""
+        return state
     }
 
     static func absolute(_ path: String) -> String {

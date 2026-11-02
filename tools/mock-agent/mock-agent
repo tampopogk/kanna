@@ -107,6 +107,25 @@ def first(args):
     return told[-1].split("Your task: ", 1)[1] if told else None
 
 
+def stage_prompt(args):
+    if not os.environ.get("KANNA_STAGE") or not args or args[-1].startswith("-"):
+        return None
+    return args[-1]
+
+
+def stage(id, prompt):
+    reported("working")
+    said = []
+    for line in prompt.splitlines():
+        if line.startswith("mock: "):
+            answering(line[len("mock: "):])
+        elif line.startswith("say: "):
+            said.append(line[len("say: "):])
+    out("\x1b[J\r\n" + "\r\n".join(said or ["done"]) + "\r\n")
+    composer()
+    reported("idle")
+
+
 def inbox():
     home = os.environ.get("KANNA_AGENTS_HOME")
     if PROGRAM != "claude" or not home:
@@ -243,7 +262,12 @@ def main():
     inbox()
     remote(sys.argv[1:])
     try:
-        talk(None if resumed else first(sys.argv[1:]))
+        prompt = stage_prompt(sys.argv[1:])
+        if resumed and prompt == id:
+            prompt = None
+        if prompt is not None:
+            stage(id, prompt)
+        talk(None if resumed or prompt is not None else first(sys.argv[1:]))
     except KeyboardInterrupt:
         pass
     bye(id)
@@ -295,7 +319,20 @@ def typed():
                 out(c)
 
 
+def reported(state):
+    if os.environ.get("KANNA_MOCK_REPORTS") == "1":
+        out(f"\x1b]7501;state={state}\x1b\\")
+
+
 def answer(line):
+    reported("working")
+    try:
+        return answering(line)
+    finally:
+        reported("idle")
+
+
+def answering(line):
     words = line.split()
     out("\x1b[J\r\n")
     if words[:1] == ["exit"]:

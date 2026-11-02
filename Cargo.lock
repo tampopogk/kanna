@@ -1724,12 +1724,16 @@ name = "kanna"
 version = "0.1.0"
 dependencies = [
  "kanna-build",
+ "kanna-calltree",
  "kanna-client",
+ "kanna-crash",
  "kanna-merman",
  "kanna-mux",
  "kanna-net",
+ "kanna-pipe",
  "kanna-threads",
  "libc",
+ "regex",
  "serde_json",
  "tokio",
 ]
@@ -1740,6 +1744,14 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "kanna-calltree"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "serde_json",
 ]
 
 [[package]]
@@ -1761,20 +1773,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanna-crash"
+version = "0.1.0"
+dependencies = [
+ "kanna-build",
+ "libc",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "kanna-daemon"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "core-foundation-sys",
  "kanna-build",
+ "kanna-crash",
  "kanna-detect",
  "kanna-diff",
  "kanna-keeper",
  "kanna-mux",
  "kanna-net",
+ "kanna-pipe",
  "kanna-threads",
  "kanna-vt",
  "libc",
  "notify",
+ "regex",
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",
@@ -1805,6 +1831,8 @@ dependencies = [
 name = "kanna-ffi"
 version = "0.1.0"
 dependencies = [
+ "kanna-calltree",
+ "kanna-crash",
  "kanna-layout",
  "kanna-merman",
  "kanna-net",
@@ -1819,6 +1847,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "kanna-build",
+ "kanna-crash",
  "libc",
  "serde_json",
 ]
@@ -1866,6 +1895,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanna-pipe"
+version = "0.1.0"
+
+[[package]]
 name = "kanna-syntax"
 version = "0.1.0"
 dependencies = [
@@ -1894,6 +1927,7 @@ dependencies = [
 name = "kanna-threads"
 version = "0.1.0"
 dependencies = [
+ "kanna-calltree",
  "libc",
  "serde_json",
 ]
