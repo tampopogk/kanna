@@ -251,6 +251,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onStop = { [weak self] pane in self?.contents.stop(pane) }
         link.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
+        link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
