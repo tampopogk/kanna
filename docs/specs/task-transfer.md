@@ -139,3 +139,4 @@ stateDiagram-v2
 - One task at a time per move; the CLI moves a Shelf task, not a Desk one, and the app has no gesture for it yet.
 - A forged epoch from a paired machine isn't checked beyond the peer log's admission, as for grants: your machines trust each other. What a peer sends is still checked where it becomes a path or a command: task IDs, branch names, and tabs (no commands, paths only inside the worktree and without `..`, web pages only http and https, a diff's arguments only revisions, `--merge-base`, `--cached` and `--staged`).
 - The handoff costs one agent turn per move.
+- Claude asks whether to trust a folder it hasn't trusted, and the worktrees of a project it trusts are trusted with it. So the first task moved to a project that has never had a Claude task on the receiver starts at that question and waits for you there.
