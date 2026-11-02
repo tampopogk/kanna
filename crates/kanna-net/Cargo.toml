@@ -19,4 +19,5 @@ n0-future = "0.3"
 
 [dev-dependencies]
 base64 = "0.22"
+kanna-build = { path = "../kanna-build" }
 iroh-relay = { version = "=1.4.1", default-features = false, features = ["server"] }

@@ -42,7 +42,7 @@ async fn machine_on(name: &str, saved: Value, port: u16) -> (Node, Machine) {
 }
 
 async fn machine_with(name: &str, saved: Value, port: u16, secret: SecretKey) -> (Node, Machine) {
-    let release = json!({ "os": std::env::consts::OS, "protocols": [1, 1] });
+    let release = json!({ "os": std::env::consts::OS, "protocol": 4 });
     server(name, saved, port, secret, release).await
 }
 
@@ -54,8 +54,8 @@ async fn server(name: &str, saved: Value, port: u16, secret: SecretKey, release:
     (Node::start(config, Box::new(host.clone())).await.unwrap(), host)
 }
 
-fn linux(commit: &str, protocols: [u32; 2]) -> Value {
-    json!({ "commit": commit, "version": "4.0.0", "channel": "production", "os": "linux", "arch": "x86_64", "protocols": protocols })
+fn linux(commit: &str, protocol: u32) -> Value {
+    json!({ "commit": commit, "version": "4.0.0", "channel": "production", "os": "linux", "arch": "x86_64", "protocol": protocol })
 }
 
 fn peer(node: &Node) -> String {
@@ -373,15 +373,15 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
 #[tokio::test(flavor = "multi_thread")]
 async fn another_protocol_is_refused_with_its_fix() {
     let (mbp, _) = machine("mbp", json!({})).await;
-    let (vm, vm_host) = server("linux-vm", json!({}), 0, SecretKey::generate(), linux(&"a".repeat(40), [2, 3])).await;
+    let (vm, vm_host) = server("linux-vm", json!({}), 0, SecretKey::generate(), linux(&"a".repeat(40), 5)).await;
     pair(&mbp, &vm).await.unwrap();
     let refused = mbp.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap_err();
     assert_eq!(refused.code, "other_protocol");
-    assert_eq!(refused.message, "linux-vm runs Kanna 4.0.0 (aaaaaaaa), protocol 2–3, and this machine speaks 1; this machine is older: update it");
+    assert_eq!(refused.message, "linux-vm runs Kanna 4.0.0 (aaaaaaaa), protocol 5, and this machine speaks 4; this machine is older: update it");
     assert!(vm_host.served.lock().unwrap().is_empty());
     let back = vm.call("mbp", json!({ "id": 1, "cmd": "list" })).await.unwrap_err();
     assert_eq!(back.code, "other_protocol");
-    assert!(back.message.ends_with("protocol 1, and this machine speaks 2–3; it's older: update Kanna on mbp"), "{}", back.message);
+    assert!(back.message.ends_with("protocol 4, and this machine speaks 5; it's older: update Kanna on mbp"), "{}", back.message);
 }
 
 #[derive(Debug)]

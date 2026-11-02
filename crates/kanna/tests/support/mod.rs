@@ -231,7 +231,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         let mut writer = stream.try_clone().unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        writeln!(writer, "{}", json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": kanna_build::PROTOCOLS, "panes": []}})).unwrap();
+        writeln!(writer, "{}", json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocol": kanna_build::PROTOCOL, "panes": []}})).unwrap();
         let (ready, hello) = std::sync::mpsc::channel();
         let diffs = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
         let heard = diffs.clone();

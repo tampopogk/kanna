@@ -75,10 +75,10 @@ rm -rf "$stage"
 mkdir -p "$stage/kanna/kanna-skills"
 cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$stage/kanna/"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$stage/kanna/kanna-skills/"; done
-protocols="$(sed -n 's/^pub const PROTOCOLS: \[u32; 2\] = \[\([0-9]*\), \([0-9]*\)\];/[\1, \2]/p' "$repo_root/crates/kanna-build/src/lib.rs")"
-[[ -n "$protocols" ]] || fail "can't read PROTOCOLS from crates/kanna-build/src/lib.rs"
+protocol="$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")"
+[[ -n "$protocol" ]] || fail "can't read PROTOCOL from crates/kanna-build/src/lib.rs"
 cat > "$stage/kanna/release.json" <<JSON
-{"commit": "$commit", "version": "$version", "channel": "$channel", "os": "linux", "arch": "$arch", "protocols": $protocols}
+{"commit": "$commit", "version": "$version", "channel": "$channel", "os": "linux", "arch": "$arch", "protocol": $protocol}
 JSON
 tarball="$out/$name-$version-linux-$arch.tar.gz"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$tarball.new" -C "$stage" kanna

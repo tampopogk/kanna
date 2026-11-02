@@ -70,7 +70,7 @@ fn capabilities() -> Value {
 
 pub fn release() -> Value {
     let channel = kanna_build::Build::current().channel.id();
-    json!({ "commit": kanna_build::COMMIT, "version": kanna_build::VERSION, "channel": channel, "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "protocols": kanna_build::PROTOCOLS })
+    json!({ "commit": kanna_build::COMMIT, "version": kanna_build::VERSION, "channel": channel, "os": std::env::consts::OS, "arch": std::env::consts::ARCH, "protocol": kanna_build::PROTOCOL })
 }
 
 fn port() -> Option<u16> {

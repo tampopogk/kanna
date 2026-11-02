@@ -30,16 +30,16 @@ flowchart LR
 
 ## 2. The hello
 
-`app.hello {pid, app, protocols: [min, max], commit, client, build?}`; `build` is sent to the local daemon only.
+`app.hello {pid, app, protocol, commit, client, build?}`; `build` is sent to the local daemon only.
 
 | | Local daemon | Remote daemon |
 |---|---|---|
 | `build` mismatch | `other_build`; the daemon stops and the app starts its own ([daemon build](daemon-build.md)) | not checked |
-| No protocol in common | `other_protocol {mine, commit, version}`, the daemon keeps running | the same |
+| Another protocol | `other_protocol {protocol, commit, version}`, the daemon keeps running | the same |
 | Reply | `{ok, protocol, daemon: {pid, build, commit, machine, capabilities: {os, arch, cores}}, panes, layout}` | the same |
 | App already attached | `app_attached` if it is local; a local app **takes over** from a remote one | `app_attached` |
 
-- **Protocols:** `kanna_build::PROTOCOLS = [2, 3]` today (3 adds output acks: [input latency](input-latency.md#4-the-app-link-protocol-3)) (Kanna.app's `Protocols.mine` must match; a test checks), shared with the daemons' own streams ([versions §2](machine-versions.md#2-protocols)); the highest both support is used. `commit` is the build's short commit (`KANNA_COMMIT`, else `git rev-parse --short=12`), shown with `other_protocol`. The app shows a refused machine as Offline with the refusal in its tooltip, and one of another protocol says which side is older and how to update it ([versions §2](machine-versions.md#2-protocols)); it never starts, stops or replaces a remote daemon, and a remote `quit` doesn't quit the app.
+- **Protocol:** `kanna_build::PROTOCOL = 4` today (Kanna.app's `Protocols.mine` must match; a test checks), shared with the daemons' own streams; the app and daemon must speak the same one ([versions §2](machine-versions.md#2-protocols)). `commit` is the build's short commit (`KANNA_COMMIT`, else `git rev-parse --short=12`), shown with `other_protocol`. The app shows a refused machine as Offline with the refusal in its tooltip, and one of another protocol as Incompatible, saying which side is older and how to update it ([versions §2](machine-versions.md#2-protocols)); it never starts, stops or replaces a remote daemon, and a remote `quit` doesn't quit the app.
 - **`DaemonStarter` is the local link's only.** A remote link that drops redials with backoff up to 30 s.
 - **`client`** is this Mac's machine name. The daemon makes it the default claimant (§4) while that app is attached.
 

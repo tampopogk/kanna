@@ -202,7 +202,7 @@ fn main() {
     let stream = runtime.block_on(client.link(&args.peer, &args.addrs, relay.as_ref(), &cert)).unwrap_or_else(|f| panic!("can't link: {}: {}", f.code, f.message));
     let reader = BufReader::new(stream.try_clone().unwrap());
     let mut link = Link { stream, reader, next: 0, received: 0 };
-    link.send(json!({ "id": 0, "cmd": "app.hello", "args": { "client": "terminal-echo", "protocols": [1, 99] } }));
+    link.send(json!({ "id": 0, "cmd": "app.hello", "args": { "client": "terminal-echo", "protocol": kanna_build::PROTOCOL } }));
     let (hello, _) = link.until(|m| m["id"] == 0);
     assert_eq!(hello["ok"], true, "hello: {hello}");
     let linked_ms = dialed.elapsed().as_secs_f64() * 1000.0;

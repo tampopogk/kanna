@@ -468,10 +468,9 @@ impl Node {
                 return;
             }
         };
-        let mine = self.protocols();
-        let theirs = if cert.is_some() { mine } else { protocol::protocols(&header["protocols"]).unwrap_or([1, 1]) };
-        let Some(protocol) = protocol::common(mine, theirs) else {
-            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {}–{}", self.state().name, mine[0], mine[1]) }, "release": self.0.release });
+        let mine = self.protocol();
+        if cert.is_none() && protocol::of(&header) != Some(mine) {
+            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {mine}", self.state().name) }, "release": self.0.release });
             let _ = write_line(&mut send, &refused).await;
             let _ = send.finish();
             return;
@@ -488,7 +487,7 @@ impl Node {
             },
             None => None,
         };
-        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": protocol, "release": self.0.release })).await.is_err() {
+        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": mine, "release": self.0.release })).await.is_err() {
             return;
         }
         if let Some(tcp) = target {
@@ -687,8 +686,8 @@ impl Node {
         Ok((conn, true))
     }
 
-    pub(crate) fn protocols(&self) -> [u32; 2] {
-        protocol::protocols(&self.0.release["protocols"]).unwrap_or([1, 1])
+    pub(crate) fn protocol(&self) -> u32 {
+        protocol::of(&self.0.release).unwrap_or(0)
     }
 
     async fn open(&self, conn: &Connection, kind: &str, name: &str) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
@@ -699,7 +698,7 @@ impl Node {
         let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
         let (mut send, recv) = conn.open_bi().await.map_err(|e| lost(e.to_string()))?;
         let mut recv = BufReader::new(recv);
-        let mut header = json!({ "kind": kind, "protocols": self.protocols() });
+        let mut header = json!({ "kind": kind, "protocol": self.protocol() });
         if let (Some(header), Some(extra)) = (header.as_object_mut(), extra.as_object()) {
             header.extend(extra.clone());
         }
@@ -712,14 +711,13 @@ impl Node {
         if ack["ok"] != true {
             let failure = Failure::from_reply(&ack);
             if failure.code == "other_protocol" {
-                return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocols())));
+                return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
             }
             return Err(Failure::new(&failure.code, format!("{name} refused this machine: {}", failure.message)));
         }
-        if !protocol::agreed(&ack, self.protocols()) {
+        if protocol::of(&ack) != Some(self.protocol()) {
             let _ = send.finish();
-            let release = if ack["release"].is_object() { ack["release"].clone() } else { json!({ "protocols": [1, 1] }) };
-            return Err(Failure::new("other_protocol", protocol::other_protocol(name, &release, self.protocols())));
+            return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
         }
         Ok((send, recv, ack))
     }
