@@ -461,9 +461,6 @@ impl Runs {
 
     fn start_run(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
         let task = self.task_here(args).ok_or_else(|| KmuxError::new("not_a_task", "kanna run start runs in a task's terminal: the run builds that task's change"))?;
-        if let Some(running) = self.db.runs_of(&task.id).map_err(failed)?.into_iter().find(|r| LIVE.contains(&r.state.as_str())) {
-            return Err(KmuxError::new("running", format!("{} already has a run, {}: one run at a time per task (kanna run stop {})", task.id, running.id, running.id)));
-        }
         let folder = PathBuf::from(task.folder.clone().ok_or_else(|| KmuxError::new("not_started", format!("{} has no worktree yet", task.id)))?);
         let named = string(args, "pipeline").filter(|p| !p.is_empty()).ok_or_else(|| bad("say which pipeline: kanna run start NAME|FILE"))?;
         let file = if named.ends_with(".pipe") || named.contains('/') { PathBuf::from(named) } else { folder.join(format!(".kanna/pipelines/{named}.pipe")) };
@@ -522,6 +519,14 @@ impl Runs {
     }
 
     fn find(&self, args: &Value) -> Result<RunRow, KmuxError> {
+        self.find_run(args, false)
+    }
+
+    fn find_live(&self, args: &Value) -> Result<RunRow, KmuxError> {
+        self.find_run(args, true)
+    }
+
+    fn find_run(&self, args: &Value, one_live: bool) -> Result<RunRow, KmuxError> {
         if let Some(reference) = string(args, "run").filter(|r| !r.is_empty()) {
             let all = self.db.runs(None).map_err(failed)?;
             let bare = reference.strip_prefix("run-").unwrap_or(reference);
@@ -533,7 +538,15 @@ impl Runs {
             };
         }
         let task = self.task_here(args).ok_or_else(|| bad("which run? give its ID, or run this in a task's terminal for the task's latest"))?;
-        self.db.runs_of(&task.id).map_err(failed)?.pop().ok_or_else(|| KmuxError::new("not_found", format!("{} has no runs", task.id)))
+        let mut runs = self.db.runs_of(&task.id).map_err(failed)?;
+        let live: Vec<String> = runs.iter().filter(|r| LIVE.contains(&r.state.as_str())).map(|r| r.id.clone()).collect();
+        if one_live && live.len() > 1 {
+            return Err(KmuxError::new("several", format!("{} has {} live runs: say which ({})", task.id, live.len(), live.join(", "))));
+        }
+        if let Some(only) = live.first().filter(|_| one_live) {
+            return runs.into_iter().find(|r| &r.id == only).ok_or_else(|| KmuxError::new("not_found", format!("no run {only}")));
+        }
+        runs.pop().ok_or_else(|| KmuxError::new("not_found", format!("{} has no runs", task.id)))
     }
 
     fn row_value(&self, row: &RunRow) -> Value {
@@ -610,7 +623,7 @@ impl Runs {
     }
 
     fn stop_run(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
-        let row = self.find(args)?;
+        let row = self.find_live(args)?;
         if !LIVE.contains(&row.state.as_str()) {
             return Err(KmuxError::new("ended", format!("{} has ended already ({})", row.id, row.outcome.as_deref().unwrap_or(&row.state))));
         }
@@ -866,7 +879,7 @@ impl Runs {
     }
 
     fn resume_run(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
-        let row = self.find(args)?;
+        let row = self.find_live(args)?;
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).unwrap_or(CARRY_ON).to_string();
         let (run, doc, visit, stage) = {
             let live = self.live.borrow();
@@ -1298,9 +1311,14 @@ impl Runs {
     }
 
     pub fn task_closed(self: &Rc<Self>, task: &str) {
-        let found = self.live.borrow().iter().find(|l| l.row.task == task && LIVE.contains(&l.row.state.as_str())).map(|l| (l.row.id.clone(), l.row.repo.clone(), l.doc.worker.clone(), l.visit.as_ref().and_then(|v| v.row.terminal.clone())));
-        let Some((id, repo, worker, terminal)) = found else { return };
-        self.update(&id, |live| {
+        let found: Vec<(String, String, String, Option<String>)> = self.live.borrow().iter().filter(|l| l.row.task == task && LIVE.contains(&l.row.state.as_str())).map(|l| (l.row.id.clone(), l.row.repo.clone(), l.doc.worker.clone(), l.visit.as_ref().and_then(|v| v.row.terminal.clone()))).collect();
+        for (id, repo, worker, terminal) in found {
+            self.close_run(&id, &repo, &worker, terminal);
+        }
+    }
+
+    fn close_run(self: &Rc<Self>, id: &str, repo: &str, worker: &str, terminal: Option<String>) {
+        self.update(id, |live| {
             if let Some(visit) = live.visit.as_mut() {
                 visit.ending = true;
             }
@@ -1309,9 +1327,9 @@ impl Runs {
         if let Some(pane) = terminal {
             self.close(&pane);
         }
-        self.stop(&id, "stopped", "the task was closed", Some("daemon"), false);
-        if Path::new(&worker).is_dir() {
-            if let Err(error) = git(Path::new(&repo), &["worktree", "remove", "--force", &worker]) {
+        self.stop(id, "stopped", "the task was closed", Some("daemon"), false);
+        if Path::new(worker).is_dir() {
+            if let Err(error) = git(Path::new(repo), &["worktree", "remove", "--force", worker]) {
                 log!("kanna-daemon: {id}'s worktree {worker} is kept: {error}");
             }
         }
