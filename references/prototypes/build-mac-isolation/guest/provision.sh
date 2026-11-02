@@ -20,7 +20,7 @@ xcodebuild -runFirstLaunch
 DevToolsSecurity -enable
 automationmodetool enable-automationmode-without-authentication
 
-mkdir -p /usr/local/kanna
+install -d -m 755 -o root -g wheel /usr/local/kanna
 install -m 755 "$here/vsockrelay" /usr/local/kanna/vsockrelay
 install -m 644 "$here/agent.py" "$here/wire.py" "$here/model.py" /usr/local/kanna/
 for name in dev.kanna.isolation.agent dev.kanna.isolation.relay dev.kanna.isolation.egress; do
@@ -33,6 +33,7 @@ defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLock -boo
 sudo -u kanna-build defaults -currentHost write com.apple.screensaver idleTime 0
 sudo -u kanna-build defaults write com.apple.screensaver askForPassword -int 0 || true
 
-sysadminctl -autologin set -userName kanna-build -password "$job_pw"
+sudo -u kanna-build sh "$here/skip-setup.sh"
+/usr/bin/python3 "$here/autologin.py" kanna-build
 defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser
 rm -f "$pw_file"

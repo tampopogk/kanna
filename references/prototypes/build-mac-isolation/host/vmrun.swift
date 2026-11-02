@@ -7,6 +7,13 @@ struct TartConfig: Decodable {
 }
 
 let args = CommandLine.arguments
+if args.count == 3, args[1] == "new-identity" {
+    let url = URL(fileURLWithPath: args[2]).appendingPathComponent("config.json")
+    var json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+    json["ecid"] = VZMacMachineIdentifier().dataRepresentation.base64EncodedString()
+    try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]).write(to: url)
+    exit(0)
+}
 guard args.count == 5, let cpus = Int(args[3]), let memoryGiB = UInt64(args[4]) else {
     FileHandle.standardError.write("usage: vmrun VM_DIR SOCKET_DIR CPUS MEMORY_GIB\n".data(using: .utf8)!)
     exit(64)
@@ -110,7 +117,24 @@ config.keyboards = [VZUSBKeyboardConfiguration()]
 config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
 config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
 config.socketDevices = [VZVirtioSocketDeviceConfiguration()]
-config.networkDevices = []
+var pair: [Int32] = [0, 0]
+precondition(socketpair(AF_UNIX, SOCK_DGRAM, 0, &pair) == 0)
+let nullNic = VZVirtioNetworkDeviceConfiguration()
+nullNic.macAddress = VZMACAddress.randomLocallyAdministered()
+nullNic.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: FileHandle(fileDescriptor: pair[0], closeOnDealloc: false))
+let sink = pair[1]
+var droppedFrames = 0
+var droppedBytes = 0
+Thread.detachNewThread {
+    var buffer = [UInt8](repeating: 0, count: 65536)
+    while true {
+        let n = read(sink, &buffer, buffer.count)
+        if n <= 0 { break }
+        droppedFrames += 1
+        droppedBytes += n
+    }
+}
+config.networkDevices = [nullNic]
 config.directorySharingDevices = []
 config.audioDevices = []
 config.serialPorts = []
@@ -121,6 +145,7 @@ try config.validate()
 let summary: [String: Any] = [
     "cpus": cpus, "memory_gib": memoryGiB,
     "network_devices": config.networkDevices.count,
+    "network": "one virtio NIC on a host socketpair; the host reads and discards every frame",
     "directory_sharing_devices": config.directorySharingDevices.count,
     "audio_devices": config.audioDevices.count,
     "serial_ports": config.serialPorts.count,
@@ -148,8 +173,13 @@ final class EgressListener: NSObject, VZVirtioSocketListenerDelegate {
     }
 }
 
+let stats = DispatchSource.makeTimerSource(queue: .main)
+stats.schedule(deadline: .now() + 60, repeating: 60)
+stats.setEventHandler { log("null nic dropped \(droppedFrames) frames, \(droppedBytes) bytes") }
+stats.resume()
+
 final class Delegate: NSObject, VZVirtualMachineDelegate {
-    func guestDidStop(_ virtualMachine: VZVirtualMachine) { log("guest stopped"); exit(0) }
+    func guestDidStop(_ virtualMachine: VZVirtualMachine) { log("guest stopped; null nic dropped \(droppedFrames) frames"); exit(0) }
     func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
         log("guest error: \(error)"); exit(70)
     }

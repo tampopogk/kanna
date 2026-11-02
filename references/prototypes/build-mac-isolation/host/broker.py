@@ -130,6 +130,7 @@ def vm_create(vm, tenant):
     tmp.mkdir()
     for name in ("config.json", "nvram.bin", "disk.img"):
         subprocess.run(["cp", "-c", str(GOLDEN / name), str(tmp / name)], check=True)
+    subprocess.run([str(VMRUN), "new-identity", str(tmp)], check=True)
     (tmp / "sock").mkdir(mode=0o700)
     save(tmp / "owner.json", {"vm": vm, "tenant": tenant, "created": time.time(), "state": "stopped",
                               "golden": str(GOLDEN)})
@@ -498,7 +499,7 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 ADMIN = {
     "vm-create": lambda b: vm_create(b["vm"], b["tenant"]),
     "vm-start": lambda b: vm_start(b["vm"], b.get("cpus", 6), b.get("memory", 8)),
-    "vm-wait": lambda b: vm_wait(b["vm"], b.get("timeout", 600))[0],
+    "vm-wait": lambda b: vm_wait(b["vm"], b.get("timeout", 600)),
     "vm-stop": lambda b: vm_stop(b["vm"], b.get("crash", False)),
     "vm-retire": lambda b: vm_retire(b["vm"]),
     "credential": lambda b: credential(b["vm"], b["name"], base64.b64decode(b["data"]))[0],
