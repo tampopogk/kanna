@@ -726,7 +726,7 @@ pub struct Tasks {
     pub roster: RefCell<Option<Box<dyn Fn() -> Roster>>>,
     pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
     asked: RefCell<HashMap<u64, Asked>>,
-    away: RefCell<HashMap<String, Instant>>,
+    away: RefCell<HashMap<String, Away>>,
     refused: RefCell<HashMap<String, Instant>>,
     syncing: RefCell<HashSet<String>>,
     sync_at: Cell<Instant>,
@@ -774,6 +774,13 @@ enum Asked {
 const SYNC_EVERY: Duration = Duration::from_secs(3);
 
 const AWAY_WAIT: Duration = Duration::from_secs(10);
+
+const AWAY_MAX: Duration = Duration::from_secs(300);
+
+struct Away {
+    until: Instant,
+    wait: Duration,
+}
 
 const REFUSED_WAIT: Duration = Duration::from_secs(10);
 
@@ -1310,12 +1317,25 @@ impl Tasks {
         }
     }
 
+    fn is_away(&self, peer: &str, now: Instant) -> bool {
+        self.away.borrow().get(peer).is_some_and(|away| away.until > now)
+    }
+
+    fn went_away(&self, peer: String) {
+        let wait = self.away.borrow().get(&peer).map_or(AWAY_WAIT, |away| (away.wait * 2).min(AWAY_MAX));
+        self.away.borrow_mut().insert(peer, Away { until: Instant::now() + wait, wait });
+    }
+
+    fn came_back(&self, peer: &str) {
+        self.away.borrow_mut().remove(peer);
+    }
+
     fn sync_all(&self) {
         let machines = self.machines();
         let now = Instant::now();
         let vector = self.replica.borrow().vector();
         for peer in &machines.peers {
-            if self.syncing.borrow().contains(&peer.key) || self.away.borrow().get(&peer.key).is_some_and(|until| *until > now) {
+            if self.syncing.borrow().contains(&peer.key) || self.is_away(&peer.key, now) {
                 continue;
             }
             self.syncing.borrow_mut().insert(peer.key.clone());
@@ -1339,6 +1359,7 @@ impl Tasks {
                 self.syncing.borrow_mut().remove(&peer);
                 match reply {
                     Ok(reply) => {
+                        self.came_back(&peer);
                         self.take_ops(&reply["ops"]);
                         let ops = self.replica.borrow().ops_after(&self.db, &reply["vector"]).unwrap_or_default();
                         if !ops.is_empty() {
@@ -1347,7 +1368,7 @@ impl Tasks {
                     }
                     Err(why) => {
                         log!("kanna-daemon: couldn't sync the Shelf with {}: {why}", machines.name_of(&peer));
-                        self.away.borrow_mut().insert(peer, Instant::now() + AWAY_WAIT);
+                        self.went_away(peer);
                     }
                 }
             }
@@ -1355,16 +1376,18 @@ impl Tasks {
             Asked::Ask { task, birth, owner, repo } => {
                 match reply {
                     Ok(reply) => {
+                        self.came_back(&owner);
                         let epoch = reply["epoch"].as_i64().unwrap_or(0);
                         log!("kanna-daemon: {} granted {task} to this machine for {repo}", machines.name_of(&owner));
                         self.take_grant(&owner, &task, &birth, epoch);
                     }
                     Err(why) if why.ends_with("[unreachable]") => {
                         log!("kanna-daemon: {task} waits: its owner {} is away ({why})", machines.name_of(&owner));
-                        self.away.borrow_mut().insert(owner, Instant::now() + AWAY_WAIT);
+                        self.went_away(owner);
                     }
                     Err(why) => {
                         log!("kanna-daemon: {} didn't grant {task}: {why}", machines.name_of(&owner));
+                        self.came_back(&owner);
                         self.refused.borrow_mut().insert(task, Instant::now() + REFUSED_WAIT);
                         self.sync_at.set(Instant::now());
                     }
@@ -1483,6 +1506,7 @@ impl Tasks {
         let Some(peer) = string(args, kanna_net::PEER).map(String::from) else {
             return Err(bad("replica is for another machine's daemon, over a sync stream"));
         };
+        self.came_back(&peer);
         let task = string(args, "task").unwrap_or_default();
         let birth = string(args, "birth").unwrap_or_default();
         match action {
@@ -1771,7 +1795,6 @@ impl Tasks {
         let starting: HashSet<String> = self.pending.borrow().values().map(|p| p.entry.id.clone()).chain(self.launching.borrow().iter().cloned()).collect();
         let asking: Vec<(String, String)> = self.asked.borrow().values().filter_map(|a| if let Asked::Ask { repo, task, .. } = a { Some((repo.clone(), task.clone())) } else { None }).collect();
         let mut asked: HashSet<String> = asking.iter().map(|(_, task)| task.clone()).collect();
-        self.away.borrow_mut().retain(|_, until| *until > now);
         self.refused.borrow_mut().retain(|_, until| *until > now);
         for repo in repos {
             let slots = runners(&config_files(Path::new(&repo)));
@@ -1814,7 +1837,7 @@ impl Tasks {
                         && !asked.contains(&record.task)
                         && replica.births(&record.task).len() == 1
                         && allowed(&record.list("on"), &machines.me.name)
-                        && !self.away.borrow().contains_key(owner)
+                        && !self.is_away(owner, now)
                         && !self.refused.borrow().contains_key(&record.task)
                         && record.list("after").iter().all(|id| !self.is_open(id) && !replica.open_task(id));
                     if eligible {
@@ -4087,6 +4110,27 @@ mod tests {
         let status = Command::new("git").arg("-C").arg(&other).args(["status", "--porcelain"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&status.stdout), "", "a worktree's .kanna/tmp stays out of git status");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_owner_away_is_asked_again_after_10s_doubling_to_5_minutes_until_it_answers() {
+        let state = std::env::temp_dir().join(format!("kanna-away-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let core = kanna_mux::Core::default();
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0);
+        let waits: Vec<u64> = (0..7).map(|_| {
+            tasks.went_away("mbp".into());
+            tasks.away.borrow()["mbp"].wait.as_secs()
+        }).collect();
+        assert_eq!(waits, [10, 20, 40, 80, 160, 300, 300]);
+        assert!(tasks.is_away("mbp", Instant::now()) && !tasks.is_away("mbp", Instant::now() + Duration::from_secs(301)));
+        assert!(!tasks.is_away("vm", Instant::now()));
+        tasks.came_back("mbp");
+        assert!(!tasks.is_away("mbp", Instant::now()));
+        tasks.went_away("mbp".into());
+        assert_eq!(tasks.away.borrow()["mbp"].wait.as_secs(), 10, "back, then away again, starts over");
+        fs::remove_dir_all(&state).unwrap();
     }
 
     #[test]
