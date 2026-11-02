@@ -28,6 +28,7 @@ final class DaemonLink: TerminalLink {
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
     var onFile: ((String, JSON) -> Void)?
+    var onMarkup: ((String, JSON) -> Void)?
     var onSerial: ((String, JSON) -> Void)?
     var onLost: (() -> Void)?
     private var requests = 0
@@ -37,7 +38,7 @@ final class DaemonLink: TerminalLink {
     var socketPath: String { connection.path }
 
     static let protocols: [JSON] = Protocols.mine.map { .number(Double($0)) }
-    static let localOnly: Set<String> = ["app.machine.confirm", "app.snap"]
+    static let localOnly: Set<String> = ["app.machine.confirm"]
 
     init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
         self.commands = commands
@@ -212,6 +213,8 @@ final class DaemonLink: TerminalLink {
             if let content = args["content"]?.string { onDiff?(content, args) }
         case "file":
             if let content = args["content"]?.string { onFile?(content, args) }
+        case "markup":
+            if let content = args["content"]?.string { onMarkup?(content, args) }
         case "serial":
             if let content = args["content"]?.string { onSerial?(content, args) }
         case "tasks":

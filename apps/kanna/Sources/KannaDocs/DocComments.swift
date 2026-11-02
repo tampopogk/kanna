@@ -249,7 +249,7 @@ package enum DocWait: Equatable {
         case "working": return .typing
         case "needs-you": return .note("Not answered · the agent is waiting on you", warn: true)
         default:
-            if let at = DocStore.date(last.at), now.timeIntervalSince(at) < grace { return .typing }
+            if let at = Doc.date(last.at), now.timeIntervalSince(at) < grace { return .typing }
             return .note("Not answered · the agent stopped", warn: false)
         }
     }

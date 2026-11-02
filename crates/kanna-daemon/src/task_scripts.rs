@@ -182,6 +182,23 @@ impl Task {
     }
 }
 
+pub fn stage_command(vars: &[(&str, String)], command: &str, timeout: u64, log: &Path, exit: &Path) -> String {
+    let vars: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+    let exit = exit.to_string_lossy();
+    format!(
+        "printf 'Running: %s\\n\\n' {shown}; {{ {vars} perl -e 'alarm shift; exec @ARGV' {timeout} \"${{SHELL:-/bin/zsh}}\" -lc {shown}; printf '%s\\n' \"$?\" > {part}; }} 2>&1 | tee {log}; mv {part} {exit}",
+        shown = quote(command),
+        vars = vars.join(" "),
+        part = quote(&format!("{exit}.part")),
+        exit = quote(&exit),
+        log = quote(&log.to_string_lossy()),
+    )
+}
+
+pub fn timed_out(code: i32) -> bool {
+    code == TIMED_OUT
+}
+
 pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration) -> Result<i32, String> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
     let mut cmd = Command::new(shell);

@@ -45,12 +45,13 @@ ws-3 (task-1dfb, Fix login), on the Shelf
   focus: diff, zoomed
   *tab-211 "diff"  diff
    tab-212 "login.md"  file-5:1/2 | term-6:1/2
+  background: term-31
   win-40
     focus: term-9
     *tab-30 "Tab 1"  term-9
 ```
 
-`*` is the shown tab. From a pane in a free window, it's that window; from a pane with no window (Kanna.app closed), it says so.
+`*` is the shown tab. `background:` lists the workspace's terminals in no tab, such as a run's stage terminals ([workspaces §1](workspaces.md#1-the-model)); `--json` has them as each workspace's `background`. From a pane in a free window, it's that window; from a pane with no window (Kanna.app closed), it says so.
 
 ```text
 *win-45  free

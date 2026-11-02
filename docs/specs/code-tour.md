@@ -109,7 +109,7 @@ flowchart TB
 | Markdown | `crates/kanna` (`threads.rs`) | `comment` on a `.md` file adds a thread, written by the agent, to the doc's thread file, quoting the block at that line, after opening the doc for comments as `markup` does (or turning them on in the tab that shows it); the pane picks the thread up as it does a reply, and selects a new one the agent started |
 | Comment command | `crates/kanna-mux` (daemon) | `comment` finds or opens the file's code pane (the same-file rule), asks the app to snap, and puts the comment on the pane's record |
 | Comment in the pane | `apps/kanna/Sources/KannaCode` | the comment box above its lines, tint and dim |
-| Snap | `apps/kanna/Sources/Kanna` | `AppCommands.swift`: answers the daemon's `app.snap` (path, line, last) with the snapped lines, from `kanna-syntax`'s scopes; the daemon sends any `app.` command to the app, as it does `debug.` ones |
+| Snap | `apps/kanna/Sources/Kanna` | `AppCommands.swift`: answers the daemon's `app.snap` (path, line, last, and the file's text, which the daemon reads) with the snapped lines, from `kanna-syntax`'s scopes; the daemon sends any `app.` command to the app, as it does `debug.` ones |
 | Contents | `apps/kanna/Sources/Kanna/Panes` | passes a code pane its comment |
 
 - **The comment lives on the code pane's record**, `comment: {path, first, last, text}`, so the saved layout keeps it and it goes when the pane closes. A pane shows it while it shows that file.

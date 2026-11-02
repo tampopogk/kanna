@@ -196,15 +196,16 @@ pub static COMMANDS: &[Command] = &[
         name: "move",
         group: "Panes",
         summary: "Move a pane next to another pane, swap two panes, move a pane to another tab or window, or dock it.",
-        usage: "kanna move PANE --to OTHER [--side left|right|top|bottom|swap]\n       kanna move PANE --tab [TAB|new] [--window WINDOW]\n       kanna move PANE --window WINDOW|new\n       kanna move PANE --dock [left|right] [--window WINDOW|new]",
+        usage: "kanna move PANE --to OTHER [--side left|right|top|bottom|swap]\n       kanna move PANE --tab [TAB|new] [--window WINDOW]\n       kanna move PANE --window WINDOW|new\n       kanna move PANE --dock [left|right] [--window WINDOW|new]\n       kanna move PANE --background",
         options: &[
             ("--to OTHER", "The pane to move next to."),
             ("--side SIDE", "left, right, top or bottom of OTHER (takes half its space), or swap (default)."),
             ("--tab [TAB|new]", "Move into that tab, or a new tab (the default). Undocks a docked pane."),
             ("--window WINDOW|new", "Move into a new tab of that window (as --tab new --window), or a new window."),
             ("--dock [left|right]", "Make it its window's docked pane (or that window's), on the left (default) or right edge; or move the docked pane to that edge. A pane already docked there moves to a new tab."),
+            ("--background", "Put it in its task's workspace's background: still the task's and running, but in no tab and never drawn."),
         ],
-        notes: "Moving a docked pane to a tab, a window or beside a pane undocks it. A docked pane can't be split: --to it only swaps. A frozen docked pane doesn't move, and nothing moves onto it or into its dock. A docked pane is a running task, so --dock moves only the pane that's docked already: start a task with `kanna task start`. A task's agent is frozen.",
+        notes: "Moving a docked pane to a tab, a window or beside a pane undocks it. A docked pane can't be split: --to it only swaps. A frozen docked pane doesn't move, and nothing moves onto it or into its dock. A docked pane is a running task, so --dock moves only the pane that's docked already: start a task with `kanna task start`. A task's agent is frozen. A run's stages run in its task's background; `kanna move PANE --tab` shows one, and --background puts it back.",
         examples: &[
             ("kanna move logs --to server --side bottom", "Put logs below server."),
             ("kanna move logs --window new", "Move logs into a new window."),
@@ -229,7 +230,13 @@ pub static COMMANDS: &[Command] = &[
                 }
                 out.insert("dock".into(), json!(edge.unwrap_or_else(|| "left".into())));
             }
-            if !["to", "tab", "window", "dock"].iter().any(|k| out.contains_key(*k)) {
+            if args.flag("--background") {
+                if out.len() > 1 {
+                    return Err(usage("move", "--background goes on its own"));
+                }
+                out.insert("background".into(), json!(true));
+            }
+            if !["to", "tab", "window", "dock", "background"].iter().any(|k| out.contains_key(*k)) {
                 return Err(usage("move", "say where: --to OTHER, --tab [TAB|new], --window WINDOW|new or --dock [left|right]"));
             }
             Ok(Value::Object(out))
@@ -588,10 +595,10 @@ pub static COMMANDS: &[Command] = &[
         summary: "Check a pipeline of the software factory, or list the repo's, with each one's worst case.",
         usage: "kanna pipeline list\n       kanna pipeline check NAME|FILE",
         options: &[],
-        notes: "A pipeline is .kanna/pipelines/NAME.pipe in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/pipeline-language.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it, and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
+        notes: "A pipeline is .kanna/pipelines/NAME.kojo in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/kojo.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it, and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
         examples: &[
-            ("kanna pipeline check feature", "Check .kanna/pipelines/feature.pipe of this repo."),
-            ("kanna pipeline check ~/work/app/.kanna/pipelines/bugfix.pipe --json", "Check a file; its errors, warnings and worst case as JSON."),
+            ("kanna pipeline check feature", "Check .kanna/pipelines/feature.kojo of this repo."),
+            ("kanna pipeline check ~/work/app/.kanna/pipelines/bugfix.kojo --json", "Check a file; its errors, warnings and worst case as JSON."),
             ("kanna pipeline list", "The repo's pipelines, each valid with its worst case, or how many errors it has."),
         ],
         parse: |args| match args.positional().as_deref() {
@@ -604,6 +611,28 @@ pub static COMMANDS: &[Command] = &[
             None => Err(usage("pipeline", "missing list or check")),
         },
         show: |_, _| String::new(),
+    },
+    Command {
+        name: "run",
+        group: "Information",
+        summary: "Build a task's change through a pipeline: start a run from the task's terminal, list runs, show one, read its log, resume a paused one, or stop it.",
+        usage: "kanna run start PIPELINE [--request FILE|TEXT]\n       kanna run list [--all]\n       kanna run show [RUN] [--json]\n       kanna run log [RUN]\n       kanna run stop [RUN]\n       kanna run resume [RUN] [TEXT]\n       kanna run done [pass|fail] [--answer FILE]\n       kanna run need TEXT",
+        options: &[
+            ("--request FILE|TEXT", "start: what the run builds, given to every agent stage: a file's text, or the text itself. Default: the task's first message."),
+            ("--all", "list: every repo's runs, not only this repo's."),
+            ("--answer FILE", "done: the stage's final answer. Default: the file in $KANNA_ANSWER, which the stage's prompt names."),
+        ],
+        notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal in the task's workspace's background, in no tab until you show it with kanna move PANE --tab (kanna move PANE --background puts it back). The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: it removes its worktree, keeps its branch and tells the task's agent the branch is ready, with how to take it (git merge --ff-only run/TASK-N in the task's worktree), as it tells it when the run is stuck, waits on you or stops. The task's agent decides whether to merge it; from the task's worktree the change goes to main as any task's work. Closing the task stops its live runs.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. Agent stages take claude or codex, which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, show and log take the latest run of the task the terminal is in, and stop and resume its live run, refusing with the list when it has several. A task can have any number of runs at once, each on its own branch and worktree; each run's budget is its own, and a run over it waits and tells the task's agent. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
+        examples: &[
+            ("kanna run start feature", "Build this task's change through .kanna/pipelines/feature.kojo."),
+            ("kanna run start bugfix --request notes/bug.md", "Run bugfix.kojo with the bug's write-up as the request."),
+            ("kanna run show --json", "This task's latest run: its revision, every visit with its verdict and answer, and the worker running now."),
+            ("kanna run log run-7f3a", "What happened in run-7f3a, oldest first."),
+            ("kanna run resume \"Use blue.\"", "Answer the stage this task's run paused on; its agent carries on with that."),
+            ("kanna run stop", "Stop this task's run where it is; its branch is kept."),
+        ],
+        parse: parse_run,
+        show: output::run,
     },
     Command {
         name: "status",
@@ -1004,6 +1033,74 @@ fn parse_quiz(args: &mut Argv) -> Result<Value, Failure> {
     }
     if let Some(doc) = doc {
         out["doc"] = doc;
+    }
+    Ok(out)
+}
+
+fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
+    let request = args.option("--request")?;
+    let answer = args.option("--answer")?;
+    let all = args.flag("--all");
+    let action = args.positional().ok_or_else(|| usage("run", "say what: start, list, show, log, resume or stop"))?;
+    let mut out = json!({ "action": action });
+    if let Some(by) = caller() {
+        out["by"] = json!(by);
+    }
+    if let Ok(here) = std::env::current_dir() {
+        out["cwd"] = json!(here.to_string_lossy());
+    }
+    if request.is_some() && action != "start" {
+        return Err(usage("run", "--request is for run start"));
+    }
+    if all && action != "list" {
+        return Err(usage("run", "--all is for run list"));
+    }
+    if answer.is_some() && action != "done" {
+        return Err(usage("run", "--answer is for run done"));
+    }
+    match action.as_str() {
+        "start" => {
+            let pipeline = args.positional().ok_or_else(|| usage("run", "start needs a PIPELINE: a name in .kanna/pipelines or a .kojo file"))?;
+            out["pipeline"] = json!(if pipeline.ends_with(".kojo") || pipeline.contains('/') { absolute(&pipeline) } else { pipeline });
+            if let Some(request) = request {
+                let file = std::path::Path::new(&request);
+                out["request"] = json!(if file.is_file() { std::fs::read_to_string(file).map_err(|e| usage("run", &format!("can't read {request}: {e}")))? } else { request });
+            }
+        }
+        "list" => {
+            out["all"] = json!(all);
+            if let Ok(repo) = repo_here() {
+                out["repo"] = json!(repo);
+            }
+        }
+        "done" => {
+            if let Some(verdict) = args.positional() {
+                if verdict != "pass" && verdict != "fail" {
+                    return Err(usage("run", &format!("done takes pass or fail, not \"{verdict}\"")));
+                }
+                out["verdict"] = json!(verdict);
+            }
+            let file = answer.or_else(|| std::env::var("KANNA_ANSWER").ok().filter(|f| std::path::Path::new(f).is_file()));
+            if let Some(file) = file {
+                out["answer"] = json!(std::fs::read_to_string(&file).map_err(|e| usage("run", &format!("can't read the answer {file}: {e}")))?);
+            }
+        }
+        "need" => out["text"] = json!(args.rest().ok_or_else(|| usage("run", "need says what: kanna run need TEXT"))?),
+        "resume" => {
+            let mut words = args.positionals();
+            if words.first().is_some_and(|w| w.starts_with("run-")) {
+                out["run"] = json!(words.remove(0));
+            }
+            if !words.is_empty() {
+                out["text"] = json!(words.join(" "));
+            }
+        }
+        "show" | "log" | "stop" => {
+            if let Some(run) = args.positional() {
+                out["run"] = json!(run);
+            }
+        }
+        other => return Err(usage("run", &format!("unknown action \"{other}\" (start, list, show, log, stop, resume, done or need)"))),
     }
     Ok(out)
 }

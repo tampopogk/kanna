@@ -141,6 +141,61 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         doc text not null default '{}' check (json_valid(doc))
     );
     create unique index schedules_by_name on schedules (coalesce(repo, ''), name) where name is not null;
+"), Step::Sql("
+    create table runs (
+        id text primary key,
+        task text not null,
+        repo text not null,
+        pipeline text not null,
+        revision_hash text not null,
+        branch text not null,
+        state text not null check (state in ('running', 'waiting', 'paused', 'done', 'stopped')),
+        started_at real not null,
+        ended_at real,
+        outcome text,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create index runs_by_task on runs (task, started_at);
+    create index runs_by_repo on runs (repo, started_at);
+    create index runs_by_state on runs (state);
+    create table run_revisions (
+        run text not null references runs (id),
+        n integer not null,
+        at real not null,
+        by text not null,
+        hash text not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        primary key (run, n)
+    );
+    create table run_stages (
+        id integer primary key,
+        run text not null references runs (id),
+        stage text not null,
+        visit integer not null,
+        instance text,
+        kind text not null,
+        agent text,
+        machine text not null,
+        started_at real not null,
+        ended_at real,
+        verdict text,
+        session text,
+        terminal text,
+        worktree text,
+        branch text,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create index run_stages_by_run on run_stages (run, id);
+    create index run_stages_open on run_stages (ended_at, run);
+    create table run_events (
+        id integer primary key,
+        run text not null references runs (id),
+        at real not null,
+        what text not null,
+        by text,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create index run_events_by_run on run_events (run, at);
 ")];
 
 pub const RECENT: usize = 10;
@@ -771,6 +826,173 @@ impl Db {
     pub fn repos(&self) -> rusqlite::Result<Vec<String>> {
         let mut statement = self.conn.prepare("select repo from tasks union select path from projects order by 1")?;
         let rows = statement.query_map([], |r| r.get(0))?;
+        rows.collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunRow {
+    pub id: String,
+    pub task: String,
+    pub repo: String,
+    pub pipeline: String,
+    pub revision_hash: String,
+    pub branch: String,
+    pub state: String,
+    pub started_at: f64,
+    pub ended_at: Option<f64>,
+    pub outcome: Option<String>,
+    pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StageRow {
+    pub id: i64,
+    pub run: String,
+    pub stage: String,
+    pub visit: i64,
+    pub instance: Option<String>,
+    pub kind: String,
+    pub agent: Option<String>,
+    pub machine: String,
+    pub started_at: f64,
+    pub ended_at: Option<f64>,
+    pub verdict: Option<String>,
+    pub session: Option<String>,
+    pub terminal: Option<String>,
+    pub worktree: Option<String>,
+    pub branch: Option<String>,
+    pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunEvent {
+    pub at: f64,
+    pub what: String,
+    pub by: Option<String>,
+    pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Revision {
+    pub n: i64,
+    pub at: f64,
+    pub by: String,
+    pub hash: String,
+    pub doc: Value,
+}
+
+const RUN: &str = "id, task, repo, pipeline, revision_hash, branch, state, started_at, ended_at, outcome, doc";
+
+const STAGE: &str = "id, run, stage, visit, instance, kind, agent, machine, started_at, ended_at, verdict, session, terminal, worktree, branch, doc";
+
+fn run_row(r: &rusqlite::Row) -> rusqlite::Result<RunRow> {
+    Ok(RunRow { id: r.get(0)?, task: r.get(1)?, repo: r.get(2)?, pipeline: r.get(3)?, revision_hash: r.get(4)?, branch: r.get(5)?, state: r.get(6)?, started_at: r.get(7)?, ended_at: r.get(8)?, outcome: r.get(9)?, doc: doc_of(r.get(10)?) })
+}
+
+fn stage_row(r: &rusqlite::Row) -> rusqlite::Result<StageRow> {
+    Ok(StageRow {
+        id: r.get(0)?,
+        run: r.get(1)?,
+        stage: r.get(2)?,
+        visit: r.get(3)?,
+        instance: r.get(4)?,
+        kind: r.get(5)?,
+        agent: r.get(6)?,
+        machine: r.get(7)?,
+        started_at: r.get(8)?,
+        ended_at: r.get(9)?,
+        verdict: r.get(10)?,
+        session: r.get(11)?,
+        terminal: r.get(12)?,
+        worktree: r.get(13)?,
+        branch: r.get(14)?,
+        doc: doc_of(r.get(15)?),
+    })
+}
+
+impl Db {
+    pub fn new_run_id(&self) -> rusqlite::Result<String> {
+        loop {
+            let id = format!("run-{}", &random_id()?["task-".len()..]);
+            if self.conn.query_row("select 1 from runs where id = ?1", [&id], |_| Ok(())).optional()?.is_none() {
+                return Ok(id);
+            }
+        }
+    }
+
+    pub fn put_run(&self, run: &RunRow, event: Option<(&str, Option<&str>, &Value)>) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "insert into runs (id, task, repo, pipeline, revision_hash, branch, state, started_at, ended_at, outcome, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+             on conflict (id) do update set revision_hash = excluded.revision_hash, state = excluded.state, ended_at = excluded.ended_at, outcome = excluded.outcome, doc = json_patch(runs.doc, excluded.doc)",
+            params![run.id, run.task, run.repo, run.pipeline, run.revision_hash, run.branch, run.state, run.started_at, run.ended_at, run.outcome, run.doc.to_string()],
+        )?;
+        if let Some((what, by, doc)) = event {
+            tx.execute("insert into run_events (run, at, what, by, doc) values (?1, ?2, ?3, ?4, ?5)", params![run.id, now(), what, by, doc.to_string()])?;
+        }
+        tx.commit()
+    }
+
+    pub fn run_event(&self, run: &str, what: &str, by: Option<&str>, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into run_events (run, at, what, by, doc) values (?1, ?2, ?3, ?4, ?5)", params![run, now(), what, by, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn runs(&self, repo: Option<&str>) -> rusqlite::Result<Vec<RunRow>> {
+        let mut statement = self.conn.prepare(&format!("select {RUN} from runs where ?1 is null or repo = ?1 order by started_at, id"))?;
+        let rows = statement.query_map([repo], run_row)?;
+        rows.collect()
+    }
+
+    pub fn live_runs(&self) -> rusqlite::Result<Vec<RunRow>> {
+        let mut statement = self.conn.prepare(&format!("select {RUN} from runs where state in ('running', 'waiting', 'paused') order by started_at, id"))?;
+        let rows = statement.query_map([], run_row)?;
+        rows.collect()
+    }
+
+    pub fn runs_of(&self, task: &str) -> rusqlite::Result<Vec<RunRow>> {
+        let mut statement = self.conn.prepare(&format!("select {RUN} from runs where task = ?1 order by started_at, id"))?;
+        let rows = statement.query_map([task], run_row)?;
+        rows.collect()
+    }
+
+    pub fn add_revision(&self, run: &str, by: &str, hash: &str, doc: &Value) -> rusqlite::Result<i64> {
+        let n: i64 = self.conn.query_row("select coalesce(max(n), 0) + 1 from run_revisions where run = ?1", [run], |r| r.get(0))?;
+        self.conn.execute("insert into run_revisions (run, n, at, by, hash, doc) values (?1, ?2, ?3, ?4, ?5, ?6)", params![run, n, now(), by, hash, doc.to_string()])?;
+        Ok(n)
+    }
+
+    pub fn revisions(&self, run: &str) -> rusqlite::Result<Vec<Revision>> {
+        let mut statement = self.conn.prepare("select n, at, by, hash, doc from run_revisions where run = ?1 order by n")?;
+        let rows = statement.query_map([run], |r| Ok(Revision { n: r.get(0)?, at: r.get(1)?, by: r.get(2)?, hash: r.get(3)?, doc: doc_of(r.get(4)?) }))?;
+        rows.collect()
+    }
+
+    pub fn put_stage(&self, stage: &StageRow) -> rusqlite::Result<i64> {
+        if stage.id == 0 {
+            self.conn.execute(
+                "insert into run_stages (run, stage, visit, instance, kind, agent, machine, started_at, ended_at, verdict, session, terminal, worktree, branch, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![stage.run, stage.stage, stage.visit, stage.instance, stage.kind, stage.agent, stage.machine, stage.started_at, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string()],
+            )?;
+            return Ok(self.conn.last_insert_rowid());
+        }
+        self.conn.execute(
+            "update run_stages set ended_at = ?2, verdict = ?3, session = ?4, terminal = ?5, worktree = ?6, branch = ?7, doc = json_patch(doc, ?8) where id = ?1",
+            params![stage.id, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string()],
+        )?;
+        Ok(stage.id)
+    }
+
+    pub fn stages(&self, run: &str) -> rusqlite::Result<Vec<StageRow>> {
+        let mut statement = self.conn.prepare(&format!("select {STAGE} from run_stages where run = ?1 order by id"))?;
+        let rows = statement.query_map([run], stage_row)?;
+        rows.collect()
+    }
+
+    pub fn run_events(&self, run: &str) -> rusqlite::Result<Vec<RunEvent>> {
+        let mut statement = self.conn.prepare("select at, what, by, doc from run_events where run = ?1 order by at, id")?;
+        let rows = statement.query_map([run], |r| Ok(RunEvent { at: r.get(0)?, what: r.get(1)?, by: r.get(2)?, doc: doc_of(r.get(3)?) }))?;
         rows.collect()
     }
 }

@@ -446,6 +446,19 @@ fn states(t: &Terminal) -> Vec<(String, ProgramState)> {
 }
 
 #[test]
+fn every_turn_the_program_reports_is_counted_even_between_looks() {
+    let mut t = Terminal::new(20, 5, 0).unwrap();
+    t.write(b"\x1b]7501;state=idle\x1b\\");
+    assert_eq!(t.program_turns(), 0);
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=idle\x1b\\");
+    t.write(b"\x1b]7501;state=working:id=sub\x1b\\\x1b]7501;state=done:id=sub\x1b\\");
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=blocked\x1b\\\x1b]7501;state=done\x1b\\");
+    assert_eq!(t.program_turns(), 1);
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=done\x1b\\");
+    assert_eq!(t.program_turns(), 2);
+}
+
+#[test]
 fn the_program_status_query_is_answered_and_nothing_is_echoed() {
     let mut t = Terminal::new(20, 5, 0).unwrap();
     let answer = "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth";

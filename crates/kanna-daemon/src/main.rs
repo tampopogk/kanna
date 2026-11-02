@@ -22,6 +22,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod reader;
+mod runs;
 mod schedule;
 mod settings;
 mod shell;
@@ -30,6 +31,8 @@ mod status_command;
 mod diffs;
 mod machines;
 mod files;
+mod reads;
+mod screenshot;
 mod serial;
 mod store;
 mod stacks;
@@ -341,6 +344,14 @@ fn run() -> Result<Option<PathBuf>, String> {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
     }));
+    let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks)));
+    runs.install(&core);
+    let closing = Rc::downgrade(&runs);
+    *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = closing.upgrade() {
+            runs.task_closed(task);
+        }
+    }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
@@ -364,7 +375,10 @@ fn run() -> Result<Option<PathBuf>, String> {
     diffs.install(&core);
     perf::install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
-    files.install(&core);
+    files.install(&core, "files");
+    let threads = Rc::new(files::Files::new(events.clone()));
+    threads.install(&core, "threads");
+    reads::install(&core);
     let serial = Rc::new(serial::Serial::new(events.clone(), &state_dir));
     serial.install(&core);
     let host = Rc::new(Host::new(terminals.clone(), serial.clone()));
@@ -415,7 +429,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
-    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), files.clone(), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -459,7 +473,13 @@ fn run() -> Result<Option<PathBuf>, String> {
     let file_link = Rc::downgrade(&app);
     *files.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = file_link.upgrade() {
-            app.file(views, payload);
+            app.file("file", views, payload);
+        }
+    }));
+    let threads_link = Rc::downgrade(&app);
+    *threads.on_file.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = threads_link.upgrade() {
+            app.file("markup", views, payload);
         }
     }));
     let on_start = Rc::downgrade(&app);
@@ -474,7 +494,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         "screenshot",
         Rc::new(move |args, responder| {
             if let Some(link) = screenshot.upgrade() {
-                link.forward("screenshot", args, responder);
+                screenshot::take(&link, args, responder);
             }
         }),
     );
@@ -595,7 +615,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         let ticks = if shutdown.is_none() {
             crashes.tick(Instant::now(), app.attached());
             tasks.sweep();
-            [tasks.tick(), scheduler.tick()].into_iter().flatten().min()
+            [tasks.tick(), scheduler.tick(), runs.tick()].into_iter().flatten().min()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
@@ -653,6 +673,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
                     app.status(&pane, status);
                     tasks.status(&pane, status, ended);
+                    runs.status(&pane, ended);
                 }
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),
@@ -665,7 +686,10 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Finished { task, changes } => tasks.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
-            Event::File { id, read } => files.loaded(&id, read),
+            Event::File { id, read } => {
+                files.loaded(&id, read.clone());
+                threads.loaded(&id, read);
+            }
             Event::Serial(event) => serial.event_in(event),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();

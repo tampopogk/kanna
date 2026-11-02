@@ -74,8 +74,9 @@ struct CallTreeTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("docs/rename.md").path
         let target = MarkdownRenderer.codeLink(path: file, line: 3)
-        #expect(MarkdownPaneView.action(for: target, from: file) == .openCode(file, 3))
-        #expect(MarkdownPaneView.action(for: "rename.md#L3", from: file) == .openCode(file, 3))
-        #expect(MarkdownPaneView.action(for: "rename.md", from: file) == .showMarkdown(file))
+        let url = URL(fileURLWithPath: file)
+        #expect(MarkdownPaneView.action(for: target, from: file) == .file(url, line: 3))
+        #expect(MarkdownPaneView.action(for: "rename.md#L3", from: file) == .file(url, line: 3))
+        #expect(MarkdownPaneView.action(for: "rename.md", from: file) == .file(url, line: nil))
     }
 }

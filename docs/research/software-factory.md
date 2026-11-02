@@ -1,6 +1,6 @@
 # Research: a software factory for Kanna
 
-**For:** [software factory](../specs/software-factory.md), [pipeline language](../specs/pipeline-language.md) · **Date:** 2026-10-31
+**For:** [software factory](../specs/software-factory.md), [Kojo](../specs/kojo.md) · **Date:** 2026-10-31
 
 What was looked at before designing Kanna's pipelines: kojo's factory language and runner in depth, the workflow engines and agent frameworks that solve the same problems, and the evidence on which stages make agent-written code better. Each section ends with what Kanna takes from it.
 
@@ -107,7 +107,7 @@ About 140 sources were read (papers, vendor engineering posts, field studies; th
 | The whole flow syntax: `NAME = …`, arrows, `[pass]`, `[fail]`, `[max N]`, `[reset]`, `[progress]`, `done`, first-matching-arrow, every loop bounded, worst case computed, errors with file and line | kojo | kojo's fixed kinds and benchmark checkers | Kanna's stages are any agent, any command, a question, a merge |
 | Verdict stages ending `VERDICT: PASS\|FAIL`; feedback appended under a heading; a fresh conversation per stage | kojo; evidence #8 | continuing one conversation through review and fix | fresh context with an explicit artifact beats a long one |
 | `guard STAGE` and `xN by STAGE` as attributes | kojo; evidence #4 | best-of-n as the default | cost about linear in n; a first pipeline runs n=1 |
-| Tests the agent can't edit as the gate (`run`), a reproduction test first (`bugfix.pipe`), a reviewer of another model, the spec settled with you before the pipeline starts | evidence #1, #2, #9, #5 | review by the author's own session | self-review without execution measures nothing |
+| Tests the agent can't edit as the gate (`run`), a reproduction test first (`bugfix.kojo`), a reviewer of another model, the spec settled with you before the pipeline starts | evidence #1, #2, #9, #5 | review by the author's own session | self-review without execution measures nothing |
 | Fan-out over a stage's named JSON output (`each`), the join a stage of its own | Workflow tool `pipeline`, Argo `withParam`, Dagster `DynamicOut` | instance counts fixed in the file | the plan knows the parts |
 | Gates as stages that wait (`ask`), answered from the Desk or the CLI | Argo `suspend`, Step Functions' token, the Workflow tool's rule against mid-run input | a question in the agent's chat | the daemon drives, and the answer is recorded as an intervention |
 | A run's pipeline can change: a stage declared `emits` adds stages and arrows as a new, validated revision, and so can the user | the user's requirement; Temporal child workflows, orchestrator-workers | a run that rewrites its own file freely | every revision is validated, bounded by the budget, kept and shown |
