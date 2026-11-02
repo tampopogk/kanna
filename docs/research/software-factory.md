@@ -1,6 +1,6 @@
 # Research: a software factory for Kanna
 
-**For:** [software factory](../specs/software-factory.md), [pipeline language](../specs/pipeline-language.md) · **Date:** 2026-10-31
+**For:** [software factory](../specs/software-factory.md), [Kojo](../specs/kojo.md) · **Date:** 2026-10-31
 
 What was looked at before designing Kanna's pipelines: kojo's factory language and runner in depth, the workflow engines and agent frameworks that solve the same problems, and the evidence on which stages make agent-written code better. Each section ends with what Kanna takes from it.
 

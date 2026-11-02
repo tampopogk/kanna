@@ -1,6 +1,6 @@
 # Software factory
 
-**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates, fan-out, revisions, the Run tab and metrics not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [pipeline language](pipeline-language.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
+**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates, fan-out, revisions, the Run tab and metrics not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [Kojo](kojo.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
 
 A **pipeline** says how an approved change gets built: its stages (plan, build, review, tests, your go-ahead, merge), who does each (an agent, a command, you, git), and where a failure goes (a bounded loop back to a fix). Any task's agent can **run** one; the daemon drives it in the task's background terminals, and a **Run** tab shows where it is. Every stage's numbers and your interventions go in `kanna.db`, to compare and tune pipelines.
 
@@ -64,8 +64,8 @@ flowchart LR
 
 - **Daemon owns runs:** it moves a run along the pipeline's arrows; a gate picks the arrow: a stage's verdict (an exit code, a reviewer's `pass` or `fail`), or an `ask`, answered by you or by the task's agent when you've let it (`kanna run answer`).
 - **Roles:** the task's agent starts, reads, resumes and stops runs; skip, retry and edit are yours.
-- **Stage inputs:** a stage's agent gets only the stage's prompt file, the request, the last failure's feedback, and the earlier stages' named outputs its prompt asks for, as `{{STAGE.KEY}}` ([pipeline language §5](pipeline-language.md#5-inputs-and-outputs)).
-- **Revisions:** a stage marked `emits` may propose a pipeline change in its answer; the daemon checks it and adopts it as the run's next revision ([pipeline language §7](pipeline-language.md#7-changing-a-pipeline-while-it-runs); not built yet).
+- **Stage inputs:** a stage's agent gets only the stage's prompt file, the request, the last failure's feedback, and the earlier stages' named outputs its prompt asks for, as `{{STAGE.KEY}}` ([Kojo §5](kojo.md#5-inputs-and-outputs)).
+- **Revisions:** a stage marked `emits` may propose a pipeline change in its answer; the daemon checks it and adopts it as the run's next revision ([Kojo §7](kojo.md#7-changing-a-pipeline-while-it-runs); not built yet).
 - **Stage end:** its agent reports done (`kanna run done`), its command exits, you answer, or its `within` passes; `kanna run need` pauses the run. Kanna reads no screen and times no idleness; the agent's own status report (OSC 7501) marks its turn's end, so agent stages take claude or codex ([6.1](#61-sequential-runs-as-built)).
 - **Events:** the daemon steps a run on a report, a turn's end, a worker's terminal ending, a visit opening or concluding, or its own start, and otherwise sleeps until the next deadline: a `within`, or 10s for a reported agent to end its turn.
 - **Workers:** every visit runs in a worker, here or on a peer; the run sees only its verdict, answer and commits, and records its `machine`.
@@ -101,7 +101,7 @@ sequenceDiagram
     R->>R: the run's branch fast-forwards, the visit ends, pick the next arrow
 ```
 
-- **Other machines (`on PLACEMENT`, [pipeline language §3](pipeline-language.md#3-attributes)):** one stage's worker runs on another of your machines, granted as a task is ([tasks across machines](machine-tasks.md)): branch over as a git bundle, result back as the worker's replicated record and a bundle of commits; the run stays put. A command stage needs the repo cloned there, an agent stage the machine signed in ([agent sign-in](agent-sign-in.md)). Its terminal shows in a tab over the link as any remote terminal.
+- **Other machines (`on PLACEMENT`, [Kojo §3](kojo.md#3-attributes)):** one stage's worker runs on another of your machines, granted as a task is ([tasks across machines](machine-tasks.md)): branch over as a git bundle, result back as the worker's replicated record and a bundle of commits; the run stays put. A command stage needs the repo cloned there, an agent stage the machine signed in ([agent sign-in](agent-sign-in.md)). Its terminal shows in a tab over the link as any remote terminal.
 - **Placement:** a name picks that machine, a role (`mac`, `e2e`) any machine declaring it with a free slot, `any` whichever asks first, `here` the run's own. Matching by capability beyond roles is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays). A stage whose placement is offline waits, and the run says so; `within` bounds the wait.
 - **Unit of travel:** a visit, from a commit to a report or exit code, like a task's turn, so the transfer protocol carries it as it is.
 - **Until machines are built:** every placement is this machine and `on` with another name fails the check; the remote worker is a Machines task ([build order](software-factory-build-order.md)). First use: `e2e` on a second Mac, away from the dev Kanna.
@@ -235,7 +235,7 @@ RUN defaults to the task the terminal is in: `show`, `log` and `open run` take i
 - **A `merge main` stage gated by an `ask`:** the run would land on main from a branch you never had in your worktree.
 - **The run fast-forwarding the task's worktree at hand-back** (the first build): it moved the task's branch under the task's agent and had to guess what to do with local changes.
 - **YAML or JSON pipelines:** the arrows are the point, and a flow line reads as the diagram; kojo's grammar is proven on 30 factories.
-- **A run that rewrites its own file:** revisions come from a declared `emits` stage or from you, validated and bounded ([pipeline language §7](pipeline-language.md#7-changing-a-pipeline-while-it-runs)).
+- **A run that rewrites its own file:** revisions come from a declared `emits` stage or from you, validated and bounded ([Kojo §7](kojo.md#7-changing-a-pipeline-while-it-runs)).
 - **Test count and pass rate as quality:** all tests must pass to land; the quality columns are the Code quality metrics task's.
 
 ## 9. Build tasks
@@ -246,7 +246,7 @@ The tasks for the planner, in order, are in [software factory build order](softw
 
 | Term | Meaning |
 |---|---|
-| **Pipeline** | A `.pipe` file in `.kanna/pipelines/` ([pipeline language](pipeline-language.md)) |
+| **Pipeline** | A `.pipe` file in `.kanna/pipelines/` ([Kojo](kojo.md)) |
 | **Run** | The task's agent building one change through a pipeline, from request to handed back |
 | **The task's agent** | The agent you talk to, docked in the task: it starts, reads, answers for and stops runs, and takes their branches |
 | **A stage's agent** | The agent a stage runs in one of the run's background terminals, for one visit |
