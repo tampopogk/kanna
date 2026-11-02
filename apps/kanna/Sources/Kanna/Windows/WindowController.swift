@@ -205,7 +205,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         if taskless {
         } else if desk {
             deskStrip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: DeskStrip.height)
-            deskStrip.show(DeskOrder.byAge(others, made: \.made), keys: keys, waiting: shelf.count)
+            deskStrip.show(DeskOrder.strip(others), keys: keys, waiting: shelf.count)
             bounds = NSRect(x: 0, y: DeskStrip.height, width: bounds.width, height: bounds.height - DeskStrip.height)
         }
         var side = bounds

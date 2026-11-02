@@ -42,6 +42,21 @@ struct DeskOrderTests {
         #expect(DeskOrder.keys(desk.keyed) == ["d": "⌘1", "b": "⌘2"])
     }
 
+    @Test func theStripListsTheOtherTasksInKeyOrder() {
+        var desk = Desk(active: "a", recent: ["c", "b"])
+        #expect(DeskOrder.strip(desk.keyed) == ["c", "b"])
+        desk.press(1)
+        #expect(DeskOrder.strip(desk.keyed) == ["a", "b"])
+        desk.needs = ["b"]
+        #expect(DeskOrder.strip(desk.keyed) == ["b", "a"])
+    }
+
+    @Test func withNoTaskActiveTheStripListsCommandOneThenCommandTwoThenTheUnkeyedTask() {
+        #expect(DeskOrder.strip(["a", "b", "c"]) == ["a", "c", "b"])
+        #expect(DeskOrder.strip(["b"]) == ["b"])
+        #expect(DeskOrder.strip([String]()) == [])
+    }
+
     @Test func withNoTaskActiveCommandTwoIsTheTaskLeftLongestAgo() {
         #expect(DeskOrder.task(["a", "b", "c"], key: 2) == "c")
         #expect(DeskOrder.keys(["a", "b", "c"]) == ["a": "⌘1", "c": "⌘2"])

@@ -18,6 +18,11 @@ public enum DeskOrder {
         }
     }
 
+    public static func strip<T>(_ keyed: [T]) -> [T] {
+        guard keyed.count > 2, let first = keyed.first, let last = keyed.last else { return keyed }
+        return [first, last] + keyed.dropFirst().dropLast()
+    }
+
     public static func keys(_ keyed: [String]) -> [String: String] {
         guard let first = keyed.first, let last = keyed.last else { return [:] }
         return first == last ? [first: "⌘1"] : [first: "⌘1", last: "⌘2"]

@@ -6,7 +6,7 @@ Kanna's task words say where a task is from the user's side. The **Desk** holds 
 
 | Desk view | The active task |
 |---|---|
-| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, the strip below starting with a muted ⌘. Desk, then the Desk's other tasks oldest first](desk-view-task.png) |
+| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, the strip below starting with a muted ⌘. Desk, then the Desk's other tasks in key order, ⌘1 then ⌘2, each key before its name](desk-view-task.png) |
 
 *(From the mockup: `#picture-desk&hover=p3` and `#picture`.)*
 
@@ -49,15 +49,15 @@ stateDiagram-v2
 - **⌘. toggles.** From the active task it shows the Desk view; the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
 - **"Pull back the task parked last" becomes "the active task".** With none active (it was Done or moved to the Shelf), ⌘. makes the Desk's ⌘1 task active: the one left last, or one that needs you. That was the old "task parked last", so the key does what it did.
 - **Making a task active** (click, ⌘1, ⌘2, ⇧⌘A, `kanna task activate`) leaves the one active before on the Desk, not active, as pulling parked it before. It counts as left then, even when the Desk view was showing, so it becomes ⌘1.
-- **The Desk's tasks are listed oldest first**, by when each task was made, as the Shelf sorts ([tasks](tasks.md)), in the Desk view and in the strip alike. The active task stays in its place in that order; in the Desk view only its row's highlight marks it. A task that needs you stays in its place too: its status dot shows it, and ⇧⌘A goes to the one that has needed you longest.
+- **The Desk's tasks are listed oldest first**, by when each task was made, as the Shelf sorts ([tasks](tasks.md)). The active task stays in its place in that order; only its row's highlight marks it. A task that needs you stays in its place too: its status dot shows it, and ⇧⌘A goes to the one that has needed you longest.
 - **⌘1 and ⌘2 pick among the Desk's tasks other than the active one** by recency, not by place, one that needs you ahead: ⌘1 the one left most recently, ⌘2 the one left longest ago. ⌘1 pressed again goes back to the task you came from; ⌘2 pressed again cycles through the Desk whatever its number of tasks: through all three, or, with two, back and forth (with one other task ⌘1 and ⌘2 both go to it). With no task active they work the same over the Desk's tasks. Those two cover a full Desk, so there's no ⌘3. The Task menu has Desk Task 1 and 2, each enabled whenever its key does something.
-- **A task shows the key that's uniquely its own,** the same in the strip and in the Desk view, so the keys on the rows aren't in numeric order: ⌘1 on the task left last, ⌘2 on the one left longest ago when that's another task. With two tasks the other shows ⌘1; with no task active and three on the Desk, the middle one has no key.
-- **Hover hints.** A row shows its hint only while hovered: "⌘N · Make active →", or the active task's "⌘. · Back to it". The strip shows a task's key on hover.
-- **The strip** starts with a muted "⌘. Desk" that shows the Desk view when clicked, then the Desk's other tasks, oldest first, then "N on the Shelf".
+- **A task shows the key that's uniquely its own,** the same in the strip and in the Desk view: ⌘1 on the task left last, ⌘2 on the one left longest ago when that's another task. With two tasks the other shows ⌘1; with no task active and three on the Desk, the middle one has no key. The Desk view's rows are oldest first, so their keys aren't in numeric order there.
+- **Hover hints.** A row shows its hint only while hovered: "⌘N · Make active →", or the active task's "⌘. · Back to it".
+- **The strip** starts with a muted "⌘. Desk" that shows the Desk view when clicked, then the Desk's other tasks in key order: the ⌘1 task first (one that needs you, else the one left last), then the ⌘2 task, then any task with no key. So it reorders as you switch tasks. Each shows its key, muted, before its name, all the time. Then "N on the Shelf".
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
 - **The encouraging line** moves on each time the Desk view shows (before: each time the Desk was cleared).
 - **Closing a Desk window** leaves its tasks on the Desk, none active (before: it parked its task).
-- **How the order is built.** The daemon's `tasks` notice to the app lists the Desk's tasks under `desk` (`id`, `pane`, `madeAt`) beside the Shelf's under `shelf`, oldest first, two made in the same second in the order they were made, as the Shelf breaks ties. The app lists rows and strip items in that order and numbers keys from its own record of which task was left last (`KannaWindows/DeskOrder.swift`; tested in `DeskOrderTests`, the daemon's `the_view_lists_the_desk_s_tasks_with_when_each_was_made` and e2e `desk_shelf`).
+- **How the order is built.** The daemon's `tasks` notice to the app lists the Desk's tasks under `desk` (`id`, `pane`, `madeAt`) beside the Shelf's under `shelf`, oldest first, two made in the same second in the order they were made, as the Shelf breaks ties. The app lists rows in that order, and strip items in key order, and numbers keys from its own record of which task was left last (`KannaWindows/DeskOrder.swift`; tested in `DeskOrderTests`, the daemon's `the_view_lists_the_desk_s_tasks_with_when_each_was_made` and e2e `desk_shelf`).
 
 ## 3. CLI verbs
 
