@@ -1,9 +1,9 @@
 use crate::log::PeerLog;
 use crate::pair::{hello_a, hello_b, pake_bytes, pake_hex, Offer, Party, Role};
 use crate::update::{self, Install};
-use crate::{is_key, Refused, ALPN, KINDS, UPDATE};
+use crate::{is_key, relay_mode, relay_url, Refused, Relay, ALPN, KINDS, UPDATE};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
 use serde_json::{json, Value};
@@ -104,6 +104,7 @@ pub(crate) struct Inner {
 pub(crate) struct State {
     pub(crate) name: String,
     port: u16,
+    relay: Option<Relay>,
     log: Option<PeerLog>,
     broken: Option<String>,
     addrs: BTreeMap<String, Vec<String>>,
@@ -128,7 +129,7 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 async fn bind(secret: &SecretKey, port: u16) -> Result<Endpoint, String> {
-    let builder = || Endpoint::builder(presets::Minimal).secret_key(secret.clone()).alpns(vec![ALPN.to_vec()]).relay_mode(RelayMode::Disabled);
+    let builder = || Endpoint::builder(presets::Minimal).secret_key(secret.clone()).alpns(vec![ALPN.to_vec()]).relay_mode(relay_mode());
     if port != 0 {
         if let Ok(fixed) = builder().bind_addr(SocketAddr::from(([0, 0, 0, 0], port))) {
             if let Ok(endpoint) = fixed.bind().await {
@@ -157,7 +158,11 @@ impl Node {
         };
         let name = saved["name"].as_str().filter(|n| valid_name(n)).map(String::from).unwrap_or(config.name);
         let addrs = saved["addrs"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), strings(v))).collect()).unwrap_or_default();
-        let state = State { name, port, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new(), releases: HashMap::new() };
+        let relay = saved["relay"].as_str().and_then(|url| Relay::new(url, saved["relay_token"].as_str()).ok());
+        if let Some(relay) = &relay {
+            endpoint.insert_relay(relay.url.clone(), relay.config()).await;
+        }
+        let state = State { name, port, relay, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new(), releases: HashMap::new() };
         let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, install: config.install, updating: AtomicBool::new(false), state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
@@ -217,6 +222,10 @@ impl Node {
 
     fn snapshot(state: &State) -> Value {
         let mut saved = json!({ "name": state.name, "port": state.port, "addrs": state.addrs });
+        if let Some(relay) = &state.relay {
+            saved["relay"] = json!(relay.url.to_string());
+            saved["relay_token"] = json!(relay.token);
+        }
         if let Some(log) = &state.log {
             saved["anchor"] = log.anchor().clone();
             saved["entries"] = json!(log.entries());
@@ -233,7 +242,8 @@ impl Node {
 
     fn descriptor(&self) -> Value {
         let addrs: Vec<String> = self.0.endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
-        json!({ "name": self.state().name, "key": self.key(), "capabilities": self.0.capabilities, "relay": null, "addrs": addrs })
+        let state = self.state();
+        json!({ "name": state.name, "key": self.key(), "capabilities": self.0.capabilities, "relay": state.relay.as_ref().map(|r| r.url.to_string()), "addrs": addrs })
     }
 
     pub(crate) fn usable(&self) -> Result<(), Failure> {
@@ -255,6 +265,7 @@ impl Node {
                     let path = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| if p.is_ip() { "direct" } else { "relay" }));
                     let mut addrs = strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default());
                     addrs.extend(state.addrs.get(key).cloned().unwrap_or_default());
+                    let relay = state.relay.as_ref().map(|r| r.url.to_string()).or_else(|| view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)));
                     peers.push(json!({
                         "name": name,
                         "key": key,
@@ -264,6 +275,7 @@ impl Node {
                         "conflict": keys.len() > 1,
                         "path": path,
                         "addrs": addrs,
+                        "relay": relay,
                         "release": state.releases.get(key).cloned().unwrap_or(if *key == me { self.0.release.clone() } else { Value::Null }),
                     }));
                 }
@@ -278,6 +290,9 @@ impl Node {
             "port": state.port,
             "release": self.0.release,
             "addrs": addrs,
+            "relay": state.relay.as_ref().map(|r| r.url.to_string()),
+            "relay_token": state.relay.as_ref().is_some_and(|r| r.token.is_some()),
+            "home_relay": self.0.endpoint.addr().relay_urls().next().map(|r| r.to_string()),
             "paired": state.log.is_some(),
             "log": state.log.as_ref().map(|l| l.id().to_string()),
             "broken": state.broken,
@@ -301,6 +316,23 @@ impl Node {
         }
         self.save();
         Ok(json!({ "name": name }))
+    }
+
+    pub fn relay_token(&self) -> Option<String> {
+        self.state().relay.as_ref().and_then(|r| r.token.clone())
+    }
+
+    pub async fn set_relay(&self, url: Option<&str>, token: Option<&str>) -> Result<Value, Failure> {
+        let relay = url.map(|url| Relay::new(url, token)).transpose()?;
+        let old = std::mem::replace(&mut self.state().relay, relay.clone());
+        if let Some(old) = old.filter(|old| Some(&old.url) != relay.as_ref().map(|r| &r.url)) {
+            self.0.endpoint.remove_relay(&old.url).await;
+        }
+        if let Some(relay) = &relay {
+            self.0.endpoint.insert_relay(relay.url.clone(), relay.config()).await;
+        }
+        self.save();
+        Ok(json!({ "relay": relay.as_ref().map(|r| r.url.to_string()), "token": relay.is_some_and(|r| r.token.is_some()) }))
     }
 
     pub fn offer(&self) -> Result<Value, Failure> {
@@ -632,6 +664,10 @@ impl Node {
         let mut direct: Vec<SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
         direct.extend(state.nearby.get(key).map(|n| n.addrs.clone()).unwrap_or_default());
         let mut addr = EndpointAddr::new(id);
+        let theirs = state.log.as_ref().and_then(|l| l.view().descriptors.get(key).and_then(|d| d["relay"].as_str().and_then(|r| relay_url(r).ok())));
+        for relay in state.relay.iter().map(|r| &r.url).chain(theirs.iter()) {
+            addr = addr.with_relay_url(relay.clone());
+        }
         for socket in direct {
             addr = addr.with_ip_addr(socket);
         }

@@ -166,6 +166,11 @@ impl Machines {
                 responder.reply(result.and_then(object))
             }
             "wait" => self.spawn(responder, async move { node.wait_offer().await }),
+            "relay" => {
+                let url = string(&args, "url").map(String::from);
+                let token = string(&args, "token").map(String::from);
+                self.spawn(responder, async move { node.set_relay(url.as_deref(), token.as_deref()).await })
+            }
             "pair" => {
                 let Some(code) = string(&args, "code").map(String::from) else { return responder.reply(Err(KmuxError::new("bad_request", "machine pair CODE: the code the other machine shows"))) };
                 let peer = string(&args, "peer").map(String::from);
@@ -219,7 +224,7 @@ impl Machines {
                     })
                 });
             }
-            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown machine action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync, certify, update or call)")))),
+            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown machine action \"{other}\" (status, name, offer, wait, pair, revoke, addr, relay, ping, sync, certify, update or call)")))),
         }
     }
 
@@ -270,7 +275,7 @@ impl Machines {
 
     pub fn machine(&self) -> Value {
         match &self.node {
-            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities() }),
+            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities(), "relay_token": node.relay_token() }),
             Err(_) => json!({ "name": hostname(), "capabilities": capabilities() }),
         }
     }

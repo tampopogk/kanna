@@ -115,8 +115,8 @@ impl Wire {
         if link.flow && feed.inflight {
             return;
         }
-        let Some((bytes, typed)) = feed.chunk(if link.flow { CHUNK } else { usize::MAX }) else { return };
-        let queued = link.out.push_for(Some(id), &output(id, &bytes), typed);
+        let Some(chunk) = feed.chunk(if link.flow { CHUNK } else { usize::MAX }) else { return };
+        let queued = link.out.push_for(Some(id), &output(id, &chunk.bytes, chunk.offset), chunk.typed);
         feed.inflight = link.flow;
         if queued > QUEUE_BEHIND && link.out.fell_behind() {
             let _ = self.events.lock().unwrap_or_else(PoisonError::into_inner).send(Event::AppBehind { conn: link.conn, queued });
@@ -139,14 +139,14 @@ impl Wire {
         let state = self.state();
         let Some(link) = state.link.as_ref() else { return };
         if feed.shown && !feed.overflowed() && !link.out.behind() {
-            while let Some((bytes, typed)) = feed.chunk(usize::MAX) {
-                link.out.push_for(Some(id), &output(id, &bytes), typed);
+            while let Some(chunk) = feed.chunk(usize::MAX) {
+                link.out.push_for(Some(id), &output(id, &chunk.bytes, chunk.offset), chunk.typed);
             }
         }
         link.out.push_for(Some(id), message, None);
     }
 }
 
-fn output(id: &str, bytes: &[u8]) -> Value {
-    json!({ "cmd": "output", "args": { "terminal": id, "data": BASE64.encode(bytes) } })
+pub fn output(id: &str, bytes: &[u8], offset: u64) -> Value {
+    json!({ "cmd": "output", "args": { "terminal": id, "data": BASE64.encode(bytes), "offset": offset } })
 }

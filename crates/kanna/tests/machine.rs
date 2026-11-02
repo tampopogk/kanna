@@ -99,7 +99,7 @@ impl Link {
 }
 
 fn link(runtime: &tokio::runtime::Runtime, client: &kanna_net::Client, key: &str, port: u64, cert: &Value, hello: Value) -> (Link, Value) {
-    let stream = runtime.block_on(client.link(key, &[format!("127.0.0.1:{port}")], cert)).unwrap();
+    let stream = runtime.block_on(client.link(key, &[format!("127.0.0.1:{port}")], None, cert)).unwrap();
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
     let mut link = Link { lines: BufReader::new(stream.try_clone().unwrap()).lines(), stream };
     link.send(json!({ "id": 0, "cmd": "app.hello", "args": hello }));
@@ -149,7 +149,7 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     drop(here);
 
     let stranger = runtime.block_on(kanna_net::Client::start(kanna_net::SecretKey::generate())).unwrap();
-    let unpaired = runtime.block_on(stranger.link(&vm_key, &[format!("127.0.0.1:{port}")], &cert)).unwrap_err();
+    let unpaired = runtime.block_on(stranger.link(&vm_key, &[format!("127.0.0.1:{port}")], None, &cert)).unwrap_err();
     assert_eq!(unpaired.code, "unpaired");
     app.quit();
 }
