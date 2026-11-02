@@ -1,7 +1,7 @@
 use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER};
-use crate::{relay_mode, relay_url, Failure, ALPN, DEFAULT_PORT};
+use crate::{relay_mode, Failure, Relay, ALPN, DEFAULT_PORT};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -13,11 +13,11 @@ use tokio::io::{AsyncWriteExt, BufReader};
 pub struct Client {
     endpoint: Endpoint,
     conns: Arc<Mutex<HashMap<String, Connection>>>,
-    relays: Arc<Mutex<Vec<RelayUrl>>>,
+    relays: Arc<Mutex<Vec<Relay>>>,
     ports: Arc<Mutex<HashMap<(String, u16), Port>>>,
 }
 
-type Target = (Vec<String>, Option<String>, Value);
+type Target = (Vec<String>, Option<Relay>, Value);
 
 struct Port {
     local: u16,
@@ -48,7 +48,7 @@ impl Client {
         self.conns.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    async fn connect(&self, key: &str, addrs: &[String], relay: Option<&str>) -> Result<(Connection, bool), Failure> {
+    async fn connect(&self, key: &str, addrs: &[String], relay: Option<&Relay>) -> Result<(Connection, bool), Failure> {
         if let Some(conn) = self.conns().get(key).filter(|c| c.close_reason().is_none()).cloned() {
             return Ok((conn, false));
         }
@@ -57,13 +57,13 @@ impl Client {
         for socket in resolve(addrs).await {
             addr = addr.with_ip_addr(socket);
         }
-        if let Some(relay) = relay.map(relay_url).transpose()? {
-            let known = self.relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains(&relay);
+        if let Some(relay) = relay {
+            let known = self.relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains(relay);
             if !known {
-                self.endpoint.insert_relay(relay.clone(), std::sync::Arc::new(relay.clone().into())).await;
+                self.endpoint.insert_relay(relay.url.clone(), relay.config()).await;
                 self.relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(relay.clone());
             }
-            addr = addr.with_relay_url(relay);
+            addr = addr.with_relay_url(relay.url.clone());
         }
         let conn = match tokio::time::timeout(DIAL, self.endpoint.connect(addr, ALPN)).await {
             Ok(Ok(conn)) => conn,
@@ -74,7 +74,7 @@ impl Client {
         Ok((conn, true))
     }
 
-    pub async fn open(&self, key: &str, addrs: &[String], relay: Option<&str>, header: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
+    pub async fn open(&self, key: &str, addrs: &[String], relay: Option<&Relay>, header: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
         let (mut conn, mut fresh) = self.connect(key, addrs, relay).await?;
         loop {
             match open(&conn, &header).await {
@@ -90,7 +90,7 @@ impl Client {
         }
     }
 
-    pub async fn link(&self, key: &str, addrs: &[String], relay: Option<&str>, cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
+    pub async fn link(&self, key: &str, addrs: &[String], relay: Option<&Relay>, cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
         let (mut send, mut recv, _) = self.open(key, addrs, relay, json!({ "kind": "control", "cert": cert })).await?;
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|e| Failure::new("failed", e.to_string()))?;
         let ours = ours.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(ours)).map_err(|e| Failure::new("failed", e.to_string()))?;
@@ -116,17 +116,17 @@ impl Client {
         self.ports.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub async fn port_open(&self, key: &str, addrs: &[String], relay: Option<&str>, cert: &Value, port: u16) -> Result<u16, Failure> {
+    pub async fn port_open(&self, key: &str, addrs: &[String], relay: Option<&Relay>, cert: &Value, port: u16) -> Result<u16, Failure> {
         if port == 0 {
             return Err(Failure::new("bad_request", "port 0 isn't a port"));
         }
         if let Some(open) = self.ports().get(&(key.to_string(), port)).filter(|p| !p.accepting.is_finished()) {
-            *open.target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (addrs.to_vec(), relay.map(String::from), cert.clone());
+            *open.target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (addrs.to_vec(), relay.cloned(), cert.clone());
             return Ok(open.local);
         }
         let listener = tokio::net::TcpListener::bind((IpAddr::from([127, 0, 0, 1]), 0)).await.map_err(|e| Failure::new("failed", format!("can't listen on this Mac's loopback: {e}")))?;
         let local = listener.local_addr().map_err(|e| Failure::new("failed", e.to_string()))?.port();
-        let target = Arc::new(Mutex::new((addrs.to_vec(), relay.map(String::from), cert.clone())));
+        let target = Arc::new(Mutex::new((addrs.to_vec(), relay.cloned(), cert.clone())));
         let (open, closed) = tokio::sync::watch::channel(());
         let accepting = tokio::spawn({
             let (client, key, target) = (self.clone(), key.to_string(), target.clone());
@@ -137,7 +137,7 @@ impl Client {
                     tokio::spawn(async move {
                         let (addrs, relay, cert) = target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
                         let tunnel = async {
-                            if let Ok((send, recv, _)) = client.open(&key, &addrs, relay.as_deref(), json!({ "kind": "port", "cert": cert, "port": port })).await {
+                            if let Ok((send, recv, _)) = client.open(&key, &addrs, relay.as_ref(), json!({ "kind": "port", "cert": cert, "port": port })).await {
                                 splice(tcp, send, recv).await;
                             }
                         };

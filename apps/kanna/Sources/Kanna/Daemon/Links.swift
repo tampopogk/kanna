@@ -144,7 +144,7 @@ final class Links: TerminalLink {
                 kept.insert(machine)
                 let dial = dials[machine] ?? Dial()
                 dials[machine] = dial
-                dial.set(["key": .string(key), "addrs": .array((peer["addrs"]?.array ?? []) + (nearby[key] ?? [])), "relay": peer["relay"] ?? .null, "cert": cert])
+                dial.set(["key": .string(key), "addrs": .array((peer["addrs"]?.array ?? []) + (nearby[key] ?? [])), "relay": peer["relay"] ?? .null, "relay_token": status["relay_token"] ?? .null, "cert": cert])
                 if remotes[machine] == nil { open(machine, dial) }
             }
         }

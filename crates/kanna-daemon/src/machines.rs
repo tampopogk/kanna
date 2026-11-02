@@ -164,7 +164,8 @@ impl Machines {
             "wait" => self.spawn(responder, async move { node.wait_offer().await }),
             "relay" => {
                 let url = string(&args, "url").map(String::from);
-                self.spawn(responder, async move { node.set_relay(url.as_deref()).await })
+                let token = string(&args, "token").map(String::from);
+                self.spawn(responder, async move { node.set_relay(url.as_deref(), token.as_deref()).await })
             }
             "pair" => {
                 let Some(code) = string(&args, "code").map(String::from) else { return responder.reply(Err(KmuxError::new("bad_request", "machine pair CODE: the code the other machine shows"))) };

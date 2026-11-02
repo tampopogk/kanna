@@ -1,4 +1,4 @@
-use kanna_net::{Client, SecretKey};
+use kanna_net::{Client, Relay, SecretKey};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -13,6 +13,7 @@ struct Args {
     peer: String,
     addrs: Vec<String>,
     relay: Option<String>,
+    relay_token: Option<String>,
     relay_only: bool,
     samples: usize,
     label: String,
@@ -20,7 +21,7 @@ struct Args {
 }
 
 fn args() -> Args {
-    let mut out = Args { socket: String::new(), peer: String::new(), addrs: vec![], relay: None, relay_only: false, samples: 100, label: "run".into(), output: None };
+    let mut out = Args { socket: String::new(), peer: String::new(), addrs: vec![], relay: None, relay_token: None, relay_only: false, samples: 100, label: "run".into(), output: None };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         let mut value = || argv.next().unwrap_or_else(|| panic!("{arg} needs a value"));
@@ -29,11 +30,12 @@ fn args() -> Args {
             "--peer" => out.peer = value(),
             "--addr" => out.addrs.push(value()),
             "--relay" => out.relay = Some(value()),
+            "--relay-token-file" => out.relay_token = Some(std::fs::read_to_string(value()).expect("--relay-token-file FILE").trim().to_string()),
             "--relay-only" => out.relay_only = true,
             "--samples" => out.samples = value().parse().expect("--samples N"),
             "--label" => out.label = value(),
             "--output" => out.output = Some(value()),
-            other => panic!("unknown argument {other}: terminal-echo --socket LOCAL.sock --peer KEY [--addr HOST:PORT] [--relay URL [--relay-only]] [--samples N] [--label NAME] [--output FILE]"),
+            other => panic!("unknown argument {other}: terminal-echo --socket LOCAL.sock --peer KEY [--addr HOST:PORT] [--relay URL [--relay-token-file FILE] [--relay-only]] [--samples N] [--label NAME] [--output FILE]"),
         }
     }
     assert!(!out.socket.is_empty() && !out.peer.is_empty(), "--socket and --peer are needed");
@@ -196,7 +198,8 @@ fn main() {
     let client = if args.relay_only { runtime.block_on(Client::start_relay_only(secret)) } else { runtime.block_on(Client::start(secret)) }.unwrap();
     let cert = certify(&args.socket, &client.key());
     let dialed = Instant::now();
-    let stream = runtime.block_on(client.link(&args.peer, &args.addrs, args.relay.as_deref(), &cert)).unwrap_or_else(|f| panic!("can't link: {}: {}", f.code, f.message));
+    let relay = args.relay.as_deref().map(|url| Relay::new(url, args.relay_token.as_deref()).unwrap());
+    let stream = runtime.block_on(client.link(&args.peer, &args.addrs, relay.as_ref(), &cert)).unwrap_or_else(|f| panic!("can't link: {}: {}", f.code, f.message));
     let reader = BufReader::new(stream.try_clone().unwrap());
     let mut link = Link { stream, reader, next: 0, received: 0 };
     link.send(json!({ "id": 0, "cmd": "app.hello", "args": { "client": "terminal-echo", "protocols": [1, 99] } }));

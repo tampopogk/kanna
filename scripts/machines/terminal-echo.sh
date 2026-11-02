@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/machines/terminal-echo.sh DIR LABEL [--remote SSH-HOST] [--relay URL [--relay-only]] [--samples N]
+usage: scripts/machines/terminal-echo.sh DIR LABEL [--remote SSH-HOST [--lan-proxy]] [--relay URL [--relay-only]] [--samples N]
 
 Starts a private daemon on this Mac in DIR/mbp and a second one, in DIR/peer here or in
 ~/kanna-echo on SSH-HOST (which needs kanna-daemon, kanna-keeper and kanna built for it
@@ -11,16 +11,19 @@ in ~/kanna-echo/bin), pairs them, and runs the terminal-echo example from this M
 the second: link round trips, keystroke echo idle and while another terminal floods, and
 attach sizes. The JSON report is DIR/LABEL.json. Neither daemon uses your own Kanna's
 state, HOME or socket; both are stopped at the end.
+--lan-proxy sends this Mac's side through a python UDP forwarder on 127.0.0.1, for binaries
+macOS Local Network privacy hasn't allowed to reach the LAN ("No route to host").
 EOF
   exit 2
 }
 
 [[ $# -ge 2 ]] || usage
 dir="$1" label="$2"; shift 2
-remote="" relay="" relay_only="" samples=100
+remote="" relay="" relay_only="" samples=100 proxy=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --remote) remote="$2"; shift ;;
+    --lan-proxy) proxy=1 ;;
     --relay) relay="$2"; shift ;;
     --relay-only) relay_only=1 ;;
     --samples) samples="$2"; shift ;;
@@ -38,19 +41,20 @@ mkdir -p "$dir"
 dir="$(cd "$dir" && pwd)"
 pids=()
 cleanup() {
-  for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+  for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
   for state in "$dir"/mbp/state "$dir"/peer/state; do
     [[ -f "$state/keeper.pid" ]] && kill "$(cat "$state/keeper.pid")" 2>/dev/null || true
   done
   [[ -n "$remote" ]] && ssh "$remote" 'cd ~/kanna-echo && kill $(cat daemon.pid) $(cat state/keeper.pid) 2>/dev/null; true' || true
 }
 trap cleanup EXIT
+exec 3>&2
 
 daemon() {
   local home="$1"
   mkdir -p "$home/state" "$home/home" && chmod 700 "$home"
   HOME="$home/home" SHELL=/bin/sh KANNA_SOCKET="$home/kanna.sock" KANNA_STATE_DIR="$home/state" KANNA_KEEPER="$bin/kanna-keeper" \
-    KANNA_AGENT_RULES_URL=none KANNA_FLEET_MDNS=0 KANNA_FLEET_PORT=0 "$bin/kanna-daemon" >>"$home/daemon.log" 2>&1 &
+    KANNA_AGENT_RULES_URL=none KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0 "$bin/kanna-daemon" >>"$home/daemon.log" 2>&1 &
   pids+=($!)
   for _ in $(seq 50); do [[ -S "$home/kanna.sock" ]] && return 0; sleep 0.1; done
   echo "the daemon in $home didn't open its socket" >&2; return 1
@@ -59,10 +63,30 @@ mbp() { KANNA_SOCKET="$dir/mbp/kanna.sock" KANNA_STATE_DIR="$dir/mbp/state" "$bi
 if [[ -n "$remote" ]]; then
   ssh "$remote" 'cd ~/kanna-echo && rm -rf state home kanna.sock && mkdir -p state home && chmod 700 . &&
     (HOME=$PWD/home SHELL=/bin/sh KANNA_SOCKET=$PWD/kanna.sock KANNA_STATE_DIR=$PWD/state KANNA_KEEPER=$PWD/bin/kanna-keeper \
-     KANNA_AGENT_RULES_URL=none KANNA_FLEET_MDNS=0 KANNA_FLEET_PORT=7471 nohup bin/kanna-daemon >>daemon.log 2>&1 & echo $! >daemon.pid) &&
+     KANNA_AGENT_RULES_URL=none KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=7471 nohup bin/kanna-daemon >>daemon.log 2>&1 & echo $! >daemon.pid) &&
     for i in $(seq 50); do [ -S kanna.sock ] && exit 0; sleep 0.1; done; exit 1'
   peer() { ssh "$remote" "cd ~/kanna-echo && KANNA_SOCKET=\$PWD/kanna.sock KANNA_STATE_DIR=\$PWD/state bin/kanna $(printf '%q ' "$@")"; }
   host="$(ssh -G "$remote" | awk '/^hostname /{print $2}')"
+  if [[ -n "$proxy" ]]; then
+    python3 -u - "$host" 7471 >"$dir/proxy.port" <<'PY' &
+import select, socket, sys
+target = (sys.argv[1], int(sys.argv[2]))
+front = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); front.bind(("127.0.0.1", 0))
+back = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); back.bind(("0.0.0.0", 0))
+print(front.getsockname()[1], flush=True)
+client = None
+while True:
+    for s in select.select([front, back], [], [])[0]:
+        data, addr = s.recvfrom(65536)
+        if s is front:
+            client = addr
+            back.sendto(data, target)
+        elif client and addr == target:
+            front.sendto(data, client)
+PY
+    pids+=($!)
+    for _ in $(seq 50); do [[ -s "$dir/proxy.port" ]] && break; sleep 0.1; done
+  fi
 else
   daemon "$dir/peer"
   peer() { KANNA_SOCKET="$dir/peer/kanna.sock" KANNA_STATE_DIR="$dir/peer/state" "$bin/kanna" "$@"; }
@@ -89,6 +113,7 @@ for _ in $(seq 50); do [[ -s "$dir/offer" ]] && break; sleep 0.1; done
 code="$(head -1 "$dir/offer" | python3 -c 'import json, sys; print(json.load(sys.stdin)["code"])')"
 key="$(head -1 "$dir/offer" | python3 -c 'import json, sys; print(json.load(sys.stdin)["key"])')"
 port="$(head -1 "$dir/offer" | python3 -c 'import json, sys; print(json.load(sys.stdin)["port"])')"
+if [[ -n "$proxy" ]]; then host=127.0.0.1 port="$(cat "$dir/proxy.port")"; fi
 mbp machine pair "$code" --peer "$key@$host:$port"
 wait "$waiting" "$confirmer"
 kill "$confirmer" 2>/dev/null || true
