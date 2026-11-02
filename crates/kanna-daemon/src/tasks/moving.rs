@@ -606,7 +606,12 @@ impl Tasks {
         }));
         if let Some(folder) = &entry.folder {
             let scratch = Path::new(folder).join(SCRATCH);
-            let _ = fs::create_dir_all(&scratch).and_then(|_| fs::write(scratch.join("handoff.md"), format!("{}\n", text("handoff").unwrap_or_default())));
+            let linked = [Path::new(folder).join(".kanna"), scratch.clone(), scratch.join("handoff.md")].iter().any(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()));
+            if linked {
+                log!("kanna-daemon: {}'s handoff isn't saved in its worktree: a link is in the way", entry.id);
+            } else {
+                let _ = fs::create_dir_all(&scratch).and_then(|_| fs::write(scratch.join("handoff.md"), format!("{}\n", text("handoff").unwrap_or_default())));
+            }
         }
         log!("kanna-daemon: {} carries on here from its handoff", entry.id);
         self.start_handed_over(entry, first, then);
