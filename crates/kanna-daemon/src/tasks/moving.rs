@@ -552,10 +552,8 @@ impl Tasks {
         if let Some(pane) = pane {
             out.insert("pane".to_string(), json!(pane));
         }
-        for key in ["why"] {
-            if let Some(text) = saved.text(key) {
-                out.insert(key.to_string(), json!(text));
-            }
+        if let Some(why) = saved.text("why") {
+            out.insert("why".to_string(), json!(why));
         }
         out
     }
