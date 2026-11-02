@@ -93,11 +93,15 @@ def agent_call(vm, header, payload=b"", max_payload=MAX_STREAM, frames=False):
         if not frames:
             return wire.recv(s, max_payload)
         out = []
+        total = 0
         while True:
             try:
                 out.append(wire.recv(s, max_payload))
             except EOFError:
                 return out
+            total += len(out[-1][1])
+            if len(out) > intake.MAX_FILES + 3 or total > intake.MAX_TOTAL + 2 * MAX_STREAM:
+                raise ValueError("guest exceeded per-call frame or byte limit")
             if out[-1][0].get("op") in ("status", "error"):
                 return out
 
@@ -371,7 +375,8 @@ def run_job(job, vm, cap, request, snapshot):
         status.update(state="lost" if "lost" in str(error) else "error", error=str(error))
     with lock:
         active_caps.pop(cap, None)
-    status["rejected"] = rejected
+    status["rejected"] = rejected[:200]
+    status["rejected_total"] = len(rejected)
     status["ended"] = time.time()
     save(d / "status.json", status)
     event("job-end", job=job, vm=vm, state=status["state"], rejected=len(rejected))
