@@ -121,7 +121,6 @@ pub enum Event {
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     MachinesSave(Value),
-    Restart,
     Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
@@ -144,7 +143,7 @@ impl Event {
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
-            Event::Restart | Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
+            Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
         }
     }
 }
@@ -167,14 +166,7 @@ fn main() {
         unstamped(info)
     }));
     match run() {
-        Ok(Some(daemon)) => {
-            use std::os::unix::process::CommandExt;
-            log!("kanna-daemon: restarting as {}", daemon.display());
-            let error = std::process::Command::new(&daemon).args(&args).exec();
-            log!("kanna-daemon: can't restart as {}: {error}", daemon.display());
-            std::process::exit(1);
-        }
-        Ok(None) => {}
+        Ok(()) => {}
         Err(message) => {
             log!("kanna-daemon: {message}");
             std::process::exit(1);
@@ -206,7 +198,7 @@ fn app_socket() -> PathBuf {
     support_folder().join("kanna/kanna.sock")
 }
 
-fn run() -> Result<Option<PathBuf>, String> {
+fn run() -> Result<(), String> {
     let _ = Brand::set_current(Brand::new("kanna", "Kanna"));
     let build_id = kanna_build::own_build_id();
     let build = Build::current();
@@ -216,7 +208,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
     if let Some(owner) = lifeline::owner().filter(|pid| lifeline::gone(*pid)) {
         log!("kanna-daemon: its owner (pid {owner}, {}) is gone; not starting", lifeline::OWNER);
-        return Ok(None);
+        return Ok(());
     }
     let state_dir = env_path("KANNA_STATE_DIR").unwrap_or_else(|| socket.parent().map(Path::to_path_buf).unwrap_or_default());
     if let Ok(helper) = std::env::current_exe() {
@@ -228,7 +220,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     let marker = state_dir.join(SHUTDOWN_MARKER);
     if marker.exists() && (waited || started_before(&marker)) {
         log!("kanna-daemon: the daemon before it shut this Kanna down while it waited; not starting");
-        return Ok(None);
+        return Ok(());
     }
     let _ = std::fs::remove_file(&marker);
     kanna_crash::install("daemon", state_dir.clone());
@@ -580,7 +572,6 @@ fn run() -> Result<Option<PathBuf>, String> {
     drop(events);
 
     let mut failure = None;
-    let mut restart = None;
     let mut shutdown: Option<Shutdown> = None;
     let begin = |why: &str, shutdown: &mut Option<Shutdown>| {
         if shutdown.is_some() {
@@ -805,14 +796,6 @@ fn run() -> Result<Option<PathBuf>, String> {
                 }
             }
             Event::Replica { token, reply } => tasks.replied(token, reply),
-            Event::Restart => match machines.as_ref().and_then(|m| m.install.as_ref()) {
-                Some(install) if shutdown.is_none() => {
-                    log!("kanna-daemon: updated to {}; restarting, and the keeper keeps the terminals", install.current().unwrap_or_default());
-                    restart = Some(install.daemon());
-                    break;
-                }
-                _ => {}
-            },
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
@@ -838,7 +821,7 @@ fn run() -> Result<Option<PathBuf>, String> {
     }
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
-        None => Ok(restart),
+        None => Ok(()),
     }
 }
 

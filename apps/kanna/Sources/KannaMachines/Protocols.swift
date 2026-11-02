@@ -17,9 +17,9 @@ public enum Protocols {
         }
         let facts = "It runs \(runs), protocol \(span(theirs)); this Kanna speaks \(span(mine))."
         if theirs[1] < mine[0] {
-            return ("\(machine) runs an older Kanna", "kanna machine update \(machine) updates it. \(facts)")
+            return ("\(machine) runs an older Kanna", "Update Kanna on \(machine). \(facts)")
         }
-        return ("\(machine) runs a newer Kanna", "Update this Kanna, or run kanna machine update on \(machine). \(facts)")
+        return ("\(machine) runs a newer Kanna", "Update this Kanna. \(facts)")
     }
 
     static func short(_ commit: String) -> String {

@@ -799,14 +799,13 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "machine",
         group: "Information",
-        summary: "Your machines: pair one, list them, check one's link, give an address or a relay, update them, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
-        usage: "kanna machine [list]\n       kanna machine pair\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna machine update [MACHINE ...] [--tarball FILE]\n       kanna --host MACHINE COMMAND ...",
+        summary: "Your machines: pair one, list them, check one's link, give an address or a relay, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
+        usage: "kanna machine [list]\n       kanna machine pair\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
         options: &[
             ("--peer KEY[@HOST[:PORT]]", "pair CODE: the machine to pair with, as `kanna machine pair` prints it there, when it isn't on this LAN."),
-            ("--tarball FILE", "update: the Linux tarball to install (scripts/build-linux.sh makes one); without it, this release's tarball is downloaded."),
             ("--host MACHINE", "Before any command: run it on that machine (its name or key) instead of this one. KANNA_HOST does the same."),
         ],
-        notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna machine pair` on it: it shows a six-digit code and waits. On one of your machines (or the first one, which starts them), run `kanna machine pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna machine name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna machine addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.\n`kanna machine relay URL` names the iroh-relay this machine meets the others through when they aren't on its LAN; run it on each machine, and the app dials them through it too. A relay that admits only holders of a secret (iroh-relay's access.shared_token) takes it with --token-file FILE; the token stays in this machine's kanna.db and is never put in the peer log. iroh moves to a direct path by itself whenever one opens. `none` goes back to the LAN and given addresses only.\n`kanna machine update` puts one commit on each of your Linux machines (or those named): this release's tarball, or the one --tarball gives. Each machine installs it in /opt/kanna/COMMIT beside the one it runs, switches current to it and restarts its daemon; the keeper keeps every terminal and agent running. Macs update with Kanna.app. Machines of another protocol take an update too.",
+        notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna machine pair` on it: it shows a six-digit code and waits. On one of your machines (or the first one, which starts them), run `kanna machine pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna machine name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna machine addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.\n`kanna machine relay URL` names the iroh-relay this machine meets the others through when they aren't on its LAN; run it on each machine, and the app dials them through it too. A relay that admits only holders of a secret (iroh-relay's access.shared_token) takes it with --token-file FILE; the token stays in this machine's kanna.db and is never put in the peer log. iroh moves to a direct path by itself whenever one opens. `none` goes back to the LAN and given addresses only.",
         examples: &[
             ("kanna machine list", "This machine, your other machines and how each is reached."),
             ("kanna machine pair", "On a new machine: show a code to pair it with."),
@@ -815,8 +814,6 @@ pub static COMMANDS: &[Command] = &[
             ("kanna machine addr r720-1 10.0.0.5", "Also try r720-1 at 10.0.0.5, port 7470."),
             ("kanna machine relay https://relay.example.com:8443", "Meet your other machines through your own relay when away."),
             ("kanna machine revoke old-laptop", "Shut old-laptop out of every machine for good."),
-            ("kanna machine update", "Put this release on each of your Linux machines."),
-            ("kanna machine update r720-1 --tarball target/release-linux/Kanna-4.1.0-linux-x86_64.tar.gz", "Put the build in that tarball on r720-1."),
         ],
         parse: parse_machine,
         show: output::machine,
@@ -1440,7 +1437,6 @@ fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {
 fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
     let peer = args.option("--peer")?;
     let token_file = args.option("--token-file")?;
-    let tarball = args.option("--tarball")?;
     let action = args.positional();
     let machine = |what: &str, args: &mut Argv| args.positional().ok_or_else(|| usage("machine", &format!("machine {what} needs a MACHINE: its name or key")));
     let request = match action.as_deref() {
@@ -1451,10 +1447,6 @@ fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
         },
         Some("name") => json!({ "action": "name", "name": args.positional().ok_or_else(|| usage("machine", "machine name needs a NAME"))? }),
         Some(what @ ("ping" | "revoke" | "sync")) => json!({ "action": what, "host": machine(what, args)? }),
-        Some("update") => {
-            let tarball = tarball.as_ref().map(|t| std::path::absolute(t).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| t.clone()));
-            json!({ "action": "update", "hosts": args.positionals(), "tarball": tarball })
-        }
         Some("addr") => {
             let host = machine("addr", args)?;
             json!({ "action": "addr", "host": host, "addr": args.positional().ok_or_else(|| usage("machine", "machine addr needs a HOST or HOST:PORT"))? })
@@ -1469,16 +1461,13 @@ fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
                 json!({ "action": "relay", "url": url, "token": token })
             }
         },
-        Some(other) => return Err(usage("machine", &format!("unknown action \"{other}\" (list, pair, name, ping, addr, relay, update or revoke)"))),
+        Some(other) => return Err(usage("machine", &format!("unknown action \"{other}\" (list, pair, name, ping, addr, relay or revoke)"))),
     };
     if token_file.is_some() && (request["action"] != "relay" || request["url"].is_null()) {
         return Err(usage("machine", "--token-file goes with relay URL"));
     }
     if peer.is_some() && request["action"] != "pair" {
         return Err(usage("machine", "--peer goes with pair CODE"));
-    }
-    if tarball.is_some() && request["action"] != "update" {
-        return Err(usage("machine", "--tarball goes with update"));
     }
     Ok(request)
 }

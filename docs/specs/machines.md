@@ -18,7 +18,7 @@ It's free and open source, with no account and no server of Kanna's: on the LAN,
 6. [One app, several machines](#6-one-app-several-machines)
 7. [Terminals and panes](#7-terminals-and-panes)
 8. [Where tasks run](#8-where-tasks-run)
-9. [Server setup and updates](#9-server-setup-and-updates)
+9. [Server setup and versions](#9-server-setup-and-versions)
 10. [Build order](#10-build-order)
 11. [Open questions](#11-open-questions)
 12. [Rejected](#12-rejected)
@@ -102,7 +102,7 @@ sequenceDiagram
     A->>D: app.hello {pid, app, client: "mbp", protocols: 3..5, commit}
     alt no protocol in common
         D-->>A: ok: false, other_protocol {mine: 1..2, commit}
-        Note over A: "linux-1 runs an older Kanna: kanna machine update linux-1", and the daemon keeps running
+        Note over A: "linux-1 runs an older Kanna: update Kanna on linux-1", and the daemon keeps running
     else in common
         D-->>A: ok, protocol: 4, daemon {machine, commit, capabilities}, panes, layout
     end
@@ -118,7 +118,7 @@ sequenceDiagram
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `machine call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
-- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocols the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([updates §6](machine-update.md#6-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. Two more kinds aren't negotiated: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)), and `update`, which carries a new build to any trusted daemon of any protocol ([updates §4](machine-update.md#4-the-update-stream)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). A `sync` stream is a daemon's only (an app's certificate is refused) and carries the replicated Shelf's requests ([tasks §2](machine-tasks.md#2-owners-and-grants)), each stamped with the asking daemon's key. Until their slices, `file`, `job` and `transfer` are acknowledged and closed; `job` is used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
+- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocols the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([versions §2](machine-versions.md#2-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. One more kind isn't negotiated: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). A `sync` stream is a daemon's only (an app's certificate is refused) and carries the replicated Shelf's requests ([tasks §2](machine-tasks.md#2-owners-and-grants)), each stamped with the asking daemon's key. Until their slices, `file`, `job` and `transfer` are acknowledged and closed; `job` is used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
 
@@ -150,9 +150,9 @@ In short ([detail](machine-tasks.md)):
 - **Each task has one owner.** A runner elsewhere with free slots, within the task's preferences, asks for it, and the owner grants it to exactly one.
 - **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, the transcript is copied, and the agent resumes by session ID at the receiver's own paths.
 
-## 9. Server setup and updates
+## 9. Server setup and versions
 
-A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit ([setting up a Linux machine](machine-setup.md)), and `kanna machine update` puts one build on every Linux machine, each daemon installing it and restarting itself with its terminals kept ([updates](machine-update.md)). Daemons updating themselves from a peer or the release site is slice 6b.
+A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit ([setting up a Linux machine](machine-setup.md)), or with the release's Linux tarball installed however you like. Kanna doesn't update your Linux machines: machines of different releases work together over a range of protocols, and the Machines tab says which side to update when they don't ([versions](machine-versions.md)). Kanna Cloud's servers are installed and updated by an internal tool.
 
 ## 10. Build order
 

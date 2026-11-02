@@ -10,8 +10,8 @@ CLIs, the daemon, keeper and CLI installed in /opt/kanna/<commit> with /opt/kann
 linked to it (from a release tarball, or built from this checkout with Rust), and a
 systemd user unit that runs the daemon at boot (linger). docs/specs/machine-setup.md says
 what it sets up and why. Safe to run again: each step is skipped when already done, and
-an update restarts the daemon, whose terminals the keeper keeps. Later updates come with
-kanna machine update from another machine (docs/specs/machine-update.md).
+an update restarts the daemon, whose terminals the keeper keeps. Run it again with a
+newer --tarball to update (docs/specs/machine-versions.md).
 
   --agents LIST    agent CLIs to install with npm, comma-separated: claude, codex
                    (default: claude,codex; none installs none)
