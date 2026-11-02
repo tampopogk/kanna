@@ -105,7 +105,7 @@ Make the title bar quieter.
 - **Replies you add to a thread** are sent the same way, under the same header.
 - **Sent at once, never held.** Claude Code and Codex queue input that arrives during a turn and take it next. If you have unsent text in the agent's prompt, the comment joins it; Kanna doesn't try to detect that (v3 did, and it was never reliable).
 - **How to answer is a skill, not part of the message.** The `kanna-markup` skill in kanna-skills, which Kanna installs for every agent once you agree ([agent setup](agent-setup.md)), tells the agent that a `[kanna comment …]` is a review comment and to answer it with `kanna markup reply cN` before doing the work: the answer, or what it'll change and how it read the comment. Work longer than a quick doc edit goes to a subagent or the background so the turn ends, since the next comment is typed in only when it does; a second reply in the thread says what landed.
-- **The agent replies; you resolve.** An answered thread stays open, so you read the reply beside the doc and resolve it yourself (or reply again). The agent resolves only when you ask.
+- **The agent replies; you resolve.** An answered thread stays open, so you read the reply beside the doc and resolve it yourself (or reply again). The agent resolves only when you ask. A reply to a thread you've resolved reopens it, so the agent's later reply (what landed, after you resolved its first) shows where you look rather than under *Show resolved*.
 - **No agent** (the doc has none, or its pane is closed): posting still saves the thread, and the toolbar says it wasn't sent.
 
 ```mermaid
@@ -115,6 +115,7 @@ stateDiagram-v2
     replied --> sent: you reply again
     sent --> resolved: you resolve
     replied --> resolved: you resolve
+    resolved --> replied: kanna markup reply
     resolved --> sent: reopen
 ```
 
@@ -150,7 +151,7 @@ Run in the doc's repo, the doc is found from the thread ID, the docs whose comme
 | `kanna markup PANE [--to PANE \| --off]` | Turn comments on or off in a pane already open, or send them elsewhere |
 | `kanna markup comments [--all]` | List the threads (open only, unless `--all`) |
 | `kanna markup show cN` | One thread: what it points at, line, messages, state |
-| `kanna markup reply cN TEXT` | Answer a thread |
+| `kanna markup reply cN TEXT` | Answer a thread, reopening it if resolved |
 | `kanna markup resolve cN` / `reopen cN` | Resolve or reopen a thread |
 
 ## 6. How it's built

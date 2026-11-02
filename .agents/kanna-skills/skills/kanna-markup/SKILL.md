@@ -71,7 +71,7 @@ Kanna types the next comment in only when your turn ends, so a turn spent workin
 2. **Do the work without holding the turn.** A quick doc edit you make now. Anything longer (code, builds, tests) goes to a subagent or a background command, and your turn ends so the next comment can come in.
 3. **Reply again in the same thread when it's done,** saying what landed:
    `kanna markup reply c2 "Added under Keys: ⌃Tab scrolls the next tab into view."`
-4. **Leave it open.** The user resolves a thread once they've read your reply; resolving it yourself hides the reply from them. Resolve only when they ask you to.
+4. **Leave it open.** The user resolves a thread once they've read your reply; resolving it yourself hides the reply from them. Resolve only when they ask you to. A reply to a thread they've resolved opens it again, so your second reply still reaches them.
 
 Reply in the thread, not only in the chat: the user reads replies beside the doc.
 
@@ -83,7 +83,7 @@ Reply in the thread, not only in the chat: the user reads replies beside the doc
 | `kanna markup PANE`, `kanna markup PANE --off` | Turn comments on (coming to you) or off in a pane already open; `kanna open md` and `kanna open web` show docs without them |
 | `kanna markup comments [--all]` | The open comments on your docs (`--all`: resolved too) |
 | `kanna markup show cN` | One thread: what it points at, its line, every message |
-| `kanna markup reply cN TEXT` | Answer a thread |
+| `kanna markup reply cN TEXT` | Answer a thread; a resolved one opens again |
 | `kanna markup resolve cN`, `kanna markup reopen cN` | Resolve a thread (only when the user asks), or reopen one |
 
 Run them from your own terminal, in the doc's repo: the doc is found from the thread ID, the docs whose comments come to your pane first. Pass `--doc FILE` if that's ambiguous.
