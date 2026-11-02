@@ -44,7 +44,7 @@ flowchart LR
 |---|---|---|
 | `version` | `1` | The settings format the file is written for |
 | `planning.agent` | none: asked | The agent a new Desk's planning terminal starts as a [planning agent](planning-agent.md#2-what-it-is), a name from the agents Kanna knows (`claude`, `codex`, …). Unset, each [new Desk](new-desk.md) asks (unless one agent is installed), and your answer is written to the repo's file straight away. |
-| `tasks.agent` | `claude` | The agent a new task runs when `kanna task new` has no `--agent` ([choosing the agent](tasks.md#6-choosing-the-agent)). In your file, an agent or any command that starts one (`"codex"`, `"claude --model opus"`); in a repo's, only an agent Kanna knows (`claude`, `codex`, `copilot`, `opencode`, `agy`), so a cloned repo can't make Kanna run a command. A task keeps the agent it was made with. |
+| `tasks.agent` | `claude` | The agent a new task runs when `kanna task new` has no `--agent` ([choosing the agent](tasks.md#6-choosing-the-agent)). One of [Kanna's agents](agent-status.md#2-kannas-agents) (`claude`, `codex`, `opencode`, `agy`): in your file with any arguments (`"claude --model opus"`), in a repo's the name alone, so a cloned repo can't make Kanna run a command. A task keeps the agent it was made with. |
 | `shelf.runners` | `3` | How many of a repo's Shelf tasks run at once, from 0 to 10: they start by themselves, oldest first, and Kanna stops each when its agent's turn ends ([Shelf runners](shelf-runners.md)). `0` turns it off. `backlog.runners`, its old name, is still read; `shelf.runners` wins when a file has both. |
 | `agents.prompts` | `"ask"` | Whether the agents Kanna starts (task agents, the quiz agent, planning agents) ask permission before they run commands and edit files (`"ask"`), or skip their permission prompts (`"skip"`). Only `~/.kanna-v4/config.json` sets it ([4](#agent-prompts)). Unset, agents ask, and the next planning terminal asks you once. |
 | `planning.context` | `300000` | Tokens a claude agent's context grows to in a [planning terminal](planning-agent.md) before it compacts, from 100000 to 1000000, or `"auto"` for claude's own. A long-lived agent works better kept small (context rot). Claude gets it as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, set by the terminal unless your environment already does; codex as `-c model_auto_compact_token_limit=N` (its window is 272K to 500K tokens, by model). Other agents keep their own limit. |
@@ -56,7 +56,7 @@ flowchart LR
 <a id="agent-prompts"></a>
 ## 4. Agent prompts
 
-`agents.prompts` decides whether the agents Kanna starts skip their permission prompts: `claude --dangerously-skip-permissions`, `codex --yolo`, `copilot --yolo`, `agy --dangerously-skip-permissions` (opencode has no flag). With prompts off, an agent runs commands and edits files without asking, so it's your choice, asked once.
+`agents.prompts` decides whether the agents Kanna starts skip their permission prompts: `claude --dangerously-skip-permissions`, `codex --yolo`, `agy --dangerously-skip-permissions` (opencode has no flag). With prompts off, an agent runs commands and edits files without asking, so it's your choice, asked once.
 
 ```mermaid
 flowchart LR
@@ -69,7 +69,7 @@ flowchart LR
 - **Only yours sets it.** A repo's `.kanna/config.json` comes with the repo: a repo you clone could otherwise turn your prompts off, and its agents would then run whatever its files talk them into. A repo's file that sets it is ignored, and the daemon's log names the file.
 - **Unset means `"ask"`:** agents keep their prompts until you say otherwise. A bad value, or a file for a newer Kanna, is unset too.
 - **Asked once,** by the planning terminal of a [new Desk](new-desk.md#2-its-planning-terminal), after the agent is chosen and before it starts: `Let Kanna's agents work without permission prompts? They'll run commands and edit files without asking. [y/N]`. Yes writes `"skip"`, anything else `"ask"`, to `~/.kanna-v4/config.json`, keeping the file's other keys; then that planning agent starts to match. It's never asked again while the key is set; change it by editing the file.
-- **An agent command that picks its own mode keeps it** (`claude --permission-mode plan`, `codex -a untrusted`, `copilot --allow-all-tools`, `agy --mode plan`, or one that already has the skipping flag), whatever the setting.
+- **An agent command that picks its own mode keeps it** (`claude --permission-mode plan`, `codex -a untrusted`, `agy --mode plan`, or one that already has the skipping flag), whatever the setting.
 - **Why `agents.prompts`:** it's about every agent Kanna starts, so it's in its own `agents` section rather than `planning` or `shelf`; it names what you see, the permission prompts, and its values read as what they do (`ask`, `skip`). A word rather than a boolean leaves no doubt which way `true` goes, and none of the agents' own names for it (`yolo`, `dangerously-skip-permissions`) fits them all.
 
 ## 5. How it's built
