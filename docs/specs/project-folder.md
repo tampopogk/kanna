@@ -136,7 +136,7 @@ These still name ~/work/app; change them yourself:
 
 - **`projects.rs`:** `home_place` reads `origin` from the repo's `.git/config` and maps it (`place_of`); `outside` is the refusal. The Shelf (`tasks.rs`: `placed`, from `ready` and `mint`) and the `desk` command call it; `Tasks.repos` is set by `main.rs`, so tests run without it. Its `projects list` adds the outside projects with work in Kanna, marked `outside`.
 - **`project import`** is the daemon's `project` command (`import`, `path`, `by`), in `tasks.rs` (`import`), with the file work in `project_import.rs` (`plan`, `copy`, `Stores::carry`, `mentions`). While it runs, the Shelf refuses to make or start a task in the project (`importing`). The same command's `asked` and `never` (`path`) read and set never, for `planner.sh`.
-- **The agents' folders** are under `KANNA_AGENTS_HOME` when it's set, else `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `XDG_DATA_HOME` or their defaults in `~`. Rewritten files keep their modification time, which the session lookups go by.
+- **The agents' folders** are under `KANNA_AGENTS_HOME` when it's set, else `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_DATA_HOME` or their defaults in `~`. Rewritten files keep their modification time, which the session lookups go by.
 - **`planner.sh`** works out a place the same way (`place`, `misplaced`), so it can say where without the daemon, asks the daemon for never (`kanna raw`), and runs `kanna project import` when you say yes.
 
 ## 6. Rejected

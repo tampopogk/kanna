@@ -412,9 +412,9 @@ function agentTerm(t) {
 }
 
 const ROLE = "You are the Kanna planning agent.";
-const KNOWN = ["claude", "codex", "copilot", "opencode", "agy"];
-const START = { claude: "claude --dangerously-skip-permissions", codex: "codex --yolo --no-daemon", copilot: "copilot --yolo -i", opencode: "opencode --prompt", agy: "agy --dangerously-skip-permissions -i" };
-const ASKING = { claude: "claude", codex: "codex --no-daemon", copilot: "copilot -i", opencode: "opencode --prompt", agy: "agy -i" };
+const KNOWN = ["claude", "codex", "opencode", "agy"];
+const START = { claude: "claude --dangerously-skip-permissions", codex: "codex --yolo --no-daemon", opencode: "opencode --prompt", agy: "agy --dangerously-skip-permissions -i" };
+const ASKING = { claude: "claude", codex: "codex --no-daemon", opencode: "opencode --prompt", agy: "agy -i" };
 const startOf = agent => (s.prompts === "skip" ? START : ASKING)[agent] || agent;
 const out = text => `<span class="out">${esc(text)}</span>`;
 const short = repo => repo.replace("~/work/", "");
