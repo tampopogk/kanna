@@ -75,7 +75,7 @@ Reply in the thread, not only in the chat: the user reads replies beside the doc
 
 | Command | Does |
 |---|---|
-| `kanna markup FILE.md`, `kanna markup FILE.html` | Show a markdown file or a local page (a mockup) in a Kanna pane with comments; comments on it come to you (`--to PANE`: to another terminal) |
+| `kanna markup FILE.md`, `kanna markup FILE.html` | Show a markdown file or a local page (a mockup) in a new Kanna pane with comments; comments on it come to you (`--to PANE`: to another terminal). If it's already open (`kanna workspace list`), use `kanna markup PANE` instead |
 | `kanna markup PANE`, `kanna markup PANE --off` | Turn comments on (coming to you) or off in a pane already open; `kanna open md` and `kanna open web` show docs without them |
 | `kanna markup comments [--all]` | The open comments on your docs (`--all`: resolved too) |
 | `kanna markup show cN` | One thread: what it points at, its line, every message |

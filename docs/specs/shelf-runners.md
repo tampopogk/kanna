@@ -40,7 +40,7 @@ stateDiagram-v2
 
 ## 2. How it's built
 
-- **The runners are the daemon's** (`Tasks::tick` in `tasks.rs`, the Shelf's code): every 2s, and whenever a task is made, edited, done or stopped, it starts each repo's oldest waiting tasks (never started, not blocked) until `shelf.runners` of them run. Tasks you start on the Shelf, or move there running, count too.
+- **The runners are the daemon's** (`Tasks::tick` in `tasks.rs`, the Shelf's code): every 2s, and whenever a task is made, edited, done or stopped, it starts each repo's oldest waiting tasks (never started, not blocked) until `shelf.runners` of them run. Tasks you start on the Shelf, or move there running, count too. With several machines, a runner also asks other machines for their waiting tasks in the same project, oldest first with its own ([machine tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **A turn's end is the agent's report:** `Turn` (`kanna-detect`) watches a running Shelf task's agent and says its turn is over when its root record goes from working to idle, done or blocked, counted by the terminal as the reports arrive, so a short turn between two looks isn't missed ([agent status](agent-status.md#3-the-report-osc-7501)).
 - **Each agent says how it quits and where its session is**, in `agent-rules/quit/AGENT.json`: the keys that quit it, and a pattern that finds its session ID in what it prints as it exits.
 

@@ -6,7 +6,7 @@ pub mod update;
 
 pub use iroh::SecretKey;
 pub use client::Client;
-pub use node::{Config, Failure, Host, Node, DEFAULT_PORT};
+pub use node::{Config, Failure, Host, Node, DEFAULT_PORT, PEER};
 pub use update::{Install, Tarball};
 
 use serde_json::{Map, Value};

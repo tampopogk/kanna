@@ -196,6 +196,25 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         doc text not null default '{}' check (json_valid(doc))
     );
     create index run_events_by_run on run_events (run, at);
+"), Step::Sql("
+    create table record_ops (
+        device text not null,
+        ms integer not null,
+        n integer not null,
+        task text not null,
+        birth text not null,
+        field text not null,
+        value text not null check (json_valid(value)),
+        primary key (device, ms, n)
+    );
+    create table authority (
+        task text not null,
+        birth text not null,
+        epoch integer not null,
+        permit text not null check (permit in ('ready', 'running', 'sent', 'acked')),
+        recipient text,
+        primary key (task, birth)
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -580,21 +599,26 @@ impl Db {
     }
 
     pub fn put(&self, row: &Row, change: Option<&Change>) -> rusqlite::Result<()> {
+        self.put_with(row, change, |_| Ok(()))
+    }
+
+    pub fn put_with(&self, row: &Row, change: Option<&Change>, also: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "insert into tasks (id, repo, place, terminal, made_at, doc) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6))
-             on conflict (id) do update set repo = excluded.repo, place = excluded.place, terminal = excluded.terminal, made_at = excluded.made_at, doc = json_patch(tasks.doc, ?6)",
-            params![row.id, row.repo, row.place.as_str(), row.terminal, row.made_at, row.doc.to_string()],
-        )?;
-        if let Some(change) = change {
-            log(&tx, &row.id, change)?;
-        }
+        put_row(&tx, row, change)?;
+        also(&tx)?;
         if row.place == Place::Done {
             if let Some(layout) = self.layout.borrow().as_ref().and_then(|now| now()) {
                 put_layout(&tx, &layout)?;
             }
         }
         tx.commit()
+    }
+
+    pub fn atomically<T>(&self, work: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+        let tx = self.conn.unchecked_transaction()?;
+        let done = work(&tx)?;
+        tx.commit()?;
+        Ok(done)
     }
 
     pub fn saves_layout_with_done(&self, now: impl Fn() -> Option<Value> + 'static) {
@@ -1009,6 +1033,18 @@ fn round_row(r: &rusqlite::Row) -> rusqlite::Result<Round> {
 
 fn answer_row(r: &rusqlite::Row) -> rusqlite::Result<Answer> {
     Ok(Answer { id: r.get(0)?, round: r.get(1)?, at: r.get(2)?, kind: r.get(3)?, file: r.get(4)?, right: r.get(5)?, again: r.get(6)?, doc: doc_of(r.get(7)?) })
+}
+
+pub fn put_row(conn: &Connection, row: &Row, change: Option<&Change>) -> rusqlite::Result<()> {
+    conn.execute(
+        "insert into tasks (id, repo, place, terminal, made_at, doc) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6))
+         on conflict (id) do update set repo = excluded.repo, place = excluded.place, terminal = excluded.terminal, made_at = excluded.made_at, doc = json_patch(tasks.doc, ?6)",
+        params![row.id, row.repo, row.place.as_str(), row.terminal, row.made_at, row.doc.to_string()],
+    )?;
+    if let Some(change) = change {
+        log(conn, &row.id, change)?;
+    }
+    Ok(())
 }
 
 fn insert_schedule(conn: &Connection, schedule: &Schedule) -> rusqlite::Result<i64> {

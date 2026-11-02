@@ -1,5 +1,6 @@
 use crate::app_link::AppLink;
 use crate::db::Db;
+use crate::replica::{Peer, Roster};
 use crate::Event;
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
@@ -14,6 +15,8 @@ pub const KEY: &str = "device.key";
 const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 
 const CONFIRM: &str = "app.machine.confirm";
+
+const EXCHANGE_WAIT: Duration = Duration::from_secs(20);
 
 static DOWNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -239,6 +242,33 @@ impl Machines {
             answer(match reply.await {
                 Ok(fields) => Ok(fields.get("confirmed") == Some(&Value::Bool(true))),
                 Err(e) => Err(e.message),
+            })
+        });
+    }
+
+    pub fn roster(&self) -> Roster {
+        let Ok(node) = &self.node else { return Roster { me: Peer { key: String::new(), name: hostname() }, peers: vec![] } };
+        let status = node.status();
+        let me = Peer { key: node.key(), name: status["name"].as_str().unwrap_or_default().to_string() };
+        let peers = status["peers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["me"] != true && p["trusted"] == true && p["revoked"] != true && p["conflict"] != true)
+            .map(|p| Peer { key: p["key"].as_str().unwrap_or_default().to_string(), name: p["name"].as_str().unwrap_or_default().to_string() })
+            .collect();
+        Roster { me, peers }
+    }
+
+    pub fn exchange(&self, key: String, request: Value, done: Box<dyn FnOnce(Result<Value, String>) + Send>) {
+        let Ok(node) = &self.node else { return done(Err("this daemon has no endpoint".into())) };
+        let node = node.clone();
+        self.runtime.spawn(async move {
+            let reply = tokio::time::timeout(EXCHANGE_WAIT, node.exchange(&key, request)).await;
+            done(match reply {
+                Ok(Ok(reply)) => Ok(reply),
+                Ok(Err(failure)) => Err(format!("{} [{}]", failure.message, failure.code)),
+                Err(_) => Err(format!("no answer in {}s [unreachable]", EXCHANGE_WAIT.as_secs())),
             })
         });
     }

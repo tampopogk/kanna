@@ -21,6 +21,7 @@ mod messages;
 mod project_import;
 mod projects;
 mod quiz;
+mod replica;
 mod reader;
 mod runs;
 mod schedule;
@@ -121,6 +122,7 @@ pub enum Event {
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     MachinesSave(Value),
     Restart,
+    Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
 }
@@ -141,7 +143,7 @@ impl Event {
             Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
-            Event::MachineConfirm { .. } | Event::MachinesSave(_) => "loop.machines",
+            Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
             Event::Restart | Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
         }
     }
@@ -367,6 +369,22 @@ fn run() -> Result<Option<PathBuf>, String> {
             None
         }
     };
+    if let Some(machines) = &machines {
+        let roster = Rc::downgrade(machines);
+        *tasks.roster.borrow_mut() = Some(Box::new(move || roster.upgrade().map(|m| m.roster()).unwrap_or_default()));
+        let (exchanging, replies) = (Rc::downgrade(machines), events.clone());
+        *tasks.exchange.borrow_mut() = Some(Box::new(move |peer, request, token| {
+            let replies = replies.clone();
+            let done: Box<dyn FnOnce(Result<Value, String>) + Send> = Box::new(move |reply| {
+                let _ = replies.send(Event::Replica { token, reply });
+            });
+            match exchanging.upgrade() {
+                Some(machines) => machines.exchange(peer, request, done),
+                None => done(Err("the daemon is stopping".into())),
+            }
+        }));
+    }
+    tasks.join();
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
@@ -744,7 +762,12 @@ fn run() -> Result<Option<PathBuf>, String> {
                 }
             }
             Event::AppMessage { conn, message } => {
-                if let Some(request) = app.message(conn, message) {
+                if let Some(mut request) = app.message(conn, message) {
+                    if request["cmd"] == "replica" {
+                        if let Some(args) = request.get_mut("args").and_then(Value::as_object_mut) {
+                            args.remove(kanna_net::PEER);
+                        }
+                    }
                     if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
                         app.answer_app(conn, refused);
                         continue;
@@ -781,6 +804,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                     log!("kanna-daemon: can't save your machines in kanna.db: {error}");
                 }
             }
+            Event::Replica { token, reply } => tasks.replied(token, reply),
             Event::Restart => match machines.as_ref().and_then(|m| m.install.as_ref()) {
                 Some(install) if shutdown.is_none() => {
                     log!("kanna-daemon: updated to {}; restarting, and the keeper keeps the terminals", install.current().unwrap_or_default());

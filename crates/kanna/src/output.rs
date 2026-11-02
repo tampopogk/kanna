@@ -208,13 +208,14 @@ pub fn task(request: &Value, reply: &Value) -> String {
             let tasks = reply["tasks"].as_array().cloned().unwrap_or_default();
             let waiting = reply["shelf"].as_array().cloned().unwrap_or_default();
             let done = reply["done"].as_array().cloned().unwrap_or_default();
-            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty(), request["query"].as_str()) {
+            let elsewhere = reply["elsewhere"].as_array().cloned().unwrap_or_default();
+            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty(), request["query"].as_str()) {
                 return match &reply["found"] {
                     found if found["place"] == "done" => done_line(found),
                     _ => format!("no task matches \"{query}\""),
                 };
             }
-            if tasks.is_empty() && waiting.is_empty() && done.is_empty() {
+            if tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() {
                 return "no tasks: add one with `kanna task new NAME \"FIRST MESSAGE\"`".into();
             }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
@@ -247,17 +248,26 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 (_, bases) if !bases.is_empty() => Some(format!("merges after {bases}")),
                 _ => None,
             };
+            let twice = |id: &str| {
+                let machines = reply["twice"].as_object()?.iter().find(|(task, _)| task.starts_with(id))?.1.as_array()?.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
+                Some(format!("ran twice: {machines}"))
+            };
             let row = |t: &Value, id: &str, last: Option<String>| -> [String; 4] {
-                let tail: Vec<String> = [agent(t), repo(t), waits(t).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last)].into_iter().flatten().collect();
+                let tail: Vec<String> = [agent(t), repo(t), waits(t).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last), twice(id)].into_iter().flatten().collect();
                 [id.into(), t["name"].as_str().unwrap_or("").into(), state(t), tail.join("  ")]
             };
             let desk: Vec<[String; 4]> = tasks.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)))).collect();
             let shelf: Vec<[String; 4]> = waiting.iter().map(|t| row(t, t["id"].as_str().unwrap_or("?"), None)).collect();
+            let others: Vec<[String; 4]> = elsewhere.iter().map(|t| {
+                let mut row = row(t, t["id"].as_str().unwrap_or("?"), t["machine"].as_str().map(|m| format!("on {m}")));
+                row[2] = t["state"].as_str().unwrap_or("").into();
+                row
+            }).collect();
             let finished: Vec<[String; 4]> = done.iter().map(|t| {
                 let tail: Vec<String> = [agent(t), repo(t), t["doneAt"].as_f64().map(|at| format!("done {}", ago(now - at)))].into_iter().flatten().collect();
                 [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), String::new(), tail.join("  ")]
             }).collect();
-            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).chain(finished.iter()).collect();
+            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).chain(others.iter()).chain(finished.iter()).collect();
             let width = |i: usize| all.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
             let line = |r: &[String; 4]| format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = width(0), w1 = width(1), w2 = width(2)).trim_end().to_string();
             let section = |head: &str, rows: &[[String; 4]]| match (rows.is_empty(), request["query"].is_string()) {
@@ -267,7 +277,7 @@ pub fn task(request: &Value, reply: &Value) -> String {
             };
             let more = reply["moreDone"].as_u64().map(|n| format!("\n… {n} more done: add words to search them"));
             let finished = Some(&finished).filter(|_| request["done"] == true).and_then(|rows| section("Done", rows)).map(|s| s + more.as_deref().unwrap_or(""));
-            [section("Desk", &desk), section("Shelf", &shelf), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
+            [section("Desk", &desk), section("Shelf", &shelf), Some(&others).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other machines", rows)), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}: {} shows the Desk view, and {id} stays active", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} isn't shown: its Desk shows the Desk view already"),
@@ -477,7 +487,7 @@ fn id_start(word: &str) -> Option<String> {
 
 pub fn keep_matching(reply: &mut Value, query: &str) {
     let words: Vec<&str> = query.split_whitespace().collect();
-    for list in ["tasks", "shelf", "done"] {
+    for list in ["tasks", "shelf", "elsewhere", "done"] {
         if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
             tasks.retain(|task| words.iter().all(|word| task_matches(task, word)));
         }

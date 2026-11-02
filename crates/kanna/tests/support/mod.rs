@@ -46,8 +46,9 @@ impl Daemon {
     }
 
     pub fn start_with(extra: &[(&str, &str)]) -> Daemon {
+        let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let extra = extra.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), 0, extra)
+        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), port, extra)
     }
 
     pub fn exited(&mut self) -> std::process::ExitStatus {
@@ -99,6 +100,18 @@ impl Daemon {
         daemon
     }
 
+    pub fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(self.socket());
+    }
+
+    pub fn restart(&mut self) {
+        self.stop();
+        self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
+        wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
+    }
+
     fn spawn(dir: &Path, daemon: &Path, keeper: &Path, port: u16, extra: &[(String, String)]) -> Child {
         let log = std::fs::File::options().create(true).append(true).open(dir.join("daemon.log")).unwrap();
         let mut command = Command::new(daemon);
@@ -108,7 +121,6 @@ impl Daemon {
                 command.env(key, value);
             }
         }
-        command.envs(extra.iter().map(|(k, v)| (k, v)));
         command
             .env("HOME", dir.join("home"))
             .env("SHELL", "/bin/sh")
@@ -118,6 +130,7 @@ impl Daemon {
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_MACHINE_MDNS", "0")
             .env("KANNA_MACHINE_PORT", port.to_string())
+            .envs(extra.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)

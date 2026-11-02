@@ -352,10 +352,11 @@ pub static COMMANDS: &[Command] = &[
         name: "task",
         group: "Tabs and windows",
         summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
+        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
         options: &[
             ("--agent CMD", "new: the agent to start (default: claude)."),
             ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
+            ("--on MACHINE,...", "new: the machines it may run on (see `kanna machine`); without it, any of your machines with a clone of the repo and a free runner."),
             ("--include-done", "list: also the done tasks, newest first: with QUERY, every one that matches; without, the 5 done last."),
             ("--keep", "done: end it without the repo's tasks.teardown, keeping its worktree and branch."),
             ("--all", "list: every repo's tasks, not only the one you're in."),
@@ -365,6 +366,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task new \"Fix the page_comments pinch\" \"The mark drifts when you pinch; find out why and add a test\"", "Add a task to this repo's Shelf."),
             ("kanna task new \"Release notes\" \"Write the 0.9 notes\" --after 1dfb,c0ff", "Add a task that can't start until task-1dfb and task-c0ff are done."),
             ("kanna task edit task-3f9a --after none", "Let a blocked task start: it waits for nothing now."),
+            ("kanna task new \"UI tests\" \"Run the iOS UI tests and fix what fails\" --on mini", "Add a task that only the machine named mini takes."),
             ("kanna task start 3f9a", "Start a Shelf task where it is: its own worktree and branch, and its agent with the first message."),
             ("kanna task pick 3f9a", "Pick a task off the Shelf onto the Desk, starting it if it's stopped."),
             ("kanna task stop 3f9a", "End a task's agent and hang up its terminals, leaving it and its tabs where they are; start it again to resume its conversation and rerun its terminals."),
@@ -404,6 +406,10 @@ pub static COMMANDS: &[Command] = &[
                 return Err(usage("task", "--after is for task new and task edit"));
             }
             let after = after.map(|list| if list == "none" { vec![] } else { list.split(',').map(str::trim).filter(|id| !id.is_empty()).map(String::from).collect::<Vec<_>>() });
+            let on = args.option("--on")?;
+            if on.is_some() && action != "new" {
+                return Err(usage("task", "--on is for task new"));
+            }
             let mut out = json!({ "action": action });
             match action.as_str() {
                 "list" => {
@@ -431,6 +437,9 @@ pub static COMMANDS: &[Command] = &[
                     }
                     if let Some(after) = after {
                         out["after"] = json!(after);
+                    }
+                    if let Some(on) = on {
+                        out["on"] = json!(on.split(',').map(str::trim).filter(|m| !m.is_empty()).collect::<Vec<_>>());
                     }
                     if let Some(by) = caller() {
                         out["by"] = json!(by);
