@@ -1,16 +1,15 @@
 # Kanna's usual flow, once the spec and mockup are approved in the task's chat:
-# plan, build, review, e2e, your go-ahead, merge.
+# plan, build, review, e2e; then the run hands its branch back to the task's
+# worktree, where you review it before it merges.
 budget  = 40 sessions, 8h
 
 plan    = claude prompt plan emits             # splits the work; may add stages
 build   = claude prompt build each plan.parts  # a worktree and pane per part, inside the run
 join    = merge build                          # the parts' branches into the run's
 check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
-review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
+review  = codex:high prompt review verdict     # fresh reviewer; reports pass or fail
 fix     = claude prompt fix guard check        # rolled back if check gets worse
 e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
-ship    = ask "Land it on main?"               # you, with the diff in the tabs
-land    = merge main
 
 plan -> build -> join -> check
 check  -[fail, max 3, progress]-> fix -> check
@@ -18,6 +17,4 @@ check  -> review
 review -[fail, max 3]-> fix
 review -> e2e
 e2e    -[fail, max 2]-> fix
-e2e    -> ship
-ship   -[fail, max 2]-> fix
-ship   -> land -> done
+e2e    -> done

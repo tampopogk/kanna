@@ -99,7 +99,7 @@ flowchart LR
 - **Only the daemon's terminal answers the probe,** so the agent gets one answer; the app's Ghostty parses the reports and ignores them.
 - **Records** are kept per pane, one per id, each report replacing its record whole (children such as `build/test` too; `state=clear` removes a record and those beneath it; one without an `app` takes its nearest ancestor's). At most 256; the one updated longest ago goes.
 - **When records go:** working and blocked ones when a new prompt starts (OSC 133 A) or the program ends (another process group takes the terminal's foreground, or the pane exits); all of them at a full reset (RIS). A record counts only while the process group that reported it is in the foreground, so a `done` left by one program never speaks for the next.
-- **A turn's end:** a record going from working to idle or done ends a [Shelf task's turn](shelf-runners.md) at once, alongside the 3s rule.
+- **A turn's end:** the root record going from working to idle or done ends a [Shelf task's turn](shelf-runners.md) at once, alongside the 3s rule, and a [run's stage turn](software-factory.md#61-sequential-runs-as-built). The terminal counts these turns as the reports arrive (`program_turns` in `kanna-vt`), so the watcher, which looks at the latest record now and then and not before it knows which agent runs, still sees a turn that began and ended between two looks.
 - **Untrusted text:** `msg`, `title` and `app` are shown only by `kanna status explain`, with control and invisible formatting characters taken out, and never sent back to the program.
 
 ## 5. CLI

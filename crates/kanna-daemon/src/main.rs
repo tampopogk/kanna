@@ -22,6 +22,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod reader;
+mod runs;
 mod schedule;
 mod settings;
 mod shell;
@@ -341,6 +342,14 @@ fn run() -> Result<Option<PathBuf>, String> {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
     }));
+    let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks)));
+    runs.install(&core);
+    let closing = Rc::downgrade(&runs);
+    *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = closing.upgrade() {
+            runs.task_closed(task);
+        }
+    }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
@@ -595,7 +604,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         let ticks = if shutdown.is_none() {
             crashes.tick(Instant::now(), app.attached());
             tasks.sweep();
-            [tasks.tick(), scheduler.tick()].into_iter().flatten().min()
+            [tasks.tick(), scheduler.tick(), runs.tick()].into_iter().flatten().min()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
@@ -653,6 +662,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
                     app.status(&pane, status);
                     tasks.status(&pane, status, ended);
+                    runs.status(&pane, ended);
                 }
             }
             Event::RulesUpdated { token, report } => status_commands.updated(token, report),

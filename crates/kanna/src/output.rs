@@ -76,6 +76,9 @@ fn whose_text(reply: &Value) -> Option<String> {
 
 pub fn opened(request: &Value, reply: &Value) -> String {
     let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("?").to_string());
+    if reply["background"] == true {
+        return format!("opened {} in the background of {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
+    }
     if let Some(edge) = reply["dock"].as_str() {
         let frozen = if request["frozen"] == true { ", frozen," } else { "" };
         return format!("opened {} docked {edge}{frozen} in {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
@@ -108,6 +111,9 @@ pub fn marked(args: &Value, reply: &Value) -> String {
 }
 
 pub fn moved(reply: &Value) -> String {
+    if reply["background"] == true {
+        return format!("{} is in the background of {}", reply["pane"].as_str().unwrap_or("?"), whose_text(reply).unwrap_or_else(|| "its workspace".into()));
+    }
     let dock = &reply["dock"];
     if dock.is_object() {
         return format!(
@@ -579,13 +585,13 @@ pub fn scoped(reply: &Value, pane: &str) -> Option<Value> {
     let named = |v: &Value| v == shown.as_str() || v == id.as_str();
     let has = |list: &Value, p: &str| list.as_array().is_some_and(|l| l.iter().any(|x| x == p));
     let mut out = json!({ "pane": id, "at": null, "windows": [], "hiddenWindows": [], "workspaces": [], "panes": [row], "desks": reply["desks"].clone() });
-    if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id)) {
+    if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id) || has(&w["background"], &id)) {
         let ours = |w: &&Value| w["workspace"] == ws["id"];
         out["at"] = json!("workspace");
         out["workspaces"] = json!([ws]);
         out["windows"] = Value::Array(windows.iter().filter(ours).cloned().collect());
         out["hiddenWindows"] = Value::Array(hidden.iter().filter(ours).cloned().collect());
-        out["panes"] = Value::Array(panes.iter().filter(|p| p["id"].as_str().is_some_and(|p| has(&ws["panes"], p))).cloned().collect());
+        out["panes"] = Value::Array(panes.iter().filter(|p| p["id"].as_str().is_some_and(|p| has(&ws["panes"], p) || has(&ws["background"], p))).cloned().collect());
         return Some(out);
     }
     let holds = |w: &Value| named(&w["lead"]["pane"]) || named(&w["dock"]["pane"]) || w["tabs"].as_array().is_some_and(|t| t.iter().any(|t| layout_panes(&t["layout"]).iter().any(|p| named(&json!(p)))));
@@ -675,7 +681,7 @@ fn everything(reply: &Value) -> String {
     if !free.is_empty() {
         sections.push(format!("Free windows\n{}", free.join("\n")));
     }
-    let mut placed: Vec<String> = workspaces.iter().flat_map(|w| w["panes"].as_array().cloned().unwrap_or_default()).filter_map(|p| p.as_str().map(String::from)).collect();
+    let mut placed: Vec<String> = workspaces.iter().flat_map(|w| [&w["panes"], &w["background"]]).flat_map(|l| l.as_array().cloned().unwrap_or_default()).filter_map(|p| p.as_str().map(String::from)).collect();
     for window in windows.iter().chain(reply["hiddenWindows"].as_array().unwrap_or(&empty)) {
         placed.extend(window["tabs"].as_array().unwrap_or(&empty).iter().flat_map(|t| layout_panes(&t["layout"])));
         placed.extend(window["lead"]["pane"].as_str().map(String::from));
@@ -746,6 +752,10 @@ fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     }
     out.extend(focus_line(ws, "  "));
     out.extend(tab_lines(&ws["tabs"], "  "));
+    let background: Vec<String> = ws["background"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str).map(|p| named_pane(reply, p)).collect();
+    if !background.is_empty() {
+        out.push(format!("  background: {}", background.join(", ")));
+    }
     for own in ws["windows"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str) {
         let window = reply["windows"].as_array().and_then(|l| l.iter().find(|w| w["id"] == own)).cloned();
         out.push(format!("  {own}"));
@@ -1425,6 +1435,95 @@ pub fn machine(request: &Value, reply: &Value) -> String {
             }
             if let Some(code) = reply["offer"]["code"].as_str() {
                 out.push(format!("this machine is waiting to pair, code {code}"));
+            }
+            out.join("\n")
+        }
+    }
+}
+
+fn span(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    match (s / 3600, s % 3600 / 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m {s:02}s"),
+        (h, m, _) => format!("{h}h {m:02}m"),
+    }
+}
+
+fn run_line(run: &Value, now: f64) -> String {
+    let id = run["run"].as_str().unwrap_or("?");
+    let task: String = run["task"].as_str().unwrap_or("?").chars().take(9).collect();
+    let state = run["state"].as_str().unwrap_or("?");
+    let stage = match (run["stageOpen"].as_bool(), run["stage"].as_str(), run["next"].as_str()) {
+        (Some(true), Some(stage), _) => stage.to_string(),
+        (_, _, Some(next)) => format!("next {next}"),
+        (_, Some(stage), _) => format!("last {stage}"),
+        _ => "-".into(),
+    };
+    let ended = run["endedAt"].as_f64().unwrap_or(now);
+    let took = span(ended - run["startedAt"].as_f64().unwrap_or(ended));
+    let outcome = run["outcome"].as_str().map_or(String::new(), |o| format!("  {o}"));
+    let why = run["why"].as_str().filter(|_| state != "done").map_or(String::new(), |w| format!(": {w}"));
+    format!("{id}  {task}  {:<10} {:<8} {stage}  {} visits  {took}{outcome}{why}", run["pipeline"].as_str().unwrap_or("?"), state, run["visits"].as_u64().unwrap_or(0))
+}
+
+pub fn run(request: &Value, reply: &Value) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    match request["action"].as_str() {
+        Some("start") => format!(
+            "{} runs {} for {} on {} (worst case {} sessions); `kanna run show {}` follows it",
+            reply["run"].as_str().unwrap_or("?"),
+            reply["pipeline"].as_str().unwrap_or("?"),
+            reply["task"].as_str().unwrap_or("?"),
+            reply["branch"].as_str().unwrap_or("?"),
+            reply["worst"],
+            reply["run"].as_str().unwrap_or("?")
+        ),
+        Some("stop") => format!("{} is stopped; its branch is kept", reply["run"].as_str().unwrap_or("?")),
+        Some("done") => format!("{}: {} reported {}; Kanna ends this session now", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?"), reply["verdict"].as_str().unwrap_or("done")),
+        Some("need") => format!("{}: {} is paused; the task's agent is told what it needs, and Kanna ends this session once your turn ends, keeping it to resume", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("resume") => format!("{}: {} carries on", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("list") => {
+            let runs = reply["runs"].as_array().cloned().unwrap_or_default();
+            if runs.is_empty() {
+                return "no runs".into();
+            }
+            runs.iter().map(|r| run_line(r, now)).collect::<Vec<_>>().join("\n")
+        }
+        Some("log") => reply["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| {
+                let at = e["at"].as_f64().unwrap_or(0.0);
+                let doc = &e["doc"];
+                let detail = match e["what"].as_str() {
+                    Some("stage") => format!("{} (visit {}) in {}", doc["stage"].as_str().unwrap_or("?"), doc["visit"], doc["terminal"].as_str().unwrap_or("-")),
+                    Some("verdict") => format!("{} {} → {}", doc["stage"].as_str().unwrap_or("?"), doc["verdict"].as_str().unwrap_or("?"), doc["next"].as_str().unwrap_or("no arrow")),
+                    Some("started") => format!("{} on {}", doc["pipeline"].as_str().unwrap_or("?"), doc["branch"].as_str().unwrap_or("?")),
+                    Some("handed_back") => doc["note"].as_str().unwrap_or("").to_string(),
+                    _ => doc["why"].as_str().unwrap_or("").to_string(),
+                };
+                format!("{}  {:<11} {detail}", ago(now - at), e["what"].as_str().unwrap_or("?"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => {
+            let run = &reply["run"];
+            let mut out = vec![run_line(run, now)];
+            out.push(format!("branch {}  worktree {}", run["branch"].as_str().unwrap_or("?"), tilde(run["worktree"].as_str().unwrap_or("?"))));
+            if let Some(note) = run["note"].as_str() {
+                out.push(format!("handed back: {note}"));
+            }
+            for visit in reply["visits"].as_array().into_iter().flatten() {
+                let ended = visit["endedAt"].as_f64().unwrap_or(now);
+                let took = span(ended - visit["startedAt"].as_f64().unwrap_or(ended));
+                let verdict = visit["verdict"].as_str().unwrap_or("running");
+                let answer = visit["doc"]["answer"].as_str().or(visit["doc"]["feedback"].as_str()).unwrap_or("").lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(72).collect::<String>();
+                out.push(format!("  {:<10} {:<2} {:<8} {:<11} {took:>8}  {answer}", visit["stage"].as_str().unwrap_or("?"), visit["visit"], visit["kind"].as_str().unwrap_or("?"), verdict));
+            }
+            for worker in reply["workers"].as_array().into_iter().flatten() {
+                out.push(format!("worker: {} in {}", worker["stage"].as_str().unwrap_or("?"), worker["terminal"].as_str().unwrap_or("-")));
             }
             out.join("\n")
         }

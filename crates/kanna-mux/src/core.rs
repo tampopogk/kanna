@@ -105,6 +105,7 @@ struct Inner {
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
     renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
+    ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
 }
 
 pub struct Core(CoreHandle);
@@ -153,6 +154,7 @@ impl Core {
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
             renamed: RefCell::new(vec![]),
+            ended: RefCell::new(vec![]),
         })))
     }
 }
@@ -208,6 +210,17 @@ impl CoreHandle {
 
     pub fn on_renamed(&self, renamed: Rc<dyn Fn(&str, &str)>) {
         self.0.renamed.borrow_mut().push(renamed);
+    }
+
+    pub fn on_ended(&self, ended: Rc<dyn Fn(&str)>) {
+        self.0.ended.borrow_mut().push(ended);
+    }
+
+    fn notify_ended(&self, id: &str) {
+        let hooks: Vec<Rc<dyn Fn(&str)>> = self.0.ended.borrow().clone();
+        for hook in hooks {
+            hook(id);
+        }
     }
 
     pub fn set_wakeup(&self, wakeup: Option<Wakeup>) {
@@ -424,7 +437,8 @@ impl CoreHandle {
         let found = self.layout(scope_request(&Scope::Task(task.into()))).await?;
         let s = self.state();
         let ids = found.get("panes").and_then(Value::as_array).cloned().unwrap_or_default();
-        Ok(ids.iter().filter_map(Value::as_str).filter(|id| *id != task).filter(|id| s.panes.get(id).is_some_and(|p| p.kind == PaneType::Term && keep(p))).map(String::from).collect())
+        let background = found.get("background").and_then(Value::as_array).cloned().unwrap_or_default();
+        Ok(ids.iter().filter(|id| !background.contains(id)).filter_map(Value::as_str).filter(|id| *id != task).filter(|id| s.panes.get(id).is_some_and(|p| p.kind == PaneType::Term && keep(p))).map(String::from).collect())
     }
 
     async fn hung_up(&self, task: &str) -> Result<Vec<String>, KmuxError> {
@@ -495,6 +509,9 @@ impl CoreHandle {
         }
         if state != PaneState::Starting {
             self.resume(id);
+        }
+        if matches!(state, PaneState::Exited | PaneState::Failed) {
+            self.notify_ended(id);
         }
         self.changed();
         self.0.exec.run();
@@ -589,7 +606,7 @@ impl CoreHandle {
             Some(cmd) => {
                 let cmd = cmd.to_string();
                 let mut args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-                match if cmd == "window" { self.task_workspace(&mut args) } else { Ok(()) } {
+                match if matches!(cmd.as_str(), "window" | "open") { self.task_workspace(&mut args) } else { Ok(()) } {
                     Ok(()) => self.run(&cmd, args).await,
                     Err(error) => Err(error),
                 }
@@ -702,7 +719,7 @@ impl CoreHandle {
             book.sync(all);
         }
         let s = self.state();
-        let of = |id: &str| workspaces.as_ref().and_then(Value::as_array).and_then(|all| all.iter().find(|ws| ws["panes"].as_array().is_some_and(|p| p.iter().any(|p| p == id)))).map(|ws| ws["id"].clone());
+        let of = |id: &str| workspaces.as_ref().and_then(Value::as_array).and_then(|all| all.iter().find(|ws| ["panes", "background"].iter().any(|key| ws[*key].as_array().is_some_and(|p| p.iter().any(|p| p == id))))).map(|ws| ws["id"].clone());
         let panes = s.panes.iter().map(|pane| {
             let mut row = pane.summary();
             if let Some(ws) = of(&pane.id) {
@@ -856,6 +873,10 @@ impl CoreHandle {
         if shelf && claimed.is_some() {
             return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
+        let background = is_true(args, "background");
+        if background && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || shelf || claimed.is_some() || string(args, "workspace").is_none() || ["window", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
+            return Err(bad_request("a background terminal is in its task's workspace and nowhere else: it takes a workspace, and no window, dock, split, size or tab"));
+        }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
             return Err(bad_request("a window's lead is a terminal in a window, with no dock, split, size or tab"));
@@ -902,6 +923,7 @@ impl CoreHandle {
             shelf,
             lead,
             planner,
+            background,
         };
         let placed = self.layout(place_request(&Pane::new(&id, name.clone(), kind), &at)).await?;
         let placed = Value::Object(placed);
@@ -1183,6 +1205,9 @@ impl CoreHandle {
             host.stop(pane);
         }
         self.resume(id);
+        if pane.is_some() {
+            self.notify_ended(id);
+        }
     }
 
     async fn reload(&self, id: &str, clear_exit: bool) -> Pane {
@@ -1466,6 +1491,9 @@ fn opened(summary: Value, location: &Value, placed: &Value) -> Map {
     let mut out = reply([("pane", summary), ("window", window), ("tab", location["tab"].clone())]);
     if let Some(edge) = location.get("dock").filter(|d| !d.is_null()) {
         out.insert("dock".into(), edge.clone());
+    }
+    if location.get("background").or_else(|| placed.get("background")) == Some(&Value::Bool(true)) {
+        out.insert("background".into(), Value::Bool(true));
     }
     if let Some(workspace) = location.get("workspace").or_else(|| placed.get("workspace")).filter(|w| !w.is_null()) {
         out.insert("workspace".into(), workspace.clone());
