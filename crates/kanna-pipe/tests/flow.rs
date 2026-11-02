@@ -1,4 +1,4 @@
-use kanna_pipe::{edited, emitted, parse, pipe_block, Context, Rule, Sizes, Verdict};
+use kanna_pipe::{edited, emitted, parse, kojo_block, Context, Rule, Sizes, Verdict};
 use std::path::PathBuf;
 
 fn repo() -> PathBuf {
@@ -89,7 +89,7 @@ fn an_emitted_block_goes_ahead_of_the_emitters_arrows() {
 fn an_emitted_block_cant_redefine_a_stage_or_the_budget() {
     let pipeline = feature();
     let errors = emitted(&pipeline, "plan", "x = run true\ncheck = run true\nbudget = 99 sessions", &context()).unwrap_err();
-    assert_eq!(errors.iter().map(|e| e.at("plan")).collect::<Vec<_>>(), ["plan:2: stage 'check' exists already; a pipe block can only add stages", "plan:3: a pipe block can't change the budget"]);
+    assert_eq!(errors.iter().map(|e| e.at("plan")).collect::<Vec<_>>(), ["plan:2: stage 'check' exists already; a kojo block can only add stages", "plan:3: a kojo block can't change the budget"]);
 }
 
 #[test]
@@ -120,8 +120,8 @@ fn an_edit_keeps_the_counts_of_arrows_it_didnt_change() {
 }
 
 #[test]
-fn a_pipe_block_is_found_in_an_answer() {
-    let answer = "The plan.\n\n```json name=parts\n[]\n```\n\n```pipe\nlint = run true\nplan -> lint\n```\nDone.";
-    assert_eq!(pipe_block(answer).as_deref(), Some("lint = run true\nplan -> lint"));
-    assert_eq!(pipe_block("no block here"), None);
+fn a_kojo_block_is_found_in_an_answer() {
+    let answer = "The plan.\n\n```json name=parts\n[]\n```\n\n```kojo\nlint = run true\nplan -> lint\n```\nDone.";
+    assert_eq!(kojo_block(answer).as_deref(), Some("lint = run true\nplan -> lint"));
+    assert_eq!(kojo_block("no block here"), None);
 }

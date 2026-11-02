@@ -136,7 +136,7 @@ sequenceDiagram
     participant S as plan stage, with emits
     participant D as daemon
     participant U as you
-    S->>D: its answer holds a fenced pipe block
+    S->>D: its answer holds a fenced kojo block
     D->>D: merge into the run's pipeline, validate, check the budget
     alt valid
         D->>D: revision 2, by stage plan
@@ -147,7 +147,7 @@ sequenceDiagram
     D->>D: validate, then revision 3, by you
 ```
 
-- **A stage with `emits`** may put a fenced block with the info string `pipe` in its answer: stage lines and flow lines in this language. New stages are added; a flow line from the emitting stage goes **ahead** of that stage's own arrows (so what it emits is taken first, and its static arrow is the fallback when it emits nothing); every other flow line is appended. A stage name that exists already is an error, so a run can't redefine a stage behind your back.
+- **A stage with `emits`** may put a fenced block with the info string `kojo` in its answer: stage lines and flow lines in this language. New stages are added; a flow line from the emitting stage goes **ahead** of that stage's own arrows (so what it emits is taken first, and its static arrow is the fallback when it emits nothing); every other flow line is appended. A stage name that exists already is an error, so a run can't redefine a stage behind your back.
 - **The merged revision is text,** so it can be shown with a diff and edited: the block's stage lines go after the last stage line; each emitted arrow from the emitter becomes a line of its own just above the line with the emitter's first arrow; every other emitted arrow becomes a line at the end. A block may not set the budget, and only a stage with `emits` may emit. Errors in the block name the block's lines; errors in the merged pipeline name the revision's lines.
 
 ```

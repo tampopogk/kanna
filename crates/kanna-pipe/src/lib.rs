@@ -258,12 +258,12 @@ pub fn load(text: &str, context: &Context) -> Result<Pipeline, Vec<Error>> {
     Ok(pipeline)
 }
 
-pub fn pipe_block(answer: &str) -> Option<String> {
+pub fn kojo_block(answer: &str) -> Option<String> {
     let mut lines = answer.lines();
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
         let fence: String = trimmed.chars().take_while(|&c| c == '`' || c == '~').collect();
-        if fence.len() < 3 || trimmed[fence.len()..].split_whitespace().next() != Some("pipe") {
+        if fence.len() < 3 || trimmed[fence.len()..].split_whitespace().next() != Some("kojo") {
             continue;
         }
         let mut block = Vec::new();

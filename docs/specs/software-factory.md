@@ -110,13 +110,13 @@ sequenceDiagram
 
 | Waiting on you | A stage's terminal, shown |
 |---|---|
-| ![The run waiting on you: the task's agent relays the stage's question in its chat, and the Run tab shows it as a card with Yes, No and a note](software-factory-gate.png) | ![The review stage's agent (codex) at work: its terminal shown in a tab of the task's workspace, beside the Run tab](software-factory-watch.png) |
+| ![The run waiting on you: a stage's agent needs an answer; the task's agent relays the question in its chat, and the Run tab shows it as a card to answer and resume](software-factory-gate.png) | ![The review stage's agent (codex) at work: its terminal shown in a tab of the task's workspace, beside the Run tab](software-factory-watch.png) |
 
 - **Run tab:** `kanna open run`, opened by the task's agent when it starts a run: the pipeline graph with each stage's state and visits, the run's numbers and revision, the visits with their verdicts, times, turns and tokens, and the running workers. A visit opens to its answer, output or diff. It offers to show the current stage's terminal, whose tab then follows the run to the next stage.
 - **Stage terminals:** `kanna move TERMINAL --tab` shows one in a tab, `--background` puts it back; the run carries on. What you type there is kept as an intervention.
 - **Ask:** the task's agent relays it in its chat and runs `kanna run answer`; the Run tab shows a card with **Yes**, **No** and a note. The task shows needs you. Either answer is recorded with who gave it.
 - **Buttons:** the CLI's verbs ([7](#7-cli)). **Pause** finishes the current stage and starts no other; **Skip stage** ends the visit as `pass` by you; **Retry stage** runs it again; **Edit pipeline** opens the run's revision in a code pane; **Stop** ends the run. Each is recorded as an intervention.
-- **Desk and Shelf:** one row, the task's agent's status; the Run tab's badge (`5/9`) is the run's only sign. `kanna task list` adds `run: review 5/9` after the state.
+- **Desk and Shelf:** one row, the task's agent's status; the Run tab's badge (`5/7`) is the run's only sign. `kanna task list` adds `run: review 5/7` after the state.
 - **Result:** at hand-back the task's agent presents it ([presenting](presenting.md)): the spec, the diff, the mockup, what it built and what it cost.
 
 ## 5. Metrics
