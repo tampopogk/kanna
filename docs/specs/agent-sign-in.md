@@ -1,6 +1,6 @@
 # Agent Sign-In Across Machines
 
-**Status:** built for your own machines (slice S1); the Codex holder is verified through Codex 0.163.0's app-server, including the terminal command Kanna starts · **Tests:** `cargo test -p kanna-daemon` (accounts, codex_remote, agents), `cargo test -p kanna` (accounts, `tests/machine.rs`), e2e `machine_remote_task` · **Part of:** [your machines](machines.md) · **On Kanna-run machines:** [Cloud §7](kanna-cloud.md#7-agent-sign-in-on-kanna-run-machines) · **Builds on:** [agent setup](agent-setup.md), [Codex's app-server](codex-app-server.md) · **Model:** [agent-sign-in](../../references/prototypes/agent-sign-in/README.md)
+**Status:** built for your own machines (slice S1) and verified against real accounts on 2026-11-03 ([§5](#5-verification)); Codex through Codex 0.163.0's app-server, including the terminal command Kanna starts · **Tests:** `cargo test -p kanna-daemon` (accounts, codex_remote, agents), `cargo test -p kanna` (accounts, `tests/machine.rs`), e2e `machine_remote_task` · **Part of:** [your machines](machines.md) · **On Kanna-run machines:** [Cloud §7](kanna-cloud.md#7-agent-sign-in-on-kanna-run-machines) · **Builds on:** [agent setup](agent-setup.md), [Codex's app-server](codex-app-server.md) · **Model:** [agent-sign-in](../../references/prototypes/agent-sign-in/README.md)
 
 Agents run on the user's own Claude or Codex accounts, subscriptions or API keys. **Accounts are the user's, not a machine's:** one is added once, on the Mac, and every machine's agents use it. Where an account can't be shared, a machine signs in by itself, with the sign-in page opened where the user is.
 
@@ -10,6 +10,7 @@ Agents run on the user's own Claude or Codex accounts, subscriptions or API keys
 2. [How a machine gets them](#2-how-a-machine-gets-them)
 3. [Rules](#3-rules)
 4. [How it's built](#4-how-its-built)
+5. [Verification](#5-verification)
 
 ## 1. Accounts
 
@@ -59,7 +60,7 @@ sequenceDiagram
 ## 3. Rules
 
 - **Terms** (checked 2026-10-26; these pages change):
-  - **Anthropic** ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)): "developers may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow." API keys kept in "a development environment, secrets manager, or machine image for use by the customer's own authorized users" are allowed, and so is "an end user … signing in to the unmodified Claude Code binary with their own Claude subscription". Pro and Max limits "assume ordinary, individual usage". So a Claude API key may be shared; Kanna keeping and handing out a subscription's setup token is what that sentence forbids. The per-machine sign-in is allowed.
+  - **Anthropic** ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)): "developers may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow." API keys kept in "a development environment, secrets manager, or machine image for use by the customer's own authorized users" are allowed, and so is "an end user … signing in to the unmodified Claude Code binary with their own Claude subscription". Pro and Max limits "assume ordinary, individual usage". So a Claude API key may be shared; Kanna keeping and handing out a subscription's setup token is what that sentence forbids. The per-machine sign-in is allowed. **Decided (2026-11-03):** Kanna shares the setup token anyway, because a sign-in per machine is worse to use; the per-machine sign-in stays as the fallback.
   - **OpenAI** ([app-server](https://learn.chatgpt.com/docs/app-server), [auth](https://learn.chatgpt.com/docs/auth)): external tokens are "experimental and intended for host apps that already own the user's ChatGPT auth lifecycle". App-server auth "has never been permitted for commercial or hosted services", while a local or open-source app may keep using it (OpenAI recommends Sign in with ChatGPT). One refresher per login, never one `auth.json` on several machines, matches the auth guide. The [Terms of Use](https://openai.com/policies/terms-of-use/) forbid making an account available to others and bypassing limits; that page refused automated reads (403).
 - **Secrets** are kept in the Mac's Keychain (service "Kanna agent accounts"), and in the state folder's `agent-secrets/` (0700, files 0600) on a machine without one. A holder is always one of your devices. Kanna Cloud keeps no copy (proposed: [Cloud §9](kanna-cloud.md#9-open-questions)).
 - **Login files are never copied** between machines (`~/.claude/.credentials.json`, `~/.codex/auth.json`): their refresh tokens rotate, so two machines sharing one sign each other out.
@@ -83,5 +84,18 @@ sequenceDiagram
 | `remove {account}` | this machine | an ID, or `claude`/`codex` |
 | `token {account?, previous?}` | this machine or a peer | the Codex access token, from here if this is the holder, else from the holder |
 | `supply {version, accounts}` | a peer only | replaces what that peer gave this machine |
+
+## 5. Verification
+
+Run on 2026-11-03 against real accounts: a test Kanna on this Mac (secrets in its Keychain) and an Incus VM on r720-1 running this branch, paired over the LAN. Codex 0.163.0, Claude Code 2.1.310 on the VM.
+
+| Check | Result |
+|---|---|
+| A machine that joins gets the accounts | the VM listed both on pairing; its `agent-secrets/received` holds the setup token and the holder's name, and no refresh token, ID token or JWT |
+| One setup token, concurrent inference | `kanna-daemon --with-account … claude -p` on the Mac and the VM, started together, both answered (4.9 s and 16.5 s); without `--with-account` the Mac's Claude was signed out |
+| Codex through the holder, injected invalid token | the holder's access token had its signature changed; the VM's Codex, started by `kanna-daemon --codex-remote`, answered two turns in the same process and thread; the holder's token was then a new one from a real refresh; no `~/.codex/auth.json` on the VM |
+| A refused refresh | three requests from the VM, all refused, raised one toast on the Mac: "Sign in to Codex again" |
+| Removing an account | `kanna accounts remove codex` took it off the VM |
+| Revoking a machine | `kanna machine revoke s1-vm`: the VM dropped every account and its Claude was signed out; the Mac kept its own |
 
 **Done when** (the slice's verification): one Claude setup token runs concurrent inference on this Mac and a paired Linux VM; Codex runs through the holder on the VM with an injected invalid token recovered in the same process and thread, and no refresh credential on the worker. Keep the model's negative regression too: ordinary ChatGPT OAuth tokens are refused by `codex login --with-access-token`.
