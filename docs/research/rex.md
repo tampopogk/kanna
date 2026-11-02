@@ -231,7 +231,7 @@ Pink is Rex's code, green Kanna's, grey the OS, orange the clients.
 | **Layout model** | sessions → windows → a split tree plus floating layers of blocks; detached blocks; many clients (§1.3) | windows → tabs → a split tree of panes, with zoom; panes view the daemon's content; background terminals in no tab; one app per daemon ([workspaces §1](../specs/workspaces.md#1-the-model), [physical layout](../specs/physical-layout.md)) | Rex: floating layers, several viewers; otherwise the same tree |
 | **CLI targets** | flags, env, else the focused block | the caller, else refused ([CLI caller](../specs/cli-caller.md)) | Kanna: stricter |
 | **Waiting, events** | `wait`, `run --wait`, `--keep-open`, `events --json` | results pushed as messages; no event stream ([agent messaging](../specs/agent-messaging.md)) | Rex for events; Kanna for results (3.1 #2) |
-| **API description** | schemas and notes per method; older revisions bridged | `commands --json`; a `[min, max]` range ([machine links §2](../specs/machine-links.md#2-the-hello)) | Rex |
+| **API description** | schemas and notes per method; older revisions bridged | `commands --json`; a `[min, max]` range ([machine links §2](../specs/machine-links.md#2-the-hello)) | Rex; Shelf task `task-c383` |
 | **Scripting** | Lua config, scripts and events | agents and the CLI; `kanna up` planned | Rex has more; see 3.3 |
 | **Agent status** | OSC 7501 only | OSC 7501, then screen rules ([agent status](../specs/agent-status.md)) | Kanna |
 | **Agent skills** | guide read from the binary; a session-start hook | skills copied and merged; no hooks ([agent setup](../specs/agent-setup.md)) | each has a point; see 3.1 #9 |
