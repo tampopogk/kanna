@@ -229,6 +229,15 @@ pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     configured(std::slice::from_ref(mine), "pipelines", "agents", read, "an object of agent names to commands").flatten().unwrap_or_else(|| agent.into())
 }
 
+pub const WORKERS: usize = 3;
+
+pub const WORKERS_MAX: usize = 10;
+
+pub fn pipeline_workers(files: &[PathBuf]) -> usize {
+    let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| (1..=WORKERS_MAX).contains(n));
+    configured(files, "pipelines", "workers", read, "a number of workers from 1 to 10").unwrap_or(WORKERS)
+}
+
 pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;
@@ -4009,7 +4018,9 @@ mod tests {
         let keys: Vec<&String> = schema["properties"]["agents"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["prompts"]);
         let keys: Vec<&String> = schema["properties"]["pipelines"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["agents"]);
+        assert_eq!(keys, ["agents", "workers"]);
+        let workers = &schema["properties"]["pipelines"]["properties"]["workers"];
+        assert_eq!((workers["default"].clone(), workers["minimum"].clone(), workers["maximum"].clone()), (json!(WORKERS), json!(1), json!(WORKERS_MAX)));
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["pipelines"]["properties"]["agents"]["propertyNames"]["enum"], json!(names));
         assert_eq!((tasks["agent"]["default"].clone(), tasks["agent"]["examples"].clone()), (json!(DEFAULT_AGENT), json!(names)));
