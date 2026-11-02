@@ -1,8 +1,10 @@
+use crate::db::Db;
 use crate::tasks::{add_worktree, git};
+use kanna_mux::json::Value;
+use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub const WIP: &str = "kanna: work in progress of";
 
@@ -14,6 +16,54 @@ pub fn inbox(state: &Path) -> PathBuf {
 
 pub fn outbox(state: &Path) -> PathBuf {
     state.join("transfers").join("out")
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Saved {
+    pub id: String,
+    pub task: String,
+    pub role: String,
+    pub peer: String,
+    pub state: String,
+    pub doc: Value,
+}
+
+impl Saved {
+    pub fn text(&self, key: &str) -> Option<&str> {
+        self.doc.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+    }
+
+    pub fn packed(&self) -> Option<Packed> {
+        Some(Packed { branch: self.text("branch")?.to_string(), pre: self.text("pre")?.to_string(), wip: self.text("wip")?.to_string() })
+    }
+}
+
+pub fn save(conn: &Connection, saved: &Saved) -> rusqlite::Result<()> {
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    conn.execute(
+        "insert into transfers (id, task, role, peer, state, doc, at) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         on conflict (id) do update set state = excluded.state, doc = excluded.doc, at = excluded.at",
+        params![saved.id, saved.task, saved.role, saved.peer, saved.state, saved.doc.to_string(), at],
+    )?;
+    Ok(())
+}
+
+fn saved_row(r: &rusqlite::Row) -> rusqlite::Result<Saved> {
+    let doc: String = r.get(5)?;
+    Ok(Saved { id: r.get(0)?, task: r.get(1)?, role: r.get(2)?, peer: r.get(3)?, state: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+}
+
+pub fn saved(db: &Db, id: &str) -> Option<Saved> {
+    db.atomically(|conn| conn.query_row("select id, task, role, peer, state, doc from transfers where id = ?1", [id], saved_row).optional()).ok().flatten()
+}
+
+pub fn under_way(db: &Db, role: &str) -> Vec<Saved> {
+    db.atomically(|conn| {
+        let mut statement = conn.prepare("select id, task, role, peer, state, doc from transfers where role = ?1 and state not in ('done', 'failed') order by at")?;
+        let rows = statement.query_map([role], saved_row)?;
+        rows.collect()
+    })
+    .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -229,11 +279,6 @@ pub fn split(file: &Path, bundle_size: u64, transcript_size: u64, bundle: &Path)
     let mut transcript = Vec::with_capacity(transcript_size as usize);
     from.read_to_end(&mut transcript).map_err(|e| e.to_string())?;
     Ok(transcript)
-}
-
-pub fn digest(path: &Path) -> Option<String> {
-    let out = Command::new("shasum").arg("-a").arg("256").arg(path).output().ok().filter(|o| o.status.success())?;
-    String::from_utf8_lossy(&out.stdout).split_whitespace().next().map(String::from)
 }
 
 #[cfg(test)]

@@ -385,6 +385,19 @@ fn run() -> Result<Option<PathBuf>, String> {
             }
         }));
     }
+    if let Some(machines) = &machines {
+        let (sending, replies) = (Rc::downgrade(machines), events.clone());
+        *tasks.payload.borrow_mut() = Some(Box::new(move |peer, id, args, path, token| {
+            let replies = replies.clone();
+            let done: Box<dyn FnOnce(Result<Value, String>) + Send> = Box::new(move |reply| {
+                let _ = replies.send(Event::Replica { token, reply });
+            });
+            match sending.upgrade() {
+                Some(machines) => machines.transfer(peer, id, args, path, done),
+                None => done(Err("the daemon is stopping".into())),
+            }
+        }));
+    }
     tasks.join();
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();

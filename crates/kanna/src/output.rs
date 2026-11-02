@@ -306,6 +306,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
         Some("unready") => format!("{} isn't ready", reply["task"]["id"].as_str().unwrap_or("?")),
         Some("setup") if reply["tab"].is_string() => format!("{id}'s setup runs again in {} (a Setup tab)", reply["pane"].as_str().unwrap_or("?")),
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
+        Some("move") if reply["waiting"] == true => format!("{} moves to {} when it's reachable ({})", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["why"].as_str().unwrap_or("away")),
+        Some("move") => format!("{} carries on on {}{}", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["folder"].as_str().map_or(String::new(), |f| format!(", in {f}"))),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
         Some("pick") => format!(
             "moved {} to the Desk: {} in {}{}",
