@@ -523,7 +523,8 @@ impl Runs {
         value["budget"] = budget;
         let row = RunRow { id: id.clone(), task: task.id.clone(), repo: task.repo.clone(), pipeline: name.clone(), revision_hash: hash(&text), branch: branch.clone(), state: "running".into(), started_at: now(), ended_at: None, outcome: None, doc: value };
         let by = string(args, "by").unwrap_or("user").to_string();
-        self.db.put_run(&row, Some(("started", Some(&by), &json!({ "pipeline": name, "branch": branch, "base": base })))).map_err(failed)?;
+        let agent = string(args, "by").and_then(|by| self.tasks.upgrade()?.task_of(by)).is_some_and(|of| of == task.id);
+        self.db.put_run(&row, Some(("started", Some(&by), &json!({ "pipeline": name, "branch": branch, "base": base, "agent": agent })))).map_err(failed)?;
         self.db.add_revision(&id, "file", &row.revision_hash, &json!({ "text": text, "file": shown, "prompts": prompts })).map_err(failed)?;
         log!("kanna-daemon: {} runs {name} for {} on {branch} in {worker}", id, task.id);
         let worst = pipeline.max_sessions(&Sizes::new());
@@ -999,6 +1000,7 @@ impl Runs {
             };
             if let Some((old, true)) = &last {
                 log!("kanna-daemon: {id}'s next worker {pane} takes the tab {old} was shown in");
+                this.name_tab(&id, &pane);
             }
             this.heed_typing(&pane);
             opened(&this, &id, &pane);
@@ -1474,7 +1476,6 @@ impl Runs {
         let events = self.db.run_events(id).map_err(failed)?;
         let revision = self.db.revisions(id).map_err(failed)?.pop();
         let task = self.tasks.upgrade().and_then(|t| t.entry(&row.task));
-        let agent = self.tasks.upgrade().and_then(|t| t.agent_pane(&row.task));
         let lines = self.lines(&row);
         Ok(run_notice::notice(&run_notice::Inputs {
             row: &row,
@@ -1483,7 +1484,6 @@ impl Runs {
             events: &events,
             revision: revision.as_ref(),
             task_name: task.as_ref().and_then(|t| t.name.as_deref()),
-            agent_pane: agent.as_deref(),
             lines,
             now: now(),
         }))
@@ -1557,7 +1557,7 @@ impl Runs {
         let (run, terminal) = terminal;
         let by = string(args, "by").unwrap_or("user").to_string();
         let (this, focusing) = (Rc::downgrade(self), core.weak());
-        core.handle(json!({ "cmd": "move", "args": { "pane": terminal, "tab": true } }), move |moved| {
+        core.handle(json!({ "cmd": "move", "args": { "pane": terminal, "tab": "new" } }), move |moved| {
             if moved.get("ok") != Some(&Value::Bool(true)) {
                 let message = moved.get("error").and_then(|e| string(e, "message")).unwrap_or("it couldn't be moved").to_string();
                 return responder.reply(Err(failed(format!("can't show {terminal} in a tab: {message}"))));
@@ -1565,6 +1565,7 @@ impl Runs {
             if let Some(this) = this.upgrade() {
                 let _ = this.db.run_event(&run, "watched", Some(&by), &json!({ "terminal": terminal }));
                 log!("kanna-daemon: {run} is watched in {terminal}");
+                this.name_tab(&run, &terminal);
             }
             let mut out = Map::from_iter([("run".to_string(), json!(run)), ("terminal".to_string(), json!(terminal))]);
             for key in ["tab", "workspace", "window"] {
@@ -1574,6 +1575,18 @@ impl Runs {
             }
             let Some(core) = focusing.upgrade() else { return responder.reply(Ok(out)) };
             core.handle(json!({ "cmd": "focus", "args": { "pane": terminal } }), move |_| responder.reply(Ok(out)));
+        });
+    }
+
+    fn name_tab(&self, id: &str, pane: &str) {
+        let title = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref().map(|v| format!("{} · {}", v.row.stage, run_notice::who(&l.pipeline, &v.row))));
+        let (Some(title), Some(core)) = (title, self.core.upgrade()) else { return };
+        let (renaming, pane) = (core.weak(), pane.to_string());
+        core.handle(json!({ "cmd": "list" }), move |list| {
+            let tab = list.get("workspaces").and_then(Value::as_array).into_iter().flatten().flat_map(|ws| ws.get("tabs").and_then(Value::as_array).into_iter().flatten()).find(|t| t.get("panes").and_then(Value::as_array).is_some_and(|p| p.iter().any(|p| p == pane.as_str()))).and_then(|t| string(t, "id").map(String::from));
+            if let (Some(tab), Some(core)) = (tab, renaming.upgrade()) {
+                core.handle(json!({ "cmd": "rename-tab", "args": { "tab": tab, "title": title } }), |_| {});
+            }
         });
     }
 

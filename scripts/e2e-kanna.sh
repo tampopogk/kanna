@@ -4843,6 +4843,138 @@ assert v[0]["doc"]["replies"] == 1 and "paused" not in v[0]["doc"], v[0]["doc"]'
   check test -n "$(git -C "$repo" branch --list "run/$task-4")" -a -n "$(git -C "$repo" branch --list "run/$task-5")" || { echo "pipeline_run: the closed task's run branches are gone"; return 1; }
 }
 
+scenario pipeline_tab M4
+pipeline_tab() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/tabbed" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s KANNA_MOCK_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  python3 -c 'import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["pipelines"] = {"agents": {"claude": sys.argv[2]}}; json.dump(c, open(p, "w"))' "$KANNA_AGENTS_HOME/.kanna-v4/config.json" "$fake/claude" || { echo "pipeline_tab line $LINENO"; return 1; }
+  start_daemon && start_app || { echo "pipeline_tab line $LINENO"; return 1; }
+  mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_tab line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  cat >"$repo/.kanna/pipelines/demo.kojo" <<'PIPE'
+budget = 6 sessions, 30m
+build  = claude
+check  = run sh check.sh
+build -> check
+check -[fail, max 2]-> build
+check -> done
+PIPE
+  cat >"$repo/.kanna/prompts/build.md" <<'PROMPT'
+Build the change.
+mock: run echo visit >> built.txt && git add built.txt && git commit -qm build && echo 'Built the counter.' >"$KANNA_ANSWER" && "$KANNA_CLI" run done
+PROMPT
+  cat >"$repo/check.sh" <<CHECK
+n=\$(cat .kanna/tmp/checks 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >.kanna/tmp/checks
+until [ -e "$KANNA_STATE_DIR/go\$n" ]; do sleep 0.2; done
+[ "\$n" -eq 1 ] && { echo "FAILED: counter_counts"; exit 1; }
+echo ok
+CHECK
+  printf 'needy = claude\nneedy -> done\n' >"$repo/.kanna/pipelines/needy.kojo"
+  printf 'Ask first.\nmock: run "$KANNA_CLI" run need "Which colour?"\n' >"$repo/.kanna/prompts/needy.md"
+  printf 'wait = run sleep 300\nwait -> done\n' >"$repo/.kanna/pipelines/slow.kojo"
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "pipeline_tab line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Counter" "run $bin/kanna run start demo --request 'Count the visits'" --agent "$fake/claude") >/dev/null || { echo "pipeline_tab line $LINENO"; return 1; }
+  local task; task="$(tid 1)"
+  local folder="$repo/.kanna-worktrees/$task"
+  runs() { kanna run list --all --json | python3 -c 'import json, sys
+r = json.load(sys.stdin)["runs"]; print(" ".join(x[sys.argv[1]] if isinstance(x[sys.argv[1]], str) else json.dumps(x[sys.argv[1]]) for x in r))' "$1"; }
+  check wait_for 20 eval '[[ "$(runs run)" == run-* ]]' || { echo "pipeline_tab: the task's agent didn't start a run"; tail -20 "$out/daemon.log"; return 1; }
+  local run term; run="$(runs run)"
+  term="$(raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+print([t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0].get("held") or "-")' "$task")"
+  agent_of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+l = json.load(sys.stdin)
+print(next((t.get("held") or t.get("pane") for t in (l["shelf"] + (l.get("desk") or [])) if t["id"] == sys.argv[1] and (t.get("held") or t.get("pane"))), "-"))' "$task"; }
+  here() { (cd "$folder" && KANNA_TERMINAL="$(agent_of)" kanna "$@"); }
+  local opened; opened="$(here open run)" || { echo "pipeline_tab: kanna open run failed: $opened"; return 1; }
+  [[ "$opened" =~ ^opened\ (runview-[0-9]+)\ in\ .*\ tab-[0-9]+:\ running$ ]] || { echo "pipeline_tab: kanna open run said: $opened"; return 1; }
+  local tab="${BASH_REMATCH[1]}"
+  local taskws; taskws="$(kanna workspace list --all --json | python3 -c 'import json, sys
+print([w["id"] for w in json.load(sys.stdin)["workspaces"] if w["dock"]["id"] == sys.argv[1]][0])' "$term")"
+  in_tab() { kanna workspace list --all --json | python3 -c 'import json, sys
+ws = [w for w in json.load(sys.stdin)["workspaces"] if w["id"] == sys.argv[1]][0]
+print(next((t["id"] for t in ws["tabs"] if sys.argv[2] in t["panes"]), "-"))' "$taskws" "$1"; }
+  check test "$(in_tab "$tab")" != - || { echo "pipeline_tab: the Run tab isn't a tab of the task's workspace"; return 1; }
+  shown() { raw "{\"id\":1,\"cmd\":\"debug.run\",\"args\":{\"pane\":\"$tab\"${2:-}}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(shown run)" == "$run" ]]' || { echo "pipeline_tab: the Run tab shows no run"; raw "{\"id\":1,\"cmd\":\"debug.run\",\"args\":{\"pane\":\"$tab\"}}"; return 1; }
+  python3 -c 'import json, sys; assert json.loads(sys.argv[1]) == ["agent session", "command", "passed", "failed", "running", "waiting on you", "\u00d7N visits"]' "$(shown legend)" || { echo "pipeline_tab: the legend is $(shown legend)"; return 1; }
+  check test "$(shown nodes | python3 -c 'import json, sys; print(" ".join(n["id"] for n in json.load(sys.stdin)))')" == "build check done" || { echo "pipeline_tab: the graph is $(shown nodes)"; return 1; }
+  check wait_for 20 eval '[[ "$(shown badge)" == 2/2 ]]' || { echo "pipeline_tab: the badge while check runs is $(shown badge)"; return 1; }
+  [[ "$(cd "$repo" && kanna task list)" == *"Counter  "*" · run: check 2/2"* ]] || { echo "pipeline_tab: task list doesn't say the run's stage"; (cd "$repo" && kanna task list); return 1; }
+  local tiles; tiles="$(shown tiles)"
+  python3 -c 'import json, sys
+t = dict((l.split(" ")[0], v) for v, l in json.loads(sys.argv[1]))
+assert t["agent"] == "—" and t["tokens"] == "—", ("turns and tokens are not recorded yet", t)
+assert t["rework"] == "0" and t["your"] == "0", t' "$tiles" || { echo "pipeline_tab: the tiles were $tiles"; return 1; }
+  check test "$(shown enabled.watch)" == True -a "$(shown enabled.stop)" == True || { echo "pipeline_tab: the buttons are $(shown enabled)"; return 1; }
+  workers() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from run_stages where run = '$run' and terminal is not null order by id" | tr '\n' ' '; }
+  (cd "$repo" && kanna task pick "$task") >/dev/null || { echo "pipeline_tab line $LINENO"; return 1; }
+  local w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "pipeline_tab line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[1]}"
+  (cd "$repo" && kanna task activate "$task") >/dev/null || { echo "pipeline_tab line $LINENO"; return 1; }
+  local first; first="$(workers | awk '{print $2}')"
+  local watched; watched="$(here open run --watch)" || { echo "pipeline_tab: kanna open run --watch failed: $watched"; return 1; }
+  [[ "$watched" == "$first shows $run's worker in "*"; the tab follows the run to the next stage" ]] || { echo "pipeline_tab: --watch said: $watched"; return 1; }
+  local watch_tab; watch_tab="$(in_tab "$first")"
+  check test "$watch_tab" != - || { echo "pipeline_tab: the watched worker isn't in a tab"; return 1; }
+  check test "$(ws "$taskws" focused)" == "$first" || { echo "pipeline_tab: the watched worker isn't focused"; return 1; }
+  touch "$KANNA_STATE_DIR/go1"
+  check wait_for 30 eval '[[ "$(workers | wc -w | tr -d " ")" == 4 ]]' || { echo "pipeline_tab: the second check never started"; kanna run show "$run"; return 1; }
+  local second third; second="$(workers | awk '{print $3}')"; third="$(workers | awk '{print $4}')"
+  check wait_for 10 eval '[[ "$(in_tab "$third")" == "$watch_tab" ]]' || { echo "pipeline_tab: the next stage's worker $third isn't in the watched tab $watch_tab: $(in_tab "$third")"; kanna workspace list --all --json; tail -20 "$out/daemon.log"; return 1; }
+  check test "$(in_tab "$first")" == - -a "$(in_tab "$second")" == - || { echo "pipeline_tab: earlier workers are still in tabs"; return 1; }
+  grep -q "next worker $second takes the tab $first was shown in" "$out/daemon.log" || { echo "pipeline_tab: build's worker didn't take the watched tab"; tail -30 "$out/daemon.log"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"pane\":\"$third\",\"text\":\" \"}}" >/dev/null
+  check wait_for 10 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from run_events where run = '"'$run'"' and what = '"'typed'"'")" == 1 ]]' || { echo "pipeline_tab: typing into the worker wasn't recorded"; return 1; }
+  check wait_for 10 eval '[[ "$(shown tiles | python3 -c "import json, sys; print(json.load(sys.stdin)[5][0])")" == 1 ]]' || { echo "pipeline_tab: the interventions tile is $(shown tiles)"; return 1; }
+  check test "$(shown tiles | python3 -c 'import json, sys; print(json.load(sys.stdin)[4][0])')" == 1 || { echo "pipeline_tab: one fail arrow was taken, but rework loops is $(shown tiles)"; return 1; }
+  python3 -c 'import json, sys
+rows = json.loads(sys.argv[1])
+assert [r[1] for r in rows] == ["build", "check", "build ·2", "check ·2"], rows
+assert [r[4] for r in rows] == ["—", "fail", "—", "running"], rows
+assert rows[0][7] == "Built the counter." and rows[1][7] == "FAILED: counter_counts", rows
+assert rows[0][5] == "—" and rows[0][6] == "—" and rows[1][5] == "", rows' "$(shown rows)" || { echo "pipeline_tab: the stages table is $(shown rows)"; return 1; }
+  check test "$(shown workers | python3 -c 'import json, sys; print(json.load(sys.stdin)[0].split(" · ")[:3])')" == "['check ·2', 'check.sh', '$third']" || { echo "pipeline_tab: the workers are $(shown workers)"; return 1; }
+  kanna focus "$tab" >/dev/null || { echo "pipeline_tab line $LINENO"; return 1; }
+  sleep 1; snap "$w" pipeline_tab-run >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 1; snap "$w" pipeline_tab-run-light >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  touch "$KANNA_STATE_DIR/go2"
+  check wait_for 30 eval '[[ "$(runs state)" == done ]]' || { echo "pipeline_tab: the run didn't hand back"; kanna run show "$run"; return 1; }
+  check wait_for 10 eval '[[ "$(shown badge)" == done ]]' || { echo "pipeline_tab: the badge after hand-back is $(shown badge)"; return 1; }
+  check test "$(shown enabled.stop) $(shown enabled.watch)" == "False False" || { echo "pipeline_tab: a handed-back run's buttons are $(shown enabled)"; return 1; }
+  check wait_for 10 eval '[[ "$(in_tab "$third")" == - ]]' || { echo "pipeline_tab: the last worker is still shown"; return 1; }
+  [[ "$(cd "$repo" && kanna task list)" != *"run:"* ]] || { echo "pipeline_tab: task list still says a run after it ended"; return 1; }
+
+  local again; again="$(here run start needy 2>&1)" || { echo "pipeline_tab: the needy run didn't start: $again"; return 1; }
+  local needy="${again%% *}"
+  opened="$(here open run "$needy")" && [[ "$opened" =~ ^opened\ (runview-[0-9]+) ]] || { echo "pipeline_tab: open run RUN said: $opened"; return 1; }
+  tab="${BASH_REMATCH[1]}"
+  check wait_for 30 eval '[[ "$(shown card)" == "needy needs you: Which colour?" && "$(shown cardShown)" == True ]]' || { echo "pipeline_tab: the paused run shows no card: $(shown card)"; return 1; }
+  check test "$(shown badge)" == 1/1 || { echo "pipeline_tab: the paused badge is $(shown badge)"; return 1; }
+  kanna focus "$tab" >/dev/null && sleep 1 && snap "$w" pipeline_tab-gate >/dev/null
+  local note; note="$(python3 -c 'import json; print(json.dumps({"pane": "'"$tab"'", "press": "resume", "note": "mock: run \"$KANNA_CLI\" run done"}))')"
+  resume_card() { raw "{\"id\":1,\"cmd\":\"debug.run\",\"args\":$note}" >/dev/null; sleep 1; [[ "$(shown flash)" == None ]]; }
+  check wait_for 20 resume_card || { echo "pipeline_tab: Resume on the card was refused: $(shown flash)"; return 1; }
+  check wait_for 30 eval '[[ "$(runs state)" == "done done" ]]' || { echo "pipeline_tab: the resumed run didn't hand back: $(runs state) $(runs why)"; return 1; }
+  [[ "$(kanna run log "$needy" --json | python3 -c 'import json, sys; print([e["by"] for e in json.load(sys.stdin)["events"] if e["what"] == "resumed"])')" == "['user']" ]] || { echo "pipeline_tab: the card's answer wasn't recorded as yours"; kanna run log "$needy"; return 1; }
+
+  again="$(here run start slow 2>&1)" || { echo "pipeline_tab: the slow run didn't start: $again"; return 1; }
+  local slow="${again%% *}"
+  opened="$(here open run "$slow")" && [[ "$opened" =~ ^opened\ (runview-[0-9]+) ]] || { echo "pipeline_tab: open run said: $opened"; return 1; }
+  tab="${BASH_REMATCH[1]}"
+  check wait_for 20 eval '[[ "$(shown enabled.stop)" == True ]]' || { echo "pipeline_tab: the slow run's Stop is $(shown enabled.stop)"; return 1; }
+  shown flash ',"press":"pause"' >/dev/null
+  check wait_for 10 eval '[[ -n "$(shown flash)" || "$(runs state)" == *paused ]]' || { echo "pipeline_tab: Pause did nothing"; return 1; }
+  shown state ',"press":"stop"' >/dev/null
+  check wait_for 10 eval '[[ "$(runs state)" == "done done stopped" ]]' || { echo "pipeline_tab: Stop on the Run tab didn't stop the run: $(runs state)"; return 1; }
+  [[ "$(kanna run log "$slow" --json | python3 -c 'import json, sys; print([e["by"] for e in json.load(sys.stdin)["events"] if e["what"] == "stopped"])')" == "['user']" ]] || { echo "pipeline_tab: the Stop wasn't recorded as yours"; return 1; }
+  check wait_for 10 eval '[[ "$(shown state)" == stopped ]]' || { echo "pipeline_tab: the stopped run's tab says $(shown state)"; return 1; }
+}
+
 scenario task_scripts M4
 task_scripts() {
   start_daemon && start_app || { echo "task_scripts line $LINENO"; return 1; }

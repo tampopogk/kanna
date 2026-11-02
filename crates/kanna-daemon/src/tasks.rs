@@ -1257,11 +1257,6 @@ impl Tasks {
         self.run_of.borrow().as_ref().and_then(|run_of| run_of(task))
     }
 
-    pub fn agent_pane(&self, task: &str) -> Option<String> {
-        let running = self.running.borrow().iter().find(|r| r.entry.id == task).map(|r| r.pane.clone());
-        running.or_else(|| self.known(task).and_then(|e| e.held))
-    }
-
     pub fn task_of(&self, pane: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.id.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))

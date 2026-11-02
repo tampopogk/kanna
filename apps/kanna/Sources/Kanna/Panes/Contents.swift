@@ -5,6 +5,7 @@ import KannaDiff
 import KannaDocs
 import KannaLinks
 import KannaMarkdown
+import KannaRun
 import KannaSerial
 import WebKit
 
@@ -60,6 +61,8 @@ final class Contents {
     private var fileContents: [String: String] = [:]
     private var fileLatest: [String: JSON] = [:]
     private var serialContents: [String: String] = [:]
+    private var runContents: [String: String] = [:]
+    var onBadge: (() -> Void)?
 
     func slot(_ id: String) -> PaneSlot {
         if let slot = slots[id] { return slot }
@@ -103,7 +106,9 @@ final class Contents {
     func code(_ id: String) -> CodePaneView? { slots[id]?.content as? CodePaneView }
     func diff(_ id: String) -> DiffPaneView? { slots[id]?.content as? DiffPaneView }
     func serial(_ id: String) -> SerialPaneView? { slots[id]?.content as? SerialPaneView }
-    func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? serial(id)?.keyView }
+    func run(_ id: String) -> RunPaneView? { slots[id]?.content as? RunPaneView }
+    func badge(_ id: String) -> String? { run(id)?.notice?.badge }
+    func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? serial(id)?.keyView ?? run(id)?.keyView }
     func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
     private func send(_ text: String, to agent: String, done: @escaping (String?) -> Void) {
@@ -253,6 +258,22 @@ final class Contents {
             slot(id).content = serial
             subscribe(serial: id)
             return
+        case "run":
+            let view = RunPaneView()
+            let runID = pane["run"]?.string ?? ""
+            view.onFocus = { [weak self] in self?.onFocus?(id) }
+            view.contextMenu = { [weak self] in self?.contextMenu?() }
+            view.onAction = { [weak self, weak view] action, args in
+                var call: [String: JSON] = ["action": .string(action), "run": .string(runID), "by": "user"]
+                for (key, value) in args { call[key] = .string(value) }
+                self?.onCall?("run", call) { answer in
+                    if answer["ok"]?.bool != true { view?.flash(answer["error"]?["message"]?.string ?? "couldn't \(action) the run") }
+                }
+            }
+            runContents[id] = runID
+            slot(id).content = view
+            subscribe(run: id)
+            return
         case "web":
             var url = pane["url"]?.string ?? "about:blank"
             var unmap: (URL) -> URL = { $0 }
@@ -338,6 +359,11 @@ final class Contents {
             diffContents.removeValue(forKey: id)
             diffLatest = diffLatest.filter { diffContents.values.contains($0.key) }
             onNotice?("diff.unsubscribe", ["view": .string(id)])
+        }
+        if let run = content as? RunPaneView {
+            run.stop()
+            runContents.removeValue(forKey: id)
+            onNotice?("run.unsubscribe", ["view": .string(id)])
         }
         if let serial = content as? SerialPaneView {
             serial.stop()
@@ -438,6 +464,97 @@ final class Contents {
         let state = failure == nil ? "running" : "failed"
         guard states[id] != state else { return }
         report(id, failure.map { ["state": .string(state), "error": .string($0)] } ?? ["state": .string(state)])
+    }
+
+    func subscribeRuns(on machine: String?) {
+        for id in ids where run(id) != nil && MachineIDs.machine(of: id) == machine { subscribe(run: id) }
+    }
+
+    private func subscribe(run id: String) {
+        guard let view = run(id), let runID = runContents[id] else { return }
+        guard let onCall else { return view.show(failure: "Kanna.app isn't connected to its daemon") }
+        onCall("run.subscribe", ["view": .string(id), "run": .string(runID)]) { [weak self, weak view] answer in
+            guard let self, let view, run(id) === view else { return }
+            guard answer["ok"]?.bool == true else {
+                let message = answer["error"]?["message"]?.string ?? "The daemon has no run \(runID)"
+                view.show(failure: message)
+                return report(id, ["state": "failed", "error": .string(message)])
+            }
+            view.load(Self.runNotice(answer))
+            onBadge?()
+            if states[id] != "running" { report(id, ["state": "running"]) }
+        }
+    }
+
+    func received(run message: JSON, content: String) {
+        var changed = false
+        for (id, shown) in runContents where shown == content {
+            guard let view = run(id) else { continue }
+            let notice = Self.runNotice(message)
+            if view.notice?.badge != notice.badge { changed = true }
+            view.load(notice)
+        }
+        if changed { onBadge?() }
+    }
+
+    static func runNotice(_ json: JSON) -> RunNotice {
+        var notice = RunNotice()
+        let text = { (key: String) in json[key]?.string ?? "" }
+        let number = { (value: JSON?) in value?.number }
+        notice.run = text("run")
+        notice.task = text("task")
+        notice.name = json["name"]?.string
+        notice.pipeline = text("pipeline")
+        notice.branch = text("branch")
+        notice.state = text("state")
+        notice.outcome = json["outcome"]?.string
+        notice.why = json["why"]?.string
+        notice.startedAt = number(json["startedAt"]) ?? 0
+        notice.endedAt = number(json["endedAt"])
+        notice.now = number(json["now"]) ?? 0
+        notice.startedBy = json["startedBy"]?.string ?? "you"
+        if let revision = json["revision"], let n = revision["n"]?.number {
+            notice.revision = (Int(n), revision["by"]?.string ?? "file", revision["at"]?.number ?? 0)
+        }
+        if let place = json["place"] {
+            notice.place = (place["stage"]?.string ?? "", Int(place["at"]?.number ?? 0), Int(place["of"]?.number ?? 0))
+        }
+        let graph = json["graph"]
+        notice.columns = Int(graph?["columns"]?.number ?? 0)
+        notice.rows = Int(graph?["rows"]?.number ?? 0)
+        notice.nodes = (graph?["nodes"]?.array ?? []).map { n in
+            RunNode(id: n["id"]?.string ?? "", kind: n["kind"]?.string ?? "agent", who: n["who"]?.string ?? "", col: Int(n["col"]?.number ?? 0), row: Int(n["row"]?.number ?? 0),
+                    state: n["state"]?.string, visits: Int(n["visits"]?.number ?? 0))
+        }
+        notice.edges = (graph?["edges"]?.array ?? []).map { e in
+            RunEdge(from: e["from"]?.string ?? "", to: e["to"]?.string ?? "", route: e["route"]?.string ?? "next", label: e["label"]?.string ?? "", fail: e["fail"]?.bool == true,
+                    lane: Int(e["lane"]?.number ?? 0), lanes: Int(e["lanes"]?.number ?? 1), taken: e["taken"]?.bool == true)
+        }
+        notice.visits = (json["visits"]?.array ?? []).map { v in
+            RunVisit(n: Int(v["n"]?.number ?? 0), stage: v["stage"]?.string ?? "", visit: Int(v["visit"]?.number ?? 1), kind: v["kind"]?.string ?? "", who: v["who"]?.string ?? "",
+                     startedAt: v["startedAt"]?.number ?? 0, endedAt: v["endedAt"]?.number, verdict: v["verdict"]?.string, turns: v["turns"]?.number, tokens: v["tokens"]?.number, note: v["note"]?.string ?? "")
+        }
+        notice.workers = (json["workers"]?.array ?? []).map { w in
+            RunWorker(stage: w["stage"]?.string ?? "", visit: Int(w["visit"]?.number ?? 1), who: w["who"]?.string ?? "", terminal: w["terminal"]?.string, worktree: w["worktree"]?.string, startedAt: w["startedAt"]?.number ?? 0)
+        }
+        if let card = json["card"], card["title"]?.string != nil {
+            notice.card = RunCard(kind: card["kind"]?.string ?? "need", stage: card["stage"]?.string ?? "", title: card["title"]?.string ?? "", detail: card["detail"]?.string ?? "")
+        }
+        let numbers = json["numbers"]
+        notice.numbers.visits = Int(numbers?["visits"]?.number ?? 0)
+        notice.numbers.sessions = Int(numbers?["sessions"]?.number ?? 0)
+        notice.numbers.budget = numbers?["budget"]?.number.map { Int($0) }
+        notice.numbers.waited = numbers?["waited"]?.number ?? 0
+        notice.numbers.waitingSince = numbers?["waitingSince"]?.number
+        notice.numbers.turns = numbers?["turns"]?.number
+        notice.numbers.tokens = numbers?["tokens"]?.number
+        notice.numbers.cost = numbers?["cost"]?.number
+        notice.numbers.rework = Int(numbers?["rework"]?.number ?? 0)
+        notice.numbers.interventions = Int(numbers?["interventions"]?.number ?? 0)
+        if let lines = numbers?["lines"], let added = lines["added"]?.number {
+            notice.numbers.lines = (Int(added), Int(lines["removed"]?.number ?? 0), Int(lines["files"]?.number ?? 0))
+        }
+        return notice
     }
 
     func subscribeSerials(on machine: String?) {

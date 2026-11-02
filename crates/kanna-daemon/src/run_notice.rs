@@ -11,7 +11,6 @@ pub struct Inputs<'a> {
     pub events: &'a [RunEvent],
     pub revision: Option<&'a Revision>,
     pub task_name: Option<&'a str>,
-    pub agent_pane: Option<&'a str>,
     pub lines: Option<(u64, u64, u64)>,
     pub now: f64,
 }
@@ -148,8 +147,7 @@ pub fn notice(input: &Inputs) -> Value {
         _ => Value::Null,
     };
     let (stage, at, of) = place(pipeline, row, input.stages);
-    let started_by = input.events.iter().find(|e| e.what == "started").and_then(|e| e.by.clone());
-    let by_agent = started_by.is_some() && started_by.as_deref() == input.agent_pane;
+    let by_agent = input.events.iter().find(|e| e.what == "started").is_some_and(|e| e.doc.get("agent") == Some(&Value::Bool(true)));
     let budget = row.doc.get("budget").cloned().unwrap_or(Value::Null);
     json!({
         "content": row.id,
@@ -182,7 +180,7 @@ pub fn notice(input: &Inputs) -> Value {
             "lines": input.lines.map_or(Value::Null, |(added, removed, files)| json!({ "added": added, "removed": removed, "files": files })),
         },
         "visits": visits,
-        "workers": open.map_or(vec![], |s| vec![json!({ "stage": s.stage, "visit": s.visit, "terminal": opt(s.terminal.as_deref()), "worktree": opt(s.worktree.as_deref()), "who": who(pipeline, s), "startedAt": num(s.started_at) })]),
+        "workers": open.filter(|s| !s.doc.get("paused").is_some_and(Value::is_object) && s.terminal.is_some()).map_or(vec![], |s| vec![json!({ "stage": s.stage, "visit": s.visit, "terminal": opt(s.terminal.as_deref()), "worktree": opt(s.worktree.as_deref()), "who": who(pipeline, s), "startedAt": num(s.started_at) })]),
         "card": card(input, open),
     })
 }
@@ -225,8 +223,10 @@ mod tests {
             visit("review", 2, None, "agent"),
         ];
         let row = row("running", taken);
-        let events = [event("started", "term-1"), event("typed", "user"), event("stage", "daemon")];
-        let out = notice(&Inputs { row: &row, pipeline: &pipeline, stages: &stages, events: &events, revision: None, task_name: Some("Dark mode"), agent_pane: Some("term-1"), lines: Some((212, 48, 3)), now: 200.0 });
+        let mut started = event("started", "term-1");
+        started.doc = json!({ "agent": true });
+        let events = [started, event("typed", "user"), event("stage", "daemon")];
+        let out = notice(&Inputs { row: &row, pipeline: &pipeline, stages: &stages, events: &events, revision: None, task_name: Some("Dark mode"), lines: Some((212, 48, 3)), now: 200.0 });
         let marks: Vec<(String, Value, u64)> = out["graph"]["nodes"].as_array().unwrap().iter().map(|n| (n["id"].as_str().unwrap().to_string(), n["state"].clone(), n["visits"].as_u64().unwrap())).collect();
         assert_eq!(
             marks,
@@ -263,7 +263,7 @@ mod tests {
         let stages = [visit("plan", 1, Some("done"), "agent"), visit("fix", 1, None, "agent")];
         let mut row = row("paused", vec![1]);
         row.doc["why"] = json!("fix needs: Which theme?");
-        let out = notice(&Inputs { row: &row, pipeline: &pipeline, stages: &stages, events: &[event("started", "user"), event("paused", "term-9")], revision: None, task_name: None, agent_pane: Some("term-1"), lines: None, now: 200.0 });
+        let out = notice(&Inputs { row: &row, pipeline: &pipeline, stages: &stages, events: &[event("started", "user"), event("paused", "term-9")], revision: None, task_name: None, lines: None, now: 200.0 });
         assert_eq!(out["card"]["title"], "fix needs you: Which theme?");
         assert_eq!(out["card"]["kind"], "need");
         assert_eq!(out["numbers"]["waitingSince"], 50.0);
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn a_handed_back_run_has_reached_done() {
         let pipeline = feature();
-        let out = notice(&Inputs { row: &row("done", vec![]), pipeline: &pipeline, stages: &[], events: &[], revision: None, task_name: None, agent_pane: None, lines: None, now: 0.0 });
+        let out = notice(&Inputs { row: &row("done", vec![]), pipeline: &pipeline, stages: &[], events: &[], revision: None, task_name: None, lines: None, now: 0.0 });
         assert_eq!(out["place"], json!({ "stage": "done", "at": 7, "of": 7 }));
         assert_eq!(out["graph"]["nodes"].as_array().unwrap().iter().find(|n| n["id"] == "done").unwrap()["state"], "pass");
     }

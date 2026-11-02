@@ -29,6 +29,7 @@ final class DaemonLink: TerminalLink {
     var onQuit: (() -> Void)?
     var onFile: ((String, JSON) -> Void)?
     var onSerial: ((String, JSON) -> Void)?
+    var onRun: ((String, JSON) -> Void)?
     var onLost: (() -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
@@ -214,6 +215,8 @@ final class DaemonLink: TerminalLink {
             if let content = args["content"]?.string { onFile?(content, args) }
         case "serial":
             if let content = args["content"]?.string { onSerial?(content, args) }
+        case "run":
+            if let content = args["content"]?.string { onRun?(content, args) }
         case "tasks":
             if case .array(let tasks)? = args["shelf"] { onShelf?(tasks, args["desk"]?.array ?? []) }
         case "toast":
