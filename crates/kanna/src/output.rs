@@ -221,7 +221,7 @@ pub fn task(request: &Value, reply: &Value) -> String {
             let script = |t: &Value| t["script"].as_str().or_else(|| t["id"].as_str().and_then(|id| reply["script"][id].as_str())).map(String::from);
             let state = |t: &Value| match (t["running"].as_bool(), t["status"].as_str()) {
                 _ if script(t).is_some() => script(t).unwrap_or_default(),
-                (Some(true) | None, Some("needs-you")) => "needs you".to_string(),
+                (_, Some("needs-you")) => "needs you".to_string(),
                 (Some(true) | None, Some("working")) => "working".to_string(),
                 _ if t["merged"] == true => "merged".to_string(),
                 _ if listed(&t["stale"]) => "stale".to_string(),
@@ -1483,6 +1483,13 @@ pub fn run(request: &Value, reply: &Value) -> String {
         Some("done") => format!("{}: {} reported {}; Kanna ends this session now", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?"), reply["verdict"].as_str().unwrap_or("done")),
         Some("need") => format!("{}: {} is paused; the task's agent is told what it needs, and Kanna ends this session once your turn ends, keeping it to resume", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
         Some("resume") => format!("{}: {} carries on", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("answer") => format!("{}: {} is answered {}", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?"), reply["answer"].as_str().unwrap_or("?")),
+        Some("pause") => match (reply["state"].as_str(), reply["stage"].as_str()) {
+            (Some("pausing"), Some(stage)) => format!("{} pauses once {stage} ends; `kanna run resume` carries it on", reply["run"].as_str().unwrap_or("?")),
+            _ => format!("{} is paused; `kanna run resume` carries it on", reply["run"].as_str().unwrap_or("?")),
+        },
+        Some("skip") => format!("{}: {} is skipped, as a pass", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("retry") => format!("{}: {} runs again", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
         Some("list") => {
             let runs = reply["runs"].as_array().cloned().unwrap_or_default();
             if runs.is_empty() {
@@ -1502,6 +1509,8 @@ pub fn run(request: &Value, reply: &Value) -> String {
                     Some("verdict") => format!("{} {} → {}", doc["stage"].as_str().unwrap_or("?"), doc["verdict"].as_str().unwrap_or("?"), doc["next"].as_str().unwrap_or("no arrow")),
                     Some("started") => format!("{} on {}", doc["pipeline"].as_str().unwrap_or("?"), doc["branch"].as_str().unwrap_or("?")),
                     Some("handed_back") => doc["note"].as_str().unwrap_or("").to_string(),
+                    Some("answered") => format!("{} {} by the {}{}", doc["stage"].as_str().unwrap_or("?"), doc["answer"].as_str().unwrap_or("?"), e["by"].as_str().unwrap_or("user"), doc["note"].as_str().filter(|n| !n.is_empty()).map_or(String::new(), |n| format!(": {n}"))),
+                    Some("skipped" | "retried") => format!("{} (visit {}) by the {}", doc["stage"].as_str().unwrap_or("?"), doc["visit"], e["by"].as_str().unwrap_or("user")),
                     _ => doc["why"].as_str().unwrap_or("").to_string(),
                 };
                 format!("{}  {:<11} {detail}", ago(now - at), e["what"].as_str().unwrap_or("?"))
@@ -1515,10 +1524,16 @@ pub fn run(request: &Value, reply: &Value) -> String {
             if let Some(note) = run["note"].as_str() {
                 out.push(format!("handed back: {note}"));
             }
+            if let Some(kinds) = run["interventions"].as_object().filter(|k| !k.is_empty()) {
+                out.push(format!("interventions: {}", kinds.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", ")));
+            }
             for visit in reply["visits"].as_array().into_iter().flatten() {
                 let ended = visit["endedAt"].as_f64().unwrap_or(now);
                 let took = span(ended - visit["startedAt"].as_f64().unwrap_or(ended));
-                let verdict = visit["verdict"].as_str().unwrap_or("running");
+                let verdict = match (visit["verdict"].as_str(), visit["doc"]["by"].as_str()) {
+                    (Some(verdict), Some(by)) => format!("{verdict} ({by})"),
+                    (verdict, _) => verdict.unwrap_or(if visit["kind"] == "ask" { "asking" } else { "running" }).to_string(),
+                };
                 let answer = visit["doc"]["answer"].as_str().or(visit["doc"]["feedback"].as_str()).unwrap_or("").lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(72).collect::<String>();
                 out.push(format!("  {:<10} {:<2} {:<8} {:<11} {took:>8}  {answer}", visit["stage"].as_str().unwrap_or("?"), visit["visit"], visit["kind"].as_str().unwrap_or("?"), verdict));
             }

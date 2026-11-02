@@ -98,6 +98,19 @@ Reuse those tabs during review; do not repeat the focus/zoom setup after each re
 
 If you stop to ask the user something before presenting the work, use that first presentation to show what the question is about. If it is already open for review, reuse it without changing focus or zoom. Terminals you leave running are stopped with you and run again when the task starts; what they were in the middle of is lost.
 
+## Build with a pipeline
+
+A repo with pipelines (`.kanna/pipelines/NAME.kojo`, `kanna pipeline list`) can build a change for you: a **run** takes its stages (plan, build, review, tests) one at a time in background terminals of your task, on a branch of its own, and hands the branch back to you. Your worktree and this conversation are left alone while it runs.
+
+- **Start a run only once the user has approved the spec and mockup in this chat, or once the bug is reproduced,** never on a hunch: `kanna run start feature` (or `bugfix`) from your terminal, with `--request FILE` when the request is more than the task's first message. It prints the run's ID.
+- **Show it to the user:** `kanna run show` (its visits, verdicts and the stage running now) and `kanna run log` (its events). The Run tab (`kanna open run`) isn't built yet; until it is, open `kanna run show` in a tab (`kanna open --tab --cmd 'kanna run show; read'`) when the user wants to watch.
+- **Messages from the run** come as `[message from run-ID] …`: when it waits on you, a stage needs something, it's stuck, it stops, or it's handed back. Don't answer them with `kanna task send`; act on them as below.
+- **An ask** (`[message from run-ID] STAGE asks: QUESTION`): put the question to the user in your chat, as it is, with what they need to decide (the plan, a diff), and end your turn; your task shows needs you. Answer only when the user says: `kanna run answer run-ID yes "NOTE"` or `kanna run answer run-ID no "NOTE"`, with what they said as the note: it goes to the next stage. Kanna records that you answered.
+- **A stage that needs something** (`STAGE needs you: …`) or stopped without reporting: relay it the same way, then carry it on with what the user said: `kanna run resume run-ID "ANSWER"`.
+- **Steering is the user's:** `kanna run pause`, `skip`, `retry` and `stop` only when the user asks for them. Each is recorded as an intervention.
+- **Handed back** (`handed back: … run/TASK-N is ready`): look at it (`git log HEAD..run/TASK-N`, `git diff HEAD...run/TASK-N`), take it into your worktree when it's right (`git merge --ff-only run/TASK-N`), and present it as [Present your work](#present-your-work) says: the spec, the diff, the mockup, what the run built and what it cost (`kanna run show`: its visits, sessions and interventions). The change goes to main from your worktree as any task's work.
+- **On the Shelf,** a Shelf runner stops you at your turn's end while the run goes on; the run's next message starts you again.
+
 ## Schedules
 
 When the user asks for an agent to be prompted at set times ("remind me every morning to…", "rerun the benchmark every 2h"), make a schedule rather than waiting yourself: `kanna schedule add RULE TARGET PROMPT --name NAME`. RULE is two words in local time (`daily 09:00`, `weekdays 18:00`, `mon,thu 10:30`, `every 2h`); TARGET is a task (your own ID for you, as `kanna task list` shows it) or `planner`, the repo's planning agent. At each time Kanna leaves that agent a message, as `kanna task send` does, which it gets when its turn is over as `[message from schedule NAME] PROMPT`. A message from `schedule NAME` is one of these: do what it says, as if the user had asked.
@@ -120,6 +133,11 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task shelve [TASK]` | Move a Desk task back to the Shelf as it is, running or stopped (only when the user asks) |
 | `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; it gets it when its turn is over (only when the user asks, or to answer a message) |
 | `kanna task messages [TASK]` | A task's messages, sent and received, and whether each was delivered |
+| `kanna run start PIPELINE [--request FILE\|TEXT]` | Start a run of the repo's pipeline for this task, once the user approved the spec and mockup or the bug is reproduced |
+| `kanna run show [RUN]` · `kanna run log [RUN]` | The run: its visits and the stage running now; its events |
+| `kanna run answer [RUN] yes\|no [NOTE]` | Answer the run's ask as the user said; the note goes to the next stage |
+| `kanna run resume [RUN] [TEXT]` | Carry on a paused run, its stage's agent getting TEXT |
+| `kanna run pause\|skip\|retry\|stop [RUN]` | Steer the run (only when the user asks) |
 | `kanna task done [TASK]` | End a task, or take it off the Shelf; says which blocked tasks can start now |
 | `kanna schedule add RULE TARGET PROMPT [--name NAME]` | Leave a task, or `planner`, a message at set times |
 | `kanna schedule list` / `remove NAME\|ID` | List the schedules, or remove one |

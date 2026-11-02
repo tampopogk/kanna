@@ -220,6 +220,7 @@ pub struct Pane {
     pub pid: Option<i64>,
     pub status: Option<String>,
     pub hung_up: bool,
+    pub waits_on_you: bool,
     pub terminal: Option<String>,
 }
 
@@ -256,12 +257,15 @@ impl Pane {
             pid: None,
             status: None,
             hung_up: false,
+            waits_on_you: false,
             terminal: None,
         }
     }
 
     pub fn status(&self) -> Option<&str> {
         match (self.kind, self.state) {
+            (PaneType::Term, PaneState::Exited) if self.waits_on_you => Some("needs-you"),
+            (PaneType::Term, _) if self.waits_on_you && self.status.as_deref() != Some("working") => Some("needs-you"),
             (PaneType::Term, PaneState::Exited) => Some("exited"),
             (PaneType::Term, _) => self.status.as_deref(),
             _ => None,
@@ -584,6 +588,21 @@ mod status_tests {
         let mut web = Pane::new("p2", None, PaneType::Web);
         web.state = PaneState::Exited;
         assert!(web.summary().get("status").is_none());
+    }
+
+    #[test]
+    fn a_terminal_waiting_on_you_says_needs_you_unless_it_s_working() {
+        let mut pane = Pane::new("p1", None, PaneType::Term);
+        pane.state = PaneState::Running;
+        pane.status = Some("idle".into());
+        pane.waits_on_you = true;
+        assert_eq!(pane.status(), Some("needs-you"));
+        pane.status = Some("working".into());
+        assert_eq!(pane.status(), Some("working"));
+        pane.state = PaneState::Exited;
+        assert_eq!(pane.status(), Some("needs-you"));
+        pane.waits_on_you = false;
+        assert_eq!(pane.status(), Some("exited"));
     }
 }
 
