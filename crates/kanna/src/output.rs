@@ -1367,6 +1367,10 @@ pub fn machine(request: &Value, reply: &Value) -> String {
         Some("addr") => format!("will try {} for {}", reply["addr"].as_str().unwrap_or("?"), request["host"].as_str().unwrap_or("?")),
         Some("sync") => format!("swapped peer logs with {}", reply["name"].as_str().unwrap_or("?")),
         Some("update") => machine_update(reply),
+        Some("relay") => match reply["relay"].as_str() {
+            Some(url) => format!("this machine meets the others through {url} when away"),
+            None => "this machine uses no relay: only the LAN and addresses you give".into(),
+        },
         Some("revoke") => {
             let told = join(&reply["told"]);
             let told = if told.is_empty() { "no other machine was reachable to hear it yet".to_string() } else { format!("told {told}") };
@@ -1383,6 +1387,10 @@ pub fn machine(request: &Value, reply: &Value) -> String {
                 out.push(format!("your machines are off here: {broken}"));
             }
             out.push(format!("{} (this machine)  key {}  UDP port {}", reply["name"].as_str().unwrap_or("?"), reply["key"].as_str().unwrap_or("?"), reply["port"]));
+            if let Some(relay) = reply["relay"].as_str() {
+                let state = if reply["home_relay"].as_str().is_some() { "connected" } else { "not connected yet" };
+                out.push(format!("relay {relay} ({state})"));
+            }
             let peers: Vec<&Value> = reply["peers"].as_array().map(|p| p.iter().filter(|p| p["me"] != true).collect()).unwrap_or_default();
             if reply["paired"] != true {
                 out.push("not paired with any machine: kanna machine pair".into());

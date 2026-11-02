@@ -132,6 +132,7 @@ See [Desks across machines](machines-app.md) for project identity, each app's De
 - **Reconnect by offset:** `output` carries a running byte offset, and `attach {from}` replays only the gap.
 - **The 16 / 64 MiB limits stay**, and resizing stays the daemon's.
 - **Local echo** (mosh-style prediction) is decided after slice 8 measures echo delay through the relay.
+- How they're built and measured: [remote terminals](remote-terminals.md).
 
 | Content | Remote task |
 |---|---|
