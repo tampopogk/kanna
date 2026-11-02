@@ -219,6 +219,14 @@ pub fn task(request: &Value, reply: &Value) -> String {
                     let place = format!("on {}", t["machine"].as_str().unwrap_or("?"));
                     [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, t["state"].as_str().unwrap_or("").into(), agent(t), made]
                 }))
+                .map(|mut row: [String; 6]| {
+                    let twice = reply["twice"].as_object().and_then(|twice| twice.iter().find(|(id, _)| id.starts_with(row[0].as_str())).map(|(_, machines)| machines.clone()));
+                    if let Some(machines) = twice.as_ref().and_then(Value::as_array) {
+                        let ran = format!("ran twice: {}", machines.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+                        row[5] = if row[5].is_empty() { ran } else { format!("{} · {ran}", row[5]) };
+                    }
+                    row
+                })
                 .collect();
             let head = ["TASK", "NAME", "WHERE", "STATE", "AGENT", ""];
             let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());

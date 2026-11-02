@@ -24,6 +24,7 @@ pub struct Daemon {
     child: Child,
     port: u16,
     binaries: (PathBuf, PathBuf),
+    env: Vec<(String, String)>,
 }
 
 impl Daemon {
@@ -36,8 +37,13 @@ impl Daemon {
     }
 
     pub fn start() -> Daemon {
+        Daemon::start_with(&[])
+    }
+
+    pub fn start_with(env: &[(&str, &str)]) -> Daemon {
         let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), port)
+        let env = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), port, env)
     }
 
     pub fn installed(commit: &str) -> Daemon {
@@ -46,7 +52,7 @@ impl Daemon {
         Daemon::build(&prefix.join(commit), &json!({ "commit": commit }));
         std::os::unix::fs::symlink(commit, prefix.join("current")).unwrap();
         let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Daemon::run(dir, prefix.join("current/kanna-daemon"), prefix.join("current/kanna-keeper"), port)
+        Daemon::run(dir, prefix.join("current/kanna-daemon"), prefix.join("current/kanna-keeper"), port, vec![])
     }
 
     pub fn build(dir: &Path, release: &Value) {
@@ -57,9 +63,9 @@ impl Daemon {
         std::fs::write(dir.join("release.json"), release.to_string()).unwrap();
     }
 
-    fn run(dir: PathBuf, daemon: PathBuf, keeper: PathBuf, port: u16) -> Daemon {
-        let child = Daemon::spawn(&dir, &daemon, &keeper, port);
-        let daemon = Daemon { dir, child, port, binaries: (daemon, keeper) };
+    fn run(dir: PathBuf, daemon: PathBuf, keeper: PathBuf, port: u16, env: Vec<(String, String)>) -> Daemon {
+        let child = Daemon::spawn(&dir, &daemon, &keeper, port, &env);
+        let daemon = Daemon { dir, child, port, binaries: (daemon, keeper), env };
         wait_for("the daemon's socket", || UnixStream::connect(daemon.socket()).is_ok());
         daemon
     }
@@ -73,11 +79,11 @@ impl Daemon {
 
     pub fn restart(&mut self) {
         self.stop();
-        self.child = Daemon::spawn(&self.dir, &self.binaries.0, &self.binaries.1, self.port);
+        self.child = Daemon::spawn(&self.dir, &self.binaries.0, &self.binaries.1, self.port, &self.env);
         wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
     }
 
-    fn spawn(dir: &Path, daemon: &Path, keeper: &Path, port: u16) -> Child {
+    fn spawn(dir: &Path, daemon: &Path, keeper: &Path, port: u16, env: &[(String, String)]) -> Child {
         let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).unwrap();
         let mut command = Command::new(daemon);
         command.env_clear();
@@ -96,6 +102,7 @@ impl Daemon {
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_MACHINE_MDNS", "0")
             .env("KANNA_MACHINE_PORT", port.to_string())
+            .envs(env.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)

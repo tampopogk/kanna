@@ -191,6 +191,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         if let Ok(found) = mux.call("tasks", serde_json::json!({ "action": "list" })) {
             reply["shelf"] = found["shelf"].clone();
             reply["elsewhere"] = found["elsewhere"].clone();
+            reply["twice"] = found["twice"].clone();
             output::name_out(&mut reply, &found["desk"]);
             shorts.extend(output::shorts(&found));
             listed = true;

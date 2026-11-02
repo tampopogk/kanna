@@ -6,6 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const MAX_OPS: usize = 2000;
 
+pub const RUN: &str = "run.";
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Hlc {
     pub ms: i64,
@@ -65,6 +67,10 @@ impl Record {
 
     pub fn list(&self, field: &str) -> Vec<String> {
         self.get(field).as_array().map_or(vec![], |items| items.iter().filter_map(Value::as_str).map(String::from).collect())
+    }
+
+    pub fn runs(&self) -> Vec<&str> {
+        self.fields.keys().filter_map(|field| field.strip_prefix(RUN)).collect()
     }
 
     pub fn born(&self) -> Hlc {
@@ -324,6 +330,26 @@ impl Replica {
         Ok(Grant { task: task.to_string(), birth: birth.to_string(), epoch, to: to.to_string() })
     }
 
+    pub fn take(&mut self, db: &Db, task: &str, birth: &str, from: &str) -> rusqlite::Result<()> {
+        let me = self.me.clone();
+        let ops = self.stage(task, birth, &[("owner", json!(me)), (&format!("{RUN}{me}"), json!({ "from": from, "at": wall() }))]);
+        db.atomically(|conn| {
+            let epoch = authority(conn, task, birth)?.map_or(0, |a| a.epoch) + 1;
+            set_authority(conn, task, birth, &Authority { epoch, permit: Permit::Ready, to: None })?;
+            self.commit(conn, &ops)
+        })?;
+        self.applied(&ops);
+        Ok(())
+    }
+
+    pub fn ran(&mut self, db: &Db, task: &str, birth: &str) -> rusqlite::Result<usize> {
+        let field = format!("{RUN}{}", self.me);
+        if self.record(task, birth).is_some_and(|r| !r.get(&field).is_null()) {
+            return Ok(0);
+        }
+        self.write(db, task, birth, &[(&field, json!({ "at": wall() }))])
+    }
+
     pub fn receive(&mut self, db: &Db, task: &str, birth: &str, epoch: i64) -> rusqlite::Result<bool> {
         if Replica::authority(db, task, birth)?.is_some_and(|a| a.epoch >= epoch) {
             return Ok(false);
@@ -362,6 +388,11 @@ impl Replica {
             rows.collect()
         })
     }
+}
+
+pub fn yielded(conn: &Connection, task: &str, birth: &str, to: &str) -> rusqlite::Result<()> {
+    let epoch = authority(conn, task, birth)?.map_or(0, |a| a.epoch);
+    set_authority(conn, task, birth, &Authority { epoch, permit: Permit::Acked, to: Some(to.to_string()) })
 }
 
 pub fn hold_unless_held(conn: &Connection, task: &str, birth: &str, permit: Permit) -> rusqlite::Result<()> {
@@ -554,6 +585,33 @@ mod tests {
         assert!(Replica::start(&runner.db, "task-00000001", &birth).is_err(), "knowing the record isn't permission to start it");
         let me = runner.replica.me().to_string();
         assert!(runner.replica.grant(&runner.db, "task-00000001", &birth, &me, |_| Ok(())).is_err(), "nor to grant it");
+    }
+
+    #[test]
+    fn a_task_taken_from_an_away_owner_runs_there_and_the_owner_sees_who_ran_it() {
+        let (mut owner, mut runner) = (Machine::new("owner"), Machine::new("runner"));
+        let birth = owner.make("task-00000001");
+        runner.pull(&owner);
+        runner.replica.take(&runner.db, "task-00000001", &birth, "owner").unwrap();
+        assert_eq!(Replica::start(&runner.db, "task-00000001", &birth), Ok(()));
+        runner.replica.ran(&runner.db, "task-00000001", &birth).unwrap();
+        owner.pull(&runner);
+        let record = owner.replica.record("task-00000001", &birth).unwrap();
+        assert_eq!((record.text("owner"), record.runs()), (Some("runner"), vec!["runner"]));
+        assert_eq!(record.get("run.runner")["from"], "owner");
+        owner.db.atomically(|conn| yielded(conn, "task-00000001", &birth, "runner")).unwrap();
+        assert!(Replica::start(&owner.db, "task-00000001", &birth).is_err(), "the owner doesn't start what was taken");
+
+        let other = owner.make("task-00000002");
+        runner.pull(&owner);
+        Replica::start(&owner.db, "task-00000002", &other).unwrap();
+        owner.replica.ran(&owner.db, "task-00000002", &other).unwrap();
+        runner.replica.take(&runner.db, "task-00000002", &other, "owner").unwrap();
+        runner.replica.ran(&runner.db, "task-00000002", &other).unwrap();
+        sync(&mut owner, &mut runner);
+        for m in [&owner, &runner] {
+            assert_eq!(m.replica.record("task-00000002", &other).unwrap().runs(), vec!["owner", "runner"], "both ran it, and {} knows", m.replica.me());
+        }
     }
 
     #[test]

@@ -524,6 +524,7 @@ fn allowed(on: &[String], name: &str) -> bool {
 enum Candidate {
     Here(Entry),
     There { task: String, birth: String, owner: String },
+    Take { task: String, birth: String, owner: String },
 }
 
 fn strings(value: &Value, key: &str) -> Vec<String> {
@@ -729,6 +730,9 @@ pub struct Tasks {
     away: RefCell<HashMap<String, Away>>,
     refused: RefCell<HashMap<String, Instant>>,
     syncing: RefCell<HashSet<String>>,
+    synced: RefCell<HashMap<String, Instant>>,
+    woke: Cell<Instant>,
+    checked: Cell<(Instant, i64)>,
     sync_at: Cell<Instant>,
     pub repos: RefCell<Option<PathBuf>>,
     importing: RefCell<Option<project_import::Import>>,
@@ -777,9 +781,17 @@ const AWAY_WAIT: Duration = Duration::from_secs(10);
 
 const AWAY_MAX: Duration = Duration::from_secs(300);
 
+const TAKEOVER_AFTER: Duration = Duration::from_secs(120);
+
+fn takeover_after() -> Duration {
+    std::env::var("KANNA_TAKEOVER_AFTER").ok().and_then(|s| s.parse().ok()).map_or(TAKEOVER_AFTER, Duration::from_secs)
+}
+
 struct Away {
     until: Instant,
     wait: Duration,
+    since: Instant,
+    last: Instant,
 }
 
 const REFUSED_WAIT: Duration = Duration::from_secs(10);
@@ -875,6 +887,9 @@ impl Tasks {
             away: RefCell::default(),
             refused: RefCell::default(),
             syncing: RefCell::default(),
+            synced: RefCell::default(),
+            woke: Cell::new(Instant::now()),
+            checked: Cell::new((Instant::now(), replica::wall())),
             sync_at: Cell::new(Instant::now()),
             repos: RefCell::default(),
             importing: RefCell::default(),
@@ -1294,7 +1309,12 @@ impl Tasks {
                 birth: Some(birth),
                 ..Default::default()
             };
-            if self.store(&entry, Place::Shelf, None, Some(Change { to: Some(Place::Shelf), ..Change::new("granted") }.by(Some("daemon")))).is_ok() {
+            let me = self.replica.borrow().me().to_string();
+            let change = match record.get(&format!("{}{me}", replica::RUN))["from"].as_str() {
+                Some(from) => Change::new("taken").with("from", json!(self.machines().name_of(from))),
+                None => Change::new("granted"),
+            };
+            if self.store(&entry, Place::Shelf, None, Some(Change { to: Some(Place::Shelf), ..change }.by(Some("daemon")))).is_ok() {
                 log!("kanna-daemon: {task} is on this machine's Shelf now, in {}", entry.repo);
                 self.entries.borrow_mut().push(entry);
                 adopted = true;
@@ -1322,8 +1342,24 @@ impl Tasks {
     }
 
     fn went_away(&self, peer: String) {
-        let wait = self.away.borrow().get(&peer).map_or(AWAY_WAIT, |away| (away.wait * 2).min(AWAY_MAX));
-        self.away.borrow_mut().insert(peer, Away { until: Instant::now() + wait, wait });
+        let now = Instant::now();
+        let (wait, since) = self.away.borrow().get(&peer).map_or((AWAY_WAIT, now), |away| ((away.wait * 2).min(AWAY_MAX), away.since));
+        self.away.borrow_mut().insert(peer, Away { until: now + wait, wait, since, last: now });
+    }
+
+    fn away_long(&self, peer: &str, now: Instant) -> bool {
+        self.away.borrow().get(peer).is_some_and(|away| now.duration_since(away.since) >= takeover_after())
+    }
+
+    fn heard_from_all(&self, machines: &Roster) -> bool {
+        let (now, wall) = (Instant::now(), replica::wall());
+        let (then, then_wall) = self.checked.replace((now, wall));
+        if wall - then_wall > now.duration_since(then).as_millis() as i64 + 30_000 {
+            self.woke.set(now);
+        }
+        let woke = self.woke.get();
+        let (synced, away) = (self.synced.borrow(), self.away.borrow());
+        machines.peers.iter().all(|p| synced.get(&p.key).is_some_and(|at| *at >= woke) || away.get(&p.key).is_some_and(|a| a.last >= woke))
     }
 
     fn came_back(&self, peer: &str) {
@@ -1360,6 +1396,7 @@ impl Tasks {
                 match reply {
                     Ok(reply) => {
                         self.came_back(&peer);
+                        self.synced.borrow_mut().insert(peer.clone(), Instant::now());
                         self.take_ops(&reply["ops"]);
                         let ops = self.replica.borrow().ops_after(&self.db, &reply["vector"]).unwrap_or_default();
                         if !ops.is_empty() {
@@ -1420,6 +1457,7 @@ impl Tasks {
 
     /// Takes into this machine's waiting tasks the edits other machines made to them later than its own.
     fn refresh(&self) {
+        self.give_up();
         let replica = self.replica.borrow();
         let edited: Vec<Entry> = self
             .entries
@@ -1440,6 +1478,37 @@ impl Tasks {
                     *found = entry;
                 }
                 self.changed();
+            }
+        }
+    }
+
+    /// Gives up this machine's waiting tasks that another machine ran while this one was away.
+    fn give_up(&self) {
+        let starting: HashSet<String> = self.pending.borrow().values().map(|p| p.entry.id.clone()).chain(self.launching.borrow().iter().cloned()).collect();
+        let replica = self.replica.borrow();
+        let taken: Vec<(Entry, String)> = self
+            .entries
+            .borrow()
+            .iter()
+            .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id))
+            .filter_map(|e| {
+                let record = replica.record(&e.id, e.birth.as_deref()?)?;
+                let by = record.runs().into_iter().find(|device| *device != replica.me())?;
+                Some((e.clone(), by.to_string()))
+            })
+            .collect();
+        drop(replica);
+        for (entry, by) in taken {
+            let name = self.machines().name_of(&by);
+            let birth = entry.birth.clone().unwrap_or_default();
+            let change = Change::new("taken").moved(Place::Shelf, Place::Done).by(Some("daemon")).with("to", json!(name));
+            match self.db.put_with(&entry.row(Place::Done, None), Some(&change), |conn| replica::yielded(conn, &entry.id, &birth, &by)) {
+                Ok(()) => {
+                    log!("kanna-daemon: {} ran on {name} while this machine was away, so it leaves this Shelf", entry.id);
+                    self.take(&entry.id);
+                    self.changed();
+                }
+                Err(error) => log!("kanna-daemon: couldn't give {} up to {name}: {error}", entry.id),
             }
         }
     }
@@ -1796,6 +1865,7 @@ impl Tasks {
         let asking: Vec<(String, String)> = self.asked.borrow().values().filter_map(|a| if let Asked::Ask { repo, task, .. } = a { Some((repo.clone(), task.clone())) } else { None }).collect();
         let mut asked: HashSet<String> = asking.iter().map(|(_, task)| task.clone()).collect();
         self.refused.borrow_mut().retain(|_, until| *until > now);
+        let heard = self.heard_from_all(&machines);
         for repo in repos {
             let slots = runners(&config_files(Path::new(&repo)));
             if slots == 0 || self.placed(&repo).is_err() {
@@ -1818,6 +1888,7 @@ impl Tasks {
             let mut waiting: Vec<(bool, Hlc, Candidate)> = mine
                 .iter()
                 .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id))
+                .filter(|e| heard || e.birth.is_none() || e.on == [machines.me.name.clone()])
                 .map(|e| (mail.contains(&e.id), order(e), Candidate::Here((*e).clone())))
                 .collect();
             let others = || {
@@ -1837,11 +1908,13 @@ impl Tasks {
                         && !asked.contains(&record.task)
                         && replica.births(&record.task).len() == 1
                         && allowed(&record.list("on"), &machines.me.name)
-                        && !self.is_away(owner, now)
                         && !self.refused.borrow().contains_key(&record.task)
                         && record.list("after").iter().all(|id| !self.is_open(id) && !replica.open_task(id));
-                    if eligible {
-                        waiting.push((false, record.born(), Candidate::There { task: record.task.clone(), birth: record.birth.clone(), owner: owner.to_string() }));
+                    let (task, birth, owner) = (record.task.clone(), record.birth.clone(), owner.to_string());
+                    if eligible && self.away_long(&owner, now) {
+                        waiting.push((false, record.born(), Candidate::Take { task, birth, owner }));
+                    } else if eligible && !self.is_away(&owner, now) {
+                        waiting.push((false, record.born(), Candidate::There { task, birth, owner }));
                     }
                 }
             }
@@ -1867,6 +1940,24 @@ impl Tasks {
                         asked.insert(task.clone());
                         let args = json!({ "action": "ask", "task": task, "birth": birth });
                         self.send_to(&owner.clone(), args, Asked::Ask { task, birth, owner, repo: repo.clone() });
+                    }
+                    Candidate::Take { task, birth, owner } => {
+                        log!("kanna-daemon: {task}'s owner {} has been away {}s, so it runs here ({busy} of {slots} in {repo})", machines.name_of(&owner), takeover_after().as_secs());
+                        asked.insert(task.clone());
+                        if let Err(error) = self.replica.borrow_mut().take(&self.db, &task, &birth, &owner) {
+                            log!("kanna-daemon: couldn't take {task}: {error}");
+                            continue;
+                        }
+                        self.sync_at.set(Instant::now());
+                        self.adopt();
+                        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == task).cloned() else { continue };
+                        let this = Rc::downgrade(self);
+                        self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+                            if let (Err(error), Some(this)) = (result, this.upgrade()) {
+                                log!("kanna-daemon: {task} couldn't run on the Shelf: {}", error.message);
+                                this.failed.borrow_mut().insert(task);
+                            }
+                        })));
                     }
                 }
             }
@@ -2533,7 +2624,12 @@ impl Tasks {
                 value
             })
             .collect();
-        Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("elsewhere".to_string(), Value::Array(elsewhere))])
+        let twice: Map = replica
+            .records()
+            .filter(|r| r.runs().len() > 1 && r.text("state") != Some("done"))
+            .map(|r| (r.task.clone(), json!(r.runs().into_iter().map(|device| machines.name_of(device)).collect::<Vec<_>>())))
+            .collect();
+        Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("elsewhere".to_string(), Value::Array(elsewhere)), ("twice".to_string(), Value::Object(twice))])
 
     }
 
@@ -3192,19 +3288,30 @@ impl Tasks {
             if let Err(why) = Replica::start(&self.db, &entry.id, &birth) {
                 return responder.reply(Err(KmuxError::new("not_owner", format!("{} can't start on this machine: {why}", entry.id))));
             }
-            if let Err(error) = self.replica.borrow_mut().write(&self.db, &entry.id, &birth, &[("state", json!("started"))]) {
+            let mut replica = self.replica.borrow_mut();
+            if let Err(error) = replica.write(&self.db, &entry.id, &birth, &[("state", json!("started"))]).and_then(|_| replica.ran(&self.db, &entry.id, &birth)) {
                 log!("kanna-daemon: couldn't save that {} started: {error}", entry.id);
             }
             self.sync_at.set(Instant::now());
         }
         let token = self.next.get() + 1;
         self.next.set(token);
-        let (repo, name, events) = (PathBuf::from(&entry.repo), entry.id.clone(), self.events.clone());
+        let name = match self.taken_from(&entry) {
+            true => format!("{}-{}", entry.id, self.machines().me.name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>()),
+            false => entry.id.clone(),
+        };
+        let (repo, events) = (PathBuf::from(&entry.repo), self.events.clone());
         self.pending.borrow_mut().insert(token, Starting { entry, app, by, responder });
         std::thread::spawn(move || {
             let result = make_worktree(&repo, &name);
             let _ = events.send(Event::Worktree { token, result });
         });
+    }
+
+    fn taken_from(&self, entry: &Entry) -> bool {
+        let replica = self.replica.borrow();
+        let field = format!("{}{}", replica::RUN, replica.me());
+        entry.birth.as_deref().and_then(|birth| replica.record(&entry.id, birth)).is_some_and(|r| r.get(&field)["from"].is_string())
     }
 
     pub fn worktree_made(self: &Rc<Self>, token: u64, result: Result<(String, String), String>) {

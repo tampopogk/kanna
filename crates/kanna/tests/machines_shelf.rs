@@ -220,3 +220,66 @@ fn an_owner_going_away_mid_claim_leaves_its_task_waiting_until_it_is_back() {
     assert!(!holds(&mbp, &task));
     assert_eq!(worktrees(&here), Vec::<String>::new());
 }
+
+fn quick(name: &str) -> Daemon {
+    let daemon = Daemon::start_with(&[("KANNA_TAKEOVER_AFTER", "5")]);
+    daemon.kanna(&["machine", "name", name]).ok();
+    daemon
+}
+
+#[test]
+fn an_owner_away_past_the_grace_has_its_task_run_elsewhere_and_gives_it_up_when_back() {
+    let (mut mbp, vm) = (quick("mbp"), quick("vm"));
+    pair(&mbp, &vm);
+    let (here, there) = (clone(&mbp, 0), clone(&vm, 0));
+    let codex = agent(&mbp);
+    let (mbp_key, vm_key) = (key(&mbp), key(&vm));
+    let task = new_task(&mbp, &here, &["Taken", "work 1", "--agent", &codex]);
+    within(15, "vm to know mbp's task", || record(&vm, &task)["state"] == "waiting");
+
+    mbp.stop();
+    set_runners(&there, 1);
+    within(60, "vm to run the task of mbp, away past the grace", || started(&vm).contains(&task));
+    assert!(log_says(&vm, &format!("{task}'s owner mbp has been away 5s, so it runs here")));
+    assert_eq!(worktrees(&there), vec![format!("{task}-vm")], "a taken copy's branch names the machine");
+    let taken = record(&vm, &task);
+    assert_eq!(taken["owner"].as_str(), Some(vm_key.as_str()));
+    assert_eq!(taken[format!("run.{vm_key}")]["from"].as_str(), Some(mbp_key.as_str()), "{taken}");
+
+    set_runners(&here, 1);
+    mbp.restart();
+    within(30, "mbp, back, to give the task up", || !holds(&mbp, &task));
+    assert!(log_says(&mbp, &format!("{task} ran on vm while this machine was away, so it leaves this Shelf")));
+    std::thread::sleep(Duration::from_secs(4));
+    assert_eq!(worktrees(&here), Vec::<String>::new(), "mbp doesn't run what vm took");
+    let listed = mbp.kanna(&["task", "list"]).ok();
+    assert!(listed.lines().any(|l| l.starts_with(&task[..9]) && l.contains("on vm") && l.contains("started")), "{listed}");
+}
+
+#[test]
+fn a_task_both_machines_ran_while_apart_is_listed_as_ran_twice_on_both() {
+    let (mut mbp, mut vm) = (quick("mbp"), quick("vm"));
+    pair(&mbp, &vm);
+    let (here, there) = (clone(&mbp, 0), clone(&vm, 0));
+    let codex = agent(&mbp);
+    let task = new_task(&mbp, &here, &["Twice", "work 1", "--agent", &codex]);
+    within(15, "vm to know mbp's task", || record(&vm, &task)["state"] == "waiting");
+
+    mbp.stop();
+    set_runners(&there, 1);
+    within(60, "vm to run the task of mbp, away past the grace", || started(&vm).contains(&task));
+    vm.stop();
+    set_runners(&here, 1);
+    mbp.restart();
+    within(60, "mbp, back while vm is away, to run its own copy", || started(&mbp).contains(&task));
+    assert_eq!(worktrees(&here), vec![task.clone()]);
+
+    vm.restart();
+    for daemon in [&mbp, &vm] {
+        within(30, "both to see the task ran on both", || {
+            let listed = daemon.kanna(&["task", "list"]).ok();
+            listed.lines().any(|l| l.starts_with(&task[..9]) && l.contains("ran twice: ") && l.contains("mbp") && l.contains("vm"))
+        });
+    }
+    assert!(holds(&mbp, &task) && holds(&vm, &task), "each keeps its copy until the user ends one");
+}
