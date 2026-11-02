@@ -47,6 +47,9 @@ fn main() {
         }
     }
     let state_dir = state_dir.unwrap_or_else(paths::default_state_dir);
+    if matches!(mode, Mode::Foreground | Mode::Detach | Mode::Resume(_)) {
+        kanna_crash::install("keeper", state_dir.clone());
+    }
     let settings = server::Settings::from_env(state_dir.clone());
     let result = match mode {
         Mode::Foreground => server::run(settings, None),

@@ -51,7 +51,14 @@ fn quote(text: &str) -> String {
 }
 
 pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
-    git(worktree, &["rev-parse", "--absolute-git-dir"]).ok().map(PathBuf::from)
+    let root = worktree.ancestors().find(|dir| dir.join(".git").exists())?;
+    let marker = root.join(".git");
+    if marker.is_dir() {
+        return Some(marker);
+    }
+    let text = fs::metadata(&marker).ok().filter(|m| m.len() <= 4096).and_then(|_| fs::read_to_string(&marker).ok())?;
+    let dir = root.join(text.lines().next()?.strip_prefix("gitdir:")?.trim());
+    dir.is_dir().then_some(dir)
 }
 
 pub fn is_linked(worktree: &Path) -> bool {
@@ -68,6 +75,18 @@ pub fn record_base(worktree: &Path) {
 
 pub fn base(worktree: &Path) -> Option<String> {
     fs::read_to_string(git_dir(worktree)?.join(BASE)).ok().map(|b| b.trim().to_string())
+}
+
+pub fn merged(repo: &Path, worktree: &Path) -> bool {
+    if !worktree.is_dir() || worktree == repo {
+        return false;
+    }
+    let Ok(tip) = git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]) else { return false };
+    let moved = match base(worktree).filter(|base| !base.is_empty()) {
+        Some(base) => base != tip,
+        None => git(worktree, &["reflog", "show", "--format=%gs", "HEAD"]).is_ok_and(|log| log.lines().any(|line| line.starts_with("commit"))),
+    };
+    moved && git(repo, &["merge-base", "--is-ancestor", &tip, "HEAD"]).is_ok()
 }
 
 pub fn setup_record(worktree: &Path) -> Option<PathBuf> {
@@ -163,6 +182,23 @@ impl Task {
     }
 }
 
+pub fn stage_command(vars: &[(&str, String)], command: &str, timeout: u64, log: &Path, exit: &Path) -> String {
+    let vars: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+    let exit = exit.to_string_lossy();
+    format!(
+        "printf 'Running: %s\\n\\n' {shown}; {{ {vars} perl -e 'alarm shift; exec @ARGV' {timeout} \"${{SHELL:-/bin/zsh}}\" -lc {shown}; printf '%s\\n' \"$?\" > {part}; }} 2>&1 | tee {log}; mv {part} {exit}",
+        shown = quote(command),
+        vars = vars.join(" "),
+        part = quote(&format!("{exit}.part")),
+        exit = quote(&exit),
+        log = quote(&log.to_string_lossy()),
+    )
+}
+
+pub fn timed_out(code: i32) -> bool {
+    code == TIMED_OUT
+}
+
 pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration) -> Result<i32, String> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
     let mut cmd = Command::new(shell);
@@ -246,8 +282,23 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         let repo = fs::canonicalize(&repo).unwrap();
         sh(&repo, "git init -q -b main && printf 'target\\n' > .gitignore && git add .gitignore && git -c user.email=e@e -c user.name=e commit -q -m first");
-        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2").unwrap();
+        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2", None).unwrap();
         (fs::canonicalize(dir).unwrap(), PathBuf::from(folder))
+    }
+
+    #[test]
+    fn a_worktrees_git_folder_is_found_without_running_git() {
+        let (dir, worktree) = repo("gitdir");
+        let repo = dir.join("repo");
+        fs::create_dir_all(worktree.join("src/deep")).unwrap();
+        let canonical = |p: PathBuf| fs::canonicalize(p).unwrap();
+        for folder in [&repo, &worktree, &worktree.join("src/deep")] {
+            let asked = git(folder, &["rev-parse", "--absolute-git-dir"]).unwrap();
+            assert_eq!(canonical(git_dir(folder).unwrap()), canonical(PathBuf::from(asked)), "{}", folder.display());
+        }
+        assert!(is_linked(&worktree) && !is_linked(&repo));
+        assert_eq!(git_dir(Path::new("/")), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -280,6 +331,25 @@ mod tests {
         assert!(matches!(clean_up(&repo, &worktree), Cleanup::Removed { .. }));
         assert_eq!(clean_up(&repo, &worktree), Cleanup::Kept("its worktree is gone".into()));
         assert_eq!(clean_up(&repo, &repo), Cleanup::Kept(format!("{} isn't a task's worktree", repo.display())), "the main checkout is never removed");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_worktree_is_merged_once_its_own_commits_are_in_main() {
+        let (dir, worktree) = repo("merged");
+        let repo = dir.join("repo");
+        assert!(!merged(&repo, &worktree), "a worktree with no commit of its own is still at main, and isn't finished");
+        sh(&worktree, "echo work > notes.txt && git add notes.txt && git -c user.email=e@e -c user.name=e commit -q -m work");
+        assert!(!merged(&repo, &worktree), "its commit isn't in main yet");
+        let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
+        sh(&repo, &format!("git -c user.email=e@e -c user.name=e merge -q --no-ff -m merged {branch}"));
+        assert!(merged(&repo, &worktree));
+        sh(&worktree, "echo more >> notes.txt && git -c user.email=e@e -c user.name=e commit -qam more");
+        assert!(!merged(&repo, &worktree), "a commit beyond main");
+        sh(&repo, &format!("git -c user.email=e@e -c user.name=e merge -q --no-ff -m again {branch}"));
+        fs::remove_file(git_dir(&worktree).unwrap().join(BASE)).unwrap();
+        assert!(merged(&repo, &worktree), "without a recorded base, its reflog says it has commits of its own");
+        assert!(!merged(&repo, &repo) && !merged(&repo, &dir.join("gone")));
         fs::remove_dir_all(&dir).unwrap();
     }
 

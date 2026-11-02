@@ -1,9 +1,0 @@
-{
-  "rows": [
-    "esc to cancel"
-  ],
-  "title": "GitHub Copilot",
-  "cliVersion": "1.0.89",
-  "expected": "working",
-  "source": "slice0 behavior: active turn marker"
-}

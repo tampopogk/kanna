@@ -24,8 +24,13 @@ pub struct Adopted {
     pub exit: Option<i32>,
 }
 
+pub enum Heard {
+    Exited { keeper: String, pid: i32, code: i32 },
+    Spawned(u64, io::Result<Spawned>),
+}
+
 pub trait Spawner {
-    fn spawn(&self, spec: &Spec) -> io::Result<Spawned>;
+    fn spawn(&self, spec: &Spec) -> io::Result<u64>;
     fn close(&self, id: &str);
     fn acknowledge_exit(&self, id: &str);
     fn adopt(&self) -> io::Result<Vec<Adopted>> {

@@ -16,6 +16,8 @@ In the application support folder (`$XDG_DATA_HOME` or `~/.local/share` on Linux
 │   ├── terminals/        its terminals (daemon-restart.md)
 │   ├── kanna.db          its tasks, their history and the layout (database.md), with kanna.db.bak
 │   ├── app-state.json    its app's windows and text sizes (windows.md)
+│   ├── crashes/          a record of each crash of its app, daemon or keeper (crashes.md)
+│   ├── app.log           the output of an app the daemon relaunched after a crash
 │   └── instance.json     the build its daemon is: channel, app, checkout, worktree
 ├── kanna-dev-work/       the instance named work, the same inside
 ├── kanna-dev-task-3f9a1c2e/  the default instance of the dev build in worktree task-3f9a1c2e

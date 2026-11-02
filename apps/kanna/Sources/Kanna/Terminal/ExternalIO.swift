@@ -18,7 +18,7 @@ extension TerminalLink {
 @MainActor
 final class ExternalTerminal {
     let id: String
-    fileprivate weak var view: TerminalSurfaceView?
+    weak var view: TerminalSurfaceView?
     var surface: ghostty_surface_t? { view?.surface }
 
     private enum Pending { case output(Data, (() -> Void)?), snapshot(Data, (() -> Void)?), grid(UInt16, UInt16), exited(Int32) }

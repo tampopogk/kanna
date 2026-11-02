@@ -1,9 +1,0 @@
-{
-  "rows": [
-    "› Ask Codex to do anything"
-  ],
-  "title": "work",
-  "cliVersion": "0.159.3",
-  "expected": "idle",
-  "source": "slice0 sample: parked composer"
-}

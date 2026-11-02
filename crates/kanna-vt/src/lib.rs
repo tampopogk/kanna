@@ -168,6 +168,7 @@ pub struct ProgramStatus {
 struct ProgramStatuses {
     records: Vec<(u64, ProgramStatus)>,
     serial: u64,
+    turns: u64,
 }
 
 impl ProgramStatuses {
@@ -177,6 +178,10 @@ impl ProgramStatuses {
     }
 
     fn put(&mut self, status: ProgramStatus) {
+        let worked = status.id.is_empty() && self.records.iter().any(|(_, r)| r.id.is_empty() && r.state == ProgramState::Working);
+        if worked && matches!(status.state, ProgramState::Idle | ProgramState::Done) {
+            self.turns += 1;
+        }
         let serial = self.bump();
         if let Some(record) = self.records.iter_mut().find(|(_, r)| r.id == status.id) {
             *record = (serial, status);
@@ -492,6 +497,10 @@ impl Terminal {
 
     pub fn program_status(&self) -> Option<ProgramStatus> {
         unsafe { &(*self.hooks.as_ptr()).statuses }.records.iter().find(|(_, r)| r.id.is_empty()).map(|(_, r)| r.clone())
+    }
+
+    pub fn program_turns(&self) -> u64 {
+        unsafe { (*self.hooks.as_ptr()).statuses.turns }
     }
 
     pub fn program_status_serial(&self) -> u64 {
