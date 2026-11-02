@@ -34,7 +34,7 @@ stateDiagram-v2
     waiting --> stopped: Stop
 ```
 
-- **Two agents:** **the task's agent**, the one you talk to, docked in the task ([tasks](tasks.md)), starts and reads runs. **A stage's agent** runs one stage in a background terminal of the run's.
+- **Agents:** **the task's agent**, the one you talk to, docked in the task ([tasks](tasks.md)), starts and reads runs. Each agent stage runs its own **stage's agent**, a fresh session in a background terminal of the run's, so a run involves any number of them.
 - **Starting:** once you approve the spec and mockup in the task's chat ([reference-driven design](../../.claude/skills/reference-driven-design/SKILL.md)), or a bug is understood, the task's agent runs `kanna run start PIPELINE` from its terminal, as the `kanna-tasks` skill says, or when you tell it to. The pipeline starts at the plan, with the spec as input.
 - **Request:** what `kanna run start` is given (`--request FILE` or text), else the task's first message; every stage's agent gets it.
 - **Run branch:** `run/<task>-N`, from the task's branch at the start, built in workers ([3](#3-workers-fan-out-join-and-other-machines)). The task's worktree and conversation are left alone, so you can keep talking to the task's agent.
