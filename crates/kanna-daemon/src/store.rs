@@ -45,7 +45,6 @@ pub struct Record {
     pub keeper: String,
     pub size: Option<(u16, u16)>,
     pub hung_up: bool,
-    pub hidden: bool,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -73,9 +72,6 @@ impl Record {
         });
         if self.hung_up {
             out["hungUp"] = Value::Bool(true);
-        }
-        if self.hidden {
-            out["hidden"] = Value::Bool(true);
         }
         out
     }
@@ -108,7 +104,6 @@ impl Record {
             pid: value.get("pid").and_then(Value::as_f64)? as i64,
             size: side(value, "cols").zip(side(value, "rows")),
             hung_up: value.get("hungUp") == Some(&Value::Bool(true)),
-            hidden: value.get("hidden") == Some(&Value::Bool(true)),
         })
     }
 }
@@ -421,7 +416,6 @@ mod tests {
             keeper: pane.into(),
             size: Some((120, 40)),
             hung_up: false,
-            hidden: false,
         }
     }
 
@@ -430,7 +424,7 @@ mod tests {
         let dir = folder("records");
         let store = Store::open(&dir).unwrap();
         let mut exited = record("p3", None);
-        (exited.state, exited.exit_code, exited.hung_up, exited.hidden, exited.size) = (PaneState::Exited, Some(3), true, true, None);
+        (exited.state, exited.exit_code, exited.hung_up, exited.size) = (PaneState::Exited, Some(3), true, None);
         let saved = Saved { counter: 7, terminals: 9, records: vec![record("p1", Some("logs")), exited] };
         store.save(&saved).unwrap();
         assert_eq!(store.load(), saved);

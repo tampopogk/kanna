@@ -60,11 +60,12 @@ pub struct Placement {
     pub shelf: bool,
     pub lead: bool,
     pub planner: bool,
+    pub background: bool,
 }
 
 impl Default for Placement {
     fn default() -> Placement {
-        Placement { window: None, workspace: None, split: SplitSide::Auto, size: 0.5, new_tab: false, dock: None, frozen: false, from: None, opener: None, app: None, shelf: false, lead: false, planner: false }
+        Placement { window: None, workspace: None, split: SplitSide::Auto, size: 0.5, new_tab: false, dock: None, frozen: false, from: None, opener: None, app: None, shelf: false, lead: false, planner: false, background: false }
     }
 }
 
@@ -74,6 +75,7 @@ pub struct Spot {
     pub tab: Option<String>,
     pub dock: Option<Edge>,
     pub workspace: Value,
+    pub background: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +100,11 @@ pub trait LayoutHost {
     fn location(&self, pane: &str) -> Option<Spot>;
 
     fn panes_in(&mut self, scope: &Scope) -> Result<Vec<String>, KmuxError>;
+
+    fn background_of(&self, task: &str) -> Vec<String> {
+        let _ = task;
+        vec![]
+    }
 
     fn remove(&mut self, pane: &str);
 
@@ -178,6 +185,9 @@ pub fn place_request(pane: &Pane, at: &Placement) -> Value {
     }
     if at.planner {
         out.insert("planner".into(), Value::Bool(true));
+    }
+    if at.background {
+        out.insert("background".into(), Value::Bool(true));
     }
     if let Some(app) = &at.app {
         out.insert("app".into(), app.clone().into());
@@ -271,7 +281,7 @@ pub fn placement(at: &Value) -> Result<Placement, KmuxError> {
         Some(size) => size.as_f64().filter(|s| *s > 0.0 && *s < 1.0).ok_or_else(|| bad("size must be a fraction between 0 and 1"))?,
     };
     let dock = Edge::read(at.get("dock")).map_err(|_| bad("dock must be left or right"))?;
-    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), shelf: at.get("shelf") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)) })
+    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), shelf: at.get("shelf") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)), background: at.get("background") == Some(&Value::Bool(true)) })
 }
 
 fn spot(reply: &mut Map, spot: Option<Spot>, window: Option<String>) {
@@ -279,6 +289,9 @@ fn spot(reply: &mut Map, spot: Option<Spot>, window: Option<String>) {
     reply.insert("tab".into(), opt(spot.as_ref().and_then(|s| s.tab.as_deref())));
     if let Some(edge) = spot.as_ref().and_then(|s| s.dock) {
         reply.insert("dock".into(), edge.as_str().into());
+    }
+    if spot.as_ref().is_some_and(|s| s.background) {
+        reply.insert("background".into(), Value::Bool(true));
     }
     if let Some(workspace) = spot.map(|s| s.workspace).filter(|w| !w.is_null()) {
         reply.insert("workspace".into(), workspace);
@@ -312,6 +325,9 @@ fn step(host: &mut dyn LayoutHost, request: &Value, panes: &Panes) -> Result<Map
                 _ => Scope::Window(string(request, "window").map(String::from)),
             };
             reply.insert("panes".into(), host.panes_in(&scope)?.into());
+            if let Scope::Task(task) = &scope {
+                reply.insert("background".into(), host.background_of(task).into());
+            }
         }
         "remove" => {
             if let Some(task) = string(request, "task") {

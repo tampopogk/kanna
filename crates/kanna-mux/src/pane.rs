@@ -221,7 +221,6 @@ pub struct Pane {
     pub status: Option<String>,
     pub hung_up: bool,
     pub terminal: Option<String>,
-    pub hidden: bool,
 }
 
 impl Pane {
@@ -258,7 +257,6 @@ impl Pane {
             status: None,
             hung_up: false,
             terminal: None,
-            hidden: false,
         }
     }
 

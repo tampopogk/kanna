@@ -827,6 +827,7 @@ mod tests {
             ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
             ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
+            ("kanna move build --background", json!({ "pane": "build", "background": true })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
             ("kanna move agent --tab tab-3", json!({ "pane": "agent", "tab": "tab-3" })),
             ("kanna move agent --tab --window win-2", json!({ "pane": "agent", "tab": "new", "window": "win-2" })),
@@ -871,6 +872,7 @@ mod tests {
             ("kanna markup a.md --dock", "a docked pane is a task's agent"),
             ("kanna move agent --dock --tab", "--dock goes on its own"),
             ("kanna move agent --dock --to b", "--dock goes on its own"),
+            ("kanna move build --background --tab", "--background goes on its own"),
         ] {
             let failure = parse(line).expect_err(line);
             assert_eq!(failure.code, exit::USAGE, "{line}");

@@ -4616,27 +4616,45 @@ r = json.load(sys.stdin)["runs"]; print(" ".join(x[sys.argv[1]] if isinstance(x[
   check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select task from runs where id = '$run'")" == "$task" || { echo "pipeline_run: the run isn't the task's"; return 1; }
   local worker="$repo/.kanna-worktrees/$task-run-1"
   check test "$(git -C "$worker" branch --show-current)" == "run/$task-1" || { echo "pipeline_run: no worker on run/$task-1"; return 1; }
-  placed() { kanna workspace list --all --json | python3 -c 'import json, sys
+  where_is() { kanna workspace list --all --json | python3 -c 'import json, sys
+pane = sys.argv[1]; view = json.load(sys.stdin)
 def ids(node):
     if isinstance(node, dict):
         for k, v in node.items():
-            if k in ("pane", "panes", "focused") and isinstance(v, str): yield v
+            if k in ("background", "panes"): continue
+            if k in ("pane", "focused", "id") and v == pane: yield v
             yield from ids(v)
     elif isinstance(node, list):
-        for v in node:
-            if isinstance(v, str) and v.startswith("term-"): yield v
-            else: yield from ids(v)
-view = json.load(sys.stdin); view.pop("panes", None); print(" ".join(sorted(set(ids(view)))))'; }
+        for v in node: yield from ids(v)
+if pane not in [p["id"] for p in view.get("panes") or []]: print("closed"); sys.exit()
+background = [w["id"] for w in view.get("workspaces") or [] if pane in (w.get("background") or [])]
+view.pop("panes", None)
+print("drawn" if any(ids(view)) else "background " + background[0] if background else "nowhere")' "$1"; }
+  local taskws; taskws="$(kanna workspace list --all --json | python3 -c 'import json, sys
+print([w["id"] for w in json.load(sys.stdin)["workspaces"] if w["dock"]["id"] == sys.argv[1]][0])' "$term")" || { echo "pipeline_run: the task has no workspace"; return 1; }
   workers() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from run_stages where run = '$run' and terminal is not null" | tr '\n' ' '; }
   local bad=""
   watch_rows() {
     [[ "$(rows)" == "1 0" ]] || bad="the Shelf and Desk showed $(rows) rows during the run"
-    local w; for w in $(workers); do [[ " $(placed) " != *" $w "* ]] || bad="worker $w is in a window or workspace"; done
+    local w at; for w in $(workers); do at="$(where_is "$w")"; [[ "$at" == "background $taskws" || "$at" == closed ]] || bad="worker $w is $at, not in $taskws's background"; done
     [[ -n "$bad" || -f "$worker/.kanna/tmp/checking" ]]
   }
   check wait_for 60 watch_rows || { echo "pipeline_run: the second check never started"; kanna run show "$run"; for w in $(workers) "$term"; do echo "== $w"; kanna read "$w"; kanna status explain "$w"; done; tail -30 "$out/daemon.log"; return 1; }
   [[ -z "$bad" ]] || { echo "pipeline_run: $bad"; return 1; }
   check test "$(held)" == "$term" || { echo "pipeline_run: the task's docked pane changed from $term to $(held)"; return 1; }
+  local checking; checking="$(workers | awk '{print $NF}')"
+  local peek; peek="$(kanna move "$checking" --tab)" || { echo "pipeline_run: the worker couldn't be shown: $peek"; return 1; }
+  check test "$(where_is "$checking")" == drawn || { echo "pipeline_run: the shown worker is $(where_is "$checking"): $peek"; return 1; }
+  in_tab() { kanna workspace list --all --json | python3 -c 'import json, sys
+ws = [w for w in json.load(sys.stdin)["workspaces"] if w["id"] == sys.argv[1]][0]
+print(any(sys.argv[2] in t["panes"] for t in ws["tabs"]))' "$taskws" "$checking"; }
+  check test "$(in_tab)" == True || { echo "pipeline_run: the shown worker isn't in a tab of $taskws: $peek"; return 1; }
+  check test "$(rows)" == "1 0" || { echo "pipeline_run: $(rows) rows with a worker shown"; return 1; }
+  local back; back="$(kanna move "$checking" --background)" || { echo "pipeline_run: the worker couldn't go back: $back"; return 1; }
+  [[ "$back" == "$checking is in the background of $taskws (${task:0:9}, on the Shelf)" ]] || { echo "pipeline_run: putting the worker back said: $back"; return 1; }
+  check test "$(where_is "$checking")" == "background $taskws" || { echo "pipeline_run: the worker put back is $(where_is "$checking")"; return 1; }
+  check test "$(in_tab)" == False || { echo "pipeline_run: the worker put back is still in a tab"; return 1; }
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from run_stages where run = '$run' and terminal is not null order by rowid desc limit 1")" == "$checking" || { echo "pipeline_run: the run's records changed"; return 1; }
   grep -q "# Feedback from check" "$worker/.kanna/tmp/stage-3.md" && grep -q "FAILED: first try" "$worker/.kanna/tmp/stage-3.md" || { echo "pipeline_run: build's second visit didn't get check's failure"; cat "$worker/.kanna/tmp/stage-3.md"; return 1; }
   grep -q "Count the visits" "$worker/.kanna/tmp/stage-1.md" || { echo "pipeline_run: the request isn't in the stage's prompt"; return 1; }
   stop_daemon; start_daemon || { echo "pipeline_run: the daemon didn't come back"; return 1; }
@@ -4685,6 +4703,20 @@ assert v[0]["doc"]["replies"] == 1 and "paused" not in v[0]["doc"], v[0]["doc"]'
   check wait_for 20 eval '[[ "$(runs state)" == "done done paused" ]]' || { echo "pipeline_run: the third run didn't pause: $(runs state)"; return 1; }
   (cd "$folder" && KANNA_TERMINAL="$(held)" kanna run stop) >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(runs state)" == "done done stopped" ]]' || { echo "pipeline_run: the paused run wasn't stopped: $(runs state)"; return 1; }
+  printf 'wait = run sleep 300\nwait -> done\n' >"$folder/.kanna/pipelines/slow.pipe"
+  again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start slow 2>&1)" || { echo "pipeline_run: the slow run didn't start: $again"; return 1; }
+  local slow="${again%% *}" sleeper=""
+  slept() { sleeper="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from run_stages where run = '$slow' and terminal is not null")"; [[ -n "$sleeper" ]]; }
+  check wait_for 20 slept || { echo "pipeline_run: the slow run opened no worker"; return 1; }
+  local slow_worker; slow_worker="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select json_extract(doc, '$.worker') from runs where id = '$slow'")"
+  check test -d "$slow_worker" || { echo "pipeline_run: no worktree for the slow run"; return 1; }
+  check wait_for 10 eval '[[ "$(where_is "$sleeper")" == "background $taskws" ]]' || { echo "pipeline_run: the slow worker is $(where_is "$sleeper")"; return 1; }
+  kanna task done "$task" >/dev/null || { echo "pipeline_run: the task with a live run couldn't be done"; return 1; }
+  check wait_for 20 eval '[[ "$(runs state)" == "done done stopped stopped" ]]' || { echo "pipeline_run: closing the task didn't stop its run: $(runs state)"; return 1; }
+  [[ "$(runs why)" == *"the task was closed" ]] || { echo "pipeline_run: the closed task's run says: $(runs why)"; return 1; }
+  check wait_for 10 eval '[[ "$(where_is "$sleeper")" == closed ]]' || { echo "pipeline_run: the closed task's worker is $(where_is "$sleeper")"; return 1; }
+  check wait_for 10 test ! -d "$slow_worker" || { echo "pipeline_run: the closed task's run kept its worktree"; return 1; }
+  check test -n "$(git -C "$repo" branch --list "run/$task-4")" || { echo "pipeline_run: the closed task's run branch is gone"; return 1; }
 }
 
 scenario task_scripts M4

@@ -927,8 +927,9 @@ impl Runs {
 
     fn open_worker(self: &Rc<Self>, id: &str, cwd: &str, command: &str, opened: impl FnOnce(&Rc<Self>, &str, &str) + 'static) {
         let Some(core) = self.core.upgrade() else { return };
+        let task = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.task.clone()).unwrap_or_default();
         let (this, id) = (Rc::downgrade(self), id.to_string());
-        core.handle(json!({ "cmd": "open", "args": { "type": "term", "hidden": true, "cwd": cwd, "cmd": command, "wait": false } }), move |reply| {
+        core.handle(json!({ "cmd": "open", "args": { "type": "term", "background": true, "workspace": task, "cwd": cwd, "cmd": command, "wait": false } }), move |reply| {
             let Some(this) = this.upgrade() else { return };
             let pane = reply.get("pane").and_then(|p| string(p, "id")).map(String::from);
             let Some(pane) = pane.filter(|_| reply.get("ok") == Some(&Value::Bool(true))) else {
@@ -1293,6 +1294,26 @@ impl Runs {
         if tell {
             let branch = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.branch.clone()).unwrap_or_default();
             self.tell(id, &format!("{why}. The run's branch {branch} is kept for you to look at; `kanna run show {id}` has its visits."));
+        }
+    }
+
+    pub fn task_closed(self: &Rc<Self>, task: &str) {
+        let found = self.live.borrow().iter().find(|l| l.row.task == task && LIVE.contains(&l.row.state.as_str())).map(|l| (l.row.id.clone(), l.row.repo.clone(), l.doc.worker.clone(), l.visit.as_ref().and_then(|v| v.row.terminal.clone())));
+        let Some((id, repo, worker, terminal)) = found else { return };
+        self.update(&id, |live| {
+            if let Some(visit) = live.visit.as_mut() {
+                visit.ending = true;
+            }
+            None
+        });
+        if let Some(pane) = terminal {
+            self.close(&pane);
+        }
+        self.stop(&id, "stopped", "the task was closed", Some("daemon"), false);
+        if Path::new(&worker).is_dir() {
+            if let Err(error) = git(Path::new(&repo), &["worktree", "remove", "--force", &worker]) {
+                log!("kanna-daemon: {id}'s worktree {worker} is kept: {error}");
+            }
         }
     }
 

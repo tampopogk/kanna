@@ -796,6 +796,7 @@ pub struct Tasks {
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
+    pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     warned: RefCell<HashMap<String, String>>,
@@ -916,6 +917,7 @@ impl Tasks {
             permissions: RefCell::default(),
             line_mode: RefCell::default(),
             on_warn: RefCell::default(),
+            on_close: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -1582,6 +1584,7 @@ impl Tasks {
         let freed = !gone.is_empty();
         for r in gone {
             log!("kanna-daemon: {}'s agent {} is closed, so {} is done", r.entry.id, r.pane, r.entry.id);
+            self.closing(&r.entry.id);
             self.running.borrow_mut().retain(|x| x.pane != r.pane);
             let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some("daemon")).with("pane", json!(r.pane)).with("branch", opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()))));
             self.setting_up.borrow_mut().remove(&r.pane);
@@ -2305,6 +2308,12 @@ impl Tasks {
         Ok(Map::from_iter([("task".to_string(), task)]))
     }
 
+    fn closing(&self, task: &str) {
+        if let Some(on_close) = self.on_close.borrow().as_ref() {
+            on_close(task);
+        }
+    }
+
     fn take(&self, id: &str) -> Option<Entry> {
         let mut entries = self.entries.borrow_mut();
         let at = entries.iter().position(|e| e.id == id)?;
@@ -2328,6 +2337,7 @@ impl Tasks {
             if pane.as_ref().is_some_and(|pane| self.tearing_down.borrow().contains_key(pane)) {
                 return responder.reply(Err(KmuxError::new("tearing_down", format!("{}'s teardown is running: it's done when that succeeds", self.short(&entry.id)))));
             }
+            self.closing(&entry.id);
         }
         if let Some(pane) = pane.clone().filter(|pane| alive(&core, pane)) {
             let agent = entry.as_ref().map_or_else(|| core.pane(&pane).and_then(|p| p.command).unwrap_or_default(), |e| e.agent.clone());

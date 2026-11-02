@@ -344,6 +344,12 @@ fn run() -> Result<Option<PathBuf>, String> {
     }));
     let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks)));
     runs.install(&core);
+    let closing = Rc::downgrade(&runs);
+    *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = closing.upgrade() {
+            runs.task_closed(task);
+        }
+    }));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));

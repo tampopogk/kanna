@@ -70,7 +70,7 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 |---|---|
 | `prompt NAME` | `.kanna/prompts/NAME.md` is the stage's prompt instead of the stage's own name |
 | `verdict` | the stage reports `pass` or `fail` when it's done; the request is appended to its prompt |
-| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a worker of the run (a worktree branched from the run's and a hidden terminal, never a task of its own); the next stage waits for them all ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)) |
+| `each STAGE.KEY` | one instance per item of a named list a previous stage produced ([5](#5-inputs-and-outputs)), each a worker of the run (a worktree branched from the run's and a background terminal of the task's); the next stage waits for them all ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)) |
 | `xN by STAGE` | N attempts of the stage from the same code (2 to 10), each a worker in its own worktree; the `run` stage named scores each (its output's last line `score: 0.83`, else pass 1 and fail 0) and the best is kept, ties to the first |
 | `guard STAGE` | that `run` stage scores the code before and after; a result that scores lower is discarded and the code before carries on, recorded as a rollback |
 | `emits` | the stage's answer may add stages and arrows to the run ([7](#7-changing-a-pipeline-while-it-runs)) |

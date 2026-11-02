@@ -56,6 +56,9 @@ fn whose_text(reply: &Value) -> Option<String> {
 
 pub fn opened(request: &Value, reply: &Value) -> String {
     let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("?").to_string());
+    if reply["background"] == true {
+        return format!("opened {} in the background of {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
+    }
     if let Some(edge) = reply["dock"].as_str() {
         let frozen = if request["frozen"] == true { ", frozen," } else { "" };
         return format!("opened {} docked {edge}{frozen} in {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
@@ -88,6 +91,9 @@ pub fn marked(args: &Value, reply: &Value) -> String {
 }
 
 pub fn moved(reply: &Value) -> String {
+    if reply["background"] == true {
+        return format!("{} is in the background of {}", reply["pane"].as_str().unwrap_or("?"), whose_text(reply).unwrap_or_else(|| "its workspace".into()));
+    }
     let dock = &reply["dock"];
     if dock.is_object() {
         return format!(
@@ -559,13 +565,13 @@ pub fn scoped(reply: &Value, pane: &str) -> Option<Value> {
     let named = |v: &Value| v == shown.as_str() || v == id.as_str();
     let has = |list: &Value, p: &str| list.as_array().is_some_and(|l| l.iter().any(|x| x == p));
     let mut out = json!({ "pane": id, "at": null, "windows": [], "hiddenWindows": [], "workspaces": [], "panes": [row] });
-    if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id)) {
+    if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id) || has(&w["background"], &id)) {
         let ours = |w: &&Value| w["workspace"] == ws["id"];
         out["at"] = json!("workspace");
         out["workspaces"] = json!([ws]);
         out["windows"] = Value::Array(windows.iter().filter(ours).cloned().collect());
         out["hiddenWindows"] = Value::Array(hidden.iter().filter(ours).cloned().collect());
-        out["panes"] = Value::Array(panes.iter().filter(|p| p["id"].as_str().is_some_and(|p| has(&ws["panes"], p))).cloned().collect());
+        out["panes"] = Value::Array(panes.iter().filter(|p| p["id"].as_str().is_some_and(|p| has(&ws["panes"], p) || has(&ws["background"], p))).cloned().collect());
         return Some(out);
     }
     let holds = |w: &Value| named(&w["lead"]["pane"]) || named(&w["dock"]["pane"]) || w["tabs"].as_array().is_some_and(|t| t.iter().any(|t| layout_panes(&t["layout"]).iter().any(|p| named(&json!(p)))));
@@ -653,7 +659,7 @@ fn everything(reply: &Value) -> String {
     if !free.is_empty() {
         sections.push(format!("Free windows\n{}", free.join("\n")));
     }
-    let mut placed: Vec<String> = workspaces.iter().flat_map(|w| w["panes"].as_array().cloned().unwrap_or_default()).filter_map(|p| p.as_str().map(String::from)).collect();
+    let mut placed: Vec<String> = workspaces.iter().flat_map(|w| [&w["panes"], &w["background"]]).flat_map(|l| l.as_array().cloned().unwrap_or_default()).filter_map(|p| p.as_str().map(String::from)).collect();
     for window in windows.iter().chain(reply["hiddenWindows"].as_array().unwrap_or(&empty)) {
         placed.extend(window["tabs"].as_array().unwrap_or(&empty).iter().flat_map(|t| layout_panes(&t["layout"])));
         placed.extend(window["lead"]["pane"].as_str().map(String::from));
@@ -720,6 +726,10 @@ fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     }
     out.extend(focus_line(ws, "  "));
     out.extend(tab_lines(&ws["tabs"], "  "));
+    let background: Vec<String> = ws["background"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str).map(|p| named_pane(reply, p)).collect();
+    if !background.is_empty() {
+        out.push(format!("  background: {}", background.join(", ")));
+    }
     for own in ws["windows"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str) {
         let window = reply["windows"].as_array().and_then(|l| l.iter().find(|w| w["id"] == own)).cloned();
         out.push(format!("  {own}"));
