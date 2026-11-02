@@ -57,6 +57,8 @@ pub const APP_PREFIX: &str = "debug.";
 
 pub const APP_ASK: &str = "app.";
 
+pub const RELAY_TOKEN: &str = "machine.relay_token";
+
 pub const PROTOCOLS: (u64, u64) = (kanna_build::PROTOCOLS[0] as u64, kanna_build::PROTOCOLS[1] as u64);
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -402,6 +404,17 @@ impl AppLink {
                 return None;
             }
             _ => {}
+        }
+        if string(&message, "cmd") == Some(RELAY_TOKEN) {
+            let local = self.app.borrow().as_ref().is_some_and(|app| app.remote.is_none());
+            let id = message.get("id").cloned().unwrap_or(Value::Null);
+            let token = self.machine.borrow().as_ref().map(|describe| describe()["relay_token"].clone()).unwrap_or(Value::Null);
+            self.send(if local {
+                json!({ "id": id, "ok": true, "token": token })
+            } else {
+                json!({ "id": id, "ok": false, "error": { "code": "local_only", "message": "a relay's token goes only to this machine's own app" } })
+            });
+            return None;
         }
         if message.get("id").is_some() {
             return Some(message);

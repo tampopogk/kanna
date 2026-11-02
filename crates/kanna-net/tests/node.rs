@@ -579,7 +579,7 @@ async fn an_app_given_only_a_key_reaches_a_machine_through_its_relay() {
     let status = mbp.status();
     let them = status["peers"].as_array().unwrap().iter().find(|p| p["name"] == "linux-vm").unwrap();
     assert_eq!(them["relay"], json!(moved), "the relay set now, not the one in the peer log: {them}");
-    assert_eq!(status["relay_token"], "s3cret");
+    assert_eq!((status["relay_token"].clone(), mbp.relay_token()), (json!(true), Some("s3cret".to_string())), "the status says only that there is a token");
     assert!(!json!(vm_host.saved.lock().unwrap()["entries"]).to_string().contains("s3cret"), "the token never goes in the peer log");
     let fresh = Client::start(SecretKey::generate()).await.unwrap();
     let cert = mbp.certify(&fresh.key()).unwrap();
@@ -589,6 +589,6 @@ async fn an_app_given_only_a_key_reaches_a_machine_through_its_relay() {
     let saved = mbp_host.saved.lock().unwrap().clone();
     mbp.close().await;
     let (again, _) = machine("mbp", saved).await;
-    assert_eq!((again.status()["relay"].clone(), again.status()["relay_token"].clone()), (json!(moved), json!("s3cret")), "the relay and its token are kept across a restart");
+    assert_eq!((again.status()["relay"].clone(), again.relay_token()), (json!(moved), Some("s3cret".to_string())), "the relay and its token are kept across a restart");
     assert_eq!(again.set_relay(None, None).await.unwrap()["relay"], Value::Null);
 }

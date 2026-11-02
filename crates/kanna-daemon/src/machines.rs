@@ -244,7 +244,7 @@ impl Machines {
 
     pub fn machine(&self) -> Value {
         match &self.node {
-            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities() }),
+            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities(), "relay_token": node.relay_token() }),
             Err(_) => json!({ "name": hostname(), "capabilities": capabilities() }),
         }
     }

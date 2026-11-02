@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/machines/terminal-echo.sh DIR LABEL [--remote SSH-HOST [--lan-proxy]] [--relay URL [--relay-only]] [--samples N]
+usage: scripts/machines/terminal-echo.sh DIR LABEL [--remote SSH-HOST [--lan-proxy]] [--relay URL [--relay-token-file FILE] [--relay-only]] [--samples N]
 
 Starts a private daemon on this Mac in DIR/mbp and a second one, in DIR/peer here or in
 ~/kanna-echo on SSH-HOST (which needs kanna-daemon, kanna-keeper and kanna built for it
@@ -19,12 +19,13 @@ EOF
 
 [[ $# -ge 2 ]] || usage
 dir="$1" label="$2"; shift 2
-remote="" relay="" relay_only="" samples=100 proxy=""
+remote="" relay="" token="" relay_only="" samples=100 proxy=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --remote) remote="$2"; shift ;;
     --lan-proxy) proxy=1 ;;
     --relay) relay="$2"; shift ;;
+    --relay-token-file) token="$2"; shift ;;
     --relay-only) relay_only=1 ;;
     --samples) samples="$2"; shift ;;
     *) usage ;;
@@ -45,7 +46,7 @@ cleanup() {
   for state in "$dir"/mbp/state "$dir"/peer/state; do
     [[ -f "$state/keeper.pid" ]] && kill "$(cat "$state/keeper.pid")" 2>/dev/null || true
   done
-  [[ -n "$remote" ]] && ssh "$remote" 'cd ~/kanna-echo && kill $(cat daemon.pid) $(cat state/keeper.pid) 2>/dev/null; true' || true
+  [[ -n "$remote" ]] && ssh "$remote" 'cd ~/kanna-echo && kill $(cat daemon.pid) $(cat state/keeper.pid) 2>/dev/null; rm -f relay.token; true' || true
 }
 trap cleanup EXIT
 exec 3>&2
@@ -121,9 +122,20 @@ kill "$confirmer" 2>/dev/null || true
 addr=(--addr "$host:$port")
 relayed=()
 if [[ -n "$relay" ]]; then
-  mbp machine relay "$relay" >/dev/null
-  peer machine relay "$relay" >/dev/null
-  relayed=(--relay "$relay")
+  if [[ -n "$token" ]]; then
+    mbp machine relay "$relay" --token-file "$token" >/dev/null
+    if [[ -n "$remote" ]]; then
+      ssh "$remote" 'umask 077 && cat >~/kanna-echo/relay.token' <"$token"
+      peer machine relay "$relay" --token-file relay.token >/dev/null
+    else
+      peer machine relay "$relay" --token-file "$token" >/dev/null
+    fi
+    relayed=(--relay "$relay" --relay-token-file "$token")
+  else
+    mbp machine relay "$relay" >/dev/null
+    peer machine relay "$relay" >/dev/null
+    relayed=(--relay "$relay")
+  fi
   [[ -n "$relay_only" ]] && relayed+=(--relay-only) && addr=()
   sleep 2
 fi

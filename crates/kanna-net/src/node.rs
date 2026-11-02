@@ -287,7 +287,7 @@ impl Node {
             "release": self.0.release,
             "addrs": addrs,
             "relay": state.relay.as_ref().map(|r| r.url.to_string()),
-            "relay_token": state.relay.as_ref().and_then(|r| r.token.clone()),
+            "relay_token": state.relay.as_ref().is_some_and(|r| r.token.is_some()),
             "home_relay": self.0.endpoint.addr().relay_urls().next().map(|r| r.to_string()),
             "paired": state.log.is_some(),
             "log": state.log.as_ref().map(|l| l.id().to_string()),
@@ -312,6 +312,10 @@ impl Node {
         }
         self.save();
         Ok(json!({ "name": name }))
+    }
+
+    pub fn relay_token(&self) -> Option<String> {
+        self.state().relay.as_ref().and_then(|r| r.token.clone())
     }
 
     pub async fn set_relay(&self, url: Option<&str>, token: Option<&str>) -> Result<Value, Failure> {

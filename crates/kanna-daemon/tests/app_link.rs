@@ -420,3 +420,16 @@ fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(reply["daemon"]["protocols"], json!(kanna_build::PROTOCOLS), "{reply}");
 }
+
+#[test]
+fn a_relays_token_goes_only_to_this_machines_own_app() {
+    let instance = Instance::start();
+    let set = instance.call("machine", json!({"action": "relay", "url": "https://relay.example.com:8444", "token": "s3cret"}));
+    assert_eq!(set["token"], true, "{set}");
+    let status = instance.call("machine", json!({"action": "status"}));
+    assert_eq!((status["relay"].as_str(), status["relay_token"].as_bool()), (Some("https://relay.example.com:8444/"), Some(true)), "the status says only that there is a token: {status}");
+    let mut app = instance.app();
+    app.send(json!({"id": 7, "cmd": "machine.relay_token", "args": {}}));
+    let reply = app.until("the token", |m| m["id"] == 7);
+    assert_eq!(reply["token"], "s3cret", "{reply}");
+}
