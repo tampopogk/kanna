@@ -62,6 +62,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 - **Run it from your own terminal, without `--window`:** the tab opens in your task's workspace, even while it's hidden on the Shelf or on the Desk but not active, and the reply names your task and where it is (`opened term-5 in ws-3 (task-1dfb, on the Desk), tab-9: running`). `--window new` opens a window of your task's, shown and hidden with it.
 - **Don't put a mermaid diagram in the chat when the chat is a terminal:** it shows there as source. A diagram, or an explanation longer than a few lines, goes in a markdown doc in `.kanna/tmp/` that you open in a tab, as the `kanna-explain` skill says.
 - **A tab, not a split or a new window,** so your pane keeps its size.
+- **Reuse a tab that already shows it:** `kanna workspace list` lists your workspace's tabs and panes. If the file is open there, bring that pane forward (`kanna focus PANE`), or point it elsewhere (`kanna navigate`), or turn comments on in it (`kanna markup PANE`), instead of opening a second copy.
 - **Refer to it by the ID the reply prints** (`term-5`, `diff-2`). Pane names are unique across Kanna, so a `--name` another task already uses fails with `name_taken`.
 - In the chat, a line saying what the tab shows.
 
