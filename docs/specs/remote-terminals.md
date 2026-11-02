@@ -83,7 +83,7 @@ sequenceDiagram
 |---|---:|---:|---:|---:|---:|---:|
 | Loopback (this Mac, 1 run) | 0.4 / 1.5 | 0.5 / 1.9 | 0.5 / 1.7 | 169 KB, 21 ms | 19 KB, 14 ms | 121 B, 0.6 ms |
 | LAN, MBP → r720-1 | 4.7–21.6 / 25–127 | 5.3–5.5 / 24–30 | 6.5–7.5 / 32–40 | 162 KB, 23–58 ms | 23 KB, 17–19 ms | 121 B, 4–5 ms |
-| Relayed, your relay (Iowa) | RELAY_RTT | RELAY_IDLE | RELAY_LOADED | 162 KB, RELAY_FULL | 23 KB, RELAY_BOUNDED | 121 B, RELAY_RECONNECT |
+| Relayed, your relay (Iowa) | 313–323 / 338–399 | 313–321 / 343–349 | 678–1102 / 3887–4288 | 162 KB, 821–998 ms | 23 KB, 334–359 ms | 121 B, 318–341 ms |
 
 The full attach is `seq 1 200000` (1.5 MB written); the reconnect is after 36 bytes typed while detached. The model's transport-only echo on the same machines was 5.4–7.9 ms p50 on the LAN and 332–340 ms p50 relayed, and 39–40 ms p50 direct from away after hole punching ([fleet-net](../../references/prototypes/fleet-net/README.md#results-and-slice-contract)).
 
@@ -92,7 +92,7 @@ The full attach is `seq 1 200000` (1.5 MB written); the reconnect is after 36 by
 - **The terminal adds nothing measurable** over the transport: echo idle equals the link round trip on every path, and both match the model's transport echo. The pty, the daemon's screen and the JSON lines cost under a millisecond.
 - **Bounded snapshots and offsets work over distance:** relayed, a reconnect costs one round trip and 121 bytes instead of a snapshot, and an attach sends 23 KB instead of 162 KB here (10 MB on a full scrollback).
 - **The relay's idle round trip is distance:** ~320 ms is Japan to Iowa and back twice through the relay. A relay in the user's region (GCP asia-northeast1, Tokyo) would cut it to roughly the 40 ms the model measured direct from away.
-- **Under load, keystrokes wait behind output.** While another terminal floods, relayed echo is RELAY_LOADED_SHORT: the flood fills the path's buffers (relayed throughput was 14–20 Mbps in the model) and a keystroke's echo queues behind up to 16 MiB of output on the same control stream before the daemon gives up and resnapshots. On the LAN the same flood costs 1–2 ms.
+- **Under load, keystrokes wait behind output.** While another terminal floods, relayed echo is p50 0.7–1.1 s and p95 3.9–4.3 s: the flood fills the path's buffers (relayed throughput was 14–20 Mbps in the model) and a keystroke's echo queues behind up to 16 MiB of output on the same control stream before the daemon gives up and resnapshots. On the LAN the same flood costs 1–2 ms.
 
 ## 5. Local echo
 
