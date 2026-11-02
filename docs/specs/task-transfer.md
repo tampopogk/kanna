@@ -1,6 +1,6 @@
 # Task Transfer
 
-**Status:** built (slice 11) · **Tested:** `cargo test -p kanna --test machines_transfer` (two daemons with different home folders, mock claude and codex: a move each way, a receiver gone before it answers, a refusal, an agent that writes no handoff), `-p kanna-daemon transfer:: moving:: replica` (each case of §3's branch rules) · **Part of:** [tasks across machines §3](machine-tasks.md#3-transfer) · **Model:** [fleet-transfer](../../references/prototypes/fleet-transfer/README.md)
+**Status:** built (slice 11) · **Tested:** `cargo test -p kanna --test machines_transfer` (two daemons with different home folders, mock claude and codex: a move each way, a receiver gone before it answers, a refusal, an agent that writes no handoff), `-p kanna-daemon transfer:: moving:: replica` (each case of §3's branch rules); real claude and codex moved from a MacBook Pro to a Mac Studio, each carrying on from its handoff to finish the task's second step there (2026-11-03) · **Part of:** [tasks across machines §3](machine-tasks.md#3-transfer) · **Model:** [fleet-transfer](../../references/prototypes/fleet-transfer/README.md)
 
 A task on one machine's Shelf moves to another of your machines at its turn's end and carries on there: its branch, its uncommitted work and its tabs go, and a new agent there starts from a handoff the old one wrote before the move. The conversation itself doesn't move (decided with the user, 2026-11-02; §4 says why).
 
