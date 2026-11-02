@@ -44,7 +44,7 @@ fn with_no_app_every_pane_type_opens_and_an_app_shows_it_later() {
     let list = instance.call("list", json!({}));
     assert_eq!(names(&list), vec!["sh", "site", "doc", "src", "phone"], "{list}");
     let capabilities = instance.call("capabilities", json!({}));
-    assert_eq!(capabilities["paneTypes"], json!(["term", "web", "ios", "md", "code", "diff", "serial"]), "{capabilities}");
+    assert_eq!(capabilities["paneTypes"], json!(["term", "web", "ios", "md", "code", "diff", "serial", "run"]), "{capabilities}");
 
     let mut app = App::connect(&instance.socket());
     assert!(app.view.to_string().contains("\"page-1\""), "{}", app.view);
