@@ -1,7 +1,7 @@
 import Foundation
 
 enum MachineIDs {
-    static let kinds: Set<Substring> = ["task", "ws", "win", "tab", "term", "diff", "file", "page", "ios"]
+    static let kinds: Set<Substring> = ["task", "ws", "win", "tab", "term", "diff", "file", "page", "ios", "serial"]
     static let fields: Set<String> = ["id", "pane", "terminal", "workspace", "tab", "window", "key", "focused", "zoomed", "shows", "planner", "content", "view", "held", "by", "task", "panes", "windows", "tasks", "about", "lead", "agent", "owner", "from", "under"]
 
     static func isID(_ text: Substring) -> Bool {

@@ -15,7 +15,11 @@ const DAEMON: &str = env!("CARGO_BIN_EXE_kanna-daemon");
 fn keeper_binary() -> PathBuf {
     let keeper = Path::new(DAEMON).with_file_name("kanna-keeper");
     if !keeper.exists() {
-        let status = Command::new(env!("CARGO")).args(["build", "-p", "kanna-keeper"]).status().unwrap();
+        let profile = match keeper.parent().and_then(Path::file_name).and_then(|d| d.to_str()) {
+            Some("debug") | None => "dev",
+            Some(dir) => dir,
+        };
+        let status = Command::new(env!("CARGO")).args(["build", "--profile", profile, "-p", "kanna-keeper"]).status().unwrap();
         assert!(status.success(), "building kanna-keeper failed");
     }
     keeper
@@ -53,6 +57,26 @@ impl Instance {
     pub fn start_again(&mut self) {
         self.daemon = spawn_daemon(&self.dir, &self.env);
         wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
+    }
+
+    pub fn start_on(&mut self, listener: std::os::fd::OwnedFd) {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let fd = listener.as_raw_fd();
+        let mut command = daemon_command(&self.dir, &self.env);
+        command.env("KANNA_LISTEN_FD", "3");
+        unsafe {
+            command.pre_exec(move || {
+                if fd == 3 {
+                    libc::fcntl(3, libc::F_SETFD, 0);
+                } else if libc::dup2(fd, 3) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self.daemon = command.spawn().unwrap();
+        drop(listener);
     }
 
     pub fn restart(&mut self, signal: i32) {
@@ -111,6 +135,10 @@ impl Instance {
     pub fn app(&self) -> App {
         App::connect(&self.socket())
     }
+
+    pub fn app_speaking(&self, protocols: [u32; 2]) -> App {
+        App::connect_speaking(&self.socket(), json!([]), protocols)
+    }
 }
 
 impl Drop for Instance {
@@ -137,6 +165,10 @@ fn stop_process(pid: i32) {
 }
 
 fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
+    daemon_command(dir, env).spawn().unwrap()
+}
+
+fn daemon_command(dir: &Path, env: &[(String, String)]) -> Command {
     let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).unwrap();
     let mut command = Command::new(DAEMON);
     command.env_clear();
@@ -150,7 +182,6 @@ fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
         .env("SHELL", "/bin/sh")
         .env("KANNA_SOCKET", dir.join("kanna.sock"))
         .env("KANNA_STATE_DIR", dir.join("state"))
-        .env("KANNA_AGENT_RULES_URL", "none")
         .env("KANNA_KEEPER", keeper_binary())
         .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
         .env("KANNA_MACHINE_MDNS", "0")
@@ -160,7 +191,7 @@ fn spawn_daemon(dir: &Path, env: &[(String, String)]) -> Child {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
-    command.spawn().unwrap()
+    command
 }
 
 pub struct App {
@@ -168,6 +199,8 @@ pub struct App {
     reader: BufReader<UnixStream>,
     pub view: Value,
     pub shows: bool,
+    pub acks: bool,
+    pub hello: Value,
 }
 
 impl App {
@@ -176,12 +209,17 @@ impl App {
     }
 
     pub fn connect_with(socket: &Path, panes: Value) -> App {
+        App::connect_speaking(socket, panes, kanna_build::PROTOCOLS)
+    }
+
+    pub fn connect_speaking(socket: &Path, panes: Value, protocols: [u32; 2]) -> App {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let mut app = App::raw(socket);
-            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": kanna_build::PROTOCOLS, "panes": panes}}));
+            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": protocols, "panes": panes}}));
             let hello = app.next().expect("no answer to app.hello");
             if hello["ok"] == true {
+                app.hello = hello;
                 return app;
             }
             assert!(hello["error"]["code"] == "app_attached" && Instant::now() < deadline, "{hello}");
@@ -193,7 +231,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        App { stream, reader, view: Value::Null, shows: true }
+        App { stream, reader, view: Value::Null, shows: true, acks: true, hello: Value::Null }
     }
 
     pub fn answering(self) -> std::thread::JoinHandle<()> {
@@ -224,6 +262,10 @@ impl App {
             }
             if message["cmd"] == "layout" {
                 self.view = message["args"].clone();
+            }
+            if message["cmd"] == "output" && self.acks {
+                let terminal = message["args"]["terminal"].clone();
+                self.tell("taken", json!({"terminal": terminal}));
             }
             if message["cmd"] == "start" && self.shows {
                 let pane = message["args"]["pane"]["id"].clone();

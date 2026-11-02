@@ -15,6 +15,7 @@ final class DaemonConnection: @unchecked Sendable {
     private let received: @MainActor @Sendable (JSON, Delivery) -> Void
     private let disconnected: @MainActor @Sendable () -> Void
     private let unreachable: @Sendable () -> Void
+    private let descriptor: @Sendable (Int32) -> Void
     private let writes = DispatchQueue(label: "kanna.daemon.write")
     private let lock = NSCondition()
     private var fd: Int32 = -1
@@ -29,8 +30,9 @@ final class DaemonConnection: @unchecked Sendable {
 
     init(path: String, dial: (@Sendable () -> Int32?)? = nil, hello: @escaping @MainActor @Sendable () -> JSON, connected: @escaping @MainActor @Sendable () -> Void,
          received: @escaping @MainActor @Sendable (JSON, Delivery) -> Void, disconnected: @escaping @MainActor @Sendable () -> Void,
-         unreachable: @escaping @Sendable () -> Void = {}) {
+         unreachable: @escaping @Sendable () -> Void = {}, descriptor: @escaping @Sendable (Int32) -> Void = { close($0) }) {
         self.path = path
+        self.descriptor = descriptor
         self.dial = dial ?? { Self.connect(path) }
         remote = dial != nil
         self.hello = hello
@@ -64,6 +66,15 @@ final class DaemonConnection: @unchecked Sendable {
             let fd = lock.withLock { generation == nil || generation == self.generation ? self.fd : -1 }
             if fd >= 0 { _ = Self.writeAll(fd, line) }
             sent?()
+        }
+    }
+
+    func sendNow(_ message: JSON) {
+        var line = message.encoded()
+        line.append(UInt8(ascii: "\n"))
+        writes.sync { [self] in
+            let fd = lock.withLock { self.fd }
+            if fd >= 0 { _ = Self.writeAll(fd, line) }
         }
     }
 
@@ -128,16 +139,21 @@ final class DaemonConnection: @unchecked Sendable {
     }
 
     private func readLines(_ socket: Int32, generation: Int) {
-        var buffer = Data()
+        var buffer = [UInt8]()
         var chunk = [UInt8](repeating: 0, count: 65536)
         while true {
-            let count = read(socket, &chunk, chunk.count)
+            var descriptors: [Int32] = []
+            let count = chunk.withUnsafeMutableBytes { Self.receive(socket, $0, &descriptors) }
+            descriptors.forEach(descriptor)
             if count < 0 && errno == EINTR { continue }
             if count <= 0 { return }
-            buffer.append(chunk, count: count)
-            while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-                let line = Data(buffer[buffer.startIndex..<newline])
-                buffer.removeSubrange(buffer.startIndex...newline)
+            var searched = buffer.count
+            buffer.append(contentsOf: chunk[0..<count])
+            var start = 0
+            while let newline = Self.newline(in: buffer, from: searched) {
+                let line = Data(buffer[start..<newline])
+                start = newline + 1
+                searched = start
                 guard let message = try? JSON.parse(line) else {
                     FileHandle.standardError.write(Data("kanna: the daemon sent a line that isn't JSON\n".utf8))
                     continue
@@ -147,6 +163,14 @@ final class DaemonConnection: @unchecked Sendable {
                 let received = received
                 DispatchQueue.main.async { MainActor.assumeIsolated { received(message, delivery) } }
             }
+            if start > 0 { buffer.removeFirst(start) }
+        }
+    }
+
+    private static func newline(in buffer: [UInt8], from offset: Int) -> Int? {
+        guard offset < buffer.count else { return nil }
+        return buffer.withUnsafeBufferPointer { bytes in
+            memchr(bytes.baseAddress! + offset, Int32(UInt8(ascii: "\n")), bytes.count - offset).map { UnsafeRawPointer(bytes.baseAddress!).distance(to: $0) }
         }
     }
 
@@ -156,6 +180,34 @@ final class DaemonConnection: @unchecked Sendable {
             inFlight += delivery.size
             return !stopped
         }
+    }
+
+    private static func receive(_ socket: Int32, _ buffer: UnsafeMutableRawBufferPointer, _ descriptors: inout [Int32]) -> Int {
+        let headerSize = MemoryLayout<cmsghdr>.size
+        var control = [UInt8](repeating: 0, count: headerSize + 16 * MemoryLayout<Int32>.size)
+        var iov = iovec(iov_base: buffer.baseAddress, iov_len: buffer.count)
+        let (count, length) = control.withUnsafeMutableBytes { raw in
+            withUnsafeMutablePointer(to: &iov) { vector in
+                var message = msghdr(msg_name: nil, msg_namelen: 0, msg_iov: vector, msg_iovlen: 1, msg_control: raw.baseAddress, msg_controllen: socklen_t(raw.count), msg_flags: 0)
+                let count = recvmsg(socket, &message, 0)
+                return (count, count >= 0 ? Int(message.msg_controllen) : 0)
+            }
+        }
+        var offset = 0
+        while offset + headerSize <= length {
+            let header = control.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: cmsghdr.self) }
+            let size = Int(header.cmsg_len)
+            guard size >= headerSize, offset + size <= length else { break }
+            if header.cmsg_level == SOL_SOCKET && header.cmsg_type == SCM_RIGHTS {
+                for start in stride(from: offset + headerSize, to: offset + size - MemoryLayout<Int32>.size + 1, by: MemoryLayout<Int32>.size) {
+                    let fd = control.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: start, as: Int32.self) }
+                    _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
+                    descriptors.append(fd)
+                }
+            }
+            offset += (size + 3) & ~3
+        }
+        return count
     }
 
     private static func connect(_ path: String) -> Int32? {

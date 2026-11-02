@@ -60,7 +60,7 @@ Green: Kanna's code. Grey: the OS. Orange: clients. Clients and apps send the sa
 - **The daemon publishes every change** to work and logical presentation. An app connects, subscribes, and renders; on every (re)connect it subscribes again and gets the current state, so nothing depends on what the daemon was told before it restarted.
 - **Every logical command works with no app.** A task opens a tab, shows a diff, focuses its spec, all in the daemon; an app that opens later shows the workspace as the task left it.
 - **Logical windows, physical windows.** A task may ask for an extra window (`open --window new`); that's logical, so every app shows it, and the app realizes it at a default position that the user can then move. Independently, an app may spread a workspace's tabs across more windows of its own (a tab torn off): that's physical, and the task neither sees nor cares.
-- **Physical state never leaves the app.** Pane and window IDs, frames, sizes and focus are the app's; the daemon never stores them and the CLI never sees them.
+- **Physical state never leaves the app.** Pane and window IDs, frames, sizes and focus are the app's; the daemon never stores them and the CLI never sees them. The one exception is which workspace each of the app's Desks shows, which the app tells the daemon (not saved) so the CLI can name a Desk's window ([Desk windows](desk-windows.md)).
 - **Each app has its own Desks** ([each app's Desks](app-desk.md)). Making a task active in one app doesn't change another. The Shelf is shared: a task an app moves to its Desk is that app's claim, kept in the daemon.
 
 ## 2. Who changes what
@@ -103,7 +103,7 @@ flowchart LR
 | `win-2` | a logical window: one of a workspace's, or free; each app gives it a frame | daemon | everyone |
 | `tab-9` | a tab in a workspace | daemon | everyone |
 | `term-41`, `diff-2`, `file-7`, `page-3`, `ios-1` | content | daemon; never reused | everyone |
-| `d1` | one of an app's Desks | each app | that app, and its CLI replies |
+| `d1` | one of an app's Desks, and its window | each app | that app, and the CLI (as a window: [Desk windows](desk-windows.md)) |
 
 - **A restart makes a new terminal with a new ID.** `restart term-41` (or a task starting again) ends it and answers `term-48`; the workspace's tab now shows `term-48`, and an app sees a new content ID, so it makes a new view instead of reusing the exited one.
 - **A task keys on its agent's terminal ID and its workspace ID,** both in its record; neither is a pane. Starting a task again gives its agent a new terminal, and the task's record, its workspace's dock and the markup routed to it follow the new ID.
@@ -131,7 +131,7 @@ flowchart LR
 3. **Each app has its own Desks;** the Shelf is shared, and a task on an app's Desk is claimed by that app ([each app's Desks](app-desk.md)).
 4. **Terminals:** a restart makes a new terminal with a new ID; `KANNA_TERMINAL` replaces `KANNA_PANE`.
 5. **Diffs:** one watcher per folder + git args, shared, stopped when the last subscriber leaves.
-6. **CLI:** content commands take content IDs, layout commands act on logical presentation with no app and take its IDs (`ws-3`, `win-2`, `tab-9`); the only app ID the CLI sees is a Desk's (`d1`), in replies about it.
+6. **CLI:** content commands take content IDs, layout commands act on logical presentation with no app and take its IDs (`ws-3`, `win-2`, `tab-9`); the only app ID the CLI sees is a Desk's (`d1`), in replies about it and as a window it can name.
 7. **Stop and Start** hang up and rerun a task's tab terminals from its workspace; **Done** closes it.
 8. **Ruled out:** the app as the only owner of layout (a task could then open tabs only by starting the app); the daemon storing workspaces as an opaque app blob (something still has to understand a layout to change it); a grace period for diff watchers.
 9. **`kanna task activate` and `park`** act on the CLI's instance's app, starting it if none runs.

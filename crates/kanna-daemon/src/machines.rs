@@ -1,5 +1,6 @@
 use crate::app_link::AppLink;
 use crate::db::Db;
+use crate::replica::{Peer, Roster};
 use crate::Event;
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
@@ -15,6 +16,8 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 
 const CONFIRM: &str = "app.machine.confirm";
 
+const EXCHANGE_WAIT: Duration = Duration::from_secs(20);
+
 static DOWNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const RELEASES: &str = "https://github.com/tampopogk/kanna/releases/download";
@@ -26,7 +29,7 @@ pub struct Machines {
     pub install: Option<Install>,
 }
 
-struct DaemonHost(Mutex<Sender<Event>>);
+struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>);
 
 impl Host for DaemonHost {
     fn request(&self, _from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
@@ -50,8 +53,9 @@ impl Host for DaemonHost {
 
     fn app(&self, from: String, hello: Value, stream: std::os::unix::net::UnixStream) {
         let events = self.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let wire = self.1.clone();
         let Ok(reader) = stream.try_clone() else { return };
-        let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, hello, std::io::BufReader::new(reader), stream, Some(from)));
+        let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, wire, hello, std::io::BufReader::new(reader), stream, Some(from)));
     }
 }
 
@@ -111,14 +115,14 @@ fn port() -> Option<u16> {
 }
 
 impl Machines {
-    pub fn start(state_dir: &Path, db: &Db, events: Sender<Event>) -> Result<Machines, String> {
+    pub fn start(state_dir: &Path, db: &Db, events: Sender<Event>, wire: std::sync::Arc<crate::wire::Wire>) -> Result<Machines, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("kanna.machines").enable_all().build().map_err(|e| format!("can't start the machines' runtime: {e}"))?;
         let install = std::env::current_exe().ok().and_then(|exe| Install::detect(&exe));
         let node = kanna_net::read_key(&state_dir.join(KEY)).and_then(|secret| {
             let saved = db.machines().unwrap_or_else(|_| json!({}));
             let mdns = std::env::var("KANNA_MACHINE_MDNS").map_or(true, |v| v != "0");
             let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns, release: release(install.as_ref()), install: install.clone() };
-            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events)))))
+            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire))))
         });
         Ok(Machines { runtime, node, state_dir: state_dir.to_path_buf(), install })
     }
@@ -162,6 +166,11 @@ impl Machines {
                 responder.reply(result.and_then(object))
             }
             "wait" => self.spawn(responder, async move { node.wait_offer().await }),
+            "relay" => {
+                let url = string(&args, "url").map(String::from);
+                let token = string(&args, "token").map(String::from);
+                self.spawn(responder, async move { node.set_relay(url.as_deref(), token.as_deref()).await })
+            }
             "pair" => {
                 let Some(code) = string(&args, "code").map(String::from) else { return responder.reply(Err(KmuxError::new("bad_request", "machine pair CODE: the code the other machine shows"))) };
                 let peer = string(&args, "peer").map(String::from);
@@ -215,7 +224,7 @@ impl Machines {
                     })
                 });
             }
-            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown machine action \"{other}\" (status, name, offer, wait, pair, revoke, addr, ping, sync, certify, update or call)")))),
+            other => responder.reply(Err(KmuxError::new("bad_request", format!("unknown machine action \"{other}\" (status, name, offer, wait, pair, revoke, addr, relay, ping, sync, certify, update or call)")))),
         }
     }
 
@@ -237,9 +246,36 @@ impl Machines {
         });
     }
 
+    pub fn roster(&self) -> Roster {
+        let Ok(node) = &self.node else { return Roster { me: Peer { key: String::new(), name: hostname() }, peers: vec![] } };
+        let status = node.status();
+        let me = Peer { key: node.key(), name: status["name"].as_str().unwrap_or_default().to_string() };
+        let peers = status["peers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["me"] != true && p["trusted"] == true && p["revoked"] != true && p["conflict"] != true)
+            .map(|p| Peer { key: p["key"].as_str().unwrap_or_default().to_string(), name: p["name"].as_str().unwrap_or_default().to_string() })
+            .collect();
+        Roster { me, peers }
+    }
+
+    pub fn exchange(&self, key: String, request: Value, done: Box<dyn FnOnce(Result<Value, String>) + Send>) {
+        let Ok(node) = &self.node else { return done(Err("this daemon has no endpoint".into())) };
+        let node = node.clone();
+        self.runtime.spawn(async move {
+            let reply = tokio::time::timeout(EXCHANGE_WAIT, node.exchange(&key, request)).await;
+            done(match reply {
+                Ok(Ok(reply)) => Ok(reply),
+                Ok(Err(failure)) => Err(format!("{} [{}]", failure.message, failure.code)),
+                Err(_) => Err(format!("no answer in {}s [unreachable]", EXCHANGE_WAIT.as_secs())),
+            })
+        });
+    }
+
     pub fn machine(&self) -> Value {
         match &self.node {
-            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities() }),
+            Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities(), "relay_token": node.relay_token() }),
             Err(_) => json!({ "name": hostname(), "capabilities": capabilities() }),
         }
     }

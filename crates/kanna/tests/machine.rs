@@ -99,7 +99,7 @@ impl Link {
 }
 
 fn link(runtime: &tokio::runtime::Runtime, client: &kanna_net::Client, key: &str, port: u64, cert: &Value, hello: Value) -> (Link, Value) {
-    let stream = runtime.block_on(client.link(key, &[format!("127.0.0.1:{port}")], cert)).unwrap();
+    let stream = runtime.block_on(client.link(key, &[format!("127.0.0.1:{port}")], None, cert)).unwrap();
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
     let mut link = Link { lines: BufReader::new(stream.try_clone().unwrap()).lines(), stream };
     link.send(json!({ "id": 0, "cmd": "app.hello", "args": hello }));
@@ -120,12 +120,12 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     let cert = certified["cert"].clone();
 
     let (_, refused) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [7, 9], "build": "another" }));
-    assert_eq!((refused["ok"].clone(), refused["error"]["code"].clone(), refused["mine"].clone()), (json!(false), json!("other_protocol"), json!([2, 2])), "{refused}");
+    assert_eq!((refused["ok"].clone(), refused["error"]["code"].clone(), refused["mine"].clone()), (json!(false), json!("other_protocol"), json!(kanna_build::PROTOCOLS)), "{refused}");
     assert_eq!(vm.kanna(&["machine", "--json"]).json()["name"], "vm", "the daemon keeps running");
 
     vm.kanna(&["open", "--window", "new", "--name", "far", "--no-wait", "--cmd", "/bin/cat"]).ok();
     let (mut far, hello) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocols": [1, 3], "build": "another", "commit": "abc" }));
-    assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(2), json!("vm")), "{hello}");
+    assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(kanna_build::PROTOCOLS[1]), json!("vm")), "{hello}");
     let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["id"].as_str().unwrap().to_string();
     far.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
     far.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
@@ -134,6 +134,8 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     far.next(|m| m["cmd"] == "output");
     far.send(json!({ "id": 5, "cmd": "machine", "args": { "action": "certify", "key": client.key() } }));
     assert_eq!(far.next(|m| m["id"] == 5)["error"]["code"], "local_only", "a remote app can't have an endpoint certified");
+    far.send(json!({ "id": 6, "cmd": "replica", "args": { "action": "grant", "task": "task-00000001", "birth": "1.0.x", "epoch": 9, "peer": client.key() } }));
+    assert!(far.next(|m| m["id"] == 6).to_string().contains("replica is for another machine's daemon"), "an app can't speak for a machine");
     let called = ask(&mbp, "machine", json!({ "action": "call", "host": "vm", "cmd": "machine", "args": { "action": "certify", "key": client.key() } }));
     assert!(called.to_string().contains("local_only"), "another machine can't have an endpoint certified: {called}");
     let here = UnixStream::connect(vm.socket()).unwrap();
@@ -147,7 +149,7 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     drop(here);
 
     let stranger = runtime.block_on(kanna_net::Client::start(kanna_net::SecretKey::generate())).unwrap();
-    let unpaired = runtime.block_on(stranger.link(&vm_key, &[format!("127.0.0.1:{port}")], &cert)).unwrap_err();
+    let unpaired = runtime.block_on(stranger.link(&vm_key, &[format!("127.0.0.1:{port}")], None, &cert)).unwrap_err();
     assert_eq!(unpaired.code, "unpaired");
     app.quit();
 }

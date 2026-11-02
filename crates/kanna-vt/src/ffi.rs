@@ -103,6 +103,7 @@ pub const GHOSTTY_TERMINAL_CURSOR_STYLE_BLOCK_HOLLOW: i32 = 3;
 pub const GHOSTTY_TERMINAL_SCREEN_ALTERNATE: i32 = 1;
 pub const GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES: i32 = 0;
 pub const GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION: i32 = 1;
+pub const GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_ROWS: i32 = 6;
 pub const GHOSTTY_POINT_TAG_SCREEN: i32 = 2;
 pub const GHOSTTY_KEY_ACTION_PRESS: i32 = 1;
 pub const GHOSTTY_MODS_SHIFT: u16 = 1 << 0;
@@ -324,6 +325,9 @@ extern "C" {
         option: i32,
         value: *const c_void,
     ) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_ready(decoder: GhosttySnapshotDecoder, terminal: *mut GhosttyTerminal) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_next(decoder: GhosttySnapshotDecoder) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_get(decoder: GhosttySnapshotDecoder, data: i32, out: *mut c_void) -> GhosttyResult;
     pub fn ghostty_snapshot_decoder_decode(
         decoder: GhosttySnapshotDecoder,
         terminal: *mut GhosttyTerminal,

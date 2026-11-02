@@ -26,7 +26,7 @@ fn whose(reply: &Value) -> Option<(String, Vec<String>)> {
     let id = workspace["id"].as_str().unwrap_or("?");
     let place = &workspace["where"];
     let mut tags: Vec<String> = workspace["task"].as_str().map(String::from).into_iter().collect();
-    tags.push(place_of(place).into());
+    tags.push(place_named(place, workspace["desk"].as_str()));
     let name = match reply["window"].as_str() {
         Some(window) => format!("{id}'s {window}"),
         None => id.to_string(),
@@ -40,6 +40,26 @@ fn place_of(place: &Value) -> &'static str {
         place if place.get("planner").is_some() => "a Desk's planner",
         _ => "on the Desk",
     }
+}
+
+fn place_named(place: &Value, desk: Option<&str>) -> String {
+    match (place.get("planner"), desk) {
+        (Some(_), Some(desk)) => format!("{desk}'s planner"),
+        _ => place_of(place).into(),
+    }
+}
+
+fn desk_line(desk: &Value, reply: &Value) -> String {
+    let empty = vec![];
+    let workspaces = reply["workspaces"].as_array().unwrap_or(&empty);
+    let id = desk["id"].as_str().unwrap_or("?");
+    let project = desk["project"].as_str().map(|p| format!(" on {}", tilde(p))).unwrap_or_default();
+    let shows = match workspaces.iter().find(|w| w["id"] == desk["workspace"]) {
+        Some(ws) if desk["deskView"] == true => format!(", the Desk view: {}", workspace_name(ws)),
+        Some(ws) => format!(", shows {}", workspace_name(ws)),
+        None => String::new(),
+    };
+    format!(" {id}  Desk{project}{shows}")
 }
 
 fn tagged(name: &str, tags: &[String]) -> String {
@@ -56,6 +76,9 @@ fn whose_text(reply: &Value) -> Option<String> {
 
 pub fn opened(request: &Value, reply: &Value) -> String {
     let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("?").to_string());
+    if reply["background"] == true {
+        return format!("opened {} in the background of {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
+    }
     if let Some(edge) = reply["dock"].as_str() {
         let frozen = if request["frozen"] == true { ", frozen," } else { "" };
         return format!("opened {} docked {edge}{frozen} in {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
@@ -88,6 +111,9 @@ pub fn marked(args: &Value, reply: &Value) -> String {
 }
 
 pub fn moved(reply: &Value) -> String {
+    if reply["background"] == true {
+        return format!("{} is in the background of {}", reply["pane"].as_str().unwrap_or("?"), whose_text(reply).unwrap_or_else(|| "its workspace".into()));
+    }
     let dock = &reply["dock"];
     if dock.is_object() {
         return format!(
@@ -111,7 +137,7 @@ pub fn closed(args: &Value, reply: &Value) -> String {
 }
 
 pub fn focused(args: &Value, reply: &Value) -> String {
-    let window = reply["window"].as_str().unwrap_or("?");
+    let window = reply["window"].as_str().or(reply["front"].as_str()).or(args["window"].as_str()).unwrap_or("?");
     let front = !reply["front"].is_null();
     let shown = if reply["behind"] == true { "behind the app you're in" } else { "in front" };
     let place = match (whose(reply), reply["window"].as_str()) {
@@ -181,43 +207,77 @@ pub fn task(request: &Value, reply: &Value) -> String {
         Some("list") => {
             let tasks = reply["tasks"].as_array().cloned().unwrap_or_default();
             let waiting = reply["shelf"].as_array().cloned().unwrap_or_default();
-            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty(), request["query"].as_str()) {
-                return format!("no task matches \"{query}\"");
+            let done = reply["done"].as_array().cloned().unwrap_or_default();
+            let elsewhere = reply["elsewhere"].as_array().cloned().unwrap_or_default();
+            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty(), request["query"].as_str()) {
+                return match &reply["found"] {
+                    found if found["place"] == "done" => done_line(found),
+                    _ => format!("no task matches \"{query}\""),
+                };
             }
-            if tasks.is_empty() && waiting.is_empty() {
+            if tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() {
                 return "no tasks: add one with `kanna task new NAME \"FIRST MESSAGE\"`".into();
             }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
             let script = |t: &Value| t["script"].as_str().or_else(|| t["id"].as_str().and_then(|id| reply["script"][id].as_str())).map(String::from);
             let state = |t: &Value| match (t["running"].as_bool(), t["status"].as_str()) {
                 _ if script(t).is_some() => script(t).unwrap_or_default(),
+                (Some(true) | None, Some("needs-you")) => "needs you".to_string(),
+                (Some(true) | None, Some("working")) => "working".to_string(),
+                _ if t["merged"] == true => "merged".to_string(),
+                _ if listed(&t["stale"]) => "stale".to_string(),
+                _ if t["ready"].is_object() => "ready".to_string(),
+                _ if t["replied"] == true => "replied".to_string(),
+                (Some(false), _) if !ids(&t["waits"]).is_empty() || t["conflict"].is_string() => "blocked".to_string(),
                 (Some(false), _) => "stopped".to_string(),
-                (_, Some("needs-you")) => "needs you".to_string(),
                 (_, Some(status)) if status != "exited" => status.to_string(),
                 _ => "running".to_string(),
             };
-            let agent = |t: &Value| t["agent"].as_str().and_then(|a| a.split_whitespace().next()).map_or(String::new(), |a| a.rsplit('/').next().unwrap_or(a).to_string());
-            let rows: Vec<[String; 6]> = tasks
-                .iter()
-                .map(|t| {
-                    let place = "Desk".to_string();
-                    let parked = t["leftAt"].as_f64().map_or(String::new(), |at| ago(now - at));
-                    [t["task"].as_str().or(t["id"].as_str()).unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), place, state(t), agent(t), parked]
-                })
-                .chain(waiting.iter().map(|t| {
-                    let made = t["madeAt"].as_f64().map_or(String::new(), |at| format!("made {} · {}", ago(now - at), tilde(t["repo"].as_str().unwrap_or(""))));
-                    let waits = ids(&t["waits"]);
-                    let (state, made) = match (t["running"].as_bool(), waits.is_empty()) {
-                        (Some(false), false) => ("blocked".to_string(), format!("{made} · waits for {waits}")),
-                        _ => (state(t), made),
-                    };
-                    [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), "Shelf".into(), state, agent(t), made]
-                }))
-                .collect();
-            let head = ["TASK", "NAME", "WHERE", "STATE", "AGENT", ""];
-            let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());
-            let line = |r: [&str; 6]| format!("{:w0$}  {:w1$}  {:w2$}  {:w3$}  {:w4$}  {}", r[0], r[1], r[2], r[3], r[4], r[5], w0 = width(0), w1 = width(1), w2 = width(2), w3 = width(3), w4 = width(4)).trim_end().to_string();
-            std::iter::once(line(head)).chain(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3], &r[4], &r[5]]))).collect::<Vec<_>>().join("\n")
+            let program = |command: &str| command.split_whitespace().next().map(|a| a.rsplit('/').next().unwrap_or(a).to_string()).unwrap_or_default();
+            let default = Some(program(reply["agent"].as_str().unwrap_or("claude")));
+            let agent = |t: &Value| Some(program(t["agent"].as_str().unwrap_or(""))).filter(|a| !a.is_empty() && Some(a) != default.as_ref());
+            let here = request["repo"].as_str();
+            let repo = |t: &Value| t["repo"].as_str().filter(|r| here != Some(*r)).map(tilde);
+            let waits = |t: &Value| {
+                let named: Vec<String> = t["waits"].as_array().into_iter().flatten().filter_map(|w| w["name"].as_str().map(|n| format!("\"{n}\"")).or_else(|| w["id"].as_str().map(String::from))).collect();
+                Some(named.join(", ")).filter(|w| !w.is_empty() && t["running"] == false).map(|w| format!("waits for {w}"))
+            };
+            let conflict = |t: &Value| t["conflict"].as_str().filter(|_| t["running"] == false).map(|_| "its blockers' branches conflict".to_string());
+            let stacked = |t: &Value| match (names(&t["stale"]), names(&t["bases"])) {
+                (stale, _) if !stale.is_empty() => Some(format!("behind {stale}")),
+                (_, bases) if !bases.is_empty() => Some(format!("merges after {bases}")),
+                _ => None,
+            };
+            let twice = |id: &str| {
+                let machines = reply["twice"].as_object()?.iter().find(|(task, _)| task.starts_with(id))?.1.as_array()?.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
+                Some(format!("ran twice: {machines}"))
+            };
+            let row = |t: &Value, id: &str, last: Option<String>| -> [String; 4] {
+                let tail: Vec<String> = [agent(t), repo(t), waits(t).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last), twice(id)].into_iter().flatten().collect();
+                [id.into(), t["name"].as_str().unwrap_or("").into(), state(t), tail.join("  ")]
+            };
+            let desk: Vec<[String; 4]> = tasks.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)))).collect();
+            let shelf: Vec<[String; 4]> = waiting.iter().map(|t| row(t, t["id"].as_str().unwrap_or("?"), None)).collect();
+            let others: Vec<[String; 4]> = elsewhere.iter().map(|t| {
+                let mut row = row(t, t["id"].as_str().unwrap_or("?"), t["machine"].as_str().map(|m| format!("on {m}")));
+                row[2] = t["state"].as_str().unwrap_or("").into();
+                row
+            }).collect();
+            let finished: Vec<[String; 4]> = done.iter().map(|t| {
+                let tail: Vec<String> = [agent(t), repo(t), t["doneAt"].as_f64().map(|at| format!("done {}", ago(now - at)))].into_iter().flatten().collect();
+                [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), String::new(), tail.join("  ")]
+            }).collect();
+            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).chain(others.iter()).chain(finished.iter()).collect();
+            let width = |i: usize| all.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
+            let line = |r: &[String; 4]| format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = width(0), w1 = width(1), w2 = width(2)).trim_end().to_string();
+            let section = |head: &str, rows: &[[String; 4]]| match (rows.is_empty(), request["query"].is_string()) {
+                (true, true) => None,
+                (true, false) => Some(format!("{head}\n(empty)")),
+                (false, _) => Some(std::iter::once(head.to_string()).chain(rows.iter().map(line)).collect::<Vec<_>>().join("\n")),
+            };
+            let more = reply["moreDone"].as_u64().map(|n| format!("\n… {n} more done: add words to search them"));
+            let finished = Some(&finished).filter(|_| request["done"] == true).and_then(|rows| section("Done", rows)).map(|s| s + more.as_deref().unwrap_or(""));
+            [section("Desk", &desk), section("Shelf", &shelf), Some(&others).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other machines", rows)), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}: {} shows the Desk view, and {id} stays active", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} isn't shown: its Desk shows the Desk view already"),
@@ -242,6 +302,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
             tilde(reply["folder"].as_str().unwrap_or("?")),
             reply["branch"].as_str().map_or(String::new(), |b| format!(" ({b})"))
         ),
+        Some("ready") => format!("{} is ready at {}{}{}", reply["task"]["id"].as_str().unwrap_or("?"), reply["task"]["ready"]["head"].as_str().map_or("?", |h| &h[..h.len().min(9)]), reply["task"]["ready"]["branch"].as_str().filter(|b| !b.is_empty()).map_or(String::new(), |b| format!(" ({b})")), freed_lines(reply)),
+        Some("unready") => format!("{} isn't ready", reply["task"]["id"].as_str().unwrap_or("?")),
         Some("setup") if reply["tab"].is_string() => format!("{id}'s setup runs again in {} (a Setup tab)", reply["pane"].as_str().unwrap_or("?")),
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
@@ -309,6 +371,14 @@ pub fn task(request: &Value, reply: &Value) -> String {
     }
 }
 
+fn listed(list: &Value) -> bool {
+    list.as_array().is_some_and(|l| !l.is_empty())
+}
+
+fn names(list: &Value) -> String {
+    list.as_array().into_iter().flatten().filter_map(|w| w["name"].as_str().map(|n| format!("\"{n}\"")).or_else(|| w["id"].as_str().map(String::from))).collect::<Vec<_>>().join(", ")
+}
+
 fn ids(list: &Value) -> String {
     list.as_array().map_or(vec![], |l| l.iter().filter_map(|w| w["id"].as_str()).collect::<Vec<_>>()).join(", ")
 }
@@ -336,7 +406,29 @@ pub fn name_out(reply: &mut Value, out: &Value) {
     for task in tasks {
         if let Some(known) = out.as_array().into_iter().flatten().find(|o| o["pane"] == task["id"]) {
             task["task"] = known["id"].clone();
+            for key in ["repo", "merged", "replied", "ready", "stale", "bases", "branch"] {
+                if let Some(value) = known.get(key) {
+                    task[key] = value.clone();
+                }
+            }
         }
+    }
+}
+
+pub const RECENT_DONE: usize = 5;
+
+pub fn keep_recent_done(reply: &mut Value) {
+    let Some(done) = reply.get_mut("done").and_then(Value::as_array_mut) else { return };
+    let more = done.len().saturating_sub(RECENT_DONE);
+    done.truncate(RECENT_DONE);
+    if more > 0 {
+        reply["moreDone"] = more.into();
+    }
+}
+
+pub fn keep_named(reply: &mut Value) {
+    if let Some(tasks) = reply["tasks"].as_array_mut() {
+        tasks.retain(|task| task["task"].is_string());
     }
 }
 
@@ -376,17 +468,45 @@ pub fn short_text(text: &str, shorts: &[(String, String)]) -> String {
     out
 }
 
-pub fn keep_matching(reply: &mut Value, query: &str) {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    let matches = |task: &Value| {
-        let text = [&task["name"], &task["message"]].iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n").to_lowercase();
-        words.iter().all(|word| text.contains(word.as_str()))
+/// Whether a query word picks out a task: a start of its task ID (`task-1dfb`, or 4 hex digits or more without `task-`), its pane ID exactly, or part of its name, first message or branch, ignoring case.
+pub fn task_matches(task: &Value, word: &str) -> bool {
+    let word = word.to_lowercase();
+    let start = id_start(&word);
+    let id = [&task["task"], &task["id"]].iter().filter_map(|v| v.as_str()).any(|id| start.as_ref().is_some_and(|start| id.to_lowercase().starts_with(start.as_str())));
+    let pane = [&task["id"], &task["held"]].iter().filter_map(|v| v.as_str()).any(|pane| pane.to_lowercase() == word);
+    id || pane || [&task["name"], &task["message"], &task["branch"]].iter().filter_map(|v| v.as_str()).any(|text| text.to_lowercase().contains(&word))
+}
+
+fn id_start(word: &str) -> Option<String> {
+    let (hex, least) = match word.strip_prefix("task-") {
+        Some(hex) => (hex, 1),
+        None => (word, 4),
     };
-    for list in ["tasks", "shelf"] {
-        if let Some(tasks) = reply[list].as_array_mut() {
-            tasks.retain(matches);
+    (hex.len() >= least && hex.len() <= 8 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| format!("task-{hex}"))
+}
+
+pub fn keep_matching(reply: &mut Value, query: &str) {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    for list in ["tasks", "shelf", "elsewhere", "done"] {
+        if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
+            tasks.retain(|task| words.iter().all(|word| task_matches(task, word)));
         }
     }
+}
+
+/// The task ID a query is, when it's only that and nothing listed matches it: a task that's done, or never was.
+pub fn lone_task(reply: &Value, query: &str) -> Option<String> {
+    let none = ["tasks", "shelf", "done"].iter().all(|list| reply[list].as_array().is_none_or(Vec::is_empty));
+    let id = query.trim().to_lowercase();
+    id_start(&id).filter(|_| none && !id.contains(char::is_whitespace))
+}
+
+fn done_line(task: &Value) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    let when = task["doneAt"].as_f64().map_or(String::new(), |at| format!(" ({})", ago(now - at)));
+    let name = task["name"].as_str().map_or(String::new(), |n| format!(" \"{n}\""));
+    let branch = task["branch"].as_str().map_or(String::new(), |b| format!("; its branch {b} is still there"));
+    format!("{}{name} is done{when}{branch}", task["short"].as_str().or(task["id"].as_str()).unwrap_or("?"))
 }
 
 fn tilde(path: &str) -> String {
@@ -474,14 +594,14 @@ pub fn scoped(reply: &Value, pane: &str) -> Option<Value> {
     let shown = row["name"].as_str().unwrap_or(&id).to_string();
     let named = |v: &Value| v == shown.as_str() || v == id.as_str();
     let has = |list: &Value, p: &str| list.as_array().is_some_and(|l| l.iter().any(|x| x == p));
-    let mut out = json!({ "pane": id, "at": null, "windows": [], "hiddenWindows": [], "workspaces": [], "panes": [row] });
-    if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id)) {
+    let mut out = json!({ "pane": id, "at": null, "windows": [], "hiddenWindows": [], "workspaces": [], "panes": [row], "desks": reply["desks"].clone() });
+    if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id) || has(&w["background"], &id)) {
         let ours = |w: &&Value| w["workspace"] == ws["id"];
         out["at"] = json!("workspace");
         out["workspaces"] = json!([ws]);
         out["windows"] = Value::Array(windows.iter().filter(ours).cloned().collect());
         out["hiddenWindows"] = Value::Array(hidden.iter().filter(ours).cloned().collect());
-        out["panes"] = Value::Array(panes.iter().filter(|p| p["id"].as_str().is_some_and(|p| has(&ws["panes"], p))).cloned().collect());
+        out["panes"] = Value::Array(panes.iter().filter(|p| p["id"].as_str().is_some_and(|p| has(&ws["panes"], p) || has(&ws["background"], p))).cloned().collect());
         return Some(out);
     }
     let holds = |w: &Value| named(&w["lead"]["pane"]) || named(&w["dock"]["pane"]) || w["tabs"].as_array().is_some_and(|t| t.iter().any(|t| layout_panes(&t["layout"]).iter().any(|p| named(&json!(p)))));
@@ -543,13 +663,15 @@ fn own(reply: &Value) -> String {
 fn everything(reply: &Value) -> String {
     let empty = vec![];
     let windows = reply["windows"].as_array().unwrap_or(&empty);
+    let desks = reply["desks"].as_array().unwrap_or(&empty);
     let panes = reply["panes"].as_array().unwrap_or(&empty);
-    if windows.is_empty() && panes.is_empty() {
+    if windows.is_empty() && desks.is_empty() && panes.is_empty() {
         return "no windows (open one with `kanna open`)".into();
     }
     let mut sections: Vec<String> = Vec::new();
-    if !windows.is_empty() {
-        sections.push(std::iter::once("Windows".to_string()).chain(windows.iter().map(|w| window_line(w, reply))).collect::<Vec<_>>().join("\n"));
+    if !windows.is_empty() || !desks.is_empty() {
+        let lines = desks.iter().map(|d| desk_line(d, reply)).chain(windows.iter().map(|w| window_line(w, reply)));
+        sections.push(std::iter::once("Windows".to_string()).chain(lines).collect::<Vec<_>>().join("\n"));
     }
     let mut workspaces: Vec<&Value> = reply["workspaces"].as_array().unwrap_or(&empty).iter().collect();
     workspaces.sort_by_key(|w| match place_of(&w["where"]) {
@@ -569,7 +691,7 @@ fn everything(reply: &Value) -> String {
     if !free.is_empty() {
         sections.push(format!("Free windows\n{}", free.join("\n")));
     }
-    let mut placed: Vec<String> = workspaces.iter().flat_map(|w| w["panes"].as_array().cloned().unwrap_or_default()).filter_map(|p| p.as_str().map(String::from)).collect();
+    let mut placed: Vec<String> = workspaces.iter().flat_map(|w| [&w["panes"], &w["background"]]).flat_map(|l| l.as_array().cloned().unwrap_or_default()).filter_map(|p| p.as_str().map(String::from)).collect();
     for window in windows.iter().chain(reply["hiddenWindows"].as_array().unwrap_or(&empty)) {
         placed.extend(window["tabs"].as_array().unwrap_or(&empty).iter().flat_map(|t| layout_panes(&t["layout"])));
         placed.extend(window["lead"]["pane"].as_str().map(String::from));
@@ -622,7 +744,11 @@ fn tab_lines(tabs: &Value, indent: &str) -> Vec<String> {
 
 fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     let empty = vec![];
-    let place = place_of(&ws["where"]);
+    let empty_desks = vec![];
+    let desks = reply["desks"].as_array().unwrap_or(&empty_desks);
+    let planning = desks.iter().find(|d| d["planner"] == ws["id"]).and_then(|d| d["id"].as_str());
+    let shown = desks.iter().find(|d| d["workspace"] == ws["id"] && d["deskView"] != true).and_then(|d| d["id"].as_str());
+    let place = place_named(&ws["where"], planning) + &shown.map(|d| format!(", shown in {d}")).unwrap_or_default();
     let mut out = vec![format!("{}, {place}", workspace_name(ws))];
     let dock = &ws["dock"];
     if let Some(pane) = dock["id"].as_str().or(dock["pane"].as_str()) {
@@ -636,6 +762,10 @@ fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     }
     out.extend(focus_line(ws, "  "));
     out.extend(tab_lines(&ws["tabs"], "  "));
+    let background: Vec<String> = ws["background"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str).map(|p| named_pane(reply, p)).collect();
+    if !background.is_empty() {
+        out.push(format!("  background: {}", background.join(", ")));
+    }
     for own in ws["windows"].as_array().unwrap_or(&empty).iter().filter_map(Value::as_str) {
         let window = reply["windows"].as_array().and_then(|l| l.iter().find(|w| w["id"] == own)).cloned();
         out.push(format!("  {own}"));
@@ -714,7 +844,7 @@ pub fn project(_: &Value, reply: &Value) -> String {
     if !copied.is_empty() {
         out.push(format!("  copied with it: {}", copied.join(", ")));
     }
-    let resumed = counted(&[("codex session", &sessions["codex"]), ("copilot session", &sessions["copilot"]), ("opencode session", &sessions["opencode"])]);
+    let resumed = counted(&[("codex session", &sessions["codex"]), ("opencode session", &sessions["opencode"])]);
     if !resumed.is_empty() {
         out.push(format!("  resuming in the copy: {}", resumed.join(", ")));
     }
@@ -770,6 +900,83 @@ pub fn quiz(request: &Value, reply: &Value) -> String {
     }
 }
 
+pub fn schedule(request: &Value, reply: &Value) -> String {
+    let id = |s: &Value| s["schedule"].as_str().unwrap_or("?").to_string();
+    let named = |s: &Value| s["name"].as_str().map_or_else(|| id(s), |n| format!("{} {n}", id(s)));
+    match request["action"].as_str() {
+        Some("add") => format!("{}: {} → {}, next {}", named(reply), reply["rule"].as_str().unwrap_or("?"), reply["target"].as_str().unwrap_or("?"), reply["nextText"].as_str().unwrap_or("?")),
+        Some("remove") => format!("removed {}", named(reply)),
+        _ => {
+            let all = reply["schedules"].as_array().cloned().unwrap_or_default();
+            if all.is_empty() {
+                return "no schedules".into();
+            }
+            let rows: Vec<[String; 7]> = all
+                .iter()
+                .map(|s| {
+                    let repo = s["repo"].as_str().map_or("-".to_string(), |r| r.rsplit('/').next().unwrap_or(r).to_string());
+                    let waiting = if s["waiting"] == true { "waiting" } else { "" };
+                    let prompt: String = s["prompt"].as_str().unwrap_or("").chars().take(60).collect();
+                    [id(s), s["name"].as_str().unwrap_or("-").to_string(), repo, s["rule"].as_str().unwrap_or("?").to_string(), s["target"].as_str().unwrap_or("?").to_string(), format!("next {}", s["nextText"].as_str().unwrap_or("?")), format!("{waiting:7} {prompt}")]
+                })
+                .collect();
+            let widths: Vec<usize> = (0..6).map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
+            rows.iter()
+                .map(|r| {
+                    let cells: Vec<String> = (0..6).map(|i| format!("{:w$}", r[i], w = widths[i])).collect();
+                    format!("{}  {}", cells.join("  "), r[6]).trim_end().to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+}
+
+fn home_relative(path: &str) -> String {
+    match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
+    }
+}
+
+pub fn crashes(args: &Value, reply: &Value) -> String {
+    if args["action"] == "dismiss" {
+        return match reply["dismissed"].as_u64().unwrap_or(0) {
+            1 => "dismissed 1 crash record".into(),
+            n => format!("dismissed {n} crash records"),
+        };
+    }
+    let list = reply["crashes"].as_array().cloned().unwrap_or_default();
+    if list.is_empty() {
+        return if args["all"] == true { "no crash records".into() } else { "no crashes (kanna crashes --all lists the dismissed ones)".into() };
+    }
+    let mut out = vec![];
+    for record in &list {
+        let text = |key: &str| record[key].as_str().unwrap_or("?").to_string();
+        let time = text("time").replace('T', " ");
+        let time = time.split('.').next().unwrap_or(&time).to_string();
+        let build = &record["build"];
+        let commit: String = build["commit"].as_str().unwrap_or("?").chars().take(8).collect();
+        let dismissed = if record["dismissed"] == true { "  (dismissed)" } else { "" };
+        out.push(format!("{time}  {} (pid {}, {} {commit})  {}{dismissed}", text("process"), record["pid"], build["channel"].as_str().unwrap_or("?"), text("reason")));
+        out.push(format!("  record  {}", home_relative(&text("file"))));
+        out.push(format!("  report  {}", record["ips"].as_str().map_or_else(|| "none".to_string(), home_relative)));
+        let stack = record["stack"].as_array().cloned().unwrap_or_default();
+        for (i, frame) in kanna_crash::site(&stack).iter().take(20).enumerate() {
+            let image = frame["image"].as_str().unwrap_or("?");
+            let symbol = frame["symbol"].as_str().unwrap_or("?");
+            out.push(match (frame["offset"].as_u64(), frame["at"].as_str()) {
+                (Some(offset), _) => format!("  {i:<2} {image}  {symbol} + {offset}"),
+                (None, Some(at)) => format!("  {i:<2} {image}  {symbol} ({at})"),
+                (None, None) => format!("  {i:<2} {image}  {symbol}"),
+            });
+        }
+        out.push(String::new());
+    }
+    out.pop();
+    out.join("\n")
+}
+
 pub fn toast(_: &Value, reply: &Value) -> String {
     match reply["toast"].as_str() {
         Some(id) if reply["shown"] == true => format!("raised {id}"),
@@ -778,62 +985,26 @@ pub fn toast(_: &Value, reply: &Value) -> String {
     }
 }
 
-pub fn status(args: &Value, reply: &Value) -> String {
-    if args["action"] == "update" {
-        let mut out = vec![match reply["site"].as_str() {
-            Some(site) => format!("checked {site}"),
-            None => "no rules site is set".to_string(),
-        }];
-        let fetched = join(&reply["fetched"]);
-        out.push(if fetched.is_empty() { "nothing new".into() } else { format!("fetched: {fetched}") });
-        for problem in reply["problems"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-            out.push(format!("problem: {problem}"));
-        }
-        for rules in reply["rules"].as_array().into_iter().flatten() {
-            out.push(format!("{:<12} {:<14} {}", rules["agent"].as_str().unwrap_or("?"), rules["version"].as_str().unwrap_or("?"), rules["source"].as_str().unwrap_or("?")));
-        }
-        return out.join("\n");
-    }
+pub fn status(_: &Value, reply: &Value) -> String {
     let mut out = vec![];
     let who = reply["pane"].as_str().map(|p| format!("{p}: ")).unwrap_or_default();
-    match reply["agent"].as_str() {
-        None => return format!("{who}not an agent Kanna knows (its foreground program has no rules){}", reply["status"].as_str().map(|s| format!("; status {s}")).unwrap_or_default()),
-        Some(agent) => {
-            let version = reply["agentVersion"].as_str().map(|v| format!(" {v}")).unwrap_or_else(|| " (version unknown)".into());
-            let exe = reply["executable"].as_str().map(|e| format!(" ({e})")).unwrap_or_default();
-            out.push(format!("{who}{agent}{version}{exe}"));
-        }
+    let Some(agent) = reply["agent"].as_str() else {
+        return format!("{who}not one of Kanna's agents{}", reply["status"].as_str().map(|s| format!("; status {s}")).unwrap_or_default());
+    };
+    let version = reply["agentVersion"].as_str().map(|v| format!(" {v}")).unwrap_or_else(|| " (version unknown)".into());
+    let exe = reply["executable"].as_str().map(|e| format!(" ({e})")).unwrap_or_default();
+    out.push(format!("{who}{agent}{version}{exe}"));
+    if let Some(needs) = reply["needs"].as_str() {
+        out.push(format!("needs: {needs} or newer"));
     }
-    let judged = reply["judged"].as_str().unwrap_or("?");
-    if reply["source"].as_str() == Some("osc7501") {
-        out.push(format!("status: {}", reply["status"].as_str().or(reply["reported"]["status"].as_str()).unwrap_or("?")));
-        out.push("source: OSC 7501, the agent's own report".into());
+    out.push(format!("status: {}", reply["status"].as_str().unwrap_or("none")));
+    if reply["reported"].is_null() {
+        out.push("record: no report yet".into());
+    } else {
         out.push(format!("record: {}", program_record(&reply["reported"])));
-        for child in reply["records"].as_array().into_iter().flatten().filter(|r| r["id"].as_str().is_some_and(|id| !id.is_empty())) {
-            out.push(format!("record {:?}: {}", child["id"].as_str().unwrap_or_default(), program_record(child)));
-        }
-        let rule = reply["rule"].as_str().unwrap_or("none matched");
-        out.push(format!("rules: {} ({}), which would judge {judged} (rule: {rule})", reply["rules"]["version"].as_str().unwrap_or("?"), reply["rules"]["source"].as_str().unwrap_or("?")));
-        return out.join("\n");
     }
-    out.push(format!("rules: {} ({})", reply["rules"]["version"].as_str().unwrap_or("?"), reply["rules"]["source"].as_str().unwrap_or("?")));
-    out.push("source: rules (no OSC 7501 report from the agent)".into());
-    match reply["status"].as_str() {
-        Some(status) if status != judged => out.push(format!("status: {status} (this screen judges {judged})")),
-        _ => out.push(format!("status: {judged}")),
-    }
-    match reply["rule"].as_str() {
-        Some(rule) => {
-            out.push(format!("rule: {rule}"));
-            if let Some(matched) = reply["matched"].as_str() {
-                out.push(format!("matched: {}", matched.trim_end()));
-            }
-        }
-        None => out.push("rule: none matched, so idle".into()),
-    }
-    let excluded = join(&reply["excluded"]);
-    if !excluded.is_empty() {
-        out.push(format!("not for this version: {excluded}"));
+    for child in reply["records"].as_array().into_iter().flatten().filter(|r| r["id"].as_str().is_some_and(|id| !id.is_empty())) {
+        out.push(format!("record {:?}: {}", child["id"].as_str().unwrap_or_default(), program_record(child)));
     }
     out.join("\n")
 }
@@ -860,20 +1031,15 @@ mod status_tests {
     use serde_json::json;
 
     #[test]
-    fn explain_says_why() {
-        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.296", "executable": "/bin/claude", "status": "working",
-            "rules": { "version": "2026.10.10.1", "source": "bundled" }, "judged": "working", "rule": "claude/working/title", "matched": "◐ Claude Code", "excluded": [] });
-        assert_eq!(
-            status(&json!({ "action": "explain" }), &reply),
-            "p3: claude 2.1.296 (/bin/claude)\nrules: 2026.10.10.1 (bundled)\nsource: rules (no OSC 7501 report from the agent)\nstatus: working\nrule: claude/working/title\nmatched: ◐ Claude Code"
-        );
+    fn explain_before_a_report() {
+        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.296", "executable": "/bin/claude", "needs": "2.1.295", "status": null, "reported": null, "records": [] });
+        assert_eq!(status(&json!({ "action": "explain" }), &reply), "p3: claude 2.1.296 (/bin/claude)\nneeds: 2.1.295 or newer\nstatus: none\nrecord: no report yet");
+        assert_eq!(status(&json!({ "action": "explain" }), &json!({ "pane": "p4", "agent": null, "status": null })), "p4: not one of Kanna's agents");
     }
 
     #[test]
     fn explain_shows_the_agents_own_report() {
-        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.300", "executable": "/bin/claude", "status": "needs-you",
-            "rules": { "version": "2026.10.10.1", "source": "bundled" }, "judged": "idle", "rule": null, "matched": null, "excluded": [],
-            "source": "osc7501",
+        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.300", "executable": "/bin/claude", "needs": "2.1.295", "status": "needs-you",
             "reported": { "id": "", "state": "blocked", "kind": "permission", "progress": null, "app": "claude-code", "title": "", "message": "Edit \"main.rs\"?", "status": "needs-you" },
             "records": [
                 { "id": "", "state": "blocked", "kind": "permission", "progress": null, "app": "claude-code", "title": "", "message": "Edit \"main.rs\"?", "status": "needs-you" },
@@ -881,7 +1047,7 @@ mod status_tests {
             ] });
         assert_eq!(
             status(&json!({ "action": "explain" }), &reply),
-            "p3: claude 2.1.300 (/bin/claude)\nstatus: needs-you\nsource: OSC 7501, the agent's own report\nrecord: state=blocked kind=permission app=\"claude-code\" msg=\"Edit \\\"main.rs\\\"?\"\nrecord \"build\": state=working progress=40\nrules: 2026.10.10.1 (bundled), which would judge idle (rule: none matched)"
+            "p3: claude 2.1.300 (/bin/claude)\nneeds: 2.1.295 or newer\nstatus: needs-you\nrecord: state=blocked kind=permission app=\"claude-code\" msg=\"Edit \\\"main.rs\\\"?\"\nrecord \"build\": state=working progress=40"
         );
     }
 }
@@ -892,21 +1058,79 @@ mod blocked_tests {
     use serde_json::json;
 
     #[test]
+    fn a_stacked_task_lists_as_ready_or_stale_and_says_what_it_merges_after_or_is_behind() {
+        let mark = json!({ "head": "0123456789abcdef", "branch": "screenshot", "at": 1 });
+        let shelf = json!([
+            { "id": "t1", "name": "A", "repo": "/r", "running": false, "waits": [], "ready": mark, "stale": [], "bases": [] },
+            { "id": "t2", "name": "B", "repo": "/r", "running": false, "waits": [], "ready": null, "stale": [{ "id": "t1", "name": "A" }], "bases": [{ "id": "t1", "name": "A" }] },
+            { "id": "t3", "name": "C", "repo": "/r", "running": false, "waits": [], "ready": mark, "stale": [], "bases": [{ "id": "t2", "name": "B" }] },
+            { "id": "t4", "name": "D", "repo": "/r", "running": false, "waits": [], "conflict": "merging t1's branch a conflicts" }
+        ]);
+        let text = task(&json!({ "action": "list", "repo": "/r" }), &json!({ "tasks": [], "shelf": shelf }));
+        assert_eq!(text, "Desk\n(empty)\n\nShelf\nt1  A  ready\nt2  B  stale    behind \"A\"\nt3  C  ready    merges after \"B\"\nt4  D  blocked  its blockers' branches conflict");
+        let ready = task(&json!({ "action": "ready" }), &json!({ "task": { "id": "t1", "ready": mark }, "freed": [{ "id": "t2", "name": "B" }] }));
+        assert_eq!(ready, "t1 is ready at 012345678 (screenshot)\nt2 \"B\" can start now: nothing it waits for is left");
+        assert_eq!(task(&json!({ "action": "unready" }), &json!({ "task": { "id": "t1" } })), "t1 isn't ready");
+        let mut desk = json!({ "tasks": [{ "id": "p1" }] });
+        name_out(&mut desk, &json!([{ "id": "t3", "pane": "p1", "ready": mark, "stale": [], "bases": [{ "id": "t2", "name": "B" }] }]));
+        assert_eq!(desk["tasks"][0]["bases"][0]["name"], "B", "a Desk task's row gets its stack too");
+    }
+
+    #[test]
     fn a_blocked_task_lists_as_blocked_with_what_it_waits_for_and_done_names_what_it_frees() {
         let listed = json!({ "shelf": [
             { "id": "t13", "name": "Diff viewer", "repo": "/r", "running": false, "waits": [{ "id": "t12", "pane": "p40" }] },
             { "id": "t14", "name": "Release notes", "repo": "/r", "running": false, "waits": [{ "id": "t8" }, { "id": "t12", "pane": "p40" }] },
             { "id": "t15", "name": "Free", "repo": "/r", "running": false, "waits": [] }
         ] });
-        let text = task(&json!({ "action": "list" }), &json!({ "tasks": [], "shelf": listed["shelf"] }));
-        assert!(text.contains("t13   Diff viewer    Shelf  blocked") && text.contains("waits for t12"), "{text}");
-        assert!(text.contains("waits for t8, t12"), "{text}");
-        assert!(text.contains("t15   Free           Shelf  stopped"), "{text}");
+        let text = task(&json!({ "action": "list", "repo": "/r" }), &json!({ "tasks": [], "shelf": listed["shelf"] }));
+        assert!(text.contains("t13  Diff viewer    blocked  waits for t12\n"), "{text}");
+        assert!(text.contains("blocked  waits for t8, t12\n"), "{text}");
+        assert!(text.ends_with("t15  Free           stopped"), "{text}");
         assert_eq!(freed(&listed, "p40"), vec![json!({ "id": "t13", "name": "Diff viewer" })], "by its pane, and only where it was the last blocker");
         assert_eq!(freed(&listed, "t12").len(), 1);
         let done = task(&json!({ "action": "done", "task": "p40" }), &json!({ "closed": ["p40"], "freed": freed(&listed, "p40") }));
         assert_eq!(done, "p40 is done: closed p40\nt13 \"Diff viewer\" can start now: nothing it waits for is left");
         assert_eq!(task(&json!({ "action": "edit" }), &json!({ "task": { "id": "t14", "waits": [] } })), "t14 waits for nothing: it can start");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_desk_comes_first_then_the_shelf_saying_only_what_matters() {
+        let reply = json!({
+            "agent": "claude",
+            "tasks": [
+                { "id": "p1", "task": "t1", "name": "Fix login", "agent": "/usr/bin/claude --yolo", "running": true, "status": "idle", "merged": true, "repo": "/r" },
+                { "id": "p2", "task": "t2", "name": "Diff viewer", "agent": "claude", "running": true, "status": "working", "merged": true, "repo": "/r" }
+            ],
+            "shelf": [
+                { "id": "t3", "name": "Release notes", "repo": "/r", "agent": "claude", "running": false, "replied": true, "madeAt": 1, "waits": [] },
+                { "id": "t4", "name": "Port", "repo": "/other", "agent": "codex", "running": false, "waits": [] },
+                { "id": "t5", "name": "Later", "repo": "/r", "agent": "claude", "running": false, "waits": [{ "id": "t2", "name": "Diff viewer" }, { "id": "t9" }] }
+            ]
+        });
+        let text = task(&json!({ "action": "list", "repo": "/r" }), &reply);
+        assert_eq!(
+            text,
+            "Desk\nt1  Fix login      merged\nt2  Diff viewer    working\n\nShelf\nt3  Release notes  replied\nt4  Port           stopped  codex  /other\nt5  Later          blocked  waits for \"Diff viewer\", t9"
+        );
+        let empty = task(&json!({ "action": "list" }), &json!({ "tasks": [], "shelf": [reply["shelf"][0].clone()] }));
+        assert!(empty.starts_with("Desk\n(empty)\n\nShelf\nt3"), "{empty}");
+        let found = task(&json!({ "action": "list", "query": "release" }), &json!({ "tasks": [], "shelf": [reply["shelf"][0].clone()] }));
+        assert!(found.starts_with("Shelf\n"), "{found}");
+    }
+
+    #[test]
+    fn a_desk_task_is_named_with_its_repo_and_state_and_other_repos_go() {
+        let mut reply = json!({ "tasks": [{ "id": "p1" }, { "id": "p9" }] });
+        name_out(&mut reply, &json!([{ "id": "t1", "pane": "p1", "repo": "/r", "merged": true, "replied": false }]));
+        keep_named(&mut reply);
+        assert_eq!(reply["tasks"], json!([{ "id": "p1", "task": "t1", "repo": "/r", "merged": true, "replied": false }]));
     }
 }
 
@@ -984,6 +1208,19 @@ mod workspace_tests {
         assert!(text.starts_with("Windows\n win-19  free, led by p157\n win-40  ws-3 (task-22a4, Skills show diffs)'s window\n win-45  free\n\nWorkspaces\nws-3 (task-22a4, Skills show diffs), on the Desk\n"), "{text}");
         assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Desk\n"), "{text}");
         assert!(text.contains("\nws-4, on the Shelf\n  dock: p185  left 2/5\n  focus: p185\nws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280\n\nFree windows\nwin-45\n  focus: notes\n  *tab-247 \"notes\"  notes\n\nUnplaced panes\np500 (logs)"), "{text}");
+    }
+
+    #[test]
+    fn a_desk_is_listed_as_a_window_and_names_its_planner_and_the_workspace_it_shows() {
+        let mut listed = reply();
+        listed["desks"] = json!([{ "id": "d1", "desk": true, "workspace": "ws-1", "planner": "ws-5", "deskView": false, "project": "/work/app" }, { "id": "d2", "desk": true, "workspace": "ws-5", "planner": "ws-5", "deskView": true, "project": null }]);
+        let text = workspace(&json!({ "action": "list", "all": true }), &listed);
+        assert!(text.starts_with("Windows\n d1  Desk on /work/app, shows ws-1 (task-1dfb, Fix login)\n d2  Desk, the Desk view: ws-5\n win-19  free"), "{text}");
+        assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Desk, shown in d1\n"), "{text}");
+        assert!(text.contains("\nws-5, d1's planner\n"), "{text}");
+        let planner = json!({ "pane": { "id": "file-1", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } });
+        assert_eq!(opened(&json!({}), &planner), "opened file-1 in ws-5 (d2's planner), tab-9: running");
+        assert_eq!(focused(&json!({ "window": "d2" }), &json!({ "window": null, "front": "d2", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } })), "brought d2 forward");
     }
 
     #[test]
@@ -1128,6 +1365,10 @@ pub fn machine(request: &Value, reply: &Value) -> String {
         Some("addr") => format!("will try {} for {}", reply["addr"].as_str().unwrap_or("?"), request["host"].as_str().unwrap_or("?")),
         Some("sync") => format!("swapped peer logs with {}", reply["name"].as_str().unwrap_or("?")),
         Some("update") => machine_update(reply),
+        Some("relay") => match reply["relay"].as_str() {
+            Some(url) => format!("this machine meets the others through {url} when away"),
+            None => "this machine uses no relay: only the LAN and addresses you give".into(),
+        },
         Some("revoke") => {
             let told = join(&reply["told"]);
             let told = if told.is_empty() { "no other machine was reachable to hear it yet".to_string() } else { format!("told {told}") };
@@ -1144,6 +1385,10 @@ pub fn machine(request: &Value, reply: &Value) -> String {
                 out.push(format!("your machines are off here: {broken}"));
             }
             out.push(format!("{} (this machine)  key {}  UDP port {}", reply["name"].as_str().unwrap_or("?"), reply["key"].as_str().unwrap_or("?"), reply["port"]));
+            if let Some(relay) = reply["relay"].as_str() {
+                let state = if reply["home_relay"].as_str().is_some() { "connected" } else { "not connected yet" };
+                out.push(format!("relay {relay} ({state})"));
+            }
             let peers: Vec<&Value> = reply["peers"].as_array().map(|p| p.iter().filter(|p| p["me"] != true).collect()).unwrap_or_default();
             if reply["paired"] != true {
                 out.push("not paired with any machine: kanna machine pair".into());
@@ -1167,6 +1412,95 @@ pub fn machine(request: &Value, reply: &Value) -> String {
             }
             if let Some(code) = reply["offer"]["code"].as_str() {
                 out.push(format!("this machine is waiting to pair, code {code}"));
+            }
+            out.join("\n")
+        }
+    }
+}
+
+fn span(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    match (s / 3600, s % 3600 / 60, s % 60) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, s) => format!("{m}m {s:02}s"),
+        (h, m, _) => format!("{h}h {m:02}m"),
+    }
+}
+
+fn run_line(run: &Value, now: f64) -> String {
+    let id = run["run"].as_str().unwrap_or("?");
+    let task: String = run["task"].as_str().unwrap_or("?").chars().take(9).collect();
+    let state = run["state"].as_str().unwrap_or("?");
+    let stage = match (run["stageOpen"].as_bool(), run["stage"].as_str(), run["next"].as_str()) {
+        (Some(true), Some(stage), _) => stage.to_string(),
+        (_, _, Some(next)) => format!("next {next}"),
+        (_, Some(stage), _) => format!("last {stage}"),
+        _ => "-".into(),
+    };
+    let ended = run["endedAt"].as_f64().unwrap_or(now);
+    let took = span(ended - run["startedAt"].as_f64().unwrap_or(ended));
+    let outcome = run["outcome"].as_str().map_or(String::new(), |o| format!("  {o}"));
+    let why = run["why"].as_str().filter(|_| state != "done").map_or(String::new(), |w| format!(": {w}"));
+    format!("{id}  {task}  {:<10} {:<8} {stage}  {} visits  {took}{outcome}{why}", run["pipeline"].as_str().unwrap_or("?"), state, run["visits"].as_u64().unwrap_or(0))
+}
+
+pub fn run(request: &Value, reply: &Value) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    match request["action"].as_str() {
+        Some("start") => format!(
+            "{} runs {} for {} on {} (worst case {} sessions); `kanna run show {}` follows it",
+            reply["run"].as_str().unwrap_or("?"),
+            reply["pipeline"].as_str().unwrap_or("?"),
+            reply["task"].as_str().unwrap_or("?"),
+            reply["branch"].as_str().unwrap_or("?"),
+            reply["worst"],
+            reply["run"].as_str().unwrap_or("?")
+        ),
+        Some("stop") => format!("{} is stopped; its branch is kept", reply["run"].as_str().unwrap_or("?")),
+        Some("done") => format!("{}: {} reported {}; Kanna ends this session now", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?"), reply["verdict"].as_str().unwrap_or("done")),
+        Some("need") => format!("{}: {} is paused; the task's agent is told what it needs, and Kanna ends this session once your turn ends, keeping it to resume", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("resume") => format!("{}: {} carries on", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("list") => {
+            let runs = reply["runs"].as_array().cloned().unwrap_or_default();
+            if runs.is_empty() {
+                return "no runs".into();
+            }
+            runs.iter().map(|r| run_line(r, now)).collect::<Vec<_>>().join("\n")
+        }
+        Some("log") => reply["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| {
+                let at = e["at"].as_f64().unwrap_or(0.0);
+                let doc = &e["doc"];
+                let detail = match e["what"].as_str() {
+                    Some("stage") => format!("{} (visit {}) in {}", doc["stage"].as_str().unwrap_or("?"), doc["visit"], doc["terminal"].as_str().unwrap_or("-")),
+                    Some("verdict") => format!("{} {} → {}", doc["stage"].as_str().unwrap_or("?"), doc["verdict"].as_str().unwrap_or("?"), doc["next"].as_str().unwrap_or("no arrow")),
+                    Some("started") => format!("{} on {}", doc["pipeline"].as_str().unwrap_or("?"), doc["branch"].as_str().unwrap_or("?")),
+                    Some("handed_back") => doc["note"].as_str().unwrap_or("").to_string(),
+                    _ => doc["why"].as_str().unwrap_or("").to_string(),
+                };
+                format!("{}  {:<11} {detail}", ago(now - at), e["what"].as_str().unwrap_or("?"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => {
+            let run = &reply["run"];
+            let mut out = vec![run_line(run, now)];
+            out.push(format!("branch {}  worktree {}", run["branch"].as_str().unwrap_or("?"), tilde(run["worktree"].as_str().unwrap_or("?"))));
+            if let Some(note) = run["note"].as_str() {
+                out.push(format!("handed back: {note}"));
+            }
+            for visit in reply["visits"].as_array().into_iter().flatten() {
+                let ended = visit["endedAt"].as_f64().unwrap_or(now);
+                let took = span(ended - visit["startedAt"].as_f64().unwrap_or(ended));
+                let verdict = visit["verdict"].as_str().unwrap_or("running");
+                let answer = visit["doc"]["answer"].as_str().or(visit["doc"]["feedback"].as_str()).unwrap_or("").lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(72).collect::<String>();
+                out.push(format!("  {:<10} {:<2} {:<8} {:<11} {took:>8}  {answer}", visit["stage"].as_str().unwrap_or("?"), visit["visit"], visit["kind"].as_str().unwrap_or("?"), verdict));
+            }
+            for worker in reply["workers"].as_array().into_iter().flatten() {
+                out.push(format!("worker: {} in {}", worker["stage"].as_str().unwrap_or("?"), worker["terminal"].as_str().unwrap_or("-")));
             }
             out.join("\n")
         }

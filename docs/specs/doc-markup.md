@@ -43,7 +43,7 @@ Every doc works the same way; only what you can point at differs.
 - **Two kinds of doc.** A markdown file and an HTML page, opened for comments with `kanna markup FILE.md` or `kanna markup FILE.html`.
 - **Comments are opt-in.** `kanna open md` and `kanna open web` show the doc alone: no thread list, no marks, ⌘ gestures do nothing. Comments come on or go off in a pane that's already open with `kanna markup PANE` (`--off`) or **Pane ▸ Comments**; turning them off keeps its threads for next time.
 - **Turning comments on or off keeps the pane.** Only the comment UI comes or goes: the toolbar's agent and Threads controls, the thread panel and the marks. The doc isn't read or drawn again and a page isn't reloaded, so the scroll, zoom, selection, history and a page's own state (its scripts' variables, a form half filled) stay as they were. `--to` only changes where comments go.
-- **Preview only.** The pane shows the file and reloads when it changes; you don't edit in it. Comments are the only thing you add.
+- **Preview only.** The pane shows the file and reloads when it, or a local image it shows, changes on disk (within a second, at the same reading position and zoom); you don't edit in it. Comments are the only thing you add.
 - **With its changes marked** (`kanna open md FILE --diff REF`, [markdown diff](markdown-diff.md)), comments work the same.
 - **Commenting.** Select text and press ⌘↵, in either kind. ⌘ adds what the kind offers:
 
@@ -161,9 +161,11 @@ flowchart LR
     F["thread file<br/>.kanna/docs/PATH.json"]
     subgraph daemon["daemon"]
         T["terminals"]
+        D["thread watches<br/>markup.*"]
     end
     CLI["kanna markup reply / show / …<br/>(from the agent)"]
-    V <-->|"read, write, watch"| F
+    V <-->|"markup.subscribe, markup.post, markup.edit"| D
+    D <-->|"read, write, watch"| F
     V -->|"send: paste + Enter"| T
     CLI --> F
     S --- F[("&lt;repo&gt;/.kanna/docs/")]
@@ -189,7 +191,7 @@ sequenceDiagram
 - **Other fields that still restart a pane.** `navigate` (a new path, line, URL or diff), `kanna comment` on a code pane (its note is fixed when the code view is made) and a tour's step on a code or markdown pane all go through the daemon's `reload`, which stops the pane's view and makes a new one. Each re-reads the file; a web pane's `navigate` loads its new URL in a new web view. They could become live changes the same way.
 - **The app** adds the thread panel, marks and the comment box to a markdown or web pane with comments on, one shared set of views (`KannaDocs`), and gets thread changes over the app link like any other pane update. A page is worked from a script world of its own (`WKContentWorld`), which the page's scripts can't see or call; its marked-up copy is the web view's own screenshot.
 - **Stored** in `<repo>/.kanna/docs/`, one file per doc, so threads survive restarts.
-- **Checks:** both panes have the native comment UI, with the [mockup](../../references/mockups/doc-markup.html)'s thread cards and waiting states (e2e `md_comments` drives the markdown pane, `page_comments` a page, and both screenshot it; both turn comments on in a scrolled pane and check it's the same view, read once, at the same scroll, and the page's script state survives); the panes get the agent's status from the app's `status` notices. The thread files keep the reference model's format, so the prototype's `kanna-doc reply` and `resolve` still work on them.
+- **Checks:** both panes have the native comment UI, with the [mockup](../../references/mockups/doc-markup.html)'s thread cards and waiting states (e2e `md_comments` drives the markdown pane, `page_comments` a page, and both screenshot it; both turn comments on in a scrolled pane and check it's the same view, read once, at the same scroll, and the page's script state survives); the panes get the agent's status from the app's `status` notices. The app reads and writes threads only through the doc's daemon ([files and threads](files-and-threads.md)), so a remote task's threads work as a local one's; the thread files keep the reference model's format, so the prototype's `kanna-doc reply` and `resolve` still work on them.
 
 ## 7. Glossary
 

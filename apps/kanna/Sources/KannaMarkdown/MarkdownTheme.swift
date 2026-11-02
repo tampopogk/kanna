@@ -5,6 +5,7 @@ enum MarkdownTheme {
     static let panel = color(dark: 0x1b1e24, light: 0xf4f5f7)
     static let panel2 = color(dark: 0x22262d, light: 0xeaecf0)
     static let line = color(dark: 0x2c313a, light: 0xd8dce2)
+    static let guide = color(dark: 0x4a515c, light: 0xb4b9c2)
     static let text = color(dark: 0xe6e8eb, light: 0x1d2026)
     static let muted = color(dark: 0x8b93a0, light: 0x6b7280)
     static let accent = color(dark: 0x7aa2ff, light: 0x2f63d8)

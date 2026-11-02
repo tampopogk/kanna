@@ -55,7 +55,7 @@ flowchart LR
 
 ## 4. Older peers
 
-The protocol range is now `[2, 2]` (`kanna_build::PROTOCOLS`, `Protocols.mine`). Locally the app, daemon and CLI are one build, so nothing changes for them. A Kanna of protocol 1 on another machine is refused with `other_protocol` and shows as Offline with "runs an older Kanna"; `kanna machine update` reaches it across protocols ([updates §6](machine-update.md#6-protocols)). Speaking 1 and 2 would have meant translating every renamed command, notice and field at the link, in Rust and Swift, for the few days until each machine updates; decided with the user not to.
+The protocol range was then `[2, 2]` (`kanna_build::PROTOCOLS`, `Protocols.mine`; now `[2, 3]`, [input latency](input-latency.md#4-the-app-link-protocol-3)). Locally the app, daemon and CLI are one build, so nothing changes for them. A Kanna of protocol 1 on another machine is refused with `other_protocol` and shows as Offline with "runs an older Kanna"; `kanna machine update` reaches it across protocols ([updates §6](machine-update.md#6-protocols)). Speaking 1 and 2 would have meant translating every renamed command, notice and field at the link, in Rust and Swift, for the few days until each machine updates; decided with the user not to.
 
 ## 5. Tests
 
