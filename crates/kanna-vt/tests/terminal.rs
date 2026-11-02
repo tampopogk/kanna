@@ -230,6 +230,32 @@ fn size_reports_follow_the_grid() {
 }
 
 #[test]
+fn a_snapshot_with_history_keeps_the_screen_and_the_newest_scrollback() {
+    let mut t = Terminal::new(40, 10, 100_000).unwrap();
+    for i in 0..20_000 {
+        t.write(format!("\x1b[3{}mline {i}\x1b[0m\r\n", i % 8).as_bytes());
+    }
+    t.write(b"\x1b[1mprompt\x1b_unfinished");
+    let full = t.snapshot().unwrap();
+    let (bounded, more) = t.snapshot_with_history(200).unwrap();
+    assert!(more);
+    assert!(bounded.len() * 10 < full.len(), "{} of {} bytes", bounded.len(), full.len());
+    let mut r = Terminal::from_snapshot(&bounded).unwrap();
+    assert_eq!(r.text(Lines::Screen), t.text(Lines::Screen));
+    let kept = r.scrollback_rows();
+    assert!((200..20_000).contains(&kept), "{kept} rows of scrollback");
+    assert_eq!(r.text(Lines::Last(kept + 10)), t.text(Lines::Last(kept + 10)));
+    let none = Terminal::from_snapshot(&t.snapshot_with_history(0).unwrap().0).unwrap();
+    assert!(!Terminal::new(40, 10, 100).unwrap().snapshot_with_history(200).unwrap().1, "nothing more when everything fit");
+    assert_eq!(none.text(Lines::Screen), t.text(Lines::Screen));
+    assert!(none.scrollback_rows() < kept, "{} rows with no history asked for", none.scrollback_rows());
+    for out in [&mut t, &mut r] {
+        out.write(b"\x1b\\ done");
+    }
+    assert_eq!(r.text(Lines::Screen), t.text(Lines::Screen));
+}
+
+#[test]
 fn snapshot_round_trip() {
     let mut t = Terminal::new(30, 6, 1000).unwrap();
     for i in 0..40 {
@@ -443,6 +469,19 @@ fn a_resize_is_reported_in_band_when_asked() {
 
 fn states(t: &Terminal) -> Vec<(String, ProgramState)> {
     t.program_statuses().into_iter().map(|r| (r.id, r.state)).collect()
+}
+
+#[test]
+fn every_turn_the_program_reports_is_counted_even_between_looks() {
+    let mut t = Terminal::new(20, 5, 0).unwrap();
+    t.write(b"\x1b]7501;state=idle\x1b\\");
+    assert_eq!(t.program_turns(), 0);
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=idle\x1b\\");
+    t.write(b"\x1b]7501;state=working:id=sub\x1b\\\x1b]7501;state=done:id=sub\x1b\\");
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=blocked\x1b\\\x1b]7501;state=done\x1b\\");
+    assert_eq!(t.program_turns(), 1);
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=done\x1b\\");
+    assert_eq!(t.program_turns(), 2);
 }
 
 #[test]

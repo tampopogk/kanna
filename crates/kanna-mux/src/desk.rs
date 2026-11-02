@@ -27,6 +27,7 @@ impl Model {
         let s = self.dock_ws(task).or_else(|| self.ws_index(task)).ok_or_else(|| not_found(format!("no task \"{task}\"")))?;
         let mut ids = self.workspace_panes(s);
         ids.rotate_right(1);
+        ids.extend(self.workspaces[s].background.iter().cloned());
         Ok(ids)
     }
 

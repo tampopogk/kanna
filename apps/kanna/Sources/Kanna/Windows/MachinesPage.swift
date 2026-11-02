@@ -10,7 +10,7 @@ struct MachineRow: Equatable {
     var tone: NSColor {
         switch path {
         case "Relayed": return .systemOrange
-        case "Offline": return .systemRed
+        case "Offline", "Incompatible": return .systemRed
         default: return .secondaryLabelColor
         }
     }
