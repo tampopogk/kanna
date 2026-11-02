@@ -235,7 +235,6 @@ Pink is Rex's code, green Kanna's, grey the OS, orange the clients.
 | **Scripting** | Lua config, scripts and events | agents and the CLI; `kanna up` planned | Rex has more; see 3.3 |
 | **Agent status** | OSC 7501 only | OSC 7501, then screen rules ([agent status](../specs/agent-status.md)) | Kanna |
 | **Agent skills** | guide read from the binary; a session-start hook | skills copied and merged; no hooks ([agent setup](../specs/agent-setup.md)) | each has a point; see 3.1 #9 |
-| **Tasks, Shelf, runners, planner** | none | built ([tasks](../specs/tasks.md), [Shelf runners](../specs/shelf-runners.md), [planning agent](../specs/planning-agent.md)) | Kanna |
 | **Remote machines** | Tailscale; trust by connection (§1.8) | iroh, device keys, pairing by code ([machines](../specs/machines.md)) | Kanna for your own machines |
 | **Several people** | PAM logins, per-account servers | out of scope ("Yours alone") | Rex |
 | **Web client** | `rex.superlogical.com` (not checked) | none | Rex |
@@ -315,20 +314,18 @@ Take the same split. Keep one control connection for requests, replies, layout, 
 |---|---|---|
 | **The keeper** | Rex's updates end every program; Kanna's don't ([a](#notes-to-32)) | §1.5, [keeper upgrade](../specs/keeper-upgrade.md) |
 | **Screens saved for the next daemon** | Rex's die with the process that sealed them; a crash loses every screen | §1.4, [daemon restart](../specs/daemon-restart.md) |
-| **Tasks, worktrees, the Shelf, runners, the planner** | Rex has none, but names them as next ([b](#notes-to-32)) | §1.5; superlogical.com |
-| **Agent status without the agent's help** | Rex shows nothing for an agent that doesn't send OSC 7501 ([c](#notes-to-32)) | §1.7, [agent status §3](../specs/agent-status.md#3-detection-rules) |
-| **The caller rule** | Rex falls back to the focused block, which Kanna removed ([d](#notes-to-32)) | `rex capture --help`, [CLI caller](../specs/cli-caller.md) |
-| **Trust between your machines** | Rex trusts by connection; Kanna pins device keys ([e](#notes-to-32)) | §1.8, [machine identity](../specs/machine-identity.md) |
-| **Agents told in their first message** | Rex needs a hook in each agent's settings ([f](#notes-to-32)) | Rex docs, *Agents*; [agent setup §2](../specs/agent-setup.md#2-how-an-agent-knows-its-in-kanna) |
+| **Agent status without the agent's help** | Rex shows nothing for an agent that doesn't send OSC 7501 ([b](#notes-to-32)) | §1.7, [agent status §3](../specs/agent-status.md#3-detection-rules) |
+| **The caller rule** | Rex falls back to the focused block, which Kanna removed ([c](#notes-to-32)) | `rex capture --help`, [CLI caller](../specs/cli-caller.md) |
+| **Trust between your machines** | Rex trusts by connection; Kanna pins device keys ([d](#notes-to-32)) | §1.8, [machine identity](../specs/machine-identity.md) |
+| **Agents told in their first message** | Rex needs a hook in each agent's settings ([e](#notes-to-32)) | Rex docs, *Agents*; [agent setup §2](../specs/agent-setup.md#2-how-an-agent-knows-its-in-kanna) |
 
 #### Notes to 3.2
 
 - **a. The keeper.** Terminals outlive a daemon restart, and the keeper upgrades itself by `execve` in place. Rex's update "ends everything running in your sessions", so it waits for an idle server, and with agents always running a Rex server is rarely idle. The keeper is Kanna's strongest difference: keep it, and keep its tests (`keeper_upgrade`).
-- **b. Tasks.** Agents in Rex are programs in panes. Superlogical names coding agents and background jobs as where it's going, so this is the gap to watch.
-- **c. Agent status.** Rex shows nothing for OpenCode, Copilot or older releases; Kanna's screen rules cover them.
-- **d. The caller rule.** `rex capture` with no block falls back to "the focused block of the default window". Kanna removed that fallback because an agent's command landed wherever the user happened to be looking.
-- **e. Trust.** Rex trusts by connection until "a full authentication and authorization system" exists. Kanna pins device keys in a signed peer log and pairs by code.
-- **f. No hooks.** Claude Code runs a hook only in trusted folders, and Codex only once it's approved. Kanna starts every agent it uses, so it needs no hook.
+- **b. Agent status.** Rex shows nothing for OpenCode, Copilot or older releases; Kanna's screen rules cover them.
+- **c. The caller rule.** `rex capture` with no block falls back to "the focused block of the default window". Kanna removed that fallback because an agent's command landed wherever the user happened to be looking.
+- **d. Trust.** Rex trusts by connection until "a full authentication and authorization system" exists. Kanna pins device keys in a signed peer log and pairs by code.
+- **e. No hooks.** Claude Code runs a hook only in trusted folders, and Codex only once it's approved. Kanna starts every agent it uses, so it needs no hook.
 
 ### 3.3 Avoid
 
