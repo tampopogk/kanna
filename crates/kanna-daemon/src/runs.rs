@@ -870,7 +870,7 @@ impl Runs {
                 None
             });
             if let Some(row) = parked {
-                log!("kanna-daemon: {id}'s {} is parked, its session {}", row.stage, row.doc["paused"]["session"].as_str().unwrap_or("the folder's latest"));
+                log!("kanna-daemon: {id}'s {} is parked, its session {}", row.stage, row.doc["paused"]["session"].as_str().unwrap_or("unknown, so it starts again from its prompt"));
                 let _ = this.db.put_stage(&row);
             }
         };
@@ -906,8 +906,9 @@ impl Runs {
         let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
         let session = visit.row.doc["paused"]["session"].as_str().map(String::from);
         let command = tasks::pipeline_agent(&files, &agent.agent);
-        let first = format!("\"$(cat {})\"", quote(&reply));
-        let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), true, &first));
+        let stage_prompt = visit.row.doc["prompt"].as_str().filter(|_| session.is_none()).map(|p| format!("{} ", quote(p))).unwrap_or_default();
+        let first = format!("\"$(cat {stage_prompt}{})\"", quote(&reply));
+        let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), session.is_some(), &first));
         let paused_at = visit.row.doc["paused"]["at"].as_f64().unwrap_or_else(now);
         let by = string(args, "by").unwrap_or("user").to_string();
         self.update(&run.id, |live| {

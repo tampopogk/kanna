@@ -136,11 +136,10 @@ impl Entry {
             None => format!("{command} {told}"),
         };
         let Some(agent) = agent else { return first(command) };
-        match (&self.session, &self.folder, session.zip(agent.named), agent.latest) {
-            (Some(resume), _, _, _) => format!("{command} {} {}", agent.resume, quote(resume)),
-            (None, Some(_), _, Some(latest)) => format!("{command} {latest}"),
-            (None, None, Some((new, flag)), _) => first(format!("{command} {flag} {new}")),
-            _ => first(command),
+        match (&self.session, session.zip(agent.named)) {
+            (Some(resume), _) => format!("{command} {} {}", agent.resume, quote(resume)),
+            (None, Some((new, flag))) => first(format!("{command} {flag} {new}")),
+            (None, None) => first(command),
         }
     }
 
@@ -385,16 +384,15 @@ struct Agent {
     prompt: Option<&'static str>,
     named: Option<&'static str>,
     resume: &'static str,
-    latest: Option<&'static str>,
     find: Option<fn(&Path) -> Option<String>>,
     compact: Option<&'static str>,
 }
 
 const AGENTS: &[Agent] = &[
-    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
-    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
-    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
+    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", find: None, compact: None },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
+    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", find: Some(opencode_session), compact: None },
+    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", find: None, compact: None },
 ];
 
 fn agent(command: &str) -> Option<&'static Agent> {
@@ -536,7 +534,6 @@ pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, pro
     let mut line = in_its_terminal(&line);
     match (resume, session, agent(command)) {
         (true, Some(session), Some(agent)) => line += &format!(" {} {}", agent.resume, quote(session)),
-        (true, None, Some(Agent { latest: Some(latest), .. })) => line += &format!(" {latest}"),
         (false, Some(session), Some(Agent { named: Some(flag), .. })) => line += &format!(" {flag} {}", quote(session)),
         _ => {}
     }
@@ -3685,7 +3682,7 @@ impl Tasks {
         let Starting { entry, app, by, responder } = starting;
         self.launching.borrow_mut().insert(entry.id.clone());
         let name = entry.name.clone().filter(|n| core.pane(n).is_none());
-        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some()) && entry.folder.is_none()).then(uuid).and_then(Result::ok);
+        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some()) && entry.session.is_none()).then(uuid).and_then(Result::ok);
         let first = entry.command(session.as_deref());
         let setup = self.setup_first(&entry, Path::new(&folder), &first);
         let mut args = json!({ "type": "term", "dock": "left", "frozen": true, "task": entry.id, "cwd": folder, "cmd": setup.as_ref().map_or(first, |(command, _)| command.clone()), "wait": false });
@@ -4097,7 +4094,8 @@ mod tests {
         assert!(id.len() == 36 && id.chars().nth(14) == Some('4'), "{id}");
         assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "/bin/claude --dangerously-skip-permissions --continue", "a task Kanna didn't start resumes the folder's latest session");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions {}", told_task(Some("go"))), "a task with no session of its own starts fresh");
+        assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))), "and names the session it starts");
         entry.session = Some(id.clone());
         assert_eq!(entry.command_with(None, Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --resume '{id}'"));
     }
@@ -4107,13 +4105,31 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_task_resumes_its_own_session_and_the_latest_only_until_it_s_found() {
+    fn a_codex_task_resumes_only_its_own_session() {
         let mut entry = started("codex");
         assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "codex can't be given a session ID");
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume --last");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "until its session is known, it starts fresh");
         entry.session = Some("01a13ca7-c348-70f2-82e8-f27af07b17f5".into());
         assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume '01a13ca7-c348-70f2-82e8-f27af07b17f5'");
+    }
+
+    #[test]
+    fn a_codex_task_whose_first_start_failed_starts_fresh_past_the_agent_s_newer_session_elsewhere() {
+        let dir = std::env::temp_dir().join(format!("kanna-codex-failed-{}", std::process::id()));
+        let (worktree, elsewhere, sessions) = (dir.join("r/.kanna-worktrees/task-0000c0de"), dir.join("Documents/Codex/other"), dir.join("sessions"));
+        fs::create_dir_all(&worktree).unwrap();
+        let made = fs::metadata(&worktree).and_then(|m| m.created()).ok();
+        let day = sessions.join("2099/01/01");
+        fs::create_dir_all(&day).unwrap();
+        let meta = json!({ "timestamp": "2099-01-01T00-00-00", "type": "session_meta", "payload": { "id": "users-own", "cwd": elsewhere } });
+        fs::write(day.join("rollout-2099-01-01T00-00-00-users-own.jsonl"), format!("{meta}\n")).unwrap();
+        let mut entry = started("codex");
+        entry.folder = Some(worktree.to_string_lossy().into_owned());
+        entry.session = latest_codex_session(&sessions, &worktree, made);
+        assert_eq!(entry.session, None, "the agent's newer session elsewhere isn't the task's");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "so it starts fresh from its first message");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -4146,11 +4162,11 @@ mod tests {
     }
 
     #[test]
-    fn an_antigravity_task_continues_its_worktree_s_conversation() {
+    fn an_antigravity_task_resumes_only_the_conversation_it_said() {
         let mut entry = started("/usr/local/bin/agy");
         assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --continue");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
         entry.session = Some("c1".into());
         assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --conversation 'c1'");
     }
@@ -4653,7 +4669,7 @@ mod tests {
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), false, first), format!("claude --session-id 'u-1' {first}"));
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), true, first), format!("claude --resume 'u-1' {first}"));
         assert!(stage_agent("codex", None, None, Prompts::Ask, Some("r-2"), true, first).ends_with(&format!(" resume 'r-2' {first}")));
-        assert!(stage_agent("codex", None, None, Prompts::Ask, None, true, first).ends_with(&format!(" resume --last {first}")));
+        assert!(!stage_agent("codex", None, None, Prompts::Ask, None, true, first).contains("resume"));
     }
 
     #[test]
