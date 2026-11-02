@@ -125,6 +125,10 @@ pub trait LayoutHost {
         Value::Null
     }
 
+    fn desks(&self) -> Value {
+        Value::Null
+    }
+
     fn hidden_windows(&self, panes: &Panes) -> Value {
         let _ = panes;
         Value::Null
@@ -357,6 +361,10 @@ fn step(host: &mut dyn LayoutHost, request: &Value, panes: &Panes) -> Result<Map
             if !workspaces.is_null() {
                 reply.insert("workspaces".into(), workspaces);
                 reply.insert("hiddenWindows".into(), host.hidden_windows(panes));
+            }
+            let desks = host.desks();
+            if !desks.is_null() {
+                reply.insert("desks".into(), desks);
             }
         }
         "export" => return Ok(host.export_state()),

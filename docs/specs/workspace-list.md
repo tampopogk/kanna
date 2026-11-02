@@ -82,7 +82,7 @@ Unplaced panes
 term-500 (logs)
 ```
 
-A Desk is the app's, so it isn't listed; a planner is a workspace like any other.
+Each of the app's Desks is listed under Windows, first (` d1  Desk on ~/work/app, shows ws-3 (task-1dfb, Fix login)`), its planner as `ws-5, d1's planner` and the task it shows as `…, on the Desk, shown in d1`; `--json` lists them as `desks` ([Desk windows](desk-windows.md)). A planner is a workspace like any other.
 
 `--json` prints the daemon's list reply: the caller's workspace, or with `--all` everything, as `kanna list --json` did (windows, panes, workspaces), with each workspace's shown tab, focus, zoom and its windows' tabs added. e2e scenarios and `tests/cli.rs` read `kanna workspace list --all --json`.
 

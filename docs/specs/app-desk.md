@@ -58,6 +58,7 @@ flowchart TB
 - **A Desk's planner is a workspace with no task,** its planning terminal docked, made when the app asks for a planning terminal (`tasks plan`) and closed when the app closes that Desk. Its ID is the Desk's, kept by the app.
 - **A task reaches a Desk only from the Shelf,** with `kanna task pick` (claimed for the CLI's instance's app) or Move to Desk; `open` docks nothing ([every task starts on the Shelf](tasks-start-on-the-shelf.md)). `kanna task activate` shows it.
 - **`activate`, `park` and `kanna PATH` reply with the Desk's ID** (`d1`, `d2`, …, the app's own), as in `term-3 is active on d1`.
+- **A Desk is a window to the CLI,** by that ID: the app tells the daemon its Desks and what each shows, and `--window d1` reaches the workspace it shows ([Desk windows](desk-windows.md)).
 - **The task list says Desk or Shelf,** and which app has it out; never which Desk window.
 - **History records claims, not which task is active:** a task's events keep `picked` (moved to the Desk) and `shelved` (moved to the Shelf); an older db's `pulled` and `parked` read as `activated` and `left`.
 
@@ -70,7 +71,8 @@ flowchart TB
 | `task activate {task}`, `task park {task?}`, `task desk {project, new?}` | Relayed to the attached app as `desk {action, …}`, the daemon first turning a task's ID, workspace or any of its panes into its agent's pane; `no_app` without one (the CLI starts it) |
 | `open {dock, claim?}`, `open {dock, shelf: true}` | A task's agent in a new workspace, claimed by an app (default `mac`) or on the Shelf; a docked pane never goes in a window |
 | `open {planner: true, claim?}` | A Desk's planner: a terminal in a workspace with no task |
-| `open {workspace: ws-N}` | Into that workspace's tabs (a planner's: a new window); how the app opens into a Desk |
+| `open {workspace: ws-N}` | Into that workspace's tabs, a planner's too; how the app opens into a Desk |
+| `desks {desks: [{id, planner, shows, project}]}` | The app's Desks and what each shows, so `--window d1` and `workspace list` reach them ([Desk windows](desk-windows.md)); not saved, cleared when the app goes away |
 | layout `task {action: list, app?}`, `find`, `hold`, `claim {task, app}` | An app's claims; a task's agent and workspace; to the Shelf; onto an app's Desk |
 | `layout` notice | Every workspace (`workspaces`: id, task, claim, dock, tabs with their trees, focused, zoomed, windows), the free and task windows (`windows`), and the tasks' claims |
 

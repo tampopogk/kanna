@@ -1057,6 +1057,58 @@ windows_tabs_ui() {
   [[ "$menus" != *'"New Instance"'* && "$menus" != *'"Start a Task"'* ]] || { echo "a removed menu item is back: $menus"; return 1; }
 }
 
+real_key() { raw "{\"id\":1,\"cmd\":\"debug.key\",\"args\":{\"key\":\"$1\",\"real\":true}}" >/dev/null; sleep 0.3; }
+planner_desk() {
+  raw '{"id":1,"cmd":"desk","args":{"action":"desk","new":true}}' | grep -q '"ok":true' || return 1
+  check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || return 1
+  check wait_for 10 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field lead)" == term-* ]]' || return 1
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field lead
+}
+
+scenario desk_window_cycle M4
+desk_window_cycle() {
+  start_daemon && start_app || return 1
+  local planner; planner="$(planner_desk)" || { echo "desk_window_cycle: no Desk with a planner"; return 1; }
+  printf '# desk_window_cycle\n' >"$KANNA_STATE_DIR/cycle.md"
+  KANNA_TERMINAL="$planner" kanna open md "$KANNA_STATE_DIR/cycle.md" --window new >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin win-1 key)" == True ]]' || { echo "desk_window_cycle: the free window isn't in front"; app_view; return 1; }
+  real_key 'cmd+`'; check test "$(dwin d1 key)" == True || { echo "desk_window_cycle: ⌘\` didn't reach the Desk"; return 1; }
+  real_key 'cmd+`'; check test "$(dwin win-1 key)" == True || { echo "desk_window_cycle: ⌘\` didn't come back to the free window"; return 1; }
+  real_key 'cmd+shift+`'; check test "$(dwin d1 key)" == True || { echo "desk_window_cycle: ⇧⌘\` didn't reach the Desk"; return 1; }
+  real_key 'cmd+shift+`'; check test "$(dwin win-1 key)" == True || { echo "desk_window_cycle: ⇧⌘\` didn't come back to the free window"; return 1; }
+}
+
+scenario desk_window_cli M4
+desk_window_cli() {
+  start_daemon && start_app || return 1
+  local planner; planner="$(planner_desk)" || { echo "desk_window_cli: no Desk with a planner"; return 1; }
+  local ws; ws="$(ws "$planner" id)"
+  listed_desk() { kanna workspace list --all | grep -q '^ d1  Desk'; }
+  check wait_for 5 listed_desk || { echo "desk_window_cli: workspace list --all doesn't list d1"; kanna workspace list --all; return 1; }
+  [[ "$(kanna workspace list --all)" == *"$ws, d1's planner"* ]] || { echo "desk_window_cli: the planner isn't named as d1's"; kanna workspace list --all; return 1; }
+  printf '# beside the planner\n' >"$KANNA_STATE_DIR/beside.md"
+  local opened; opened="$(KANNA_TERMINAL="$planner" kanna open md "$KANNA_STATE_DIR/beside.md" --tab)" || return 1
+  [[ "$opened" == "opened file-1 in $ws (d1's planner), tab-"* ]] || { echo "desk_window_cli: open --tab from the planner said: $opened"; return 1; }
+  check test "$(state | field windows | count)" == 0 || { echo "desk_window_cli: open --tab from the planner made a window"; kanna workspace list --all; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 tabs.0.panes)" == "[\"file-1\"]" ]]' || { echo "desk_window_cli: the Desk window doesn't show the tab"; dwin d1 tabs; return 1; }
+  check test "$(raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field page)" == False || { echo "desk_window_cli: the Desk view hides the planner's new tab"; return 1; }
+  sleep 1; snap d1 desk_window_cli-planner-tab >/dev/null
+  printf '# by name\n' >"$KANNA_STATE_DIR/named.md"
+  opened="$(kanna open md "$KANNA_STATE_DIR/named.md" --window d1 --tab)" || return 1
+  [[ "$opened" == "opened file-2 in $ws (d1's planner), tab-"* ]] || { echo "desk_window_cli: open --window d1 said: $opened"; return 1; }
+  kanna open --window new --name loose >/dev/null || return 1
+  local loose; loose="$(win win-1 tabs.0.id)"
+  local moved; moved="$(kanna move-tab "$loose" --window d1)" || { echo "desk_window_cli: move-tab --window d1 failed"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 tabs | count)" == 3 ]]' || { echo "desk_window_cli: move-tab --window d1 said $moved"; dwin d1 tabs; return 1; }
+  check test "$(state | field windows | count)" == 0 || { echo "desk_window_cli: the emptied free window stayed"; return 1; }
+  kanna open --window new --name front >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(dwin win-2 key)" == True ]]' || return 1
+  local focused; focused="$(kanna focus --window d1)" || { echo "desk_window_cli: focus --window d1 failed"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "desk_window_cli: focus --window d1 said $focused, but d1 isn't in front"; return 1; }
+  kanna focus --window d9 >/dev/null 2>&1 && { echo "desk_window_cli: focus --window d9 found a window"; return 1; }
+  return 0
+}
+
 scenario tab_names M4
 tab_names() {
   start_daemon && start_app || return 1
@@ -3303,6 +3355,65 @@ r = json.load(sys.stdin); r = r.get(\"result\", r)
 sys.exit(not any(h[\"ms\"] >= 300 and \"command.debug.hang\" in h[\"open\"] for h in r[\"hangs\"]))"' \
     || { echo "perf_intervals: debug.perf has no 300ms hang in command.debug.hang"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
   check wait_for 5 grep -qE 'kanna: the main thread hung [0-9]{3}ms; open: .*command\.debug\.hang' "$out/app.log" || { echo "perf_intervals: the hang isn't in the app's log"; tail -5 "$out/app.log"; return 1; }
+}
+
+scenario pick_keeper_paused M4
+pick_keeper_paused() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" keeper task seen took listed
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "pick_keeper_paused: no planning terminal"; return 1; }
+  (cd "$repo" && kanna task new "Line tables" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  check wait_for 5 shows "Line tables" "say hi" || { echo "pick_keeper_paused: the task didn't start"; return 1; }
+  task="$(pane "Line tables" id)"
+  KANNA_TERMINAL="$task" kanna open --tab --name lines --cmd 'exec cat' >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  kanna task stop $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  check wait_for 5 is "Line tables" state exited && check is lines state exited || { echo "pick_keeper_paused: the task didn't stop"; return 1; }
+  check wait_for 5 eval '[[ "$(desk shelf)" == "[\"$(tid 1)\"]" ]]' || { desk shelf; return 1; }
+  keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
+  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "pick_keeper_paused: $keeper isn't this run's keeper"; return 1; }
+  kill -STOP "$keeper"
+  seen="$(python3 -c 'import json, socket, subprocess, sys, time
+def ask(cmd, args):
+    s = socket.socket(socket.AF_UNIX); s.settimeout(30); s.connect(sys.argv[1])
+    s.sendall(json.dumps({"id": 1, "cmd": cmd, "args": args}).encode() + b"\n")
+    return json.loads(s.makefile().readline())
+start = time.monotonic()
+ask("debug.click", {"shelf": sys.argv[2], "window": "d1"})
+while time.monotonic() - start < 10:
+    d = ask("debug.desk", {"window": "d1"})
+    d = d.get("result", d)
+    if not d["shelf"] and [t["title"] for t in d["tasks"]] == ["Line tables"]:
+        took = round((time.monotonic() - start) * 1000)
+        asked = time.monotonic()
+        try:
+            listed = subprocess.run([sys.argv[3], "task", "list"], cwd=sys.argv[4], capture_output=True, text=True, timeout=2).stdout
+        except subprocess.TimeoutExpired:
+            listed = "no answer"
+        place, row = "", []
+        for line in listed.splitlines():
+            place = line.strip() if line.strip() in ("Desk", "Shelf") else place
+            row += [place + "  " + line] if "Line tables" in line else []
+        print(took, round((time.monotonic() - asked) * 1000), *(row or [listed])); sys.exit(0)
+    time.sleep(0.005)
+print("never")' "$KANNA_SOCKET" "$(tid 1)" "$bin/kanna" "$repo")"
+  sleep 0.5
+  kill -CONT "$keeper"
+  took="${seen%% *}" listed="${seen#* }"
+  [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_keeper_paused: with the keeper paused, the task never reached the Desk"; desk tasks; desk note; return 1; }
+  echo "pick_keeper_paused: on the Desk ${took}ms after the click, the keeper paused; task list (ms, row): $listed"
+  (( took <= 200 )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
+  [[ "$listed" =~ ^([0-9]+)\ Desk\ .*Line\ tables ]] && (( BASH_REMATCH[1] <= 200 )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
+  check wait_for 5 shows "Line tables" "--resume" || { echo "pick_keeper_paused: its agent didn't come back once the keeper went on"; kanna read "Line tables"; return 1; }
+  check wait_for 5 is lines state running || { echo "pick_keeper_paused: its tab didn't run again"; kanna workspace list --all; return 1; }
+  check test "$(desk note)" == "" || { echo "pick_keeper_paused: $(desk note)"; return 1; }
+  kill -0 "$(cat "$KANNA_STATE_DIR/daemon.pid")" || { echo "pick_keeper_paused: the daemon stopped"; tail -5 "$out/daemon.log"; return 1; }
 }
 
 scenario task_list_speed M4

@@ -96,11 +96,20 @@ pub struct Model {
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) counters: (usize, usize, usize),
     pub(crate) orphans: Vec<Tabs>,
+    pub(crate) desks: Vec<DeskWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DeskWindow {
+    pub(crate) id: String,
+    pub(crate) planner: Option<String>,
+    pub(crate) shows: Option<String>,
+    pub(crate) project: Option<String>,
 }
 
 impl Default for Model {
     fn default() -> Model {
-        Model { windows: vec![], workspaces: vec![], counters: (0, 0, 0), orphans: vec![] }
+        Model { windows: vec![], workspaces: vec![], counters: (0, 0, 0), orphans: vec![], desks: vec![] }
     }
 }
 
@@ -557,7 +566,44 @@ impl Model {
 
     fn workspace_holder(&mut self, reference: &str) -> Result<Holder, KmuxError> {
         let s = self.ws_index(reference).ok_or_else(|| not_found(format!("no workspace \"{reference}\"")))?;
-        Ok(if self.workspaces[s].is_task() { Holder::Workspace(s) } else { Holder::Window(self.make_window()) })
+        Ok(Holder::Workspace(s))
+    }
+
+    pub(crate) fn desk_workspace(&self, reference: &str) -> Option<usize> {
+        let desk = self.desks.iter().find(|d| d.id == reference)?;
+        desk.shows.as_deref().or(desk.planner.as_deref()).and_then(|ws| self.ws_index(ws))
+    }
+
+    pub(crate) fn window_holder(&mut self, reference: Option<&str>) -> Result<Holder, KmuxError> {
+        if let Some(s) = reference.and_then(|r| self.desk_workspace(r)) {
+            return Ok(Holder::Workspace(s));
+        }
+        Ok(Holder::Window(self.target_window(reference)?))
+    }
+
+    pub(crate) fn desk_of(&self, s: usize) -> Option<&str> {
+        let id = &self.workspaces[s].id;
+        let shown = self.desks.iter().find(|d| d.shows.as_ref() == Some(id));
+        shown.or_else(|| self.desks.iter().find(|d| d.planner.as_ref() == Some(id))).map(|d| d.id.as_str())
+    }
+
+    fn set_desks(&mut self, args: &Value) -> Result<Map, KmuxError> {
+        let list = args.get("desks").and_then(Value::as_array).ok_or_else(|| bad_request("desks needs a list of desks"))?;
+        let field = |desk: &Value, key: &str| desk.get(key).and_then(Value::as_str).map(String::from);
+        self.desks = list.iter().filter_map(|d| Some(DeskWindow { id: field(d, "id")?, planner: field(d, "planner"), shows: field(d, "shows"), project: field(d, "project") })).collect();
+        Ok(reply([("desks", self.desks.len().into())]))
+    }
+
+    fn desk_rows(&self) -> Value {
+        Value::Array(
+            self.desks
+                .iter()
+                .map(|d| {
+                    let workspace = d.shows.as_deref().or(d.planner.as_deref()).filter(|ws| self.ws_index(ws).is_some());
+                    crate::json::json!({ "id": d.id, "desk": true, "workspace": workspace, "planner": d.planner, "deskView": d.shows.is_none(), "project": d.project })
+                })
+                .collect(),
+        )
     }
 
     fn need_tab(&self, reference: Option<&str>) -> Result<(Holder, usize), KmuxError> {
@@ -572,7 +618,10 @@ impl Model {
 
     pub(crate) fn spot_of(&self, h: Holder) -> (Option<String>, Value) {
         let window = self.window_of(h).map(|w| self.windows[w].id.clone());
-        let workspace = self.ws_of(h).map_or(Value::Null, |s| self.workspaces[s].summary());
+        let mut workspace = self.ws_of(h).map_or(Value::Null, |s| self.workspaces[s].summary());
+        if let (Some(desk), Value::Object(fields)) = (self.ws_of(h).and_then(|s| self.desk_of(s)), &mut workspace) {
+            fields.insert("desk".into(), desk.into());
+        }
         (window, workspace)
     }
 
@@ -630,8 +679,8 @@ impl Model {
             return Ok(self.at(h));
         }
         if args.get("window").is_some() {
-            let w = self.target_window(string(args, "window"))?;
-            return Ok(self.at(Holder::Window(w)));
+            let h = self.window_holder(string(args, "window"))?;
+            return Ok(self.at(h));
         }
         Err(bad_request("focus needs a pane, tab or window"))
     }
@@ -778,7 +827,7 @@ impl Model {
         let destination = match args.get("window") {
             None if args.get("workspace").is_some() => self.workspace_holder(string(args, "workspace").unwrap_or_default())?,
             Some(window) if window.as_str() == Some("new") => Holder::Window(self.window_for(self.ws_of(source))),
-            Some(window) => Holder::Window(self.target_window(window.as_str())?),
+            Some(window) => self.window_holder(window.as_str())?,
             None => source,
         };
         let mut index = None;
@@ -1047,7 +1096,7 @@ impl Model {
 
 impl LayoutHost for Model {
     fn commands(&self) -> &'static [&'static str] {
-        &["focus", "zoom", "rename-tab", "move", "move-tab", "resize", "arrange", "task", "window"]
+        &["focus", "zoom", "rename-tab", "move", "move-tab", "resize", "arrange", "task", "window", "desks"]
     }
 
     fn features(&self) -> &'static [&'static str] {
@@ -1079,13 +1128,11 @@ impl LayoutHost for Model {
             return Ok(None);
         }
         let caller = at.opener.as_deref().or(at.from.as_deref()).and_then(|c| self.holder_of(c).map(|h| (c, h)));
-        let planning = |model: &Model, h: Holder| matches!(h, Holder::Workspace(s) if !model.workspaces[s].is_task());
         let (mut h, mut beside, mut new_tab) = (None, None, at.new_tab);
         match (at.window.as_deref(), caller) {
             _ if at.window.is_none() && at.workspace.is_some() => h = Some(self.workspace_holder(at.workspace.as_deref().unwrap_or_default())?),
             (Some("new"), Some((_, from))) => h = Some(Holder::Window(self.window_for(self.ws_of(from)))),
-            (Some(window), _) => h = Some(Holder::Window(self.target_window(Some(window))?)),
-            (None, Some((_, from))) if planning(self, from) => h = Some(Holder::Window(self.make_window())),
+            (Some(window), _) => h = Some(self.window_holder(Some(window))?),
             (None, Some((c, from))) => {
                 h = Some(from);
                 let side = self.side(from).as_deref() == Some(c);
@@ -1200,6 +1247,7 @@ impl LayoutHost for Model {
             "arrange" => self.arrange(args, panes),
             "task" => self.task(args, panes),
             "window" => self.window_command(args, panes),
+            "desks" => self.set_desks(args),
             _ => Err(bad_request(format!("unknown command \"{cmd}\""))),
         }
     }
@@ -1210,6 +1258,10 @@ impl LayoutHost for Model {
 
     fn hidden_windows(&self, _panes: &Panes) -> Value {
         Value::Array(vec![])
+    }
+
+    fn desks(&self) -> Value {
+        self.desk_rows()
     }
 
     fn workspaces(&self, panes: &Panes) -> Value {

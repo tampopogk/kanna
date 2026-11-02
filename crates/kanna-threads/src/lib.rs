@@ -82,20 +82,23 @@ pub fn block_at(source: &str, line: usize) -> Option<(usize, String)> {
     }
     let mut fenced = vec![false; lines.len()];
     let mut drawn = vec![false; lines.len()];
-    let mut inside: Option<bool> = None;
+    let mut tree = vec![false; lines.len()];
+    let mut inside: Option<&str> = None;
     for (i, text) in lines.iter().enumerate() {
         let trimmed = text.trim_start();
         let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
         if fence && inside.is_none() {
-            inside = Some(trimmed.trim_start_matches(['`', '~']).trim().starts_with("mermaid"));
+            let info = trimmed.trim_start_matches(['`', '~']).trim();
+            inside = Some(if info.starts_with("mermaid") { "mermaid" } else if info.starts_with(kanna_calltree::FENCE) { kanna_calltree::FENCE } else { "" });
         } else if fence {
             fenced[i] = true;
-            drawn[i] = inside == Some(true);
+            drawn[i] = inside == Some("mermaid");
             inside = None;
             continue;
         }
         fenced[i] = inside.is_some();
-        drawn[i] = inside == Some(true);
+        drawn[i] = inside == Some("mermaid");
+        tree[i] = inside == Some(kanna_calltree::FENCE) && kanna_calltree::quote(text).is_some();
     }
     let picture = |i: usize| drawn[i] || (lines[i].trim_start().starts_with("![") && lines[i].trim_end().ends_with(')'));
     let text = |i: usize| !lines[i].trim().is_empty() && !picture(i) && !(fenced[i] && lines[i].trim_start().starts_with(['`', '~']));
@@ -132,6 +135,9 @@ pub fn block_at(source: &str, line: usize) -> Option<(usize, String)> {
         }
         (start, end)
     };
+    if tree[at] {
+        return Some((at + 1, kanna_calltree::quote(lines[at]).unwrap_or_default()));
+    }
     let joined = lines[start..=end].iter().map(|l| strip(l)).collect::<Vec<_>>().join(" ");
     let plain = joined
         .split(|c: char| "*_`[]()<>|#~".contains(c))
@@ -195,6 +201,11 @@ mod comment_tests {
         assert_eq!(block_at(doc, 6), Some((6, "Panes only: a container holds panes.".into())));
         assert_eq!(block_at(doc, 11), Some((11, "kanna open --in docs".into())));
         assert_eq!(block_at(doc, 40), None);
+        let calls = "## Rename\n\n```calltree\nkanna CLI\nmain  crates/kanna/src/lib.rs:17  the entry\n  -> socket tasks\nkanna-daemon\n  name  crates/kanna-daemon/src/tasks.rs:1043\n```\n";
+        assert_eq!(block_at(calls, 5), Some((5, "lib.rs:17".into())));
+        assert_eq!(block_at(calls, 6), Some((6, "socket tasks".into())));
+        assert_eq!(block_at(calls, 7), Some((7, "kanna-daemon".into())));
+        assert_eq!(block_at(calls, 8), Some((8, "tasks.rs:1043".into())));
         let pictures = "## How it fits\n\nThe keeper hands terminals over.\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n![The stack](stack.png)\n";
         assert_eq!(block_at(pictures, 6), Some((3, "The keeper hands terminals over.".into())));
         assert_eq!(block_at(pictures, 10), Some((3, "The keeper hands terminals over.".into())));

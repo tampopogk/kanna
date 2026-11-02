@@ -251,7 +251,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
     assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff, serial
-commands: agents, arrange, capabilities, close, comment, crashes, desk, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, run, schedule, screenshot, send, send-key, serial, status, task, tasks, toast, tour, window, zoom"), "{capabilities}");
+commands: agents, arrange, capabilities, close, comment, crashes, desk, desks, diffs, files, focus, list, machine, markup, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, resize, restart, run, schedule, screenshot, send, send-key, serial, status, task, tasks, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -557,7 +557,7 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert_eq!(zoom["supported"], false);
     let diagrams = described["commands"].as_array().unwrap().iter().find(|c| c["name"] == "diagrams").unwrap().clone();
     assert_eq!(diagrams["supported"], true);
-    assert!(!overview.contains("  diagrams      Check that a markdown file's mermaid diagrams draw in Kanna, without opening anything.  [not"), "{overview}");
+    assert!(!overview.contains("  diagrams      Check that a markdown file's mermaid diagrams and call trees draw in Kanna, without opening anything.  [not"), "{overview}");
     kanna_at(&dir, Some(&socket), &["zoom", "a"]).fails(5, "the running Kanna doesn't support `zoom` yet. It supports: capabilities, list, open");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -627,6 +627,27 @@ fn diagrams_check_needs_no_kanna_and_exits_1_when_one_does_not_draw() {
     kanna_at(&dir, Some(&nowhere), &["diagrams", "lint", "a.md"]).fails(2, "unknown action \"lint\" (check)");
     assert!(kanna_at(&dir, Some(&nowhere), &["help", "diagrams"]).ok().starts_with("kanna diagrams — Check that"));
     assert!(!nowhere.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn diagrams_check_checks_call_trees_against_the_repo() {
+    let dir = scratch("calltree");
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    std::fs::write(dir.join("src/a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    std::fs::write(dir.join("docs/good.md"), "# T\n\n```calltree\napp\nmain  src/a.rs:1\n  b  src/a.rs:2  the second\n```\n").unwrap();
+    std::fs::write(dir.join("docs/bad.md"), "# T\n\n```calltree\napp\nmain  src/a.rs:1\n  gone  src/gone.rs:3\n  -> socket\n  far  src/a.rs:40\n```\n").unwrap();
+    let nowhere = dir.join("nothing.sock");
+    assert_eq!(kanna_at(&dir, Some(&nowhere), &["diagrams", "check", "docs/good.md"]).ok(), "1 diagram, it draws");
+    let run = kanna_at(&dir, Some(&nowhere), &["diagrams", "check", "docs/bad.md"]);
+    let out = run.out.clone();
+    run.fails(1, "kanna: 1 of 1 diagrams don't draw");
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        ["docs/bad.md:6: no such file in the repo: src/gone.rs", "docs/bad.md:7: a hop needs a process on the next line", "docs/bad.md:8: src/a.rs has 2 lines, not 40"]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

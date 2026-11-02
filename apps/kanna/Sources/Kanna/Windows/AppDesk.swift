@@ -56,6 +56,14 @@ extension AppController {
 
     func isDesk(_ window: String) -> Bool { physical.desk(window) != nil }
 
+    func publishDesks() {
+        let local = { (id: String?) -> JSON in id.flatMap { MachineIDs.machine(of: $0) == nil ? JSON.string($0) : nil } ?? .null }
+        let desks: JSON = .array(physical.desks.map { ["id": .string($0.id), "planner": local($0.planner), "shows": local($0.shows), "project": $0.project.map { .string($0) } ?? .null] })
+        guard desks != sentDesks, links?.link(nil) != nil else { return }
+        sentDesks = desks
+        route("desks", ["desks": desks], on: .some(nil))
+    }
+
     func address(_ window: String) -> [String: JSON] {
         guard let desk = physical.desk(window) else { return ["window": .string(window)] }
         return (desk.shows ?? desk.planner).map { ["workspace": .string($0)] } ?? ["window": "new"]

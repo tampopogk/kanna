@@ -26,7 +26,7 @@ fn whose(reply: &Value) -> Option<(String, Vec<String>)> {
     let id = workspace["id"].as_str().unwrap_or("?");
     let place = &workspace["where"];
     let mut tags: Vec<String> = workspace["task"].as_str().map(String::from).into_iter().collect();
-    tags.push(place_of(place).into());
+    tags.push(place_named(place, workspace["desk"].as_str()));
     let name = match reply["window"].as_str() {
         Some(window) => format!("{id}'s {window}"),
         None => id.to_string(),
@@ -40,6 +40,26 @@ fn place_of(place: &Value) -> &'static str {
         place if place.get("planner").is_some() => "a Desk's planner",
         _ => "on the Desk",
     }
+}
+
+fn place_named(place: &Value, desk: Option<&str>) -> String {
+    match (place.get("planner"), desk) {
+        (Some(_), Some(desk)) => format!("{desk}'s planner"),
+        _ => place_of(place).into(),
+    }
+}
+
+fn desk_line(desk: &Value, reply: &Value) -> String {
+    let empty = vec![];
+    let workspaces = reply["workspaces"].as_array().unwrap_or(&empty);
+    let id = desk["id"].as_str().unwrap_or("?");
+    let project = desk["project"].as_str().map(|p| format!(" on {}", tilde(p))).unwrap_or_default();
+    let shows = match workspaces.iter().find(|w| w["id"] == desk["workspace"]) {
+        Some(ws) if desk["deskView"] == true => format!(", the Desk view: {}", workspace_name(ws)),
+        Some(ws) => format!(", shows {}", workspace_name(ws)),
+        None => String::new(),
+    };
+    format!(" {id}  Desk{project}{shows}")
 }
 
 fn tagged(name: &str, tags: &[String]) -> String {
@@ -117,7 +137,7 @@ pub fn closed(args: &Value, reply: &Value) -> String {
 }
 
 pub fn focused(args: &Value, reply: &Value) -> String {
-    let window = reply["window"].as_str().unwrap_or("?");
+    let window = reply["window"].as_str().or(reply["front"].as_str()).or(args["window"].as_str()).unwrap_or("?");
     let front = !reply["front"].is_null();
     let shown = if reply["behind"] == true { "behind the app you're in" } else { "in front" };
     let place = match (whose(reply), reply["window"].as_str()) {
@@ -564,7 +584,7 @@ pub fn scoped(reply: &Value, pane: &str) -> Option<Value> {
     let shown = row["name"].as_str().unwrap_or(&id).to_string();
     let named = |v: &Value| v == shown.as_str() || v == id.as_str();
     let has = |list: &Value, p: &str| list.as_array().is_some_and(|l| l.iter().any(|x| x == p));
-    let mut out = json!({ "pane": id, "at": null, "windows": [], "hiddenWindows": [], "workspaces": [], "panes": [row] });
+    let mut out = json!({ "pane": id, "at": null, "windows": [], "hiddenWindows": [], "workspaces": [], "panes": [row], "desks": reply["desks"].clone() });
     if let Some(ws) = workspaces.iter().find(|w| has(&w["panes"], &id) || has(&w["background"], &id)) {
         let ours = |w: &&Value| w["workspace"] == ws["id"];
         out["at"] = json!("workspace");
@@ -633,13 +653,15 @@ fn own(reply: &Value) -> String {
 fn everything(reply: &Value) -> String {
     let empty = vec![];
     let windows = reply["windows"].as_array().unwrap_or(&empty);
+    let desks = reply["desks"].as_array().unwrap_or(&empty);
     let panes = reply["panes"].as_array().unwrap_or(&empty);
-    if windows.is_empty() && panes.is_empty() {
+    if windows.is_empty() && desks.is_empty() && panes.is_empty() {
         return "no windows (open one with `kanna open`)".into();
     }
     let mut sections: Vec<String> = Vec::new();
-    if !windows.is_empty() {
-        sections.push(std::iter::once("Windows".to_string()).chain(windows.iter().map(|w| window_line(w, reply))).collect::<Vec<_>>().join("\n"));
+    if !windows.is_empty() || !desks.is_empty() {
+        let lines = desks.iter().map(|d| desk_line(d, reply)).chain(windows.iter().map(|w| window_line(w, reply)));
+        sections.push(std::iter::once("Windows".to_string()).chain(lines).collect::<Vec<_>>().join("\n"));
     }
     let mut workspaces: Vec<&Value> = reply["workspaces"].as_array().unwrap_or(&empty).iter().collect();
     workspaces.sort_by_key(|w| match place_of(&w["where"]) {
@@ -712,7 +734,11 @@ fn tab_lines(tabs: &Value, indent: &str) -> Vec<String> {
 
 fn workspace_block(ws: &Value, reply: &Value) -> Vec<String> {
     let empty = vec![];
-    let place = place_of(&ws["where"]);
+    let empty_desks = vec![];
+    let desks = reply["desks"].as_array().unwrap_or(&empty_desks);
+    let planning = desks.iter().find(|d| d["planner"] == ws["id"]).and_then(|d| d["id"].as_str());
+    let shown = desks.iter().find(|d| d["workspace"] == ws["id"] && d["deskView"] != true).and_then(|d| d["id"].as_str());
+    let place = place_named(&ws["where"], planning) + &shown.map(|d| format!(", shown in {d}")).unwrap_or_default();
     let mut out = vec![format!("{}, {place}", workspace_name(ws))];
     let dock = &ws["dock"];
     if let Some(pane) = dock["id"].as_str().or(dock["pane"].as_str()) {
@@ -1213,6 +1239,19 @@ mod workspace_tests {
         assert!(text.starts_with("Windows\n win-19  free, led by p157\n win-40  ws-3 (task-22a4, Skills show diffs)'s window\n win-45  free\n\nWorkspaces\nws-3 (task-22a4, Skills show diffs), on the Desk\n"), "{text}");
         assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Desk\n"), "{text}");
         assert!(text.contains("\nws-4, on the Shelf\n  dock: p185  left 2/5\n  focus: p185\nws-5, a Desk's planner\n  dock: p280  left 2/5\n  focus: p280\n\nFree windows\nwin-45\n  focus: notes\n  *tab-247 \"notes\"  notes\n\nUnplaced panes\np500 (logs)"), "{text}");
+    }
+
+    #[test]
+    fn a_desk_is_listed_as_a_window_and_names_its_planner_and_the_workspace_it_shows() {
+        let mut listed = reply();
+        listed["desks"] = json!([{ "id": "d1", "desk": true, "workspace": "ws-1", "planner": "ws-5", "deskView": false, "project": "/work/app" }, { "id": "d2", "desk": true, "workspace": "ws-5", "planner": "ws-5", "deskView": true, "project": null }]);
+        let text = workspace(&json!({ "action": "list", "all": true }), &listed);
+        assert!(text.starts_with("Windows\n d1  Desk on /work/app, shows ws-1 (task-1dfb, Fix login)\n d2  Desk, the Desk view: ws-5\n win-19  free"), "{text}");
+        assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Desk, shown in d1\n"), "{text}");
+        assert!(text.contains("\nws-5, d1's planner\n"), "{text}");
+        let planner = json!({ "pane": { "id": "file-1", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } });
+        assert_eq!(opened(&json!({}), &planner), "opened file-1 in ws-5 (d2's planner), tab-9: running");
+        assert_eq!(focused(&json!({ "window": "d2" }), &json!({ "window": null, "front": "d2", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } })), "brought d2 forward");
     }
 
     #[test]
