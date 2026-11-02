@@ -190,6 +190,7 @@ fn a_receiver_that_stops_before_it_answers_carries_the_task_on_once_it_is_back()
     assert_eq!(waiting["waiting"], true, "vm went before it answered: {waiting}");
     vm.exited();
     assert!(!shelf_task(&mbp, &task).is_null(), "mbp keeps the task until vm says it carries on");
+    mbp.kanna(&["task", "start", &task]).fails(1, "is moving to vm");
     vm.unset("KANNA_TRANSFER_EXIT");
     vm.restart();
     within(60, "vm to carry the task on once it's back", || shelf_task(&vm, &task)["held"].is_string());
@@ -219,4 +220,59 @@ fn a_task_a_machine_cant_take_stays_where_it_was_as_it_was() {
     mbp.kanna(&["task", "start", &task]).ok();
     let pane = shelf_task(&mbp, &task)["held"].as_str().unwrap().to_string();
     within(30, "it to carry on here", || screen(&mbp, &pane).contains(&format!("resumed {session}")));
+    mbp.kanna(&["task", "move", &task, "vm"]).fails(1, "has no clone");
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(shelf_task(&mbp, &task)["running"], true, "a machine that refuses before the move leaves the agent running");
+}
+
+fn moved_with_handoff(vm_env: &[(&str, &str)], break_vm: impl Fn(&Daemon)) -> (Daemon, Daemon, String, String) {
+    let mbp = machine("mbp");
+    let vm = Daemon::start_with(vm_env);
+    vm.kanna(&["machine", "name", "vm"]).ok();
+    pair(&mbp, &vm);
+    let (here, _) = (clone(&mbp), clone(&vm));
+    let claude = mock(&mbp, "claude");
+    let (task, folder, session) = stopped_task(&mbp, &here, &claude);
+    let transcript = mbp.dir.join("home/.claude/projects").join(claude_project(&folder)).join(format!("{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+    break_vm(&vm);
+    let moved = mbp.kanna(&["task", "move", &task, "vm", "--json"]).json();
+    assert!(moved["folder"].is_string(), "{moved}");
+    (mbp, vm, task, session)
+}
+
+fn carries_on_from_its_handoff(vm: &Daemon, task: &str, session: &str) {
+    let pane = shelf_task(vm, task)["held"].as_str().unwrap_or_else(|| panic!("{}", shelf_task(vm, task))).to_string();
+    let mut text = String::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        let cmd = ask(vm, "list", json!({}))["panes"].as_array().unwrap().iter().find(|p| p["id"] == pane.as_str()).map_or(String::new(), |p| p["cmd"].as_str().unwrap_or_default().to_string());
+        text = format!("{}\n{cmd}", screen(vm, &pane));
+        if text.contains("mock handoff of session") && text.contains(session) && !text.contains(&format!("resumed {session}")) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let log = std::fs::read_to_string(vm.dir.join("daemon.log")).unwrap_or_default();
+    let restarted = log.contains(&format!("{task}'s claude session didn't resume after the move, so it starts again from its handoff"));
+    assert!(restarted || (text.contains("mock handoff of session") && !text.contains(&format!("resumed {session}"))), "vm's agent starts from the handoff: {text}\n{}", log.lines().filter(|l| l.contains(task)).collect::<Vec<_>>().join("\n"));
+    let entry = shelf_task(vm, task);
+    assert_ne!(entry["session"].as_str(), Some(session), "a new session: {entry}");
+    assert_eq!(entry["message"], "work 1", "the task keeps its first message");
+}
+
+#[test]
+fn a_session_that_cant_be_put_in_place_carries_on_from_the_handoff_its_agent_wrote() {
+    let (_mbp, vm, task, session) = moved_with_handoff(&[], |vm| {
+        std::fs::create_dir_all(vm.dir.join("home/.claude")).unwrap();
+        std::fs::write(vm.dir.join("home/.claude/projects"), "not a folder").unwrap();
+    });
+    carries_on_from_its_handoff(&vm, &task, &session);
+}
+
+#[test]
+fn a_session_that_doesnt_resume_carries_on_from_the_handoff_its_agent_wrote() {
+    let (_mbp, vm, task, session) = moved_with_handoff(&[], |vm| std::fs::write(vm.dir.join("home/.mock-resume-fails"), "").unwrap());
+    carries_on_from_its_handoff(&vm, &task, &session);
 }

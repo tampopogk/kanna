@@ -256,6 +256,12 @@ def main():
         tty.setraw(fd, termios.TCSANOW)
         atexit.register(lambda: termios.tcsetattr(fd, termios.TCSANOW, saved))
     id, resumed = session(sys.argv[1:])
+    if "-p" in sys.argv[1:] or sys.argv[1:2] == ["exec"]:
+        print(f"# Handoff\n\nmock handoff of session {id}: the next step is to finish the draft.")
+        return 0
+    if resumed and os.path.exists(os.path.join(os.environ.get("HOME", "/nonexistent"), ".mock-resume-fails")):
+        out(f"No conversation found with session ID: {id}\r\n")
+        return 1
     out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")

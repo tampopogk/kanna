@@ -680,16 +680,7 @@ pub fn add_worktree(repo: &Path, name: &str, branch: &str, start: Option<&str>) 
     let git = |args: &[&str]| git(repo, args);
     git(&["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} isn't a git repo", repo.display()))?;
     let born = git(&["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
-    let common = git(&["rev-parse", "--git-common-dir"])?;
-    let exclude = repo.join(common).join("info/exclude");
-    let listed = fs::read_to_string(&exclude).unwrap_or_default();
-    let missing: Vec<String> = [format!("/{WORKTREES}/"), format!("/{SCRATCH}/")].into_iter().filter(|line| !listed.lines().any(|l| l.trim() == line)).collect();
-    if !missing.is_empty() {
-        let _ = fs::create_dir_all(exclude.parent().unwrap_or(repo));
-        let start = if listed.is_empty() || listed.ends_with('\n') { "" } else { "\n" };
-        let text = format!("{listed}{start}{}\n", missing.join("\n"));
-        fs::write(&exclude, text).map_err(|e| format!("can't write {}: {e}", exclude.display()))?;
-    }
+    exclude_worktrees(repo)?;
     if taken(repo, name) || taken(repo, branch) {
         return Err(format!("{WORKTREES}/{name} or the branch {branch} is there already"));
     }
@@ -704,6 +695,20 @@ pub fn add_worktree(repo: &Path, name: &str, branch: &str, start: Option<&str>) 
     }
     task_scripts::record_base(Path::new(&folder));
     Ok((folder, branch.to_string()))
+}
+
+pub fn exclude_worktrees(repo: &Path) -> Result<(), String> {
+    let common = git(repo, &["rev-parse", "--git-common-dir"])?;
+    let exclude = repo.join(common).join("info/exclude");
+    let listed = fs::read_to_string(&exclude).unwrap_or_default();
+    let missing: Vec<String> = [format!("/{WORKTREES}/"), format!("/{SCRATCH}/")].into_iter().filter(|line| !listed.lines().any(|l| l.trim() == line)).collect();
+    if !missing.is_empty() {
+        let _ = fs::create_dir_all(exclude.parent().unwrap_or(repo));
+        let start = if listed.is_empty() || listed.ends_with('\n') { "" } else { "\n" };
+        let text = format!("{listed}{start}{}\n", missing.join("\n"));
+        fs::write(&exclude, text).map_err(|e| format!("can't write {}: {e}", exclude.display()))?;
+    }
+    Ok(())
 }
 
 enum Answer {
@@ -813,6 +818,7 @@ pub struct Tasks {
     pub roster: RefCell<Option<Box<dyn Fn() -> Roster>>>,
     pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
     pub payload: RefCell<Option<Box<dyn Fn(String, String, Value, PathBuf, u64)>>>,
+    resuming: RefCell<HashMap<String, (Instant, String)>>,
     asked: RefCell<HashMap<u64, Asked>>,
     away: RefCell<HashMap<String, Away>>,
     refused: RefCell<HashMap<String, Instant>>,
@@ -864,7 +870,7 @@ enum Asked {
     Ask { task: String, birth: String, owner: String, repo: String },
     Grant(Grant),
     Ack,
-    Heads(Box<moving::Moving>),
+    Heads(Box<moving::Asking>),
     Packed(Box<moving::Moving>, String),
     Transfer(moving::Sending),
     Unbundled(moving::Taking),
@@ -980,6 +986,7 @@ impl Tasks {
             roster: RefCell::default(),
             exchange: RefCell::default(),
             payload: RefCell::default(),
+            resuming: RefCell::default(),
             asked: RefCell::default(),
             away: RefCell::default(),
             refused: RefCell::default(),
@@ -1236,6 +1243,9 @@ impl Tasks {
 
     fn startable(&self, entry: &Entry) -> Result<(), KmuxError> {
         self.placed(&entry.repo)?;
+        if let Some(to) = self.moving_to(&entry.id) {
+            return Err(KmuxError::new("moving", format!("{} is moving to {to}: it carries on there", self.short(&entry.id))));
+        }
         if entry.folder.is_some() || entry.held.is_some() {
             return Ok(());
         }
@@ -1780,6 +1790,9 @@ impl Tasks {
         if let Some(tearing) = tearing {
             return self.torn_down(pane, tearing, code);
         }
+        if !self.quitting.borrow().contains_key(pane) && self.resume_failed(pane) {
+            return;
+        }
         self.turns.borrow_mut().remove(pane);
         self.ready.borrow_mut().remove(pane);
         self.warned.borrow_mut().remove(pane);
@@ -2060,7 +2073,7 @@ impl Tasks {
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
             let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
             let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
-            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane))).collect();
+            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).collect();
             woken.sort_by(|a, b| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id)));
             for entry in woken {
                 if busy >= slots {

@@ -1,12 +1,18 @@
 use super::*;
 use crate::replica::Peer;
-use crate::transfer::{self, Homes, Packed, Saved};
+use crate::transfer::{self, Homes, Saved};
 
 pub(super) const OUT: &str = "out";
 
 const IN: &str = "in";
 
 const TAB_FIELDS: &[&str] = &["type", "path", "cwd", "url", "cmd", "line", "args", "view"];
+
+pub(super) struct Asking {
+    id: String,
+    peer: Peer,
+    responder: Responder,
+}
 
 pub(super) struct Moving {
     entry: Entry,
@@ -27,16 +33,24 @@ pub(super) struct Taking {
     responder: Responder,
 }
 
+const HANDOFF_WAIT: Duration = Duration::from_secs(300);
+
+pub(super) const RESUME_WAIT: Duration = Duration::from_secs(30);
+
+const HANDOFF: &str = "This task is about to move to another machine. In case this conversation can't come along, write a handoff for the agent that carries it on there: the goal and where it stands; the decisions made and why; what's done and what's left; the next step; open questions; the key files. Reply with only the handoff, in markdown, and change nothing.";
+
 fn agent_name(command: &str) -> Option<&'static str> {
     agent(command).map(|a| a.names[0]).filter(|name| transfer::moves(name))
 }
 
-fn tabs_of(listed: &Value, workspace: Option<&str>, agent_pane: Option<&str>) -> Vec<Value> {
+fn tabs_of(listed: &Value, workspace: Option<&str>, agent_pane: Option<&str>, folder: &str) -> Vec<Value> {
     let Some(workspace) = workspace else { return vec![] };
+    let inside = |p: &Value, key: &str| string(p, key).is_none_or(|path| path == folder || path.starts_with(&format!("{folder}/")));
     let panes = listed.get("panes").and_then(Value::as_array).cloned().unwrap_or_default();
     panes
         .iter()
         .filter(|p| string(p, "workspace") == Some(workspace) && string(p, "id") != agent_pane)
+        .filter(|p| ["term", "md", "code", "diff", "web"].contains(&string(p, "type").unwrap_or_default()) && inside(p, "path") && inside(p, "cwd"))
         .map(|p| Value::Object(TAB_FIELDS.iter().filter_map(|key| p.get(*key).filter(|v| !v.is_null()).map(|v| (key.to_string(), v.clone()))).collect()))
         .collect()
 }
@@ -50,6 +64,71 @@ fn moved_path(value: &Value, from: &str, to: &str) -> Value {
     }
 }
 
+fn valid_task(id: &str) -> bool {
+    id.len() == 13 && id.starts_with("task-") && id[5..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn valid_branch(repo: &Path, branch: &str) -> bool {
+    !branch.starts_with('-') && git(repo, &["check-ref-format", "--branch", branch]).is_ok()
+}
+
+fn local_agent(command: &str) -> String {
+    let mut words = command.split_whitespace();
+    let Some(first) = words.next() else { return command.to_string() };
+    if !first.starts_with('/') || Path::new(first).is_file() {
+        return command.to_string();
+    }
+    std::iter::once(program(first)).chain(words).collect::<Vec<_>>().join(" ")
+}
+
+fn handoff_args(command: &str, session: &str) -> Option<Vec<String>> {
+    let mut words: Vec<String> = command.split_whitespace().map(String::from).collect();
+    match agent_name(command)? {
+        "claude" => words.extend(["-p".into(), "--resume".into(), session.into(), HANDOFF.into()]),
+        "codex" => words.extend(["exec".into(), "resume".into(), session.into(), HANDOFF.into()]),
+        _ => return None,
+    }
+    Some(words)
+}
+
+fn write_handoff(command: &str, session: &str, folder: &Path) -> Result<String, String> {
+    let args = handoff_args(command, session).ok_or("no handoff for this agent")?;
+    let mut child = Command::new(&args[0]).args(&args[1..]).current_dir(folder).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().map_err(|e| format!("can't run {}: {e}", args[0]))?;
+    let mut stdout = child.stdout.take().ok_or("no output")?;
+    let reading = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        text
+    });
+    let deadline = Instant::now() + HANDOFF_WAIT;
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) if status.success() => break,
+            Some(status) => return Err(format!("it exited with {status}")),
+            None if Instant::now() > deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("no handoff in {}s", HANDOFF_WAIT.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(200)),
+        }
+    }
+    let text = reading.join().unwrap_or_default().trim().to_string();
+    if text.is_empty() {
+        return Err("it wrote nothing".into());
+    }
+    Ok(text)
+}
+
+fn handed_over(doc: &Value, why: &str) -> Option<String> {
+    let handoff = string(doc, "handoff")?;
+    let from = string(doc, "from").unwrap_or("another machine");
+    let branch = string(doc, "branch").unwrap_or("its branch");
+    let pre = string(doc, "pre").unwrap_or("?");
+    let first = string(doc, "message").map_or(String::new(), |m| format!(" The task as it was first given: {m}"));
+    Some(format!("This task moved here from {from}, but its previous agent's conversation couldn't come along ({why}), so you carry it on from the handoff that agent wrote before the move. You're on {branch} at {pre}, with its uncommitted work staged.{first}\n\n{handoff}"))
+}
+
 impl Tasks {
     fn peer_named(&self, to: &str) -> Result<Peer, KmuxError> {
         let machines = self.machines();
@@ -59,7 +138,11 @@ impl Tasks {
         machines.peers.into_iter().find(|p| p.name == to || p.key == to).ok_or_else(|| KmuxError::new("not_found", format!("no machine \"{to}\" among your machines (see kanna machine)")))
     }
 
-    /// Move: stops a Shelf task's agent at its turn's end and sends the task to another machine, where it carries on.
+    pub(super) fn moving_to(&self, task: &str) -> Option<String> {
+        let saved = transfer::under_way(&self.db, OUT).into_iter().find(|t| t.task == task)?;
+        Some(saved.text("to").unwrap_or("another machine").to_string())
+    }
+
     pub(super) fn move_task(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let Some(reference) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
@@ -75,24 +158,51 @@ impl Tasks {
             Ok(peer) => peer,
             Err(error) => return responder.reply(Err(error)),
         };
+        if let Err(error) = self.movable(&entry, &core) {
+            return responder.reply(Err(error));
+        }
+        let project = identity(&entry.repo);
+        let key = peer.key.clone();
+        self.send_to(&key, json!({ "action": "heads", "project": project }), Asked::Heads(Box::new(Asking { id: entry.id, peer, responder })));
+    }
+
+    fn movable(&self, entry: &Entry, core: &CoreHandle) -> Result<(), KmuxError> {
         if entry.birth.is_none() {
-            return responder.reply(Err(KmuxError::new("not_shared", format!("{} isn't on the replicated Shelf: this machine has no endpoint", entry.id))));
+            return Err(KmuxError::new("not_shared", format!("{} isn't on the replicated Shelf: this machine has no endpoint", entry.id)));
         }
         if agent_name(&entry.agent).is_none() {
-            return responder.reply(Err(KmuxError::new("agent", format!("{}'s agent is {}: only claude's and codex's conversations move between machines", entry.id, program(&entry.agent)))));
+            return Err(KmuxError::new("agent", format!("{}'s agent is {}: only claude's and codex's conversations move between machines", entry.id, program(&entry.agent))));
         }
         if !entry.folder.as_deref().is_some_and(|f| Path::new(f).is_dir()) {
-            return responder.reply(Err(KmuxError::new("not_started", format!("{} hasn't started: it runs on whichever machine takes it (choose with kanna task new --on)", entry.id))));
+            return Err(KmuxError::new("not_started", format!("{} hasn't started: it runs on whichever machine takes it (choose with kanna task new --on)", entry.id)));
         }
-        if transfer::under_way(&self.db, OUT).iter().any(|t| t.task == entry.id) {
-            return responder.reply(Err(KmuxError::new("moving", format!("{} is moving already", entry.id))));
+        if let Some(to) = self.moving_to(&entry.id) {
+            return Err(KmuxError::new("moving", format!("{} is moving to {to} already", entry.id)));
         }
-        let id = entry.id.clone();
-        let Some(pane) = entry.held.clone().filter(|pane| alive(&core, pane)) else { return self.stopped_to_move(id, peer, responder) };
-        let working = self.ready.borrow().get(&pane).and_then(|r| r.status()) == Some(Status::Working);
-        if working || self.quitting.borrow().contains_key(&pane) {
-            return responder.reply(Err(KmuxError::new("busy", format!("{id} is in the middle of a turn: move it when its turn is over"))));
+        if let Some(pane) = entry.held.as_deref().filter(|pane| alive(core, pane)) {
+            let working = self.ready.borrow().get(pane).and_then(|r| r.status()) == Some(Status::Working);
+            if working || self.quitting.borrow().contains_key(pane) || self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
+                return Err(KmuxError::new("busy", format!("{} is in the middle of a turn: move it when its turn is over", entry.id)));
+            }
         }
+        Ok(())
+    }
+
+    pub(super) fn heads_came(self: &Rc<Self>, asking: Asking, reply: Result<Value, String>) {
+        let Asking { id, peer, responder } = asking;
+        let theirs = match reply {
+            Ok(reply) => strings(&reply, "heads"),
+            Err(why) => {
+                let code = if why.ends_with("[unreachable]") { "unreachable" } else { "refused" };
+                return responder.reply(Err(KmuxError::new(code, format!("{} didn't take {id}: {why}", peer.name))));
+            }
+        };
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(&id))) };
+        if let Err(error) = self.movable(&entry, &core) {
+            return responder.reply(Err(error));
+        }
+        let Some(pane) = entry.held.clone().filter(|pane| alive(&core, pane)) else { return self.stopped_to_move(id, peer, theirs, responder) };
         log!("kanna-daemon: {id} moves to {}, so its agent quits", peer.name);
         let this = Rc::downgrade(self);
         self.end_agent(&pane.clone(), &entry.agent, move |session| {
@@ -102,13 +212,13 @@ impl Tasks {
             let Some(core) = this.core.upgrade() else { return responder.reply(Err(gone())) };
             let again = Rc::downgrade(&this);
             core.hang_up(&pane.clone(), move |_| match again.upgrade() {
-                Some(this) => this.stopped_to_move(id, peer, responder),
+                Some(this) => this.stopped_to_move(id, peer, theirs, responder),
                 None => responder.reply(Err(gone())),
             });
         });
     }
 
-    fn stopped_to_move(self: &Rc<Self>, id: String, peer: Peer, responder: Responder) {
+    fn stopped_to_move(self: &Rc<Self>, id: String, peer: Peer, theirs: Vec<String>, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(&id))) };
         let agent = agent_name(&entry.agent).unwrap_or_default();
@@ -120,34 +230,29 @@ impl Tasks {
             Ok(found) => found,
             Err(why) => return responder.reply(Err(KmuxError::new("no_transcript", format!("{id} can't move: {why}")))),
         };
-        let project = identity(&entry.repo);
         let this = Rc::downgrade(self);
         core.handle(json!({ "cmd": "list" }), move |listed| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
-            let tabs = tabs_of(&listed, entry.workspace.as_deref(), entry.held.as_deref());
-            let key = peer.key.clone();
-            let moving = Moving { entry, peer, session, transcript, tabs, responder };
-            this.send_to(&key, json!({ "action": "heads", "project": project }), Asked::Heads(Box::new(moving)));
+            let tabs = tabs_of(&listed, entry.workspace.as_deref(), entry.held.as_deref(), &folder.to_string_lossy());
+            this.pack_to_move(Moving { entry, peer, session, transcript, tabs, responder }, theirs);
         });
     }
 
-    pub(super) fn heads_came(self: &Rc<Self>, moving: Moving, reply: Result<Value, String>) {
-        let theirs = match reply {
-            Ok(reply) => strings(&reply, "heads"),
-            Err(why) => {
-                let code = if why.ends_with("[unreachable]") { "unreachable" } else { "refused" };
-                return moving.responder.reply(Err(KmuxError::new(code, format!("{} didn't take {}: {why}", moving.peer.name, moving.entry.id))));
-            }
-        };
+    fn pack_to_move(self: &Rc<Self>, moving: Moving, theirs: Vec<String>) {
         let id = format!("{}-{}", moving.entry.id, replica::wall());
         let folder = PathBuf::from(moving.entry.folder.clone().unwrap_or_default());
         let outbox = transfer::outbox(&self.state);
-        let (task, transcript) = (moving.entry.id.clone(), moving.transcript.0.clone());
+        let (task, transcript, agent, session) = (moving.entry.id.clone(), moving.transcript.0.clone(), moving.entry.agent.clone(), moving.session.clone());
         let token = self.next.get() + 1;
         self.next.set(token);
         self.asked.borrow_mut().insert(token, Asked::Packed(Box::new(moving), id.clone()));
         let events = self.events.clone();
         std::thread::spawn(move || {
+            let handoff = write_handoff(&agent, &session, &folder);
+            if let Err(why) = &handoff {
+                log!("kanna-daemon: {task}'s agent wrote no handoff, so it moves without one: {why}");
+            }
+            let base = crate::task_scripts::base(&folder);
             let packed = (|| {
                 fs::create_dir_all(&outbox).map_err(|e| format!("can't make {}: {e}", outbox.display()))?;
                 let packed = transfer::pack(&folder, &task)?;
@@ -155,7 +260,7 @@ impl Tasks {
                 let joined = transfer::bundle(&folder, &packed.branch, &theirs, &bundle).and_then(|_| transfer::join(&outbox.join(format!("{id}.bin")), &bundle, &transcript));
                 let _ = fs::remove_file(&bundle);
                 match joined {
-                    Ok((bundle, transcript)) => Ok(json!({ "branch": packed.branch, "pre": packed.pre, "wip": packed.wip, "bundle": bundle, "transcript": transcript })),
+                    Ok((bundle, transcript)) => Ok(json!({ "branch": packed.branch, "pre": packed.pre, "wip": packed.wip, "base": base, "bundle": bundle, "transcript": transcript, "handoff": handoff.ok() })),
                     Err(why) => {
                         let _ = transfer::unpack(&folder, &packed);
                         Err(why)
@@ -190,6 +295,8 @@ impl Tasks {
             "tabs": tabs,
             "to": peer.name,
             "branch": made["branch"],
+            "base": made["base"],
+            "handoff": made["handoff"],
             "pre": made["pre"],
             "wip": made["wip"],
             "bundle": made["bundle"],
@@ -238,7 +345,6 @@ impl Tasks {
         }
     }
 
-    /// Sends again the transfers the receiver hasn't said it took, after either side restarted or the receiver was away.
     pub(super) fn resend_transfers(&self) {
         let sending: HashSet<String> = self.asked.borrow().values().filter_map(|a| if let Asked::Transfer(s) = a { Some(s.id.clone()) } else { None }).collect();
         let machines = self.machines();
@@ -352,21 +458,28 @@ impl Tasks {
         Ok(Map::from_iter([("heads".to_string(), json!(transfer::heads(Path::new(&repo))))]))
     }
 
-    /// Takes a task another machine sent: its branch into this machine's clone, its transcript where its agent looks, and it carries on here.
     pub(super) fn take_transfer(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(peer) = string(args, kanna_net::PEER).map(String::from) else { return responder.reply(Err(bad("a transfer comes from another machine's daemon, over a transfer stream"))) };
         self.came_back(&peer);
         let (id, file) = (string(args, "id").unwrap_or_default().to_string(), string(args, "file").unwrap_or_default().to_string());
         if let Some(saved) = transfer::saved(&self.db, &id).filter(|s| s.role == IN) {
-            let _ = fs::remove_file(&file);
-            return match saved.state.as_str() {
-                "started" => responder.reply(Ok(Self::taken_out(&saved, None))),
-                "installed" => self.carry_on(saved, responder),
-                _ => responder.reply(Err(KmuxError::new("failed", format!("this machine couldn't take {}", saved.task)))),
-            };
+            match saved.state.as_str() {
+                "started" => {
+                    let _ = fs::remove_file(&file);
+                    return responder.reply(Ok(Self::taken_out(&saved, None)));
+                }
+                "installed" => {
+                    let _ = fs::remove_file(&file);
+                    return self.carry_on(saved, responder);
+                }
+                _ => {}
+            }
         }
         let task = string(args, "task").unwrap_or_default().to_string();
         let project = string(args, "project").unwrap_or_default();
+        if !valid_task(&task) {
+            return responder.reply(Err(bad(format!("\"{task}\" isn't a task ID"))));
+        }
         let Some(repo) = self.clone_of(project) else { return responder.reply(Err(KmuxError::new("no_clone", format!("{} has no clone of {project}", self.machines().me.name)))) };
         if self.held_here(&task) {
             return responder.reply(Err(KmuxError::new("there", format!("{task} is on this machine already"))));
@@ -375,6 +488,9 @@ impl Tasks {
         let (Some(agent), Some(branch), Some(packed)) = (agent, string(args, "branch").map(String::from), Saved { doc: args.clone(), ..Default::default() }.packed()) else {
             return responder.reply(Err(bad("a transfer needs the task's agent, branch and commits")));
         };
+        if !valid_branch(Path::new(&repo), &branch) {
+            return responder.reply(Err(bad(format!("\"{branch}\" isn't a branch name"))));
+        }
         let name = self.machines().name_of(&peer);
         let mut doc = args.clone();
         if let Some(fields) = doc.as_object_mut() {
@@ -389,9 +505,9 @@ impl Tasks {
         if let Err(error) = self.db.atomically(|conn| transfer::save(conn, &saved)) {
             return responder.reply(Err(KmuxError::new("failed", format!("couldn't save the transfer of {task}: {error}"))));
         }
-        let worktree = if Path::new(&repo).join(WORKTREES).join(&task).exists() && !self.ours(&repo, &task, &packed) { format!("{task}-{}", slug(&name)) } else { task.clone() };
-        let branch = if git(Path::new(&repo), &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok() && !self.ours(&repo, &worktree, &packed) { format!("{branch}-{}", slug(&name)) } else { branch };
         let (sizes, session) = ((args["bundle"].as_u64().unwrap_or(0), args["transcript"].as_u64().unwrap_or(0)), string(args, "transcriptName").unwrap_or_default().to_string());
+        let base = string(args, "base").map(String::from);
+        let handed = args["handoff"].is_string();
         let token = self.next.get() + 1;
         self.next.set(token);
         self.asked.borrow_mut().insert(token, Asked::Unbundled(Taking { id: id.clone(), responder }));
@@ -401,11 +517,17 @@ impl Tasks {
             let taken = (|| {
                 let bundle = PathBuf::from(format!("{file}.bundle"));
                 let bytes = transfer::split(Path::new(&file), sizes.0, sizes.1, &bundle)?;
-                let (folder, branch) = transfer::unbundle(Path::new(&repo), &id, &bundle, &worktree, &branch, &packed)?;
-                let placed = transfer::install(&Homes::here(), agent, Path::new(&folder), &session, &bytes)?;
+                let unbundled = transfer::unbundle(Path::new(&repo), &id, &bundle, &task, &branch, &packed, base.as_deref());
                 let _ = fs::remove_file(&bundle);
+                let (folder, branch) = unbundled?;
+                let placed = transfer::install(&Homes::here(), agent, Path::new(&folder), &session, &bytes);
                 let _ = fs::remove_file(&file);
-                Ok(json!({ "folder": folder, "branch": branch, "placed": placed.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>() }))
+                let lost = match placed {
+                    Ok(_) => None,
+                    Err(why) if handed => Some(format!("its transcript couldn't be put in place: {why}")),
+                    Err(why) => return Err(why),
+                };
+                Ok(json!({ "folder": folder, "branch": branch, "lost": lost }))
             })();
             let _ = events.send(Event::Replica { token, reply: taken });
         });
@@ -415,22 +537,18 @@ impl Tasks {
         self.entries.borrow().iter().any(|e| e.id == task) || self.running.borrow().iter().any(|r| r.entry.id == task)
     }
 
-    fn ours(&self, repo: &str, worktree: &str, packed: &Packed) -> bool {
-        let folder = Path::new(repo).join(WORKTREES).join(worktree);
-        folder.is_dir() && git(&folder, &["rev-parse", "--verify", "HEAD"]).ok().as_deref() == Some(packed.pre.as_str())
-    }
-
     pub(super) fn unbundled(self: &Rc<Self>, taking: Taking, reply: Result<Value, String>) {
         let Some(mut saved) = transfer::saved(&self.db, &taking.id) else { return taking.responder.reply(Err(gone())) };
         match reply {
             Ok(made) => {
                 saved.doc["folder"] = made["folder"].clone();
                 saved.doc["branch"] = made["branch"].clone();
+                saved.doc["lost"] = made["lost"].clone();
                 saved.state = "installed".into();
                 if let Err(error) = self.db.atomically(|conn| transfer::save(conn, &saved)) {
                     return taking.responder.reply(Err(KmuxError::new("failed", format!("couldn't save the transfer of {}: {error}", saved.task))));
                 }
-                log!("kanna-daemon: {}'s worktree is {} and its transcript is in {}", saved.task, string(&made, "folder").unwrap_or(""), made["placed"]);
+                log!("kanna-daemon: {}'s worktree is {}{}", saved.task, string(&made, "folder").unwrap_or(""), string(&made, "lost").map_or(String::new(), |why| format!(", but {why}")));
                 if std::env::var("KANNA_TRANSFER_EXIT").as_deref() == Ok("installed") {
                     log!("kanna-daemon: exits before it answers, as KANNA_TRANSFER_EXIT says");
                     std::process::exit(75);
@@ -452,6 +570,11 @@ impl Tasks {
         if let Some(pane) = pane {
             out.insert("pane".to_string(), json!(pane));
         }
+        for key in ["lost", "why"] {
+            if let Some(text) = saved.text(key) {
+                out.insert(key.to_string(), json!(text));
+            }
+        }
         out
     }
 
@@ -467,6 +590,8 @@ impl Tasks {
                 return responder.reply(Ok(Self::taken_out(&saved, Some(&pane))));
             }
         }
+        let lost = text("lost");
+        let handoff = lost.as_deref().and_then(|why| handed_over(&doc, why));
         let entry = Entry {
             id: saved.task.clone(),
             name: text("name"),
@@ -474,9 +599,9 @@ impl Tasks {
             repo: text("repo").unwrap_or_default(),
             by: text("by"),
             made_at: doc["madeAt"].as_f64().unwrap_or(0.0),
-            agent: text("agent").unwrap_or_else(|| DEFAULT_AGENT.into()),
+            agent: local_agent(&text("agent").unwrap_or_else(|| DEFAULT_AGENT.into())),
             folder: text("folder"),
-            session: text("session"),
+            session: if handoff.is_some() { None } else { text("session") },
             after: strings(&doc, "after"),
             on: strings(&doc, "on"),
             birth: Some(birth),
@@ -492,31 +617,97 @@ impl Tasks {
         }
         let this = Rc::downgrade(self);
         let (tabs, sender_folder, to) = (doc.get("tabs").and_then(Value::as_array).cloned().unwrap_or_default(), text("senderFolder"), entry.folder.clone().unwrap_or_default());
-        log!("kanna-daemon: {} carries on here, resuming its {} session {}", entry.id, program(&entry.agent), entry.session.as_deref().unwrap_or("?"));
-        self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+        let (id, resumed) = (saved.id.clone(), handoff.is_none());
+        let then = Answer::Then(Box::new(move |result: Result<Map, KmuxError>| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
-            let pane = match result {
-                Ok(out) => string(&Value::Object(out), "pane").map(String::from),
-                Err(error) => return responder.reply(Err(error)),
-            };
-            if let Some(pane) = &pane {
-                this.reopen_tabs(pane, &tabs, sender_folder.as_deref().unwrap_or_default(), &to);
-            }
             let mut saved = saved;
             saved.state = "started".into();
+            let pane = match result {
+                Ok(out) => string(&Value::Object(out), "pane").map(String::from),
+                Err(error) => {
+                    log!("kanna-daemon: {} moved here but didn't start: {}", saved.task, error.message);
+                    this.alter(&saved.task, Change::new("stopped").by(Some("daemon")).with("why", json!(error.message)), |e| e.stopped = Some(format!("moved here, but didn't start: {}", error.message)));
+                    saved.doc["why"] = json!(format!("it's here, stopped: {}", error.message));
+                    None
+                }
+            };
+            if let Some(pane) = &pane {
+                if resumed {
+                    this.resuming.borrow_mut().insert(pane.clone(), (Instant::now(), id));
+                }
+                this.reopen_tabs(pane, &tabs, sender_folder.as_deref().unwrap_or_default(), &to);
+            }
             let _ = this.db.atomically(|conn| transfer::save(conn, &saved));
             responder.reply(Ok(Self::taken_out(&saved, pane.as_deref())))
-        })));
+        }));
+        match handoff {
+            None => {
+                log!("kanna-daemon: {} carries on here, resuming its {} session {}", entry.id, program(&entry.agent), entry.session.as_deref().unwrap_or("?"));
+                self.prepare(entry, None, Some("daemon".into()), then);
+            }
+            Some(first) => {
+                log!("kanna-daemon: {} carries on here from its handoff: {}", entry.id, lost.unwrap_or_default());
+                self.start_handed_over(entry, first, then);
+            }
+        }
+    }
+
+    fn start_handed_over(self: &Rc<Self>, entry: Entry, first: String, then: Answer) {
+        let folder = entry.folder.clone().unwrap_or_default();
+        let message = entry.message.clone();
+        let id = entry.id.clone();
+        let this = Rc::downgrade(self);
+        let starting = Starting {
+            entry: Entry { folder: None, session: None, message: Some(first), ..entry },
+            app: None,
+            by: Some("daemon".into()),
+            responder: Answer::Then(Box::new(move |result| {
+                if let Some(this) = this.upgrade() {
+                    this.alter(&id, Change::new("handed over").by(Some("daemon")), |e| e.message = message.clone());
+                }
+                then.reply(result)
+            })),
+        };
+        self.launch(starting, folder, None);
+    }
+
+    pub(super) fn resume_failed(self: &Rc<Self>, pane: &str) -> bool {
+        let Some((at, id)) = self.resuming.borrow_mut().remove(pane) else { return false };
+        if at.elapsed() > RESUME_WAIT {
+            return false;
+        }
+        let Some(saved) = transfer::saved(&self.db, &id) else { return false };
+        let Some(first) = handed_over(&saved.doc, "its session didn't resume here") else { return false };
+        let Some(entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return false };
+        log!("kanna-daemon: {}'s {} session didn't resume after the move, so it starts again from its handoff", entry.id, program(&entry.agent));
+        let fresh = Entry { folder: None, session: None, message: Some(first), ..entry.clone() };
+        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some())).then(uuid).and_then(Result::ok);
+        let command = fresh.command(session.as_deref());
+        self.alter(&entry.id, Change::new("handed over").by(Some("daemon")).with("why", json!("its session didn't resume")), |e| e.session = session.clone());
+        let this = Rc::downgrade(self);
+        self.revive(pane, Some(command), move |result| {
+            if let (Err(error), Some(_)) = (&result, this.upgrade()) {
+                log!("kanna-daemon: the handed-over agent didn't start either: {}", error.message);
+            }
+        });
+        true
     }
 
     fn reopen_tabs(&self, pane: &str, tabs: &[Value], from: &str, to: &str) {
         let Some(core) = self.core.upgrade() else { return };
         for tab in tabs {
             let mut args = moved_path(tab, from, to);
+            let inside = |key: &str| string(&args, key).is_none_or(|path| path == to || path.starts_with(&format!("{to}/")));
+            let kind = string(&args, "type").unwrap_or("?").to_string();
+            if !["term", "md", "code", "diff", "web"].contains(&kind.as_str()) || !inside("path") || !inside("cwd") || (kind == "web" && !string(&args, "url").is_some_and(|u| u.starts_with("http://") || u.starts_with("https://"))) {
+                continue;
+            }
+            if let Some(fields) = args.as_object_mut() {
+                fields.remove("cmd");
+            }
             args["from"] = json!(pane);
             args["tab"] = json!(true);
             args["wait"] = json!(false);
-            let kind = string(&args, "type").unwrap_or("?").to_string();
             core.handle(json!({ "cmd": "open", "args": args }), move |reply| {
                 if let Some(error) = failed(&reply) {
                     log!("kanna-daemon: couldn't reopen a {kind} tab of a task that moved here: {}", error.message);
@@ -526,13 +717,26 @@ impl Tasks {
     }
 }
 
-fn slug(name: &str) -> String {
-    name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_moved_tasks_agent_runs_from_this_machines_path_and_its_handoff_says_where_it_stands() {
+        assert_eq!(local_agent("/Users/alice/bin/claude --model opus"), "claude --model opus", "a path that isn't here becomes the program's name");
+        assert_eq!(local_agent("/bin/sh -c x"), "/bin/sh -c x");
+        assert_eq!(local_agent("codex"), "codex");
+        assert!(valid_task("task-0000beef") && !valid_task("../../x") && !valid_task("task-0000beef/.."));
+        assert_eq!(handoff_args("claude", "s1").unwrap()[..4], ["claude", "-p", "--resume", "s1"]);
+        assert_eq!(handoff_args("codex --yolo", "s1").unwrap()[..5], ["codex", "--yolo", "exec", "resume", "s1"]);
+        assert!(handoff_args("opencode", "s1").is_none());
+        let doc = json!({ "handoff": "# Handoff\nnext: tests", "from": "mbp", "branch": "fix-notes", "pre": "abc123", "message": "Fix the notes" });
+        let first = handed_over(&doc, "its session didn't resume here").unwrap();
+        for part in ["moved here from mbp", "its session didn't resume here", "fix-notes at abc123", "Fix the notes", "next: tests"] {
+            assert!(first.contains(part), "{part}: {first}");
+        }
+        assert!(handed_over(&json!({ "from": "mbp" }), "x").is_none(), "no handoff, no fallback");
+    }
 
     #[test]
     fn a_tasks_tabs_are_its_workspaces_panes_but_its_agent_with_paths_moved_to_the_receivers_worktree() {
@@ -543,7 +747,7 @@ mod tests {
             { "id": "web-4", "type": "web", "workspace": "ws-1", "url": "http://localhost:3000/" },
             { "id": "md-5", "type": "md", "workspace": "ws-2", "path": "/elsewhere.md" },
         ] });
-        let tabs = tabs_of(&listed, Some("ws-1"), Some("term-1"));
+        let tabs = tabs_of(&listed, Some("ws-1"), Some("term-1"), "/Users/me/notes/.kanna-worktrees/task-1");
         assert_eq!(tabs, vec![
             json!({ "type": "md", "path": "/Users/me/notes/.kanna-worktrees/task-1/docs/a.md" }),
             json!({ "type": "term", "cwd": "/Users/me/notes/.kanna-worktrees/task-1/src" }),
@@ -554,6 +758,6 @@ mod tests {
         assert_eq!(moved[0]["path"], "/home/me/repos/notes/.kanna-worktrees/task-1/docs/a.md");
         assert_eq!(moved[1]["cwd"], "/home/me/repos/notes/.kanna-worktrees/task-1/src");
         assert_eq!(moved_path(&json!("/Users/me/notes/.kanna-worktrees/task-10/x"), "/Users/me/notes/.kanna-worktrees/task-1", "/b"), json!("/Users/me/notes/.kanna-worktrees/task-10/x"), "only paths inside the worktree move");
-        assert!(tabs_of(&listed, None, None).is_empty());
+        assert!(tabs_of(&listed, None, None, "/x").is_empty());
     }
 }
