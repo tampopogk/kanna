@@ -368,7 +368,7 @@ impl Tasks {
         let task = string(args, "task").unwrap_or_default().to_string();
         let project = string(args, "project").unwrap_or_default();
         let Some(repo) = self.clone_of(project) else { return responder.reply(Err(KmuxError::new("no_clone", format!("{} has no clone of {project}", self.machines().me.name)))) };
-        if self.entry(&task).is_some() {
+        if self.held_here(&task) {
             return responder.reply(Err(KmuxError::new("there", format!("{task} is on this machine already"))));
         }
         let agent = agent_name(string(args, "agent").unwrap_or_default());
@@ -411,6 +411,10 @@ impl Tasks {
         });
     }
 
+    fn held_here(&self, task: &str) -> bool {
+        self.entries.borrow().iter().any(|e| e.id == task) || self.running.borrow().iter().any(|r| r.entry.id == task)
+    }
+
     fn ours(&self, repo: &str, worktree: &str, packed: &Packed) -> bool {
         let folder = Path::new(repo).join(WORKTREES).join(worktree);
         folder.is_dir() && git(&folder, &["rev-parse", "--verify", "HEAD"]).ok().as_deref() == Some(packed.pre.as_str())
@@ -427,6 +431,10 @@ impl Tasks {
                     return taking.responder.reply(Err(KmuxError::new("failed", format!("couldn't save the transfer of {}: {error}", saved.task))));
                 }
                 log!("kanna-daemon: {}'s worktree is {} and its transcript is in {}", saved.task, string(&made, "folder").unwrap_or(""), made["placed"]);
+                if std::env::var("KANNA_TRANSFER_EXIT").as_deref() == Ok("installed") {
+                    log!("kanna-daemon: exits before it answers, as KANNA_TRANSFER_EXIT says");
+                    std::process::exit(75);
+                }
                 self.carry_on(saved, taking.responder);
             }
             Err(why) => {
@@ -474,7 +482,7 @@ impl Tasks {
             birth: Some(birth),
             ..Default::default()
         };
-        if self.entry(&entry.id).is_none() {
+        if !self.held_here(&entry.id) {
             let change = Change::new("moved").moved(Place::Done, Place::Shelf).by(Some("daemon")).with("from", json!(text("from"))).with("session", opt(entry.session.as_deref()));
             if let Err(error) = self.store(&entry, Place::Shelf, None, Some(change)) {
                 return responder.reply(Err(error));

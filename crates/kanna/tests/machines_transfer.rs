@@ -162,6 +162,42 @@ fn a_stopped_claude_task_and_a_stopped_codex_task_move_to_another_machine_and_ca
     let pane = shelf_task(&vm, &task)["held"].as_str().unwrap().to_string();
     within(30, "vm's codex to resume the same session", || screen(&vm, &pane).contains(&format!("resumed {session}")));
     assert!(Path::new(&there_folder).join("draft.md").is_file());
+
+    let back = vm.kanna(&["task", "move", &task, "mbp", "--json"]).json();
+    let home_again = back["folder"].as_str().unwrap_or_else(|| panic!("{back}")).to_string();
+    assert_eq!(home_again, folder, "back on mbp it gets the worktree it had");
+    assert_eq!(git(Path::new(&home_again), &["diff", "--cached", "--name-status"]), "M\tREADME.md\nA\tdraft.md");
+    let pane = shelf_task(&mbp, &task)["held"].as_str().unwrap().to_string();
+    within(30, "mbp's codex to resume it again", || screen(&mbp, &pane).contains(&format!("resumed {session}")));
+    within(10, "vm to see mbp own it again", || record(&vm, &task)["owner"].as_str() == Some(key(&mbp).as_str()));
+}
+
+#[test]
+fn a_receiver_that_stops_before_it_answers_carries_the_task_on_once_it_is_back() {
+    let mbp = machine("mbp");
+    let mut vm = Daemon::start_with(&[("KANNA_TRANSFER_EXIT", "installed")]);
+    vm.kanna(&["machine", "name", "vm"]).ok();
+    pair(&mbp, &vm);
+    let (here, there) = (clone(&mbp), clone(&vm));
+    let claude = mock(&mbp, "claude");
+    mock(&vm, "claude");
+    let (task, folder, session) = stopped_task(&mbp, &here, &claude);
+    let transcript = mbp.dir.join("home/.claude/projects").join(claude_project(&folder)).join(format!("{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+
+    let waiting = mbp.kanna(&["task", "move", &task, "vm", "--json"]).json();
+    assert_eq!(waiting["waiting"], true, "vm went before it answered: {waiting}");
+    vm.exited();
+    assert!(!shelf_task(&mbp, &task).is_null(), "mbp keeps the task until vm says it carries on");
+    vm.unset("KANNA_TRANSFER_EXIT");
+    vm.restart();
+    within(60, "vm to carry the task on once it's back", || shelf_task(&vm, &task)["held"].is_string());
+    let pane = shelf_task(&vm, &task)["held"].as_str().unwrap().to_string();
+    within(30, "vm's agent to resume the session", || screen(&vm, &pane).contains(&format!("resumed {session}")));
+    within(30, "mbp to let it go", || shelf_task(&mbp, &task).is_null());
+    let worktrees: Vec<_> = std::fs::read_dir(there.join(".kanna-worktrees")).unwrap().flatten().collect();
+    assert_eq!(worktrees.len(), 1, "the transfer sent again doesn't make a second worktree");
 }
 
 #[test]

@@ -106,6 +106,10 @@ impl Daemon {
         let _ = std::fs::remove_file(self.socket());
     }
 
+    pub fn unset(&mut self, key: &str) {
+        self.extra.retain(|(k, _)| k != key);
+    }
+
     pub fn restart(&mut self) {
         self.stop();
         self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
