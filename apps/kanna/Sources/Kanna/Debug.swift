@@ -255,6 +255,7 @@ extension AppController {
             let images: [JSON] = markdown.drawnImages.map { .array([.number(Double($0.width)), .number(Double($0.height))]) }
             return ["text": .string(markdown.text), "zoom": .number(Double(markdown.zoom)), "diagrams": .array(diagrams), "images": .array(images),
                     "render_ms": .number(markdown.renderMs), "parse_ms": .number(markdown.parseMs), "scroll": .number(Double(markdown.scrollTop)),
+                    "top": markdown.top.map { ["text": .string($0.text), "fraction": .number(Double($0.fraction))] } ?? .null,
                     "layout_width": .number(Double(markdown.layoutWidth)), "threads": .array(threads),
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,
                     "active": markdown.activeThread.map { .string($0) } ?? .null, "agent": markdown.agent.map { .string($0) } ?? .null,

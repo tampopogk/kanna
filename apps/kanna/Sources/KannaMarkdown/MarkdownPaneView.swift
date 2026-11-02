@@ -46,6 +46,9 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     private var held: (text: String, compared: MarkdownComparison?)?
     private var poll: Timer?
     private var magnifyObserver: NSObjectProtocol?
+    private var kept: (position: ReadingPosition, top: CGFloat)?
+    private var anchor: ReadingPosition?
+    private var laidZoom: CGFloat = 0
     let bar = DocBar()
     let panel = ThreadPanel()
     public var changeThreads: DocChanger?
@@ -146,11 +149,9 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public func set(markup on: Bool) {
         let on = on && diffRange == nil
         guard on != markup else { return }
-        let position = readingPosition()
         markup = on
         showComments()
         layoutSubtreeIfNeeded()
-        if let position { restoreReadingPosition(position) }
     }
 
     private func showComments() {
@@ -192,8 +193,13 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let side = shown.comments ? ThreadPanel.width : 0
         let rule = shown.overview ? OverviewMetrics.width : 0
         overviewShown = shown.overview
+        let frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side - rule), height: height)
+        let rewraps = anchor != nil || frame.width != scrollView.frame.width || zoom != laidZoom
+        let position = rewraps ? anchor ?? readingPosition() : nil
+        anchor = nil
+        laidZoom = zoom
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
-        scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side - rule), height: height)
+        scrollView.frame = frame
         scrollView.hasVerticalScroller = !shown.overview
         overview.frame = NSRect(x: bounds.width - side - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
         overview.isHidden = !shown.overview
@@ -201,13 +207,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
         panel.frame = NSRect(x: bounds.width - side, y: 0, width: side, height: height)
         updateInset()
-        if overviewShown {
-            if drawnKey != pictureKey { overviewChanged() }
-            updateOverviewViewport()
-        }
         if let y = startScrollY, bounds.height > 0 {
             startScrollY = nil
             scroll(toY: y)
+        } else if let position {
+            restoreReadingPosition(position)
+        }
+        if overviewShown {
+            if drawnKey != pictureKey { overviewChanged() }
+            updateOverviewViewport()
         }
     }
 
@@ -403,38 +411,52 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public func zoom(by step: Int) {
         let steps = Self.zoomSteps, now = zoom
         let target = step == 0 ? 1 : step > 0 ? (steps.first { $0 > now + 0.001 } ?? steps.last!) : (steps.last { $0 < now - 0.001 } ?? steps.first!)
-        let visible = scrollView.contentView.bounds
-        scrollView.setMagnification(target, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+        guard target != now else { return }
+        anchor = readingPosition()
+        scrollView.magnification = target
         needsLayout = true
+        layoutSubtreeIfNeeded()
         onZoom?()
     }
 
-    private struct ReadingPosition {
+    struct ReadingPosition: Equatable {
+        static let top = ReadingPosition(index: -1, fraction: 0)
         let index: Int
-        let offset: CGFloat
+        let fraction: CGFloat
     }
 
-    private func lineTop(at index: Int) -> CGFloat {
+    private func lineRect(at index: Int) -> NSRect {
         let length = textView.textStorage?.length ?? 0
-        guard length > 0 else { return 0 }
+        guard length > 0 else { return .zero }
         let glyph = layoutManager.glyphIndexForCharacter(at: min(index, length - 1))
-        return layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + textView.textContainerOrigin.y
+        return layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).offsetBy(dx: 0, dy: textView.textContainerOrigin.y)
     }
 
-    private func readingPosition() -> ReadingPosition? {
+    private func lineTop(at index: Int) -> CGFloat { lineRect(at: index).minY }
+
+    func readingPosition() -> ReadingPosition? {
         guard let container = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 else { return nil }
-        let visible = scrollView.contentView.bounds
-        guard visible.minY > 1 else { return nil }
-        layoutManager.ensureLayout(for: container)
-        let point = NSPoint(x: 0, y: max(0, visible.minY - textView.textContainerOrigin.y))
-        let index = layoutManager.characterIndexForGlyph(at: layoutManager.glyphIndex(for: point, in: container))
-        return ReadingPosition(index: index, offset: lineTop(at: index) - visible.minY)
+        let top = scrollView.contentView.bounds.minY
+        guard top > 1 else { return .top }
+        if let kept, abs(kept.top - top) < 0.5 { return kept.position }
+        let band = NSRect(x: 0, y: max(0, top - textView.textContainerOrigin.y), width: container.size.width, height: 1)
+        let glyphs = layoutManager.glyphRange(forBoundingRect: band, in: container)
+        let index = layoutManager.characterIndexForGlyph(at: glyphs.length > 0 ? glyphs.location : layoutManager.glyphIndex(for: band.origin, in: container))
+        let line = lineRect(at: index)
+        return ReadingPosition(index: index, fraction: line.height > 0 ? (top - line.minY) / line.height : 0)
     }
 
-    private func restoreReadingPosition(_ position: ReadingPosition) {
+    func restoreReadingPosition(_ position: ReadingPosition) {
         guard let container = textView.textContainer else { return }
+        if position == .top {
+            kept = nil
+            return textView.scroll(.zero)
+        }
         layoutManager.ensureLayout(for: container)
-        textView.scroll(NSPoint(x: 0, y: max(0, lineTop(at: position.index) - position.offset)))
+        textView.sizeToFit()
+        let line = lineRect(at: position.index)
+        textView.scroll(NSPoint(x: 0, y: max(0, line.minY + position.fraction * line.height)))
+        kept = (position, scrollView.contentView.bounds.minY)
     }
 
     @discardableResult
@@ -534,6 +556,15 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var layoutWidth: CGFloat { textView.textContainer?.size.width ?? 0 }
 
     public var scrollTop: CGFloat { scrollView.contentView.bounds.minY }
+
+    public var top: (text: String, fraction: CGFloat)? {
+        guard let position = readingPosition(), let storage = textView.textStorage else { return nil }
+        guard position != .top else { return ("", 0) }
+        let string = storage.string as NSString
+        let line = string.lineRange(for: NSRange(location: min(position.index, string.length), length: 0))
+        let text = storage.attribute(.attachment, at: min(position.index, storage.length - 1), effectiveRange: nil) == nil ? string.substring(with: line) : "[picture at \(position.index)]"
+        return (text.trimmingCharacters(in: .whitespacesAndNewlines), position.fraction)
+    }
 
     public func scroll(toY y: CGFloat) { textView.scroll(NSPoint(x: 0, y: max(0, y))) }
 }
