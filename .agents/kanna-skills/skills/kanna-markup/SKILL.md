@@ -36,6 +36,32 @@ Make the title bar quieter.
 
 The line is where that text is in the HTML, when it's found. Open the marked-up copy (it's relative to the repo root) to see what they mean before you answer.
 
+### Ink
+
+The user can also draw on a doc. Their marks come as one comment, one numbered line per mark, with the note they typed on a mark under it, and a picture of the doc with the ink and the same numbers drawn on:
+
+```
+[kanna comment c2 · docs/specs/tab-container.md:7]
+> ink, 4 marks, numbered in the picture:
+> 1 circle around "Panes only:" (line 7)
+> 2 writing beside line 7, read it in the picture
+> 3 arrow from "The panes inside stay ordinary pa…" (line 23) to after "A tab container is a slot in a sp…" (line 3)
+>   note: say this up front
+> 4 strike through "middle-click or × to close it." (line 14)
+> marked up: .kanna/docs/marks/docs__specs__tab-container.md-c2.png
+```
+
+On a page, marks name parts by CSS path and text, with boxes in page pixels, as page comments do. Always open the picture: it shows what the words can't, such as the user's writing and how far a stroke reaches.
+
+| Mark | Means |
+|---|---|
+| strike, cross | cut it |
+| arrow | move what's at its start to before or after what's at its tip |
+| circle, underline | this: see the note, or the writing beside it; with neither, ask what should change |
+| writing | read it from the picture: a word, a `?`, a correction |
+
+Answer mark by mark, by number, naming what each touched and how you read it, so a misread shows in your reply: `kanna markup reply c2 "1, 2: you circled \"Panes only\" with a ? … 3: moved \"The panes inside…\" after the opening. 4: cut \"middle-click or ×\"."`. Marks whose text you changed leave the doc by themselves.
+
 ## Answering a comment
 
 1. Read the passage in the file (the line is where it is now) and do what the comment asks: change the doc, or answer the question.

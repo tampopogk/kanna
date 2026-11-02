@@ -136,9 +136,9 @@ See [Desks across machines](machines-app.md) for project identity, each app's De
 | Content | Remote task |
 |---|---|
 | Terminal, diff | over the link already |
-| Markdown, code | through the daemon ([file panes](file-panes.md)); images and relative links with `file.read` |
+| Markdown, code | through the daemon ([file panes](file-panes.md)); images and relative links with `file.read` ([files and threads](files-and-threads.md)) |
 | Doc markup threads | `markup.*` through the daemon |
-| `kanna screenshot` | bytes come back over a stream; the daemon writes the file where the agent asked |
+| `kanna screenshot` | the PNG comes back in the app's reply; the daemon writes the file where the agent asked |
 | Web | **[port tunnel](port-tunnels.md):** the dev server stays on the machine's loopback; the app listens on `127.0.0.1:LOCAL` and carries each connection over a stream. The origin stays localhost; bodies are never rewritten. |
 
 ## 8. Where tasks run

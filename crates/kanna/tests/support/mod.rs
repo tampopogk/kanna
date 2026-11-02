@@ -13,7 +13,11 @@ const KANNA: &str = env!("CARGO_BIN_EXE_kanna");
 fn sibling(name: &str, package: &str) -> PathBuf {
     let binary = Path::new(KANNA).with_file_name(name);
     if !binary.exists() {
-        let status = Command::new(env!("CARGO")).args(["build", "-p", package]).status().unwrap();
+        let profile = match binary.parent().and_then(Path::file_name).and_then(|d| d.to_str()) {
+            Some("debug") | None => "dev",
+            Some(dir) => dir,
+        };
+        let status = Command::new(env!("CARGO")).args(["build", "--profile", profile, "-p", package]).status().unwrap();
         assert!(status.success(), "building {package} failed");
     }
     binary
@@ -22,9 +26,10 @@ fn sibling(name: &str, package: &str) -> PathBuf {
 pub struct Daemon {
     pub dir: PathBuf,
     child: Child,
+    daemon: PathBuf,
+    keeper: PathBuf,
     port: u16,
-    binaries: (PathBuf, PathBuf),
-    env: Vec<(String, String)>,
+    extra: Vec<(String, String)>,
 }
 
 impl Daemon {
@@ -40,10 +45,35 @@ impl Daemon {
         Daemon::start_with(&[])
     }
 
-    pub fn start_with(env: &[(&str, &str)]) -> Daemon {
+    pub fn start_with(extra: &[(&str, &str)]) -> Daemon {
         let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let env = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), port, env)
+        let extra = extra.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Daemon::run(Daemon::folder(), sibling("kanna-daemon", "kanna-daemon"), sibling("kanna-keeper", "kanna-keeper"), port, extra)
+    }
+
+    pub fn exited(&mut self) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "the daemon didn't exit");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    pub fn again(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
+        wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
+    }
+
+    pub fn crash_records(&self) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(self.dir.join("state/crashes")) else { return vec![] };
+        let mut found: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+        found.sort();
+        found
     }
 
     pub fn installed(commit: &str) -> Daemon {
@@ -63,14 +93,13 @@ impl Daemon {
         std::fs::write(dir.join("release.json"), release.to_string()).unwrap();
     }
 
-    fn run(dir: PathBuf, daemon: PathBuf, keeper: PathBuf, port: u16, env: Vec<(String, String)>) -> Daemon {
-        let child = Daemon::spawn(&dir, &daemon, &keeper, port, &env);
-        let daemon = Daemon { dir, child, port, binaries: (daemon, keeper), env };
+    fn run(dir: PathBuf, daemon: PathBuf, keeper: PathBuf, port: u16, extra: Vec<(String, String)>) -> Daemon {
+        let child = Daemon::spawn(&dir, &daemon, &keeper, port, &extra);
+        let daemon = Daemon { dir, child, daemon, keeper, port, extra };
         wait_for("the daemon's socket", || UnixStream::connect(daemon.socket()).is_ok());
         daemon
     }
 
-    /// Stops the daemon as a machine going away would, keeping its state to start again.
     pub fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -79,12 +108,12 @@ impl Daemon {
 
     pub fn restart(&mut self) {
         self.stop();
-        self.child = Daemon::spawn(&self.dir, &self.binaries.0, &self.binaries.1, self.port, &self.env);
+        self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
         wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
     }
 
-    fn spawn(dir: &Path, daemon: &Path, keeper: &Path, port: u16, env: &[(String, String)]) -> Child {
-        let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("daemon.log")).unwrap();
+    fn spawn(dir: &Path, daemon: &Path, keeper: &Path, port: u16, extra: &[(String, String)]) -> Child {
+        let log = std::fs::File::options().create(true).append(true).open(dir.join("daemon.log")).unwrap();
         let mut command = Command::new(daemon);
         command.env_clear();
         for key in ["PATH", "USER", "LOGNAME", "TMPDIR"] {
@@ -98,11 +127,10 @@ impl Daemon {
             .env("KANNA_SOCKET", dir.join("kanna.sock"))
             .env("KANNA_STATE_DIR", dir.join("state"))
             .env("KANNA_KEEPER", keeper)
-            .env("KANNA_AGENT_RULES_URL", "none")
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_MACHINE_MDNS", "0")
             .env("KANNA_MACHINE_PORT", port.to_string())
-            .envs(env.iter().cloned())
+            .envs(extra.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
@@ -138,6 +166,7 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let crashed: Vec<String> = self.crash_records().iter().map(|p| format!("{}:\n{}", p.display(), std::fs::read_to_string(p).unwrap_or_default())).collect();
         if let Ok(pid) = std::fs::read_to_string(self.dir.join("state/keeper.pid")) {
             if let Ok(pid) = pid.trim().parse::<i32>() {
                 if pid > 0 {
@@ -146,6 +175,9 @@ impl Drop for Daemon {
             }
         }
         let _ = std::fs::remove_dir_all(&self.dir);
+        if !crashed.is_empty() && !std::thread::panicking() {
+            panic!("a crash record appeared in the test's daemon:\n{}", crashed.join("\n"));
+        }
     }
 }
 
@@ -237,7 +269,7 @@ impl App {
                     }
                     continue;
                 }
-                if message["cmd"] == "diff" || message["cmd"] == "file" {
+                if message["cmd"] == "diff" || message["cmd"] == "file" || message["cmd"] == "markup" {
                     heard.lock().unwrap().push(message["args"].clone());
                 } else if message.get("content").is_some() || (message.get("ok").is_some() && message["id"] != 0) {
                     heard.lock().unwrap().push(message.clone());
@@ -269,7 +301,11 @@ impl App {
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "confirmed": true}));
                 }
                 if message["cmd"].as_str().is_some_and(|c| c.starts_with("debug.") || c == "screenshot") {
-                    let reply = json!({"id": message["id"], "ok": true, "cmd": message["cmd"], "args": message["args"]});
+                    let mut reply = json!({"id": message["id"], "ok": true, "cmd": message["cmd"], "args": message["args"]});
+                    if message["cmd"] == "screenshot" {
+                        reply["png"] = json!("iVBORw0KGgo=");
+                        reply["window"] = message["args"].get("window").cloned().unwrap_or(json!("win-1"));
+                    }
                     let _ = writeln!(writer, "{reply}");
                 }
             }

@@ -17,14 +17,14 @@ pub struct Command {
 
 pub const GROUPS: &[&str] = &["Panes", "Tabs and windows", "Information"];
 
-pub const LOCAL: &[&str] = &["diagrams"];
+pub const LOCAL: &[&str] = &["diagrams", "pipeline"];
 
 pub static COMMANDS: &[Command] = &[
     Command {
         name: "open",
         group: "Panes",
-        summary: "Open a terminal, web, iOS, markdown, code or diff pane and wait until it is running.",
-        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]",
+        summary: "Open a terminal, web, iOS, markdown, code, diff or serial pane and wait until it is running.",
+        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]",
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
@@ -50,6 +50,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna open md docs/specs/presenting.md --diff main --tab", "Show a spec with what this branch changed in it marked."),
             ("kanna open code src/main.rs:42", "Show a source file, highlighted, at line 42; it follows the file on disk."),
             ("kanna open diff --merge-base main", "Show everything this branch changed since it left main, committed or not, with untracked files; it follows the worktree."),
+            ("kanna open serial usbmodem1101 --tab", "Show what the device on /dev/cu.usbmodem1101 sends, at 115200; `kanna serial` reads and writes the same port."),
         ],
         parse: parse_open,
         show: output::opened,
@@ -195,15 +196,16 @@ pub static COMMANDS: &[Command] = &[
         name: "move",
         group: "Panes",
         summary: "Move a pane next to another pane, swap two panes, move a pane to another tab or window, or dock it.",
-        usage: "kanna move PANE --to OTHER [--side left|right|top|bottom|swap]\n       kanna move PANE --tab [TAB|new] [--window WINDOW]\n       kanna move PANE --window WINDOW|new\n       kanna move PANE --dock [left|right] [--window WINDOW|new]",
+        usage: "kanna move PANE --to OTHER [--side left|right|top|bottom|swap]\n       kanna move PANE --tab [TAB|new] [--window WINDOW]\n       kanna move PANE --window WINDOW|new\n       kanna move PANE --dock [left|right] [--window WINDOW|new]\n       kanna move PANE --background",
         options: &[
             ("--to OTHER", "The pane to move next to."),
             ("--side SIDE", "left, right, top or bottom of OTHER (takes half its space), or swap (default)."),
             ("--tab [TAB|new]", "Move into that tab, or a new tab (the default). Undocks a docked pane."),
             ("--window WINDOW|new", "Move into a new tab of that window (as --tab new --window), or a new window."),
             ("--dock [left|right]", "Make it its window's docked pane (or that window's), on the left (default) or right edge; or move the docked pane to that edge. A pane already docked there moves to a new tab."),
+            ("--background", "Put it in its task's workspace's background: still the task's and running, but in no tab and never drawn."),
         ],
-        notes: "Moving a docked pane to a tab, a window or beside a pane undocks it. A docked pane can't be split: --to it only swaps. A frozen docked pane doesn't move, and nothing moves onto it or into its dock. A docked pane is a running task, so --dock moves only the pane that's docked already: start a task with `kanna task start`. A task's agent is frozen.",
+        notes: "Moving a docked pane to a tab, a window or beside a pane undocks it. A docked pane can't be split: --to it only swaps. A frozen docked pane doesn't move, and nothing moves onto it or into its dock. A docked pane is a running task, so --dock moves only the pane that's docked already: start a task with `kanna task start`. A task's agent is frozen. A run's stages run in its task's background; `kanna move PANE --tab` shows one, and --background puts it back.",
         examples: &[
             ("kanna move logs --to server --side bottom", "Put logs below server."),
             ("kanna move logs --window new", "Move logs into a new window."),
@@ -228,7 +230,13 @@ pub static COMMANDS: &[Command] = &[
                 }
                 out.insert("dock".into(), json!(edge.unwrap_or_else(|| "left".into())));
             }
-            if !["to", "tab", "window", "dock"].iter().any(|k| out.contains_key(*k)) {
+            if args.flag("--background") {
+                if out.len() > 1 {
+                    return Err(usage("move", "--background goes on its own"));
+                }
+                out.insert("background".into(), json!(true));
+            }
+            if !["to", "tab", "window", "dock", "background"].iter().any(|k| out.contains_key(*k)) {
                 return Err(usage("move", "say where: --to OTHER, --tab [TAB|new], --window WINDOW|new or --dock [left|right]"));
             }
             Ok(Value::Object(out))
@@ -344,14 +352,16 @@ pub static COMMANDS: &[Command] = &[
         name: "task",
         group: "Tabs and windows",
         summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
+        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
         options: &[
             ("--agent CMD", "new: the agent to start (default: claude)."),
-            ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until they're all done. edit: replaces the list, and none clears it."),
+            ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
             ("--on MACHINE,...", "new: the machines it may run on (see `kanna machine`); without it, any of your machines with a clone of the repo and a free runner."),
+            ("--include-done", "list: also the done tasks, newest first: with QUERY, every one that matches; without, the 5 done last."),
             ("--keep", "done: end it without the repo's tasks.teardown, keeping its worktree and branch."),
+            ("--all", "list: every repo's tasks, not only the one you're in."),
         ],
-        notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Each Kanna.app has its own Desk; the Shelf is every app's. Pick claims a task for Kanna.app's Desk, and shelve gives it back to the Shelf. A Desk holds up to three of a repo's tasks, one of them active. Activate and park are Kanna.app's, which the CLI starts if it isn't running: activating shows the task as it was on the Desk your terminal is on, else on its project's Desk (the one Kanna.app had in front last), else a new one, and the task active before stays on the Desk; activating a task a Desk shows brings that window forward instead. Parking (⌘.) shows its Desk's Desk view, the planning agent with the Desk's tasks and the Shelf, and the task stays active and running. Done closes the task's panes, ending its agent and terminals; its Desk shows the Desk view. Whether a task runs and where it is are separate. Start runs a task where it is: a Shelf task gets its worktree, branch and agent and stays on the Shelf, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Pick (Move to Desk) moves a Shelf task to the Desk, starting it if it's stopped; an app's Desk holds three tasks per repo. Shelve (Move to Shelf) moves a Desk task back to the Shelf as it is, running or stopped, freeing its place on the Desk. The old verbs defer and pull still work, as shelve and activate. A Shelf task can wait for other tasks (--after): it's blocked, and starting or picking it is refused until they're all done; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. A repo's tasks.setup (`kanna config schema`) runs in a new worktree's agent terminal before the agent starts, once per worktree; if it fails the task stops, `task start` starts the agent anyway, and `task setup` runs it again (in a Setup tab of a running task). Done runs tasks.teardown in the task's agent pane, its tabs closed: the task is Done once it succeeds, and a merged task's worktree and branch are removed (an unmerged one's kept); if it fails, the task stays where it is with its pane showing why, `task done` runs it again and `task done --keep` ends the task without it. A task's name is its docked pane's name, and a Shelf task's own until it starts; `task name` sets either, and a Shelf task keeps its new name when it starts. A Shelf task's first message never changes: to change it, make a new task and take the old one off with `task done`. Send leaves a message for a task's agent, or for the repo's planning agent (planner), from the task you run it in, the planner, or else you: Kanna types it into the agent's terminal as a prompt, [message from SENDER] TEXT, once the agent's turn is over and it's at its prompt (never while it asks you something, nor while you're typing there), several at once as one prompt, oldest first. A stopped Shelf task with a message runs for it, as one of the repo's shelf.runners, and a running one gets it rather than being stopped at its turn's end; a stopped Desk task gets it when you start it; a done task takes none. `task messages` lists a task's messages, sent and received, delivered or waiting, or every message. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own workspace, which a Desk shows while the task is active on it.",
+        notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Each Kanna.app has its own Desk; the Shelf is every app's. Pick claims a task for Kanna.app's Desk, and shelve gives it back to the Shelf. A Desk holds up to three of a repo's tasks, one of them active. Activate and park are Kanna.app's, which the CLI starts if it isn't running: activating shows the task as it was on the Desk your terminal is on, else on its project's Desk (the one Kanna.app had in front last), else a new one, and the task active before stays on the Desk; activating a task a Desk shows brings that window forward instead. Parking (⌘.) shows its Desk's Desk view, the planning agent with the Desk's tasks and the Shelf, and the task stays active and running. Done closes the task's panes, ending its agent and terminals; its Desk shows the Desk view. Whether a task runs and where it is are separate. Start runs a task where it is: a Shelf task gets its worktree, branch and agent and stays on the Shelf, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Pick (Move to Desk) moves a Shelf task to the Desk, starting it if it's stopped; an app's Desk holds three tasks per repo. Shelve (Move to Shelf) moves a Desk task back to the Shelf as it is, running or stopped, freeing its place on the Desk. The old verbs defer and pull still work, as shelve and activate. A Shelf task can wait for other tasks (--after): it's blocked, and starting or picking it is refused until each is done or ready; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. Ready marks a started task's work built, its tests passing, at its worktree's head (refused with uncommitted changes), and `task ready clear` clears it. A blocked task whose blockers are ready starts stacked on them: from the one blocker's ready head, or from main with each one's merged in (if they conflict, it stays blocked). When a ready task's branch moves it stops being ready, and every task stacked on it is stale, down the chain: each gets a message from kanna to merge what moved, rerun its tests and run `task ready set` again, which is refused until its bases are in its branch and none is stale. A stacked task merges after its bases, as `task list` says; once a base is in main, the task is told to merge main. A repo's tasks.setup (`kanna config schema`) runs in a new worktree's agent terminal before the agent starts, once per worktree; if it fails the task stops, `task start` starts the agent anyway, and `task setup` runs it again (in a Setup tab of a running task). Done runs tasks.teardown in the task's agent pane, its tabs closed: the task is Done once it succeeds, and a merged task's worktree and branch are removed (an unmerged one's kept); if it fails, the task stays where it is with its pane showing why, `task done` runs it again and `task done --keep` ends the task without it. A task's name is its docked pane's name, and a Shelf task's own until it starts; `task name` sets either, and a Shelf task keeps its new name when it starts. A Shelf task's first message never changes: to change it, make a new task and take the old one off with `task done`. Send leaves a message for a task's agent, or for the repo's planning agent (planner), from the task you run it in, the planner, or else you: Kanna types it into the agent's terminal as a prompt, [message from SENDER] TEXT, once the agent's turn is over and it's at its prompt (never while it asks you something, nor while you're typing there), several at once as one prompt, oldest first. A stopped Shelf task with a message runs for it, as one of the repo's shelf.runners, and a running one gets it rather than being stopped at its turn's end; a stopped Desk task gets it when you start it; a done task takes none. `task messages` lists a task's messages, sent and received, delivered or waiting, or every message. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own workspace, which a Desk shows while the task is active on it.",
         examples: &[
             ("kanna task new \"Fix the page_comments pinch\" \"The mark drifts when you pinch; find out why and add a test\"", "Add a task to this repo's Shelf."),
             ("kanna task new \"Release notes\" \"Write the 0.9 notes\" --after 1dfb,c0ff", "Add a task that can't start until task-1dfb and task-c0ff are done."),
@@ -361,8 +371,14 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task pick 3f9a", "Pick a task off the Shelf onto the Desk, starting it if it's stopped."),
             ("kanna task stop 3f9a", "End a task's agent and hang up its terminals, leaving it and its tabs where they are; start it again to resume its conversation and rerun its terminals."),
             ("kanna task setup 3f9a", "Run the repo's tasks.setup in task-3f9a's worktree again: then its agent, if it's stopped."),
-            ("kanna task list", "Every task, where it is (the Desk or the Shelf) and whether it runs."),
-            ("kanna task list resume agent", "Only the tasks with both words in their name or first message."),
+            ("kanna task list", "This repo's tasks, the Desk's then the Shelf's, and their state: working, idle, needs you, stopped, blocked, ready, stale (with what it's behind), merged (its branch is in main) or replied (its message to the planner waits); a stacked task says what it merges after."),
+            ("kanna task ready set task-3f9a", "Its work is finished and its tests pass (from its own terminal, plain `kanna task ready set`), so the tasks waiting for it can start on its branch."),
+            ("kanna task ready clear task-3f9a", "Its work isn't finished after all: tasks already stacked on it aren't affected."),
+            ("kanna task list --all", "Every repo's tasks, naming the repo of those that aren't this one's."),
+            ("kanna task list resume agent", "Only the tasks with both words in their name, first message or branch."),
+            ("kanna task list task-1dfb", "The task task-1dfb, found by a start of its ID (or its agent's pane ID, like term-12); if it's done, when, and its branch if that's still there."),
+            ("kanna task list send enter --include-done", "Also the done tasks with both words, to see if the work was done already."),
+            ("kanna task list --include-done", "Also the 5 tasks done last."),
             ("kanna task park agent", "Show the Desk view of the Desk the task docked as agent is active on; it stays active. From its terminal, leave out agent."),
             ("kanna task activate agent", "Make the task docked as agent the active one on your Desk (the one your terminal is on), else on its project's Desk."),
             ("kanna task name agent \"Tab bar light mode\"", "Name the task docked as agent; from its terminal, leave out agent."),
@@ -375,7 +391,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
         ],
         parse: |args| {
-            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done"))?;
+            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done"))?;
             let action = match action.as_str() {
                 "defer" => "shelve".to_string(),
                 "pull" => "activate".to_string(),
@@ -397,6 +413,15 @@ pub static COMMANDS: &[Command] = &[
             let mut out = json!({ "action": action });
             match action.as_str() {
                 "list" => {
+                    if args.flag("--all") {
+                        out["all"] = json!(true);
+                    }
+                    if let Ok(repo) = repo_here() {
+                        out["repo"] = json!(repo);
+                    }
+                    if args.flag("--include-done") {
+                        out["done"] = json!(true);
+                    }
                     if let Some(query) = args.rest() {
                         out["query"] = json!(query);
                     }
@@ -431,6 +456,15 @@ pub static COMMANDS: &[Command] = &[
                 "stop" => {
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
+                }
+                "ready" => {
+                    match args.positional().as_deref() {
+                        Some("set") => {}
+                        Some("clear") => out["action"] = json!("unready"),
+                        _ => return Err(usage("task", "ready needs set or clear: kanna task ready set|clear [TASK]")),
+                    }
+                    let task = args.positional().or_else(|| caller());
+                    out["task"] = json!(task.ok_or_else(|| usage("task", "ready set and ready clear need a TASK, or run them from the task's terminal"))?);
                 }
                 "setup" => {
                     let task = args.positional().or_else(|| caller());
@@ -476,9 +510,9 @@ pub static COMMANDS: &[Command] = &[
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "done needs a TASK (see `kanna task list`)"))?);
                 }
-                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done)"))),
+                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done)"))),
             }
-            if ["edit", "start", "stop", "setup", "pick", "shelve", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+            if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
                 if let Some(by) = caller() {
                     out["by"] = json!(by);
                 }
@@ -542,10 +576,10 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "diagrams",
         group: "Information",
-        summary: "Check that a markdown file's mermaid diagrams draw in Kanna, without opening anything.",
+        summary: "Check that a markdown file's mermaid diagrams and call trees draw in Kanna, without opening anything.",
         usage: "kanna diagrams check FILE.md...",
         options: &[],
-        notes: "Prints FILE:LINE: message for each ```mermaid block that won't draw, LINE being its fence line: merman can't parse it, or Kanna.app doesn't draw its type. Then `N diagrams, all draw`, or exits 1 saying how many don't. `kanna open md` checks the same and prints the failures after it opens the pane.\nNeeds no Kanna.app or daemon. It can't see labels that overlap or clip: take `kanna screenshot PANE` of the markdown pane and look.",
+        notes: "Prints FILE:LINE: message for each ```mermaid block that won't draw, LINE being its fence line: merman can't parse it, or Kanna.app doesn't draw its type. For a ```calltree block, LINE is the line at fault: a call that isn't NAME  PATH:LINE, an indent that jumps a level, a call before any process, a hop with no process after it, a repo path that doesn't exist or a line past its file's end. Then `N diagrams, all draw`, or exits 1 saying how many don't. `kanna open md` checks the same and prints the failures after it opens the pane.\nNeeds no Kanna.app or daemon. It can't see labels that overlap or clip: take `kanna screenshot PANE` of the markdown pane and look.",
         examples: &[
             ("kanna diagrams check docs/specs/plan.md", "Check one doc's diagrams."),
             ("kanna diagrams check docs/specs/*.md --json", "Check many; the count and the failures as JSON."),
@@ -565,19 +599,62 @@ pub static COMMANDS: &[Command] = &[
         show: |_, _| String::new(),
     },
     Command {
+        name: "pipeline",
+        group: "Information",
+        summary: "Check a pipeline of the software factory, or list the repo's, with each one's worst case.",
+        usage: "kanna pipeline list\n       kanna pipeline check NAME|FILE",
+        options: &[],
+        notes: "A pipeline is .kanna/pipelines/NAME.kojo in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/kojo.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it, and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
+        examples: &[
+            ("kanna pipeline check feature", "Check .kanna/pipelines/feature.kojo of this repo."),
+            ("kanna pipeline check ~/work/app/.kanna/pipelines/bugfix.kojo --json", "Check a file; its errors, warnings and worst case as JSON."),
+            ("kanna pipeline list", "The repo's pipelines, each valid with its worst case, or how many errors it has."),
+        ],
+        parse: |args| match args.positional().as_deref() {
+            Some("list") => Ok(json!({ "action": "list" })),
+            Some("check") => {
+                let pipeline = args.positional().ok_or_else(|| usage("pipeline", "check needs a NAME or a FILE"))?;
+                Ok(json!({ "action": "check", "pipeline": pipeline }))
+            }
+            Some(other) => Err(usage("pipeline", &format!("unknown action \"{other}\" (list or check)"))),
+            None => Err(usage("pipeline", "missing list or check")),
+        },
+        show: |_, _| String::new(),
+    },
+    Command {
+        name: "run",
+        group: "Information",
+        summary: "Build a task's change through a pipeline: start a run from the task's terminal, list runs, show one, read its log, resume a paused one, or stop it.",
+        usage: "kanna run start PIPELINE [--request FILE|TEXT]\n       kanna run list [--all]\n       kanna run show [RUN] [--json]\n       kanna run log [RUN]\n       kanna run stop [RUN]\n       kanna run resume [RUN] [TEXT]\n       kanna run done [pass|fail] [--answer FILE]\n       kanna run need TEXT",
+        options: &[
+            ("--request FILE|TEXT", "start: what the run builds, given to every agent stage: a file's text, or the text itself. Default: the task's first message."),
+            ("--all", "list: every repo's runs, not only this repo's."),
+            ("--answer FILE", "done: the stage's final answer. Default: the file in $KANNA_ANSWER, which the stage's prompt names."),
+        ],
+        notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal in the task's workspace's background, in no tab until you show it with kanna move PANE --tab (kanna move PANE --background puts it back). The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: it removes its worktree, keeps its branch and tells the task's agent the branch is ready, with how to take it (git merge --ff-only run/TASK-N in the task's worktree), as it tells it when the run is stuck, waits on you or stops. The task's agent decides whether to merge it; from the task's worktree the change goes to main as any task's work. Closing the task stops its live runs.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. Agent stages take any of Kanna's agents (claude, codex, opencode, agy), which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, show and log take the latest run of the task the terminal is in, and stop and resume its live run, refusing with the list when it has several. A task can have any number of runs at once, each on its own branch and worktree; each run's budget is its own, and a run over it waits and tells the task's agent. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
+        examples: &[
+            ("kanna run start feature", "Build this task's change through .kanna/pipelines/feature.kojo."),
+            ("kanna run start bugfix --request notes/bug.md", "Run bugfix.kojo with the bug's write-up as the request."),
+            ("kanna run show --json", "This task's latest run: its revision, every visit with its verdict and answer, and the worker running now."),
+            ("kanna run log run-7f3a", "What happened in run-7f3a, oldest first."),
+            ("kanna run resume \"Use blue.\"", "Answer the stage this task's run paused on; its agent carries on with that."),
+            ("kanna run stop", "Stop this task's run where it is; its branch is kept."),
+        ],
+        parse: parse_run,
+        show: output::run,
+    },
+    Command {
         name: "status",
         group: "Information",
-        summary: "Explain an agent pane's status, or check the rules site for new status rules now.",
-        usage: "kanna status explain PANE\n       kanna status explain --file SCREEN --agent AGENT\n       kanna status update",
+        summary: "Explain an agent pane's status.",
+        usage: "kanna status explain PANE",
         options: &[
             ("--file SCREEN", "A saved screen: text (as `kanna read` prints it) or a corpus case (JSON with rows, title, progress and cliVersion)."),
             ("--agent AGENT", "Whose rules judge the saved screen: claude, codex, …"),
         ],
-        notes: "An agent pane's status (working, needs-you, idle, exited) is in `kanna task list`, and in `kanna workspace list --all --json`. explain shows the agent and its version, where its status came from (the agent's own OSC 7501 report, with the record, which wins when there is one, or the rules), the rules file and where it came from, the rule that matched and the text it matched.\nRules: bundled in Kanna, from the rules site (checked every 30 minutes), or your own in ~/.config/kanna/agent-rules/<agent>.json, which always wins and reloads when you save it.",
+        notes: "An agent pane's status (working, needs-you, idle, exited) is in `kanna task list`, and in `kanna workspace list --all --json`. It comes only from the agent's own report (OSC 7501). explain shows the agent, its version and the version Kanna needs, and the records it has reported, the root one first.",
         examples: &[
             ("kanna status explain term-3", "Why term-3's agent shows the status it does."),
-            ("kanna status explain --file screen.txt --agent claude", "How Claude's rules judge a saved screen."),
-            ("kanna status update", "Fetch new rules from the rules site now."),
         ],
         parse: parse_status,
         show: output::status,
@@ -599,6 +676,43 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_toast,
         show: output::toast,
+    },
+    Command {
+        name: "serial",
+        group: "Panes",
+        summary: "List serial ports, and read, write, reset or borrow the port a serial pane has open.",
+        usage: "kanna serial list\n       kanna serial read PANE [--since T|--last N] [--follow] [--until REGEX [--timeout S]] [--raw]\n       kanna serial send PANE TEXT [--hex] [--no-ending]\n       kanna serial reset PANE [--hold MS]\n       kanna serial set PANE [--baud N] [--line-ending lf|crlf|cr]\n       kanna serial borrow PANE|PORT -- CMD...\n       kanna serial log PANE",
+        options: &[
+            ("--since T", "read: rows from T on, a time today (14:37:40.118, as send and reset print) or a duration back (10s, 2m)."),
+            ("--last N", "read: the last N rows."),
+            ("--follow", "read: keep printing rows as they come, through unplugging, until interrupted."),
+            ("--until REGEX", "read: follow until a line the device sent matches, print it and exit 0; exit 1 after --timeout."),
+            ("--timeout S", "read --until: seconds to wait (default 30)."),
+            ("--raw", "read: only what the device sent, as its bytes."),
+            ("--hex", "send: TEXT is hex bytes (1b 5b 41), sent with no line ending."),
+            ("--no-ending", "send: leave off the pane's line ending."),
+            ("--hold MS", "reset: how long to hold reset (default 100)."),
+        ],
+        notes: "Kanna's daemon owns each port, so a serial pane (kanna open serial PORT), these commands and an agent share one connection. Rows print as TIME TEXT; → marks a line sent to the device and # one from Kanna (connected, unplugged, back, reset, lent). read without --since or --last prints the rows kept in memory (the last 10,000); with --follow or --until and neither, it starts from now, so an old boot banner doesn't match. Bytes that aren't text show as \\xNN. Every row is also appended to the port's log file in the state folder (kanna serial log PANE), to grep a whole session.\nborrow lends the port to CMD, a flash for example: the pane lets go of the port, CMD runs here, and the pane takes the port back when CMD exits (or this command is killed); it exits with CMD's code. With PORT (a path or USB vid:pid), a script needn't know the pane; with no pane open on the port it just runs CMD.\nsend, reset and set fail with unplugged or lent while the port isn't there to use.",
+        examples: &[
+            ("kanna serial list", "The ports plugged in, by USB name, and the panes that have each open."),
+            ("kanna serial read serial-1 --until 'app: ready|Guru Meditation' --timeout 20", "Wait for the firmware to boot, or to crash."),
+            ("kanna serial send serial-1 'wifi status'", "Type a line to the device's console."),
+            ("kanna serial borrow serial-1 -- idf.py flash", "Flash while the pane lends the port, and watch it boot again after."),
+        ],
+        parse: crate::serial::parse,
+        show: |_, _| String::new(),
+    },
+    Command {
+        name: "crashes",
+        group: "Information",
+        summary: "List Kanna's crash records, newest first, with their stacks and the macOS crash report that matches each.",
+        usage: "kanna crashes [--all]\n       kanna crashes dismiss [RECORD]",
+        options: &[("--all", "Also list the records already dismissed (from the crash banner, or with dismiss).")],
+        notes: "Kanna.app, the daemon and the keeper each write a record in the state folder's crashes/ before they die of a bug: the reason, the crashing thread's stack, the build and the panes open. A record's report is the .ips in ~/Library/Logs/DiagnosticReports of the same process and pid, when macOS wrote one. dismiss takes away the crash banner: for RECORD and every older record, or all of them.",
+        examples: &[("kanna crashes", "The crashes not yet dismissed."), ("kanna crashes --all --json", "Every record, as the daemon has it.")],
+        parse: parse_crashes,
+        show: output::crashes,
     },
     Command {
         name: "quiz",
@@ -641,12 +755,31 @@ pub static COMMANDS: &[Command] = &[
         show: output::projects,
     },
     Command {
+        name: "schedule",
+        group: "Information",
+        summary: "Prompt an agent at set times: a schedule leaves a task or the planning agent a message, which it gets when its turn is over.",
+        usage: "kanna schedule add RULE TARGET PROMPT... [--name NAME] [--repo DIR]\n       kanna schedule list [--repo DIR]\n       kanna schedule remove NAME|ID [--repo DIR]",
+        options: &[
+            ("--name NAME", "add: a name to remove it by, one word, unique in its repo. Default: none; it's known by its ID (s3)."),
+            ("--repo DIR", "The repo the schedule belongs to, and whose planning agent planner means. Default: the repo you're in."),
+        ],
+        notes: "RULE is two words in local time, quoted or not: daily 09:00, weekdays 18:00, weekends 10:00, mon,thu 10:30, every 30m or every 2h. TARGET is a task (any form kanna task list takes) or planner, the repo's planning agent. At each time, the daemon leaves the target a message, as kanna task send does, from \"schedule NAME\": the agent gets it as [message from schedule NAME] PROMPT when its turn is over, never mid-turn, and a stopped Shelf task runs for it. One message waits at a time: a time that comes while the last is still waiting leaves no second. A time missed while the Mac slept or Kanna wasn't running fires once when it's back. Every repo has a schedule named quiz (daily 09:00, planner) that prompts the planning agent to offer a quiz if anything landed on main; remove it like any other. A NAME is looked up in this repo first.",
+        examples: &[
+            ("kanna schedule add 'weekdays 17:30' planner \"Summarise what landed today.\" --name evening", "Prompt this repo's planning agent every weekday at 17:30."),
+            ("kanna schedule add every 2h 71af \"Pull main and run the tests.\"", "Prompt task 71af every two hours."),
+            ("kanna schedule list", "Every schedule, when it next fires, and whether its message is waiting."),
+            ("kanna schedule remove evening", "Remove the schedule named evening."),
+        ],
+        parse: parse_schedule,
+        show: output::schedule,
+    },
+    Command {
         name: "project",
         group: "Information",
         summary: "Import a project into ~/.kanna-v4/repos, where Kanna keeps every project at the same place on each of your machines: a copy, leaving the original as it is.",
         usage: "kanna project import PATH [--json]",
         options: &[("--json", "What was imported: from, to, the worktrees copied, those left with the original, the agents' sessions carried over, the tasks and terminals started again, and the files that still name the old path.")],
-        notes: "Kanna opens Desks and runs tasks only for a project at its place in ~/.kanna-v4/repos: OWNER/NAME from its origin remote (github.com/a/app is a/app), or local/NAME with none. import copies the project PATH is in (a worktree's repo) there, whole: .git, uncommitted and untracked work, stashes, local branches and its worktrees in .kanna-worktrees, as APFS clones where it can, which take no space. PATH stays as it was; Kanna still refuses it, and you can delete it once you're happy with the copy. Worktrees outside the folder stay with the original and are listed. It stops the project's running tasks and terminals first, and starts them again in the copy, each agent resuming its conversation. Kanna's records follow the copy: the tasks, messages, recent projects, planners and terminal folders in kanna.db, Claude's conversation and memory folders (copied), and the sessions codex, copilot and opencode keep by folder (pointed at the copy). Then it lists the files that still name PATH, from a quick search of ~/.claude, ~/.agents, your shell's files and the repo, for you to change. It refuses when another clone of the same remote is at the place already, saying both, and when it runs in a terminal in the project, which it would stop. On another machine, run it there: kanna --host MACHINE project import '~/work/app'.",
+        notes: "Kanna opens Desks and runs tasks only for a project at its place in ~/.kanna-v4/repos: OWNER/NAME from its origin remote (github.com/a/app is a/app), or local/NAME with none. import copies the project PATH is in (a worktree's repo) there, whole: .git, uncommitted and untracked work, stashes, local branches and its worktrees in .kanna-worktrees, as APFS clones where it can, which take no space. PATH stays as it was; Kanna still refuses it, and you can delete it once you're happy with the copy. Worktrees outside the folder stay with the original and are listed. It stops the project's running tasks and terminals first, and starts them again in the copy, each agent resuming its conversation. Kanna's records follow the copy: the tasks, messages, recent projects, planners and terminal folders in kanna.db, Claude's conversation and memory folders (copied), and the sessions codex and opencode keep by folder (pointed at the copy). Then it lists the files that still name PATH, from a quick search of ~/.claude, ~/.agents, your shell's files and the repo, for you to change. It refuses when another clone of the same remote is at the place already, saying both, and when it runs in a terminal in the project, which it would stop. On another machine, run it there: kanna --host MACHINE project import '~/work/app'.",
         examples: &[("kanna project import ~/work/app", "Copy ~/work/app to ~/.kanna-v4/repos/OWNER/NAME and move its tasks and terminals to the copy."), ("kanna project import '~/work/app'", "The same, with ~ as the daemon's machine has it: with --host MACHINE, that machine's copy.")],
         parse: |args| {
             let action = args.positional().ok_or_else(|| usage("project", "say what: import PATH"))?;
@@ -911,6 +1044,106 @@ fn parse_quiz(args: &mut Argv) -> Result<Value, Failure> {
     Ok(out)
 }
 
+fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
+    let request = args.option("--request")?;
+    let answer = args.option("--answer")?;
+    let all = args.flag("--all");
+    let action = args.positional().ok_or_else(|| usage("run", "say what: start, list, show, log, resume or stop"))?;
+    let mut out = json!({ "action": action });
+    if let Some(by) = caller() {
+        out["by"] = json!(by);
+    }
+    if let Ok(here) = std::env::current_dir() {
+        out["cwd"] = json!(here.to_string_lossy());
+    }
+    if request.is_some() && action != "start" {
+        return Err(usage("run", "--request is for run start"));
+    }
+    if all && action != "list" {
+        return Err(usage("run", "--all is for run list"));
+    }
+    if answer.is_some() && action != "done" {
+        return Err(usage("run", "--answer is for run done"));
+    }
+    match action.as_str() {
+        "start" => {
+            let pipeline = args.positional().ok_or_else(|| usage("run", "start needs a PIPELINE: a name in .kanna/pipelines or a .kojo file"))?;
+            out["pipeline"] = json!(if pipeline.ends_with(".kojo") || pipeline.contains('/') { absolute(&pipeline) } else { pipeline });
+            if let Some(request) = request {
+                let file = std::path::Path::new(&request);
+                out["request"] = json!(if file.is_file() { std::fs::read_to_string(file).map_err(|e| usage("run", &format!("can't read {request}: {e}")))? } else { request });
+            }
+        }
+        "list" => {
+            out["all"] = json!(all);
+            if let Ok(repo) = repo_here() {
+                out["repo"] = json!(repo);
+            }
+        }
+        "done" => {
+            if let Some(verdict) = args.positional() {
+                if verdict != "pass" && verdict != "fail" {
+                    return Err(usage("run", &format!("done takes pass or fail, not \"{verdict}\"")));
+                }
+                out["verdict"] = json!(verdict);
+            }
+            let file = answer.or_else(|| std::env::var("KANNA_ANSWER").ok().filter(|f| std::path::Path::new(f).is_file()));
+            if let Some(file) = file {
+                out["answer"] = json!(std::fs::read_to_string(&file).map_err(|e| usage("run", &format!("can't read the answer {file}: {e}")))?);
+            }
+        }
+        "need" => out["text"] = json!(args.rest().ok_or_else(|| usage("run", "need says what: kanna run need TEXT"))?),
+        "resume" => {
+            let mut words = args.positionals();
+            if words.first().is_some_and(|w| w.starts_with("run-")) {
+                out["run"] = json!(words.remove(0));
+            }
+            if !words.is_empty() {
+                out["text"] = json!(words.join(" "));
+            }
+        }
+        "show" | "log" | "stop" => {
+            if let Some(run) = args.positional() {
+                out["run"] = json!(run);
+            }
+        }
+        other => return Err(usage("run", &format!("unknown action \"{other}\" (start, list, show, log, stop, resume, done or need)"))),
+    }
+    Ok(out)
+}
+
+fn parse_schedule(args: &mut Argv) -> Result<Value, Failure> {
+    let name = args.option("--name")?;
+    let repo = args.option("--repo")?;
+    let action = args.positional().ok_or_else(|| usage("schedule", "say what: add, list or remove"))?;
+    let mut out = json!({ "action": action });
+    if let Some(repo) = repo.map(|r| absolute(&r)).or_else(|| repo_here().ok()) {
+        out["repo"] = json!(repo);
+    }
+    if action != "add" && name.is_some() {
+        return Err(usage("schedule", "--name is for schedule add"));
+    }
+    match action.as_str() {
+        "add" => {
+            let missing = || usage("schedule", "add needs a RULE, a TARGET and a PROMPT: kanna schedule add 'daily 09:00' planner \"Offer a quiz.\"");
+            let first = args.positional().ok_or_else(missing)?;
+            out["rule"] = json!(if first.contains(char::is_whitespace) { first } else { format!("{first} {}", args.positional().ok_or_else(missing)?) });
+            out["target"] = json!(args.positional().ok_or_else(missing)?);
+            out["prompt"] = json!(args.rest().ok_or_else(missing)?);
+            if let Some(name) = name {
+                out["name"] = json!(name);
+            }
+            if let Some(by) = caller() {
+                out["by"] = json!(by);
+            }
+        }
+        "list" => {}
+        "remove" => out["schedule"] = json!(args.positional().ok_or_else(|| usage("schedule", "remove needs a schedule's NAME or ID (s3)"))?),
+        other => return Err(usage("schedule", &format!("unknown action \"{other}\" (add, list or remove)"))),
+    }
+    Ok(out)
+}
+
 fn main_commit(repo: &str) -> Result<String, Failure> {
     ["main", "master"]
         .iter()
@@ -1150,17 +1383,25 @@ pub fn file_lines(target: &str) -> Option<(String, u64, Option<u64>)> {
 }
 
 fn parse_status(args: &mut Argv) -> Result<Value, Failure> {
-    let file = args.option("--file")?;
-    let agent = args.option("--agent")?;
     match args.positional().as_deref() {
-        Some("update") => Ok(json!({ "action": "update" })),
-        Some("explain") => match (file, agent) {
-            (Some(file), Some(agent)) => Ok(json!({ "action": "explain", "agent": agent, "file": absolute(&file) })),
-            (Some(_), None) => Err(usage("status", "a saved screen needs --agent (claude, codex, …)")),
-            (None, _) => Ok(json!({ "action": "explain", "pane": pane(args, "status")? })),
-        },
-        Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain or update)"))),
-        None => Err(usage("status", "say what: explain PANE, explain --file SCREEN --agent AGENT, or update")),
+        Some("explain") => Ok(json!({ "action": "explain", "pane": pane(args, "status")? })),
+        Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain)"))),
+        None => Err(usage("status", "say what: explain PANE")),
+    }
+}
+
+fn parse_crashes(args: &mut Argv) -> Result<Value, Failure> {
+    let all = args.flag("--all");
+    match args.positional().as_deref() {
+        None | Some("list") => Ok(json!({ "action": "list", "all": all })),
+        Some("dismiss") => {
+            let mut out = json!({ "action": "dismiss" });
+            if let Some(file) = args.positional() {
+                out["file"] = json!(absolute(&file));
+            }
+            Ok(out)
+        }
+        Some(other) => Err(usage("crashes", &format!("unknown action \"{other}\" (list or dismiss)"))),
     }
 }
 
@@ -1416,12 +1657,12 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     let diff = args.optional("--diff", |word| !word.starts_with('-') && !is_markdown(word));
     let kind = match args.positional() {
         None => "term".to_string(),
-        Some(kind) if ["term", "web", "ios", "md", "code", "diff"].contains(&kind.as_str()) => kind,
+        Some(kind) if ["term", "web", "ios", "md", "code", "diff", "serial"].contains(&kind.as_str()) => kind,
         Some(other) if is_markdown(&other) => {
             return Err(usage("open", &format!("to show a markdown file use: kanna open md {other}")));
         }
         Some(other) => {
-            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code or diff). To run a command use --cmd \"{other}\"")));
+            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code, diff or serial). To run a command use --cmd \"{other}\"")));
         }
     };
     if kind == "web" {
@@ -1444,6 +1685,22 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
         let folder = out.remove("cwd").and_then(|cwd| cwd.as_str().map(String::from)).unwrap_or_else(|| absolute("."));
         out.insert("path".into(), json!(folder));
         out.insert("args".into(), json!(args.remaining()));
+    }
+    let (baud, ending) = (args.option("--baud")?, args.option("--line-ending")?);
+    if kind == "serial" {
+        let port = args.positional().ok_or_else(|| usage("open", "serial panes need a port: kanna open serial PORT (kanna serial list shows them)"))?;
+        out.insert("path".into(), json!(port));
+        if let Some(baud) = baud {
+            out.insert("baud".into(), json!(baud.parse::<u32>().map_err(|_| usage("open", "--baud takes a number, like 115200"))?));
+        }
+        if let Some(ending) = ending {
+            if !["lf", "crlf", "cr"].contains(&ending.as_str()) {
+                return Err(usage("open", "--line-ending is lf, crlf or cr"));
+            }
+            out.insert("lineEnding".into(), json!(ending));
+        }
+    } else if baud.is_some() || ending.is_some() {
+        return Err(usage("open", "--baud and --line-ending are only for serial panes: kanna open serial PORT --baud N"));
     }
     if kind == "ios" && !out.contains_key("app") {
         return Err(usage("open", "iOS panes need an app: kanna open ios --app MyApp.app (or a bundle ID)"));

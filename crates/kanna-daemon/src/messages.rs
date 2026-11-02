@@ -9,6 +9,14 @@ pub const PLANNER: &str = "planner";
 
 pub const USER: &str = "user";
 
+pub const SCHEDULE: &str = "schedule ";
+
+pub const RUN: &str = "run-";
+
+pub fn yours(sender: &str) -> bool {
+    sender == USER || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
+}
+
 pub const PICKUP: Duration = Duration::from_secs(5);
 
 pub const POST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -45,29 +53,26 @@ impl Channel {
 pub struct Ready {
     status: Option<Status>,
     since: Instant,
-    reported: bool,
 }
 
 impl Ready {
     pub fn new(now: Instant) -> Ready {
-        Ready { status: None, since: now, reported: false }
+        Ready { status: None, since: now }
     }
 
-    pub fn see(&mut self, status: Option<Status>, ended: bool, now: Instant) {
+    pub fn see(&mut self, status: Option<Status>, now: Instant) {
         if status != self.status {
             self.status = status;
             self.since = now;
         }
-        self.reported = ended && status == Some(Status::Idle);
     }
 
     pub fn sent(&mut self, now: Instant) {
-        self.since = now;
-        self.reported = false;
+        self.since = now + AGAIN;
     }
 
-    pub fn at(&self, settle: Duration) -> Option<Instant> {
-        (self.status == Some(Status::Idle)).then(|| if self.reported { self.since } else { self.since + settle })
+    pub fn at(&self) -> Option<Instant> {
+        (self.status == Some(Status::Idle)).then_some(self.since)
     }
 }
 
@@ -76,6 +81,8 @@ pub fn prompt(messages: &[(String, String)]) -> String {
 }
 
 pub const RETRY: Duration = Duration::from_secs(5);
+
+pub const AGAIN: Duration = Duration::from_secs(3);
 
 pub fn permissions(argv: &[Vec<String>]) -> Option<&'static str> {
     let unprompted = |args: &Vec<String>| args.iter().enumerate().any(|(at, arg)| UNPROMPTED.contains(&arg.as_str()) || (arg == "--permission-mode" && args.get(at + 1).is_some_and(|mode| mode == "bypassPermissions")));
@@ -264,25 +271,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_message_waits_for_the_agent_to_stay_idle_or_to_report_its_turn_over() {
+    fn a_message_waits_for_the_agent_to_report_idle() {
         let t0 = Instant::now();
         let at = |ms: u64| t0 + Duration::from_millis(ms);
-        let settle = Duration::from_millis(3000);
         let mut ready = Ready::new(t0);
-        assert_eq!(ready.at(settle), None, "no agent yet");
-        ready.see(Some(Status::Working), false, at(0));
-        assert_eq!(ready.at(settle), None, "busy");
-        ready.see(Some(Status::Idle), false, at(1000));
-        assert_eq!(ready.at(settle), Some(at(4000)), "idle, held 3s");
-        ready.see(Some(Status::Idle), false, at(2000));
-        assert_eq!(ready.at(settle), Some(at(4000)), "the same idle");
-        ready.see(Some(Status::NeedsYou), false, at(2500));
-        assert_eq!(ready.at(settle), None, "never while it asks");
-        ready.see(Some(Status::Working), false, at(2600));
-        ready.see(Some(Status::Idle), true, at(5000));
-        assert_eq!(ready.at(settle), Some(at(5000)), "the agent said its turn is over");
+        assert_eq!(ready.at(), None, "no agent yet");
+        ready.see(Some(Status::Working), at(0));
+        assert_eq!(ready.at(), None, "busy");
+        ready.see(Some(Status::Idle), at(1000));
+        assert_eq!(ready.at(), Some(at(1000)), "idle goes at once");
+        ready.see(Some(Status::Idle), at(2000));
+        assert_eq!(ready.at(), Some(at(1000)), "the same idle");
+        ready.see(Some(Status::NeedsYou), at(2500));
+        assert_eq!(ready.at(), None, "never while it asks");
+        ready.see(Some(Status::Idle), at(5000));
         ready.sent(at(5100));
-        assert_eq!(ready.at(settle), Some(at(8100)), "after a delivery, it settles again");
+        assert_eq!(ready.at(), Some(at(8100)), "after a try, again 3s later if still idle");
     }
 
     #[test]
