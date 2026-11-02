@@ -834,7 +834,7 @@ pub fn project(_: &Value, reply: &Value) -> String {
     if !copied.is_empty() {
         out.push(format!("  copied with it: {}", copied.join(", ")));
     }
-    let resumed = counted(&[("codex session", &sessions["codex"]), ("copilot session", &sessions["copilot"]), ("opencode session", &sessions["opencode"])]);
+    let resumed = counted(&[("codex session", &sessions["codex"]), ("opencode session", &sessions["opencode"])]);
     if !resumed.is_empty() {
         out.push(format!("  resuming in the copy: {}", resumed.join(", ")));
     }
@@ -975,62 +975,26 @@ pub fn toast(_: &Value, reply: &Value) -> String {
     }
 }
 
-pub fn status(args: &Value, reply: &Value) -> String {
-    if args["action"] == "update" {
-        let mut out = vec![match reply["site"].as_str() {
-            Some(site) => format!("checked {site}"),
-            None => "no rules site is set".to_string(),
-        }];
-        let fetched = join(&reply["fetched"]);
-        out.push(if fetched.is_empty() { "nothing new".into() } else { format!("fetched: {fetched}") });
-        for problem in reply["problems"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-            out.push(format!("problem: {problem}"));
-        }
-        for rules in reply["rules"].as_array().into_iter().flatten() {
-            out.push(format!("{:<12} {:<14} {}", rules["agent"].as_str().unwrap_or("?"), rules["version"].as_str().unwrap_or("?"), rules["source"].as_str().unwrap_or("?")));
-        }
-        return out.join("\n");
-    }
+pub fn status(_: &Value, reply: &Value) -> String {
     let mut out = vec![];
     let who = reply["pane"].as_str().map(|p| format!("{p}: ")).unwrap_or_default();
-    match reply["agent"].as_str() {
-        None => return format!("{who}not an agent Kanna knows (its foreground program has no rules){}", reply["status"].as_str().map(|s| format!("; status {s}")).unwrap_or_default()),
-        Some(agent) => {
-            let version = reply["agentVersion"].as_str().map(|v| format!(" {v}")).unwrap_or_else(|| " (version unknown)".into());
-            let exe = reply["executable"].as_str().map(|e| format!(" ({e})")).unwrap_or_default();
-            out.push(format!("{who}{agent}{version}{exe}"));
-        }
+    let Some(agent) = reply["agent"].as_str() else {
+        return format!("{who}not one of Kanna's agents{}", reply["status"].as_str().map(|s| format!("; status {s}")).unwrap_or_default());
+    };
+    let version = reply["agentVersion"].as_str().map(|v| format!(" {v}")).unwrap_or_else(|| " (version unknown)".into());
+    let exe = reply["executable"].as_str().map(|e| format!(" ({e})")).unwrap_or_default();
+    out.push(format!("{who}{agent}{version}{exe}"));
+    if let Some(needs) = reply["needs"].as_str() {
+        out.push(format!("needs: {needs} or newer"));
     }
-    let judged = reply["judged"].as_str().unwrap_or("?");
-    if reply["source"].as_str() == Some("osc7501") {
-        out.push(format!("status: {}", reply["status"].as_str().or(reply["reported"]["status"].as_str()).unwrap_or("?")));
-        out.push("source: OSC 7501, the agent's own report".into());
+    out.push(format!("status: {}", reply["status"].as_str().unwrap_or("none")));
+    if reply["reported"].is_null() {
+        out.push("record: no report yet".into());
+    } else {
         out.push(format!("record: {}", program_record(&reply["reported"])));
-        for child in reply["records"].as_array().into_iter().flatten().filter(|r| r["id"].as_str().is_some_and(|id| !id.is_empty())) {
-            out.push(format!("record {:?}: {}", child["id"].as_str().unwrap_or_default(), program_record(child)));
-        }
-        let rule = reply["rule"].as_str().unwrap_or("none matched");
-        out.push(format!("rules: {} ({}), which would judge {judged} (rule: {rule})", reply["rules"]["version"].as_str().unwrap_or("?"), reply["rules"]["source"].as_str().unwrap_or("?")));
-        return out.join("\n");
     }
-    out.push(format!("rules: {} ({})", reply["rules"]["version"].as_str().unwrap_or("?"), reply["rules"]["source"].as_str().unwrap_or("?")));
-    out.push("source: rules (no OSC 7501 report from the agent)".into());
-    match reply["status"].as_str() {
-        Some(status) if status != judged => out.push(format!("status: {status} (this screen judges {judged})")),
-        _ => out.push(format!("status: {judged}")),
-    }
-    match reply["rule"].as_str() {
-        Some(rule) => {
-            out.push(format!("rule: {rule}"));
-            if let Some(matched) = reply["matched"].as_str() {
-                out.push(format!("matched: {}", matched.trim_end()));
-            }
-        }
-        None => out.push("rule: none matched, so idle".into()),
-    }
-    let excluded = join(&reply["excluded"]);
-    if !excluded.is_empty() {
-        out.push(format!("not for this version: {excluded}"));
+    for child in reply["records"].as_array().into_iter().flatten().filter(|r| r["id"].as_str().is_some_and(|id| !id.is_empty())) {
+        out.push(format!("record {:?}: {}", child["id"].as_str().unwrap_or_default(), program_record(child)));
     }
     out.join("\n")
 }
@@ -1057,20 +1021,15 @@ mod status_tests {
     use serde_json::json;
 
     #[test]
-    fn explain_says_why() {
-        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.296", "executable": "/bin/claude", "status": "working",
-            "rules": { "version": "2026.10.10.1", "source": "bundled" }, "judged": "working", "rule": "claude/working/title", "matched": "◐ Claude Code", "excluded": [] });
-        assert_eq!(
-            status(&json!({ "action": "explain" }), &reply),
-            "p3: claude 2.1.296 (/bin/claude)\nrules: 2026.10.10.1 (bundled)\nsource: rules (no OSC 7501 report from the agent)\nstatus: working\nrule: claude/working/title\nmatched: ◐ Claude Code"
-        );
+    fn explain_before_a_report() {
+        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.296", "executable": "/bin/claude", "needs": "2.1.295", "status": null, "reported": null, "records": [] });
+        assert_eq!(status(&json!({ "action": "explain" }), &reply), "p3: claude 2.1.296 (/bin/claude)\nneeds: 2.1.295 or newer\nstatus: none\nrecord: no report yet");
+        assert_eq!(status(&json!({ "action": "explain" }), &json!({ "pane": "p4", "agent": null, "status": null })), "p4: not one of Kanna's agents");
     }
 
     #[test]
     fn explain_shows_the_agents_own_report() {
-        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.300", "executable": "/bin/claude", "status": "needs-you",
-            "rules": { "version": "2026.10.10.1", "source": "bundled" }, "judged": "idle", "rule": null, "matched": null, "excluded": [],
-            "source": "osc7501",
+        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.300", "executable": "/bin/claude", "needs": "2.1.295", "status": "needs-you",
             "reported": { "id": "", "state": "blocked", "kind": "permission", "progress": null, "app": "claude-code", "title": "", "message": "Edit \"main.rs\"?", "status": "needs-you" },
             "records": [
                 { "id": "", "state": "blocked", "kind": "permission", "progress": null, "app": "claude-code", "title": "", "message": "Edit \"main.rs\"?", "status": "needs-you" },
@@ -1078,7 +1037,7 @@ mod status_tests {
             ] });
         assert_eq!(
             status(&json!({ "action": "explain" }), &reply),
-            "p3: claude 2.1.300 (/bin/claude)\nstatus: needs-you\nsource: OSC 7501, the agent's own report\nrecord: state=blocked kind=permission app=\"claude-code\" msg=\"Edit \\\"main.rs\\\"?\"\nrecord \"build\": state=working progress=40\nrules: 2026.10.10.1 (bundled), which would judge idle (rule: none matched)"
+            "p3: claude 2.1.300 (/bin/claude)\nneeds: 2.1.295 or newer\nstatus: needs-you\nrecord: state=blocked kind=permission app=\"claude-code\" msg=\"Edit \\\"main.rs\\\"?\"\nrecord \"build\": state=working progress=40"
         );
     }
 }

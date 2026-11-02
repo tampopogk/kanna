@@ -5,7 +5,7 @@ use crate::stacks::{self, Base, Conflict, Made, Mark, Step, Where, KANNA};
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
-use kanna_detect::{Quit, Status, Turn, TURN_SETTLE};
+use kanna_detect::{Quit, Status, Turn};
 use kanna_mux::{project, CoreHandle, KmuxError, Pane, PaneState, Responder, TaskBook, WeakCore, MAC_APP, TASKS_PER_PROJECT};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -213,7 +213,7 @@ pub fn task_agent(files: &[PathBuf]) -> String {
     let Some((mine, repos)) = files.split_last() else { return DEFAULT_AGENT.into() };
     let known = |value: &Value| value.as_str().map(str::trim).filter(|a| AGENTS.iter().any(|k| k.names.contains(a))).map(String::from);
     let any = |value: &Value| value.as_str().map(str::trim).filter(|a| !a.is_empty()).map(String::from);
-    configured(repos, "tasks", "agent", known, "an agent Kanna knows (claude, codex, copilot, opencode, agy): a repo's file can't name a command")
+    configured(repos, "tasks", "agent", known, "an agent Kanna knows (claude, codex, opencode, agy): a repo's file can't name a command")
         .or_else(|| configured(std::slice::from_ref(mine), "tasks", "agent", any, "an agent or a command"))
         .unwrap_or_else(|| DEFAULT_AGENT.into())
 }
@@ -380,15 +380,13 @@ struct Agent {
     latest: Option<&'static str>,
     find: Option<fn(&Path) -> Option<String>>,
     compact: Option<&'static str>,
-    reports: bool,
 }
 
 const AGENTS: &[Agent] = &[
-    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None, reports: true },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit="), reports: true },
-    Agent { names: &["copilot"], unprompted: Some("--yolo"), prompt: Some("-i"), named: Some("--session-id"), resume: "--session-id", latest: None, find: Some(copilot_session), compact: None, reports: false },
-    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None, reports: false },
-    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None, reports: false },
+    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
+    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
+    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
 ];
 
 fn agent(command: &str) -> Option<&'static Agent> {
@@ -402,28 +400,6 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
-}
-
-fn copilot_session(folder: &Path) -> Option<String> {
-    let state = std::env::var_os("COPILOT_HOME").map_or_else(|| home().join(".copilot"), PathBuf::from).join("session-state");
-    latest_copilot_session(&state, folder)
-}
-
-fn latest_copilot_session(state: &Path, folder: &Path) -> Option<String> {
-    let field = |text: &str, key: &str| text.lines().find_map(|l| l.strip_prefix(key)).map(|v| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
-    let mut sessions: Vec<(String, String)> = fs::read_dir(state)
-        .ok()?
-        .flatten()
-        .filter_map(|dir| {
-            let file = dir.path().join("workspace.yaml");
-            let text = fs::metadata(&file).ok().filter(|m| m.len() <= 64 << 10).and_then(|_| fs::read_to_string(&file).ok())?;
-            let cwd = field(&text, "cwd:")?;
-            same_folder(Path::new(&cwd), folder).then_some(())?;
-            Some((field(&text, "updated_at:").unwrap_or_default(), field(&text, "id:")?))
-        })
-        .collect();
-    sessions.sort();
-    sessions.pop().map(|(_, id)| id)
 }
 
 fn codex_session(folder: &Path) -> Option<String> {
@@ -525,7 +501,7 @@ fn latest_opencode_session(db: &Path, folder: &Path) -> Option<String> {
     rows.as_array()?.iter().find(|row| string(row, "directory").is_some_and(|dir| same_folder(Path::new(dir), folder))).and_then(|row| string(row, "id")).map(String::from)
 }
 
-const ASKING: &[&str] = &["--dangerously-skip-permissions", "--yolo", "--permission-mode", "--ask-for-approval", "-a", "--allow-all", "--allow-all-tools", "--mode"];
+const ASKING: &[&str] = &["--dangerously-skip-permissions", "--yolo", "--permission-mode", "--ask-for-approval", "-a", "--mode"];
 
 fn asking(agent: &str, prompts: Prompts) -> String {
     let agent = agent.trim();
@@ -538,10 +514,6 @@ fn asking(agent: &str, prompts: Prompts) -> String {
 
 pub fn names_its_session(command: &str) -> bool {
     agent(command).is_some_and(|a| a.named.is_some())
-}
-
-pub fn reports_status(command: &str) -> bool {
-    agent(command).is_some_and(|a| a.reports)
 }
 
 pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, prompts: Prompts, session: Option<&str>, resume: bool, first: &str) -> String {
@@ -1291,14 +1263,18 @@ impl Tasks {
 
     pub fn status(&self, pane: &str, status: Option<&str>, ended: bool) {
         let now = Instant::now();
-        self.ready.borrow_mut().entry(pane.to_string()).or_insert_with(|| Ready::new(now)).see(status.and_then(Status::parse), ended, now);
+        let status = status.and_then(Status::parse);
+        let mut ready = self.ready.borrow_mut();
+        let ready = ready.entry(pane.to_string()).or_insert_with(|| Ready::new(now));
+        if ended && status == Some(Status::Idle) {
+            ready.see(Some(Status::Working), now);
+        }
+        ready.see(status, now);
         if let Some(turn) = self.turns.borrow_mut().get_mut(pane) {
-            let status = status.and_then(Status::parse);
             if ended {
-                turn.reported_end(status, Instant::now());
-            } else {
-                turn.see(status, Instant::now());
+                turn.see(Some(Status::Working), now);
             }
+            turn.see(status, now);
         }
         self.find_session(pane);
     }
@@ -1373,7 +1349,7 @@ impl Tasks {
             self.set_up(&pane, &setting);
         }
         let mail = self.deliver(&core, now);
-        let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !(self.has_mail(pane) && self.ready.borrow().get(*pane).is_some_and(|r| r.at(TURN_SETTLE).is_some()))).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now, TURN_SETTLE).map(|why| (pane.clone(), why))).collect();
+        let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !(self.has_mail(pane) && self.ready.borrow().get(*pane).is_some_and(|r| r.at().is_some()))).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now).map(|why| (pane.clone(), why))).collect();
         for (pane, why) in over {
             let Some((_, entry)) = running.iter().find(|(p, _)| *p == pane) else { continue };
             if runners(&config_files(Path::new(&entry.repo))) == 0 {
@@ -1387,10 +1363,42 @@ impl Tasks {
             self.fill(&core);
             self.follow();
         }
-        let turns = self.turns.borrow().values().filter_map(|t| t.due(TURN_SETTLE)).min();
+        let turns = self.turns.borrow().values().filter_map(Turn::due).min();
         let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         [turns, quits, setups, self.fill_at.get(), mail].into_iter().flatten().min()
+    }
+
+    pub fn too_old(self: &Rc<Self>, pane: &str, why: &str) -> Option<String> {
+        let Some(core) = self.core.upgrade().filter(|core| alive(core, pane)) else { return None };
+        let agent = core.pane(pane).and_then(|p| p.command).unwrap_or_default();
+        let Some(id) = self.task_of(pane) else {
+            if !self.planners().iter().any(|p| p == pane) {
+                return None;
+            }
+            log!("kanna-daemon: the planner in {pane} is refused: {why}");
+            self.end_agent(pane, &agent, |_| {});
+            return Some("the planning agent".into());
+        };
+        log!("kanna-daemon: {id}'s agent in {pane} is refused: {why}");
+        self.failed.borrow_mut().insert(id.clone());
+        let name = self.known(&id).and_then(|e| e.name).unwrap_or_else(|| id.clone());
+        let agent = self.pane_entry(pane).map_or(agent, |e| e.agent);
+        let (this, closing, why) = (Rc::downgrade(self), pane.to_string(), why.to_string());
+        self.end_agent(pane, &agent, move |session| {
+            let Some(this) = this.upgrade() else { return };
+            this.keep_session(&closing, session.clone());
+            this.note(&closing, Change::new("refused").by(Some("daemon")).with("why", json!(why)));
+            if this.entries.borrow().iter().any(|e| e.held.as_deref() == Some(closing.as_str())) {
+                this.stopped_by_itself(&closing, "too-old", session);
+            } else {
+                this.note(&closing, Change::new("stopped").by(Some("daemon")).with("why", json!("too-old")));
+            }
+            if let Some(core) = this.core.upgrade() {
+                core.hang_up(&closing, |_| {});
+            }
+        });
+        Some(name)
     }
 
     fn quit(self: &Rc<Self>, pane: &str, entry: &Entry, why: Status) {
@@ -1826,7 +1834,7 @@ impl Tasks {
             let mut sessions = project_import::Carried::default();
             for from in plan.froms() {
                 let found = project_import::Stores::here().carry(&from, &plan.to);
-                sessions = project_import::Carried { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, copilot: sessions.copilot + found.copilot, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
+                sessions = project_import::Carried { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
                 if let Err(error) = self.db.relocate(&from.to_string_lossy(), &plan.to.to_string_lossy()) {
                     log!("kanna-daemon: couldn't point {}'s records at {} in {}: {error}", from.display(), plan.to.display(), db::FILE);
                     sessions.kept.push(format!("{}: {error}", db::FILE));
@@ -1843,7 +1851,7 @@ impl Tasks {
                 }
                 edited
             });
-            log!("kanna-daemon: imported {} to {} ({} worktree(s), {} left with the original, {} Claude folder(s), {} codex, {} copilot, {} opencode session(s))", plan.from.display(), plan.to.display(), copied.worktrees, copied.outside.len(), sessions.claude, sessions.codex, sessions.copilot, sessions.opencode);
+            log!("kanna-daemon: imported {} to {} ({} worktree(s), {} left with the original, {} Claude folder(s), {} codex, {} opencode session(s))", plan.from.display(), plan.to.display(), copied.worktrees, copied.outside.len(), sessions.claude, sessions.codex, sessions.opencode);
             reply.insert("from".into(), json!(plan.from));
             reply.insert("to".into(), json!(plan.to));
             reply.insert("worktrees".into(), json!(copied.worktrees));
@@ -2052,7 +2060,7 @@ impl Tasks {
         for (pane, _) in &by_pane {
             if !self.ready.borrow().contains_key(pane) {
                 let mut ready = Ready::new(now);
-                ready.see(core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse), false, now);
+                ready.see(core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse), now);
                 self.ready.borrow_mut().insert(pane.clone(), ready);
             }
         }
@@ -2061,7 +2069,7 @@ impl Tasks {
                 continue;
             }
             let Some(channel) = self.channel(&pane) else { continue };
-            let at = self.ready.borrow().get(&pane).and_then(|r| r.at(TURN_SETTLE));
+            let at = self.ready.borrow().get(&pane).and_then(Ready::at);
             match at {
                 Some(at) if at <= now => match self.undeliverable(&channel) {
                     Some(why) => {
@@ -3484,17 +3492,6 @@ mod tests {
     }
 
     #[test]
-    fn a_copilot_task_gets_a_session_and_resumes_it() {
-        let mut entry = started("copilot");
-        let id = uuid().unwrap();
-        assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("copilot --yolo --session-id {id} -i {}", told_task(Some("go"))));
-        entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), format!("copilot --yolo -i {}", told_task(Some("go"))), "copilot's --continue isn't the folder's: without a session it starts again");
-        entry.session = Some(id.clone());
-        assert_eq!(entry.command_with(None, Prompts::Skip), format!("copilot --yolo --session-id '{id}'"));
-    }
-
-    #[test]
     fn an_opencode_task_resumes_the_session_found_for_its_worktree() {
         let mut entry = started("opencode");
         assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("opencode --prompt {}", told_task(Some("go"))));
@@ -3534,16 +3531,10 @@ mod tests {
 
 
     #[test]
-    fn copilot_and_opencode_sessions_are_found_by_worktree() {
+    fn opencode_sessions_are_found_by_worktree() {
         let dir = std::env::temp_dir().join(format!("kanna-sessions-{}", std::process::id()));
         let (here, there) = (dir.join("here"), dir.join("there"));
-        for (id, cwd, at) in [("old", &here, "2026-01-01T00:00:00Z"), ("new", &here, "2026-02-01T00:00:00Z"), ("other", &there, "2026-03-01T00:00:00Z")] {
-            fs::create_dir_all(dir.join("state").join(id)).unwrap();
-            fs::write(dir.join("state").join(id).join("workspace.yaml"), format!("id: {id}\ncwd: {}\nupdated_at: {at}\n", cwd.display())).unwrap();
-        }
         fs::create_dir_all(&here).unwrap();
-        assert_eq!(latest_copilot_session(&dir.join("state"), &here), Some("new".into()));
-        assert_eq!(latest_copilot_session(&dir.join("state"), &dir.join("nowhere")), None);
         let db = dir.join("opencode.db");
         let setup = format!(
             "create table session (id text, parent_id text, directory text, time_updated integer, time_archived integer); insert into session values ('ses_old', null, '{h}', 1, null), ('ses_new', null, '{h}', 2, null), ('ses_child', 'ses_new', '{h}', 3, null), ('ses_other', null, '{t}', 4, null);",
@@ -3561,15 +3552,13 @@ mod tests {
     fn each_agent_starts_as_the_planner_as_you_d_start_it_with_its_first_message() {
         let agents = planner_agents(None);
         let names: Vec<&str> = agents.iter().map(|(n, _, _, _)| n.as_str()).collect();
-        assert_eq!(names, ["claude", "codex", "copilot", "opencode", "agy"]);
+        assert_eq!(names, ["claude", "codex", "opencode", "agy"]);
         let asking = |name: &str| agents.iter().find(|(n, _, _, _)| n == name).unwrap().2.clone();
         assert_eq!(asking("claude"), "claude 'You are the Kanna planning agent.'", "no session");
         assert_eq!(asking("codex"), "codex --no-daemon 'You are the Kanna planning agent.'");
-        assert_eq!(asking("copilot"), "copilot -i 'You are the Kanna planning agent.'");
         let start = |name: &str| agents.iter().find(|(n, _, _, _)| n == name).unwrap().3.clone();
         assert_eq!(start("claude"), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'", "no session; no permission prompts, as a task's agent");
         assert_eq!(start("codex"), "codex --yolo --no-daemon 'You are the Kanna planning agent.'");
-        assert_eq!(start("copilot"), "copilot --yolo -i 'You are the Kanna planning agent.'");
         assert_eq!(start("opencode"), "opencode --prompt 'You are the Kanna planning agent.'");
         assert_eq!(start("agy"), "agy --dangerously-skip-permissions -i 'You are the Kanna planning agent.'");
         assert_eq!(started_as("/opt/bin/codex", PLANNER_ROLE, None, Prompts::Skip), "/opt/bin/codex --yolo --no-daemon 'You are the Kanna planning agent.'");
@@ -3581,11 +3570,10 @@ mod tests {
     #[test]
     fn a_planner_starts_in_a_session_of_its_own_and_comes_back_to_it_without_its_first_message() {
         assert_eq!(started_in("claude", PLANNER_ROLE, None, Prompts::Skip, Some("u-1")), "claude --dangerously-skip-permissions --session-id 'u-1' 'You are the Kanna planning agent.'");
-        assert_eq!(started_in("copilot", PLANNER_ROLE, None, Prompts::Skip, Some("u-1")), "copilot --yolo --session-id 'u-1' -i 'You are the Kanna planning agent.'");
+        assert_eq!(started_in("agy", PLANNER_ROLE, None, Prompts::Skip, Some("u-1")), "agy --dangerously-skip-permissions -i 'You are the Kanna planning agent.'", "agy takes no session ID");
         assert_eq!(started_in("codex", PLANNER_ROLE, Some(300_000), Prompts::Skip, Some("u-1")), "codex --yolo -c model_auto_compact_token_limit=300000 --no-daemon 'You are the Kanna planning agent.'", "codex takes no session ID");
         assert_eq!(resumed_as("claude", Some(300_000), Prompts::Skip, "u-1"), "claude --dangerously-skip-permissions --resume 'u-1'");
         assert_eq!(resumed_as("codex", Some(300_000), Prompts::Skip, "u-1"), "codex --yolo -c model_auto_compact_token_limit=300000 --no-daemon resume 'u-1'");
-        assert_eq!(resumed_as("copilot", None, Prompts::Skip, "u-1"), "copilot --yolo --session-id 'u-1'");
         assert_eq!(resumed_as("opencode", None, Prompts::Skip, "u-1"), "opencode --session 'u-1'");
         assert_eq!(resumed_as("/x/bin/claude", None, Prompts::Skip, "u-1"), "/x/bin/claude --dangerously-skip-permissions --resume 'u-1'");
     }
@@ -3733,7 +3721,7 @@ mod tests {
                 args.extend(["--kanna".to_string(), kanna.to_string_lossy().into_owned()]);
             }
             args.push("--".to_string());
-            for agent in ["claude", "codex", "copilot"] {
+            for agent in ["claude", "codex", "opencode"] {
                 args.push(agent.to_string());
                 args.push(agent.to_string());
                 args.push(started_as(agent, PLANNER_ROLE, None, Prompts::Ask));
@@ -3854,7 +3842,7 @@ mod tests {
         let p = planner("none", &[]);
         let repo = p.repo("app");
         let out = p.run(&repo, "");
-        assert_eq!(out, "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here.\nshell in ROOT/home/.kanna-v4/repos/local/app\n");
+        assert_eq!(out, "No agent Kanna knows is installed (claude, codex, opencode or agy). Install one, then start it here.\nshell in ROOT/home/.kanna-v4/repos/local/app\n");
     }
 
     #[test]
@@ -4022,7 +4010,6 @@ mod tests {
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), true, first), format!("claude --resume 'u-1' {first}"));
         assert!(stage_agent("codex", None, None, Prompts::Ask, Some("r-2"), true, first).ends_with(&format!(" resume 'r-2' {first}")));
         assert!(stage_agent("codex", None, None, Prompts::Ask, None, true, first).ends_with(&format!(" resume --last {first}")));
-        assert!(reports_status("/x/claude") && reports_status("codex") && !reports_status("copilot"));
     }
 
     #[test]
@@ -4038,7 +4025,7 @@ mod tests {
         fs::write(&mine, r#"{"pipelines": {"agents": {"claude": "/fake/claude", "codex": " "}}}"#).unwrap();
         assert_eq!(pipeline_agent(&files, "claude"), "/fake/claude");
         assert_eq!(pipeline_agent(&files, "codex"), "codex");
-        assert_eq!(pipeline_agent(&files, "copilot"), "copilot");
+        assert_eq!(pipeline_agent(&files, "opencode"), "opencode");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -4166,8 +4153,6 @@ mod tests {
         assert_eq!(asking("claude --permission-mode plan", Prompts::Skip), "claude --permission-mode plan");
         assert_eq!(asking("codex --ask-for-approval=untrusted", Prompts::Skip), "codex --ask-for-approval=untrusted");
         assert_eq!(asking("codex -a untrusted", Prompts::Skip), "codex -a untrusted");
-        assert_eq!(asking("copilot", Prompts::Skip), "copilot --yolo");
-        assert_eq!(asking("copilot --allow-all-tools", Prompts::Skip), "copilot --allow-all-tools");
         assert_eq!(asking("agy", Prompts::Skip), "agy --dangerously-skip-permissions");
         assert_eq!(asking("agy --mode plan", Prompts::Skip), "agy --mode plan");
         assert_eq!(asking("opencode", Prompts::Skip), "opencode");
@@ -4371,12 +4356,12 @@ mod tests {
         for _ in 0..2 {
             let due = tasks.tick();
             assert!(due.is_some_and(|at| at > Instant::now()), "nothing is overdue, so the daemon sleeps");
-            assert_eq!(tasks.turns.borrow()["term-7"].ended(Instant::now() + TURN_SETTLE, TURN_SETTLE), None, "the ended turn came back");
+            assert_eq!(tasks.turns.borrow()["term-7"].ended(Instant::now() + Duration::from_secs(3)), None, "the ended turn came back");
             assert!(tasks.quitting.borrow().is_empty(), "runners 0 stops none");
         }
         tasks.status("term-7", Some("working"), false);
         tasks.status("term-7", Some("idle"), true);
-        assert!(tasks.turns.borrow()["term-7"].ended(Instant::now(), TURN_SETTLE).is_some(), "its next turn is tracked again");
+        assert!(tasks.turns.borrow()["term-7"].ended(Instant::now()).is_some(), "its next turn is tracked again");
         fs::remove_dir_all(&state).unwrap();
     }
 
@@ -4772,6 +4757,19 @@ mod tests {
         assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
         assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
         assert_eq!(t.session(&pane).as_deref(), Some("given"), "the session Kanna gave claude stays its own");
+    }
+
+    #[test]
+    fn an_agent_too_old_to_report_is_refused_and_its_task_stopped_and_not_run_again() {
+        let t = Stopping::new("old");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        assert_eq!(t.tasks.too_old(&pane, "claude 2.1.290 is too old").as_deref(), Some(entry.id.as_str()));
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")]);
+        assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("too-old"));
+        assert!(t.tasks.failed.borrow().contains(&entry.id), "runners don't start it again");
+        let plain = t.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": "claude" } }))["pane"]["id"].as_str().unwrap().to_string();
+        assert_eq!(t.tasks.too_old(&plain, "claude 2.1.290 is too old"), None, "a plain terminal runs anything");
     }
 
     #[test]

@@ -622,7 +622,7 @@ pub static COMMANDS: &[Command] = &[
             ("--all", "list: every repo's runs, not only this repo's."),
             ("--answer FILE", "done: the stage's final answer. Default: the file in $KANNA_ANSWER, which the stage's prompt names."),
         ],
-        notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal in the task's workspace's background, in no tab until you show it with kanna move PANE --tab (kanna move PANE --background puts it back). The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: it removes its worktree, keeps its branch and tells the task's agent the branch is ready, with how to take it (git merge --ff-only run/TASK-N in the task's worktree), as it tells it when the run is stuck, waits on you or stops. The task's agent decides whether to merge it; from the task's worktree the change goes to main as any task's work. Closing the task stops its live runs.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. Agent stages take claude or codex, which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, show and log take the latest run of the task the terminal is in, and stop and resume its live run, refusing with the list when it has several. A task can have any number of runs at once, each on its own branch and worktree; each run's budget is its own, and a run over it waits and tells the task's agent. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
+        notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal in the task's workspace's background, in no tab until you show it with kanna move PANE --tab (kanna move PANE --background puts it back). The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: it removes its worktree, keeps its branch and tells the task's agent the branch is ready, with how to take it (git merge --ff-only run/TASK-N in the task's worktree), as it tells it when the run is stuck, waits on you or stops. The task's agent decides whether to merge it; from the task's worktree the change goes to main as any task's work. Closing the task stops its live runs.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. Agent stages take any of Kanna's agents (claude, codex, opencode, agy), which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, show and log take the latest run of the task the terminal is in, and stop and resume its live run, refusing with the list when it has several. A task can have any number of runs at once, each on its own branch and worktree; each run's budget is its own, and a run over it waits and tells the task's agent. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
         examples: &[
             ("kanna run start feature", "Build this task's change through .kanna/pipelines/feature.kojo."),
             ("kanna run start bugfix --request notes/bug.md", "Run bugfix.kojo with the bug's write-up as the request."),
@@ -637,17 +637,15 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "status",
         group: "Information",
-        summary: "Explain an agent pane's status, or check the rules site for new status rules now.",
-        usage: "kanna status explain PANE\n       kanna status explain --file SCREEN --agent AGENT\n       kanna status update",
+        summary: "Explain an agent pane's status.",
+        usage: "kanna status explain PANE",
         options: &[
             ("--file SCREEN", "A saved screen: text (as `kanna read` prints it) or a corpus case (JSON with rows, title, progress and cliVersion)."),
             ("--agent AGENT", "Whose rules judge the saved screen: claude, codex, …"),
         ],
-        notes: "An agent pane's status (working, needs-you, idle, exited) is in `kanna task list`, and in `kanna workspace list --all --json`. explain shows the agent and its version, where its status came from (the agent's own OSC 7501 report, with the record, which wins when there is one, or the rules), the rules file and where it came from, the rule that matched and the text it matched.\nRules: bundled in Kanna, from the rules site (checked every 30 minutes), or your own in ~/.config/kanna/agent-rules/<agent>.json, which always wins and reloads when you save it.",
+        notes: "An agent pane's status (working, needs-you, idle, exited) is in `kanna task list`, and in `kanna workspace list --all --json`. It comes only from the agent's own report (OSC 7501). explain shows the agent, its version and the version Kanna needs, and the records it has reported, the root one first.",
         examples: &[
             ("kanna status explain term-3", "Why term-3's agent shows the status it does."),
-            ("kanna status explain --file screen.txt --agent claude", "How Claude's rules judge a saved screen."),
-            ("kanna status update", "Fetch new rules from the rules site now."),
         ],
         parse: parse_status,
         show: output::status,
@@ -1376,17 +1374,10 @@ pub fn file_lines(target: &str) -> Option<(String, u64, Option<u64>)> {
 }
 
 fn parse_status(args: &mut Argv) -> Result<Value, Failure> {
-    let file = args.option("--file")?;
-    let agent = args.option("--agent")?;
     match args.positional().as_deref() {
-        Some("update") => Ok(json!({ "action": "update" })),
-        Some("explain") => match (file, agent) {
-            (Some(file), Some(agent)) => Ok(json!({ "action": "explain", "agent": agent, "file": absolute(&file) })),
-            (Some(_), None) => Err(usage("status", "a saved screen needs --agent (claude, codex, …)")),
-            (None, _) => Ok(json!({ "action": "explain", "pane": pane(args, "status")? })),
-        },
-        Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain or update)"))),
-        None => Err(usage("status", "say what: explain PANE, explain --file SCREEN --agent AGENT, or update")),
+        Some("explain") => Ok(json!({ "action": "explain", "pane": pane(args, "status")? })),
+        Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain)"))),
+        None => Err(usage("status", "say what: explain PANE")),
     }
 }
 
