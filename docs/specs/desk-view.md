@@ -93,7 +93,7 @@ stateDiagram-v2
 | Spec files | renamed | `backlog-runners.md` → [`shelf-runners.md`](shelf-runners.md), `backlog-search.md` → [`shelf-search.md`](shelf-search.md) (and its pictures), `shelve-latency.md` → [`move-to-desk-latency.md`](move-to-desk-latency.md); links updated |
 | Mockups | `desk.html`, `blocked-tasks.html`, `toasts.html`, `task-scripts.html`, `quiz.html`, `doc-markup.html`, `diff.html`, `page-marks.html`, `fleet.html` | their visible words; `desk.html` keeps its own scenes (planner, recent projects) and points to `desk-view.html` for the Desk view |
 | e2e | `scripts/e2e-kanna.sh` | the checks of words, and the scenario names: `desk_shelf` → `desk_tasks`, `desk_backlog` → `desk_shelf`, `backlog_and_back` → `shelf_and_back`, `move_to_backlog` → `move_to_shelf`, `task_backlog` → `task_shelf`, `backlog_rename` → `shelf_rename`, `backlog_runners` → `shelf_runners`, `backlog_search` → `shelf_search`, `shelf_times` → `desk_times`, `shelf_zoom` → `desk_zoom`, `shelve_at_once` → `pick_at_once` |
-| Not changed | `agent-rules/corpus` (recorded terminals), `README.md` ("git pull") | |
+| Not changed | `README.md` ("git pull") | |
 
 ## 5. Internal names
 

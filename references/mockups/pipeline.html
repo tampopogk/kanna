@@ -207,7 +207,7 @@ function hl(line) {
     out = out.replace(/\bdone\b/, `<span class="fn">done</span>`);
   } else {
     out = out.replace(/^(\s*)([a-z_][a-z0-9_]*)(\s*=\s*)/, (m, a, n, e) => `${a}<span class="nm">${n}</span>${e}`);
-    out = out.replace(/\b(claude|codex|copilot|opencode|agy)(:[a-z]+)?/, m => `<span class="fn">${m}</span>`);
+    out = out.replace(/\b(claude|codex|opencode|agy)(:[a-z]+)?/, m => `<span class="fn">${m}</span>`);
     out = out.replace(/\b(ask|run|merge|prompt|verdict|each|guard|emits|by|x\d|within|resume|sessions|model)\b/g, m => `<span class="kw">${m}</span>`);
     out = out.replace(/&quot;[^&]*&quot;/g, m => `<span class="str">${m}</span>`);
     out = out.replace(/\b(\d+h?)\b/g, m => `<span class="num">${m}</span>`);

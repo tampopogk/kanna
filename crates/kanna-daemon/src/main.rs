@@ -98,7 +98,7 @@ pub enum Event {
     Output { terminal: String, serial: u64 },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
-    RulesUpdated { token: u64, report: kanna_detect::Report },
+    TooOld { terminal: String, serial: u64, why: String },
     Worktree { token: u64, result: Result<stacks::Made, String> },
     Stacks { seen: Vec<stacks::Seen> },
     Heads,
@@ -133,7 +133,7 @@ impl Event {
             Event::Output { .. } => "loop.output",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
-            Event::RulesUpdated { .. } => "loop.rules",
+            Event::TooOld { .. } => "loop.status",
             Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::File { .. } => "loop.file",
@@ -288,7 +288,7 @@ fn run() -> Result<Option<PathBuf>, String> {
         }
     };
 
-    let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone())];
+    let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone()), ("AGY_CLI_OSC7501".to_string(), "on".to_string())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
     let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
@@ -298,11 +298,9 @@ fn run() -> Result<Option<PathBuf>, String> {
             terminals.renamed(from, to);
         }
     }));
-    let rules = kanna_detect::Store::new(status_command::rules_config(&state_dir));
-    let rules_updater = rules.start();
-    let detector = Rc::new(status::Detector::start(rules, events.clone()));
+    let detector = Rc::new(status::Detector::start(events.clone()));
     *terminals.detector.borrow_mut() = Some(detector.clone());
-    let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone(), events.clone()));
+    let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone()));
     status_commands.install(&core);
     let tasks = Rc::new(tasks::Tasks::open(db.clone(), &state_dir, core.weak(), events.clone()));
     tasks.install(&core);
@@ -324,6 +322,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                 messages::Channel::Claude(messages::inbox(&config, program.pid))
             }
             "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(pane))),
+            "antigravity" => messages::Channel::Other("agy".to_string()),
             other => messages::Channel::Other(other.to_string()),
         })
     }));
@@ -676,7 +675,17 @@ fn run() -> Result<Option<PathBuf>, String> {
                     runs.status(&pane, ended);
                 }
             }
-            Event::RulesUpdated { token, report } => status_commands.updated(token, report),
+            Event::TooOld { terminal, serial, why } => {
+                if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
+                    let refused = tasks.too_old(&pane, &why).or_else(|| runs.too_old(&pane, &why).then(|| "a run's stage".to_string()));
+                    if let Some(name) = refused {
+                        let toast = toasts::Toast { title: format!("Kanna can't run {name}'s agent"), detail: Some(why), pane: Some(pane.clone()), task: None, key: Some(format!("too-old:{pane}")) };
+                        if let Err(error) = toasts.raise(toast) {
+                            log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
+                        }
+                    }
+                }
+            }
             Event::Worktree { token, result } => tasks.worktree_made(token, result),
             Event::Stacks { seen } => tasks.watched(seen),
             Event::Heads => tasks.heads_moved(),
@@ -795,7 +804,6 @@ fn run() -> Result<Option<PathBuf>, String> {
         machines.stop();
     }
     let _ = std::fs::remove_file(&pid_file);
-    std::mem::forget(rules_updater);
     if keep_socket {
         server.stop_leaving_path();
     } else {

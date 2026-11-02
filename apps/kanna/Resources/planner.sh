@@ -336,7 +336,7 @@ elif misplaced .; then
 fi
 
 if [ -z "$installed" ]; then
-  echo "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here."
+  echo "No agent Kanna knows is installed (claude, codex, opencode or agy). Install one, then start it here."
   shell
 fi
 

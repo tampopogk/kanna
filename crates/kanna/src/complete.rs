@@ -21,7 +21,7 @@ pub enum Want {
 const MARKDOWN: &[&str] = &["md", "markdown", "mdown"];
 const HTML: &[&str] = &["html", "htm"];
 
-pub const AGENTS: &[&str] = &["antigravity", "claude", "codex", "copilot", "opencode"];
+pub const AGENTS: &[&str] = &["antigravity", "claude", "codex", "opencode"];
 
 const GLOBAL: &[(&str, &str)] = &[
     ("--mux kanna|kmux", "Which multiplexer to control."),
@@ -636,10 +636,8 @@ mod tests {
 
     #[test]
     fn status_and_help_have_their_own_words() {
-        assert_eq!(words(&at("status ")), ["explain", "update"]);
+        assert_eq!(words(&at("status ")), ["explain"]);
         assert_eq!(at("status explain "), [Want::Panes]);
-        let agents: Vec<String> = AGENTS.iter().map(|a| a.to_string()).collect();
-        assert_eq!(words(&at("status explain --file s.txt --agent ")), agents);
         assert!(words(&at("help ")).contains(&"move-tab".into()));
         assert!(words(&at("help ")).contains(&"completions".into()));
         assert_eq!(words(&at("completions ")), ["zsh", "bash"]);
@@ -670,8 +668,8 @@ mod tests {
     }
 
     #[test]
-    fn the_agents_are_the_bundled_rules() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agent-rules");
+    fn the_agents_are_those_with_quit_files() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agent-rules/quit");
         let mut names: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
             .flatten()

@@ -69,7 +69,6 @@ mock_agent="$repo_root/tools/mock-agent/mock-agent"
 new_state_dir() {
   KANNA_STATE_DIR="$(mktemp -d /tmp/kanna-e2e.XXXXXX)" || exit 1
   echo $$ >"$KANNA_STATE_DIR/e2e-kanna.pid"
-  export KANNA_AGENT_RULES_DIR="$KANNA_STATE_DIR/agent-rules-override"
   export KANNA_AGENTS_HOME="$KANNA_STATE_DIR/home"
   [[ -n "$KANNA_STATE_DIR" && -d "$KANNA_STATE_DIR" ]] || { echo "e2e-kanna: mktemp gave no folder" >&2; exit 1; }
   export KANNA_STATE_DIR KANNA_SOCKET="$KANNA_STATE_DIR/kanna.sock"
@@ -81,7 +80,6 @@ export KANNA_IGNORE_OCCLUSION=1
 export KANNA_DEBUG=1
 export KANNA_TEST_EFFECTS=1
 export KANNA_NO_INITIAL_WINDOW=1
-export KANNA_AGENT_RULES_URL=none
 export KANNA_PLANNING_AGENTS=none
 export KANNA_AGENT_SKILLS="${app%/MacOS/Kanna}/Resources/kanna-skills"
 daemon_pid="" app_pid="" scenario_pid=""
@@ -1930,7 +1928,7 @@ agent_status() {
   check wait_for 5 is agent_status status working || return 1
   check wait_for 10 is agent_status status needs-you || return 1
   check test "$(kanna workspace list --all --json | python3 -c 'import json, sys; print(next(p.get("status") for p in json.load(sys.stdin)["panes"] if p["name"] == "agent_status"))')" == needs-you || return 1
-  kanna status explain agent_status | grep -qF 'rule: mock/needs-you/proceed' || { kanna status explain agent_status; return 1; }
+  kanna status explain agent_status | grep -qF 'record: state=blocked kind=permission' || { kanna status explain agent_status; return 1; }
   check wait_for 5 eval '[[ "$(agent_status_status status)" == needs-you ]]' || return 1
   kanna send agent_status 1 || return 1
   check wait_for 5 is agent_status status working || return 1
@@ -3649,7 +3647,7 @@ real_agent_program_status() {
   repo="$(cd "$repo" && pwd -P)"
   python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
   check wait_for 10 eval '[[ -s "$agents/port" ]]' || { echo "real_agent_program_status: the mock model didn't start"; return 1; }
-  reported() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$1\"}}" | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r.get("source"), (r.get("reported") or {}).get("state"), r.get("status"))'; }
+  reported() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$1\"}}" | python3 -c 'import json, sys; r = json.load(sys.stdin); print((r.get("reported") or {}).get("state"), r.get("status"))'; }
   local agent real pane into=new
   for agent in claude codex; do
     [[ $agent == claude ]] && real="$claude" || real="$codex"
@@ -3659,9 +3657,8 @@ real_agent_program_status() {
     into=win-1
     check wait_for 60 shows "$pane" "for shortcuts\\|shift+tab" || { echo "real_agent_program_status: $agent didn't start"; kanna read "$pane"; return 1; }
     kanna send "$pane" "PLAIN_TURN" || { echo "real_agent_program_status line $LINENO"; return 1; }
-    check wait_for 30 eval '[[ "$(reported "$pane")" == "osc7501 working working" ]]' || { echo "real_agent_program_status: $agent's turn wasn't working from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; tail -2 "$agents/mock.jsonl" | cut -c1-300; return 1; }
-    [[ "$(kanna status explain "$pane")" == *"source: OSC 7501"* ]] || { kanna status explain "$pane"; return 1; }
-    check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^"osc7501 "(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: $agent's turn didn't end idle from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
+    check wait_for 30 eval '[[ "$(reported "$pane")" == "working working" ]]' || { echo "real_agent_program_status: $agent's turn wasn't working from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; tail -2 "$agents/mock.jsonl" | cut -c1-300; return 1; }
+    check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: $agent's turn didn't end idle from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
     shows "$pane" "slow streamed answer" || { echo "real_agent_program_status: $agent didn't show the mock's answer"; kanna read "$pane"; return 1; }
   done
   stop_agents
@@ -4666,24 +4663,50 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   check wait_for 15 shows "$cterm" "peer: \[message from user\] over the socket" || { echo "agent_messaging: the claude task didn't get its message on its socket"; kanna read "$cterm"; tail -5 "$out/daemon.log"; return 1; }
   check test "$(times "$cterm" "over the socket")" -eq 1 || { echo "agent_messaging: the claude task's message was typed too"; kanna read "$cterm"; return 1; }
   check wait_for 15 eval '[[ "$(task_state $claude)" == stopped* ]]' || { echo "agent_messaging: the claude task wasn't stopped after the turn its message started"; task_state "$claude"; return 1; }
-  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/copilot"
-  in_repo task new "Copilot" "work 1" --agent "$fake/copilot" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/agy"
+  in_repo task new "Agy" "work 1" --agent "$fake/agy" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
   said="$(in_repo task send "$(tid 4)" "can you hear me")"
-  [[ "$said" == *$'\n'"warning: it waits: copilot can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to a copilot task said: $said"; return 1; }
+  [[ "$said" == *$'\n'"warning: it waits: agy can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to an agy task said: $said"; return 1; }
   waits() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
-print(" ".join(t["pane"] + ":" + t["about"] for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Copilot"))'; }
-  local copilot; copilot="$(task_state "$(tid 4)" | cut -d' ' -f2)"
-  check wait_for 15 eval '[[ "$(waits)" == "$copilot:Copilot" ]]' || { echo "agent_messaging: the waiting message raised no toast about $copilot: $(waits)"; return 1; }
+print(" ".join(t["about"] + ":" + (t.get("detail") or "") for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Agy"))'; }
+  check wait_for 15 eval '[[ "$(waits)" == "Agy:agy can'"'"'t take messages: only claude and codex can" ]]' || { echo "agent_messaging: the waiting message raised no toast about the agy task: $(waits)"; return 1; }
   sleep 2
-  check test "$(waits)" == "$copilot:Copilot" || { echo "agent_messaging: the same reason raised another toast: $(waits)"; return 1; }
-  check wait_for 15 eval '[[ "$(in_repo task messages "$(tid 4)")" == *"held for $(sid 4): copilot can'"'"'t take messages"* ]]' || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
+  check test "$(waits)" == "Agy:agy can't take messages: only claude and codex can" || { echo "agent_messaging: the same reason raised another toast: $(waits)"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state "$(tid 4)")" == stopped* ]]' || { echo "agent_messaging: the agy task wasn't stopped at its turn's end"; task_state "$(tid 4)"; return 1; }
+  sleep 3
+  check test "$(task_state "$(tid 4)" | cut -d' ' -f1)" == stopped || { echo "agent_messaging: the agy task was woken for a message it can't take"; return 1; }
+  [[ "$(in_repo task messages "$(tid 4)")" == *"waiting  can you hear me"* ]] || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
+}
+
+scenario agent_too_old M4
+agent_too_old() {
+  start_daemon && start_app || { echo "agent_too_old line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake/bin" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "agent_too_old line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  sed 's/"KANNA_MOCK_VERSION", "99.0.0"/"KANNA_MOCK_VERSION", "2.1.290"/' "$repo_root/tools/mock-agent/mock-agent" >"$fake/bin/claude" && chmod +x "$fake/bin/claude" || { echo "agent_too_old line $LINENO"; return 1; }
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("stopped") or "-")' "$1"; }
+  (cd "$repo" && kanna task new "Old" "work 30" --agent "$fake/bin/claude") >/dev/null || { echo "agent_too_old line $LINENO"; return 1; }
+  check wait_for 20 eval '[[ "$(task_state $(tid 1))" == "stopped too-old" ]]' || { echo "agent_too_old: the old claude's task wasn't stopped as too old: $(task_state $(tid 1))"; return 1; }
+  refused() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+print(" ".join(t.get("detail") or "" for t in json.load(sys.stdin)["toasts"] if t["title"].startswith("Kanna can'"'"'t run")))'; }
+  check wait_for 10 eval '[[ "$(refused)" == "claude 2.1.290 is too old for Kanna: it needs 2.1.295 or newer"* ]]' || { echo "agent_too_old: no toast said why: $(refused)"; raw '{"id":1,"cmd":"debug.toasts"}'; return 1; }
+  sleep 3
+  check test "$(task_state $(tid 1))" == "stopped too-old" || { echo "agent_too_old: a runner started it again"; return 1; }
+  kanna open --window new --name plain --cwd "$repo" --cmd "$fake/bin/claude" >/dev/null || { echo "agent_too_old line $LINENO"; return 1; }
+  check wait_for 10 is plain status idle || { echo "agent_too_old: the old claude in a plain terminal didn't run with its reports"; kanna status explain plain; return 1; }
+  sleep 2
+  check test "$(pane plain state)" == running || { echo "agent_too_old: the plain terminal's agent was refused"; return 1; }
 }
 
 scenario pipeline_run M4
 pipeline_run() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/factory" fake="$KANNA_STATE_DIR/agents"
   mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
-  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s KANNA_MOCK_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
   python3 -c 'import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["pipelines"] = {"agents": {"claude": sys.argv[2]}}; json.dump(c, open(p, "w"))' "$KANNA_AGENTS_HOME/.kanna-v4/config.json" "$fake/claude" || { echo "pipeline_run line $LINENO"; return 1; }
   start_daemon && start_app || { echo "pipeline_run line $LINENO"; return 1; }
   mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_run line $LINENO"; return 1; }

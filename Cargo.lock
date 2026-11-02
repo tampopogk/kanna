@@ -1763,16 +1763,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kanna-corpus"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "kanna-detect",
- "kanna-vt",
- "serde_json",
-]
-
-[[package]]
 name = "kanna-crash"
 version = "0.1.0"
 dependencies = [
@@ -1813,11 +1803,8 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "regex",
- "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
- "webpki-roots",
 ]
 
 [[package]]

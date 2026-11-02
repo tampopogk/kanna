@@ -115,7 +115,6 @@ impl Daemon {
             .env("KANNA_SOCKET", dir.join("kanna.sock"))
             .env("KANNA_STATE_DIR", dir.join("state"))
             .env("KANNA_KEEPER", keeper)
-            .env("KANNA_AGENT_RULES_URL", "none")
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_MACHINE_MDNS", "0")
             .env("KANNA_MACHINE_PORT", port.to_string())
