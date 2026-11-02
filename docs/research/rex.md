@@ -179,7 +179,7 @@ flowchart LR
             K2["2 · Views<br/>GhosttyKit surfaces<br/>web · markdown · iOS"]
         end
         subgraph KD["daemon"]
-            K3["3 · Logical presentation<br/>workspaces · tabs · Desk"]
+            K3["3 · Logical presentation<br/>windows · tabs · split trees · panes"]
             K4["4 · Work<br/>tasks · agents · worktrees<br/>terminals: libghostty-vt"]
         end
         subgraph KK["keeper"]
@@ -213,7 +213,7 @@ Pink is Rex's code, green Kanna's, grey the OS, orange the clients.
 | clients | `rex` CLI, Lua scripts (`rex do`), agents, the web client, other devices' apps; each is a *client* with an ID | `kanna` CLI, agents | their own |
 | 1 · UI | sessions, tabs, palette, 88 client actions | Desk view, Desk, Shelf, review, editor | app |
 | 2 · Views | swift-ghostty, its own Metal renderer | GhosttyKit (Kanna's fork), web, markdown, iOS | app |
-| 3 · Presentation | sessions, windows, tiled and floating layers, splits, per-block owners | workspaces, tabs, the Desk, logical windows | server / daemon |
+| 3 · Presentation | sessions, windows, tiled and floating layers, splits, per-block owners | windows, tabs, split trees of panes, zoom, background terminals | server / daemon |
 | 4 · Work | blocks (terminal, onboarding, plugins); libghostty per terminal; **the ptys** | tasks, agents, worktrees, terminals (libghostty-vt), diffs, files, pages | server / daemon |
 | 5 · Keeper | — | holds the ptys across daemon restarts and upgrades | keeper |
 | 6 · OS | ptys through `/usr/bin/login` | ptys, WebKit, iOS Simulator | — |
@@ -228,7 +228,7 @@ Pink is Rex's code, green Kanna's, grey the OS, orange the clients.
 | **Search** | `client.find.*` | none, as kmux | Rex |
 | **Restart and upgrade** | an update ends every program, so it waits for idle (§1.5) | terminals outlive daemon restarts and keeper upgrades ([keeper upgrade](../specs/keeper-upgrade.md)) | **Kanna, clearly** |
 | **Saved screens** | sealed per process; gone after a crash | reloaded by the next daemon ([daemon restart](../specs/daemon-restart.md)) | Kanna |
-| **Layout model** | sessions, tabs, splits, floating layers; detached blocks; many clients (§1.3) | a Desk of up to three tasks, and the Shelf; one app per daemon ([workspaces](../specs/workspaces.md)) | different aims; Rex for several viewers |
+| **Layout model** | sessions → windows → a split tree plus floating layers of blocks; detached blocks; many clients (§1.3) | windows → tabs → a split tree of panes, with zoom; panes view the daemon's content; background terminals in no tab; one app per daemon ([workspaces §1](../specs/workspaces.md#1-the-model), [physical layout](../specs/physical-layout.md)) | Rex: floating layers, several viewers; otherwise the same tree |
 | **CLI targets** | flags, env, else the focused block | the caller, else refused ([CLI caller](../specs/cli-caller.md)) | Kanna: stricter |
 | **Waiting, events** | `wait`, `run --wait`, `--keep-open`, `events --json` | results pushed as messages; no event stream ([agent messaging](../specs/agent-messaging.md)) | Rex for events; Kanna for results (3.1 #2) |
 | **API description** | schemas and notes per method; older revisions bridged | `commands --json`; a `[min, max]` range ([machine links §2](../specs/machine-links.md#2-the-hello)) | Rex |
