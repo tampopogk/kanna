@@ -17,7 +17,7 @@ mod state_file;
 mod tabs;
 mod workspace;
 
-pub use crate::core::{normalize_url, project, resolve, responder, TASKS_PER_PROJECT, CommandHandler, Core, PrefixHandler, CoreHandle, PaneHost, Responder, TaskBook, WeakCore, CORE_COMMANDS, DEBUG_COMMANDS};
+pub use crate::core::{normalize_url, project, resolve, responder, TASKS_PER_PROJECT, CommandHandler, Core, OpenPrep, PrefixHandler, CoreHandle, PaneHost, Responder, TaskBook, WeakCore, CORE_COMMANDS, DEBUG_COMMANDS};
 pub use brand::Brand;
 pub use error::KmuxError;
 pub use exec::Wakeup;

@@ -797,6 +797,7 @@ pub struct Tasks {
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub run_of: RefCell<Option<Box<dyn Fn(&str) -> Option<String>>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     warned: RefCell<HashMap<String, String>>,
@@ -918,6 +919,7 @@ impl Tasks {
             line_mode: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
+            run_of: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -1249,6 +1251,15 @@ impl Tasks {
         let inside = |entry: &Entry| entry.folder.as_deref().is_some_and(|f| folder.starts_with(f) || same_folder(Path::new(f), folder));
         let running: Vec<Entry> = self.running.borrow().iter().map(|r| r.entry.clone()).collect();
         running.into_iter().chain(self.entries.borrow().iter().cloned()).find(inside)
+    }
+
+    fn run_stage(&self, task: &str) -> Option<String> {
+        self.run_of.borrow().as_ref().and_then(|run_of| run_of(task))
+    }
+
+    pub fn agent_pane(&self, task: &str) -> Option<String> {
+        let running = self.running.borrow().iter().find(|r| r.entry.id == task).map(|r| r.pane.clone());
+        running.or_else(|| self.known(task).and_then(|e| e.held))
     }
 
     pub fn task_of(&self, pane: &str) -> Option<String> {
@@ -2231,6 +2242,7 @@ impl Tasks {
                 value["running"] = json!(pane.as_ref().is_some_and(|(running, _)| *running));
                 value["status"] = opt(pane.as_ref().and_then(|(_, p)| p.status()));
                 value["replied"] = json!(replied.contains(&e.id));
+                value["run"] = opt(self.run_stage(&e.id).as_deref());
                 value
             })
             .collect();
@@ -2242,6 +2254,7 @@ impl Tasks {
             .map(|r| {
                 let mut value = json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id), "branch": opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()) });
                 self.stack_fields(&r.entry, &mut value);
+                value["run"] = opt(self.run_stage(&r.entry.id).as_deref());
                 value
             })
             .collect();

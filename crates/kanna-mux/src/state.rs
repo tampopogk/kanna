@@ -79,6 +79,9 @@ pub fn pane_record(pane: &Pane) -> Map {
             out.insert("device".into(), opt(pane.device.as_deref()));
         }
         PaneType::Serial => serial_fields(pane, &mut out),
+        PaneType::Run => {
+            out.insert("run".into(), opt(pane.run.as_deref()));
+        }
     }
     if let Some(tour) = &pane.tour {
         out.insert("tour".into(), tour.to_json());
@@ -141,6 +144,7 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
             pane.baud = read_baud(item.get("baud")).ok().flatten();
             pane.line_ending = read_line_ending(item.get("lineEnding")).ok().flatten();
         }
+        PaneType::Run => pane.run = field("run"),
     }
     match kind {
         PaneType::Term => pane.tour = item.get("tour").and_then(Tour::from_json),
@@ -190,7 +194,7 @@ pub(crate) fn upgrade(state: &Value) -> Value {
     let count = |key: &str| counters.and_then(|c| c.get(key)).cloned().unwrap_or(Value::Null);
     let pane = count("pane");
     out["version"] = num(STATE_VERSION as f64);
-    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "serial": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
+    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "serial": pane, "runview": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
     out
 }
 
@@ -258,6 +262,7 @@ pub(crate) fn import_versions(state: &Value, versions: &[u32], reader: &str) -> 
             PaneType::Web => Some("url"),
             PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Serial => Some("path"),
             PaneType::Ios => Some("app"),
+            PaneType::Run => Some("run"),
             PaneType::Term => None,
         };
         if let Some(needed) = needed {

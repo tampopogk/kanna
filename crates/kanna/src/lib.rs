@@ -268,6 +268,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
 fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
     let given = |keys: &[&str]| keys.iter().any(|key| !request[*key].is_null());
     match command {
+        "open" if request["type"] == "run" || request["action"] == "watch" => None,
         "open" if !given(&["window", "workspace", "from"]) => Some("add --window WINDOW (or --window new)"),
         "markup" if !request["type"].is_null() && !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
         "comment" if !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
@@ -337,6 +338,7 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
+        "open" if request["action"] == "watch" => "run",
         "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
         "task" if request["action"] == "done" => "tasks",
         "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",

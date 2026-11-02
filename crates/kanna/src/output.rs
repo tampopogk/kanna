@@ -86,6 +86,12 @@ pub fn opened(request: &Value, reply: &Value) -> String {
     format!("opened {} in {place}, {}: {}", label(&reply["pane"]), reply["tab"].as_str().unwrap_or("?"), state(&reply["pane"]))
 }
 
+pub fn watching(reply: &Value) -> String {
+    let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("its task's workspace").to_string());
+    let tab = reply["tab"].as_str().map(|t| format!(", {t}")).unwrap_or_default();
+    format!("{} shows {}'s worker in {place}{tab}; the tab follows the run to the next stage", reply["terminal"].as_str().unwrap_or("?"), reply["run"].as_str().unwrap_or("?"))
+}
+
 pub fn commented(args: &Value, reply: &Value) -> String {
     let file = args["path"].as_str().and_then(|p| p.rsplit('/').next()).unwrap_or("?");
     let lines = match (reply["first"].as_u64(), reply["last"].as_u64()) {
@@ -231,6 +237,10 @@ pub fn task(request: &Value, reply: &Value) -> String {
                 (Some(false), _) => "stopped".to_string(),
                 (_, Some(status)) if status != "exited" => status.to_string(),
                 _ => "running".to_string(),
+            };
+            let state = |t: &Value| match t["run"].as_str() {
+                Some(run) => format!("{} · run: {run}", state(t)),
+                None => state(t),
             };
             let program = |command: &str| command.split_whitespace().next().map(|a| a.rsplit('/').next().unwrap_or(a).to_string()).unwrap_or_default();
             let default = Some(program(reply["agent"].as_str().unwrap_or("claude")));
@@ -396,7 +406,7 @@ pub fn name_out(reply: &mut Value, out: &Value) {
     for task in tasks {
         if let Some(known) = out.as_array().into_iter().flatten().find(|o| o["pane"] == task["id"]) {
             task["task"] = known["id"].clone();
-            for key in ["repo", "merged", "replied", "ready", "stale", "bases", "branch"] {
+            for key in ["repo", "merged", "replied", "ready", "stale", "bases", "branch", "run"] {
                 if let Some(value) = known.get(key) {
                     task[key] = value.clone();
                 }

@@ -35,7 +35,7 @@ const EXTENDED: &[(&str, &str)] = &[
 
 const KMUX_ONLY_OPTIONS: &[(&str, &str)] = &[("open", "--dock [left|right]"), ("open", "--frozen")];
 
-const KANNA_ONLY_OPTIONS: &[(&str, &str)] = &[("move", "--background")];
+const KANNA_ONLY_OPTIONS: &[(&str, &str)] = &[("move", "--background"), ("open", "--watch [WORKER]")];
 
 const KMUX_ONLY_EXAMPLES: &[&str] = &["kmux open --name agent --cmd claude --dock"];
 
@@ -58,6 +58,8 @@ fn without_code_panes(text: &str) -> String {
         .replace("\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]", "")
         .replace("\n       kanna open md FILE --diff [REF|A..B] [same placement options]", "")
         .replace("\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]", "")
+        .replace("\n       kanna open run [RUN] [same placement options]", "")
+        .replace("\n       kanna open run [RUN] --watch [WORKER]", "")
         .replace("\n       kanna navigate PANE FILE[:LINE]", "")
         .replace("\n       kanna navigate PANE diff [GIT-DIFF-ARGS]", "")
 }
@@ -317,7 +319,7 @@ fn an_unknown_pane_type_lists_code_and_diff_panes_too() {
     let kmux = kmux_parse("kmux open top").expect_err("kmux");
     let kanna = kanna_parse("kmux open top").expect_err("kanna");
     assert_eq!(kanna.0, kmux.0);
-    assert_eq!(without_code_panes(&from_kanna(&kanna.1)), from_kmux(&kmux.1).replace("ios or md", "ios, md, code, diff or serial"));
+    assert_eq!(without_code_panes(&from_kanna(&kanna.1)), from_kmux(&kmux.1).replace("ios or md", "ios, md, code, diff, serial or run"));
 }
 
 #[test]

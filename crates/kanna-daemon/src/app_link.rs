@@ -229,6 +229,7 @@ pub struct AppLink {
     diffs: Rc<Diffs>,
     files: Rc<Files>,
     serial: Rc<Serial>,
+    runs: RefCell<std::rc::Weak<crate::runs::Runs>>,
     layout: Rc<DaemonLayout>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
@@ -255,6 +256,7 @@ impl AppLink {
             diffs,
             files,
             serial,
+            runs: RefCell::new(std::rc::Weak::new()),
             layout,
             app: RefCell::new(None),
             pending: RefCell::default(),
@@ -489,6 +491,9 @@ impl AppLink {
         self.diffs.leave(|view| view.starts_with(&prefix));
         self.files.leave(|view| view.starts_with(&prefix));
         self.serial.leave_views(|view| view.starts_with(&prefix));
+        if let Some(runs) = self.runs.borrow().upgrade() {
+            runs.leave_views(|view| view.starts_with(&prefix));
+        }
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
@@ -543,6 +548,18 @@ impl AppLink {
             ("serial.subscribe", Some(view)) => {
                 let reply = self.serial.subscribe(&view, &args);
                 self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("run.subscribe", Some(view)) => {
+                let runs = self.runs.borrow().upgrade();
+                let reply = runs.map_or_else(|| Err(KmuxError::new("app_gone", "the daemon is stopping")), |runs| runs.subscribe(&view, &args));
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("run.unsubscribe", Some(view)) => {
+                if let Some(runs) = self.runs.borrow().upgrade() {
+                    runs.unsubscribe(&view);
+                }
                 return None;
             }
             ("serial.unsubscribe", Some(view)) => {
@@ -645,6 +662,18 @@ impl AppLink {
         let prefix = view_prefix(conn);
         if views.iter().any(|view| view.starts_with(&prefix)) {
             self.notify("file", payload.clone());
+        }
+    }
+
+    pub fn connect_runs(&self, runs: &Rc<crate::runs::Runs>) {
+        *self.runs.borrow_mut() = Rc::downgrade(runs);
+    }
+
+    pub fn run(&self, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify("run", payload.clone());
         }
     }
 

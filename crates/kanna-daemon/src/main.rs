@@ -22,6 +22,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod reader;
+mod run_notice;
 mod runs;
 mod schedule;
 mod settings;
@@ -94,6 +95,7 @@ pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Wake,
     Output { terminal: String, serial: u64 },
+    Typed { terminal: String },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     RulesUpdated { token: u64, report: kanna_detect::Report },
@@ -129,6 +131,7 @@ impl Event {
             Event::Request(..) => "loop.request",
             Event::Wake => "loop.wake",
             Event::Output { .. } => "loop.output",
+            Event::Typed { .. } => "loop.typed",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::RulesUpdated { .. } => "loop.rules",
@@ -350,6 +353,10 @@ fn run() -> Result<Option<PathBuf>, String> {
             runs.task_closed(task);
         }
     }));
+    let staging = Rc::downgrade(&runs);
+    *tasks.run_of.borrow_mut() = Some(Box::new(move |task| staging.upgrade().and_then(|runs| runs.stage_of(task))));
+    let heeding = wire.clone();
+    *runs.heed.borrow_mut() = Some(Box::new(move |terminal| heeding.heed(terminal)));
     let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
@@ -457,6 +464,13 @@ fn run() -> Result<Option<PathBuf>, String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    app.connect_runs(&runs);
+    let run_link = Rc::downgrade(&app);
+    *runs.on_run.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = run_link.upgrade() {
+            app.run(views, payload);
         }
     }));
     let serial_link = Rc::downgrade(&app);
@@ -650,6 +664,11 @@ fn run() -> Result<Option<PathBuf>, String> {
                 }
                 if noticed.overflowed {
                     app.resync(&terminal);
+                }
+            }
+            Event::Typed { terminal } => {
+                if let Some(pane) = terminals.pane_of(&terminal) {
+                    runs.typed(&pane);
                 }
             }
             Event::Drained { terminal, serial } => {
