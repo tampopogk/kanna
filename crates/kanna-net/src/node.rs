@@ -31,6 +31,8 @@ pub(crate) const MAX_HEADER: u64 = 64 << 10;
 
 pub(crate) const MAX_LINE: u64 = 16 << 20;
 
+const MAX_TRANSFER: u64 = 4 << 30;
+
 pub(crate) const DIAL: Duration = Duration::from_secs(10);
 
 const PAIRING_SESSION: Duration = Duration::from_secs(180);
@@ -72,6 +74,9 @@ pub trait Host: Send + Sync + 'static {
     fn save(&self, state: Value);
     fn restart(&self);
     fn app(&self, _from: String, _hello: Value, _stream: std::os::unix::net::UnixStream) {}
+    fn inbox(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 pub struct Config {
@@ -504,6 +509,15 @@ impl Node {
             let _ = send.finish();
             return;
         }
+        if kind == "transfer" {
+            let reply = match cert {
+                Some(_) => refusal(&Failure::new("not_a_daemon", "only a machine's daemon sends a task")),
+                None => self.take_transfer(&remote, &from, &mut recv).await,
+            };
+            let _ = write_line(&mut send, &reply).await;
+            let _ = send.finish();
+            return;
+        }
         if kind == "control" || kind == "sync" {
             while let Ok(mut request) = read_line(&mut recv, MAX_LINE).await {
                 if let Err(failure) = self.admit(&remote, cert.as_ref()) {
@@ -579,6 +593,44 @@ impl Node {
             () = watched => {}
         }
         let _ = send.finish();
+    }
+
+    async fn take_transfer(&self, remote: &str, from: &str, recv: &mut BufReader<RecvStream>) -> Value {
+        let header = match read_line(recv, MAX_LINE).await {
+            Ok(header) => header,
+            Err(e) => return refusal(&Failure::new("bad_request", format!("no transfer header: {e}"))),
+        };
+        let id = header["id"].as_str().unwrap_or_default().to_string();
+        if id.is_empty() || id.len() > 96 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return refusal(&Failure::new("bad_request", "a transfer needs an ID of letters, digits and dashes"));
+        }
+        let Some(size) = header["size"].as_u64().filter(|size| *size <= MAX_TRANSFER) else {
+            return refusal(&Failure::new("too_big", format!("a transfer carries at most {} MB", MAX_TRANSFER >> 20)));
+        };
+        let Some(inbox) = self.0.host.inbox() else { return refusal(&Failure::new("unavailable", "this machine takes no transfers")) };
+        let file = inbox.join(format!("{id}.in"));
+        if let Err(e) = receive_file(recv, &inbox, &file, size).await {
+            return refusal(&Failure::new("unreachable", format!("lost the transfer on the way: {e}")));
+        }
+        let mut args = header["args"].as_object().cloned().unwrap_or_default();
+        args.insert("action".into(), json!("transfer"));
+        args.insert("id".into(), json!(id));
+        args.insert("file".into(), json!(file.to_string_lossy()));
+        args.insert(PEER.into(), json!(remote));
+        self.control(from, json!({ "id": 1, "cmd": REPLICA, "args": args })).await
+    }
+
+    pub async fn transfer(&self, key: &str, id: &str, args: Value, path: &std::path::Path) -> Result<Value, Failure> {
+        self.usable()?;
+        let name = self.name_of(key);
+        let size = tokio::fs::metadata(path).await.map_err(|e| Failure::new("failed", format!("can't read {}: {e}", path.display())))?.len();
+        let (mut send, mut recv, _) = self.open_to(key, "transfer", json!({})).await?;
+        let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
+        write_line(&mut send, &json!({ "id": id, "size": size, "args": args })).await.map_err(lost)?;
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| Failure::new("failed", format!("can't read {}: {e}", path.display())))?;
+        tokio::io::copy(&mut file, &mut send).await.map_err(|e| lost(e.to_string()))?;
+        let _ = send.finish();
+        read_line(&mut recv, MAX_LINE).await.map_err(lost)
     }
 
     async fn control(&self, from: &str, request: Value) -> Value {
@@ -1081,6 +1133,19 @@ async fn refuse(send: &mut SendStream, failure: Failure) -> Result<Value, Failur
 
 fn unix_time() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+async fn receive_file<R: tokio::io::AsyncRead + Unpin>(recv: &mut R, inbox: &std::path::Path, file: &std::path::Path, size: u64) -> Result<(), String> {
+    tokio::fs::create_dir_all(inbox).await.map_err(|e| e.to_string())?;
+    let part = file.with_extension("part");
+    let mut out = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
+    let copied = tokio::io::copy(&mut (&mut *recv).take(size), &mut out).await.map_err(|e| e.to_string())?;
+    if copied != size {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(format!("{copied} of {size} bytes came"));
+    }
+    out.sync_all().await.map_err(|e| e.to_string())?;
+    tokio::fs::rename(&part, file).await.map_err(|e| e.to_string())
 }
 
 pub(crate) async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(recv: &mut R, max: u64) -> Result<Value, String> {

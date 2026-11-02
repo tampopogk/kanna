@@ -29,7 +29,7 @@ pub struct Machines {
     pub install: Option<Install>,
 }
 
-struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>);
+struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>, PathBuf);
 
 impl Host for DaemonHost {
     fn request(&self, _from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
@@ -56,6 +56,10 @@ impl Host for DaemonHost {
         let wire = self.1.clone();
         let Ok(reader) = stream.try_clone() else { return };
         let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, wire, hello, std::io::BufReader::new(reader), stream, Some(from)));
+    }
+
+    fn inbox(&self) -> Option<PathBuf> {
+        Some(self.2.clone())
     }
 }
 
@@ -122,7 +126,7 @@ impl Machines {
             let saved = db.machines().unwrap_or_else(|_| json!({}));
             let mdns = std::env::var("KANNA_MACHINE_MDNS").map_or(true, |v| v != "0");
             let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns, release: release(install.as_ref()), install: install.clone() };
-            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire))))
+            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire, crate::transfer::inbox(state_dir)))))
         });
         Ok(Machines { runtime, node, state_dir: state_dir.to_path_buf(), install })
     }
@@ -265,6 +269,14 @@ impl Machines {
                 Ok(Err(failure)) => Err(format!("{} [{}]", failure.message, failure.code)),
                 Err(_) => Err(format!("no answer in {}s [unreachable]", EXCHANGE_WAIT.as_secs())),
             })
+        });
+    }
+
+    pub fn transfer(&self, key: String, id: String, args: Value, path: PathBuf, done: Box<dyn FnOnce(Result<Value, String>) + Send>) {
+        let Ok(node) = &self.node else { return done(Err("this daemon has no endpoint [unavailable]".into())) };
+        let node = node.clone();
+        self.runtime.spawn(async move {
+            done(node.transfer(&key, &id, args, &path).await.map_err(|failure| format!("{} [{}]", failure.message, failure.code)))
         });
     }
 

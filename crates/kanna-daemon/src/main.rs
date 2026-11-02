@@ -39,6 +39,7 @@ mod store;
 mod stacks;
 mod task_scripts;
 mod terminals;
+mod transfer;
 mod toasts;
 mod wire;
 

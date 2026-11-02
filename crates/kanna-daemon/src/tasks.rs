@@ -692,7 +692,8 @@ pub fn add_worktree(repo: &Path, name: &str, branch: &str, start: Option<&str>) 
         return Err(format!("{WORKTREES}/{name} or the branch {branch} is there already"));
     }
     let folder = repo.join(WORKTREES).join(name).to_string_lossy().to_string();
-    if let (true, Some(start)) = (born, start) {
+    let start = start.filter(|start| git(&["rev-parse", "--verify", "--quiet", &format!("{start}^{{commit}}")]).is_ok());
+    if let Some(start) = start {
         git(&["worktree", "add", "-b", branch, &folder, start])?;
     } else if born {
         git(&["worktree", "add", "-b", branch, &folder])?;
