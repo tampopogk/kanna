@@ -140,8 +140,10 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
     assert_eq!(git(Path::new(&there_folder), &["diff", "--cached", "--name-status"]), "M\tREADME.md\nA\tdraft.md", "the uncommitted work comes back staged");
     assert_eq!(git(Path::new(&there_folder), &["log", "-1", "--format=%s"]), "first", "the work-in-progress commit is undone");
     carries_on_from_its_handoff(&vm, &task, &there_folder, &session);
+    let handoff = std::fs::read_to_string(Path::new(&there_folder).join(".kanna/tmp/handoff.md")).unwrap();
+    assert!(handoff.contains("## The workspace on mbp") && handoff.contains("- the doc `draft.md`"), "the handoff says which tabs were open, at paths in the worktree: {handoff}");
     let panes = ask(&vm, "list", json!({}))["panes"].as_array().unwrap().clone();
-    assert!(panes.iter().any(|p| p["type"] == "md" && p["path"] == format!("{there_folder}/draft.md")), "its tab is open again at vm's path: {panes:?}");
+    assert!(!panes.iter().any(|p| p["type"] == "md"), "no tab is reopened: {panes:?}");
     assert!(shelf_task(&mbp, &task).is_null(), "the task left mbp's Shelf");
     assert!(!Path::new(&folder).exists(), "and its worktree there");
     within(10, "mbp to see vm own it", || record(&mbp, &task)["owner"].as_str() == Some(key(&vm).as_str()));

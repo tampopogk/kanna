@@ -2,7 +2,7 @@
 
 **Status:** built (slice 11) · **Tested:** `cargo test -p kanna --test machines_transfer` (two daemons with different home folders, mock claude and codex: a move each way, a receiver gone before it answers, a refusal, an agent that writes no handoff), `-p kanna-daemon transfer:: moving:: replica` (each case of §3's branch rules); real claude and codex moved from a MacBook Pro to a Mac Studio, each carrying on from its handoff to finish the task's second step there (2026-11-03) · **Part of:** [tasks across machines §3](machine-tasks.md#3-transfer) · **Model:** [fleet-transfer](../../references/prototypes/fleet-transfer/README.md)
 
-A task on one machine's Shelf moves to another of your machines at its turn's end and carries on there: its branch, its uncommitted work and its tabs go, and a new agent there starts from a handoff the old one wrote before the move. The conversation itself doesn't move (decided with the user, 2026-11-02; §4 says why).
+A task on one machine's Shelf moves to another of your machines at its turn's end and carries on there: its branch and its uncommitted work go, and a new agent there starts from a handoff the old one wrote before the move, which also says what tabs were open. No tab moves (decided with the user, 2026-11-03). The conversation itself doesn't move (decided with the user, 2026-11-02; §4 says why).
 
 ## Contents
 
@@ -33,7 +33,7 @@ sequenceDiagram
     S->>R: transfer stream: header with the handoff, then the bundle
     R->>R: fetch into its own clone, worktree at its own path, reset --soft
     R->>R: permission taken, onto its Shelf
-    R->>R: a new agent session, the handoff its first message, tabs reopened
+    R->>R: a new agent session, the handoff its first message
     R-->>S: {folder, branch, pane}
     S->>S: task Done here (moved to vm), worktree and branch removed
 ```
@@ -50,8 +50,7 @@ sequenceDiagram
 |---|---|
 | The branch | a WIP commit of everything in the worktree (`git add -A`, ignored files excepted) on the branch's tip, made with `commit-tree` and `update-ref`; a git bundle of the branch less the commits the receiver's clone has (its branches, remote branches and tags); a full bundle when they share none |
 | The record | name, first message, agent, `after`, `on`, birth, who made it, the task's base (the commit its worktree started from) |
-| The handoff | the text the sender's agent wrote (§4) |
-| The tabs | the task's workspace's terminals, docs, code, diffs and web pages but its agent, whose paths are inside the worktree: type, path, cwd, url, line, diff args; the receiver rewrites the paths to its worktree's, and reopens terminals as shells in their folder, without the command they ran |
+| The handoff | the text the sender's agent wrote, and Kanna's list of the tabs that were open (§4) |
 
 - **Packing twice doesn't stack WIP commits:** a branch whose tip is already a `kanna: work in progress of TASK` commit is reset onto its parent first.
 - **The WIP commit never reaches origin:** the receiver undoes it, and the sender removes its branch once the receiver has the task.
@@ -64,7 +63,7 @@ sequenceDiagram
 - **Its own clone, its own paths:** the project's clone here (matched by project identity), and the worktree `.kanna-worktrees/TASK` on the task's branch.
 - **The dirty tree comes back staged:** `reset --soft` to the commit before the WIP one, and the index's tree is checked against the WIP commit's. The task's base is recorded for the worktree, as on the sender.
 - **The agent runs from this machine's path:** an agent named by an absolute path that isn't here runs by its program's name.
-- **It carries on:** the task goes onto this Shelf with its folder (`moved`, from the sender), its agent starts a new session with the handoff as its first message (§4), its tabs open beside it, and then it answers. If its agent can't be started, the task stays here, stopped with why, and the receiver still answers, so only one machine has it.
+- **It carries on:** the task goes onto this Shelf with its folder (`moved`, from the sender), its agent starts a new session with the handoff as its first message (§4), and then it answers. No tab opens beside it. If its agent can't be started, the task stays here, stopped with why, and the receiver still answers, so only one machine has it.
 - **A move back** to a machine the task left works the same: the old copy there is Done, its worktree and branch were removed, and the permission comes at a newer epoch.
 
 **A branch or worktree the receiver has already** (from an earlier run of the task, or an earlier transfer) is checked before anything is written, and nothing of the receiver's is overwritten:
@@ -88,7 +87,10 @@ A refusal leaves the receiver's refs and files as they were (the fetched commits
 
 - **Written before every move:** after the agent quits, the sender runs one headless turn of the same session in the worktree (`claude -p --resume ID PROMPT`, `codex exec resume ID PROMPT`), asking for a handoff: the goal and where it stands, decisions and why, what's done and what's left, the next step, open questions, the key files. It may take 5 minutes; without one (it failed, timed out or wrote nothing) the task doesn't move.
 - **The new agent's first message** says the task moved here from the sender, names the branch and the commit (its uncommitted work staged), gives the task's first message, then the handoff. Kanna adds the branch and SHA itself rather than asking the agent for them. The task keeps its first message; its session is the new one.
+- **Kanna adds the workspace:** a last section, `The workspace on MBP`, lists the task's tabs but its agent, as the sender had them: terminals by folder and what they ran, docs, files with their line, diffs with their arguments, web pages. Paths in the worktree are given relative to it; others are named as the sender's. The new agent opens again what it needs (`kanna open --tab`); nothing is reopened for it.
 - **It's kept** in the worktree as `.kanna/tmp/handoff.md`, outside git, for you and the agent to read again.
+
+**Why the tabs are described, not moved:** the tabs that matter are files in the worktree, which the agent can open again, and a terminal can't move with what it was running anyway. Reopening tabs meant rewriting paths and checking each one the peer sent (no command, nothing outside the worktree, only http pages, only safe diff arguments); a list in the handoff needs none of that. The cost: you open again the tabs you want, or the agent does.
 
 **Why a handoff and not the conversation:** an earlier version copied the agent's transcript to where the receiver's agent looks and resumed it by session ID, with the handoff as a fallback ([model](../../references/prototypes/fleet-transfer/README.md)). It was dropped for the handoff alone:
 
@@ -128,7 +130,7 @@ stateDiagram-v2
 | Between daemons | |
 |---|---|
 | `replica {action: "heads", project}` on a `sync` stream | `{heads: [sha]}` of the clone here, or `no_clone` |
-| a `transfer` stream | a header line `{id, size, args}`, then `size` bytes, the bundle; the receiving node writes them to `transfers/in/ID.in`, hands the daemon `replica {action: "transfer", id, file, peer, …args}`, and writes its reply as one line, `{folder, branch, pane}`. An app's certificate is refused (`not_a_daemon`); at most 4 GB. `args` has `task` (`task-` and 8 hex digits, else refused), `branch` (a valid branch name), `pre`, `wip`, `base`, `handoff` (required), `tabs`, `epoch` and the record |
+| a `transfer` stream | a header line `{id, size, args}`, then `size` bytes, the bundle; the receiving node writes them to `transfers/in/ID.in`, hands the daemon `replica {action: "transfer", id, file, peer, …args}`, and writes its reply as one line, `{folder, branch, pane}`. An app's certificate is refused (`not_a_daemon`); at most 4 GB. `args` has `task` (`task-` and 8 hex digits, else refused), `branch` (a valid branch name), `pre`, `wip`, `base`, `handoff` (required, with Kanna's list of tabs at its end), `epoch` and the record |
 
 `KANNA_TRANSFER_EXIT=installed` makes a receiver exit before it answers, for the durability test.
 
@@ -137,6 +139,6 @@ stateDiagram-v2
 - The conversation doesn't move, only its handoff (§4); claude and codex only.
 - Ignored files (builds, `node_modules`), Git LFS objects and submodules don't move; the repo's `tasks.setup` runs on the receiver as for any first start there.
 - One task at a time per move; the CLI moves a Shelf task, not a Desk one, and the app has no gesture for it yet.
-- A forged epoch from a paired machine isn't checked beyond the peer log's admission, as for grants: your machines trust each other. What a peer sends is still checked where it becomes a path or a command: task IDs, branch names, and tabs (no commands, paths only inside the worktree and without `..`, web pages only http and https, a diff's arguments only revisions, `--merge-base`, `--cached` and `--staged`).
+- A forged epoch from a paired machine isn't checked beyond the peer log's admission, as for grants: your machines trust each other. What a peer sends is still checked where it becomes a path or a command: task IDs and branch names. The handoff is only ever text for the agent to read.
 - The handoff costs one agent turn per move.
 - Claude asks whether to trust a folder it hasn't trusted, and the worktrees of a project it trusts are trusted with it. So the first task moved to a project that has never had a Claude task on the receiver starts at that question and waits for you there.

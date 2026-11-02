@@ -6,8 +6,6 @@ pub(super) const OUT: &str = "out";
 
 const IN: &str = "in";
 
-const TAB_FIELDS: &[&str] = &["type", "path", "cwd", "url", "cmd", "line", "args", "view"];
-
 pub(super) struct Asking {
     id: String,
     peer: Peer,
@@ -18,7 +16,7 @@ pub(super) struct Moving {
     entry: Entry,
     peer: Peer,
     session: String,
-    tabs: Vec<Value>,
+    workspace: String,
     responder: Responder,
 }
 
@@ -40,25 +38,41 @@ fn agent_name(command: &str) -> Option<&'static str> {
     agent(command).map(|a| a.names[0]).filter(|name| transfer::moves(name))
 }
 
-fn tabs_of(listed: &Value, workspace: Option<&str>, agent_pane: Option<&str>, folder: &str) -> Vec<Value> {
-    let Some(workspace) = workspace else { return vec![] };
-    let inside = |p: &Value, key: &str| string(p, key).is_none_or(|path| path == folder || path.starts_with(&format!("{folder}/")));
+fn workspace_of(listed: &Value, workspace: Option<&str>, agent_pane: Option<&str>, folder: &str, machine: &str) -> String {
+    let Some(workspace) = workspace else { return String::new() };
+    let place = |path: &str| match path.strip_prefix(folder) {
+        Some("") => "the worktree".to_string(),
+        Some(rest) if rest.starts_with('/') => format!("`{}`", &rest[1..]),
+        _ => format!("`{path}` (on {machine})"),
+    };
     let panes = listed.get("panes").and_then(Value::as_array).cloned().unwrap_or_default();
-    panes
+    let lines: Vec<String> = panes
         .iter()
         .filter(|p| string(p, "workspace") == Some(workspace) && string(p, "id") != agent_pane)
-        .filter(|p| ["term", "md", "code", "diff", "web"].contains(&string(p, "type").unwrap_or_default()) && inside(p, "path") && inside(p, "cwd"))
-        .map(|p| Value::Object(TAB_FIELDS.iter().filter_map(|key| p.get(*key).filter(|v| !v.is_null()).map(|v| (key.to_string(), v.clone()))).collect()))
-        .collect()
-}
-
-fn moved_path(value: &Value, from: &str, to: &str) -> Value {
-    match value {
-        Value::String(text) if !from.is_empty() && (text == from || text.starts_with(&format!("{from}/"))) => json!(format!("{to}{}", &text[from.len()..])),
-        Value::Array(items) => Value::Array(items.iter().map(|v| moved_path(v, from, to)).collect()),
-        Value::Object(fields) => Value::Object(fields.iter().map(|(k, v)| (k.clone(), moved_path(v, from, to))).collect()),
-        other => other.clone(),
+        .map(|p| {
+            let kind = string(p, "type").unwrap_or("pane");
+            let mut line = match (kind, string(p, "path"), string(p, "cwd"), string(p, "url")) {
+                ("term", _, cwd, _) => format!("- a terminal in {}", cwd.map_or("the worktree".to_string(), place)),
+                ("web", _, _, Some(url)) => format!("- the page {url}"),
+                (kind, Some(path), _, _) => format!("- {} {}", match kind { "md" => "the doc", "code" => "the file", "diff" => "the diff of", _ => kind }, place(path)),
+                (kind, None, _, _) => format!("- a {kind} pane"),
+            };
+            if let Some(n) = p.get("line").and_then(Value::as_i64) {
+                line += &format!(", at line {n}");
+            }
+            if let Some(args) = p.get("args").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+                line += &format!(", `git diff {}`", args.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "));
+            }
+            if let Some(cmd) = string(p, "cmd").filter(|c| !c.is_empty()) {
+                line += &format!(", running `{cmd}`");
+            }
+            line
+        })
+        .collect();
+    if lines.is_empty() {
+        return String::new();
     }
+    format!("\n\n## The workspace on {machine}\n\nKanna had these open beside the agent before the move; none are open here. Open again what you need (`kanna open --tab`):\n\n{}", lines.join("\n"))
 }
 
 fn valid_task(id: &str) -> bool {
@@ -226,8 +240,8 @@ impl Tasks {
         let this = Rc::downgrade(self);
         core.handle(json!({ "cmd": "list" }), move |listed| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
-            let tabs = tabs_of(&listed, entry.workspace.as_deref(), entry.held.as_deref(), &folder.to_string_lossy());
-            this.pack_to_move(Moving { entry, peer, session, tabs, responder }, theirs);
+            let workspace = workspace_of(&listed, entry.workspace.as_deref(), entry.held.as_deref(), &folder.to_string_lossy(), &this.machines().me.name);
+            this.pack_to_move(Moving { entry, peer, session, workspace, responder }, theirs);
         });
     }
 
@@ -235,7 +249,7 @@ impl Tasks {
         let id = format!("{}-{}", moving.entry.id, replica::wall());
         let folder = PathBuf::from(moving.entry.folder.clone().unwrap_or_default());
         let outbox = transfer::outbox(&self.state);
-        let (task, agent, session) = (moving.entry.id.clone(), moving.entry.agent.clone(), moving.session.clone());
+        let (task, agent, session, workspace) = (moving.entry.id.clone(), moving.entry.agent.clone(), moving.session.clone(), moving.workspace.clone());
         let token = self.next.get() + 1;
         self.next.set(token);
         self.asked.borrow_mut().insert(token, Asked::Packed(Box::new(moving), id.clone()));
@@ -243,7 +257,7 @@ impl Tasks {
         std::thread::spawn(move || {
             let base = crate::task_scripts::base(&folder);
             let packed = (|| {
-                let handoff = write_handoff(&agent, &session, &folder).map_err(|why| format!("its agent wrote no handoff: {why}"))?;
+                let handoff = write_handoff(&agent, &session, &folder).map_err(|why| format!("its agent wrote no handoff: {why}"))? + &workspace;
                 fs::create_dir_all(&outbox).map_err(|e| format!("can't make {}: {e}", outbox.display()))?;
                 let packed = transfer::pack(&folder, &task)?;
                 match transfer::bundle(&folder, &packed.branch, &theirs, &outbox.join(format!("{id}.bin"))) {
@@ -259,7 +273,7 @@ impl Tasks {
     }
 
     pub(super) fn packed(self: &Rc<Self>, moving: Moving, id: String, reply: Result<Value, String>) {
-        let Moving { mut entry, peer, session: _, tabs, responder } = moving;
+        let Moving { mut entry, peer, responder, .. } = moving;
         let made = match reply {
             Ok(made) => made,
             Err(why) => return responder.reply(Err(KmuxError::new("failed", format!("couldn't pack {} to move: {why}", entry.id)))),
@@ -277,7 +291,6 @@ impl Tasks {
             "on": entry.on,
             "project": opt(identity(&entry.repo).as_deref()),
             "folder": opt(entry.folder.as_deref()),
-            "tabs": tabs,
             "to": peer.name,
             "branch": made["branch"],
             "base": made["base"],
@@ -486,7 +499,6 @@ impl Tasks {
         }
         doc["repo"] = json!(repo);
         doc["from"] = json!(name);
-        doc["senderFolder"] = args["folder"].clone();
         let saved = Saved { id: id.clone(), task: task.clone(), role: IN.into(), peer: peer.clone(), state: "receiving".into(), doc };
         if let Err(error) = self.db.atomically(|conn| transfer::save(conn, &saved)) {
             return responder.reply(Err(KmuxError::new("failed", format!("couldn't save the transfer of {task}: {error}"))));
@@ -584,7 +596,6 @@ impl Tasks {
             self.changed();
         }
         let this = Rc::downgrade(self);
-        let (tabs, sender_folder, to) = (doc.get("tabs").and_then(Value::as_array).cloned().unwrap_or_default(), text("senderFolder"), entry.folder.clone().unwrap_or_default());
         let then = Answer::Then(Box::new(move |result: Result<Map, KmuxError>| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
             let mut saved = saved;
@@ -598,9 +609,6 @@ impl Tasks {
                     None
                 }
             };
-            if let Some(pane) = &pane {
-                this.reopen_tabs(pane, &tabs, sender_folder.as_deref().unwrap_or_default(), &to);
-            }
             let _ = this.db.atomically(|conn| transfer::save(conn, &saved));
             responder.reply(Ok(Self::taken_out(&saved, pane.as_deref())))
         }));
@@ -635,35 +643,6 @@ impl Tasks {
         };
         self.launch(starting, folder, None);
     }
-
-    fn reopen_tabs(&self, pane: &str, tabs: &[Value], from: &str, to: &str) {
-        let Some(core) = self.core.upgrade() else { return };
-        for tab in tabs {
-            let mut args = moved_path(tab, from, to);
-            let inside = |key: &str| string(&args, key).is_none_or(|path| (path == to || path.starts_with(&format!("{to}/"))) && !Path::new(path).components().any(|c| c == std::path::Component::ParentDir));
-            let kind = string(&args, "type").unwrap_or("?").to_string();
-            if !["term", "md", "code", "diff", "web"].contains(&kind.as_str()) || !inside("path") || !inside("cwd") || (kind == "web" && !string(&args, "url").is_some_and(|u| u.starts_with("http://") || u.starts_with("https://"))) {
-                continue;
-            }
-            if let Some(fields) = args.as_object_mut() {
-                fields.remove("cmd");
-                if let Some(Value::Array(diff)) = fields.get("args") {
-                    let safe = diff.iter().all(|a| a.as_str().is_some_and(|a| ["--merge-base", "--cached", "--staged"].contains(&a) || !a.starts_with('-')));
-                    if !safe {
-                        fields.remove("args");
-                    }
-                }
-            }
-            args["from"] = json!(pane);
-            args["tab"] = json!(true);
-            args["wait"] = json!(false);
-            core.handle(json!({ "cmd": "open", "args": args }), move |reply| {
-                if let Some(error) = failed(&reply) {
-                    log!("kanna-daemon: couldn't reopen a {kind} tab of a task that moved here: {}", error.message);
-                }
-            });
-        }
-    }
 }
 
 #[cfg(test)]
@@ -688,25 +667,30 @@ mod tests {
     }
 
     #[test]
-    fn a_tasks_tabs_are_its_workspaces_panes_but_its_agent_with_paths_moved_to_the_receivers_worktree() {
+    fn the_handoff_describes_the_tasks_workspace_with_paths_in_its_worktree() {
         let listed = json!({ "panes": [
             { "id": "term-1", "type": "term", "workspace": "ws-1", "cmd": "claude --resume s", "cwd": "/Users/me/notes/.kanna-worktrees/task-1" },
-            { "id": "md-2", "type": "md", "workspace": "ws-1", "path": "/Users/me/notes/.kanna-worktrees/task-1/docs/a.md", "agent": null },
-            { "id": "term-3", "type": "term", "workspace": "ws-1", "cmd": null, "cwd": "/Users/me/notes/.kanna-worktrees/task-1/src" },
+            { "id": "md-2", "type": "md", "workspace": "ws-1", "path": "/Users/me/notes/.kanna-worktrees/task-1/docs/a.md" },
+            { "id": "term-3", "type": "term", "workspace": "ws-1", "cmd": "npm run dev", "cwd": "/Users/me/notes/.kanna-worktrees/task-1/src" },
             { "id": "web-4", "type": "web", "workspace": "ws-1", "url": "http://localhost:3000/" },
-            { "id": "md-5", "type": "md", "workspace": "ws-2", "path": "/elsewhere.md" },
+            { "id": "code-6", "type": "code", "workspace": "ws-1", "path": "/Users/me/notes/.kanna-worktrees/task-1/src/main.rs", "line": 42 },
+            { "id": "diff-7", "type": "diff", "workspace": "ws-1", "path": "/Users/me/notes/.kanna-worktrees/task-1", "args": ["--merge-base", "main"] },
+            { "id": "md-8", "type": "md", "workspace": "ws-1", "path": "/Users/me/elsewhere.md" },
+            { "id": "md-5", "type": "md", "workspace": "ws-2", "path": "/Users/me/notes/.kanna-worktrees/task-1/other.md" },
         ] });
-        let tabs = tabs_of(&listed, Some("ws-1"), Some("term-1"), "/Users/me/notes/.kanna-worktrees/task-1");
-        assert_eq!(tabs, vec![
-            json!({ "type": "md", "path": "/Users/me/notes/.kanna-worktrees/task-1/docs/a.md" }),
-            json!({ "type": "term", "cwd": "/Users/me/notes/.kanna-worktrees/task-1/src" }),
-            json!({ "type": "web", "url": "http://localhost:3000/" }),
+        let text = workspace_of(&listed, Some("ws-1"), Some("term-1"), "/Users/me/notes/.kanna-worktrees/task-1", "mbp");
+        assert!(text.starts_with("\n\n## The workspace on mbp\n"), "{text}");
+        let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(lines, [
+            "- the doc `docs/a.md`",
+            "- a terminal in `src`, running `npm run dev`",
+            "- the page http://localhost:3000/",
+            "- the file `src/main.rs`, at line 42",
+            "- the diff of the worktree, `git diff --merge-base main`",
+            "- the doc `/Users/me/elsewhere.md` (on mbp)",
         ]);
-        let moved: Vec<Value> = tabs.iter().map(|t| moved_path(t, "/Users/me/notes/.kanna-worktrees/task-1", "/home/me/repos/notes/.kanna-worktrees/task-1")).collect();
-        assert_eq!(moved[2], tabs[2]);
-        assert_eq!(moved[0]["path"], "/home/me/repos/notes/.kanna-worktrees/task-1/docs/a.md");
-        assert_eq!(moved[1]["cwd"], "/home/me/repos/notes/.kanna-worktrees/task-1/src");
-        assert_eq!(moved_path(&json!("/Users/me/notes/.kanna-worktrees/task-10/x"), "/Users/me/notes/.kanna-worktrees/task-1", "/b"), json!("/Users/me/notes/.kanna-worktrees/task-10/x"), "only paths inside the worktree move");
-        assert!(tabs_of(&listed, None, None, "/x").is_empty());
+        assert!(!text.contains("claude --resume"), "the agent isn't a tab");
+        assert_eq!(workspace_of(&listed, None, None, "/x", "mbp"), "");
+        assert_eq!(workspace_of(&json!({ "panes": [] }), Some("ws-1"), None, "/x", "mbp"), "", "no tabs, no section");
     }
 }
