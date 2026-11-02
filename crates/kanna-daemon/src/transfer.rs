@@ -3,7 +3,6 @@ use crate::tasks::{add_worktree, git};
 use kanna_mux::json::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const WIP: &str = "kanna: work in progress of";
@@ -204,116 +203,8 @@ pub fn remove(repo: &Path, folder: &Path, branch: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-}
-
-#[derive(Clone, Debug)]
-pub struct Homes {
-    pub claude: PathBuf,
-    pub codex: PathBuf,
-}
-
-impl Homes {
-    pub fn here() -> Homes {
-        let dir = |var: &str, default: &str| std::env::var_os(var).filter(|d| !d.is_empty()).map_or_else(|| home().join(default), PathBuf::from);
-        Homes { claude: dir("CLAUDE_CONFIG_DIR", ".claude"), codex: dir("CODEX_HOME", ".codex") }
-    }
-
-    fn sessions(&self) -> PathBuf {
-        self.codex.join("sessions")
-    }
-}
-
-pub fn claude_project(folder: &Path) -> String {
-    folder.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
-}
-
-fn folders(folder: &Path) -> Vec<PathBuf> {
-    let mut all = vec![folder.to_path_buf()];
-    if let Ok(real) = folder.canonicalize() {
-        if real != folder {
-            all.push(real);
-        }
-    }
-    all
-}
-
 pub fn moves(agent: &str) -> bool {
     matches!(agent, "claude" | "codex")
-}
-
-pub fn transcript(homes: &Homes, agent: &str, folder: &Path, session: &str) -> Result<(PathBuf, String), String> {
-    if session.is_empty() || session.contains('/') || session.contains("..") {
-        return Err(format!("\"{session}\" isn't a session ID"));
-    }
-    let file = format!("{session}.jsonl");
-    match agent {
-        "claude" => {
-            let projects = homes.claude.join("projects");
-            let here = folders(folder).into_iter().map(|f| projects.join(claude_project(&f)).join(&file)).find(|p| p.is_file());
-            let found = here.or_else(|| {
-                let all: Vec<PathBuf> = fs::read_dir(&projects).into_iter().flatten().flatten().map(|d| d.path().join(&file)).filter(|p| p.is_file()).collect();
-                (all.len() == 1).then(|| all[0].clone())
-            });
-            found.map(|path| (path, file.clone())).ok_or_else(|| format!("claude's transcript of {session} isn't in {}", projects.display()))
-        }
-        "codex" => {
-            let sessions = homes.sessions();
-            let suffix = format!("-{session}.jsonl");
-            let listed = |dir: &Path| fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect::<Vec<_>>();
-            let found = listed(&sessions).into_iter().flat_map(|y| listed(&y)).flat_map(|m| listed(&m)).flat_map(|d| listed(&d)).find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-") && n.ends_with(&suffix)));
-            let path = found.ok_or_else(|| format!("codex's transcript of {session} isn't in {}", sessions.display()))?;
-            let name = path.strip_prefix(&sessions).map_err(|e| e.to_string())?.to_string_lossy().into_owned();
-            Ok((path, name))
-        }
-        other => Err(format!("{other}'s conversations don't move between machines yet: only claude's and codex's")),
-    }
-}
-
-pub fn install(homes: &Homes, agent: &str, folder: &Path, name: &str, bytes: &[u8]) -> Result<Vec<PathBuf>, String> {
-    let safe = !name.is_empty() && Path::new(name).components().all(|c| matches!(c, std::path::Component::Normal(_)));
-    if !safe || !name.ends_with(".jsonl") {
-        return Err(format!("\"{name}\" isn't a transcript's name"));
-    }
-    let places: Vec<PathBuf> = match agent {
-        "claude" if !name.contains('/') => folders(folder).into_iter().map(|f| homes.claude.join("projects").join(claude_project(&f)).join(name)).collect(),
-        "codex" => vec![homes.sessions().join(name)],
-        other => return Err(format!("{other}'s transcript \"{name}\" has no place here")),
-    };
-    for place in &places {
-        let dir = place.parent().unwrap_or(folder);
-        fs::create_dir_all(dir).map_err(|e| format!("can't make {}: {e}", dir.display()))?;
-        let part = place.with_extension("jsonl.part");
-        let mut out = fs::File::create(&part).map_err(|e| format!("can't write {}: {e}", part.display()))?;
-        out.write_all(bytes).and_then(|_| out.sync_all()).map_err(|e| format!("can't write {}: {e}", part.display()))?;
-        fs::rename(&part, place).map_err(|e| format!("can't write {}: {e}", place.display()))?;
-    }
-    Ok(places)
-}
-
-pub fn join(out: &Path, bundle: &Path, transcript: &Path) -> Result<(u64, u64), String> {
-    let mut file = fs::File::create(out).map_err(|e| format!("can't write {}: {e}", out.display()))?;
-    let mut sizes = [0u64; 2];
-    for (i, part) in [bundle, transcript].iter().enumerate() {
-        let mut from = fs::File::open(part).map_err(|e| format!("can't read {}: {e}", part.display()))?;
-        sizes[i] = std::io::copy(&mut from, &mut file).map_err(|e| format!("can't write {}: {e}", out.display()))?;
-    }
-    file.sync_all().map_err(|e| e.to_string())?;
-    Ok((sizes[0], sizes[1]))
-}
-
-pub fn split(file: &Path, bundle_size: u64, transcript_size: u64, bundle: &Path) -> Result<Vec<u8>, String> {
-    let mut from = fs::File::open(file).map_err(|e| format!("can't read {}: {e}", file.display()))?;
-    let total = from.metadata().map_err(|e| e.to_string())?.len();
-    if total != bundle_size + transcript_size {
-        return Err(format!("the transfer has {total} bytes, not {}", bundle_size + transcript_size));
-    }
-    let mut out = fs::File::create(bundle).map_err(|e| format!("can't write {}: {e}", bundle.display()))?;
-    std::io::copy(&mut (&mut from).take(bundle_size), &mut out).map_err(|e| e.to_string())?;
-    let mut transcript = Vec::with_capacity(transcript_size as usize);
-    from.read_to_end(&mut transcript).map_err(|e| e.to_string())?;
-    Ok(transcript)
 }
 
 #[cfg(test)]
@@ -506,30 +397,5 @@ mod tests {
         assert!(refused.contains("this clone's own branch"), "{refused}");
         assert_eq!(branch_at(&other, "main"), before);
         assert_eq!(fs::read_to_string(mine.join("tracked.txt")).unwrap(), "local edit\n", "nothing is overwritten");
-    }
-
-    #[test]
-    fn transcripts_are_found_where_each_agent_keeps_them_and_installed_at_the_receivers_own_paths() {
-        let home = dir("home");
-        let homes = Homes { claude: home.join("claude"), codex: home.join("codex") };
-        let sender = Path::new("/Users/me/.kanna-v4/repos/team/notes/.kanna-worktrees/task-0000beef");
-        let receiver = Path::new("/home/me/repos/notes/.kanna-worktrees/task-0000beef");
-        let claude = home.join("claude/projects/-Users-me--kanna-v4-repos-team-notes--kanna-worktrees-task-0000beef/s1.jsonl");
-        fs::create_dir_all(claude.parent().unwrap()).unwrap();
-        fs::write(&claude, "{\"a\":1}\n").unwrap();
-        assert_eq!(transcript(&homes, "claude", sender, "s1").unwrap(), (claude.clone(), "s1.jsonl".into()));
-        let placed = install(&homes, "claude", receiver, "s1.jsonl", b"{\"a\":1}\n").unwrap();
-        assert_eq!(placed, vec![home.join("claude/projects/-home-me-repos-notes--kanna-worktrees-task-0000beef/s1.jsonl")]);
-        assert_eq!(fs::read(&placed[0]).unwrap(), fs::read(&claude).unwrap());
-
-        let codex = home.join("codex/sessions/2026/11/02/rollout-2026-11-02T10-00-00-c1.jsonl");
-        fs::create_dir_all(codex.parent().unwrap()).unwrap();
-        fs::write(&codex, "{}\n").unwrap();
-        assert_eq!(transcript(&homes, "codex", sender, "c1").unwrap(), (codex.clone(), "2026/11/02/rollout-2026-11-02T10-00-00-c1.jsonl".into()));
-        assert_eq!(install(&homes, "codex", receiver, "2026/11/02/rollout-2026-11-02T10-00-00-c1.jsonl", b"{}\n").unwrap(), vec![codex]);
-
-        assert!(transcript(&homes, "claude", sender, "../x").is_err());
-        assert!(install(&homes, "codex", receiver, "../../.ssh/x.jsonl", b"").is_err(), "a name can't climb out of the sessions folder");
-        assert!(transcript(&homes, "opencode", sender, "s1").is_err());
     }
 }

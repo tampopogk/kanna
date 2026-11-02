@@ -1,6 +1,6 @@
 use super::*;
 use crate::replica::Peer;
-use crate::transfer::{self, Homes, Saved};
+use crate::transfer::{self, Saved};
 
 pub(super) const OUT: &str = "out";
 
@@ -18,7 +18,6 @@ pub(super) struct Moving {
     entry: Entry,
     peer: Peer,
     session: String,
-    transcript: (PathBuf, String),
     tabs: Vec<Value>,
     responder: Responder,
 }
@@ -35,9 +34,7 @@ pub(super) struct Taking {
 
 const HANDOFF_WAIT: Duration = Duration::from_secs(300);
 
-pub(super) const RESUME_WAIT: Duration = Duration::from_secs(30);
-
-const HANDOFF: &str = "This task is about to move to another machine. In case this conversation can't come along, write a handoff for the agent that carries it on there: the goal and where it stands; the decisions made and why; what's done and what's left; the next step; open questions; the key files. Reply with only the handoff, in markdown, and change nothing.";
+const HANDOFF: &str = "This task is about to move to another machine, where a new agent carries it on from what you write now. Write it a handoff: the goal and where it stands; the decisions made and why; what's done and what's left; the next step; open questions; the key files. Reply with only the handoff, in markdown, and change nothing.";
 
 fn agent_name(command: &str) -> Option<&'static str> {
     agent(command).map(|a| a.names[0]).filter(|name| transfer::moves(name))
@@ -120,13 +117,13 @@ fn write_handoff(command: &str, session: &str, folder: &Path) -> Result<String, 
     Ok(text)
 }
 
-fn handed_over(doc: &Value, why: &str) -> Option<String> {
+fn handed_over(doc: &Value) -> Option<String> {
     let handoff = string(doc, "handoff")?;
     let from = string(doc, "from").unwrap_or("another machine");
     let branch = string(doc, "branch").unwrap_or("its branch");
     let pre = string(doc, "pre").unwrap_or("?");
     let first = string(doc, "message").map_or(String::new(), |m| format!(" The task as it was first given: {m}"));
-    Some(format!("This task moved here from {from}, but its previous agent's conversation couldn't come along ({why}), so you carry it on from the handoff that agent wrote before the move. You're on {branch} at {pre}, with its uncommitted work staged.{first}\n\n{handoff}"))
+    Some(format!("This task moved here from {from}, and you carry it on from the handoff its previous agent wrote before the move. You're on {branch} at {pre}, with its uncommitted work staged.{first}\n\n{handoff}"))
 }
 
 impl Tasks {
@@ -224,17 +221,13 @@ impl Tasks {
         let agent = agent_name(&entry.agent).unwrap_or_default();
         let folder = PathBuf::from(entry.folder.clone().unwrap_or_default());
         let Some(session) = entry.session.clone().or_else(|| entry.clone().resumable().session) else {
-            return responder.reply(Err(KmuxError::new("no_session", format!("{id}'s {agent} session isn't known, so its conversation can't move"))));
-        };
-        let transcript = match transfer::transcript(&Homes::here(), agent, &folder, &session) {
-            Ok(found) => found,
-            Err(why) => return responder.reply(Err(KmuxError::new("no_transcript", format!("{id} can't move: {why}")))),
+            return responder.reply(Err(KmuxError::new("no_session", format!("{id}'s {agent} session isn't known, so its agent can't write a handoff"))));
         };
         let this = Rc::downgrade(self);
         core.handle(json!({ "cmd": "list" }), move |listed| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
             let tabs = tabs_of(&listed, entry.workspace.as_deref(), entry.held.as_deref(), &folder.to_string_lossy());
-            this.pack_to_move(Moving { entry, peer, session, transcript, tabs, responder }, theirs);
+            this.pack_to_move(Moving { entry, peer, session, tabs, responder }, theirs);
         });
     }
 
@@ -242,25 +235,19 @@ impl Tasks {
         let id = format!("{}-{}", moving.entry.id, replica::wall());
         let folder = PathBuf::from(moving.entry.folder.clone().unwrap_or_default());
         let outbox = transfer::outbox(&self.state);
-        let (task, transcript, agent, session) = (moving.entry.id.clone(), moving.transcript.0.clone(), moving.entry.agent.clone(), moving.session.clone());
+        let (task, agent, session) = (moving.entry.id.clone(), moving.entry.agent.clone(), moving.session.clone());
         let token = self.next.get() + 1;
         self.next.set(token);
         self.asked.borrow_mut().insert(token, Asked::Packed(Box::new(moving), id.clone()));
         let events = self.events.clone();
         std::thread::spawn(move || {
-            let handoff = write_handoff(&agent, &session, &folder);
-            if let Err(why) = &handoff {
-                log!("kanna-daemon: {task}'s agent wrote no handoff, so it moves without one: {why}");
-            }
             let base = crate::task_scripts::base(&folder);
             let packed = (|| {
+                let handoff = write_handoff(&agent, &session, &folder).map_err(|why| format!("its agent wrote no handoff: {why}"))?;
                 fs::create_dir_all(&outbox).map_err(|e| format!("can't make {}: {e}", outbox.display()))?;
                 let packed = transfer::pack(&folder, &task)?;
-                let bundle = outbox.join(format!("{id}.bundle"));
-                let joined = transfer::bundle(&folder, &packed.branch, &theirs, &bundle).and_then(|_| transfer::join(&outbox.join(format!("{id}.bin")), &bundle, &transcript));
-                let _ = fs::remove_file(&bundle);
-                match joined {
-                    Ok((bundle, transcript)) => Ok(json!({ "branch": packed.branch, "pre": packed.pre, "wip": packed.wip, "base": base, "bundle": bundle, "transcript": transcript, "handoff": handoff.ok() })),
+                match transfer::bundle(&folder, &packed.branch, &theirs, &outbox.join(format!("{id}.bin"))) {
+                    Ok(()) => Ok(json!({ "branch": packed.branch, "pre": packed.pre, "wip": packed.wip, "base": base, "handoff": handoff })),
                     Err(why) => {
                         let _ = transfer::unpack(&folder, &packed);
                         Err(why)
@@ -272,7 +259,7 @@ impl Tasks {
     }
 
     pub(super) fn packed(self: &Rc<Self>, moving: Moving, id: String, reply: Result<Value, String>) {
-        let Moving { mut entry, peer, session, transcript, tabs, responder } = moving;
+        let Moving { mut entry, peer, session: _, tabs, responder } = moving;
         let made = match reply {
             Ok(made) => made,
             Err(why) => return responder.reply(Err(KmuxError::new("failed", format!("couldn't pack {} to move: {why}", entry.id)))),
@@ -289,8 +276,6 @@ impl Tasks {
             "after": entry.after,
             "on": entry.on,
             "project": opt(identity(&entry.repo).as_deref()),
-            "session": session,
-            "transcriptName": transcript.1,
             "folder": opt(entry.folder.as_deref()),
             "tabs": tabs,
             "to": peer.name,
@@ -299,8 +284,6 @@ impl Tasks {
             "handoff": made["handoff"],
             "pre": made["pre"],
             "wip": made["wip"],
-            "bundle": made["bundle"],
-            "transcript": made["transcript"],
         });
         let saved = Saved { id: id.clone(), task: entry.id.clone(), role: OUT.into(), peer: peer.key.clone(), state: "sending".into(), doc };
         entry.stopped = Some(format!("moving to {}", peer.name));
@@ -485,8 +468,11 @@ impl Tasks {
             return responder.reply(Err(KmuxError::new("there", format!("{task} is on this machine already"))));
         }
         let agent = agent_name(string(args, "agent").unwrap_or_default());
-        let (Some(agent), Some(branch), Some(packed)) = (agent, string(args, "branch").map(String::from), Saved { doc: args.clone(), ..Default::default() }.packed()) else {
+        let (Some(_), Some(branch), Some(packed)) = (agent, string(args, "branch").map(String::from), Saved { doc: args.clone(), ..Default::default() }.packed()) else {
             return responder.reply(Err(bad("a transfer needs the task's agent, branch and commits")));
+        };
+        let Some(_) = handed_over(args) else {
+            return responder.reply(Err(bad("a transfer needs its agent's handoff")));
         };
         if !valid_branch(Path::new(&repo), &branch) {
             return responder.reply(Err(bad(format!("\"{branch}\" isn't a branch name"))));
@@ -505,30 +491,15 @@ impl Tasks {
         if let Err(error) = self.db.atomically(|conn| transfer::save(conn, &saved)) {
             return responder.reply(Err(KmuxError::new("failed", format!("couldn't save the transfer of {task}: {error}"))));
         }
-        let (sizes, session) = ((args["bundle"].as_u64().unwrap_or(0), args["transcript"].as_u64().unwrap_or(0)), string(args, "transcriptName").unwrap_or_default().to_string());
         let base = string(args, "base").map(String::from);
-        let handed = args["handoff"].is_string();
         let token = self.next.get() + 1;
         self.next.set(token);
         self.asked.borrow_mut().insert(token, Asked::Unbundled(Taking { id: id.clone(), responder }));
         let events = self.events.clone();
         log!("kanna-daemon: {task} comes from {name} into {repo}");
         std::thread::spawn(move || {
-            let taken = (|| {
-                let bundle = PathBuf::from(format!("{file}.bundle"));
-                let bytes = transfer::split(Path::new(&file), sizes.0, sizes.1, &bundle)?;
-                let unbundled = transfer::unbundle(Path::new(&repo), &id, &bundle, &task, &branch, &packed, base.as_deref());
-                let _ = fs::remove_file(&bundle);
-                let (folder, branch) = unbundled?;
-                let placed = transfer::install(&Homes::here(), agent, Path::new(&folder), &session, &bytes);
-                let _ = fs::remove_file(&file);
-                let lost = match placed {
-                    Ok(_) => None,
-                    Err(why) if handed => Some(format!("its transcript couldn't be put in place: {why}")),
-                    Err(why) => return Err(why),
-                };
-                Ok(json!({ "folder": folder, "branch": branch, "lost": lost }))
-            })();
+            let taken = transfer::unbundle(Path::new(&repo), &id, Path::new(&file), &task, &branch, &packed, base.as_deref()).map(|(folder, branch)| json!({ "folder": folder, "branch": branch }));
+            let _ = fs::remove_file(&file);
             let _ = events.send(Event::Replica { token, reply: taken });
         });
     }
@@ -543,12 +514,11 @@ impl Tasks {
             Ok(made) => {
                 saved.doc["folder"] = made["folder"].clone();
                 saved.doc["branch"] = made["branch"].clone();
-                saved.doc["lost"] = made["lost"].clone();
                 saved.state = "installed".into();
                 if let Err(error) = self.db.atomically(|conn| transfer::save(conn, &saved)) {
                     return taking.responder.reply(Err(KmuxError::new("failed", format!("couldn't save the transfer of {}: {error}", saved.task))));
                 }
-                log!("kanna-daemon: {}'s worktree is {}{}", saved.task, string(&made, "folder").unwrap_or(""), string(&made, "lost").map_or(String::new(), |why| format!(", but {why}")));
+                log!("kanna-daemon: {}'s worktree is {}", saved.task, string(&made, "folder").unwrap_or(""));
                 if std::env::var("KANNA_TRANSFER_EXIT").as_deref() == Ok("installed") {
                     log!("kanna-daemon: exits before it answers, as KANNA_TRANSFER_EXIT says");
                     std::process::exit(75);
@@ -570,7 +540,7 @@ impl Tasks {
         if let Some(pane) = pane {
             out.insert("pane".to_string(), json!(pane));
         }
-        for key in ["lost", "why"] {
+        for key in ["why"] {
             if let Some(text) = saved.text(key) {
                 out.insert(key.to_string(), json!(text));
             }
@@ -590,8 +560,7 @@ impl Tasks {
                 return responder.reply(Ok(Self::taken_out(&saved, Some(&pane))));
             }
         }
-        let lost = text("lost");
-        let handoff = lost.as_deref().and_then(|why| handed_over(&doc, why));
+        let Some(first) = handed_over(&doc) else { return responder.reply(Err(bad("a transfer needs its agent's handoff"))) };
         let entry = Entry {
             id: saved.task.clone(),
             name: text("name"),
@@ -601,14 +570,13 @@ impl Tasks {
             made_at: doc["madeAt"].as_f64().unwrap_or(0.0),
             agent: local_agent(&text("agent").unwrap_or_else(|| DEFAULT_AGENT.into())),
             folder: text("folder"),
-            session: if handoff.is_some() { None } else { text("session") },
             after: strings(&doc, "after"),
             on: strings(&doc, "on"),
             birth: Some(birth),
             ..Default::default()
         };
         if !self.held_here(&entry.id) {
-            let change = Change::new("moved").moved(Place::Done, Place::Shelf).by(Some("daemon")).with("from", json!(text("from"))).with("session", opt(entry.session.as_deref()));
+            let change = Change::new("moved").moved(Place::Done, Place::Shelf).by(Some("daemon")).with("from", json!(text("from")));
             if let Err(error) = self.store(&entry, Place::Shelf, None, Some(change)) {
                 return responder.reply(Err(error));
             }
@@ -617,7 +585,6 @@ impl Tasks {
         }
         let this = Rc::downgrade(self);
         let (tabs, sender_folder, to) = (doc.get("tabs").and_then(Value::as_array).cloned().unwrap_or_default(), text("senderFolder"), entry.folder.clone().unwrap_or_default());
-        let (id, resumed) = (saved.id.clone(), handoff.is_none());
         let then = Answer::Then(Box::new(move |result: Result<Map, KmuxError>| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
             let mut saved = saved;
@@ -632,24 +599,17 @@ impl Tasks {
                 }
             };
             if let Some(pane) = &pane {
-                if resumed {
-                    this.resuming.borrow_mut().insert(pane.clone(), (Instant::now(), id));
-                }
                 this.reopen_tabs(pane, &tabs, sender_folder.as_deref().unwrap_or_default(), &to);
             }
             let _ = this.db.atomically(|conn| transfer::save(conn, &saved));
             responder.reply(Ok(Self::taken_out(&saved, pane.as_deref())))
         }));
-        match handoff {
-            None => {
-                log!("kanna-daemon: {} carries on here, resuming its {} session {}", entry.id, program(&entry.agent), entry.session.as_deref().unwrap_or("?"));
-                self.prepare(entry, None, Some("daemon".into()), then);
-            }
-            Some(first) => {
-                log!("kanna-daemon: {} carries on here from its handoff: {}", entry.id, lost.unwrap_or_default());
-                self.start_handed_over(entry, first, then);
-            }
+        if let Some(folder) = &entry.folder {
+            let scratch = Path::new(folder).join(SCRATCH);
+            let _ = fs::create_dir_all(&scratch).and_then(|_| fs::write(scratch.join("handoff.md"), format!("{}\n", text("handoff").unwrap_or_default())));
         }
+        log!("kanna-daemon: {} carries on here from its handoff", entry.id);
+        self.start_handed_over(entry, first, then);
     }
 
     fn start_handed_over(self: &Rc<Self>, entry: Entry, first: String, then: Answer) {
@@ -669,28 +629,6 @@ impl Tasks {
             })),
         };
         self.launch(starting, folder, None);
-    }
-
-    pub(super) fn resume_failed(self: &Rc<Self>, pane: &str) -> bool {
-        let Some((at, id)) = self.resuming.borrow_mut().remove(pane) else { return false };
-        if at.elapsed() > RESUME_WAIT {
-            return false;
-        }
-        let Some(saved) = transfer::saved(&self.db, &id) else { return false };
-        let Some(first) = handed_over(&saved.doc, "its session didn't resume here") else { return false };
-        let Some(entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return false };
-        log!("kanna-daemon: {}'s {} session didn't resume after the move, so it starts again from its handoff", entry.id, program(&entry.agent));
-        let fresh = Entry { folder: None, session: None, message: Some(first), ..entry.clone() };
-        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some())).then(uuid).and_then(Result::ok);
-        let command = fresh.command(session.as_deref());
-        self.alter(&entry.id, Change::new("handed over").by(Some("daemon")).with("why", json!("its session didn't resume")), |e| e.session = session.clone());
-        let this = Rc::downgrade(self);
-        self.revive(pane, Some(command), move |result| {
-            if let (Err(error), Some(_)) = (&result, this.upgrade()) {
-                log!("kanna-daemon: the handed-over agent didn't start either: {}", error.message);
-            }
-        });
-        true
     }
 
     fn reopen_tabs(&self, pane: &str, tabs: &[Value], from: &str, to: &str) {
@@ -737,11 +675,11 @@ mod tests {
         assert_eq!(handoff_args("codex --yolo", "s1").unwrap()[..5], ["codex", "--yolo", "exec", "resume", "s1"]);
         assert!(handoff_args("opencode", "s1").is_none());
         let doc = json!({ "handoff": "# Handoff\nnext: tests", "from": "mbp", "branch": "fix-notes", "pre": "abc123", "message": "Fix the notes" });
-        let first = handed_over(&doc, "its session didn't resume here").unwrap();
-        for part in ["moved here from mbp", "its session didn't resume here", "fix-notes at abc123", "Fix the notes", "next: tests"] {
+        let first = handed_over(&doc).unwrap();
+        for part in ["moved here from mbp", "fix-notes at abc123", "Fix the notes", "next: tests"] {
             assert!(first.contains(part), "{part}: {first}");
         }
-        assert!(handed_over(&json!({ "from": "mbp" }), "x").is_none(), "no handoff, no fallback");
+        assert!(handed_over(&json!({ "from": "mbp" })).is_none(), "no handoff, no move");
     }
 
     #[test]

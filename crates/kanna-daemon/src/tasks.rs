@@ -818,7 +818,6 @@ pub struct Tasks {
     pub roster: RefCell<Option<Box<dyn Fn() -> Roster>>>,
     pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
     pub payload: RefCell<Option<Box<dyn Fn(String, String, Value, PathBuf, u64)>>>,
-    resuming: RefCell<HashMap<String, (Instant, String)>>,
     asked: RefCell<HashMap<u64, Asked>>,
     away: RefCell<HashMap<String, Away>>,
     refused: RefCell<HashMap<String, Instant>>,
@@ -986,7 +985,6 @@ impl Tasks {
             roster: RefCell::default(),
             exchange: RefCell::default(),
             payload: RefCell::default(),
-            resuming: RefCell::default(),
             asked: RefCell::default(),
             away: RefCell::default(),
             refused: RefCell::default(),
@@ -1789,9 +1787,6 @@ impl Tasks {
         let tearing = self.tearing_down.borrow_mut().remove(pane);
         if let Some(tearing) = tearing {
             return self.torn_down(pane, tearing, code);
-        }
-        if !self.quitting.borrow().contains_key(pane) && self.resume_failed(pane) {
-            return;
         }
         self.turns.borrow_mut().remove(pane);
         self.ready.borrow_mut().remove(pane);
