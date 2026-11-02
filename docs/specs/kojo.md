@@ -2,9 +2,9 @@
 
 **Status:** the language is built (`crates/kanna-pipe`: parse, check, `pick`, `worst`, revisions; `kanna pipeline check` and `list`); runs are not · **Part of:** [software factory](software-factory.md) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#define`) · **Examples:** [`.kanna/pipelines/`](../../.kanna/pipelines/) · **From:** kojo's factory language ([research](../research/software-factory.md#1-kojo))
 
-Kojo is the language software-factory pipelines are written in. A pipeline is a short text file, `.kanna/pipelines/NAME.pipe`, that names its **stages** and joins them with **arrows**. A stage is an agent session, a command, a question for you, or the join of a fan-out. A run never merges to main: it hands its branch back to the task's worktree, where you review it and merge it as any task's work ([software factory](software-factory.md#1-what-a-run-is)). Arrows carry conditions and bounds, so a pipeline always ends and its worst-case cost is known before it runs. The daemon reads, checks and runs it ([software factory](software-factory.md)).
+Kojo is the language software-factory pipelines are written in. A pipeline is a short text file, `.kanna/pipelines/NAME.kojo`, that names its **stages** and joins them with **arrows**. A stage is an agent session, a command, a question for you, or the join of a fan-out. A run never merges to main: it hands its branch back to the task's worktree, where you review it and merge it as any task's work ([software factory](software-factory.md#1-what-a-run-is)). Arrows carry conditions and bounds, so a pipeline always ends and its worst-case cost is known before it runs. The daemon reads, checks and runs it ([software factory](software-factory.md)).
 
-![feature.pipe beside the graph the Run tab draws from it, with the worst-case session count](kojo.png)
+![feature.kojo beside the graph the Run tab draws from it, with the worst-case session count](kojo.png)
 
 ## Contents
 
@@ -120,7 +120,7 @@ Read when the run starts and on every revision, with errors as `FILE:LINE: messa
 
 ```
 plan -> build (each plan.parts) -> join -> check
-                 counted as 2 parts until plan answers: feature.pipe is 17 of 40
+                 counted as 2 parts until plan answers: feature.kojo is 17 of 40
                  plan answered 3 parts:                  18 of 40
                  plan answered 30 parts:                 45 of 40, over: the run stops, waiting on you
 ```
@@ -170,7 +170,7 @@ lint -> build                         ← the rest of the block, appended
 
 | Term | Meaning |
 |---|---|
-| **Pipeline** | A `.pipe` file: stages and arrows, with a budget |
+| **Pipeline** | A `.kojo` file: stages and arrows, with a budget |
 | **Stage** | One step: an agent session, a command, a question, or a fan-out's join |
 | **Verdict** | pass or fail from a stage that gives one; picks the arrow |
 | **Feedback** | What a verdict stage leaves for the next stage's prompt |

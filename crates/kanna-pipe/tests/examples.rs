@@ -16,7 +16,7 @@ fn context() -> Context {
 }
 
 fn example(name: &str) -> String {
-    std::fs::read_to_string(repo().join(format!(".kanna/pipelines/{name}.pipe"))).unwrap()
+    std::fs::read_to_string(repo().join(format!(".kanna/pipelines/{name}.kojo"))).unwrap()
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn feature_counts_the_fan_out_by_its_real_length_once_known() {
     assert_eq!(pipeline.max_sessions(&sizes), 18);
     let too_many = Context { sizes: Sizes::from([("plan.parts".to_string(), 30)]), ..context() };
     let errors = pipeline.check(&too_many).unwrap_err();
-    assert_eq!(errors[0].at("feature.pipe"), "feature.pipe:4: the worst case is 45 sessions, over the budget of 40");
+    assert_eq!(errors[0].at("feature.kojo"), "feature.kojo:4: the worst case is 45 sessions, over the budget of 40");
 }
 
 #[test]
@@ -55,5 +55,5 @@ fn an_unpaired_machine_is_a_placement_error() {
     let errors = load(&example("feature"), &context).unwrap_err();
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].rule, Rule::Placement);
-    assert_eq!(errors[0].at("feature.pipe"), "feature.pipe:12: no such machine 'mini': use here, any, or one of your machines or roles");
+    assert_eq!(errors[0].at("feature.kojo"), "feature.kojo:12: no such machine 'mini': use here, any, or one of your machines or roles");
 }

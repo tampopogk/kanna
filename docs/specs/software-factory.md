@@ -246,7 +246,7 @@ The tasks for the planner, in order, are in [software factory build order](softw
 
 | Term | Meaning |
 |---|---|
-| **Pipeline** | A `.pipe` file in `.kanna/pipelines/` ([Kojo](kojo.md)) |
+| **Pipeline** | A `.kojo` file in `.kanna/pipelines/` ([Kojo](kojo.md)) |
 | **Run** | The task's agent building one change through a pipeline, from request to handed back |
 | **The task's agent** | The agent you talk to, docked in the task: it starts, reads, answers for and stops runs, and takes their branches |
 | **A stage's agent** | The agent a stage runs in one of the run's background terminals, for one visit |

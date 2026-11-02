@@ -4579,7 +4579,7 @@ pipeline_run() {
   repo="$(cd "$repo" && pwd -P)"
   git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
   printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
-  cat >"$repo/.kanna/pipelines/demo.pipe" <<'PIPE'
+  cat >"$repo/.kanna/pipelines/demo.kojo" <<'PIPE'
 budget = 4 sessions, 30m
 build  = claude
 check  = run sh check.sh
@@ -4592,7 +4592,7 @@ PIPE
 Build the change.
 mock: run echo visit >> built.txt && git add built.txt && git commit -qm build && echo 'Built it.' >"$KANNA_ANSWER" && "$KANNA_CLI" run done
 PROMPT
-  printf 'needy = claude\nquiet = claude\nneedy -> quiet -> done\n' >"$repo/.kanna/pipelines/needy.pipe"
+  printf 'needy = claude\nquiet = claude\nneedy -> quiet -> done\n' >"$repo/.kanna/pipelines/needy.kojo"
   printf 'Ask first.\nmock: run "$KANNA_CLI" run need "Which colour?"\n' >"$repo/.kanna/prompts/needy.md"
   printf 'Stop without reporting.\nsay: Not sure what to do.\n' >"$repo/.kanna/prompts/quiet.md"
   cat >"$repo/check.sh" <<'CHECK'
@@ -4707,7 +4707,7 @@ assert v[0]["doc"]["replies"] == 1 and "paused" not in v[0]["doc"], v[0]["doc"]'
   check wait_for 20 eval '[[ "$(runs state)" == "done done paused" ]]' || { echo "pipeline_run: the third run didn't pause: $(runs state)"; return 1; }
   (cd "$folder" && KANNA_TERMINAL="$(held)" kanna run stop) >/dev/null || { echo "pipeline_run line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(runs state)" == "done done stopped" ]]' || { echo "pipeline_run: the paused run wasn't stopped: $(runs state)"; return 1; }
-  printf 'wait = run sleep 300\nwait -> done\n' >"$folder/.kanna/pipelines/slow.pipe"
+  printf 'wait = run sleep 300\nwait -> done\n' >"$folder/.kanna/pipelines/slow.kojo"
   again="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start slow 2>&1)" || { echo "pipeline_run: the slow run didn't start: $again"; return 1; }
   local slow="${again%% *}" sleeper=""
   slept() { sleeper="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from run_stages where run = '$slow' and terminal is not null")"; [[ -n "$sleeper" ]]; }

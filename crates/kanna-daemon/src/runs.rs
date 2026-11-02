@@ -463,7 +463,7 @@ impl Runs {
         let task = self.task_here(args).ok_or_else(|| KmuxError::new("not_a_task", "kanna run start runs in a task's terminal: the run builds that task's change"))?;
         let folder = PathBuf::from(task.folder.clone().ok_or_else(|| KmuxError::new("not_started", format!("{} has no worktree yet", task.id)))?);
         let named = string(args, "pipeline").filter(|p| !p.is_empty()).ok_or_else(|| bad("say which pipeline: kanna run start NAME|FILE"))?;
-        let file = if named.ends_with(".pipe") || named.contains('/') { PathBuf::from(named) } else { folder.join(format!(".kanna/pipelines/{named}.pipe")) };
+        let file = if named.ends_with(".kojo") || named.contains('/') { PathBuf::from(named) } else { folder.join(format!(".kanna/pipelines/{named}.kojo")) };
         let text = fs::read_to_string(&file).map_err(|e| KmuxError::new("not_found", format!("no pipeline {named}: can't read {} ({e})", file.display())))?;
         let name = file.file_stem().map_or_else(|| named.to_string(), |s| s.to_string_lossy().into_owned());
         let prompts: BTreeMap<String, String> = fs::read_dir(file.parent().and_then(Path::parent).map(|k| k.join("prompts")).unwrap_or_default())

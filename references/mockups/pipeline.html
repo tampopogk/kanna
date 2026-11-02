@@ -158,7 +158,7 @@ table.t.wrap td { white-space: normal; }
 <main>
   <div class="intro">
     <h1>The software factory: a pipeline's definition, a run on the Desk, and runs compared</h1>
-    <p>A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.pipe</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. The spec and mockup are made and approved in the task's chat first, as always; then its agent runs the pipeline (<code>kanna run start feature</code>): the task looks as it always does, its agent on the left and tabs on the right, and the pipeline builds under the hood in workers, agent sessions and commands in hidden terminals, driven by the daemon. The <b>Run</b> tab draws where it is; a <b>watch</b> tab shows the current stage's agent at work. A run is one task wherever tasks show. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
+    <p>A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.kojo</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. The spec and mockup are made and approved in the task's chat first, as always; then its agent runs the pipeline (<code>kanna run start feature</code>): the task looks as it always does, its agent on the left and tabs on the right, and the pipeline builds under the hood in workers, agent sessions and commands in hidden terminals, driven by the daemon. The <b>Run</b> tab draws where it is; a <b>watch</b> tab shows the current stage's agent at work. A run is one task wherever tasks show. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
     <div class="controls">
       <button data-scene="define">Definition</button>
       <button data-scene="run">A run on the Desk</button>
@@ -176,7 +176,7 @@ table.t.wrap td { white-space: normal; }
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let scene = "run";
 
-// ---------- the pipeline (feature.pipe) ----------
+// ---------- the pipeline (feature.kojo) ----------
 const SRC = `# Kanna's usual flow, once the spec and mockup are approved in the task's chat:
 # plan, build, review, e2e, your go-ahead, merge.
 budget  = 40 sessions, 8h
@@ -286,9 +286,9 @@ const LEGEND = `<div class="legend"><span><i></i>agent session</span><span><i cl
 function defineHTML() {
   const lines = SRC.split("\n");
   return `<div class="window">
-    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>feature.pipe</b> · .kanna/pipelines · kanna-v4</span></div>
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>feature.kojo</b> · .kanna/pipelines · kanna-v4</span></div>
     <div class="content">
-      <div class="code"><div class="head">.kanna/pipelines/feature.pipe<span class="spacer"></span>saved · <b>valid</b>: worst case 21 sessions of 40</div>
+      <div class="code"><div class="head">.kanna/pipelines/feature.kojo<span class="spacer"></span>saved · <b>valid</b>: worst case 21 sessions of 40</div>
         <div class="src">${lines.map((l, i) => `<div class="ln"><i>${i + 1}</i><span class="t">${hl(l)}</span></div>`).join("")}</div></div>
       <div class="docs"><div class="dtabs"><div class="dtab on">Pipeline</div><div class="dtab">prompts/spec.md</div><div class="dtab">prompts/review.md</div><span class="add">+</span></div>
         <div class="doc">

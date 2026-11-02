@@ -578,19 +578,19 @@ fn pipeline_check_prints_the_worst_case_or_each_error_at_its_line() {
     for name in ["plan", "build", "fix", "review"] {
         std::fs::copy(repo.join(format!(".kanna/prompts/{name}.md")), dir.join(format!(".kanna/prompts/{name}.md"))).unwrap();
     }
-    std::fs::copy(repo.join(".kanna/pipelines/feature.pipe"), dir.join(".kanna/pipelines/feature.pipe")).unwrap();
-    std::fs::write(dir.join(".kanna/pipelines/broken.pipe"), "budget = 2 sessions\nb = claude prompt build\nb -> c\n").unwrap();
+    std::fs::copy(repo.join(".kanna/pipelines/feature.kojo"), dir.join(".kanna/pipelines/feature.kojo")).unwrap();
+    std::fs::write(dir.join(".kanna/pipelines/broken.kojo"), "budget = 2 sessions\nb = claude prompt build\nb -> c\n").unwrap();
     assert!(std::process::Command::new("git").arg("init").arg("-q").current_dir(&dir).status().unwrap().success());
     let checked = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "feature"]).ok();
     assert_eq!(checked.lines().collect::<Vec<_>>(), [
-        ".kanna/pipelines/feature.pipe:12: warning: no such machine 'mini': use here, any, or one of your machines or roles",
-        ".kanna/pipelines/feature.pipe: valid: 7 stages, worst case 17 sessions of 40, 8h (counting 2 parts for each fan-out: build)",
+        ".kanna/pipelines/feature.kojo:12: warning: no such machine 'mini': use here, any, or one of your machines or roles",
+        ".kanna/pipelines/feature.kojo: valid: 7 stages, worst case 17 sessions of 40, 8h (counting 2 parts for each fan-out: build)",
     ]);
-    assert_eq!(kanna_at(&dir, Some(&nowhere), &["pipeline", "check", ".kanna/pipelines/feature.pipe"]).ok(), checked);
+    assert_eq!(kanna_at(&dir, Some(&nowhere), &["pipeline", "check", ".kanna/pipelines/feature.kojo"]).ok(), checked);
     let run = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "broken"]);
     let out = run.out.clone();
-    run.fails(1, "kanna: .kanna/pipelines/broken.pipe: 2 errors");
-    assert_eq!(out.lines().collect::<Vec<_>>(), [".kanna/pipelines/broken.pipe:3: no stage named 'c'", ".kanna/pipelines/broken.pipe:3: no flow from 'b' reaches done, so the run could only end stuck"]);
+    run.fails(1, "kanna: .kanna/pipelines/broken.kojo: 2 errors");
+    assert_eq!(out.lines().collect::<Vec<_>>(), [".kanna/pipelines/broken.kojo:3: no stage named 'c'", ".kanna/pipelines/broken.kojo:3: no flow from 'b' reaches done, so the run could only end stuck"]);
     let list = kanna_at(&dir, Some(&nowhere), &["pipeline", "list"]).ok();
     assert_eq!(list.lines().collect::<Vec<_>>(), [
         "broken   invalid: 2 errors (kanna pipeline check broken)",

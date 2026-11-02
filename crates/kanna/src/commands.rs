@@ -595,10 +595,10 @@ pub static COMMANDS: &[Command] = &[
         summary: "Check a pipeline of the software factory, or list the repo's, with each one's worst case.",
         usage: "kanna pipeline list\n       kanna pipeline check NAME|FILE",
         options: &[],
-        notes: "A pipeline is .kanna/pipelines/NAME.pipe in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/kojo.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it, and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
+        notes: "A pipeline is .kanna/pipelines/NAME.kojo in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/kojo.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it, and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
         examples: &[
-            ("kanna pipeline check feature", "Check .kanna/pipelines/feature.pipe of this repo."),
-            ("kanna pipeline check ~/work/app/.kanna/pipelines/bugfix.pipe --json", "Check a file; its errors, warnings and worst case as JSON."),
+            ("kanna pipeline check feature", "Check .kanna/pipelines/feature.kojo of this repo."),
+            ("kanna pipeline check ~/work/app/.kanna/pipelines/bugfix.kojo --json", "Check a file; its errors, warnings and worst case as JSON."),
             ("kanna pipeline list", "The repo's pipelines, each valid with its worst case, or how many errors it has."),
         ],
         parse: |args| match args.positional().as_deref() {
@@ -624,8 +624,8 @@ pub static COMMANDS: &[Command] = &[
         ],
         notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal in the task's workspace's background, in no tab until you show it with kanna move PANE --tab (kanna move PANE --background puts it back). The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: it removes its worktree, keeps its branch and tells the task's agent the branch is ready, with how to take it (git merge --ff-only run/TASK-N in the task's worktree), as it tells it when the run is stuck, waits on you or stops. The task's agent decides whether to merge it; from the task's worktree the change goes to main as any task's work. Closing the task stops its live runs.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. Agent stages take claude or codex, which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, show and log take the latest run of the task the terminal is in, and stop and resume its live run, refusing with the list when it has several. A task can have any number of runs at once, each on its own branch and worktree; each run's budget is its own, and a run over it waits and tells the task's agent. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
         examples: &[
-            ("kanna run start feature", "Build this task's change through .kanna/pipelines/feature.pipe."),
-            ("kanna run start bugfix --request notes/bug.md", "Run bugfix.pipe with the bug's write-up as the request."),
+            ("kanna run start feature", "Build this task's change through .kanna/pipelines/feature.kojo."),
+            ("kanna run start bugfix --request notes/bug.md", "Run bugfix.kojo with the bug's write-up as the request."),
             ("kanna run show --json", "This task's latest run: its revision, every visit with its verdict and answer, and the worker running now."),
             ("kanna run log run-7f3a", "What happened in run-7f3a, oldest first."),
             ("kanna run resume \"Use blue.\"", "Answer the stage this task's run paused on; its agent carries on with that."),
@@ -1060,8 +1060,8 @@ fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
     }
     match action.as_str() {
         "start" => {
-            let pipeline = args.positional().ok_or_else(|| usage("run", "start needs a PIPELINE: a name in .kanna/pipelines or a .pipe file"))?;
-            out["pipeline"] = json!(if pipeline.ends_with(".pipe") || pipeline.contains('/') { absolute(&pipeline) } else { pipeline });
+            let pipeline = args.positional().ok_or_else(|| usage("run", "start needs a PIPELINE: a name in .kanna/pipelines or a .kojo file"))?;
+            out["pipeline"] = json!(if pipeline.ends_with(".kojo") || pipeline.contains('/') { absolute(&pipeline) } else { pipeline });
             if let Some(request) = request {
                 let file = std::path::Path::new(&request);
                 out["request"] = json!(if file.is_file() { std::fs::read_to_string(file).map_err(|e| usage("run", &format!("can't read {request}: {e}")))? } else { request });
