@@ -148,7 +148,7 @@ In short ([detail](machine-tasks.md)):
 
 - **The Shelf is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
 - **Each task has one owner.** A runner elsewhere with free slots, within the task's preferences, asks for it, and the owner grants it to exactly one.
-- **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, the transcript is copied, and the agent resumes by session ID at the receiver's own paths.
+- **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, and a new agent at the receiver's own paths carries on from a handoff the old one wrote ([task transfer](task-transfer.md)).
 
 ## 9. Server setup and updates
 
@@ -168,7 +168,7 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 - **A TCP listener with Kanna's own signed hello** (the research's plan): that relied on a WireGuard mesh for reach. iroh gives reach and encryption in one piece.
 - **The local daemon proxying the app's remote links:** it would put the MBP's daemon in every keystroke's path and make one app link carry several daemons. The CLI goes through it only because a short-lived process shouldn't register with a relay.
 - **n0's public relays by default:** free reach from away, but on a third party's terms and capacity.
-- **A fixed `/kanna/repos` path:** it needs root on users' Macs, and agents resume by ID from any path anyway.
+- **A fixed `/kanna/repos` path:** it needs root on users' Macs, and a moved task starts a new agent from a handoff, which doesn't care about paths.
 
 ## 13. Glossary
 
