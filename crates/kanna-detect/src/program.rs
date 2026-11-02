@@ -98,7 +98,8 @@ pub fn recognise(process: &Process) -> Option<Program> {
     }
     let script = process.argv.iter().skip(1).take_while(|a| *a != "-c" && *a != "-e").find(|a| !a.starts_with('-'))?;
     let agent = known_agent(Path::new(script).file_stem()?.to_str()?)?;
-    Some(Program { agent: agent.into(), pid: process.pid, executable: None })
+    let executable = resolved(Path::new(script)).filter(|path| agent_of(path) == Some(agent));
+    Some(Program { agent: agent.into(), pid: process.pid, executable })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -352,7 +353,8 @@ mod tests {
         );
         assert_eq!(found(proc("/opt/vendor/codex/codex", &["/opt/vendor/codex/codex", "--yolo"])).map(|f| f.0), Some("codex".into()));
         assert_eq!(found(proc("/usr/local/bin/node", &["node", "/n/lib/node_modules/@openai/codex/bin/codex.js", "resume"])), Some(("codex".into(), None)));
-        assert_eq!(found(proc("/usr/bin/python3", &["/usr/bin/python3", "/t/mock-agent"])), Some(("mock".into(), None)));
+        assert_eq!(found(proc("/usr/bin/python3", &["/usr/bin/python3", "/t/mock-agent"])), Some(("mock".into(), Some("/t/mock-agent".into()))), "a script named as its agent is what's asked its version");
+        assert_eq!(found(proc("/usr/bin/python3", &["python3", "/t/claude", "--resume"])), Some(("claude".into(), Some("/t/claude".into()))));
         assert_eq!(found(proc("/bin/zsh", &["-zsh"])), None);
         assert_eq!(found(proc("/bin/zsh", &["zsh", "-l"])), None);
         assert_eq!(found(proc("/bin/zsh", &["zsh", "-l", "-c", "/t/mock-agent"])), None);

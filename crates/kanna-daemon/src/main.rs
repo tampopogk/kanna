@@ -320,6 +320,7 @@ fn run() -> Result<Option<PathBuf>, String> {
                 messages::Channel::Claude(messages::inbox(&config, program.pid))
             }
             "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(pane))),
+            "antigravity" => messages::Channel::Other("agy".to_string()),
             other => messages::Channel::Other(other.to_string()),
         })
     }));

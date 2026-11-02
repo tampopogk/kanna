@@ -4666,14 +4666,16 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/agy"
   in_repo task new "Agy" "work 1" --agent "$fake/agy" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
   said="$(in_repo task send "$(tid 4)" "can you hear me")"
-  [[ "$said" == *$'\n'"warning: it waits: antigravity can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to an agy task said: $said"; return 1; }
+  [[ "$said" == *$'\n'"warning: it waits: agy can't take messages: only claude and codex can" ]] || { echo "agent_messaging: send to an agy task said: $said"; return 1; }
   waits() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
-print(" ".join(t["pane"] + ":" + t["about"] for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Agy"))'; }
-  local agy; agy="$(task_state "$(tid 4)" | cut -d' ' -f2)"
-  check wait_for 15 eval '[[ "$(waits)" == "$agy:Agy" ]]' || { echo "agent_messaging: the waiting message raised no toast about $agy: $(waits)"; return 1; }
+print(" ".join(t["about"] + ":" + (t.get("detail") or "") for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Agy"))'; }
+  check wait_for 15 eval '[[ "$(waits)" == "Agy:agy can'"'"'t take messages: only claude and codex can" ]]' || { echo "agent_messaging: the waiting message raised no toast about the agy task: $(waits)"; return 1; }
   sleep 2
-  check test "$(waits)" == "$agy:Agy" || { echo "agent_messaging: the same reason raised another toast: $(waits)"; return 1; }
-  check wait_for 15 eval '[[ "$(in_repo task messages "$(tid 4)")" == *"held for $(sid 4): antigravity can'"'"'t take messages"* ]]' || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
+  check test "$(waits)" == "Agy:agy can't take messages: only claude and codex can" || { echo "agent_messaging: the same reason raised another toast: $(waits)"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state "$(tid 4)")" == stopped* ]]' || { echo "agent_messaging: the agy task wasn't stopped at its turn's end"; task_state "$(tid 4)"; return 1; }
+  sleep 3
+  check test "$(task_state "$(tid 4)" | cut -d' ' -f1)" == stopped || { echo "agent_messaging: the agy task was woken for a message it can't take"; return 1; }
+  [[ "$(in_repo task messages "$(tid 4)")" == *"waiting  can you hear me"* ]] || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
 }
 
 scenario agent_too_old M4
@@ -4682,20 +4684,19 @@ agent_too_old() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
   mkdir -p "$repo/.kanna" "$fake/bin" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "agent_too_old line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
-  printf '#!/bin/sh\nKANNA_MOCK_VERSION=2.1.290 exec %s "$@"\n' "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  sed 's/"KANNA_MOCK_VERSION", "99.0.0"/"KANNA_MOCK_VERSION", "2.1.290"/' "$repo_root/tools/mock-agent/mock-agent" >"$fake/bin/claude" && chmod +x "$fake/bin/claude" || { echo "agent_too_old line $LINENO"; return 1; }
   printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
   task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
 print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("stopped") or "-")' "$1"; }
-  (cd "$repo" && kanna task new "Old" "work 30" --agent "$fake/claude") >/dev/null || { echo "agent_too_old line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Old" "work 30" --agent "$fake/bin/claude") >/dev/null || { echo "agent_too_old line $LINENO"; return 1; }
   check wait_for 20 eval '[[ "$(task_state $(tid 1))" == "stopped too-old" ]]' || { echo "agent_too_old: the old claude's task wasn't stopped as too old: $(task_state $(tid 1))"; return 1; }
   refused() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
 print(" ".join(t.get("detail") or "" for t in json.load(sys.stdin)["toasts"] if t["title"].startswith("Kanna can'"'"'t run")))'; }
   check wait_for 10 eval '[[ "$(refused)" == "claude 2.1.290 is too old for Kanna: it needs 2.1.295 or newer"* ]]' || { echo "agent_too_old: no toast said why: $(refused)"; raw '{"id":1,"cmd":"debug.toasts"}'; return 1; }
   sleep 3
   check test "$(task_state $(tid 1))" == "stopped too-old" || { echo "agent_too_old: a runner started it again"; return 1; }
-  kanna open --window new --name plain --cwd "$repo" --cmd "$fake/claude" >/dev/null || { echo "agent_too_old line $LINENO"; return 1; }
+  kanna open --window new --name plain --cwd "$repo" --cmd "$fake/bin/claude" >/dev/null || { echo "agent_too_old line $LINENO"; return 1; }
   check wait_for 10 is plain status idle || { echo "agent_too_old: the old claude in a plain terminal didn't run with its reports"; kanna status explain plain; return 1; }
   sleep 2
   check test "$(pane plain state)" == running || { echo "agent_too_old: the plain terminal's agent was refused"; return 1; }
