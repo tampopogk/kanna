@@ -79,6 +79,38 @@ fn rename_at(dir: &OwnedFd, from: &str, to: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn folder_under(root: &Path, steps: &[&str], create: bool) -> io::Result<OwnedFd> {
+    let mut dir = open_base(root)?;
+    for step in steps {
+        dir = open_dir_at(&dir, step, create)?;
+    }
+    Ok(dir)
+}
+
+pub fn write_under(root: &Path, rel: &str, contents: &[u8]) -> io::Result<()> {
+    let steps = parts(rel)?;
+    let dir = folder_under(root, &steps[..steps.len() - 1], true)?;
+    let name = cstring(steps[steps.len() - 1])?;
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_NOFOLLOW | libc::O_CLOEXEC, 0o644 as libc::c_uint) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    std::io::Write::write_all(&mut unsafe { File::from_raw_fd(fd) }, contents)
+}
+
+pub fn read_under(root: &Path, rel: &str) -> io::Result<Vec<u8>> {
+    let steps = parts(rel)?;
+    let dir = folder_under(root, &steps[..steps.len() - 1], false)?;
+    let name = cstring(steps[steps.len() - 1])?;
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut out = Vec::new();
+    unsafe { File::from_raw_fd(fd) }.read_to_end(&mut out)?;
+    Ok(out)
+}
+
 pub struct Intake {
     folder: PathBuf,
     parent: OwnedFd,
@@ -291,6 +323,19 @@ mod tests {
         intake.finish(true).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("package.json")).unwrap(), "x");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn records_are_written_and_read_only_through_real_folders() {
+        let dir = temp("records");
+        let outside = temp("records-outside");
+        write_under(&dir, ".kanna/build/last", b"b-1\n").unwrap();
+        assert_eq!(read_under(&dir, ".kanna/build/last").unwrap(), b"b-1\n");
+        std::fs::remove_dir_all(dir.join(".kanna")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(".kanna")).unwrap();
+        assert!(write_under(&dir, ".kanna/build/last", b"x").is_err());
+        assert!(read_under(&dir, ".kanna/build/last").is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 
     #[test]

@@ -106,7 +106,11 @@ pub fn listed(root: &Path) -> io::Result<Vec<String>> {
 const PRODUCTS: &str = ".kanna/build/products";
 
 fn products(root: &Path) -> BTreeSet<String> {
-    std::fs::read_to_string(root.join(PRODUCTS)).unwrap_or_default().lines().map(String::from).collect()
+    if git(root, &["ls-files", "--", PRODUCTS]).is_ok_and(|out| !out.is_empty()) {
+        return BTreeSet::new();
+    }
+    let text = crate::intake::read_under(root, PRODUCTS).unwrap_or_default();
+    String::from_utf8_lossy(&text).lines().map(String::from).collect()
 }
 
 fn record_product(root: &Path, path: &Path) {
@@ -115,8 +119,7 @@ fn record_product(root: &Path, path: &Path) {
     }
     let mut known = products(root);
     if known.insert(path.to_string_lossy().into_owned()) {
-        let _ = std::fs::create_dir_all(root.join(".kanna/build"));
-        let _ = std::fs::write(root.join(PRODUCTS), known.into_iter().map(|p| p + "\n").collect::<String>());
+        let _ = crate::intake::write_under(root, PRODUCTS, known.into_iter().map(|p| p + "\n").collect::<String>().as_bytes());
     }
 }
 
@@ -410,11 +413,11 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
 }
 
 fn finish(receiver: &mut Receiver, outcome: &Outcome) {
-    let results = results_dir(&receiver.request.root, &receiver.request.job);
-    let _ = std::fs::create_dir_all(&results);
+    let root = &receiver.request.root;
+    let job_rel = format!(".kanna/build/{}", receiver.request.job);
     let record = json!({ "job": receiver.request.job, "argv": receiver.request.argv, "cwd": receiver.request.cwd, "status": receiver.status, "artifacts": receiver.notes, "code": outcome.code() });
-    let _ = std::fs::write(results.join("job.json"), serde_json::to_vec_pretty(&record).unwrap_or_default());
-    let _ = std::fs::write(receiver.request.root.join(".kanna/build/last"), format!("{}\n", receiver.request.job));
+    let _ = crate::intake::write_under(root, &format!("{job_rel}/job.json"), &serde_json::to_vec_pretty(&record).unwrap_or_default());
+    let _ = crate::intake::write_under(root, ".kanna/build/last", format!("{}\n", receiver.request.job).as_bytes());
     for fd in 0..2 {
         if !receiver.lines[fd].is_empty() {
             let rest = String::from_utf8_lossy(&std::mem::take(&mut receiver.lines[fd])).into_owned();
@@ -424,7 +427,7 @@ fn finish(receiver: &mut Receiver, outcome: &Outcome) {
     }
     let shown = receiver.root_relative();
     if !receiver.diagnostics.is_empty() {
-        let _ = std::fs::write(results.join("diagnostics.txt"), receiver.diagnostics.join("\n") + "\n");
+        let _ = crate::intake::write_under(root, &format!("{job_rel}/diagnostics.txt"), (receiver.diagnostics.join("\n") + "\n").as_bytes());
         let _ = writeln!(receiver.err, "kanna build: {} diagnostics with this worktree's paths ({shown}/diagnostics.txt):", receiver.diagnostics.len());
         for line in receiver.diagnostics.iter().take(DIAGNOSTICS_SHOWN) {
             let _ = writeln!(receiver.err, "{line}");
