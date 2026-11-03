@@ -20,6 +20,8 @@ struct StatsChart: Equatable {
     let rows: [StatsRow]
     let points: [StatsPoint]
     let line: [Double?]
+    let made: [Double?]
+    let done: [Double?]
     let what: String
 
     init(_ json: JSON?) {
@@ -30,6 +32,8 @@ struct StatsChart: Equatable {
         rows = (json?["rows"]?.array ?? []).map { StatsRow(label: $0["label"]?.string ?? "", value: $0["value"]?.number, note: $0["note"]?.string ?? "") }
         points = (json?["points"]?.array ?? []).map { StatsPoint(day: Int($0["day"]?.number ?? 0), value: $0["value"]?.number ?? 0, label: $0["label"]?.string ?? "") }
         line = numbers("line")
+        made = numbers("made")
+        done = numbers("done")
         what = json?["what"]?.string ?? ""
     }
 }
@@ -87,6 +91,8 @@ enum StatsInk {
     static let context = dynamic(0xb9bec7, 0x5b616b)
     static let grid = dynamic(0xeceef1, 0x262a31)
     static let axis = dynamic(0xc9cdd4, 0x3a404a)
+    static let made = dynamic(0x9aa1ab, 0x6f7783)
+    static let done = dynamic(0x2f9a68, 0x3f9a6e)
 }
 
 @MainActor
@@ -233,13 +239,19 @@ final class StatsPage: NSView {
         }
         y = value.frame.maxY + 6
         let chart = StatsChartView(tile: tile, days: days)
-        chart.frame = NSRect(x: origin.x, y: y, width: width, height: big ? 120 : 84)
+        let flow = tile.chart.kind == "flow"
+        chart.frame = NSRect(x: origin.x, y: y, width: width, height: flow ? 150 : big ? 120 : 84)
         chart.onHover = { [weak self, weak chart] text, point in
             guard let self, let chart else { return }
             self.hover(text, at: chart.convert(point, to: self.document))
         }
         document.addSubview(chart)
-        return chart.frame.maxY
+        guard flow else { return chart.frame.maxY }
+        let legend = label("", size: 11, color: .secondaryLabelColor)
+        legend.attributedStringValue = StatsChartView.legend([(StatsInk.series, tile.chart.what), (StatsInk.made, "made"), (StatsInk.done, "done")])
+        legend.sizeToFit()
+        legend.frame.origin = NSPoint(x: origin.x, y: chart.frame.maxY + 4)
+        return legend.frame.maxY
     }
 
     private func hover(_ text: NSAttributedString?, at point: NSPoint) {
@@ -417,7 +429,10 @@ final class StatsChartView: NSView {
         return StatsFormat.nice(tile.chart.values.compactMap { $0 }.max() ?? 0)
     }
 
-    private func y(_ value: Double) -> CGFloat { plot.maxY - CGFloat(min(value, scale) / scale) * plot.height }
+    private var strip: CGFloat { tile.chart.kind == "flow" ? 34 : 0 }
+    private var baseline: CGFloat { plot.maxY - (strip > 0 ? strip + 6 : 0) }
+
+    private func y(_ value: Double) -> CGFloat { baseline - CGFloat(min(value, scale) / scale) * (baseline - plot.minY) }
 
     private func tick(_ value: Double) -> String { tile.unit == "s" ? StatsFormat.duration(value) : tile.unit == "%" ? "\(Int(value))%" : "\(Int(value))" }
 
@@ -433,7 +448,11 @@ final class StatsChartView: NSView {
             (string as NSString).draw(at: NSPoint(x: point.x - size.width * align, y: point.y - size.height / 2), withAttributes: small)
         }
         text(tick(scale), NSPoint(x: plot.minX - 6, y: plot.minY), align: 1)
-        text("0", NSPoint(x: plot.minX - 6, y: plot.maxY), align: 1)
+        text("0", NSPoint(x: plot.minX - 6, y: baseline), align: 1)
+        if strip > 0 {
+            StatsInk.axis.setFill()
+            NSRect(x: plot.minX, y: baseline, width: plot.width, height: 1).fill()
+        }
         if days.count > 1 {
             for (day, align) in [(0, 0.0), (days.count / 2, 0.5), (days.count - 1, 1.0)] {
                 text(StatsFormat.day(days[day], isToday: day == days.count - 1), NSPoint(x: x(day), y: bounds.height - 7), align: align)
@@ -442,6 +461,9 @@ final class StatsChartView: NSView {
         switch tile.chart.kind {
         case "columns": columns()
         case "line": line(tile.chart.values, wash: true)
+        case "flow":
+            bars()
+            line(tile.chart.values, wash: true)
         case "dots": dots()
         default: break
         }
@@ -471,6 +493,29 @@ final class StatsChartView: NSView {
         }
     }
 
+    private func bars() {
+        let top = StatsFormat.nice((tile.chart.made + tile.chart.done).compactMap { $0 }.max() ?? 0)
+        let width = max(1.5, min(8, plot.width / CGFloat(count) / 2 - 1.5))
+        for (values, ink, side) in [(tile.chart.made, StatsInk.made, -1.0), (tile.chart.done, StatsInk.done, 1.0)] {
+            ink.setFill()
+            for (day, value) in values.enumerated() {
+                guard let value, value > 0 else { continue }
+                let height = CGFloat(value / top) * strip
+                let left = side < 0 ? x(day) - width - 0.5 : x(day) + 0.5
+                NSBezierPath(roundedRect: NSRect(x: left, y: plot.maxY - height, width: width, height: height), xRadius: 1, yRadius: 1).fill()
+            }
+        }
+    }
+
+    static func legend(_ keys: [(NSColor, String)]) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        for (i, (ink, words)) in keys.enumerated() {
+            out.append(NSAttributedString(string: (i == 0 ? "" : "     ") + "━ ", attributes: [.foregroundColor: ink, .font: NSFont.systemFont(ofSize: 11, weight: .bold)]))
+            out.append(NSAttributedString(string: words, attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: NSFont.systemFont(ofSize: 11)]))
+        }
+        return out
+    }
+
     private func line(_ values: [Double?], wash: Bool) {
         var runs: [[NSPoint]] = [], run: [NSPoint] = []
         for (day, value) in values.enumerated() {
@@ -483,9 +528,9 @@ final class StatsChartView: NSView {
         for run in runs {
             if wash, let first = run.first, let last = run.last {
                 let area = NSBezierPath()
-                area.move(to: NSPoint(x: first.x, y: plot.maxY))
+                area.move(to: NSPoint(x: first.x, y: baseline))
                 run.forEach { area.line(to: $0) }
-                area.line(to: NSPoint(x: last.x, y: plot.maxY))
+                area.line(to: NSPoint(x: last.x, y: baseline))
                 area.close()
                 StatsInk.series.withAlphaComponent(0.12).setFill()
                 area.fill()
@@ -557,6 +602,10 @@ final class StatsChartView: NSView {
             let done = tile.chart.points.filter { $0.day == day }
             let lines = done.isEmpty ? ["No task done"] : done.map { "\($0.label) · \(StatsFormat.duration($0.value))" }
             out.append(NSAttributedString(string: "\n" + lines.joined(separator: "\n"), attributes: muted))
+        }
+        if tile.chart.kind == "flow" {
+            let at = { (values: [Double?]) in StatsFormat.figure(day < values.count ? values[day] : nil, unit: nil) }
+            out.append(NSAttributedString(string: "\n\(at(tile.chart.made)) made · \(at(tile.chart.done)) done", attributes: muted))
         }
         return out
     }

@@ -4086,6 +4086,11 @@ assert t["quiz", "misses"]["value"] == 1, t["quiz", "misses"]
 assert [x["label"] for x in t["quiz", "areas"]["chart"]["rows"]] == ["README.md", "crates/one", "docs/specs"], t["quiz", "areas"]
 assert t["main", "commits"]["value"] == 3 and t["main", "commits"]["note"] == "today · 4 in 30 days", t["main", "commits"]
 assert t["main", "landed"]["value"] == 1, t["main", "landed"]
+assert [x["id"] for x in s["tasks"]["tiles"]] == ["open", "made", "started", "ended", "lead"], s["tasks"]
+o = t["tasks", "open"]
+assert o["value"] == 2 and o["note"] == "+2 in 30 days" and o["span"] == 6, o
+assert o["chart"]["kind"] == "flow" and o["chart"]["values"] == [0] * 29 + [2], o["chart"]
+assert o["chart"]["made"][-1] == 3 and o["chart"]["done"][-1] == 1 and sum(o["chart"]["made"]) == 3 and sum(o["chart"]["done"]) == 1, o["chart"]
 assert t["tasks", "made"]["note"] == "today · 3 in 30 days", t["tasks", "made"]
 assert t["tasks", "started"]["note"] == "today · 2 in 30 days", t["tasks", "started"]
 assert t["tasks", "ended"]["note"] == "today · 1 in 30 days", t["tasks", "ended"]
@@ -4093,6 +4098,7 @@ assert t["tasks", "lead"]["note"] == "median of 1" and t["tasks", "lead"]["unit"
 assert s["code"]["placeholder"] is True and s["code"]["tiles"] == [], s["code"]' "$json" "$repo" || return 1
   [[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*), sum(value) from samples where metric = 'commits'")" == "3|4.0" ]] || { echo "stats_tab: the samples are $(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select metric, value from samples")"; return 1; }
   (cd "$repo" && kanna stats) | grep -qE '^Main +Commits +3  today · 4 in 30 days ' || { echo "stats_tab: kanna stats prints"; (cd "$repo" && kanna stats); return 1; }
+  (cd "$repo" && kanna stats) | grep -qE '^Tasks +Open +2  \+2 in 30 days ' || { echo "stats_tab: kanna stats prints the open tasks"; (cd "$repo" && kanna stats); return 1; }
   start_app || { echo "stats_tab line $LINENO"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
   local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "stats_tab line $LINENO: $opened"; return 1; }
@@ -4114,6 +4120,8 @@ for sec in r["sections"]:
         assert got["frame"] and got["frame"]["width"] > 100 and got["frame"]["height"] > 40, got
 assert shown["quiz", "right"]["figure"] == "75%" and shown["main", "commits"]["figure"] == "3", shown
 assert shown["tasks", "lead"]["figure"] not in ("", "—"), shown["tasks", "lead"]
+assert shown["tasks", "open"]["figure"] == "2", shown["tasks", "open"]
+assert shown["tasks", "open"]["frame"]["width"] > 2.5 * shown["tasks", "made"]["frame"]["width"] and shown["tasks", "open"]["frame"]["height"] > 150, shown["tasks", "open"]
 code = [s for s in json.loads(sys.argv[3]) if s["id"] == "code"][0]
 assert code["placeholder"] is True and code["empty"].startswith("Not measured yet"), code' "$(desk stats "$d")" "$json" "$(desk statsSections "$d")" || return 1
   sleep 0.5; snap "$d" stats_tab-dark >/dev/null

@@ -1099,6 +1099,7 @@ mod tests {
                 { "id": "kinds", "label": "By kind", "value": null, "note": "", "chart": { "kind": "ranked", "rows": [{ "label": "why", "value": 91.7, "note": "11/12" }] } },
             ] },
             { "id": "tasks", "title": "Tasks", "tiles": [
+                { "id": "open", "label": "Open", "value": 2.0, "note": "+2 in 30 days", "chart": { "kind": "flow", "values": [0.0, 1.0, 2.0], "made": [0.0, 1.0, 3.0], "done": [0.0, 0.0, 2.0] } },
                 { "id": "lead", "label": "Made to done", "value": 12780.0, "unit": "s", "note": "median of 3", "chart": { "kind": "dots", "points": [], "line": [null, 3600.0, 7200.0] } },
             ] },
             { "id": "code", "title": "Code quality", "placeholder": true, "empty": "Not measured yet.", "tiles": [] },
@@ -1109,8 +1110,9 @@ mod tests {
         assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers   ▅█");
         assert_eq!(lines[2], "              By kind");
         assert_eq!(lines[3], "                why             92%  11/12");
-        assert_eq!(lines[4], "Tasks         Made to done   3h 33m  median of 3     ▅█");
-        assert_eq!(lines[5], "Code quality  Not measured yet.");
+        assert_eq!(lines[4], "Tasks         Open                2  +2 in 30 days  ▁▅█");
+        assert_eq!(lines[5], "              Made to done   3h 33m  median of 3     ▅█");
+        assert_eq!(lines[6], "Code quality  Not measured yet.");
         assert_eq!(output::duration(59.0 * 60.0), "59m");
         assert_eq!(output::duration(3.0 * 3600.0), "3h");
         assert_eq!(output::duration(50.0 * 3600.0), "2d");
