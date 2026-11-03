@@ -1,6 +1,9 @@
 use crate::Event;
 use std::fmt::Display;
-use std::time::Duration;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 pub type Events = tokio::sync::mpsc::UnboundedSender<Event>;
 pub type Inbox = tokio::sync::mpsc::UnboundedReceiver<Event>;
@@ -21,14 +24,50 @@ pub fn check(what: impl Display, took: Duration) {
     }
 }
 
+#[cfg(not(test))]
+pub fn spawn(name: &'static str, future: impl Future<Output = ()> + 'static) {
+    tokio::task::spawn_local(Timed { name, future: Box::pin(future) });
+}
+
+#[cfg(test)]
+pub fn spawn(name: &'static str, future: impl Future<Output = ()> + 'static) {
+    let timed = Timed { name, future: Box::pin(future) };
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::spawn_local(timed);
+        return;
+    }
+    let runtime = build().unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.spawn_local(timed);
+    runtime.block_on(local);
+}
+
+struct Timed<F> {
+    name: &'static str,
+    future: Pin<Box<F>>,
+}
+
+impl<F: Future<Output = ()>> Future for Timed<F> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let started = Instant::now();
+        let polled = self.future.as_mut().poll(cx);
+        let took = started.elapsed();
+        crate::perf::record("loop.async", took);
+        check(self.name, took);
+        polled
+    }
+}
+
 #[cfg(test)]
 pub fn next(inbox: &mut Inbox, within: Duration) -> Result<Event, ()> {
-    let by = std::time::Instant::now() + within;
+    let by = Instant::now() + within;
     loop {
         match inbox.try_recv() {
             Ok(event) => return Ok(event),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return Err(()),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) if std::time::Instant::now() >= by => return Err(()),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) if Instant::now() >= by => return Err(()),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(5)),
         }
     }

@@ -504,6 +504,16 @@ fn run() -> Result<(), String> {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
     }
+    let (found_tasks, found_app) = (Rc::downgrade(&tasks), Rc::downgrade(&app));
+    projects::on_found(Rc::new(move || {
+        if let Some(tasks) = found_tasks.upgrade() {
+            tasks.mark_changed();
+        }
+        if let Some(app) = found_app.upgrade() {
+            app.project_found();
+        }
+    }));
+    tasks.prime_projects();
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -600,7 +610,11 @@ fn run() -> Result<(), String> {
                     if let Err(error) = projects::desk_here(folder) {
                         return responder.reply(Err(error));
                     }
-                    args["place"] = projects::place(folder);
+                    let folder = folder.to_string();
+                    return runtime::spawn("the Desk's place", async move {
+                        args["place"] = projects::place_now(&folder).await;
+                        app.forward("desk", args, responder);
+                    });
                 }
                 return app.forward("desk", args, responder);
             };

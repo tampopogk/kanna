@@ -1797,6 +1797,11 @@ impl Tasks {
         }
     }
 
+    pub fn prime_projects(&self) {
+        let repos: HashSet<String> = self.entries.borrow().iter().map(|e| e.repo.clone()).chain(self.running.borrow().iter().map(|r| r.entry.repo.clone())).collect();
+        repos.iter().filter_map(|repo| project(Some(repo))).for_each(|main: PathBuf| crate::projects::prime(&main));
+    }
+
     pub fn mark_changed(&self) {
         self.dirty.set(true);
     }

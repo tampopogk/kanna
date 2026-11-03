@@ -4,21 +4,80 @@ use kanna_mux::{project, CoreHandle, KmuxError};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+enum Root {
+    Looking,
+    Found(String),
+}
+
 thread_local! {
-    static FIRST_COMMITS: std::cell::RefCell<std::collections::HashMap<PathBuf, String>> = std::cell::RefCell::default();
+    static ROOTS: std::cell::RefCell<std::collections::HashMap<PathBuf, Root>> = std::cell::RefCell::default();
+    static ON_FOUND: std::cell::RefCell<Vec<Rc<dyn Fn()>>> = std::cell::RefCell::default();
+}
+
+pub fn on_found(found: Rc<dyn Fn()>) {
+    ON_FOUND.with(|hooks| hooks.borrow_mut().push(found));
+}
+
+fn known_root(main: &Path) -> Option<String> {
+    ROOTS.with(|roots| match roots.borrow().get(main) {
+        Some(Root::Found(sha)) => Some(sha.clone()),
+        _ => None,
+    })
 }
 
 pub fn identity(main: &Path) -> Option<String> {
     if let Some(url) = origin(main) {
         return Some(format!("url:{url}"));
     }
-    let known = FIRST_COMMITS.with(|ids| ids.borrow().get(main).cloned());
-    let sha = known.or_else(|| {
-        let found = first_commit(main)?;
-        FIRST_COMMITS.with(|ids| ids.borrow_mut().insert(main.to_path_buf(), found.clone()));
-        Some(found)
-    })?;
+    if ROOTS.with(|roots| !roots.borrow().contains_key(main)) {
+        look_for_root(main.to_path_buf());
+    }
+    Some(format!("commit:{}", known_root(main)?))
+}
+
+fn look_for_root(main: PathBuf) {
+    ROOTS.with(|roots| roots.borrow_mut().insert(main.clone(), Root::Looking));
+    crate::runtime::spawn("the project's first commit", async move {
+        let found = first_commit(&main).await;
+        let announce = found.is_some();
+        ROOTS.with(|roots| match found {
+            Some(sha) => roots.borrow_mut().insert(main, Root::Found(sha)),
+            None => roots.borrow_mut().remove(&main),
+        });
+        if announce {
+            let hooks = ON_FOUND.with(|hooks| hooks.borrow().clone());
+            hooks.iter().for_each(|found| found());
+        }
+    });
+}
+
+pub async fn identity_now(main: &Path) -> Option<String> {
+    if let Some(url) = origin(main) {
+        return Some(format!("url:{url}"));
+    }
+    if let Some(sha) = known_root(main) {
+        return Some(format!("commit:{sha}"));
+    }
+    let sha = first_commit(main).await?;
+    ROOTS.with(|roots| roots.borrow_mut().insert(main.to_path_buf(), Root::Found(sha.clone())));
     Some(format!("commit:{sha}"))
+}
+
+pub async fn place_now(cwd: &str) -> Value {
+    if let Some(main) = project(Some(cwd)) {
+        identity_now(&main).await;
+    }
+    place(cwd)
+}
+
+pub fn prime(main: &Path) {
+    if origin(main).is_some() || known_root(main).is_some() {
+        return;
+    }
+    let out = std::process::Command::new("git").arg("-C").arg(main).args(FIRST_COMMIT).stderr(std::process::Stdio::null()).output();
+    if let Some(sha) = out.ok().and_then(|out| root_of(&out.stdout)) {
+        ROOTS.with(|roots| roots.borrow_mut().insert(main.to_path_buf(), Root::Found(sha)));
+    }
 }
 
 fn origin(main: &Path) -> Option<String> {
@@ -128,9 +187,15 @@ pub fn desk_here(folder: &str) -> Result<(), KmuxError> {
     outside(&repos(), Path::new(folder))
 }
 
-fn first_commit(main: &Path) -> Option<String> {
-    let out = std::process::Command::new("git").arg("-C").arg(main).args(["rev-list", "--max-parents=0", "HEAD"]).stderr(std::process::Stdio::null()).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
+const FIRST_COMMIT: [&str; 3] = ["rev-list", "--max-parents=0", "HEAD"];
+
+async fn first_commit(main: &Path) -> Option<String> {
+    let out = tokio::process::Command::new("git").arg("-C").arg(main).args(FIRST_COMMIT).stderr(std::process::Stdio::null()).output().await.ok()?;
+    root_of(&out.stdout)
+}
+
+fn root_of(listed: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(listed);
     let mut roots: Vec<&str> = text.lines().filter(|l| l.len() >= 40).collect();
     roots.sort();
     roots.first().map(|r| r.to_string())
@@ -308,6 +373,30 @@ mod tests {
         assert_eq!((found["branch"].clone(), found["project"].clone(), found["main"].clone()), (json!("task-1"), json!(commit), json!(repo.canonicalize().unwrap())));
         git(&repo, &["remote", "add", "origin", "git@github.com:tampopogk/kanna.git"]);
         assert_eq!(identity(&repo).as_deref(), Some("url:github.com/tampopogk/kanna"), "an origin added later is the identity");
+    }
+
+    #[test]
+    fn on_the_loop_a_project_s_first_commit_is_looked_up_while_the_loop_goes_on() {
+        let dir = folder("looked-up");
+        let repo = dir.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "user.name=k", "-c", "user.email=k@k", "commit", "-q", "--allow-empty", "-m", "first"]);
+        let found = Rc::new(std::cell::Cell::new(false));
+        let told = found.clone();
+        on_found(Rc::new(move || told.set(true)));
+        let runtime = crate::runtime::build().unwrap();
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            assert_eq!(identity(&repo), None, "the lookup runs beside the loop");
+            for _ in 0..500 {
+                if found.get() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert!(found.get(), "whoever showed no project is told");
+            assert!(identity(&repo).unwrap().starts_with("commit:"));
+        });
     }
 
     #[test]

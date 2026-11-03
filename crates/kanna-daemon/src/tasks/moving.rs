@@ -172,9 +172,16 @@ impl Tasks {
         if let Err(error) = self.movable(&entry, &core) {
             return responder.reply(Err(error));
         }
-        let project = identity(&entry.repo);
-        let key = peer.key.clone();
-        self.send_to(&key, json!({ "action": "heads", "project": project }), Asked::Heads(Box::new(Asking { id: entry.id, peer, responder })));
+        let tasks = self.clone();
+        crate::runtime::spawn("a task's project", async move {
+            let main = project(Some(&entry.repo));
+            let project = match &main {
+                Some(main) => crate::projects::identity_now(main).await,
+                None => None,
+            };
+            let key = peer.key.clone();
+            tasks.send_to(&key, json!({ "action": "heads", "project": project }), Asked::Heads(Box::new(Asking { id: entry.id, peer, responder })));
+        });
     }
 
     fn movable(&self, entry: &Entry, core: &CoreHandle) -> Result<(), KmuxError> {

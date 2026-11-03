@@ -58,6 +58,7 @@ flowchart LR
 - **No blocking call on the loop or in a local task**: no `std::process::Command`, no `std::fs` beyond a small known file, no sqlite3 subprocess, no sleeps, no blocking sockets. Programs use `tokio::process`; files `tokio::fs`; anything else blocking goes in `spawn_blocking` and is awaited.
 - **Recheck after every await.** The task, pane or request may be gone, or changed, by the time the wait ends: look it up again by ID, and answer or drop accordingly.
 - **Spawn through `runtime::spawn(name, future)`**, never `spawn_local` directly, so the guard times every poll under that name.
+- **A value a view needs but can't wait for** is looked up beside the loop: the view shows what's known, and whoever showed nothing is told when it's found (`projects::identity`, `on_found`). What must have the true answer awaits it (`identity_now`). What the daemon already knows about at its start is looked up before the loop (`prime`).
 - **A new hand-written thread plus a result `Event` is no longer how to get off the loop.** The existing ones (`Worktree`, `Branch`, `Posted`, `Finished`, `RulesUpdated`) become local tasks when their handler is converted. The file and diff watchers stay threads: they live as long as a view and wait on `notify`, not on one call.
 
 ## 3. A handler that waits
@@ -89,7 +90,6 @@ Found by reading every handler and chore (October 2026). Each line is converted 
 
 | What | Reached from | Waits on |
 |---|---|---|
-| `projects::first_commit` | every `tasks.view()` (`described` → `identity`) for a repo with no origin; `app.folder` on a cwd change; `projects list`; `project import` | `git rev-list` |
 | `mint`, `taken` | `tasks new` | `git rev-parse`, per candidate ID |
 | `task_scripts::is_linked` | `tasks done`, `stop`, the sweep | `git rev-parse` |
 | `opencode_session`, `first_session_since` | `Event::Status` (every one, until a session is found), `tasks start`, `planner start/quit` | `/usr/bin/sqlite3` |
@@ -97,7 +97,7 @@ Found by reading every handler and chore (October 2026). Each line is converted 
 | `agents::merge` | `agents status/ask/setup/update` | `git merge-file`, per file |
 | `project_import` | `project import` | `git`, `cp -R`, rewriting session files: unbounded |
 | `crashes` scan | the crash tick while the app is gone | reading DiagnosticReports |
-| the keeper's requests | `open`, `restart`, `close`, exit acks | a round trip on `keeper.sock` (ms) |
+| the keeper's requests | `close`, exit acks (spawns no longer wait: [async spawns](async-spawns.md)) | a round trip on `keeper.sock` (ms) |
 | `Db` | almost every handler | sqlite in-process (ms; up to its 5s busy timeout) |
 
 ## 6. Open questions

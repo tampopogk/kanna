@@ -225,6 +225,7 @@ fn write_with(stream: &UnixStream, reply: &Value, listener: Option<&OwnedFd>) ->
 }
 
 pub struct AppLink {
+    unnamed_folders: RefCell<HashMap<String, String>>,
     core: WeakCore,
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
@@ -253,6 +254,7 @@ impl AppLink {
         let (files, threads) = files;
         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         AppLink {
+            unnamed_folders: RefCell::default(),
             build,
             run: format!("{:x}-{:x}", std::process::id(), started.as_nanos()),
             listener,
@@ -436,8 +438,19 @@ impl AppLink {
 
     pub fn folder(&self, pane: &str, cwd: &str) {
         if self.attached() {
-            self.notify("folder", json!({ "pane": pane, "cwd": cwd, "place": crate::projects::place(cwd) }));
+            let place = crate::projects::place(cwd);
+            let unnamed = !place["main"].is_null() && place["project"].is_null();
+            match unnamed {
+                true => self.unnamed_folders.borrow_mut().insert(pane.to_string(), cwd.to_string()),
+                false => self.unnamed_folders.borrow_mut().remove(pane),
+            };
+            self.notify("folder", json!({ "pane": pane, "cwd": cwd, "place": place }));
         }
+    }
+
+    pub fn project_found(&self) {
+        let waiting = std::mem::take(&mut *self.unnamed_folders.borrow_mut());
+        waiting.iter().for_each(|(pane, cwd)| self.folder(pane, cwd));
     }
 
     pub fn status(&self, pane: &str, status: Option<&str>) {
