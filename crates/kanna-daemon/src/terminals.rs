@@ -1,5 +1,5 @@
 use crate::pty::{self, Adopted, Heard, Spawned, Spawner, Spec};
-use crate::reader::{Feed, Noticed, Reader, Typing};
+use crate::reader::{Feed, Noticed, Reader, Replayed, Typing};
 use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::status::Detector;
@@ -351,23 +351,31 @@ impl Terminals {
         }
     }
 
-    pub fn attach(&self, id: &str, shown: bool) -> Option<Attach> {
+    pub fn attach(&self, id: &str, shown: bool, history: Option<usize>, from: Option<u64>) -> Option<Attach> {
         let live = self.live.borrow();
         let t = live.get(id)?;
         let mut feed = Feed::lock(&t.feed);
-        let snapshot = match feed.snapshot() {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                feed.shown = false;
-                feed.discard();
-                return Some(Attach { snapshot: Err(error), exit_code: None });
-            }
+        let messages = match from.and_then(|from| feed.replay(from)) {
+            Some(replayed) => replayed
+                .into_iter()
+                .map(|item| match item {
+                    Replayed::Output(bytes, offset) => crate::wire::output(id, &bytes, offset),
+                    Replayed::Grid(cols, rows) => grid(id, cols, rows),
+                })
+                .collect(),
+            None => match feed.snapshot(history) {
+                Ok(snapshot) => vec![
+                    json!({ "cmd": "snapshot", "args": { "terminal": id, "data": BASE64.encode(&snapshot.data), "offset": snapshot.offset, "more": snapshot.more } }),
+                    grid(id, feed.cols, feed.rows),
+                ],
+                Err(error) => {
+                    feed.shown = false;
+                    feed.discard();
+                    return Some(Attach { snapshot: Err(error), exit_code: None });
+                }
+            },
         };
         if shown {
-            let messages = [
-                json!({ "cmd": "snapshot", "args": { "terminal": id, "data": BASE64.encode(&snapshot) } }),
-                grid(id, feed.cols, feed.rows),
-            ];
             self.wire.shown(id, &mut feed, &messages);
         }
         Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
@@ -921,7 +929,7 @@ mod tests {
         let reply = opened.borrow_mut().take().unwrap();
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(core.pane(&pane).map(|p| (p.state, p.pid)), Some((PaneState::Running, Some(4243))));
-        assert!(terminals.attach(core.pane(&pane).unwrap().terminal.as_deref().unwrap(), false).is_some());
+        assert!(terminals.attach(core.pane(&pane).unwrap().terminal.as_deref().unwrap(), false, None, None).is_some());
         drop((terminals, keeper));
         drop(fake);
         let _ = std::fs::remove_dir_all(&dir);

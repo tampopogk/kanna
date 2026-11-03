@@ -46,36 +46,17 @@ final class DiagramCache {
     func keep(only sources: Set<String>) { layouts = layouts.filter { sources.contains($0.key) } }
 }
 
-struct ImageStamp: Equatable {
-    var path: String?
-    var regular = false
-    var inode: UInt64 = 0
-    var size: Int64 = 0
-    var seconds = 0
-    var nanoseconds = 0
-
-    init(_ source: String, folder: URL) {
-        path = MarkdownRenderer.localImagePath(source, folder: folder)
-        var info = stat()
-        guard let path, stat(path, &info) == 0 else { return }
-        regular = info.st_mode & S_IFMT == S_IFREG
-        inode = info.st_ino
-        size = info.st_size
-        seconds = info.st_mtimespec.tv_sec
-        nanoseconds = info.st_mtimespec.tv_nsec
-    }
-}
-
 @MainActor
 struct MarkdownRenderer {
     var folder: URL
     var diagrams: DiagramCache
+    var images: [String: NSImage] = [:]
 
     private var blockCount = 0
     private var old = false
     private var slugs: [String: Int] = [:]
     private(set) var diagramSources: [String] = []
-    private(set) var images: [String: ImageStamp] = [:]
+    private(set) var imagePaths: [String] = []
 
     init(folder: URL, diagrams: DiagramCache) {
         self.folder = folder
@@ -546,11 +527,9 @@ struct MarkdownRenderer {
     }
 
     private mutating func imageAttachment(_ source: String?) -> NSTextAttachment? {
-        guard let source else { return nil }
-        let stamp = ImageStamp(source, folder: folder)
-        images[source] = stamp
-        guard stamp.regular, let path = stamp.path, let data = FileManager.default.contents(atPath: path),
-              let image = NSImage(data: data) else { return nil }
+        guard let source, let path = Self.localImagePath(source, folder: folder) else { return nil }
+        imagePaths.append(path)
+        guard let image = images[path] else { return nil }
         let attachment = NSTextAttachment()
         attachment.attachmentCell = ImageCell(image: image)
         return attachment
@@ -579,44 +558,7 @@ struct MarkdownRenderer {
         }
         guard let decoded = raw.removingPercentEncoding, !decoded.isEmpty, !decoded.contains("\0") else { return nil }
         let start = decoded.hasPrefix("/") ? decoded : folder.path + "/" + decoded
-        guard let resolved = resolveLocally(start) else { return nil }
-        var info = statfs()
-        guard statfs(resolved, &info) == 0, info.f_flags & UInt32(MNT_LOCAL) != 0 else { return nil }
-        return resolved
-    }
-
-    nonisolated private static let automountRoots: Set<String> = ["net", "Network", "home"]
-
-    nonisolated private static func resolveLocally(_ path: String) -> String? {
-        var pending = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        var done: [String] = []
-        var hops = 0
-        while !pending.isEmpty {
-            let part = pending.removeFirst()
-            if part == "." { continue }
-            if part == ".." { if !done.isEmpty { done.removeLast() }; continue }
-            done.append(part)
-            if isAutomount(done) { return nil }
-            let current = "/" + done.joined(separator: "/")
-            var info = stat()
-            guard lstat(current, &info) == 0 else { return nil }
-            guard info.st_mode & S_IFMT == S_IFLNK else { continue }
-            hops += 1
-            guard hops <= 32, let target = try? FileManager.default.destinationOfSymbolicLink(atPath: current) else { return nil }
-            done.removeLast()
-            let targetParts = target.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-            if target.hasPrefix("/") { done = [] }
-            pending = targetParts + pending
-        }
-        return "/" + done.joined(separator: "/")
-    }
-
-    nonisolated private static func isAutomount(_ parts: [String]) -> Bool {
-        var rest = parts[...]
-        if rest.starts(with: ["System", "Volumes", "Data"]) { rest = rest.dropFirst(3) }
-        if rest.first == "private" { rest = rest.dropFirst() }
-        guard let root = rest.first else { return false }
-        return automountRoots.contains(root) && rest.count >= 2
+        return URL(fileURLWithPath: start).standardizedFileURL.path
     }
 
     private mutating func slug(_ text: String) -> String {

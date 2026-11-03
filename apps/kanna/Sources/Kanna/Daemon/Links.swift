@@ -53,6 +53,7 @@ final class Links: TerminalLink {
     var onGone: ((String) -> Void)?
     private var appKey: String?
     private var cert: JSON?
+    private var relayToken: JSON = .null
     private var certifying = false
     private var timer: Timer?
     private let keyPath: String?
@@ -119,6 +120,15 @@ final class Links: TerminalLink {
         guard status["ok"]?.bool == true else { return }
         name = status["name"]?.string
         peers = (status["peers"]?.array ?? []).filter { $0["me"]?.bool != true }
+        if status["relay_token"]?.bool == true {
+            local.request("machine.relay_token", [:]) { [weak self] reply in
+                guard let self, reply["ok"]?.bool == true, let token = reply["token"], token != relayToken else { return }
+                relayToken = token
+                refresh()
+            }
+        } else {
+            relayToken = .null
+        }
         let wanted = status["paired"]?.bool == true && status["broken"] == .null ? peers.filter { peer in
             peer["trusted"]?.bool == true && peer["revoked"]?.bool != true && peer["conflict"]?.bool != true && peer["name"]?.string != nil
         } : []
@@ -144,7 +154,7 @@ final class Links: TerminalLink {
                 kept.insert(machine)
                 let dial = dials[machine] ?? Dial()
                 dials[machine] = dial
-                dial.set(["key": .string(key), "addrs": .array((peer["addrs"]?.array ?? []) + (nearby[key] ?? [])), "cert": cert])
+                dial.set(["key": .string(key), "addrs": .array((peer["addrs"]?.array ?? []) + (nearby[key] ?? [])), "relay": peer["relay"] ?? .null, "relay_token": relayToken, "cert": cert])
                 if remotes[machine] == nil { open(machine, dial) }
             }
         }
@@ -177,6 +187,8 @@ final class Links: TerminalLink {
     }
 
     func closed(_ terminal: ExternalTerminal) { link(for: terminal.id)?.closed(terminal) }
+
+    func scrolledToTop(_ terminal: ExternalTerminal) -> Bool { link(for: terminal.id)?.scrolledToTop(terminal) ?? false }
 
     func settingsChanged(_ settings: TerminalSettings) {
         for link in all { link.settingsChanged(settings) }

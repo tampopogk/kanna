@@ -23,7 +23,6 @@
           "enum": [
             "claude",
             "codex",
-            "copilot",
             "opencode",
             "agy"
           ]
@@ -78,14 +77,13 @@
       "type": "object",
       "properties": {
         "agent": {
-          "description": "The agent a new task runs when kanna task new has no --agent: an agent Kanna knows (claude, codex, copilot, opencode, agy), or in your ~/.kanna-v4/config.json any command that starts one (\"claude --model opus\"). A repo's .kanna/config.json may only name an agent, so a repo you clone can't make Kanna run a command of its choosing. Read when a task is made; the task keeps it.",
+          "description": "The agent a new task runs when kanna task new has no --agent: an agent Kanna knows (claude, codex, opencode, agy), or in your ~/.kanna-v4/config.json any command that starts one (\"claude --model opus\"). A repo's .kanna/config.json may only name an agent, so a repo you clone can't make Kanna run a command of its choosing. Read when a task is made; the task keeps it.",
           "type": "string",
           "minLength": 1,
           "default": "claude",
           "examples": [
             "claude",
             "codex",
-            "copilot",
             "opencode",
             "agy"
           ]
@@ -115,7 +113,7 @@
       "type": "object",
       "properties": {
         "prompts": {
-          "description": "Whether the agents Kanna starts ask permission before running commands and editing files (\"ask\"), or skip their permission prompts (\"skip\": claude --dangerously-skip-permissions, codex --yolo, copilot --yolo, agy --dangerously-skip-permissions). An agent command that already picks its own mode keeps it. Only ~/.kanna-v4/config.json sets this: a repo's .kanna/config.json that sets it is ignored, so a cloned repo can't turn your prompts off. Unset, agents ask, and the planning terminal asks you once and writes your answer here. Read when an agent's command is built.",
+          "description": "Whether the agents Kanna starts ask permission before running commands and editing files (\"ask\"), or skip their permission prompts (\"skip\": claude --dangerously-skip-permissions, codex --yolo, agy --dangerously-skip-permissions). An agent command that already picks its own mode keeps it. Only ~/.kanna-v4/config.json sets this: a repo's .kanna/config.json that sets it is ignored, so a cloned repo can't turn your prompts off. Unset, agents ask, and the planning terminal asks you once and writes your answer here. Read when an agent's command is built.",
           "enum": [
             "ask",
             "skip"
@@ -136,7 +134,6 @@
             "enum": [
               "claude",
               "codex",
-              "copilot",
               "opencode",
               "agy"
             ]

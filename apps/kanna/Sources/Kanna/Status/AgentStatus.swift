@@ -32,7 +32,7 @@ extension AppController {
     func statusChanged(_ pane: String, _ status: String?) {
         agentStatuses.set(pane, status, looking: lookingAt.contains(pane))
         contents.agentStatusChanged(pane, status)
-        if isTask(pane) { refreshSoon() }
+        if isTask(pane) || isShelfTask(pane) { refreshSoon() }
     }
 
     func folderChanged(_ pane: String, _ cwd: String, _ place: JSON?) {
