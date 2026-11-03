@@ -1336,37 +1336,12 @@ fn short_commit(commit: &str) -> String {
     format!("{}{dirty}", commit.chars().take(8).collect::<String>())
 }
 
-fn machine_update(reply: &Value) -> String {
-    let mut out = vec![format!("Kanna {} for {} {}", release(&reply["release"]), reply["release"]["os"].as_str().unwrap_or("?"), reply["release"]["arch"].as_str().unwrap_or("?"))];
-    let machines = reply["machines"].as_array().cloned().unwrap_or_default();
-    if machines.is_empty() {
-        out.push("no other machines".into());
-    }
-    for machine in machines {
-        let name = machine["name"].as_str().unwrap_or("?");
-        let line = if let Some(skipped) = machine["skipped"].as_str() {
-            format!("skipped ({skipped})")
-        } else if machine["already"] == true {
-            "already runs it".to_string()
-        } else if machine["ok"] == true {
-            let from = machine["from"].as_str().map_or(String::new(), |f| format!(" from {}", short_commit(f)));
-            let mb = machine["bytes"].as_f64().unwrap_or(0.0) / 1e6;
-            format!("updated{from}: sent {mb:.0} MB in {:.1}s, restarted with its terminals in {:.1}s", machine["sent_secs"].as_f64().unwrap_or(0.0), machine["back_secs"].as_f64().unwrap_or(0.0))
-        } else {
-            format!("failed: {}", machine["error"]["message"].as_str().unwrap_or("?"))
-        };
-        out.push(format!("  {name:<14} {line}"));
-    }
-    out.join("\n")
-}
-
 pub fn machine(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
         Some("pair") => format!("added {} to your machines", reply["name"].as_str().unwrap_or("?")),
         Some("name") => format!("this machine is {} now", reply["name"].as_str().unwrap_or("?")),
         Some("addr") => format!("will try {} for {}", reply["addr"].as_str().unwrap_or("?"), request["host"].as_str().unwrap_or("?")),
         Some("sync") => format!("swapped peer logs with {}", reply["name"].as_str().unwrap_or("?")),
-        Some("update") => machine_update(reply),
         Some("relay") => match reply["relay"].as_str() {
             Some(url) => format!("this machine meets the others through {url} when away"),
             None => "this machine uses no relay: only the LAN and addresses you give".into(),

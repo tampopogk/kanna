@@ -1,7 +1,7 @@
 use crate::log::PeerLog;
 use crate::pair::{hello_a, hello_b, pake_bytes, pake_hex, Offer, Party, Role};
-use crate::update::{self, Install};
-use crate::{is_key, relay_mode, relay_url, Refused, Relay, ALPN, KINDS, UPDATE};
+use crate::protocol;
+use crate::{is_key, relay_mode, relay_url, Refused, Relay, ALPN, KINDS};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
@@ -9,7 +9,6 @@ use n0_future::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -72,7 +71,6 @@ pub trait Host: Send + Sync + 'static {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>);
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>);
     fn save(&self, state: Value);
-    fn restart(&self);
     fn app(&self, _from: String, _hello: Value, _stream: std::os::unix::net::UnixStream) {}
     fn inbox(&self) -> Option<std::path::PathBuf> {
         None
@@ -87,7 +85,6 @@ pub struct Config {
     pub port: Option<u16>,
     pub mdns: bool,
     pub release: Value,
-    pub install: Option<Install>,
 }
 
 #[derive(Clone)]
@@ -99,8 +96,6 @@ pub(crate) struct Inner {
     pub(crate) host: Box<dyn Host>,
     capabilities: Value,
     pub(crate) release: Value,
-    pub(crate) install: Option<Install>,
-    pub(crate) updating: AtomicBool,
     state: Mutex<State>,
     outcome: watch::Sender<Option<Result<Value, Failure>>>,
     revoked: watch::Sender<u64>,
@@ -168,7 +163,7 @@ impl Node {
             endpoint.insert_relay(relay.url.clone(), relay.config()).await;
         }
         let state = State { name, port, relay, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new(), releases: HashMap::new() };
-        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, install: config.install, updating: AtomicBool::new(false), state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
+        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
         }
@@ -406,14 +401,6 @@ impl Node {
         }
     }
 
-    pub(crate) fn trusted(&self) -> Vec<String> {
-        self.state().log.as_ref().map(|l| l.view().trusted().into_iter().collect()).unwrap_or_default()
-    }
-
-    pub(crate) fn capabilities_of(&self, key: &str) -> Value {
-        self.state().log.as_ref().and_then(|l| l.view().descriptors.get(key).map(|d| d["capabilities"].clone())).unwrap_or(Value::Null)
-    }
-
     pub(crate) fn forget(&self, key: &str) {
         self.state().conns.remove(key);
     }
@@ -471,16 +458,6 @@ impl Node {
             let _ = send.finish();
             return;
         }
-        if kind == UPDATE {
-            match self.admit(&remote, None) {
-                Ok(_) => self.receive_update(&header, &mut send, &mut recv).await,
-                Err(failure) => {
-                    let _ = write_line(&mut send, &refusal(&failure)).await;
-                }
-            }
-            let _ = send.finish();
-            return;
-        }
         if !KINDS.contains(&kind.as_str()) {
             let _ = write_line(&mut send, &refusal(&Failure::new("unknown_stream", format!("no stream kind \"{kind}\"")))).await;
             let _ = send.finish();
@@ -496,10 +473,9 @@ impl Node {
                 return;
             }
         };
-        let mine = self.protocols();
-        let theirs = if cert.is_some() { mine } else { update::protocols(&header["protocols"]).unwrap_or([1, 1]) };
-        let Some(protocol) = update::common(mine, theirs) else {
-            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {}–{}", self.state().name, mine[0], mine[1]) }, "release": self.0.release });
+        let mine = self.protocol();
+        if cert.is_none() && protocol::of(&header) != Some(mine) {
+            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {mine}", self.state().name) }, "release": self.0.release });
             let _ = write_line(&mut send, &refused).await;
             let _ = send.finish();
             return;
@@ -516,7 +492,7 @@ impl Node {
             },
             None => None,
         };
-        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": protocol, "release": self.0.release })).await.is_err() {
+        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": mine, "release": self.0.release })).await.is_err() {
             return;
         }
         if let Some(tcp) = target {
@@ -762,8 +738,8 @@ impl Node {
         Ok((conn, true))
     }
 
-    pub(crate) fn protocols(&self) -> [u32; 2] {
-        update::protocols(&self.0.release["protocols"]).unwrap_or([1, 1])
+    pub(crate) fn protocol(&self) -> u32 {
+        protocol::of(&self.0.release).unwrap_or(0)
     }
 
     async fn open(&self, conn: &Connection, kind: &str, name: &str) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
@@ -774,7 +750,7 @@ impl Node {
         let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
         let (mut send, recv) = conn.open_bi().await.map_err(|e| lost(e.to_string()))?;
         let mut recv = BufReader::new(recv);
-        let mut header = json!({ "kind": kind, "protocols": self.protocols() });
+        let mut header = json!({ "kind": kind, "protocol": self.protocol() });
         if let (Some(header), Some(extra)) = (header.as_object_mut(), extra.as_object()) {
             header.extend(extra.clone());
         }
@@ -787,14 +763,13 @@ impl Node {
         if ack["ok"] != true {
             let failure = Failure::from_reply(&ack);
             if failure.code == "other_protocol" {
-                return Err(Failure::new("other_protocol", update::other_protocol(name, &ack["release"], self.protocols())));
+                return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
             }
             return Err(Failure::new(&failure.code, format!("{name} refused this machine: {}", failure.message)));
         }
-        if kind != UPDATE && !update::agreed(&ack, self.protocols()) {
+        if protocol::of(&ack) != Some(self.protocol()) {
             let _ = send.finish();
-            let release = if ack["release"].is_object() { ack["release"].clone() } else { json!({ "protocols": [1, 1] }) };
-            return Err(Failure::new("other_protocol", update::other_protocol(name, &release, self.protocols())));
+            return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
         }
         Ok((send, recv, ack))
     }
@@ -814,12 +789,6 @@ impl Node {
                 }
             }
         }
-    }
-
-    pub(crate) async fn release_of(&self, key: &str) -> Result<Value, Failure> {
-        let (mut send, _, ack) = self.open_to(key, "control", json!({})).await?;
-        let _ = send.finish();
-        Ok(ack["release"].clone())
     }
 
     async fn control_stream(&self, host: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {

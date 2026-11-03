@@ -97,10 +97,10 @@ daemon "$dir/mbp"
 mbp machine name mbp >/dev/null
 peer machine name peer >/dev/null
 
-python3 - "$dir/mbp/kanna.sock" <<'PY' &
+python3 - "$dir/mbp/kanna.sock" "$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo/crates/kanna-build/src/lib.rs")" <<'PY' &
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
-f.write(json.dumps({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [1, 99]}}) + "\n"); f.flush()
+f.write(json.dumps({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocol": int(sys.argv[2])}}) + "\n"); f.flush()
 for line in f:
     m = json.loads(line)
     if m.get("cmd") == "app.machine.confirm":

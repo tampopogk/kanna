@@ -3660,6 +3660,13 @@ real_agent_program_status() {
     check wait_for 30 eval '[[ "$(reported "$pane")" == "working working" ]]' || { echo "real_agent_program_status: $agent's turn wasn't working from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; tail -2 "$agents/mock.jsonl" | cut -c1-300; return 1; }
     check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: $agent's turn didn't end idle from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
     shows "$pane" "slow streamed answer" || { echo "real_agent_program_status: $agent didn't show the mock's answer"; kanna read "$pane"; return 1; }
+    [[ $agent == codex ]] || continue
+    kanna send "$pane" "BACKGROUND_TURN" || { echo "real_agent_program_status line $LINENO"; return 1; }
+    check wait_for 60 eval 'shows "$pane" "BACKGROUND_DONE" && shows "$pane" "Worked for" && shows "$pane" "background terminal running"' || { echo "real_agent_program_status: codex's turn didn't end with a background terminal running"; kanna read "$pane"; return 1; }
+    sleep 3
+    [[ "$(reported "$pane")" == "working working" ]] || { echo "real_agent_program_status: codex with a background terminal running wasn't working but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
+    kanna send "$pane" "/stop" || { echo "real_agent_program_status line $LINENO"; return 1; }
+    check wait_for 30 eval '[[ "$(reported "$pane")" == "idle idle" ]]' || { echo "real_agent_program_status: codex wasn't idle once /stop closed its background terminal but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
   done
   stop_agents
 }
@@ -5128,10 +5135,10 @@ machine_vm() {
   vm_pid=$!
   wait_for 5 test -S "$vm/kanna.sock" || { echo "$1: the second daemon didn't open its socket"; return 1; }
   kanna machine name mbp >/dev/null && vmk machine name vm >/dev/null || { echo "$1 line $LINENO"; return 1; }
-  python3 - "$KANNA_SOCKET" >"$KANNA_STATE_DIR/confirmed" <<'PY' &
+  python3 - "$KANNA_SOCKET" "$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")" >"$KANNA_STATE_DIR/confirmed" <<'PY' &
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
-f.write(json.dumps({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [1, 99]}}) + "\n"); f.flush()
+f.write(json.dumps({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocol": int(sys.argv[2])}}) + "\n"); f.flush()
 for line in f:
     m = json.loads(line)
     if m.get("cmd") == "app.machine.confirm":

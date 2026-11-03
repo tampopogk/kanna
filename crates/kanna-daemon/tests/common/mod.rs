@@ -136,9 +136,6 @@ impl Instance {
         App::connect(&self.socket())
     }
 
-    pub fn app_speaking(&self, protocols: [u32; 2]) -> App {
-        App::connect_speaking(&self.socket(), json!([]), protocols)
-    }
 }
 
 impl Drop for Instance {
@@ -209,14 +206,10 @@ impl App {
     }
 
     pub fn connect_with(socket: &Path, panes: Value) -> App {
-        App::connect_speaking(socket, panes, kanna_build::PROTOCOLS)
-    }
-
-    pub fn connect_speaking(socket: &Path, panes: Value, protocols: [u32; 2]) -> App {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let mut app = App::raw(socket);
-            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": protocols, "panes": panes}}));
+            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocol": kanna_build::PROTOCOL, "panes": panes}}));
             let hello = app.next().expect("no answer to app.hello");
             if hello["ok"] == true {
                 app.hello = hello;

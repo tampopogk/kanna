@@ -29,9 +29,11 @@ sequenceDiagram
     You->>Doc: maybe a typed note on a mark, then stop drawing or ↵
     Doc->>F: new thread c2 with its marks
     Doc->>A: types c2 (marks as text + marked-up picture)
-    A->>A: reads the picture, edits the file
-    A->>F: kanna markup reply c2 "Cut … Moved …"
-    F->>Doc: c2 shows the reply, marks it acted on leave the page
+    A->>A: reads the picture
+    A->>F: kanna markup reply c2 "1: I'll cut … 2: I'll move …"
+    A->>A: edits the file
+    A->>F: kanna markup reply c2 "Done: cut … moved …"
+    F->>Doc: c2 shows what landed, marks it acted on leave the page
     You->>Doc: read it, resolve
 ```
 
@@ -77,7 +79,7 @@ Both a picture and words: the picture shows what you meant (the gesture, your wr
 
 - **On a page**, marks name parts by CSS path and text with a box in page pixels, as [page comments](doc-markup.md#3-reaching-the-agent) do.
 - **The picture** is the pane as shown, with the ink and the notes drawn on and each mark numbered as in the message, saved beside the threads (as `kanna screenshot` takes it). The numbers are only in the picture, to tie its strokes to the lines; the doc shows the ink alone.
-- **What marks mean is a skill.** The `kanna-markup` skill gives the conventions (strike or cross: cut it; arrow: move it there; circle or underline: this, see the note or writing; writing: read it from the picture) and tells the agent to answer mark by mark, naming what each touched and how it read it, so a misread shows in the reply.
+- **What marks mean is a skill.** The `kanna-markup` skill gives the conventions (strike or cross: cut it; arrow: move it there; circle or underline: this, see the note or writing; writing: read it from the picture) and tells the agent to answer mark by mark, naming what each touched and how it read it, in a first reply before it edits, so a misread shows before the work.
 
 ## 4. After it's sent
 
