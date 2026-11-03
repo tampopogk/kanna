@@ -30,6 +30,7 @@ git branch -m fix-login-redirect
 - **Short kebab-case,** what the work is; follow the repo's branch prefixes if it has any.
 - **Only the branch:** leave the worktree's folder where it is, since you and your terminals are in it.
 - **Before you push,** so the remote branch has the real name.
+- **Other worktrees you make** (to check main, say) go in `.worktrees/` with your task's ID in the name (`.worktrees/3f9a1c2e-main-check`): builds are kept by the worktree folder's name, so a name another task also picks shares its builds.
 
 ## Add tasks to the Shelf
 
