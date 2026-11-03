@@ -12,12 +12,9 @@ use std::time::Instant;
 
 pub const CHUNK: usize = 64 << 10;
 
-pub const FLOW_PROTOCOL: u64 = 3;
-
 struct Link {
     conn: u64,
     out: Outbox,
-    flow: bool,
 }
 
 struct Line {
@@ -48,8 +45,8 @@ impl Wire {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub fn connect(&self, conn: u64, out: Outbox, flow: bool) {
-        self.state().link = Some(Link { conn, out, flow });
+    pub fn connect(&self, conn: u64, out: Outbox) {
+        self.state().link = Some(Link { conn, out });
     }
 
     pub fn disconnect(&self) {
@@ -112,12 +109,12 @@ impl Wire {
             feed.discard();
             return;
         }
-        if link.flow && feed.inflight {
+        if feed.inflight {
             return;
         }
-        let Some((bytes, typed)) = feed.chunk(if link.flow { CHUNK } else { usize::MAX }) else { return };
-        let queued = link.out.push_for(Some(id), &output(id, &bytes), typed);
-        feed.inflight = link.flow;
+        let Some(chunk) = feed.chunk(CHUNK) else { return };
+        let queued = link.out.push_for(Some(id), &output(id, &chunk.bytes, chunk.offset), chunk.typed);
+        feed.inflight = true;
         if queued > QUEUE_BEHIND && link.out.fell_behind() {
             let _ = self.events.lock().unwrap_or_else(PoisonError::into_inner).send(Event::AppBehind { conn: link.conn, queued });
         }
@@ -139,14 +136,14 @@ impl Wire {
         let state = self.state();
         let Some(link) = state.link.as_ref() else { return };
         if feed.shown && !feed.overflowed() && !link.out.behind() {
-            while let Some((bytes, typed)) = feed.chunk(usize::MAX) {
-                link.out.push_for(Some(id), &output(id, &bytes), typed);
+            while let Some(chunk) = feed.chunk(usize::MAX) {
+                link.out.push_for(Some(id), &output(id, &chunk.bytes, chunk.offset), chunk.typed);
             }
         }
         link.out.push_for(Some(id), message, None);
     }
 }
 
-fn output(id: &str, bytes: &[u8]) -> Value {
-    json!({ "cmd": "output", "args": { "terminal": id, "data": BASE64.encode(bytes) } })
+pub fn output(id: &str, bytes: &[u8], offset: u64) -> Value {
+    json!({ "cmd": "output", "args": { "terminal": id, "data": BASE64.encode(bytes), "offset": offset } })
 }

@@ -39,47 +39,17 @@ fn an_echo_is_not_held_behind_another_terminals_flood() {
     let typed = instance.open("typed", Some("exec cat"));
     let mut app = instance.app();
     app.acks = false;
-    for pane in [&flood, &typed] {
-        app.tell("attach", json!({"terminal": pane}));
-        app.until("the view to start", |m| is(m, "snapshot", pane));
-    }
+    app.tell("attach", json!({"terminal": flood}));
+    app.until("the flood's view to start", |m| is(m, "snapshot", &flood));
     app.until("the flood's first chunk", |m| is(m, "output", &flood));
+    app.tell("attach", json!({"terminal": typed}));
+    app.until("the typed terminal's view to start", |m| is(m, "snapshot", &typed));
     std::thread::sleep(Duration::from_millis(500));
     let asked = Instant::now();
     app.tell("input", json!({"terminal": typed, "data": BASE64.encode("k")}));
     let echo = app.until("the echo", |m| is(m, "output", &typed));
     assert_eq!(data(&echo), b"k");
     assert!(asked.elapsed() < Duration::from_millis(500), "the echo took {:?}", asked.elapsed());
-}
-
-#[test]
-fn a_flood_is_held_back_at_the_pty() {
-    let mut instance = Instance::start();
-    let pane = instance.open("flood", Some("yes"));
-    std::thread::sleep(Duration::from_secs(3));
-    let alone = instance.rss_mb();
-    assert!(alone < 150, "with no app the daemon grew to {alone} MB");
-
-    let mut app = instance.app_speaking([2, 2]);
-    app.tell("attach", json!({"terminal": pane}));
-    app.until("the view to start", |m| is(m, "snapshot", &pane));
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !instance.log().contains("the app is") {
-        assert!(Instant::now() < deadline, "the app never fell behind");
-        assert!(instance.rss_mb() < 150, "with a stalled app the daemon grew to {} MB", instance.rss_mb());
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    std::thread::sleep(Duration::from_secs(2));
-    let stalled = instance.rss_mb();
-    assert!(stalled < 150, "with a stalled app the daemon grew to {stalled} MB");
-
-    app.until("the view to start over", |m| is(m, "snapshot", &pane));
-    app.until("more output", |m| is(m, "output", &pane));
-
-    let asked = Instant::now();
-    unsafe { libc::kill(instance.pid(), libc::SIGTERM) };
-    wait_for("the daemon to stop", || instance.daemon.try_wait().unwrap().is_some());
-    assert!(asked.elapsed() < Duration::from_secs(2), "the daemon took {:?} to stop", asked.elapsed());
 }
 
 #[test]
@@ -144,6 +114,89 @@ fn a_replica_misses_nothing_and_repeats_nothing() {
     let daemon = instance.call("read", json!({"pane": pane, "lines": 2000}))["text"].as_str().unwrap().to_string();
     assert_eq!(replica.text(Lines::Last(2000)), daemon);
     assert!(daemon.ends_with("199999\n200000\nDONE"), "{}", &daemon[daemon.len() - 40..]);
+}
+
+fn apply(replica: &mut Terminal, message: &serde_json::Value) -> u64 {
+    match message["cmd"].as_str() {
+        Some("output") => replica.write(&data(message)),
+        Some("grid") => {
+            let side = |k: &str| message["args"][k].as_u64().unwrap() as u16;
+            replica.resize(side("cols"), side("rows")).unwrap();
+        }
+        other => panic!("unexpected {other:?}: {message}"),
+    }
+    message["args"]["offset"].as_u64().unwrap_or(0)
+}
+
+#[test]
+fn an_attach_can_bound_the_scrollback_and_the_rest_comes_when_asked() {
+    let instance = Instance::start();
+    let pane = instance.open("long", Some("seq 1 60000; exec cat"));
+    wait_for("the output", || instance.screen(&pane).contains("60000"));
+    let mut app = instance.app();
+    app.tell("attach", json!({"terminal": pane}));
+    let full = app.until("the snapshot", |m| is(m, "snapshot", &pane));
+    assert_eq!(full["args"]["more"], false, "{}", full["args"]["more"]);
+    drop(app);
+    let mut app = instance.app();
+    app.tell("attach", json!({"terminal": pane, "scrollback": 100}));
+    let bounded = app.until("the snapshot", |m| is(m, "snapshot", &pane));
+    assert_eq!(bounded["args"]["more"], true);
+    assert_eq!(bounded["args"]["offset"], full["args"]["offset"]);
+    assert!(data(&bounded).len() * 10 < data(&full).len(), "{} of {} bytes", data(&bounded).len(), data(&full).len());
+    let replica = Terminal::from_snapshot(&data(&bounded)).unwrap();
+    assert!(replica.text(Lines::Last(101)).ends_with("59999\n60000"), "{}", replica.text(Lines::Last(3)));
+    assert!(replica.scrollback_rows() < 10_000);
+    app.tell("scrollback", json!({"terminal": pane}));
+    let rest = app.until("the whole scrollback", |m| is(m, "snapshot", &pane));
+    assert_eq!(rest["args"]["more"], false);
+    assert_eq!(Terminal::from_snapshot(&data(&rest)).unwrap().text(Lines::Last(100_000)), Terminal::from_snapshot(&data(&full)).unwrap().text(Lines::Last(100_000)));
+}
+
+#[test]
+fn a_reconnect_from_an_offset_replays_only_the_gap() {
+    let instance = Instance::start();
+    let pane = instance.open("gap", Some("seq 1 200000; exec cat"));
+    wait_for("the output", || instance.screen(&pane).contains("200000"));
+    let mut app = instance.app();
+    let run = app.hello["daemon"]["run"].as_str().unwrap().to_string();
+    app.tell("attach", json!({"terminal": pane, "scrollback": 50}));
+    let snapshot = app.until("the snapshot", |m| is(m, "snapshot", &pane));
+    let mut replica = Terminal::from_snapshot(&data(&snapshot)).unwrap();
+    let mut offset = snapshot["args"]["offset"].as_u64().unwrap();
+    app.until("the grid", |m| is(m, "grid", &pane));
+    app.tell("input", json!({"terminal": pane, "data": BASE64.encode("before\r")}));
+    while !replica.text(Lines::Screen).contains("before\nbefore") {
+        offset = apply(&mut replica, &app.until("the echo", |m| m["args"]["terminal"] == pane.as_str()));
+    }
+    drop(app);
+
+    instance.call("send", json!({"pane": pane, "text": "while away"}));
+    wait_for("the input while away", || instance.screen(&pane).matches("while away").count() == 2);
+
+    let mut app = instance.app();
+    app.tell("attach", json!({"terminal": pane, "scrollback": 50, "from": offset, "run": run}));
+    let first = app.until("the gap", |m| m["args"]["terminal"] == pane.as_str());
+    assert_eq!(first["cmd"], "output", "a replay, not a snapshot: {first}");
+    assert!(data(&first).len() < 100, "only the gap: {first}");
+    apply(&mut replica, &first);
+    app.tell("input", json!({"terminal": pane, "data": BASE64.encode("after\r")}));
+    while !replica.text(Lines::Screen).contains("after\nafter") {
+        apply(&mut replica, &app.until("the echo", |m| m["args"]["terminal"] == pane.as_str()));
+    }
+    let daemon = instance.call("read", json!({"pane": pane, "lines": 30}))["text"].as_str().unwrap().to_string();
+    assert_eq!(replica.text(Lines::Last(30)), daemon);
+    drop(app);
+
+    let mut app = instance.app();
+    app.tell("attach", json!({"terminal": pane, "from": offset, "run": "another-daemon"}));
+    let first = app.until("the screen", |m| m["args"]["terminal"] == pane.as_str());
+    assert_eq!(first["cmd"], "snapshot", "an offset from another run of the daemon means nothing: {first}");
+    drop(app);
+    let mut app = instance.app();
+    app.tell("attach", json!({"terminal": pane, "from": 3, "run": run}));
+    let first = app.until("the screen", |m| m["args"]["terminal"] == pane.as_str());
+    assert_eq!(first["cmd"], "snapshot", "an offset older than the replay ring: {first}");
 }
 
 #[test]
@@ -236,7 +289,7 @@ fn a_request_the_app_never_answers_times_out() {
     let request = app.until("the request", |m| m["cmd"] == "debug.app");
     app.send(json!({"id": request["id"], "ok": true, "late": true}));
     let mut second = App::raw(&instance.socket());
-    second.send(json!({"id": 0, "cmd": "app.hello", "args": {"protocols": kanna_build::PROTOCOLS}}));
+    second.send(json!({"id": 0, "cmd": "app.hello", "args": {"protocol": kanna_build::PROTOCOL}}));
     assert_eq!(second.next().unwrap()["error"]["code"], "app_attached");
 }
 
@@ -371,16 +424,34 @@ fn every_debug_command_goes_to_the_app_with_pane_names_resolved() {
 fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     let instance = Instance::start();
     let mut other = App::raw(&instance.socket());
-    other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [7, 9]}}));
+    other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [2, 3]}}));
     let reply = other.next().unwrap();
     assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
-    assert_eq!(reply["mine"], json!(kanna_build::PROTOCOLS), "{reply}");
+    assert_eq!(reply["protocol"], json!(kanna_build::PROTOCOL), "{reply}");
     assert!(reply["version"].is_string() && reply["commit"].is_string(), "{reply}");
     assert_eq!(instance.call("capabilities", json!({}))["ok"], true);
 
     let mut app = App::raw(&instance.socket());
-    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocols": [1, 4]}}));
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocol": kanna_build::PROTOCOL + 1}}));
+    let reply = app.next().unwrap();
+    assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
+
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocol": kanna_build::PROTOCOL}}));
     let reply = app.next().unwrap();
     assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(reply["daemon"]["protocols"], json!(kanna_build::PROTOCOLS), "{reply}");
+    assert_eq!(reply["daemon"]["protocol"], json!(kanna_build::PROTOCOL), "{reply}");
+}
+
+#[test]
+fn a_relays_token_goes_only_to_this_machines_own_app() {
+    let instance = Instance::start();
+    let set = instance.call("machine", json!({"action": "relay", "url": "https://relay.example.com:8444", "token": "s3cret"}));
+    assert_eq!(set["token"], true, "{set}");
+    let status = instance.call("machine", json!({"action": "status"}));
+    assert_eq!((status["relay"].as_str(), status["relay_token"].as_bool()), (Some("https://relay.example.com:8444/"), Some(true)), "the status says only that there is a token: {status}");
+    let mut app = instance.app();
+    app.send(json!({"id": 7, "cmd": "machine.relay_token", "args": {}}));
+    let reply = app.until("the token", |m| m["id"] == 7);
+    assert_eq!(reply["token"], "s3cret", "{reply}");
 }

@@ -1,6 +1,7 @@
-use crate::store::bundled_quit;
 use regex::Regex;
 use serde::Deserialize;
+
+include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,7 +30,7 @@ impl Quit {
     }
 
     pub fn of(agent: &str) -> Option<Quit> {
-        let (_, text) = bundled_quit().find(|(name, _)| *name == agent)?;
+        let (_, text) = BUNDLED_QUIT.iter().copied().find(|(name, _)| *name == agent)?;
         Quit::parse(text).map_err(|error| eprintln!("kanna: agent-rules/quit/{agent}.json: {error}")).ok()
     }
 
@@ -46,7 +47,7 @@ mod tests {
 
     #[test]
     fn every_bundled_quit_file_loads_and_names_its_agent() {
-        for (name, text) in bundled_quit() {
+        for (name, text) in BUNDLED_QUIT.iter().copied() {
             let quit = Quit::parse(text).unwrap_or_else(|e| panic!("{name}.json: {e}"));
             assert_eq!(quit.agent, name);
             assert!(crate::program::known_agents().contains(&name), "{name} isn't an agent Kanna knows");
@@ -71,7 +72,6 @@ mod tests {
         let id = "11111111-2222-4333-8444-555555555555";
         let said = [
             ("claude", format!("Press Ctrl-C again to exit\nResume this session with:\nclaude --resume {id}\n")),
-            ("copilot", format!(" ▔▔▔▔    Resume     copilot --resume={id}\n")),
             ("antigravity", format!("Resume with -c (or command below):\nagy --conversation={id}\n")),
         ];
         for (agent, screen) in said {

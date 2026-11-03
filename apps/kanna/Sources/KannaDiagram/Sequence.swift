@@ -25,7 +25,7 @@ enum Sequence {
         }
     }
 
-    static func scene(semantic: [String: Any], layout: [String: Any]) -> DiagramScene {
+    static func scene(semantic: [String: Any], layout: [String: Any], log: MeasureLog = MeasureLog()) -> DiagramScene {
         let frame = Frame(layout: layout)
         var scene = DiagramScene(size: frame.size)
         let actors = semantic.dict("actors") ?? [:]
@@ -75,7 +75,9 @@ enum Sequence {
                 let shown = numbering ? number : nil
                 deferred.append { drawMessage(type: type, start: start, end: end, label: text, labelBox: labelBox, number: shown, into: &scene) }
             case note:
-                guard let box = nodes["note-\(id)"]?.box.map(frame.rect) else { continue }
+                guard var box = nodes["note-\(id)"]?.box.map(frame.rect) else { continue }
+                let needed = log.width(of: text, defaultSize: 14) + 20
+                if message["wrap"] as? Bool != true, box.width < needed { box = box.insetBy(dx: (box.width - needed) / 2, dy: 0) }
                 include(box)
                 deferred.append {
                     scene.shape(Paths.rect(box), fill: .role(.noteFill), stroke: .role(.noteStroke))

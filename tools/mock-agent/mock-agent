@@ -17,7 +17,7 @@ import time
 import tty
 import uuid
 
-VERSION = "mock-agent 1.0.0"
+VERSION = os.environ.get("KANNA_MOCK_VERSION", "99.0.0")
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 lock = threading.Lock()
 
@@ -55,6 +55,7 @@ def draw(choice):
 
 
 def ask():
+    reported("blocked:kind=permission")
     out(f"\r\n{QUESTION}\r\n")
     choice = 0
     draw(choice)
@@ -105,6 +106,25 @@ def session(args):
 def first(args):
     told = [a for a in args if "Your task: " in a]
     return told[-1].split("Your task: ", 1)[1] if told else None
+
+
+def stage_prompt(args):
+    if not os.environ.get("KANNA_STAGE") or not args or args[-1].startswith("-"):
+        return None
+    return args[-1]
+
+
+def stage(id, prompt):
+    reported("working")
+    said = []
+    for line in prompt.splitlines():
+        if line.startswith("mock: "):
+            answering(line[len("mock: "):])
+        elif line.startswith("say: "):
+            said.append(line[len("say: "):])
+    out("\x1b[J\r\n" + "\r\n".join(said or ["done"]) + "\r\n")
+    composer()
+    reported("idle")
 
 
 def inbox():
@@ -226,7 +246,7 @@ def bye(id):
 
 def main():
     if "--version" in sys.argv[1:]:
-        print(VERSION)
+        print(f"mock-agent {VERSION}")
         return 0
     if sys.argv[1:2] == ["app-server"]:
         return app_server(sys.argv[1:])
@@ -236,6 +256,11 @@ def main():
         tty.setraw(fd, termios.TCSANOW)
         atexit.register(lambda: termios.tcsetattr(fd, termios.TCSANOW, saved))
     id, resumed = session(sys.argv[1:])
+    if "-p" in sys.argv[1:] or sys.argv[1:2] == ["exec"]:
+        if os.path.exists(os.path.join(os.environ.get("HOME", "/nonexistent"), ".mock-handoff-fails")):
+            return 1
+        print(f"# Handoff\n\nmock handoff of session {id}: the next step is to finish the draft.")
+        return 0
     out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
@@ -243,7 +268,12 @@ def main():
     inbox()
     remote(sys.argv[1:])
     try:
-        talk(None if resumed else first(sys.argv[1:]))
+        prompt = stage_prompt(sys.argv[1:])
+        if resumed and prompt == id:
+            prompt = None
+        if prompt is not None:
+            stage(id, prompt)
+        talk(None if resumed or prompt is not None else first(sys.argv[1:]))
     except KeyboardInterrupt:
         pass
     bye(id)
@@ -251,6 +281,7 @@ def main():
 
 
 def talk(task):
+    reported("idle")
     composer()
     if task and not answer(task):
         return
@@ -295,7 +326,22 @@ def typed():
                 out(c)
 
 
+def reported(state):
+    if os.environ.get("KANNA_MOCK_REPORTS") != "0":
+        out(f"\x1b]7501;state={state}\x1b\\")
+
+
 def answer(line):
+    if line.split()[:1] == ["report"]:
+        return answering(line)
+    reported("working")
+    try:
+        return answering(line)
+    finally:
+        reported("idle")
+
+
+def answering(line):
     words = line.split()
     out("\x1b[J\r\n")
     if words[:1] == ["exit"]:
@@ -316,6 +362,7 @@ def answer(line):
         if words[:1] == ["turn"]:
             work(2)
         choice = ask()
+        reported("working")
         out("\x1b[2J\x1b[H")
         if choice == 0:
             work(1)

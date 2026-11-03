@@ -1,10 +1,14 @@
+pub mod accounts;
 pub mod agents;
 pub mod args;
+pub mod build;
 pub mod commands;
 pub mod complete;
 pub mod diagrams;
 pub mod machine;
 pub mod output;
+pub mod pipeline;
+pub mod serial;
 pub mod target;
 pub mod threads;
 
@@ -15,13 +19,128 @@ use serde_json::{json, Value};
 use target::{process_env, Backend, Choice, Env, Session, Target};
 
 pub fn main() -> std::process::ExitCode {
-    match run(std::env::args().skip(1).collect(), &process_env) {
+    let argv0 = std::env::args().next().unwrap_or_default();
+    if let Some(tool) = build::shim_name(&argv0) {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        return match shim(tool, &argv0, args) {
+            Ok(code) => std::process::ExitCode::from(code.clamp(0, 255) as u8),
+            Err(failure) => {
+                eprintln!("kanna build: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "build") {
+        if args.get(1).is_some_and(|a| a == "--help" || a == "-h") {
+            println!("{}", build::HELP);
+            return std::process::ExitCode::SUCCESS;
+        }
+        let code = build::parse(&args[1..]).and_then(|options| build::run(build_socket(&process_env)?, options));
+        return match code {
+            Ok(code) => std::process::ExitCode::from(code.clamp(0, 255) as u8),
+            Err(failure) => {
+                eprintln!("kanna: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
+    if args.first().is_some_and(|a| a == "guests") {
+        return match guests(&args[1..], &process_env) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(failure) => {
+                eprintln!("kanna: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
+    match run(args, &process_env) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(failure) => {
             eprintln!("kanna: {}", failure.message);
             std::process::ExitCode::from(failure.code)
         }
     }
+}
+
+fn build_socket(env: Env) -> Result<std::path::PathBuf, Failure> {
+    let target = Target::resolve(&kanna_build::Build::current(), Choice { mux: None, instance: None, background: false, fresh: false }, env)?;
+    Ok(target.socket)
+}
+
+fn swift_goes_to_the_mac() -> bool {
+    let Ok(here) = std::env::current_dir() else { return false };
+    let Ok(worktree) = kanna_guest::client::worktree(&here) else { return false };
+    let config = std::fs::read(worktree.root.join(".kanna/config.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).unwrap_or(Value::Null);
+    config["build"]["swift"] == "mac"
+}
+
+fn shim(tool: &str, argv0: &str, args: Vec<String>) -> Result<i32, Failure> {
+    if tool == "swift" && !swift_goes_to_the_mac() {
+        use std::os::unix::process::CommandExt;
+        let me = std::fs::canonicalize(std::env::current_exe().unwrap_or_default()).unwrap_or_default();
+        let shim_dir = std::path::Path::new(argv0).parent().and_then(|d| d.canonicalize().ok());
+        let path = std::env::var("PATH").unwrap_or_default();
+        let next = path.split(':').map(|dir| std::path::Path::new(dir).join(tool)).find(|candidate| candidate.is_file() && candidate.parent().and_then(|d| d.canonicalize().ok()) != shim_dir && std::fs::canonicalize(candidate).ok().as_ref() != Some(&me));
+        let Some(next) = next else { return Err(fail(exit::FAILED, "swift: there's no swift on this machine, and this repo doesn't send swift to the build Mac (build.swift in .kanna/config.json)")) };
+        let error = std::process::Command::new(next).args(args).exec();
+        return Err(fail(exit::FAILED, format!("swift: {error}")));
+    }
+    let argv = std::iter::once(tool.to_string()).chain(args).collect();
+    build::run(build_socket(&process_env)?, build::Options { mac: None, fetch: fetch_policy(), ui: std::env::var("KANNA_BUILD_UI").is_ok_and(|v| v == "1"), argv })
+}
+
+const GUESTS_HELP: &str = "kanna guests [list]
+kanna guests create NAME --from MASTER_VM_DIR [--cpus N] [--memory GIB] [--data GIB]
+kanna guests data NAME [--data GIB]
+kanna guests start|stop|retire NAME
+
+A build Mac's guests: macOS VMs that run builds for one tenant, each an APFS clone of a master VM folder with its own
+machine identity and a data disk (default 64 GiB, the volume KannaData) for its builds. `data` adds one to a guest made
+without it, attached when the guest next starts. The daemon keeps every guest that isn't stopped running; retire destroys
+its disks.";
+
+fn guests(args: &[String], env: Env) -> Result<(), Failure> {
+    let mut args = Argv::new(args.to_vec());
+    let json_output = args.flag("--json");
+    if args.flag("--help") || args.flag("-h") {
+        println!("{GUESTS_HELP}");
+        return Ok(());
+    }
+    let action = args.positional().unwrap_or_else(|| "list".into());
+    let mut request = json!({ "action": action });
+    if action != "list" {
+        request["name"] = json!(args.positional().ok_or_else(|| fail(exit::USAGE, format!("guests {action} needs a NAME\n\n{GUESTS_HELP}")))?);
+    }
+    if let Some(from) = args.option("--from")? {
+        let from = std::fs::canonicalize(&from).map_err(|e| fail(exit::USAGE, format!("guests: {from}: {e}")))?;
+        request["from"] = json!(from);
+    }
+    for (flag, key) in [("--cpus", "cpus"), ("--memory", "memory"), ("--data", "data")] {
+        if let Some(value) = args.option(flag)? {
+            request[key] = json!(value.parse::<u64>().map_err(|_| fail(exit::USAGE, format!("guests: {flag} takes a number")))?);
+        }
+    }
+    let target = Target::resolve(&kanna_build::Build::current(), Choice { mux: None, instance: None, background: false, fresh: false }, env)?;
+    let reply = Session::connect(&target, env)?.call("build", request)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&reply).unwrap_or_default());
+    } else if let Some(list) = reply["guests"].as_array() {
+        if list.is_empty() {
+            println!("no guests: kanna guests create NAME --from MASTER_VM_DIR");
+        }
+        for guest in list {
+            let state = if guest["stopped"] == true { "stopped" } else if guest["socket"] == true { "running" } else { "starting" };
+            println!("{:<16} {state}", guest["name"].as_str().unwrap_or_default());
+        }
+    } else {
+        println!("{}", reply["guest"].as_str().unwrap_or("done"));
+    }
+    Ok(())
+}
+
+fn fetch_policy() -> Vec<String> {
+    std::env::var("KANNA_BUILD_FETCH").map(|v| v.split(':').filter(|p| !p.is_empty()).map(String::from).collect()).unwrap_or_default()
 }
 
 pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
@@ -134,6 +253,11 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if let Some(extra) = args.first() {
         return Err(commands::usage(command.name, &format!("unexpected argument \"{extra}\"")));
     }
+    if command.name == "accounts" && request["local"] == "interactive" {
+        let mut mux = Session::connect(&target, env)?;
+        mux.host = host;
+        return accounts::run(&request, &mut |cmd, args| mux.call(cmd, args), json_output);
+    }
     if request.get("local").is_some() {
         let mut callers: Vec<String> = commands::caller().into_iter().collect();
         let terminal = callers.first().cloned();
@@ -151,8 +275,14 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "diagrams" {
         return diagrams::run(&request, json_output);
     }
+    if command.name == "pipeline" {
+        return pipeline::run(&request, json_output, &target);
+    }
     let mut mux = Session::connect(&target, env)?;
     mux.host = host;
+    if command.name == "serial" {
+        return serial::run(&request, &mut mux, json_output);
+    }
     if command.name == "machine" && request["action"] == "offer" {
         return machine::offer(&mut mux, json_output);
     }
@@ -188,12 +318,14 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        let mut asked = json!({ "action": "list", "merged": true });
+        let mut asked = json!({ "action": "list", "merged": true, "done": request["done"] == true });
         if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
             asked["repo"] = json!(repo);
         }
         if let Ok(found) = mux.call("tasks", asked.clone()) {
             reply["shelf"] = found["shelf"].clone();
+            reply["elsewhere"] = found["elsewhere"].clone();
+            reply["twice"] = found["twice"].clone();
             reply["agent"] = found["agent"].clone();
             output::name_out(&mut reply, &found["desk"]);
             if asked["repo"].is_string() {
@@ -202,9 +334,19 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             shorts.extend(output::shorts(&found));
             listed = true;
             reply["script"] = found["script"].clone();
+            if request["done"] == true {
+                reply["done"] = found["done"].clone();
+            }
         }
         if let Some(query) = request["query"].as_str() {
             output::keep_matching(&mut reply, query);
+            if let Some(id) = output::lone_task(&reply, query) {
+                if let Ok(shown) = mux.call("tasks", serde_json::json!({ "action": "show", "task": id })) {
+                    reply["found"] = shown["task"].clone();
+                }
+            }
+        } else {
+            output::keep_recent_done(&mut reply);
         }
     }
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {
@@ -240,9 +382,6 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         for failure in undrawn.iter().flatten() {
             eprintln!("{}", diagrams::line(failure));
         }
-    }
-    if command.name == "machine" && request["action"] == "update" && reply["machines"].as_array().is_some_and(|m| m.iter().any(|m| m["ok"] == false)) {
-        return Err(fail(exit::FAILED, "not every machine took the update"));
     }
     Ok(())
 }
@@ -319,7 +458,7 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
+        "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "move", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
         "task" if request["action"] == "done" => "tasks",
         "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",
         "task" if request["action"] == "name" => "rename-pane",
@@ -676,6 +815,14 @@ mod tests {
     }
 
     #[test]
+    fn ready_set_and_clear_name_a_task_or_the_one_they_run_in() {
+        assert_eq!(parse("kanna task ready set 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
+        assert_eq!(parse("kanna task ready clear 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
+        assert!(parse("kanna task ready").is_err(), "outside a task's terminal it needs a TASK");
+        assert!(parse("kanna task ready 3f9a").is_err(), "it says set or clear");
+    }
+
+    #[test]
     fn every_documented_example_parses() {
         for command in COMMANDS {
             assert!(!command.examples.is_empty(), "{} has no examples", command.name);
@@ -801,6 +948,7 @@ mod tests {
             ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
             ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
+            ("kanna move build --background", json!({ "pane": "build", "background": true })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
             ("kanna move agent --tab tab-3", json!({ "pane": "agent", "tab": "tab-3" })),
             ("kanna move agent --tab --window win-2", json!({ "pane": "agent", "tab": "new", "window": "win-2" })),
@@ -845,6 +993,7 @@ mod tests {
             ("kanna markup a.md --dock", "a docked pane is a task's agent"),
             ("kanna move agent --dock --tab", "--dock goes on its own"),
             ("kanna move agent --dock --to b", "--dock goes on its own"),
+            ("kanna move build --background --tab", "--background goes on its own"),
         ] {
             let failure = parse(line).expect_err(line);
             assert_eq!(failure.code, exit::USAGE, "{line}");
@@ -938,5 +1087,69 @@ mod tests {
         assert_eq!(output::quiz(&json!({ "action": "start" }), &json!({ "round": "r3" })), "r3");
         assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": true })), "opened p9 in win-4");
         assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": false })), "brought forward p9 in win-4");
+    }
+
+    #[test]
+    fn stats_print_a_line_a_tile_with_its_sparkline() {
+        let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
+        assert_eq!(parse("kanna stats").unwrap().1, json!({ "repo": repo }));
+        let reply = json!({ "project": "/r", "days": [], "sections": [
+            { "id": "quiz", "title": "Quiz", "tiles": [
+                { "id": "right", "label": "Answers right", "value": 79.0, "unit": "%", "note": "of 95 answers", "chart": { "kind": "line", "max": 100, "values": [null, 50.0, 100.0] } },
+                { "id": "kinds", "label": "By kind", "value": null, "note": "", "chart": { "kind": "ranked", "rows": [{ "label": "why", "value": 91.7, "note": "11/12" }] } },
+            ] },
+            { "id": "tasks", "title": "Tasks", "tiles": [
+                { "id": "lead", "label": "Made to done", "value": 12780.0, "unit": "s", "note": "median of 3", "chart": { "kind": "dots", "points": [], "line": [null, 3600.0, 7200.0] } },
+            ] },
+            { "id": "code", "title": "Code quality", "tiles": [
+                { "id": "erosion", "label": "Erosion", "value": 48.5, "unit": "%", "note": "up 1.2 points in 30 days", "chart": { "kind": "line", "max": 100, "values": [47.3, 48.5] } },
+                { "id": "worst", "label": "Worst functions", "value": null, "note": "", "chart": { "kind": "list", "rows": [{ "label": "run", "detail": "crates/kanna-daemon/src/main.rs:215", "figure": "CC 154", "note": "677 lines", "open": { "path": "crates/kanna-daemon/src/main.rs", "line": 215 } }] } },
+                { "id": "causes", "label": "Landings that needed the most fixes", "value": null, "note": "", "chart": { "kind": "list", "rows": [], "empty": "No fix traced back to a landing in 30 days." } },
+            ] },
+            { "id": "empty", "title": "Later", "empty": "Not measured yet.", "tiles": [] },
+        ] });
+        let text = output::stats(&json!({}), &reply);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "/r · main · last 30 days");
+        assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers              ▅█");
+        assert_eq!(lines[2], "              By kind");
+        assert_eq!(lines[3], "                why             92%  11/12");
+        assert_eq!(lines[4], "Tasks         Made to done   3h 33m  median of 3                ▅█");
+        assert_eq!(lines[5], "Code quality  Erosion           49%  up 1.2 points in 30 days  ▄▄");
+        assert_eq!(lines[6], "              Worst functions");
+        assert_eq!(lines[7], "                run          CC 154                            crates/kanna-daemon/src/main.rs:215 · 677 lines");
+        assert_eq!(lines[9], "                No fix traced back to a landing in 30 days.");
+        assert_eq!(lines[10], "Later         Not measured yet.");
+        assert_eq!(output::duration(59.0 * 60.0), "59m");
+        assert_eq!(output::duration(3.0 * 3600.0), "3h");
+        assert_eq!(output::duration(50.0 * 3600.0), "2d");
+    }
+
+    #[test]
+    fn a_schedule_takes_a_two_word_rule_quoted_or_not_a_target_and_the_rest_as_its_prompt() {
+        let git = |args: &[&str]| String::from_utf8(std::process::Command::new("git").args(args).output().unwrap().stdout).unwrap().trim().to_string();
+        let repo = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim_end_matches("/.git").to_string();
+        let want = json!({ "action": "add", "repo": repo, "rule": "weekdays 17:30", "target": "planner", "prompt": "Summarise what landed today.", "name": "evening" });
+        assert_eq!(parse("kanna schedule add 'weekdays 17:30' planner \"Summarise what landed today.\" --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule add weekdays 17:30 planner Summarise what landed today. --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule remove s3 --repo /tmp").unwrap().1, json!({ "action": "remove", "repo": "/tmp", "schedule": "s3" }));
+        assert_eq!(parse("kanna schedule list").unwrap().1, json!({ "action": "list", "repo": repo }));
+        let refused = |line: &str| parse(line).err().unwrap_or_else(|| panic!("{line} parsed")).message;
+        assert!(refused("kanna schedule add daily 09:00 planner").contains("needs a RULE, a TARGET and a PROMPT"));
+        assert!(refused("kanna schedule remove").contains("NAME or ID"));
+        assert!(refused("kanna schedule list --name x").contains("--name is for schedule add"));
+        assert!(refused("kanna schedule pause x").contains("unknown action"));
+    }
+
+    #[test]
+    fn schedules_list_as_columns_with_what_s_waiting() {
+        let reply = json!({ "schedules": [
+            { "schedule": "s1", "name": "quiz", "repo": "/Users/x/work/kanna-v4", "rule": "daily 09:00", "target": "planner", "nextText": "Sat 17 Oct 09:00", "waiting": true, "prompt": "Morning quiz check." },
+            { "schedule": "s12", "name": null, "repo": null, "rule": "every 2h", "target": "71af", "nextText": "Fri 16 Oct 14:00", "waiting": false, "prompt": "Run the tests." },
+        ]});
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &reply), "s1   quiz  kanna-v4  daily 09:00  planner  next Sat 17 Oct 09:00  waiting Morning quiz check.\ns12  -     -         every 2h     71af     next Fri 16 Oct 14:00          Run the tests.");
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &json!({ "schedules": [] })), "no schedules");
+        assert_eq!(output::schedule(&json!({ "action": "add" }), &reply["schedules"][0]), "s1 quiz: daily 09:00 → planner, next Sat 17 Oct 09:00");
+        assert_eq!(output::schedule(&json!({ "action": "remove" }), &json!({ "schedule": "s12", "name": null })), "removed s12");
     }
 }

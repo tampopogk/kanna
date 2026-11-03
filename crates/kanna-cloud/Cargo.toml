@@ -1,0 +1,13 @@
+[package]
+name = "kanna-cloud"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+description = "Kanna Cloud's internal operator tool: hosts, task VMs, releases. Never shipped to customers."
+
+[[bin]]
+name = "kanna-cloud"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
