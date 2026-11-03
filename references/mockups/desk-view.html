@@ -178,8 +178,7 @@ const shelf = () => s.tasks.filter(t => t.place === "shelf");
 const active = () => task(s.active);
 const byAge = list => list.slice().sort((a, b) => a.madeAt - b.madeAt);
 const others = () => {
-  const rest = onDesk().filter(t => t.id !== s.active).sort((a, b) => b.leftAt - a.leftAt);
-  return rest.filter(t => t.status === "needs").concat(rest.filter(t => t.status !== "needs"));
+  return onDesk().filter(t => t.id !== s.active).sort((a, b) => b.leftAt - a.leftAt);
 };
 const keyOf = t => { const i = others().indexOf(t); return i >= 0 && i < 2 ? "⌘" + (i + 1) : ""; };
 const words = q => q.toLowerCase().split(/\s+/).filter(Boolean);

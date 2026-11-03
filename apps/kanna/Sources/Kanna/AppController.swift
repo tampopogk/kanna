@@ -413,12 +413,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     var deskTasks: [DeskTask] {
-        let tasks = deskEntries.compactMap { entry -> DeskTask? in
+        deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
             return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
                              place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id))
         }
-        return DeskOrder.byRecency(tasks) { $0.status == "needs-you" }
     }
 
     func taskTitle(_ id: String, name: String?) -> String {
