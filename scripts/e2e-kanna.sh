@@ -3375,13 +3375,19 @@ desk_scrolls() {
   fits() { desk stripLayout "$1" | python3 -c 'import json, sys; g = json.load(sys.stdin); items = g["items"]
 end = g["countLeft"] if g["countLeft"] is not None else g["hintLeft"]
 sys.exit(not (len(items) == 2 and all(i["meta"].startswith("· ") for i in items) and all(i["right"] <= end for i in items) and end <= g["hintLeft"] and g["hintRight"] <= g["width"] and g["width"] - g["hintRight"] <= 12))'; }
-  check eval 'fits "\"size\":[1400,420]"' || { desk stripLayout; return 1; }
+  check eval 'fits "\"size\":[900,420]"' || { desk stripLayout; return 1; }
   check test "$(desk waiting)" == "19 on the Shelf" || { desk waiting; return 1; }
-  check eval 'fits "\"size\":[600,420]"' || { desk stripLayout; return 1; }
+  sleep 0.3; snap d1 desk_scrolls-strip-900 >/dev/null
+  check eval 'fits "\"size\":[520,420]"' || { desk stripLayout; return 1; }
   check test "$(desk waiting)" == "19 on the Shelf" || { echo "desk_scrolls: the Shelf count gave way before the titles"; desk stripLayout; return 1; }
+  sleep 0.3; snap d1 desk_scrolls-strip-520 >/dev/null
   check eval 'fits "\"size\":[400,420]"' || { desk stripLayout; return 1; }
   check test "$(desk waiting)" == "" || { echo "desk_scrolls: the Shelf count didn't give way on a narrow strip"; desk stripLayout; return 1; }
-  sleep 0.3; snap d1 desk_scrolls-strip >/dev/null
+  sleep 0.3; snap d1 desk_scrolls-strip-400 >/dev/null
+  desk stripLayout '"size":[300,420]' >/dev/null
+  check test "$(desk stripLayout.hint)" == "⌘. Desk" || { desk stripLayout; return 1; }
+  check test "$(desk stripLayout.items.0.meta)" == "" || { echo "desk_scrolls: the times didn't give way last"; desk stripLayout; return 1; }
+  sleep 0.3; snap d1 desk_scrolls-strip-300 >/dev/null
 }
 
 scenario desk_times M4
