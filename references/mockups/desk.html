@@ -231,7 +231,6 @@ body.picture.menu .menubar { display: flex; }
       <span><kbd>⌘.</kbd> the Desk view ⇄ the active task</span>
       <span><kbd>⇧⌘↩</kbd> zoom what's showing: the task's focused pane, or the planning agent; each keeps its own</span>
       <span><kbd>⌘]</kbd> <kbd>⌘[</kbd> next pane (or click one)</span>
-      <span><kbd>⇧⌘A</kbd> the Desk task waiting longest for you</span>
       <span><kbd>⌘F</kbd> search the Shelf (Desk view): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Desk, <kbd>esc</kbd> clear</span>
     </div>
   </div>
@@ -412,9 +411,9 @@ function agentTerm(t) {
 }
 
 const ROLE = "You are the Kanna planning agent.";
-const KNOWN = ["claude", "codex", "copilot", "opencode", "agy"];
-const START = { claude: "claude --dangerously-skip-permissions", codex: "codex --yolo --no-daemon", copilot: "copilot --yolo -i", opencode: "opencode --prompt", agy: "agy --dangerously-skip-permissions -i" };
-const ASKING = { claude: "claude", codex: "codex --no-daemon", copilot: "copilot -i", opencode: "opencode --prompt", agy: "agy -i" };
+const KNOWN = ["claude", "codex", "opencode", "agy"];
+const START = { claude: "claude --dangerously-skip-permissions", codex: "codex --yolo --no-daemon", opencode: "opencode --prompt", agy: "agy --dangerously-skip-permissions -i" };
+const ASKING = { claude: "claude", codex: "codex --no-daemon", opencode: "opencode --prompt", agy: "agy -i" };
 const startOf = agent => (s.prompts === "skip" ? START : ASKING)[agent] || agent;
 const out = text => `<span class="out">${esc(text)}</span>`;
 const short = repo => repo.replace("~/work/", "");
@@ -766,11 +765,6 @@ function closeWindow(id) {
   render();
 }
 
-function waitingLongest() {
-  const t = s.order.map(task).filter(t => t && !deskOf(t.id) && t.status === "needs").sort((a, b) => (a.needsAt || 0) - (b.needsAt || 0))[0];
-  if (t) pull(t.id);
-}
-
 function run(t, line) {
   const words = line.trim().split(/\s+/);
   const say = text => t.log.push(`<span class="p">❯</span> ${esc(line.trim())}`, ...text.split("\n").map(l => `<span class="out">${esc(l)}</span>`));
@@ -922,7 +916,6 @@ document.addEventListener("keydown", e => {
     const t = shelf()[Number(e.key) - 1];
     if (t) { e.preventDefault(); pull(t.id); }
   } else if (!e.shiftKey && e.key === ".") { e.preventDefault(); toggleShelf(); }
-  else if (e.shiftKey && e.key.toLowerCase() === "a") { e.preventDefault(); waitingLongest(); }
   else if (!e.shiftKey && (e.key === "]" || e.key === "[")) { e.preventDefault(); nextPane(); }
 });
 

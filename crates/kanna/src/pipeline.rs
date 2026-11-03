@@ -47,7 +47,7 @@ fn check(pipeline: &str, json_output: bool, places: &Context) -> Result<(), Fail
 
 fn list(json_output: bool, places: &Context) -> Result<(), Failure> {
     let dir = repo()?.join(".kanna/pipelines");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.filter_map(|e| Some(e.ok()?.path())).filter(|p| p.extension().is_some_and(|x| x == "pipe")).collect()).unwrap_or_default();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.filter_map(|e| Some(e.ok()?.path())).filter(|p| p.extension().is_some_and(|x| x == "kojo")).collect()).unwrap_or_default();
     files.sort();
     let checked = files.iter().map(|path| check_file(path, places)).collect::<Result<Vec<_>, _>>()?;
     if json_output {
@@ -55,7 +55,7 @@ fn list(json_output: bool, places: &Context) -> Result<(), Failure> {
         return Ok(());
     }
     if checked.is_empty() {
-        println!("no pipelines: add one as {}/NAME.pipe", shown(&dir.to_string_lossy()));
+        println!("no pipelines: add one as {}/NAME.kojo", shown(&dir.to_string_lossy()));
         return Ok(());
     }
     let width = checked.iter().map(|c| c.name.len()).max().unwrap_or(0);
@@ -136,10 +136,10 @@ fn describe(checked: &Checked) -> Value {
 }
 
 fn locate(pipeline: &str) -> Result<PathBuf, Failure> {
-    if pipeline.ends_with(".pipe") || pipeline.contains('/') {
+    if pipeline.ends_with(".kojo") || pipeline.contains('/') {
         return Ok(PathBuf::from(pipeline));
     }
-    let path = repo()?.join(format!(".kanna/pipelines/{pipeline}.pipe"));
+    let path = repo()?.join(format!(".kanna/pipelines/{pipeline}.kojo"));
     if !path.is_file() {
         return Err(fail(exit::NOT_FOUND, format!("no pipeline {pipeline}: no {} (kanna pipeline list shows the repo's)", shown(&path.to_string_lossy()))));
     }
@@ -149,7 +149,7 @@ fn locate(pipeline: &str) -> Result<PathBuf, Failure> {
 fn repo() -> Result<PathBuf, Failure> {
     let out = std::process::Command::new("git").args(["rev-parse", "--show-toplevel"]).output().ok().filter(|o| o.status.success());
     out.map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
-        .ok_or_else(|| fail(exit::NOT_FOUND, "pipeline: not in a git repo; a repo's pipelines are its .kanna/pipelines/*.pipe"))
+        .ok_or_else(|| fail(exit::NOT_FOUND, "pipeline: not in a git repo; a repo's pipelines are its .kanna/pipelines/*.kojo"))
 }
 
 fn prompts(pipeline: &Path) -> std::collections::BTreeMap<String, String> {

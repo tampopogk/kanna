@@ -1,4 +1,4 @@
-use kanna_pipe::{edited, emitted, parse, pipe_block, verdict_of, Context, Rule, Sizes, Verdict};
+use kanna_pipe::{edited, emitted, parse, kojo_block, Context, Rule, Sizes, Verdict};
 use std::path::PathBuf;
 
 fn repo() -> PathBuf {
@@ -14,7 +14,7 @@ fn context() -> Context {
 }
 
 fn feature() -> kanna_pipe::Pipeline {
-    parse(&std::fs::read_to_string(repo().join(".kanna/pipelines/feature.pipe")).unwrap()).unwrap()
+    parse(&std::fs::read_to_string(repo().join(".kanna/pipelines/feature.kojo")).unwrap()).unwrap()
 }
 
 fn to(pipeline: &kanna_pipe::Pipeline, stage: &str, verdict: Option<Verdict>, taken: &[u32], stalled: bool) -> Option<String> {
@@ -28,7 +28,7 @@ fn pick_takes_the_first_arrow_that_holds() {
     assert_eq!(to(&pipeline, "plan", None, &fresh, false).as_deref(), Some("build"));
     assert_eq!(to(&pipeline, "check", Some(Verdict::Fail), &fresh, false).as_deref(), Some("fix"));
     assert_eq!(to(&pipeline, "check", Some(Verdict::Pass), &fresh, false).as_deref(), Some("review"));
-    assert_eq!(to(&pipeline, "land", Some(Verdict::Pass), &fresh, false).as_deref(), Some("done"));
+    assert_eq!(to(&pipeline, "e2e", Some(Verdict::Pass), &fresh, false).as_deref(), Some("done"));
 }
 
 #[test]
@@ -50,8 +50,8 @@ fn nothing_eligible_is_stuck() {
 #[test]
 fn worst_takes_any_cost() {
     let pipeline = feature();
-    assert_eq!(pipeline.worst(|stage| u32::from(stage.is_run())), 16);
-    assert_eq!(pipeline.worst(|stage| u32::from(stage.name == "fix")), 10);
+    assert_eq!(pipeline.worst(|stage| u32::from(stage.is_run())), 12);
+    assert_eq!(pipeline.worst(|stage| u32::from(stage.name == "fix")), 8);
 }
 
 #[test]
@@ -67,13 +67,13 @@ fn an_emitted_block_goes_ahead_of_the_emitters_arrows() {
     let revision = emitted(&pipeline, "plan", block, &context()).unwrap();
     let text = revision.pipeline.text.clone();
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines[13], "lint = run scripts/lint.sh   # the new stage");
-    assert_eq!(lines[15], "plan -> lint");
-    assert_eq!(lines[16], "plan -> build -> join -> check");
+    assert_eq!(lines[12], "lint = run scripts/lint.sh   # the new stage");
+    assert_eq!(lines[14], "plan -> lint");
+    assert_eq!(lines[15], "plan -> build -> join -> check");
     assert_eq!(lines.last(), Some(&"lint -> build"));
     let fresh = vec![0; revision.pipeline.arrows.len()];
     assert_eq!(to(&revision.pipeline, "plan", None, &fresh, false).as_deref(), Some("lint"));
-    assert_eq!(revision.pipeline.max_sessions(&Sizes::new()), 21);
+    assert_eq!(revision.pipeline.max_sessions(&Sizes::new()), 17);
     let mut before = vec![0; pipeline.arrows.len()];
     before[3] = 2;
     let after = revision.taken(&before);
@@ -89,21 +89,21 @@ fn an_emitted_block_goes_ahead_of_the_emitters_arrows() {
 fn an_emitted_block_cant_redefine_a_stage_or_the_budget() {
     let pipeline = feature();
     let errors = emitted(&pipeline, "plan", "x = run true\ncheck = run true\nbudget = 99 sessions", &context()).unwrap_err();
-    assert_eq!(errors.iter().map(|e| e.at("plan")).collect::<Vec<_>>(), ["plan:2: stage 'check' exists already; a pipe block can only add stages", "plan:3: a pipe block can't change the budget"]);
+    assert_eq!(errors.iter().map(|e| e.at("plan")).collect::<Vec<_>>(), ["plan:2: stage 'check' exists already; a kojo block can only add stages", "plan:3: a kojo block can't change the budget"]);
 }
 
 #[test]
 fn only_an_emits_stage_can_emit() {
     let errors = emitted(&feature(), "review", "x = run true\nreview -> x", &context()).unwrap_err();
-    assert_eq!((errors[0].rule, errors[0].line), (Rule::Emits, 9));
+    assert_eq!((errors[0].rule, errors[0].line), (Rule::Emits, 10));
 }
 
 #[test]
 fn an_emitted_revision_is_checked_whole() {
     let errors = emitted(&feature(), "plan", "lint = run true\nplan -> lint\nlint -[fail]-> plan", &context()).unwrap_err();
-    assert_eq!(errors.iter().map(|e| (e.rule, e.line)).collect::<Vec<_>>(), [(Rule::Unbounded, 26)]);
-    let errors = emitted(&feature(), "plan", "more = claude x10 by check each plan.parts\nplan -> more -> build", &context()).unwrap_err();
-    assert_eq!(errors.iter().map(|e| e.rule).collect::<Vec<_>>(), [Rule::Budget, Rule::Prompt]);
+    assert_eq!(errors.iter().map(|e| (e.rule, e.line)).collect::<Vec<_>>(), [(Rule::Unbounded, 23)]);
+    let errors = emitted(&feature(), "plan", "more = claude x10 by check each plan.parts\nagain = claude x10 by check each plan.parts\nplan -> more -> again -> build", &context()).unwrap_err();
+    assert_eq!(errors.iter().map(|e| e.rule).collect::<Vec<_>>(), [Rule::Budget, Rule::Prompt, Rule::Prompt]);
 }
 
 #[test]
@@ -120,17 +120,8 @@ fn an_edit_keeps_the_counts_of_arrows_it_didnt_change() {
 }
 
 #[test]
-fn verdicts_come_from_the_last_line() {
-    assert_eq!(verdict_of("All good.\n\nVERDICT: PASS\n"), Verdict::Pass);
-    assert_eq!(verdict_of("**Verdict: pass**"), Verdict::Pass);
-    assert_eq!(verdict_of("VERDICT: FAIL"), Verdict::Fail);
-    assert_eq!(verdict_of("VERDICT: PASS\nbut one more thing"), Verdict::Fail);
-    assert_eq!(verdict_of(""), Verdict::Fail);
-}
-
-#[test]
-fn a_pipe_block_is_found_in_an_answer() {
-    let answer = "The plan.\n\n```json name=parts\n[]\n```\n\n```pipe\nlint = run true\nplan -> lint\n```\nDone.";
-    assert_eq!(pipe_block(answer).as_deref(), Some("lint = run true\nplan -> lint"));
-    assert_eq!(pipe_block("no block here"), None);
+fn a_kojo_block_is_found_in_an_answer() {
+    let answer = "The plan.\n\n```json name=parts\n[]\n```\n\n```kojo\nlint = run true\nplan -> lint\n```\nDone.";
+    assert_eq!(kojo_block(answer).as_deref(), Some("lint = run true\nplan -> lint"));
+    assert_eq!(kojo_block("no block here"), None);
 }

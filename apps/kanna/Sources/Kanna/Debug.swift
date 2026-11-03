@@ -178,6 +178,7 @@ extension AppController {
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
+                    "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
                     "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.deskTasks.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
@@ -230,11 +231,33 @@ extension AppController {
             reply["hash"] = .string(markup.pageHash)
             return reply
         }
+        commands["debug.comments"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string else { throw KannaError("bad_request", "debug.comments needs a pane") }
+            let markdown = contents.markdown(id), web = contents.web(id)
+            guard markdown != nil || web != nil else { throw KannaError("wrong_type", "not a running md or web pane") }
+            switch args["press"]?.string {
+            case "comments": markdown?.pressComments() ?? web?.pressComments()
+            case "threads": markdown?.pressThreads() ?? web?.markup?.pressThreads()
+            case "menu": switchComments(id)
+            default: break
+            }
+            if let agent = args["pick"]?.string {
+                guard let menu = agentMenu, menu.pane == id, menu.choices.contains(where: { $0.pane == agent }) else { throw KannaError("not_found", "no agent menu offering \(agent)") }
+                agentMenu = nil
+                request("markup", ["pane": .string(id), "agent": .string(agent)])
+            }
+            let menu: JSON = agentMenu.flatMap { $0.pane == id ? .array($0.choices.map { ["pane": .string($0.pane), "name": .string($0.name), "detail": .string($0.detail)] }) : nil } ?? .null
+            return ["bar": .array((markdown?.barText ?? web?.barText ?? []).map { .string($0) }),
+                    "comments_button": .bool(markdown?.commentsButtonShown ?? web?.commentsButtonShown ?? false),
+                    "marks": .bool(markdown?.marksShown ?? web?.markup?.marksShown ?? false),
+                    "markup": .bool(markdown?.markup ?? web?.markable ?? false), "menu": menu]
+        }
         commands["debug.md"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let markdown = contents.markdown(id) else { throw KannaError("wrong_type", "not a running md pane") }
             if let step = args["zoom"]?.number { markdown.zoom(by: Int(step)) }
             if let y = args["scroll"]?.number { markdown.scroll(toY: CGFloat(y)) }
             if let step = args["change"]?.number { markdown.jump(by: Int(step)) }
+            if let target = args["follow"]?.string { markdown.follow(target) }
             if case .array(let pick)? = args["select"], pick.count == 2, let at = pick[0].number, let length = pick[1].number {
                 markdown.select(NSRange(location: Int(at), length: Int(length)))
             }
@@ -257,7 +280,7 @@ extension AppController {
                     "layout_width": .number(Double(markdown.layoutWidth)), "threads": .array(threads),
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,
                     "active": markdown.activeThread.map { .string($0) } ?? .null, "agent": markdown.agent.map { .string($0) } ?? .null,
-                    "markup": .bool(markdown.markup), "view": .string(Self.identity(markdown)), "loads": .number(Double(markdown.loads)), "diff": markdown.diffBase.map { .string($0) } ?? .null,
+                    "markup": .bool(markdown.markup), "path": .string(markdown.path), "name": .string(markdown.docName), "view": .string(Self.identity(markdown)), "loads": .number(Double(markdown.loads)), "diff": markdown.diffBase.map { .string($0) } ?? .null,
                     "changes": markdown.diffBase == nil ? .null : .number(Double(markdown.changes.count)), "diff_error": markdown.diffError.map { .string($0) } ?? .null,
                     "box_parts": Self.boxParts(markdown.commentBoxParts), "box_shown": .bool(markdown.commentBoxShown),
                     "cards": .object(markdown.cards.mapValues { ["typing": .bool($0.typing), "waiting": $0.waiting.map { .string($0) } ?? .null, "reply": .bool($0.reply)] }),
@@ -329,6 +352,27 @@ extension AppController {
                     "selected": diff.selectedFile.map { .string($0) } ?? .null, "sticky": diff.stickyFile.map { .string($0) } ?? .null,
                     "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }), "overview": overview,
                     "colors": .array((args["colors"]?.number).map { diff.colors(atRow: Int($0)).map { .string($0) } } ?? [])]
+        }
+        commands["debug.log"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let log = contents.log(id) else { throw KannaError("wrong_type", "not a running log pane") }
+            if let hash = args["select"]?.string { log.reveal(hash); log.select(hash) }
+            if let keys = args["keys"]?.string { for key in keys { _ = log.press(key == "~" ? "\r" : String(key)) } }
+            if let step = args["zoom"]?.number { log.zoom(by: Int(step)) }
+            if let hash = args["fold"]?.string { log.toggle(hash) }
+            if let query = args["find"]?.string { query.isEmpty ? log.closeFind() : log.find(query) }
+            if args["next"]?.bool == true { log.findStep(forward: true) }
+            if args["refresh"]?.bool == true { log.refresh() }
+            if args["copy"]?.bool == true { log.copyHash() }
+            if args["diff"]?.bool == true { log.openDiff() }
+            log.layoutSubtreeIfNeeded()
+            return ["command": .string(log.result?.command ?? ""), "range": .array((log.result?.range ?? []).map { .string($0) }), "main": .string(log.result?.main ?? ""),
+                    "error": log.result?.error.map { .string($0) } ?? .null, "rows": .array(log.debugRows.map(JSON.from)), "lanes": .number(Double(log.graph.lanes)),
+                    "total": .number(Double(log.result?.rows.count ?? 0)), "selected": log.selected.map { .string($0) } ?? .null,
+                    "serial": .number(Double(log.serial)), "stale": .bool(log.stale), "latest": log.pending.map { .number(Double($0.serial)) } ?? .null,
+                    "held": log.heldText.map { .string($0) } ?? .null, "notice": log.notice.map { .string($0) } ?? .null,
+                    "fresh": .array(log.fresh.sorted().map { .string($0) }), "open": .array(log.open.sorted().map { .string($0) }),
+                    "find": log.finding ? .string(log.query) : .null, "hits": .array(log.hits.map { .string($0) }),
+                    "detail": log.detail.map { .string($0.hash) } ?? .null, "detailShown": .bool(log.detailShown), "zoom": .number(Double(log.zoom)), "width": .number(log.bounds.width)]
         }
         commands["debug.ios"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
@@ -402,6 +446,11 @@ extension AppController {
         }
         guard let window else { throw KannaError("not_found", "no window") }
         guard let event = SyntheticKey.event(name, window: window) else { throw KannaError("bad_request", "unknown key \"\(name)\"") }
+        if args["real"]?.bool == true {
+            NSApp.sendEvent(event)
+            if let up = NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: event.modifierFlags, timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: event.characters ?? "", charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "", isARepeat: false, keyCode: event.keyCode) { NSApp.sendEvent(up) }
+            return ["real": true]
+        }
         if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty, window.performKeyEquivalent(with: event)
             || Self.performResponderItem(event, in: window) || NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
             return ["characters": .string(event.characters ?? ""), "charactersIgnoringModifiers": .string(event.charactersIgnoringModifiers ?? ""), "menu": true]

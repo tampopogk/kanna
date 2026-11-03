@@ -1,4 +1,4 @@
-use crate::{Agent, Arrow, Attempts, Budget, Error, Kind, Merge, Output, Pipeline, Rule, Stage, Verdict, AGENTS, DONE};
+use crate::{Agent, Arrow, Attempts, Budget, Error, Kind, Output, Pipeline, Rule, Stage, Verdict, AGENTS, DONE};
 use std::time::Duration;
 
 pub(crate) enum Line {
@@ -238,7 +238,7 @@ fn stage(name: &str, body: &str, number: usize) -> Result<Stage, String> {
     let mut stage = Stage { name: name.into(), line: number, kind: Kind::Run { command: String::new() }, on: None, within: None };
     let all = words(body);
     let Some(&(_, first)) = all.first() else {
-        return Err(format!("stage '{name}' needs a body: an agent (claude, codex, …), `run COMMAND`, `ask \"QUESTION\"` or `merge main|STAGE`"));
+        return Err(format!("stage '{name}' needs a body: an agent (claude, codex, …), `run COMMAND`, `ask \"QUESTION\"` or `merge STAGE`"));
     };
     match first {
         "run" => {
@@ -263,14 +263,17 @@ fn stage(name: &str, body: &str, number: usize) -> Result<Stage, String> {
             let after = body[3..].trim_start();
             let question = after.strip_prefix('"').and_then(|q| q.split_once('"'));
             let Some((question, rest)) = question.filter(|(q, _)| !q.trim().is_empty()) else {
-                return Err("`ask` needs a question in double quotes: ask \"Land it on main?\"".into());
+                return Err("`ask` needs a question in double quotes: ask \"Is the plan right?\"".into());
             };
             only_placement(&mut stage, rest, "ask")?;
             stage.kind = Kind::Ask { question: question.into() };
         }
         "merge" => {
-            let Some(&(at, into)) = all.get(1) else { return Err("`merge` needs main or a fanned-out stage: merge main, merge build".into()) };
-            let into = if into == "main" { Merge::Main } else { Merge::Stage(self::name(into, "merge")?) };
+            let Some(&(at, into)) = all.get(1) else { return Err("`merge` needs a fanned-out stage: merge build".into()) };
+            if into == "main" {
+                return Err("`merge main` isn't a stage: a run hands its branch back to the task's worktree, and you merge from there".into());
+            }
+            let into = self::name(into, "merge")?;
             only_placement(&mut stage, &body[at + all[1].1.len()..], "merge")?;
             stage.kind = Kind::Merge(into);
         }

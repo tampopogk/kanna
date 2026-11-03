@@ -46,7 +46,6 @@ flowchart TD
 |---|---|---|---|
 | claude | `claude --session-id UUID 'You are the Kanna planning agent.'`, the UUID Kanna's | `claude --resume UUID` | — |
 | codex | `codex --yolo 'You are …'` (it takes no ID), through [its app-server](codex-app-server.md) | `codex --yolo resume UUID` | the one it says as it quits; else the first rollout in `$CODEX_HOME/sessions` (`~/.codex` by default) made since the planner started whose `session_meta` `cwd` is the main checkout |
-| copilot | `copilot --yolo --session-id UUID -i 'You are …'` | `copilot --yolo --session-id UUID` | — |
 | opencode | `opencode --prompt 'You are …'` | `opencode --session ID` | the first top-level session in `~/.local/share/opencode/opencode.db` made since the planner started whose `directory` is the main checkout |
 | antigravity | `agy --dangerously-skip-permissions -i 'You are …'` | — | none: it starts a new conversation each time and says so (`agy didn't leave a conversation Kanna can find for NAME`) |
 

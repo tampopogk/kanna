@@ -15,7 +15,7 @@ mod commands {
 use kanna::args::Argv;
 use serde_json::{json, Value};
 
-const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "project", "toast", "diagrams", "machine", "crashes", "schedule", "serial"];
+const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "project", "toast", "diagrams", "machine", "crashes", "schedule", "serial", "pipeline", "run", "accounts"];
 
 const KMUX_ONLY: &[&str] = &[];
 
@@ -30,9 +30,12 @@ const EXTENDED: &[(&str, &str)] = &[
     ("navigate", "usage"),
     ("send", "notes"),
     ("move", "notes"),
+    ("move", "usage"),
 ];
 
 const KMUX_ONLY_OPTIONS: &[(&str, &str)] = &[("open", "--dock [left|right]"), ("open", "--frozen")];
+
+const KANNA_ONLY_OPTIONS: &[(&str, &str)] = &[("move", "--background")];
 
 const KMUX_ONLY_EXAMPLES: &[&str] = &["kmux open --name agent --cmd claude --dock"];
 
@@ -124,7 +127,7 @@ fn kanna_has_every_kmux_command_in_kmux_order() {
 }
 
 fn same_options<'a>(command: &str, options: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
-    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option)) && !KMUX_ONLY_OPTIONS.contains(&(command, *option))).copied().collect()
+    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option)) && !KMUX_ONLY_OPTIONS.contains(&(command, *option)) && !KANNA_ONLY_OPTIONS.contains(&(command, *option))).copied().collect()
 }
 
 fn usage_lines(usage: &str) -> Vec<String> {
@@ -165,6 +168,14 @@ fn kanna_has_none_of_kmuxs_own_options_and_refuses_them() {
         assert!(kmux_parse(line).is_ok(), "{line}");
         let (code, message) = kanna_parse(line).expect_err(line);
         assert!(code == 2 && message.contains("a docked pane is a task's agent"), "{line}: {message}");
+    }
+}
+
+#[test]
+fn kannas_own_options_are_kannas_alone() {
+    for (name, option) in KANNA_ONLY_OPTIONS {
+        assert!(!commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kmux's {name} has {option} now: compare it with kanna's");
+        assert!(kanna::commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kanna's {name} has no {option} any more");
     }
 }
 
@@ -297,7 +308,7 @@ fn usage_errors_are_kmux_errors() {
         let kmux = kmux_parse(line).expect_err(line);
         let kanna = kanna_parse(line).expect_err(line);
         assert_eq!(kanna.0, kmux.0, "{line}");
-        assert_eq!(without_code_panes(&from_kanna(&kanna.1)), from_kmux(&kmux.1), "{line}");
+        assert_eq!(without_code_panes(&from_kanna(&kanna.1)).replace("\n       kanna move PANE --background", ""), from_kmux(&kmux.1), "{line}");
     }
 }
 

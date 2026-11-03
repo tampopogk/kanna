@@ -59,6 +59,7 @@ static const long long kanna_vt_abi_values[] = {
     GHOSTTY_TERMINAL_SCREEN_ALTERNATE,
     GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
     GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
+    GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_ROWS,
     GHOSTTY_POINT_TAG_SCREEN,
     sizeof(GhosttyPointCoordinate),
     offsetof(GhosttyPointCoordinate, y),
@@ -189,6 +190,9 @@ SIGNATURE(ghostty_snapshot_encode_alloc, GhosttyResult, GhosttyTerminal, const G
 SIGNATURE(ghostty_snapshot_decoder_new_buf, GhosttyResult, const GhosttyAllocator *, GhosttySnapshotDecoder *,
           const uint8_t *, size_t);
 SIGNATURE(ghostty_snapshot_decoder_set, GhosttyResult, GhosttySnapshotDecoder, GhosttySnapshotDecoderOption, const void *);
+SIGNATURE(ghostty_snapshot_decoder_ready, GhosttyResult, GhosttySnapshotDecoder, GhosttyTerminal *);
+SIGNATURE(ghostty_snapshot_decoder_next, GhosttyResult, GhosttySnapshotDecoder);
+SIGNATURE(ghostty_snapshot_decoder_get, GhosttyResult, GhosttySnapshotDecoder, GhosttySnapshotDecoderData, void *);
 SIGNATURE(ghostty_snapshot_decoder_decode, GhosttyResult, GhosttySnapshotDecoder, GhosttyTerminal *);
 SIGNATURE(ghostty_snapshot_decoder_free, void, GhosttySnapshotDecoder);
 SIGNATURE(ghostty_key_encoder_new, GhosttyResult, const GhosttyAllocator *, GhosttyKeyEncoder *);

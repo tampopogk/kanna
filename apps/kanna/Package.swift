@@ -17,6 +17,7 @@ let package = Package(
         .binaryTarget(name: "GhosttyKit", path: "../../target/ghosttykit/GhosttyKit.xcframework"),
         .systemLibrary(name: "KannaLayoutC", path: "Sources/KannaLayoutC"),
         .systemLibrary(name: "KannaMerman", path: "Sources/KannaMerman"),
+        .systemLibrary(name: "KannaCallTreeC", path: "Sources/KannaCallTreeC"),
         .systemLibrary(name: "KannaSyntaxC", path: "Sources/KannaSyntaxC"),
         .systemLibrary(name: "KannaMachinesC", path: "Sources/KannaMachinesC"),
         .systemLibrary(name: "KannaCrashC", path: "Sources/KannaCrashC"),
@@ -26,8 +27,8 @@ let package = Package(
         .testTarget(name: "KannaDocsTests", dependencies: ["KannaDocs"]),
         .target(name: "KannaPerf"),
         .testTarget(name: "KannaPerfTests", dependencies: ["KannaPerf"]),
-        .target(name: "KannaMarkdown", dependencies: ["KannaDocs", "KannaPerf", "KannaDiagram", "KannaOverview", .product(name: "Markdown", package: "swift-markdown")],
-                linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
+        .target(name: "KannaMarkdown", dependencies: ["KannaDocs", "KannaPerf", "KannaDiagram", "KannaOverview", "KannaCallTreeC", .product(name: "Markdown", package: "swift-markdown")],
+                linkerSettings: [kannaFFI] + ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaMarkdownTests", dependencies: ["KannaMarkdown", "KannaOverview"]),
         .target(name: "KannaOverview", linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaOverviewTests", dependencies: ["KannaOverview"]),
@@ -35,6 +36,8 @@ let package = Package(
         .testTarget(name: "KannaCodeTests", dependencies: ["KannaCode"]),
         .target(name: "KannaDiff", dependencies: ["KannaCode", "KannaOverview"], linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaDiffTests", dependencies: ["KannaDiff"]),
+        .target(name: "KannaLog", dependencies: ["KannaCode"], linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
+        .testTarget(name: "KannaLogTests", dependencies: ["KannaLog"]),
         .target(name: "KannaSerial", linkerSettings: ["AppKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaSerialTests", dependencies: ["KannaSerial"]),
         .target(name: "KannaLinks"),
@@ -50,7 +53,7 @@ let package = Package(
         .target(name: "SimBridge", linkerSettings: ["AppKit", "IOSurface", "QuartzCore"].map { .linkedFramework($0) }),
         .executableTarget(
             name: "Kanna",
-            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaCrashC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaSerial", "KannaOverview", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
+            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaCrashC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLog", "KannaSerial", "KannaOverview", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
             linkerSettings: [.linkedLibrary("c++"), kannaFFI]
                 + ["AppKit", "Carbon", "CoreText", "IOSurface", "Metal", "QuartzCore", "Security", "SystemConfiguration", "UniformTypeIdentifiers", "WebKit"].map { .linkedFramework($0) }
         ),
