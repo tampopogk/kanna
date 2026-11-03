@@ -352,7 +352,7 @@ pub static COMMANDS: &[Command] = &[
         name: "task",
         group: "Tabs and windows",
         summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
+        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
         options: &[
             ("--agent CMD", "new: the agent to start (default: claude)."),
             ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
@@ -384,6 +384,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task name agent \"Tab bar light mode\"", "Name the task docked as agent; from its terminal, leave out agent."),
             ("kanna task name task-3f9a \"Search the Shelf\"", "Rename task-3f9a, waiting on the Shelf; it starts with that name."),
             ("kanna task shelve agent", "Move the task docked as agent back to the Shelf; from its terminal, leave out agent."),
+            ("kanna task move 3f9a r720-1", "Move task-3f9a from this machine's Shelf to r720-1 at its turn's end: its branch, uncommitted work and conversation go, and it carries on there."),
             ("kanna task send 71af \"Is your spec at docs/specs/x.md final?\"", "Leave task-71af a message: it gets it when its turn is over, and answers with kanna task send."),
             ("kanna task send planner \"The spec is final\"", "Tell this repo's planning agent something, when the user asks you to."),
             ("kanna task messages 71af", "task-71af's messages: sent, received, and whether each was delivered."),
@@ -391,7 +392,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
         ],
         parse: |args| {
-            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done"))?;
+            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages or done"))?;
             let action = match action.as_str() {
                 "defer" => "shelve".to_string(),
                 "pull" => "activate".to_string(),
@@ -453,6 +454,10 @@ pub static COMMANDS: &[Command] = &[
                     out["after"] = json!(after.ok_or_else(|| usage("task", "edit needs --after TASK,... or --after none"))?);
                 }
                 "pick" => out["task"] = json!(args.positional().ok_or_else(|| usage("task", "pick needs a TASK from the Shelf (see `kanna task list`)"))?),
+                "move" => {
+                    out["task"] = json!(args.positional().ok_or_else(|| usage("task", "move needs a TASK from the Shelf and a MACHINE: kanna task move TASK MACHINE"))?);
+                    out["to"] = json!(args.positional().ok_or_else(|| usage("task", "move needs a MACHINE (see `kanna machine`): kanna task move TASK MACHINE"))?);
+                }
                 "stop" => {
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
@@ -510,9 +515,9 @@ pub static COMMANDS: &[Command] = &[
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "done needs a TASK (see `kanna task list`)"))?);
                 }
-                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done)"))),
+                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages or done)"))),
             }
-            if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+            if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "move", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
                 if let Some(by) = caller() {
                     out["by"] = json!(by);
                 }

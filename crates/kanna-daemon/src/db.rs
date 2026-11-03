@@ -215,6 +215,16 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         recipient text,
         primary key (task, birth)
     );
+"), Step::Sql("
+    create table transfers (
+        id text primary key,
+        task text not null,
+        role text not null check (role in ('out', 'in')),
+        peer text not null,
+        state text not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        at real not null
+    );
 ")];
 
 pub const RECENT: usize = 10;

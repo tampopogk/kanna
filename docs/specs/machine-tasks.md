@@ -1,6 +1,6 @@
 # Machines: Tasks Across Machines
 
-**Status:** §1–2 built (slice 10; takeover after 2 minutes away added with the user, 2026-11-02), §3–4 planned · **Tested:** `cargo test -p kanna --test machines_shelf` (two and three daemons), `-p kanna-daemon replica` · **Part of:** [your machines](machines.md) · **Builds on:** [Shelf runners](shelf-runners.md), [tasks](tasks.md), [each app's Desks](app-desk.md)
+**Status:** §1–3 built (slice 10; takeover after 2 minutes away added with the user, 2026-11-02; transfer in slice 11), §4 planned · **Tested:** `cargo test -p kanna --test machines_shelf` (two and three daemons), `-p kanna-daemon replica` · **Part of:** [your machines](machines.md) · **Builds on:** [Shelf runners](shelf-runners.md), [tasks](tasks.md), [each app's Desks](app-desk.md)
 
 Where a task runs when you have several machines: one Shelf replicated to all of them, exactly one machine allowed to start each task while its machines can reach each other, and tasks moving between any two daemons at a boundary. All of it works on your own machines with no account; [Kanna Cloud](kanna-cloud.md#5-directory-and-relays) adds an always-on copy.
 
@@ -91,27 +91,7 @@ A `sync` stream carries only `replica` requests and adds the asking daemon's key
 
 ## 3. Transfer
 
-A task moves between any two daemons, Macs included, at a boundary: not started, or stopped at a turn's end.
-
-```mermaid
-sequenceDiagram
-    participant S as sender
-    participant R as receiver
-    S->>S: agent quits by its keys (Tasks::end_agent), session ID kept
-    S->>S: WIP commit on the task's branch
-    S->>R: git bundle of the branch (objects the receiver lacks)
-    S->>R: the transcript, from where the agent keeps it
-    R->>R: fetch into its own clone, new worktree, reset --soft to before the WIP commit
-    R->>R: transcript into its own session folder
-    R->>R: agent resumes by session ID, tabs reopened
-    R-->>S: done: the conversation carried on
-```
-
-- **No push needed:** the branch travels as a git bundle over the link, so repos without a remote work too, and WIP commits never reach origin.
-- **The dirty tree comes back:** `reset --soft` leaves the agent's uncommitted work as it left it, staged.
-- **Any path:** the receiver uses its own clone and worktree paths. Agents resume by session ID from any path: checked 2026-10-21 with Claude Code 2.1.305 and Codex 0.163, and v2 relied on it.
-- **Durable:** each step is recorded on both ends and resumes after either side restarts. The sender keeps the task until the receiver says done.
-- **v2's lessons:** copy the transcript from where the agent really keeps it (v2 copied a lock file and lost the transcript without noticing), never move a running agent, and test that the conversation carries on, not only that the transfer "completed".
+A started task moves between any two daemons, Macs included, at its turn's end: `kanna task move TASK MACHINE`. Its branch goes as a git bundle over a `transfer` stream with its uncommitted work in a WIP commit the receiver undoes (`reset --soft`), its agent writes a handoff before it goes, the receiver uses its own clone and paths and starts a new agent from that handoff, which lists the tabs that were open, and the permission to start it moves in the same transaction. Each step is recorded on both ends; the sender keeps the task until the receiver says it carries on. A branch or worktree of the task the receiver has already is reused only once it's checked to be this task's, fast-forwarded when behind, and refused with the reason when it isn't this task's, has diverged or has changes of its own ([§3 there](task-transfer.md#3-the-receiver)). The conversation itself doesn't move ([§4 there](task-transfer.md#4-the-handoff)). **Spec:** [task transfer](task-transfer.md).
 
 ## 4. Repos and credentials
 

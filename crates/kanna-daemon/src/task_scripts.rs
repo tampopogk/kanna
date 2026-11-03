@@ -73,6 +73,12 @@ pub fn record_base(worktree: &Path) {
     let _ = fs::write(dir.join(BASE), format!("{base}\n"));
 }
 
+pub fn set_base(worktree: &Path, base: &str) {
+    if let Some(dir) = git_dir(worktree) {
+        let _ = fs::write(dir.join(BASE), format!("{base}\n"));
+    }
+}
+
 pub fn base(worktree: &Path) -> Option<String> {
     fs::read_to_string(git_dir(worktree)?.join(BASE)).ok().map(|b| b.trim().to_string())
 }

@@ -71,6 +71,10 @@ impl Ready {
         self.since = now + AGAIN;
     }
 
+    pub fn status(&self) -> Option<Status> {
+        self.status
+    }
+
     pub fn at(&self) -> Option<Instant> {
         (self.status == Some(Status::Idle)).then_some(self.since)
     }

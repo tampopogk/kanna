@@ -40,6 +40,7 @@ mod store;
 mod stacks;
 mod task_scripts;
 mod terminals;
+mod transfer;
 mod toasts;
 mod wire;
 
@@ -387,6 +388,19 @@ fn run() -> Result<(), String> {
             });
             match exchanging.upgrade() {
                 Some(machines) => machines.exchange(peer, request, done),
+                None => done(Err("the daemon is stopping".into())),
+            }
+        }));
+    }
+    if let Some(machines) = &machines {
+        let (sending, replies) = (Rc::downgrade(machines), events.clone());
+        *tasks.payload.borrow_mut() = Some(Box::new(move |peer, id, args, path, token| {
+            let replies = replies.clone();
+            let done: Box<dyn FnOnce(Result<Value, String>) + Send> = Box::new(move |reply| {
+                let _ = replies.send(Event::Replica { token, reply });
+            });
+            match sending.upgrade() {
+                Some(machines) => machines.transfer(peer, id, args, path, done),
                 None => done(Err("the daemon is stopping".into())),
             }
         }));

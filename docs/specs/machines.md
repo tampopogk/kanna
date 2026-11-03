@@ -118,7 +118,7 @@ sequenceDiagram
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `machine call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
-- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocol the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([versions §2](machine-versions.md#2-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. One more kind isn't checked: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). A `sync` stream is a daemon's only (an app's certificate is refused) and carries the replicated Shelf's requests ([tasks §2](machine-tasks.md#2-owners-and-grants)), each stamped with the asking daemon's key. Until their slices, `file`, `job` and `transfer` are acknowledged and closed; `job` is used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
+- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocol the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([versions §2](machine-versions.md#2-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. One more kind isn't checked: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). A `sync` stream is a daemon's only (an app's certificate is refused) and carries the replicated Shelf's requests ([tasks §2](machine-tasks.md#2-owners-and-grants)), each stamped with the asking daemon's key. A `transfer` stream is a daemon's only and carries one task moving here, a header line and its bytes ([task transfer §6](task-transfer.md#6-interfaces)). Until their slices, `file` and `job` are acknowledged and closed; `job` is used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
 
@@ -148,7 +148,7 @@ In short ([detail](machine-tasks.md)):
 
 - **The Shelf is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
 - **Each task has one owner.** A runner elsewhere with free slots, within the task's preferences, asks for it, and the owner grants it to exactly one.
-- **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, the transcript is copied, and the agent resumes by session ID at the receiver's own paths.
+- **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, and a new agent at the receiver's own paths carries on from a handoff the old one wrote ([task transfer](task-transfer.md)).
 
 ## 9. Server setup and versions
 
@@ -168,7 +168,7 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 - **A TCP listener with Kanna's own signed hello** (the research's plan): that relied on a WireGuard mesh for reach. iroh gives reach and encryption in one piece.
 - **The local daemon proxying the app's remote links:** it would put the MBP's daemon in every keystroke's path and make one app link carry several daemons. The CLI goes through it only because a short-lived process shouldn't register with a relay.
 - **n0's public relays by default:** free reach from away, but on a third party's terms and capacity.
-- **A fixed `/kanna/repos` path:** it needs root on users' Macs, and agents resume by ID from any path anyway.
+- **A fixed `/kanna/repos` path:** it needs root on users' Macs, and a moved task starts a new agent from a handoff, which doesn't care about paths.
 
 ## 13. Glossary
 

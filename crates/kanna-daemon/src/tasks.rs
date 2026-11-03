@@ -17,6 +17,8 @@ use std::rc::{Rc, Weak};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod moving;
+
 const WORKTREES: &str = ".kanna-worktrees";
 
 const SCRATCH: &str = ".kanna/tmp";
@@ -681,7 +683,25 @@ pub fn add_worktree(repo: &Path, name: &str, branch: &str, start: Option<&str>) 
     let git = |args: &[&str]| git(repo, args);
     git(&["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} isn't a git repo", repo.display()))?;
     let born = git(&["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
-    let common = git(&["rev-parse", "--git-common-dir"])?;
+    exclude_worktrees(repo)?;
+    if taken(repo, name) || taken(repo, branch) {
+        return Err(format!("{WORKTREES}/{name} or the branch {branch} is there already"));
+    }
+    let folder = repo.join(WORKTREES).join(name).to_string_lossy().to_string();
+    let start = start.filter(|start| git(&["rev-parse", "--verify", "--quiet", &format!("{start}^{{commit}}")]).is_ok());
+    if let Some(start) = start {
+        git(&["worktree", "add", "-b", branch, &folder, start])?;
+    } else if born {
+        git(&["worktree", "add", "-b", branch, &folder])?;
+    } else {
+        git(&["worktree", "add", "--orphan", "-b", branch, &folder])?;
+    }
+    task_scripts::record_base(Path::new(&folder));
+    Ok((folder, branch.to_string()))
+}
+
+pub fn exclude_worktrees(repo: &Path) -> Result<(), String> {
+    let common = git(repo, &["rev-parse", "--git-common-dir"])?;
     let exclude = repo.join(common).join("info/exclude");
     let listed = fs::read_to_string(&exclude).unwrap_or_default();
     let missing: Vec<String> = [format!("/{WORKTREES}/"), format!("/{SCRATCH}/")].into_iter().filter(|line| !listed.lines().any(|l| l.trim() == line)).collect();
@@ -691,19 +711,7 @@ pub fn add_worktree(repo: &Path, name: &str, branch: &str, start: Option<&str>) 
         let text = format!("{listed}{start}{}\n", missing.join("\n"));
         fs::write(&exclude, text).map_err(|e| format!("can't write {}: {e}", exclude.display()))?;
     }
-    if taken(repo, name) || taken(repo, branch) {
-        return Err(format!("{WORKTREES}/{name} or the branch {branch} is there already"));
-    }
-    let folder = repo.join(WORKTREES).join(name).to_string_lossy().to_string();
-    if let (true, Some(start)) = (born, start) {
-        git(&["worktree", "add", "-b", branch, &folder, start])?;
-    } else if born {
-        git(&["worktree", "add", "-b", branch, &folder])?;
-    } else {
-        git(&["worktree", "add", "--orphan", "-b", branch, &folder])?;
-    }
-    task_scripts::record_base(Path::new(&folder));
-    Ok((folder, branch.to_string()))
+    Ok(())
 }
 
 enum Answer {
@@ -812,6 +820,7 @@ pub struct Tasks {
     replica: RefCell<Replica>,
     pub roster: RefCell<Option<Box<dyn Fn() -> Roster>>>,
     pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
+    pub payload: RefCell<Option<Box<dyn Fn(String, String, Value, PathBuf, u64)>>>,
     asked: RefCell<HashMap<u64, Asked>>,
     away: RefCell<HashMap<String, Away>>,
     refused: RefCell<HashMap<String, Instant>>,
@@ -863,6 +872,10 @@ enum Asked {
     Ask { task: String, birth: String, owner: String, repo: String },
     Grant(Grant),
     Ack,
+    Heads(Box<moving::Asking>),
+    Packed(Box<moving::Moving>, String),
+    Transfer(moving::Sending),
+    Unbundled(moving::Taking),
 }
 
 const SYNC_EVERY: Duration = Duration::from_secs(3);
@@ -974,6 +987,7 @@ impl Tasks {
             replica: RefCell::new(replica),
             roster: RefCell::default(),
             exchange: RefCell::default(),
+            payload: RefCell::default(),
             asked: RefCell::default(),
             away: RefCell::default(),
             refused: RefCell::default(),
@@ -1230,6 +1244,9 @@ impl Tasks {
 
     fn startable(&self, entry: &Entry) -> Result<(), KmuxError> {
         self.placed(&entry.repo)?;
+        if let Some(to) = self.moving_to(&entry.id) {
+            return Err(KmuxError::new("moving", format!("{} is moving to {to}: it carries on there", self.short(&entry.id))));
+        }
         if entry.folder.is_some() || entry.held.is_some() {
             return Ok(());
         }
@@ -1499,6 +1516,7 @@ impl Tasks {
             self.syncing.borrow_mut().insert(peer.key.clone());
             self.send_to(&peer.key, json!({ "action": "sync", "vector": vector }), Asked::Sync(peer.key.clone()));
         }
+        self.resend_transfers();
         let sending: HashSet<String> = self.asked.borrow().values().filter_map(|a| if let Asked::Grant(g) = a { Some(g.task.clone()) } else { None }).collect();
         for grant in Replica::outbox(&self.db).unwrap_or_default() {
             if !sending.contains(&grant.task) && machines.peers.iter().any(|p| p.key == grant.to) {
@@ -1510,6 +1528,11 @@ impl Tasks {
 
     pub fn replied(self: &Rc<Self>, token: u64, reply: Result<Value, String>) {
         let Some(asked) = self.asked.borrow_mut().remove(&token) else { return };
+        let asked = match asked {
+            Asked::Packed(moving, id) => return self.packed(*moving, id, reply),
+            Asked::Unbundled(taking) => return self.unbundled(taking, reply),
+            other => other,
+        };
         let reply = reply.and_then(|r| if r["ok"] == true { Ok(r) } else { Err(format!("{} [{}]", r["error"]["message"].as_str().unwrap_or("refused"), r["error"]["code"].as_str().unwrap_or("failed"))) });
         let machines = self.machines();
         match asked {
@@ -1531,7 +1554,9 @@ impl Tasks {
                     }
                 }
             }
-            Asked::Ops | Asked::Ack => {}
+            Asked::Ops | Asked::Ack | Asked::Packed(..) | Asked::Unbundled(_) => {}
+            Asked::Heads(moving) => self.heads_came(*moving, reply),
+            Asked::Transfer(sending) => self.transferred(sending, reply),
             Asked::Ask { task, birth, owner, repo } => {
                 match reply {
                     Ok(reply) => {
@@ -1719,7 +1744,8 @@ impl Tasks {
                 Replica::acked(&self.db, task, birth, args["epoch"].as_i64().unwrap_or(0)).map_err(|e| KmuxError::new("failed", e.to_string()))?;
                 Ok(Map::new())
             }
-            other => Err(bad(format!("unknown replica action \"{other}\" (sync, ops, ask, grant, ack or list)"))),
+            "heads" => self.heads_here(args),
+            other => Err(bad(format!("unknown replica action \"{other}\" (sync, ops, ask, grant, ack, heads, transfer or list)"))),
         }
     }
 
@@ -2045,7 +2071,7 @@ impl Tasks {
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
             let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
             let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
-            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane))).collect();
+            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).collect();
             woken.sort_by(|a, b| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id)));
             for entry in woken {
                 if busy >= slots {
@@ -2270,6 +2296,7 @@ impl Tasks {
         core.add_command(
             "replica",
             Rc::new(move |args, responder| match this.upgrade() {
+                Some(this) if string(&args, "action") == Some("transfer") => this.take_transfer(&args, responder),
                 Some(this) => responder.reply(this.replica_command(&args)),
                 None => responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))),
             }),
@@ -2301,6 +2328,7 @@ impl Tasks {
                     Some("setup") => this.setup(&args, responder),
                     Some("pick") => this.pick(&args, responder),
                     Some("shelve") => this.shelve(&args, responder),
+                    Some("move") => this.move_task(&args, responder),
                     Some("plan") => this.plan(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
