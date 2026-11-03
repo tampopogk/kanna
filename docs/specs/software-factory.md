@@ -102,7 +102,7 @@ sequenceDiagram
 ```
 
 - **Other machines (`on PLACEMENT`, [Kojo §3](kojo.md#3-attributes)):** one stage's worker runs on another of your machines, granted as a task is ([tasks across machines](machine-tasks.md)): branch over as a git bundle, result back as the worker's replicated record and a bundle of commits; the run stays put. A command stage needs the repo cloned there, an agent stage the machine signed in ([agent sign-in](agent-sign-in.md)). Its terminal shows in a tab over the link as any remote terminal.
-- **Placement:** a name picks that machine, a role (`mac`, `e2e`) any machine declaring it with a free slot, `any` whichever asks first, `here` the run's own. Matching by capability beyond roles is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays). A stage whose placement is offline waits, and the run says so; `within` bounds the wait.
+- **Placement:** a name picks that machine, a role (`mac`, `e2e`) any machine declaring it with a free slot, `any` whichever asks first, `here` the run's own. Matching by capability beyond roles is [Kanna Cloud's](kanna-cloud.md#7-directory-and-relays). A stage whose placement is offline waits, and the run says so; `within` bounds the wait.
 - **Unit of travel:** a visit, from a commit to a report or exit code, like a task's turn, so the transfer protocol carries it as it is.
 - **Until machines are built:** every placement is this machine and `on` with another name fails the check; the remote worker is a Machines task ([build order](software-factory-build-order.md)). First use: `e2e` on a second Mac, away from the dev Kanna.
 
