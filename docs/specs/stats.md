@@ -26,7 +26,7 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 ## 1. The page
 
 - **A fixed tab**, like Desk and Machines ([machine links §5](machine-links.md#5-paths-the-machines-tab-and-offline)): no close button, in Next and Previous Tab's order after Machines, ← and → when focused. Only in the Desk view; the active task has none.
-- **The Desk's project**, on the machine its Desk is on: the app asks that machine's daemon.
+- **The Desk's project**, on the machine its Desk is on: the app asks that machine's daemon. Counting a project across machines is a later task (Stats across machines).
 - **Asked when shown** and every minute while it shows; nothing is asked while it's hidden. A reply that hasn't come yet leaves the last page drawn.
 - **Every chart has a hover readout** for the day under the pointer: that day's value, and for made to done the tasks done that day. Each tile's accessibility label says its value and note, and each chart's says its 30 values.
 - **Days are the daemon's local days**: today and the 29 before it.
