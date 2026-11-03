@@ -100,7 +100,7 @@ Found by reading every handler and chore (October 2026). Each line is converted 
 
 ## 6. Decisions
 
-- **sqlite: a writer thread, not built yet.** Agreed in principle, and on hold for the reasons in [§6.1](#61-what-holds-up-the-loop-november-2026): `put_with` isn't what spikes, and writes can't all go unawaited.
+- **sqlite stays on the loop.** There's no general writer thread: writes can't all go unawaited, and `put_with` isn't what spikes ([§6.1](#61-what-holds-up-the-loop-november-2026)). A task view's per-task file reads are cut first; after that, only writes that are safe to lose go to a queue, mainly the layout, keeping the layout saved with a done task correct.
 - **One executor: tokio.** Core's futures run on the `LocalSet`, timed by the guard through `set_timing`, so there's no `Event::Wake`, `core.poll` or `set_wakeup`. Only the daemon runs a `Core` (the CLI and `kanna-layout` use kanna-mux's other parts). `handle_blocking` and `turn` drive Core's own runtime, for tests and after the loop has ended.
 
 ### 6.1 What holds up the loop (November 2026)
@@ -117,7 +117,7 @@ Temporary timers on a private instance, 40 stopped tasks, `loop_latency` run six
 
 A list or view costs about 80µs per task, nearly all of it file reads in `described` (`branch_of`, `identity`, `script_said`); those parts stayed at or under about 1ms each in what was kept. Polls over 20ms were `tasks list`, `task list`, `task hold` and `task claim`, the last two carrying the shelve or pick continuation (store, then a view) in one poll. So the biggest target is the cost per task of a view, not sqlite.
 
-A writer thread would have to deal with:
+Why there's no general writer thread:
 
 - **Read-then-write transactions.** `replica.rs` runs 14 `atomically` blocks and `transfer.rs` more; they read a task's authority or a transfer inside the transaction and use the result.
 - **Durability before peers.** `store` commits replicated ops, then applies them and lets them sync. Unawaited, peers could hold ops this machine loses, and a failed write can't be undone in memory.
