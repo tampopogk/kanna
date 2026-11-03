@@ -136,7 +136,7 @@ sequenceDiagram
 
 ## Samples
 
-**Planned.** A metric's value at each of main's first-parent commits, written by the Stats sampler ([stats §3](stats.md#3-where-they-come-from)).
+**Built.** A metric's value at each of main's first-parent commits, written by the Stats sampler; the table and how it's filled are in [stats §3](stats.md#3-where-they-come-from). A relocated repo's samples move with it.
 
 ## Recent projects
 

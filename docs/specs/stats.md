@@ -1,6 +1,6 @@
 # Stats
 
-**Status:** planned · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** code quality metrics
+**Status:** built · **Tests:** `stats.rs`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** code quality metrics
 
 **Stats** is a third fixed tab in the Desk view, after Desk and Machines: the project's numbers over the last 30 days. Each number is today's value over a small chart of the 30 days. Four sections: what you know of the code (from your quiz answers), what landed on main, how tasks moved, and a placeholder for code quality, which the next task fills. `kanna stats [--json]` prints the same numbers.
 
@@ -115,9 +115,10 @@ Main          Commits                        28  today · 616 in 30 days  ▃▂
 
 ## 6. Tests
 
-- `stats.rs`: each number from a fixture db and repo (quiz answers across days and kinds, task events with restarts, a repo with plain commits and merges of task branches): the grade as of each day, misses asked again, areas and Other, commits a merge brought, first starts only, made to done; the sampler writes a row per metric per commit, fills a new metric's 30 days, and never runs git in a checkout's worktree.
-- The CLI: the request, the text and the JSON.
-- e2e `stats_tab` on a private instance with a fixture repo, quiz answers and task events: the tab after Machines, ⇧⌘] to it, its page's tiles and values against `kanna stats --json`, snapshots in light and dark.
+- `stats.rs`: the grade as of each day (a miss 40 days back still in day 0's window, a day with no answers in its 30 is empty), a miss counted until it's asked again and a miss asked again and missed standing for the old one, areas by two folders with Other last, first starts only and made to done with its 7-day median, an empty project and the code placeholder; the sampler on a fixture repo (a plain commit, a merge bringing two) writes a row per metric per commit and fills only what's missing; the command answers two requests with one catch-up and reads back from `kanna.db`.
+- `StatsFormatTests` (KannaWindows): figures, days, scales and tile places in rows of sixths, stacked when narrow.
+- The CLI: `kanna stats` sends the repo and prints a line a tile, ranked rows under it and a section's words; `stats` is in `capabilities` and `commands`.
+- e2e `stats_tab` on a private instance: a fixture repo with commits three and two days back and a merge today, four quiz answers, three tasks (two started, one done); `kanna stats --json` and the text against the expected numbers, the samples in `kanna.db`; then the app: Desk, Machines and Stats as the Desk view's fixed tabs, Next Tab from Machines to Stats, every tile's label and note as the reply has them and its figure, the code placeholder, snapshots in dark and light (`target/e2e-kanna/stats_tab-*.png`), and Desk leaving the page. `machine_remote_task` steps Next and Previous Tab through all three fixed tabs.
 
 ## 7. Rejected
 
