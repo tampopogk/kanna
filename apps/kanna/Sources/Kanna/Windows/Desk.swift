@@ -302,10 +302,17 @@ extension AppController {
         return docked.filter { root == nil || sameProject(projectRoot($0), root) }.count
     }
 
-    private func noted(_ window: String, _ reply: JSON) {
+    private func noted(_ window: String, _ reply: JSON, otherwise: String = "it didn't start") {
         guard reply["ok"]?.bool != true, let controller = controllers[window] else { return }
-        controller.note = reply["error"]?["message"]?.string ?? "it didn't start"
+        controller.note = reply["error"]?["message"]?.string ?? otherwise
         refresh()
+    }
+
+    func shelveTask(_ task: String, from window: String) {
+        controllers[window]?.note = ""
+        request("tasks", ["action": "shelve", "task": .string(task)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it didn't move")
+        }
     }
 
     func startTask(_ task: String, from window: String) {

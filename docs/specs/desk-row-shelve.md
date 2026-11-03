@@ -27,7 +27,7 @@ Kanna keeps the user's attention on at most three tasks. If tasks were easy to s
 
 | Piece | Where | What |
 |---|---|---|
-| Drag tracking | `Windows/DeskView.swift` `DeskRow` | a tracking loop from `mouseDown`: dragged events move the copy, mouse-up drops, esc cancels; no move past 4 pt is a click |
+| Drag tracking | `Windows/DeskView.swift` `DeskView.track`, from `DeskRow.mouseDown` | a tracking loop: dragged events move the copy, mouse-up drops, esc cancels; no move past 4 pt is a click |
 | Lifted copy, drop zone | `DeskView` | the copy is a snapshot of the row above the scroll view; the zone is the Shelf section's frame from `lay` |
 | Shelving | `Windows/Desk.swift` `shelveTask(_:from:)` | sends `tasks` `shelve`; on a refusal, `noted` puts the error in the note line |
 | Test hook | `debug.click` `{task, window, drop: "shelf" \| "desk"}` | presses the task's row and drags to the Shelf section, or to the Desk header, with real mouse events |

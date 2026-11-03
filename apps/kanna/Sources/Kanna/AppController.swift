@@ -708,6 +708,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.activateTask(task, into: id)
         }
         controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
+        controller.deskView.onShelve = { [weak self] task in self?.shelveTask(task, from: id) }
         controller.deskView.onLeaveSearch = { [weak self, weak controller] in
             guard let self, let controller, let lead = controller.leadShown, let view = panes.keyView(lead) else { return }
             controller.window.makeFirstResponder(view)
