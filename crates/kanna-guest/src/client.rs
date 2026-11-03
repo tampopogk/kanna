@@ -23,6 +23,13 @@ const DIAGNOSTICS_SHOWN: usize = 40;
 
 const MAX_FRAME: u64 = 2 << 20;
 
+const MAX_STALLS: u32 = 3;
+
+fn transport(error: &io::Error) -> bool {
+    use io::ErrorKind::*;
+    matches!(error.kind(), ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof | NotConnected | TimedOut | Interrupted)
+}
+
 pub struct Request {
     pub root: PathBuf,
     pub cwd: String,
@@ -384,11 +391,23 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
     let _ = std::fs::remove_dir_all(staging);
     let deadline = || Instant::now() + RECONNECT_FOR;
     let mut give_up = deadline();
+    let mut stalls = 0;
     let outcome = loop {
+        let before = (receiver.at, receiver.exited, receiver.notes.len());
         match receiver.receive(&mut *conn) {
             Ok(Some(outcome)) => break outcome,
             Ok(None) => {}
+            Err(e) if !transport(&e) => break Outcome::Failed(format!("stopped taking job {}'s results: {e}", request.job)),
             Err(_) => {}
+        }
+        if (receiver.at, receiver.exited, receiver.notes.len()) != before {
+            give_up = deadline();
+            stalls = 0;
+        } else {
+            stalls += 1;
+            if stalls > MAX_STALLS {
+                break Outcome::Failed(format!("the connection to the build Mac kept dropping without progress; job {} may still be running there", request.job));
+            }
         }
         let attach = loop {
             if Instant::now() > give_up {
@@ -402,10 +421,7 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
             }
         };
         match attach {
-            Some(fresh) => {
-                conn = fresh;
-                give_up = deadline();
-            }
+            Some(fresh) => conn = fresh,
             None => break Outcome::Failed(format!("lost the build Mac and couldn't reach it again within {}s; job {} may still be running there", RECONNECT_FOR.as_secs(), request.job)),
         }
     };

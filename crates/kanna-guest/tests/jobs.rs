@@ -174,6 +174,31 @@ fn the_developer_dir_asked_for_is_the_one_the_job_gets() {
     assert!(matches!(&outcome, Outcome::Failed(why) if why.contains("isn't a folder on the build Mac")), "{outcome:?}");
 }
 
+#[test]
+fn a_build_mac_that_sends_garbage_fails_the_build_without_retrying() {
+    let rig = rig("garbage");
+    let (req, worktree) = request(&rig, &["true"]);
+    let connects = std::sync::Arc::new(AtomicUsize::new(0));
+    let counted = connects.clone();
+    let connect = move || -> io::Result<Box<dyn Pipe>> {
+        counted.fetch_add(1, Ordering::SeqCst);
+        let (ours, theirs) = UnixStream::pair()?;
+        std::thread::spawn(move || {
+            let mut theirs = theirs;
+            let _ = kanna_guest::frame::send(&mut theirs, &serde_json::json!({ "op": "exists" }), b"");
+            let _ = kanna_guest::frame::write_header(&mut theirs, &serde_json::json!({ "op": "out", "fd": 1, "at": 0 }), 64u64 << 20);
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        Ok(Box::new(ours))
+    };
+    let started = Instant::now();
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let outcome = client::run(&connect, &req, &worktree, &mut out, &mut err);
+    assert!(matches!(&outcome, Outcome::Failed(why) if why.contains("stopped taking")), "{outcome:?}");
+    assert_eq!(connects.load(Ordering::SeqCst), 1);
+    assert!(started.elapsed() < Duration::from_secs(4));
+}
+
 struct Dropping {
     inner: UnixStream,
     drops: bool,
