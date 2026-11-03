@@ -15,8 +15,10 @@ pub const RUN: &str = "run-";
 
 pub const DESK: &str = "desk";
 
+pub const CRASHES: &str = "crashes";
+
 pub fn yours(sender: &str) -> bool {
-    sender == USER || sender == DESK || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
+    sender == USER || sender == DESK || sender == CRASHES || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
 }
 
 pub const PICKUP: Duration = Duration::from_secs(5);
@@ -369,6 +371,16 @@ mod tests {
         assert_eq!(permissions(&[argv("/k/kanna-daemon --codex-remote /s codex --yolo").remove(0), argv("codex --remote unix:///s").remove(0)]), Some(BYPASS));
         assert_eq!(permissions(&argv("claude --permission-mode acceptEdits")), Some(PROMPTING));
         assert_eq!(permissions(&[]), None);
+    }
+
+    #[test]
+    fn messages_from_you_and_kanna_for_you_take_the_recipients_class() {
+        for sender in [USER, DESK, CRASHES, "schedule quiz", "run-3"] {
+            assert!(yours(sender), "{sender}");
+        }
+        for sender in [PLANNER, "task-5e2c", crate::stacks::KANNA] {
+            assert!(!yours(sender), "{sender}");
+        }
     }
 
     #[test]

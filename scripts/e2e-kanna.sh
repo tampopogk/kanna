@@ -5841,7 +5841,7 @@ print(t[0][sys.argv[1]] if t else "")' "$1"; }
   fi
   [[ "$listed" == *"  app (pid $crashed, dev "*")  NSInternalInconsistencyException: debug.crash in a draw"* && "$listed" == *"  record  "*"/crashes/$(basename "$record")"* && "$listed" == *"CrashView.draw"* ]] || { echo "crash_app_draw: kanna crashes: $listed"; return 1; }
   local told; told="$(raw '{"id":1,"cmd":"tasks","args":{"action":"messages"}}' | python3 -c 'import json, sys
-m = [m for m in json.load(sys.stdin)["messages"] if m["from"] == "kanna" and m["to"] == "planner"]
+m = [m for m in json.load(sys.stdin)["messages"] if m["from"] == "crashes" and m["to"] == "planner"]
 print(len(m)); print(m[0]["repo"] if m else ""); print(m[0]["text"] if m else "")')"
   [[ "$(head -1 <<<"$told")" == 1 && "$(sed -n 2p <<<"$told")" == "$(cd "$(git -C "$repo_root" rev-parse --git-common-dir)/.." && pwd -P)" ]] || { echo "crash_app_draw: the planner's message: $told"; return 1; }
   [[ "$told" == *"Kanna crashed: app (pid $crashed): NSInternalInconsistencyException: debug.crash in a draw"* && "$told" == *"record: $record"* && "$told" == *"CrashView.draw"* ]] || { echo "crash_app_draw: the message says: $told"; return 1; }
@@ -5882,6 +5882,32 @@ print(t[0][sys.argv[1]] if t else "")' "$1"; }
   check wait_for 5 eval '[[ "$(kanna crashes)" == "no crashes"* && -z "$(banner id)" ]]' || { echo "crash_daemon_panic: × didn't dismiss it"; return 1; }
   shows_file "$record" && { echo "crash_daemon_panic: × opened the record"; return 1; }
   rm -f "$record"
+}
+
+scenario crash_report_unheld M4
+crash_report_unheld() {
+  start_daemon && start_app || { echo "crash_report_unheld line $LINENO"; return 1; }
+  local here="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents" checkout opened d planner
+  checkout="$(cd "$(git -C "$repo_root" rev-parse --git-common-dir)/.." && pwd -P)"
+  mkdir -p "$here" "$fake" && git -C "$here" init -q -b main && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude" || { echo "crash_report_unheld line $LINENO"; return 1; }
+  opened="$(cd / && kanna "$here")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "crash_report_unheld line $LINENO: $opened"; return 1; }
+  d="${BASH_REMATCH[1]}"
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { desk lead; return 1; }
+  planner="$(desk lead)"
+  wait_for 10 shows "$planner" "Install Kanna's skills? \[Y/n\]" && kanna send "$planner" "n" >/dev/null
+  check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
+  kanna send "$planner" "cd '$checkout' && KANNA_AGENTS_HOME=$KANNA_AGENTS_HOME $fake/claude --dangerously-skip-permissions" >/dev/null || { echo "crash_report_unheld line $LINENO"; return 1; }
+  check wait_for 10 shows "$planner" "mock-agent:" || { kanna read "$planner"; return 1; }
+  local crashed="$app_pid"
+  check test "$(raw '{"id":1,"cmd":"debug.crash"}' | field crashing)" == True || return 1
+  check wait_for 30 eval '! kill -0 '"$crashed"' 2>/dev/null || [[ "$(ps -o stat= -p '"$crashed"')" == Z* ]]' || { echo "crash_report_unheld: the app didn't die"; return 1; }
+  wait "$crashed" 2>/dev/null
+  check wait_for 20 eval 'raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"messages\"}}" | grep -q "\"from\": *\"crashes\""' || { echo "crash_report_unheld: no crash message for the planner"; raw '{"id":1,"cmd":"tasks","args":{"action":"messages"}}'; return 1; }
+  check wait_for 20 eval 'kanna read "$planner" --lines 200 | tr -d "\r\n" | grep -qF -- "peer: [message from crashes] Kanna crashed: app (pid $crashed)"' || { shows "$planner" "held peer message" && echo "crash_report_unheld: the planner held the crash report for approval: it came without the envelope"; echo "crash_report_unheld: the planner didn't get the crash report"; kanna read "$planner"; return 1; }
+  check wait_for 40 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.app\"}" | field pid)" =~ ^[0-9]+$ && "$(raw "{\"id\":1,\"cmd\":\"debug.app\"}" | field pid)" != "$crashed" ]]' || { echo "crash_report_unheld: the app wasn't relaunched"; return 1; }
+  app_pid="$(raw '{"id":1,"cmd":"debug.app"}' | field pid)"
+  rm -f "$KANNA_STATE_DIR"/crashes/*-app.json
 }
 
 scenario serial_pane M4

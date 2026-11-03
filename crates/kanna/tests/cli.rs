@@ -978,7 +978,7 @@ fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_p
     assert_eq!(json["crashes"][0]["dismissed"], json!(false));
     let told = |daemon: &Daemon| -> Vec<serde_json::Value> {
         let messages = daemon.kanna(&["raw", r#"{"cmd":"tasks","args":{"action":"messages"}}"#]).json()["messages"].as_array().cloned().unwrap();
-        messages.into_iter().filter(|m| m["from"] == "kanna" && m["to"] == "planner").collect()
+        messages.into_iter().filter(|m| m["from"] == "crashes" && m["to"] == "planner").collect()
     };
     let messages = told(&daemon);
     assert_eq!(messages.len(), 1, "{messages:?}");

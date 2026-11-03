@@ -1,6 +1,6 @@
 # Crashes
 
-**Status:** built · **Tested:** e2e `crash_app_draw`, `crash_daemon_panic`; `crates/kanna/tests/cli.rs` (`crashes`); `kanna-crash` unit tests · **Mockup:** [`references/mockups/crashes.html`](../../references/mockups/crashes.html) · **Builds on:** [app link](app-link.md), [toasts](toasts.md), [agent messaging](agent-messaging.md)
+**Status:** built · **Tested:** e2e `crash_app_draw`, `crash_daemon_panic`, `crash_report_unheld` (a bypassing mock Claude planner takes the report unheld); `crates/kanna/tests/cli.rs` (`crashes`); `kanna-crash` unit tests · **Mockup:** [`references/mockups/crashes.html`](../../references/mockups/crashes.html) · **Builds on:** [app link](app-link.md), [toasts](toasts.md), [agent messaging](agent-messaging.md)
 
 Kanna catches its own crashes. Each Kanna process that dies of a bug (the app, the daemon, the keeper) first writes a **crash record** in its state folder; the daemon relaunches a crashed app with its windows, the relaunched app shows a banner, `kanna crashes` lists the records with the matching macOS crash report, and dev and staging builds tell the repo's planning agent about each new kind of crash.
 
@@ -134,7 +134,11 @@ stateDiagram-v2
 
 ## 5. Report
 
-**Dev and staging builds tell the repo's planning agent** about each new signature, once for the instance's life: a message from `kanna` to `planner` in the build's checkout's repo (`Build::checkout`, as `kanna task send planner` from there), held until a planner runs ([agent messaging](agent-messaging.md)). It says the process, reason, build, record and `.ips` paths, the signature and the top 15 frames. What the planner does with it: the `kanna-planning` skill.
+**Dev and staging builds tell the repo's planning agent** about each new signature, once for the instance's life: a message from `crashes` to `planner` in the build's checkout's repo (`Build::checkout`, as `kanna task send planner` from there), held until a planner runs ([agent messaging](agent-messaging.md)). It says the process, reason, build, record and `.ips` paths, the signature and the top 15 frames. What the planner does with it: the `kanna-planning` skill.
+
+**In the envelope, as the planner's own:** a crash report is Kanna telling you about itself, so it goes out in agent messaging's envelope with `from-mode` the planner's own class, as a message from you, your schedules or the [Desk news](desk-news.md) does ([agent messaging §2](agent-messaging.md#2-delivery)). Without it, a Claude planner that bypasses prompts holds the report for your approval. `crashes` is one of `messages::yours`, so `Tasks::hand_over` gives it the planner's class; `main.rs` wires `Crashes::post` to `Tasks::post` with `messages::CRASHES`.
+
+**`crashes`, not `kanna`:** `kanna` is also the sender of the catch-up messages a stale task gets ([stacked tasks](stacked-tasks.md)), which `Tasks::tell` stores as `prompting` on purpose, and `hand_over` ignores a stored mode for a sender in `messages::yours`. A sender of its own keeps the two apart.
 
 **Release builds keep records locally only** and send nothing: what may leave the Mac, to whom and with what consent is not decided. A policy comes before any sending.
 
@@ -143,7 +147,7 @@ stateDiagram-v2
 ## 6. Tests
 
 - **Debug commands** (with `KANNA_DEBUG=1`): `debug.crash` makes the app raise an `NSException` in a view's `draw(_:)` on its next display; `debug.panic` panics the daemon's main loop.
-- **e2e** `crash_app_draw`: `debug.crash` on a private instance in the background; checks the record (kind, reason, stack, panes), the relaunch, the banner, `kanna crashes` with the `.ips`, and the planner's message. `crash_daemon_panic`: the record, the app starting a daemon again, the banner and the message.
+- **e2e** `crash_app_draw`: `debug.crash` on a private instance in the background; checks the record (kind, reason, stack, panes), the relaunch, the banner, `kanna crashes` with the `.ips`, and the planner's message. `crash_daemon_panic`: the record, the app starting a daemon again, the banner and the message. `crash_report_unheld`: a mock Claude planner started with `--dangerously-skip-permissions`, in a scratch repo's Desk and `cd`'d into the build's checkout (the planner's repo is its pane's cwd, and a private instance opens only projects in its own `~/.kanna-v4/repos`), gets the `debug.crash` report as a peer message rather than `held peer message`.
 - **Every test run fails on a crash:** after each e2e scenario, and when a CLI test's private daemon is dropped, a record in the instance's `crashes/` fails it and is printed. The crash scenarios take away the records (and `.ips`) they made once they've checked them.
 
 ## 7. Glossary
