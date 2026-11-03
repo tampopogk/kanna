@@ -799,22 +799,25 @@ impl CoreHandle {
         if kind == PaneType::Code && empty("path") {
             return Err(bad_request("code panes need a path"));
         }
-        if kind == PaneType::Diff && empty("path") {
-            return Err(bad_request("diff panes need a path: the folder git runs in"));
+        if matches!(kind, PaneType::Diff | PaneType::Log) && empty("path") {
+            return Err(bad_request(format!("{} panes need a path: the folder git runs in", kind.as_str())));
         }
         if kind == PaneType::Serial && empty("path") {
             return Err(bad_request("serial panes need a path: the port"));
         }
-        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Serial) {
-            return Err(bad_request("path is only for markdown, code, diff and serial panes"));
+        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial) {
+            return Err(bad_request("path is only for markdown, code, diff, log and serial panes"));
         }
         if (args.get("baud").is_some() || args.get("lineEnding").is_some()) && kind != PaneType::Serial {
             return Err(bad_request("baud and lineEnding are only for serial panes"));
         }
         let baud = read_baud(args.get("baud"))?;
         let line_ending = read_line_ending(args.get("lineEnding"))?;
-        if (args.get("args").is_some() || args.get("view").is_some()) && kind != PaneType::Diff {
-            return Err(bad_request("args and view are only for diff panes"));
+        if args.get("args").is_some() && !matches!(kind, PaneType::Diff | PaneType::Log) {
+            return Err(bad_request("args are only for diff and log panes"));
+        }
+        if args.get("view").is_some() && kind != PaneType::Diff {
+            return Err(bad_request("view is only for diff panes"));
         }
         let diff = read_diff_args(args.get("args"))?;
         let view = read_view(args.get("view"))?;
@@ -911,6 +914,11 @@ impl CoreHandle {
                 return Ok(opened);
             }
         }
+        if is_true(args, "markup") && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() && !placed {
+            if let Some(opened) = self.markup_again(kind, args, agent.as_deref()).await? {
+                return Ok(opened);
+            }
+        }
         let turn = self.0.turns.take().await;
         taken(self)?;
         if let (Some(_), Some(app)) = (dock, app.as_deref()) {
@@ -964,8 +972,8 @@ impl CoreHandle {
             if matches!(kind, PaneType::Code | PaneType::Md) {
                 pane.stop = args.get("tour").and_then(StopMark::from_json);
             }
-            if kind == PaneType::Diff {
-                pane.diff = Some(diff.unwrap_or_default());
+            if matches!(kind, PaneType::Diff | PaneType::Log) {
+                pane.git_args = Some(diff.unwrap_or_default());
                 pane.view = view;
             }
             if kind == PaneType::Serial {
@@ -1032,6 +1040,59 @@ impl CoreHandle {
         };
         let location = Value::Object(location);
         Ok(Some(opened(summary, &location, &location)))
+    }
+
+    async fn markup_again(&self, kind: PaneType, args: &Value, agent: Option<&str>) -> Result<Option<Map>, KmuxError> {
+        let Some(from) = string(args, "from").and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone())) else { return Ok(None) };
+        let real = |path: &str| std::fs::canonicalize(path).map_or_else(|_| path.to_string(), |p| p.to_string_lossy().into_owned());
+        let page = |url: &str| {
+            let url = url.split('#').next().unwrap_or_default();
+            match url.strip_prefix("file://") {
+                Some(path) => format!("file://{}", real(&percent_decode(path))),
+                None => url.to_string(),
+            }
+        };
+        let wanted = match kind {
+            PaneType::Md => string(args, "path").map(real),
+            _ => string(args, "url").map(|url| page(&normalize_url(url))),
+        };
+        let Some(wanted) = wanted else { return Ok(None) };
+        let among: Vec<String> = {
+            let s = self.state();
+            s.panes
+                .ids()
+                .into_iter()
+                .filter(|id| {
+                    s.panes.get(id).is_some_and(|p| {
+                        p.kind == kind
+                            && !p.diff_base.as_deref().is_some_and(is_range)
+                            && match kind {
+                                PaneType::Md => p.path.as_deref().map(real).as_deref() == Some(wanted.as_str()),
+                                _ => p.url.as_deref().map(page).as_deref() == Some(wanted.as_str()),
+                            }
+                    })
+                })
+                .collect()
+        };
+        if among.is_empty() {
+            return Ok(None);
+        }
+        let found = self.layout(json!({ "op": "showing", "from": from, "among": among })).await?;
+        let Some(id) = found.get("pane").and_then(Value::as_str).map(String::from) else { return Ok(None) };
+        let mut asked = json!({ "pane": id });
+        if let Some(agent) = agent {
+            asked["agent"] = json!(agent);
+        }
+        let marked = self.markup(&asked).await?;
+        {
+            let _turn = self.0.turns.take().await;
+            self.layout(json!({ "op": "command", "cmd": "focus", "args": { "pane": id } })).await?;
+        }
+        self.changed();
+        let location = Value::Object(self.layout(json!({ "op": "location", "pane": id })).await?);
+        let mut out = opened(marked.get("pane").cloned().unwrap_or_default(), &location, &location);
+        out.insert("reused".into(), Value::Bool(true));
+        Ok(Some(out))
     }
 
     async fn comment(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1325,11 +1386,11 @@ impl CoreHandle {
             None
         };
         let mut changed = pane.clone();
-        if pane.kind == PaneType::Diff {
+        if matches!(pane.kind, PaneType::Diff | PaneType::Log) {
             if step.is_some() {
-                return Err(bad_request("a diff pane keeps no history"));
+                return Err(bad_request(format!("a {} pane keeps no history", pane.kind.as_str())));
             }
-            changed.diff = Some(read_diff_args(args.get("args"))?.unwrap_or_default());
+            changed.git_args = Some(read_diff_args(args.get("args"))?.unwrap_or_default());
         } else if matches!(pane.kind, PaneType::Md | PaneType::Code) {
             let code = pane.kind == PaneType::Code;
             if !code && args.get("line").is_some() {
@@ -1359,7 +1420,7 @@ impl CoreHandle {
             if pane.kind != PaneType::Web {
                 return Err(KmuxError::new(
                     "wrong_type",
-                    format!("{} is a {} pane; navigate only works on web, markdown, code and diff panes", pane.label(), pane.kind.as_str()),
+                    format!("{} is a {} pane; navigate only works on web, markdown, code, diff and log panes", pane.label(), pane.kind.as_str()),
                 ));
             }
             if let Some(step) = step {
@@ -1385,7 +1446,7 @@ impl CoreHandle {
             pane.path = changed.path;
             pane.line = changed.line;
             pane.url = changed.url;
-            pane.diff = changed.diff;
+            pane.git_args = changed.git_args;
         }
         let snapshot = self.reload(&pane.id, false).await;
         Ok(reply([("pane", self.summary(&pane.id, &snapshot))]))
@@ -1405,6 +1466,7 @@ impl CoreHandle {
         }
         let agent = match string(args, "agent").filter(|_| on) {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
+            None if on && is_true(args, "route") => Some(self.route(&pane).await?),
             None => None,
         };
         if let Some(pane) = self.state().panes.get_mut(&pane.id) {
@@ -1423,6 +1485,15 @@ impl CoreHandle {
             host.update(&updated);
         }
         Ok(reply([("pane", self.summary(&updated.id, &updated))]))
+    }
+
+    async fn route(&self, pane: &Pane) -> Result<String, KmuxError> {
+        let dock = self.layout(json!({ "op": "dock-of", "pane": pane.id })).await?;
+        if let Some(dock) = dock.get("dock").and_then(Value::as_str) {
+            return Ok(dock.to_string());
+        }
+        let running = |id: &String| self.state().panes.get(id).is_some_and(|p| matches!(p.state, PaneState::Starting | PaneState::Running));
+        pane.agent.clone().filter(running).ok_or_else(|| KmuxError::new("no_agent", format!("{} isn't in a task's or a planner's workspace and has no agent: say which with --to", pane.label())))
     }
 
     async fn rename_pane(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1500,6 +1571,24 @@ impl CoreHandle {
         }
         Ok(())
     }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(byte) = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn opened(summary: Value, location: &Value, placed: &Value) -> Map {

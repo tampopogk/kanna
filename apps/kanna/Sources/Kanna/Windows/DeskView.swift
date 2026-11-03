@@ -333,7 +333,6 @@ private final class DeskStripItem: NSView {
         self.key?.font = .systemFont(ofSize: 11)
         self.key?.sizeToFit()
         self.key?.textColor = .tertiaryLabelColor
-        self.key?.isHidden = true
         meta.textColor = .tertiaryLabelColor
         titleWidth = min(title.frame.width, 260)
         paintTitle()
@@ -350,7 +349,7 @@ private final class DeskStripItem: NSView {
 
     var keyText: String? { key?.stringValue }
 
-    var chrome: CGFloat { 23 + 6 + 8 + (hover ? (key.map { $0.frame.width + 6 } ?? 0) : 0) }
+    var chrome: CGFloat { 23 + 6 + 8 + (key.map { $0.frame.width + 5 } ?? 0) }
 
     func refresh() {
         meta.stringValue = "· \(task.meta)"
@@ -359,12 +358,12 @@ private final class DeskStripItem: NSView {
     }
 
     func fit(title width: CGFloat, meta room: CGFloat) {
-        title.frame = NSRect(x: 23, y: (22 - title.frame.height) / 2, width: width, height: title.frame.height)
+        key?.frame.origin = NSPoint(x: 23, y: (22 - (key?.frame.height ?? 0)) / 2)
+        let start = key.map { $0.frame.maxX + 5 } ?? 23
+        title.frame = NSRect(x: start, y: (22 - title.frame.height) / 2, width: width, height: title.frame.height)
         meta.isHidden = room < 12
         meta.frame = NSRect(x: title.frame.maxX + 6, y: title.frame.minY, width: meta.isHidden ? 0 : room, height: meta.frame.height)
-        key?.isHidden = !hover
-        key?.frame.origin = NSPoint(x: meta.frame.maxX + 6, y: (22 - (key?.frame.height ?? 0)) / 2)
-        frame.size.width = (hover ? key?.frame.maxX ?? meta.frame.maxX : meta.frame.maxX) + 8
+        frame.size.width = meta.frame.maxX + 8
     }
 
     override func draw(_ dirtyRect: NSRect) {

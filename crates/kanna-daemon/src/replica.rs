@@ -330,6 +330,34 @@ impl Replica {
         Ok(Grant { task: task.to_string(), birth: birth.to_string(), epoch, to: to.to_string() })
     }
 
+    pub fn hand(&mut self, db: &Db, task: &str, birth: &str, to: &str, also: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> Result<i64, String> {
+        let epoch = match Replica::authority(db, task, birth).map_err(|e| e.to_string())? {
+            Some(Authority { permit: Permit::Ready | Permit::Running, epoch, .. }) => epoch + 1,
+            Some(Authority { to, .. }) => return Err(format!("it was given to {}", to.unwrap_or_else(|| "another machine".into()))),
+            None => return Err("this machine was never given it".into()),
+        };
+        let ops = self.stage(task, birth, &[("owner", json!(to))]);
+        db.atomically(|conn| {
+            set_authority(conn, task, birth, &Authority { epoch, permit: Permit::Sent, to: Some(to.to_string()) })?;
+            self.commit(conn, &ops)?;
+            also(conn)
+        })
+        .map_err(|e| e.to_string())?;
+        self.applied(&ops);
+        Ok(epoch)
+    }
+
+    pub fn reclaim(&mut self, db: &Db, task: &str, birth: &str, epoch: i64) -> rusqlite::Result<()> {
+        let me = self.me.clone();
+        let ops = self.stage(task, birth, &[("owner", json!(me))]);
+        db.atomically(|conn| {
+            set_authority(conn, task, birth, &Authority { epoch, permit: Permit::Running, to: None })?;
+            self.commit(conn, &ops)
+        })?;
+        self.applied(&ops);
+        Ok(())
+    }
+
     pub fn take(&mut self, db: &Db, task: &str, birth: &str, from: &str) -> rusqlite::Result<()> {
         let me = self.me.clone();
         let ops = self.stage(task, birth, &[("owner", json!(me)), (&format!("{RUN}{me}"), json!({ "from": from, "at": wall() }))]);
@@ -612,6 +640,28 @@ mod tests {
         for m in [&owner, &runner] {
             assert_eq!(m.replica.record("task-00000002", &other).unwrap().runs(), vec!["owner", "runner"], "both ran it, and {} knows", m.replica.me());
         }
+    }
+
+    #[test]
+    fn a_started_task_handed_to_another_machine_starts_only_there_and_can_come_back() {
+        let (mut a, mut b) = (Machine::new("a"), Machine::new("b"));
+        let birth = a.make("task-00000001");
+        Replica::start(&a.db, "task-00000001", &birth).unwrap();
+        let epoch = a.replica.hand(&a.db, "task-00000001", &birth, "b", |_| Ok(())).unwrap();
+        assert!(Replica::start(&a.db, "task-00000001", &birth).is_err(), "the sender can't start what it's handing over");
+        assert!(a.replica.hand(&a.db, "task-00000001", &birth, "b", |_| Ok(())).is_err(), "nor hand it twice");
+        b.pull(&a);
+        assert!(b.replica.receive(&b.db, "task-00000001", &birth, epoch).unwrap());
+        Replica::acked(&a.db, "task-00000001", &birth, epoch).unwrap();
+        assert_eq!(Replica::start(&b.db, "task-00000001", &birth), Ok(()));
+        let back = b.replica.hand(&b.db, "task-00000001", &birth, "a", |_| Ok(())).unwrap();
+        assert!(a.replica.receive(&a.db, "task-00000001", &birth, back).unwrap(), "it comes back at a newer epoch");
+        assert_eq!(Replica::start(&a.db, "task-00000001", &birth), Ok(()));
+
+        let other = a.make("task-00000002");
+        let given = a.replica.hand(&a.db, "task-00000002", &other, "b", |_| Ok(())).unwrap();
+        a.replica.reclaim(&a.db, "task-00000002", &other, given).unwrap();
+        assert_eq!(Replica::start(&a.db, "task-00000002", &other), Ok(()), "a hand-over called off gives it back");
     }
 
     #[test]

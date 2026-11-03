@@ -1950,6 +1950,7 @@ dependencies = [
  "kanna-calltree",
  "kanna-client",
  "kanna-crash",
+ "kanna-guest",
  "kanna-merman",
  "kanna-mux",
  "kanna-net",
@@ -1986,6 +1987,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanna-cloud"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "kanna-crash"
 version = "0.1.0"
 dependencies = [
@@ -2001,11 +2009,14 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "core-foundation-sys",
+ "getrandom 0.2.17",
  "kanna-build",
  "kanna-crash",
  "kanna-detect",
  "kanna-diff",
+ "kanna-guest",
  "kanna-keeper",
+ "kanna-log",
  "kanna-mux",
  "kanna-net",
  "kanna-pipe",
@@ -2015,6 +2026,7 @@ dependencies = [
  "notify",
  "regex",
  "rusqlite",
+ "security-framework",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
@@ -2052,6 +2064,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanna-guest"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "libc",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "kanna-keeper"
 version = "0.1.0"
 dependencies = [
@@ -2067,6 +2091,14 @@ name = "kanna-layout"
 version = "0.1.0"
 dependencies = [
  "kanna-mux",
+]
+
+[[package]]
+name = "kanna-log"
+version = "0.1.0"
+dependencies = [
+ "kanna-diff",
+ "serde_json",
 ]
 
 [[package]]
@@ -2099,6 +2131,7 @@ dependencies = [
  "iroh",
  "iroh-mdns-address-lookup",
  "iroh-relay",
+ "kanna-build",
  "n0-future",
  "serde_json",
  "sha2 0.10.9",

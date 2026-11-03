@@ -1228,6 +1228,23 @@ impl LayoutHost for Model {
         self.detach(pane);
     }
 
+    fn remember(&mut self) {
+        for tabs in self.windows.iter_mut().map(|w| &mut w.tabs).chain(self.workspaces.iter_mut().map(|s| &mut s.tabs)) {
+            tabs.remember();
+        }
+    }
+
+    fn dock_of(&self, pane: &str) -> Option<String> {
+        let s = self.ws_of(self.holder_of(pane)?)?;
+        Some(self.workspaces[s].dock.pane.clone()).filter(|dock| dock != pane)
+    }
+
+    fn showing(&self, from: &str, among: &[String]) -> Option<String> {
+        let h = self.holder_of(from)?;
+        let mine: Vec<String> = among.iter().filter(|id| self.locate(id).is_some_and(|l| l.holder == h)).cloned().collect();
+        self.tabs(h).latest(&mine).cloned()
+    }
+
     fn close_task(&mut self, task: &str) {
         Model::close_task(self, task);
     }

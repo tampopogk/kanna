@@ -1,0 +1,43 @@
+{
+  "distinct_serials": 2,
+  "distinct_vms": 2,
+  "overlap_seconds": 10.0,
+  "tenants": {
+    "tenant-a": {
+      "artifacts": "ready",
+      "build_exit": 0,
+      "console_user": "kanna-build",
+      "ended": 1793652542.1579468,
+      "guest_serial": "Z94RTG0KNJ",
+      "guest_user": "kanna-build",
+      "job": "4f688665-658d-432f-a6c4-53005a8c250e",
+      "marker": "tenant-a 8535e0ba",
+      "marker_in_stdout": true,
+      "rejected_total": 0,
+      "screenshots": [
+        "attachments/B9551F44-3684-4148-B64A-492C73FB49C9.png"
+      ],
+      "started": 1793652532.192718,
+      "state": "finished",
+      "vm": "vm-a"
+    },
+    "tenant-b": {
+      "artifacts": "ready",
+      "build_exit": 0,
+      "console_user": "kanna-build",
+      "ended": 1793652542.193395,
+      "guest_serial": "ZLNFK6G0GH",
+      "guest_user": "kanna-build",
+      "job": "64167bb0-20a6-41f7-a664-00f46812eb31",
+      "marker": "tenant-b 30303894",
+      "marker_in_stdout": true,
+      "rejected_total": 0,
+      "screenshots": [
+        "attachments/D2958534-CFAE-4C09-BA63-C9C092A0C933.png"
+      ],
+      "started": 1793652532.1926248,
+      "state": "finished",
+      "vm": "vm-b"
+    }
+  }
+}

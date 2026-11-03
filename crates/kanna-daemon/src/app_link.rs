@@ -3,7 +3,7 @@ use crate::files::Files;
 use crate::serial::Serial;
 use crate::layout::DaemonLayout;
 use crate::perf;
-use crate::wire::{Wire, FLOW_PROTOCOL};
+use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::terminals::Terminals;
 use crate::Event;
@@ -126,7 +126,7 @@ pub const APP_ASK: &str = "app.";
 
 pub const RELAY_TOKEN: &str = "machine.relay_token";
 
-pub const PROTOCOLS: (u64, u64) = (kanna_build::PROTOCOLS[0] as u64, kanna_build::PROTOCOLS[1] as u64);
+pub const PROTOCOL: u64 = kanna_build::PROTOCOL as u64;
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
@@ -246,6 +246,7 @@ pub struct AppLink {
     listener: Option<OwnedFd>,
     handed: Cell<bool>,
     pub machine: RefCell<Option<Box<dyn Fn() -> Value>>>,
+    pub logs: RefCell<Option<Rc<crate::logs::Logs>>>,
 }
 
 impl AppLink {
@@ -273,6 +274,7 @@ impl AppLink {
             unsent: RefCell::default(),
             stopping: Cell::new(false),
             machine: RefCell::new(None),
+            logs: RefCell::new(None),
         }
     }
 
@@ -353,15 +355,11 @@ impl AppLink {
             return false;
         }
         let args = hello.get("args").cloned().unwrap_or(Value::Null);
-        let (low, high) = match args.get("protocols").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_u64).collect::<Vec<_>>()) {
-            Some(range) if range.len() == 2 => (range[0], range[1]),
-            _ => (1, 1),
-        };
-        let protocol = high.min(PROTOCOLS.1);
-        if protocol < low.max(PROTOCOLS.0) {
-            let theirs = if low == high { format!("{low}") } else { format!("{low}–{high}") };
-            log!("kanna-daemon: an app speaking protocol {theirs} said hello; this daemon speaks {}–{}", PROTOCOLS.0, PROTOCOLS.1);
-            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocols {}–{} and the app {theirs}", PROTOCOLS.0, PROTOCOLS.1) }, "mine": [PROTOCOLS.0, PROTOCOLS.1], "commit": kanna_build::COMMIT, "version": kanna_build::VERSION }));
+        let protocol = args.get("protocol").and_then(Value::as_u64);
+        if protocol != Some(PROTOCOL) {
+            let theirs = protocol.map_or("an older protocol".to_string(), |p| format!("protocol {p}"));
+            log!("kanna-daemon: an app speaking {theirs} said hello; this daemon speaks {PROTOCOL}");
+            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocol {PROTOCOL} and the app {theirs}") }, "protocol": PROTOCOL, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION }));
             let _ = stream.shutdown(Shutdown::Read);
             return false;
         }
@@ -379,18 +377,18 @@ impl AppLink {
         }
         let pid = args.get("pid").cloned().unwrap_or(Value::Null);
         match (&remote, args.get("client").and_then(Value::as_str)) {
-            (Some(from), client) => log!("kanna-daemon: the app on {} attached from another machine (pid {pid}, protocol {protocol})", client.unwrap_or(from)),
+            (Some(from), client) => log!("kanna-daemon: the app on {} attached from another machine (pid {pid})", client.unwrap_or(from)),
             (None, _) => log!("kanna-daemon: the app attached (pid {pid})"),
         }
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "run": self.run, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION, "protocols": [PROTOCOLS.0, PROTOCOLS.1], "machine": null, "capabilities": null });
+        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "run": self.run, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION, "protocol": PROTOCOL, "machine": null, "capabilities": null });
         if let Some(describe) = self.machine.borrow().as_ref() {
             let machine = describe();
             daemon["machine"] = machine["name"].clone();
             daemon["capabilities"] = machine["capabilities"].clone();
         }
-        let reply = json!({ "id": id, "ok": true, "protocol": protocol, "listener": listener.is_some(), "daemon": daemon, "panes": panes, "layout": self.layout.view() });
+        let reply = json!({ "id": id, "ok": true, "protocol": PROTOCOL, "listener": listener.is_some(), "daemon": daemon, "panes": panes, "layout": self.layout.view() });
         if listener.is_some() {
             if !write_with(&stream, &reply, listener) {
                 let _ = stream.shutdown(Shutdown::Both);
@@ -403,7 +401,7 @@ impl AppLink {
         if let Some(tasks) = self.tasks.borrow().as_ref().and_then(|b| b.upgrade()) {
             *tasks.claimant.borrow_mut() = claimant.unwrap_or_else(|| kanna_mux::MAC_APP.into());
         }
-        self.terminals.wire().connect(conn, out.clone(), protocol >= FLOW_PROTOCOL);
+        self.terminals.wire().connect(conn, out.clone());
         *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false), keeps: listener.is_some() });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
@@ -496,6 +494,9 @@ impl AppLink {
         let prefix = view_prefix(conn);
         self.diffs.leave(|view| view.starts_with(&prefix));
         self.files.leave(|view| view.starts_with(&prefix));
+        if let Some(logs) = self.logs.borrow().as_ref() {
+            logs.leave(|view| view.starts_with(&prefix));
+        }
         self.threads.leave(|view| view.starts_with(&prefix));
         self.serial.leave_views(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
@@ -542,6 +543,20 @@ impl AppLink {
             }
             ("diff.unsubscribe", Some(view)) => {
                 self.diffs.unsubscribe(&view);
+                return None;
+            }
+            ("log.subscribe", Some(view)) => {
+                let reply = match self.logs.borrow().as_ref() {
+                    Some(logs) => logs.subscribe(&view, &args),
+                    None => Err(KmuxError::new("unsupported", "this daemon keeps no logs")),
+                };
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("log.unsubscribe", Some(view)) => {
+                if let Some(logs) = self.logs.borrow().as_ref() {
+                    logs.unsubscribe(&view);
+                }
                 return None;
             }
             ("file.subscribe", Some(view)) => {
@@ -679,6 +694,14 @@ impl AppLink {
         let prefix = view_prefix(conn);
         if views.iter().any(|view| view.starts_with(&prefix)) {
             self.notify("diff", payload.clone());
+        }
+    }
+
+    pub fn log(&self, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify("log", payload.clone());
         }
     }
 
