@@ -6,7 +6,6 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 pub const SHIMS: &[&str] = &["xcodebuild", "xcrun", "codesign", "swift"];
 
