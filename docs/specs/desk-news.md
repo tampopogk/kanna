@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** e2e `desk_news`, `cargo test -p kanna-daemon` (desk_news, tasks) · **Builds on:** [agent messaging](agent-messaging.md), [the CLI acts on its caller](cli-caller.md), [tasks](tasks.md), [the Desk view](desk-view.md)
 
-The planning agent only learns what's on the Desk when it runs `kanna task list`. Meanwhile the user picks, shelves and activates tasks in the Desk view, and tasks' agents merge and run `kanna task done`, so the planner reports a Desk that's no longer there. Kanna now tells the repo's planner about each Desk change **it didn't make itself**, as a message from `desk`, one short line per change, batched and delivered only between its turns:
+The planning agent only learns what's on the Desk when it runs `kanna task list`. Meanwhile the user picks, shelves and activates tasks in the Desk view, and tasks' agents merge and run `kanna task done`, so the planner reports a Desk that's no longer there. Kanna now tells the repo's planner about each Desk change **it didn't make itself**, as an [agent message](agent-messaging.md) from `desk`, one short line per change, batched:
 
 ```text
 [message from desk] Ink markup with arrows merged into main and left the Desk
