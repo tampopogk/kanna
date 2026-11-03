@@ -78,17 +78,17 @@ flowchart LR
 | `value` | real | the number |
 | `doc` | JSON | the rest, by metric |
 
-- **The sampler catches up** on a worker thread, off the daemon's main thread, when a `stats` request comes and when a task is done: for each metric, the first-parent commits on main in the last 30 days with no row for it, oldest first. The request waits for it (git only, milliseconds a commit) and then answers. One catch-up per repo at a time; a request during one waits for it.
+- **The sampler catches up** on a worker thread, off the daemon's main thread, when a `stats` request comes: for each metric, the first-parent commits on main (else `master`, else `HEAD`) in the last 30 days with no row for it, oldest first. The thread sends what it found back through the daemon's event loop (`Event::Sampled`), which writes the rows and answers. One catch-up per repo at a time: a request during one waits for it and gets the same answer.
 - **Every sampled commit gets a row for every metric,** 0 when nothing applies, so a missing row always means "not sampled yet", and a new metric fills in its 30 days by itself.
-- **It reads main without touching any checkout:** `git log` and `git rev-list` on the main checkout's refs. A metric that needs the files ([§4](#4-adding-a-metric)) gets its commit checked out in a worktree of the sampler's own in the build target ([build targets](build-targets.md)), never the user's checkout.
+- **It reads main without touching any checkout:** `git log --first-parent` and `git rev-list --count` on the main checkout's refs. A metric that needs the files will need its commit checked out in a worktree of the sampler's own in the build target ([build targets](build-targets.md)), never the user's checkout; that's the code quality task's to build.
 
 ## 4. Adding a metric
 
 A metric is the daemon's: the app and the CLI draw whatever sections and tiles the reply has.
 
-- **The metric:** an entry in `stats.rs`'s list, `Metric { name, needs, sample }`, where `needs` is `Log` (git only) or `Tree` (the commit's files, checked out as §3 says), and `sample(commit, files) → (value, doc)`. `Tree` is the code quality task's to build; this task builds `Log`.
-- **The tile:** a `Tile { id, label, value, note, chart }` in a section of the reply. Charts are `line`, `columns`, `dots` and `ranked`; a new kind of chart is a new kind in the app's `StatsPage` and the CLI's printer.
-- **The section:** `code` is in the reply now, with `placeholder: true` and no tiles; the code quality task adds tiles to it and drops the flag.
+- **The metric:** an entry in `stats.rs`'s `METRICS`, `Metric { name, sample }`, with `sample(repo, commit) → (value, doc)`; `commit` has its ID, time and parents. Today's are `commits` (what the commit brought to main) and `merged` (1 for a merge). A metric that needs the commit's files adds that need to `Metric`.
+- **The tile:** `{id, label, value, unit, note, span, chart}` in a section of the reply. `unit` is `%`, `s` (a duration, shown as 3h 33m) or none; `span` is the tile's width in sixths of a row (2, 3, 4 or 6). Charts are `line` (`values`, `max`), `columns` (`values`), `dots` (`points` of `{day, value, label}` and a median `line`) and `ranked` (`rows` of `{label, value, note}`), each with `what`, the hover readout's words; a new kind of chart is a new kind in the app's `StatsPage` and the CLI's printer.
+- **The section:** `{id, title, note, tiles}`, with `empty` (the words to show with no tiles) and `placeholder` (drawn as a placeholder). `code` is in the reply now with `placeholder: true` and no tiles; the code quality task adds tiles to it and drops the flag.
 
 The reply, the same as `kanna stats --json`:
 

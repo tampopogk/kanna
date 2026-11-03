@@ -20,6 +20,7 @@ mod messages;
 mod project_import;
 mod projects;
 mod quiz;
+mod stats;
 mod reader;
 mod settings;
 mod shell;
@@ -98,6 +99,7 @@ pub enum Event {
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
     File { id: String, read: files::Read },
+    Sampled { repo: String, samples: Result<Vec<db::Sample>, String> },
     KeeperReadable,
     KeeperExits,
     KeeperLost(String),
@@ -324,6 +326,8 @@ fn run() -> Result<Option<PathBuf>, String> {
     diffs.install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
     files.install(&core);
+    let stats = Rc::new(stats::Stats::new(db.clone(), events.clone()));
+    stats.install(&core);
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let noted = core.weak();
@@ -613,6 +617,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
             Event::File { id, read } => files.loaded(&id, read),
+            Event::Sampled { repo, samples } => stats.sampled(&repo, samples),
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();
                 if matches!(event, Event::KeeperReadable) {
