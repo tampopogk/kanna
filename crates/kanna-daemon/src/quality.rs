@@ -100,7 +100,11 @@ pub fn fixes(cx: &Context, commit: &Commit) -> Result<(f64, Value), String> {
     let Some(_) = reason else { return Ok((0.0, doc)) };
     let introduced = match named.first() {
         Some(sha) => szz::landing_of(cx.repo, sha, &commit.id).map(|c| (c, 0, vec![])),
-        None => szz::introduced(cx.repo, &commit.id)?.map(|i| (i.commit, i.lines, i.files)),
+        None if commit.parents.is_empty() => None,
+        None => szz::introduced(cx.repo, &commit.id).unwrap_or_else(|error| {
+            log!("kanna-daemon: couldn't trace the fix {} back: {error}", &commit.id[..commit.id.len().min(8)]);
+            None
+        }).map(|i| (i.commit, i.lines, i.files)),
     };
     if let Some((blamed, lines, files)) = introduced.filter(|(c, _, _)| *c != commit.id) {
         let shown = crate::tasks::git(cx.repo, &["show", "-s", "--format=%ct%x09%s", &blamed])?;

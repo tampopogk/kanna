@@ -995,14 +995,15 @@ mod tests {
         let text = output::stats(&json!({}), &reply);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "/r · main · last 30 days");
-        assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers   ▅█");
+        assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers              ▅█");
         assert_eq!(lines[2], "              By kind");
         assert_eq!(lines[3], "                why             92%  11/12");
-        assert_eq!(lines[4], "Tasks         Made to done   3h 33m  median of 3     ▅█");
-        for line in &lines {
-            eprintln!("{line:?}");
-        }
-        assert_eq!(lines[5], "Code quality  Erosion");
+        assert_eq!(lines[4], "Tasks         Made to done   3h 33m  median of 3                ▅█");
+        assert_eq!(lines[5], "Code quality  Erosion           49%  up 1.2 points in 30 days  ▄▄");
+        assert_eq!(lines[6], "              Worst functions");
+        assert_eq!(lines[7], "                run          CC 154                            crates/kanna-daemon/src/main.rs:215 · 677 lines");
+        assert_eq!(lines[9], "                No fix traced back to a landing in 30 days.");
+        assert_eq!(lines[10], "Later         Not measured yet.");
         assert_eq!(output::duration(59.0 * 60.0), "59m");
         assert_eq!(output::duration(3.0 * 3600.0), "3h");
         assert_eq!(output::duration(50.0 * 3600.0), "2d");

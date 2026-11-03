@@ -948,7 +948,7 @@ pub fn stats(_: &Value, reply: &Value) -> String {
                 }
                 for row in listed {
                     let detail = [row["detail"].as_str().unwrap_or(""), row["note"].as_str().unwrap_or("")].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" · ");
-                    rows.push([String::new(), format!("  {}", row["label"].as_str().unwrap_or("?")), row["figure"].as_str().unwrap_or("").to_string(), detail, String::new()]);
+                    rows.push([String::new(), format!("  {}", row["label"].as_str().unwrap_or("?")), row["figure"].as_str().unwrap_or("").to_string(), String::new(), detail]);
                 }
                 continue;
             }

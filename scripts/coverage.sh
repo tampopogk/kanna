@@ -45,7 +45,7 @@ if [[ ! -x "$tools/llvm-cov" ]]; then
 fi
 
 echo "==> Rust: cargo llvm-cov --workspace --branch"
-RUSTC_BOOTSTRAP=1 cargo llvm-cov --workspace --branch --no-fail-fast --ignore-run-fail --lcov --output-path "$work/rust.lcov" || exit 1
+RUSTC_BOOTSTRAP=1 cargo llvm-cov --workspace --branch --ignore-run-fail --lcov --output-path "$work/rust.lcov" || exit 1
 
 echo "==> Swift: scripts/build.sh, then swift test --enable-code-coverage"
 "$tree/scripts/build.sh" || exit 1
