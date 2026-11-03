@@ -911,6 +911,11 @@ impl CoreHandle {
                 return Ok(opened);
             }
         }
+        if is_true(args, "markup") && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() && !placed {
+            if let Some(opened) = self.markup_again(kind, args, agent.as_deref()).await? {
+                return Ok(opened);
+            }
+        }
         let turn = self.0.turns.take().await;
         taken(self)?;
         if let (Some(_), Some(app)) = (dock, app.as_deref()) {
@@ -1032,6 +1037,52 @@ impl CoreHandle {
         };
         let location = Value::Object(location);
         Ok(Some(opened(summary, &location, &location)))
+    }
+
+    async fn markup_again(&self, kind: PaneType, args: &Value, agent: Option<&str>) -> Result<Option<Map>, KmuxError> {
+        let Some(from) = string(args, "from").and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone())) else { return Ok(None) };
+        let page = |url: &str| url.split('#').next().unwrap_or_default().to_string();
+        let wanted = match kind {
+            PaneType::Md => string(args, "path").map(String::from),
+            _ => string(args, "url").map(|url| page(&normalize_url(url))),
+        };
+        let Some(wanted) = wanted else { return Ok(None) };
+        let among: Vec<String> = {
+            let s = self.state();
+            s.panes
+                .ids()
+                .into_iter()
+                .filter(|id| {
+                    s.panes.get(id).is_some_and(|p| {
+                        p.kind == kind
+                            && !p.diff_base.as_deref().is_some_and(is_range)
+                            && match kind {
+                                PaneType::Md => p.path.as_deref() == Some(wanted.as_str()),
+                                _ => p.url.as_deref().map(page).as_deref() == Some(wanted.as_str()),
+                            }
+                    })
+                })
+                .collect()
+        };
+        if among.is_empty() {
+            return Ok(None);
+        }
+        let found = self.layout(json!({ "op": "showing", "from": from, "among": among })).await?;
+        let Some(id) = found.get("pane").and_then(Value::as_str).map(String::from) else { return Ok(None) };
+        let mut asked = json!({ "pane": id });
+        if let Some(agent) = agent {
+            asked["agent"] = json!(agent);
+        }
+        let marked = self.markup(&asked).await?;
+        {
+            let _turn = self.0.turns.take().await;
+            self.layout(json!({ "op": "command", "cmd": "focus", "args": { "pane": id } })).await?;
+        }
+        self.changed();
+        let location = Value::Object(self.layout(json!({ "op": "location", "pane": id })).await?);
+        let mut out = opened(marked.get("pane").cloned().unwrap_or_default(), &location, &location);
+        out.insert("reused".into(), Value::Bool(true));
+        Ok(Some(out))
     }
 
     async fn comment(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1405,6 +1456,7 @@ impl CoreHandle {
         }
         let agent = match string(args, "agent").filter(|_| on) {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
+            None if on && is_true(args, "route") => Some(self.route(&pane).await?),
             None => None,
         };
         if let Some(pane) = self.state().panes.get_mut(&pane.id) {
@@ -1423,6 +1475,15 @@ impl CoreHandle {
             host.update(&updated);
         }
         Ok(reply([("pane", self.summary(&updated.id, &updated))]))
+    }
+
+    async fn route(&self, pane: &Pane) -> Result<String, KmuxError> {
+        let dock = self.layout(json!({ "op": "dock-of", "pane": pane.id })).await?;
+        if let Some(dock) = dock.get("dock").and_then(Value::as_str) {
+            return Ok(dock.to_string());
+        }
+        let running = |id: &String| self.state().panes.get(id).is_some_and(|p| matches!(p.state, PaneState::Starting | PaneState::Running));
+        pane.agent.clone().filter(running).ok_or_else(|| KmuxError::new("no_agent", format!("{} isn't in a task's or a planner's workspace and has no agent: say which with --to", pane.label())))
     }
 
     async fn rename_pane(&self, args: &Value) -> Result<Map, KmuxError> {
