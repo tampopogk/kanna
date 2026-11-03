@@ -59,6 +59,14 @@ It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the sam
 
 Kanna never holds the customer's GitHub sign-in: their own Kanna adds and removes the deploy keys.
 
+### Joining and billing
+
+No web app of Kanna's own: a customer joins from Kanna and pays on a payment provider's page.
+
+- **`kanna cloud join EMAIL`** (and the same from the app's menu): Kanna sends a code to the address, the customer types it, and the account exists. Their Kanna makes the account key there and keeps it in the Mac's Keychain; the service keeps its hash. Another Mac of theirs joins the same account by the same command, or is given the key by a machine already on it.
+- **Billing:** the first time it's needed (`kanna cloud join` on a paid plan, or the first Cloud task), Kanna opens the payment provider's hosted checkout page in the browser (Stripe Checkout, say) to take card details; nothing about payment passes through Kanna. `kanna cloud billing` opens the provider's own customer portal for invoices, cards and cancelling.
+- **`kanna cloud`** shows the account, its plan and what it's used this month; `kanna cloud leave` closes the account, after its tasks are done or stopped.
+
 ## 4. How Kanna runs it
 
 ```mermaid
@@ -206,7 +214,8 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 - **Can Cloud's Shelf copy be encrypted from the operator?** **Proposed:** no: Cloud has to read a task to run it, and the VM sees its code anyway; it is encrypted at rest and in transit.
 - **The first tenant:** **Decided:** Cloud's VMs go on the host-enforced tenant network (§4) from the first; the network check runs on each host before a second tenant.
 - **A customer's own Mac as their private build Mac.** **Proposed:** not in the first Cloud milestone; the pool is Kanna's Macs.
-- **Billing:** VM and build-Mac time per account, with the account key; the directory's $5 a month as decided before.
+- **Billing:** VM and build-Mac time per account, with the account key; the directory's $5 a month as decided before. Joining and paying are the CLI plus the provider's hosted pages (§3).
+- **Kanna v2's accounts:** v2 had an account flow; whether any of it is worth copying for joining (§3) is to be checked before C1, not assumed.
 
 ## 12. Glossary
 
