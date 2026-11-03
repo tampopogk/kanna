@@ -134,6 +134,13 @@ The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is 
   - guests: `kanna-vm`, `kanna guests`, the egress proxy.
 
   Acceptance covers files that are dirty, untracked and deleted; a warm rebuild; two tasks at once; cancelling; a dropped connection; a failed test's attachments; a screenshot coming back. Done when a Linux task builds Kanna.app and runs a Swift test.
+
+  **Result (2026-11-03),** from an Ubuntu 24.04 VM (`linux-vm`) paired with the Mac Studio (`studio-build`), guest `vm-a` (8 CPUs, 12 GiB, 64 GiB data disk):
+  - `kanna build --fetch target/Kanna.app -- scripts/build.sh dev` built Kanna.app on a cold mirror in 477 s (Ghostty, Zig, Rust and Swift from scratch, dependencies through the egress proxy) and brought back the 140 MB bundle with its executable bits; warm, the same command took 33 s.
+  - `kanna build -- swift test --package-path apps/kanna --filter KannaDiagramTests` passed, 13 tests in 2 suites, in 30 s.
+  - The Kanna repo's snapshot reached the guest in 4.2 s cold and 0.68 s warm; a 3 MB and a 300 KB file arrived with matching checksums; the `xcrun` shim reached the guest through arg0.
+  - On the real path the guest needed, besides the master's Xcode and Rust: gettext, the Metal toolchain, Codeberg on the allowlist, and a data disk.
+  - Covered by tests rather than on the real path: dirty, untracked and deleted files, a warm rebuild, cancelling, a dropped connection. **Not done:** two tasks at once, a failed test's attachments and a screenshot coming back (which needs the readiness step below).
 - **12, the pool:** several Macs with tenant-isolated guest slots, matched by guest capability, guest-scoped Simulator leases, the queue shown in the app, the `.app` fetched to the MBP. Never pool different tenants inside one guest.
 
 ## 9. Limits
