@@ -5,25 +5,24 @@ extension AppController {
         case pane(String, side: String)
         case tab(String)
         case newTab(window: String)
-        case index(window: String, Int)
         case newWindow(NSPoint)
     }
 
-    private func controller(at point: NSPoint, below hint: DropHint) -> WindowController? {
+    func controller(at point: NSPoint, skipping floating: Int) -> WindowController? {
         if testingDrag {
             return NSApp.orderedWindows.lazy.compactMap { w in self.controllers.values.first { $0.window === w } }.first { $0.window.frame.contains(point) }
         }
         var number = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: 0)
-        if number == hint.windowNumber { number = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: number) }
+        if number == floating { number = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: number) }
         return controllers.values.first { $0.window.windowNumber == number }
     }
 
-    private func newWindowFrame(at point: NSPoint, size: NSSize) -> NSRect {
+    func newWindowFrame(at point: NSPoint, size: NSSize) -> NSRect {
         NSRect(x: point.x - 40, y: point.y - size.height + 12, width: size.width, height: size.height)
     }
 
     private func paneDrop(_ id: String, at point: NSPoint, hint: DropHint, size: NSSize) -> Drop? {
-        guard let controller = controller(at: point, below: hint) else {
+        guard let controller = controller(at: point, skipping: hint.windowNumber) else {
             hint.show(newWindowFrame(at: point, size: size), text: "new window", rounded: true)
             return .newWindow(point)
         }
@@ -64,21 +63,6 @@ extension AppController {
         return nil
     }
 
-    private func tabDrop(at point: NSPoint, hint: DropHint, size: NSSize) -> Drop? {
-        guard let controller = controller(at: point, below: hint) else {
-            hint.show(newWindowFrame(at: point, size: size), text: "new window", rounded: true)
-            return .newWindow(point)
-        }
-        let bar = controller.tabBar, inBar = bar.convert(controller.window.convertPoint(fromScreen: point), from: nil)
-        guard bar.bounds.contains(inBar) else {
-            hint.hide()
-            return nil
-        }
-        let (index, x) = bar.insertion(at: inBar.x)
-        hint.show(controller.window.convertToScreen(bar.convert(NSRect(x: x - 1, y: 4, width: 3, height: TabBar.height - 8), to: nil)))
-        return .index(window: controller.id, index)
-    }
-
     @discardableResult
     func dragPane(_ id: String) -> Bool {
         guard let size = panes[id]?.window?.frame.size, !frozen(id) else { return false }
@@ -96,27 +80,17 @@ extension AppController {
             args["tab"] = "new"
             args.merge(address(window)) { _, new in new }
         case .newWindow: args["window"] = "new"
-        case .index, nil: return false
+        case nil: return false
         }
         perform("move", args, tornOff: drop, size: size)
         return true
     }
 
     @discardableResult
-    func dragTab(_ id: String) -> Bool {
-        guard let window = windowOf(tab: id)?["id"]?.string, let size = controllers[window]?.window.frame.size else { return false }
-        let hint = DropHint()
-        let end = trackMouse { _ = tabDrop(at: $0, hint: hint, size: size) }
-        let drop = tabDrop(at: end, hint: hint, size: size)
-        hint.hide()
-        switch drop {
-        case .index(let window, let index):
-            perform("move-tab", address(window).merging(["tab": .string(id), "index": .number(Double(index))]) { _, new in new }, tornOff: nil, size: size)
-        case .newWindow:
-            perform("move-tab", ["tab": .string(id), "window": "new"], tornOff: drop, size: size)
-        default: return false
-        }
-        return true
+    func dragTab(_ id: String, grab: CGFloat? = nil) -> Bool {
+        guard let drag = TabDrag(app: self, tab: id, grab: grab, quiet: DropHint.quiet) else { return false }
+        let end = trackDrag { drag.move($0) }
+        return drag.drop(at: end)
     }
 
     private func perform(_ cmd: String, _ args: [String: JSON], tornOff drop: Drop?, size: NSSize) {
@@ -169,6 +143,7 @@ extension AppController {
             guard let controller = controllers.values.first(where: { plus ? $0.id == tab : $0.tabBar.center(of: tab) != nil }) else {
                 throw KannaError("not_found", "no tab bar for \(tab)")
             }
+            controller.window.orderFront(nil)
             let point = plus ? controller.tabBar.plusCenter : controller.tabBar.convert(controller.tabBar.center(of: tab)!, from: nil)
             to = try screen(controller.tabBar, point)
         } else {
@@ -185,7 +160,9 @@ extension AppController {
         if let reference = args["pane"]?.string {
             dropped = dragPane(try resolve(reference))
         } else if let tab = args["tab"]?.string {
+            scriptedCancel = args["cancel"]?.bool == true
             dropped = dragTab(tab)
+            scriptedCancel = false
         } else {
             scriptedDrag = nil
             throw KannaError("bad_request", "debug.drag needs pane, tab or divider")

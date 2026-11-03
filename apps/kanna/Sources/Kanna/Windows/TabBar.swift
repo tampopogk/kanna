@@ -10,7 +10,7 @@ final class TabBar: NSView {
     var onNew: (() -> Void)?
     var onRename: ((String, String) -> Void)?
     var onEditEnded: (() -> Void)?
-    var onDrag: ((String) -> Void)?
+    var onDrag: ((String, CGFloat) -> Void)?
     var onMoveToNewWindow: ((String) -> Void)?
     var onPage: ((String) -> Void)?
     var onCycle: ((Int) -> Void)?
@@ -45,14 +45,11 @@ final class TabBar: NSView {
         shownPages = pages
         shownPage = page
         subviews.forEach { $0.removeFromSuperview() }
-        var x: CGFloat = 8
         for name in pages {
             let item = PageItem(title: name, active: name == page)
             item.onSelect = { [weak self] in self?.onPage?(name) }
             item.onCycle = { [weak self] step in self?.onCycle?(step) }
-            item.frame.origin = NSPoint(x: x, y: 0)
             addSubview(item)
-            x += item.frame.width + 2
         }
         for tab in tabs {
             let item = TabItem(id: tab.id, title: tab.title, active: tab.active)
@@ -60,20 +57,102 @@ final class TabBar: NSView {
             item.onClose = { [weak self] in self?.onClose?(tab.id) }
             item.onRename = { [weak self] title in self?.onRename?(tab.id, title) }
             item.onEditEnded = { [weak self] in self?.onEditEnded?() }
-            item.onDrag = { [weak self] in self?.onDrag?(tab.id) }
+            item.onDrag = { [weak self] grab in self?.onDrag?(tab.id, grab) }
             item.onMoveToNewWindow = { [weak self] in self?.onMoveToNewWindow?(tab.id) }
-            item.frame.origin = NSPoint(x: x, y: 0)
             addSubview(item)
-            x += item.frame.width + 2
         }
         let plus = NSButton(title: "+", target: self, action: #selector(newTab))
         plus.isBordered = false
         plus.font = .systemFont(ofSize: 15)
         plus.contentTintColor = .secondaryLabelColor
-        plus.frame = NSRect(x: x + 4, y: (TabBar.height - 22) / 2, width: 22, height: 22)
+        plus.frame.size = NSSize(width: 22, height: 22)
         plus.toolTip = "New tab"
         addSubview(plus)
         self.plus = plus
+        place(animated: false)
+    }
+
+    struct Gap: Equatable {
+        let owner: ObjectIdentifier
+        let hiding: String
+        let width: CGFloat
+        let index: Int?
+    }
+
+    private(set) var gap: Gap?
+
+    func setGap(_ gap: Gap?, animated: Bool) {
+        guard gap != self.gap else { return }
+        self.gap = gap
+        place(animated: animated)
+    }
+
+    func clearGap(owner: ObjectIdentifier, animated: Bool) {
+        guard gap?.owner == owner else { return }
+        setGap(nil, animated: animated)
+    }
+
+    private var tabsStart: CGFloat {
+        subviews.compactMap { $0 as? PageItem }.reduce(8) { $0 + $1.frame.width + 2 }
+    }
+
+    private func others(hiding: String?) -> [TabItem] { items.filter { $0.id != hiding } }
+
+    func gapIndex(center: CGFloat, width: CGFloat, hiding: String?) -> Int {
+        var x = tabsStart
+        for (i, item) in others(hiding: hiding).enumerated() {
+            if center <= x + (item.frame.width + width) / 2 { return i }
+            x += item.frame.width + 2
+        }
+        return others(hiding: hiding).count
+    }
+
+    func gapRect(_ index: Int, width: CGFloat, hiding: String?) -> NSRect {
+        let x = others(hiding: hiding).prefix(index).reduce(tabsStart) { $0 + $1.frame.width + 2 }
+        return NSRect(x: x, y: 0, width: width, height: TabBar.height)
+    }
+
+    func tabsSpan(hiding: String?) -> ClosedRange<CGFloat> {
+        tabsStart...others(hiding: hiding).reduce(tabsStart) { $0 + $1.frame.width + 2 }
+    }
+
+    func index(of id: String) -> Int? { items.firstIndex { $0.id == id } }
+
+    func frame(of id: String) -> NSRect? { items.first { $0.id == id }?.frame }
+
+    func image(of id: String) -> NSImage? {
+        guard let item = items.first(where: { $0.id == id }), let rep = item.bitmapImageRepForCachingDisplay(in: item.bounds) else { return nil }
+        item.cacheDisplay(in: item.bounds, to: rep)
+        let image = NSImage(size: item.bounds.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    private func place(animated: Bool) {
+        var x: CGFloat = 8
+        var moves: [(NSView, NSPoint)] = []
+        for page in subviews.compactMap({ $0 as? PageItem }) {
+            moves.append((page, NSPoint(x: x, y: 0)))
+            x += page.frame.width + 2
+        }
+        var shown = 0
+        for item in items {
+            item.isHidden = item.id == gap?.hiding
+            if item.isHidden { continue }
+            if let gap, shown == gap.index { x += gap.width + 2 }
+            moves.append((item, NSPoint(x: x, y: 0)))
+            x += item.frame.width + 2
+            shown += 1
+        }
+        if let gap, gap.index == shown { x += gap.width + 2 }
+        if let plus { moves.append((plus, NSPoint(x: x + 4, y: (TabBar.height - 22) / 2))) }
+        guard animated else { return moves.forEach { $0.0.setFrameOrigin($0.1) } }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
+            context.allowsImplicitAnimation = true
+            for (view, origin) in moves where view.frame.origin != origin { view.animator().setFrameOrigin(origin) }
+        }
     }
 
     var pageItems: [(title: String, center: NSPoint)] {
@@ -88,12 +167,6 @@ final class TabBar: NSView {
         if let item = items.first(where: { $0.frame.contains(point) }) { return (item.id, item.frame) }
         if let plus, plus.frame.insetBy(dx: -4, dy: -3).contains(point) { return (nil, plus.frame) }
         return nil
-    }
-
-    func insertion(at x: CGFloat) -> (index: Int, x: CGFloat) {
-        let items = items
-        if let i = items.firstIndex(where: { x < $0.frame.midX }) { return (i, items[i].frame.minX - 1) }
-        return (items.count, (items.last?.frame.maxX ?? 8) + 1)
     }
 
     func center(of id: String) -> NSPoint? {
@@ -160,7 +233,7 @@ private final class TabItem: NSView, NSTextFieldDelegate {
     var onClose: (() -> Void)?
     var onRename: ((String) -> Void)?
     var onEditEnded: (() -> Void)?
-    var onDrag: (() -> Void)?
+    var onDrag: ((CGFloat) -> Void)?
     var onMoveToNewWindow: (() -> Void)?
     private let active: Bool
     private let label: NSTextField
@@ -200,10 +273,14 @@ private final class TabItem: NSView, NSTextFieldDelegate {
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 { return startEditing() }
         let origin = screenPoint(event)
+        let grab = convert(event.locationInWindow, from: nil).x
         while let next = NSApp.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
             if next.type == .leftMouseUp { break }
             let point = screenPoint(next)
-            if hypot(point.x - origin.x, point.y - origin.y) >= 5 { return drag() }
+            if hypot(point.x - origin.x, point.y - origin.y) >= 5 {
+                onDrag?(grab)
+                return
+            }
         }
         onSelect?()
     }
@@ -216,12 +293,6 @@ private final class TabItem: NSView, NSTextFieldDelegate {
     }
 
     @objc private func moveToNewWindow() { onMoveToNewWindow?() }
-
-    private func drag() {
-        alphaValue = 0.5
-        onDrag?()
-        alphaValue = 1
-    }
 
     private func startEditing() {
         guard editor == nil else { return }

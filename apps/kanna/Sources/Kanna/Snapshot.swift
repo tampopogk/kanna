@@ -10,6 +10,10 @@ enum Snapshot {
         return unsafeBitCast(symbol, to: CreateImage.self)
     }()
 
+    static func image(of window: NSWindow) -> CGImage? {
+        createImage?(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), CGWindowImageOption([.boundsIgnoreFraming, .bestResolution]).rawValue)?.takeRetainedValue()
+    }
+
     static func capture(_ window: NSWindow, terminals: [TerminalSurfaceView]) async throws -> CGImage {
         window.displayIfNeeded()
         let hidden = terminals.filter(\.hiddenFromGhostty).map { ($0, $0.presented) }

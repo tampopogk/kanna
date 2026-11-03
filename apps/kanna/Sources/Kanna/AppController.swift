@@ -694,7 +694,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
-        controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }
+        controller.tabBar.onDrag = { [weak self] tab, grab in self?.dragTab(tab, grab: grab) }
         controller.tabBar.onMoveToNewWindow = { [weak self] tab in self?.layoutCommand("move-tab", ["tab": .string(tab), "window": "new"]) }
         controller.tabBar.onEditEnded = { [weak self, weak controller] in
             guard let self, let controller else { return }
