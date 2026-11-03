@@ -95,8 +95,6 @@ extension AppController {
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
             ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
-            ("Task Waiting Longest", #selector(activateWaitingTask), nil, .shiftCmd("A")),
-            nil,
             ("Desk Task 1", #selector(activateDeskTask1), "goto_tab:1", .cmd("1")),
             ("Desk Task 2", #selector(activateDeskTask2), "goto_tab:2", .cmd("2")),
         ])
@@ -288,7 +286,6 @@ extension AppController {
             item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
             return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
         case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
-        case #selector(activateWaitingTask): return waitingTask != nil
         case #selector(activateDeskTask1): return keyedDeskTask(1) != nil
         case #selector(activateDeskTask2): return keyedDeskTask(2) != nil
         default: return true
@@ -452,17 +449,6 @@ extension AppController {
 
     @objc func activateDeskTask1() { activateDeskTask(1) }
     @objc func activateDeskTask2() { activateDeskTask(2) }
-
-    private var waitingTask: (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.deskTasks,
-              let task = agentStatuses.waitingLongest(among: tasks.map(\.id)) else { return nil }
-        return (task, window)
-    }
-
-    @objc func activateWaitingTask() {
-        guard let (task, window) = waitingTask else { return }
-        activateTask(task, into: window)
-    }
 
     private func keyedDeskTask(_ place: Int) -> (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }

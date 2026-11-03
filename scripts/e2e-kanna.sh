@@ -2117,11 +2117,6 @@ desk_tasks() {
   check wait_for 5 is asker status idle || return 1
   kanna send asker ask || return 1
   check wait_for 5 is asker status needs-you || return 1
-  check wait_for 5 eval '[[ "$(desk tasks.0.task)" == "$(pane asker id)" ]]' || { desk tasks; return 1; }
-  key cmd+shift+a
-  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$(pane asker id)" ]]' || return 1
-  key cmd+1
-  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == term-1 ]]' || { echo "desk_tasks line $LINENO"; app_view; return 1; }
   kanna task done asker >/dev/null || return 1
   KANNA_TERMINAL=term-1 kanna open --name side >/dev/null || return 1
   check wait_for 5 eval '[[ "$(dwin d1 tabs.1.panes.0)" == "$(pane side id)" ]]' || return 1
