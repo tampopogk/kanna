@@ -188,19 +188,12 @@ impl Supervisor {
         let result = match first.op() {
             "hello" => frame::send(&mut conn, &json!({ "op": "hello", "versions": self.versions(), "identity": identity() }), b""),
             "run" => self.run(&mut conn, &first, &payload),
-            "attach" => {
-                let job = self.job(first.str("job").unwrap_or_default())?;
-                self.attach(&mut conn, &job, offsets(&first.header["at"]))
-            }
-            "cancel" => {
-                let job = self.job(first.str("job").unwrap_or_default())?;
+            "attach" => self.job(first.str("job").unwrap_or_default()).and_then(|job| self.attach(&mut conn, &job, offsets(&first.header["at"]))),
+            "cancel" => self.job(first.str("job").unwrap_or_default()).and_then(|job| {
                 self.cancel(&job);
                 frame::send(&mut conn, &json!({ "op": "ok", "status": job.status() }), b"")
-            }
-            "status" => {
-                let job = self.job(first.str("job").unwrap_or_default())?;
-                frame::send(&mut conn, &json!({ "op": "status", "status": job.status() }), b"")
-            }
+            }),
+            "status" => self.job(first.str("job").unwrap_or_default()).and_then(|job| frame::send(&mut conn, &json!({ "op": "status", "status": job.status() }), b"")),
             other => Err(bad(format!("no op {other:?}"))),
         };
         if let Err(e) = &result {

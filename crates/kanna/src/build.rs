@@ -109,13 +109,7 @@ pub fn run(socket: PathBuf, options: Options) -> Result<i32, Failure> {
     let outcome = std::thread::scope(|scope| {
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let connect = &connect;
-        scope.spawn(move || {
-            while done_rx.recv_timeout(Duration::from_millis(200)).is_err() {
-                if INTERRUPTED.swap(false, Ordering::SeqCst) {
-                    let _ = client::cancel(connect, &job);
-                }
-            }
-        });
+        scope.spawn(move || client::watch_cancel(connect, &job, &INTERRUPTED, &done_rx));
         let (stdout, stderr) = (io::stdout(), io::stderr());
         let outcome = client::run(connect, &request, &worktree, &mut stdout.lock(), &mut stderr.lock());
         let _ = done_tx.send(());

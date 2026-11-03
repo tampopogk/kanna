@@ -476,8 +476,17 @@ impl<R: Read> Read for Counted<R> {
     }
 }
 
-pub fn cancel(connect: Connect, job: &str) -> io::Result<()> {
+pub fn cancel(connect: Connect, job: &str) -> io::Result<bool> {
     let mut conn = connect()?;
     frame::send(&mut conn, &json!({ "op": "cancel", "job": job }), b"")?;
-    frame::read(&mut conn, 1 << 20).map(drop)
+    Ok(frame::read(&mut conn, 1 << 20)?.0.op() == "ok")
+}
+
+pub fn watch_cancel(connect: Connect, job: &str, requested: &std::sync::atomic::AtomicBool, done: &std::sync::mpsc::Receiver<()>) {
+    let mut sent = false;
+    while done.recv_timeout(Duration::from_millis(200)).is_err() {
+        if !sent && requested.load(std::sync::atomic::Ordering::SeqCst) {
+            sent = cancel(connect, job).unwrap_or(false);
+        }
+    }
 }

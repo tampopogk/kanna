@@ -199,6 +199,29 @@ fn a_build_mac_that_sends_garbage_fails_the_build_without_retrying() {
     assert!(started.elapsed() < Duration::from_secs(4));
 }
 
+#[test]
+fn a_cancel_asked_for_before_the_job_reaches_the_build_mac_still_cancels_it() {
+    let rig = rig("earlycancel");
+    let (req, worktree) = request(&rig, &["sleep", "30"]);
+    let socket = rig.socket.clone();
+    let connect = move || -> io::Result<Box<dyn Pipe>> { Ok(Box::new(UnixStream::connect(&socket)?)) };
+    let early = client::cancel(&connect, &req.job);
+    assert!(matches!(early, Ok(false)), "{early:?}");
+    let requested = std::sync::atomic::AtomicBool::new(true);
+    let started = Instant::now();
+    let outcome = std::thread::scope(|scope| {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (connect, job, requested) = (&connect, req.job.clone(), &requested);
+        scope.spawn(move || client::watch_cancel(connect, &job, requested, &done_rx));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let outcome = client::run(connect, &req, &worktree, &mut out, &mut err);
+        let _ = done_tx.send(());
+        outcome
+    });
+    assert_eq!(outcome, Outcome::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(20));
+}
+
 struct Dropping {
     inner: UnixStream,
     drops: bool,
