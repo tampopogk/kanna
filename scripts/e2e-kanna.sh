@@ -3858,7 +3858,7 @@ real_agent_program_status() {
       check wait_for 60 eval 'shows "$pane" "SHELL_IN_BACKGROUND_DONE" && [[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: claude's turn didn't end idle with its background shell running but $(reported "$pane")"; kanna read "$pane"; return 1; }
       [[ ! -e "$repo/background-done.txt" ]] || { echo "real_agent_program_status: claude's background shell ended before its turn did"; return 1; }
       check wait_for 30 eval '[[ -e "$repo/background-done.txt" ]]' || { echo "real_agent_program_status: claude's background shell didn't finish"; return 1; }
-      check wait_for 2 eval '[[ "$(reported "$pane")" == working* ]]' || { echo "real_agent_program_status: claude wasn't working within Shelf runners' 2s grace once its background shell ended but $(reported "$pane")"; kanna read "$pane"; return 1; }
+      check wait_for 10 eval '[[ "$(reported "$pane")" == working* ]]' || { echo "real_agent_program_status: claude wasn't working within Shelf runners' 10s grace once its background shell ended but $(reported "$pane")"; kanna read "$pane"; return 1; }
       check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status line $LINENO"; return 1; }
     fi
     [[ $agent == codex ]] || continue
@@ -4885,11 +4885,11 @@ print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"]
   check test "$(waited $(tid 9))" == "sleep 4" || { echo "shelf_runners: why it waits isn't in its events: $(waited $(tid 9))"; return 1; }
   check wait_for 10 shows "$bg" BACKGROUND_EXITED || { kanna read "$bg"; return 1; }
   local exited stopped; exited="$(clock)"
-  sleep 1
+  sleep 5
   check test "$(of $(tid 9) 2)" == running || { echo "shelf_runners: the background task was stopped within the grace"; shelf; return 1; }
-  check wait_for 10 eval '[[ "$(of $(tid 9) 2)" == stopped:finished ]]' || { echo "shelf_runners: the background task didn't stop once its command was done"; shelf; return 1; }
+  check wait_for 20 eval '[[ "$(of $(tid 9) 2)" == stopped:finished ]]' || { echo "shelf_runners: the background task didn't stop once its command was done"; shelf; return 1; }
   stopped="$(clock)"
-  python3 -c 'import sys; sys.exit(not float(sys.argv[2]) - float(sys.argv[1]) >= 1.5)' "$exited" "$stopped" || { echo "shelf_runners: the background task stopped before the grace passed"; return 1; }
+  python3 -c 'import sys; sys.exit(not float(sys.argv[2]) - float(sys.argv[1]) >= 8)' "$exited" "$stopped" || { echo "shelf_runners: the background task stopped before the grace passed"; return 1; }
   local wakes; wakes="$(of $(tid 10) 3)"
   check wait_for 30 eval '[[ "$(of $(tid 10) 2)" == stopped:finished ]]' || { echo "shelf_runners: the task woken by its background command didn't stop"; shelf; kanna read "$wakes"; return 1; }
   shows "$wakes" WOKE_DONE || { echo "shelf_runners: the task that worked again within the grace was stopped mid-turn"; kanna read "$wakes"; return 1; }

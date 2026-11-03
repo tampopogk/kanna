@@ -5623,7 +5623,8 @@ mod tests {
         assert_eq!(waits[0]["why"], "background");
         assert_eq!(waits[0]["processes"], json!([{ "pid": 4242, "command": "sleep 30" }]));
         child.borrow_mut().clear();
-        let ended = Instant::now();
+        let ended = Instant::now() - kanna_detect::turn::GRACE + Duration::from_millis(300);
+        t.tasks.turns.borrow_mut().get_mut(&pane).unwrap().background(false, ended);
         t.pump();
         assert!(t.tasks.quitting.borrow().is_empty(), "the grace");
         t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
@@ -5635,9 +5636,10 @@ mod tests {
     fn an_agent_that_works_again_in_the_grace_keeps_running_and_stop_is_immediate() {
         let (t, pane, child) = idle_with_a_child("woken");
         child.borrow_mut().clear();
+        t.tasks.turns.borrow_mut().get_mut(&pane).unwrap().background(false, Instant::now() - kanna_detect::turn::GRACE + Duration::from_millis(200));
         t.pump();
         t.tasks.status(&pane, Some("working"), false);
-        let by = Instant::now() + kanna_detect::turn::GRACE + Duration::from_millis(300);
+        let by = Instant::now() + Duration::from_millis(500);
         while Instant::now() < by {
             t.pump();
             std::thread::sleep(Duration::from_millis(20));

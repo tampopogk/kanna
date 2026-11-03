@@ -1,7 +1,7 @@
 use crate::agents::Status;
 use std::time::{Duration, Instant};
 
-pub const GRACE: Duration = Duration::from_secs(2);
+pub const GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Background {

@@ -23,7 +23,7 @@ stateDiagram-v2
     running --> finished: its turn ends
     running --> background: idle with background work running
     background --> running: it reports working
-    background --> finished: 2s after the last of it exits
+    background --> finished: 10s after the last of it exits
     needs_you --> desk: Move to Desk (resumes its session)
     finished --> desk: Move to Desk (resumes its session)
     running --> desk: Move to Desk (as it is)
@@ -47,7 +47,7 @@ Claude reports idle at the end of its turn while a command it started in the bac
 
 - **Background work is a process under the agent outside its process group:** a live descendant of the agent's process whose group isn't the agent's, such as Claude's shells (each runs in a session of its own) and what they run (a build, a server). The agent's own helpers stay in its group and don't count: MCP servers, `caffeinate`, the `git` it runs to show the branch. A process that left the tree (a daemon that detached and was reparented) doesn't count, nor does one that has exited but isn't reaped yet.
 - **The runner stays taken while it waits,** with no time limit: a command that never ends holds its runner until you stop the task. Idle with work running isn't shown anywhere either; the task's events say it waits and for what (`waiting`, with `why: background` and each process's pid and command), and the daemon log names them.
-- **Then a grace of 2s:** once the last of it exits, Kanna waits 2s before it stops the task, since the command finishing wakes the agent (Claude tells itself the command completed) and it starts a new turn. A working report in the grace cancels the stop; that turn ends as any other. Real Claude 2.1.317 reported working 45 to 54 ms after its background shell ended (six runs against the mock model), so 2s leaves a wide margin for a loaded Mac.
+- **Then a grace of 10s:** once the last of it exits, Kanna waits 10s before it stops the task, since the command finishing wakes the agent (Claude tells itself the command completed) and it starts a new turn. A working report in the grace cancels the stop; that turn ends as any other.
 - **Asking you waits too:** a turn that ends blocked (needs you) with background work running waits for it the same way.
 - **Only Claude is looked at** (and the mock agent named as it): codex reports working until its background terminals close ([agent status](agent-status.md#2-kannas-agents)), and runs two `app-server-daemon` processes in sessions of their own for as long as it runs, which would hold its runner for ever. Antigravity and opencode aren't measured, so Kanna takes their reports at their word.
 - **`kanna task stop` and Done are immediate:** they quit the agent at once, background work or not.
@@ -56,7 +56,7 @@ Claude reports idle at the end of its turn while a command it started in the bac
 
 - **The runners are the daemon's** (`Tasks::tick` in `tasks.rs`, the Shelf's code): every 2s, and whenever a task is made, edited, done or stopped, it starts each repo's oldest waiting tasks (never started, not blocked) until `shelf.runners` of them run. Tasks you start on the Shelf, or move there running, count too. With several machines, a runner also asks other machines for their waiting tasks in the same project, oldest first with its own ([machine tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **A turn's end is the agent's report:** `Turn` (`kanna-detect`) watches a running Shelf task's agent and says its turn is over when its root record goes from working to idle, done or blocked, counted by the terminal as the reports arrive, so a short turn between two looks isn't missed ([agent status](agent-status.md#3-the-report-osc-7501)).
-- **And its background work:** while a turn is quiet, `Tasks::tick` looks at the agent's tree every 0.5s (`program::background`: `proc_listchildpids` and each child's group from `proc_pidinfo` on macOS, `/proc` on Linux) for the agents in `agents::IDLE_WITH_BACKGROUND`, the agent being the program the terminal's status comes from. `Turn` keeps whether work runs or when it ended, and ends the turn only once it's quiet, nothing runs, and `turn::GRACE` (2s) has passed since the work ended.
+- **And its background work:** while a turn is quiet, `Tasks::tick` looks at the agent's tree every 0.5s (`program::background`: `proc_listchildpids` and each child's group from `proc_pidinfo` on macOS, `/proc` on Linux) for the agents in `agents::IDLE_WITH_BACKGROUND`, the agent being the program the terminal's status comes from. `Turn` keeps whether work runs or when it ended, and ends the turn only once it's quiet, nothing runs, and `turn::GRACE` (10s) has passed since the work ended.
 - **Each agent says how it quits and where its session is**, in `agent-rules/quit/AGENT.json`: the keys that quit it, and a pattern that finds its session ID in what it prints as it exits.
 
 | Agent | Quit with | Its session |
@@ -81,4 +81,4 @@ Claude reports idle at the end of its turn while a command it started in the bac
 | **Runner** | One of `shelf.runners` places in which a repo's Shelf tasks run by themselves |
 | **Turn** | An agent's work from your message (or its first) until it stops to wait for you, with no background work left running |
 | **Background work** | A process under a task's agent outside the agent's own process group, such as a shell it runs a command in the background in |
-| **Grace** | The 2s Kanna waits after the last background work exits before it stops the task, in case the agent starts a new turn for it |
+| **Grace** | The 10s Kanna waits after the last background work exits before it stops the task, in case the agent starts a new turn for it |
