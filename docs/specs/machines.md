@@ -62,7 +62,7 @@ flowchart LR
 | `mbp` | the client; still a Kanna machine for local projects | yes |
 | your Linux machines | run tasks: a box under the desk, a VM on it, a rented server | yes ([setup](machine-setup.md)) |
 | your other Macs | run tasks that need macOS, whole | yes |
-| a VM Kanna Cloud made | runs tasks, like a Linux machine of yours | yes, once it has joined ([Cloud §6](kanna-cloud.md#6-cloud-machines-and-enrollment)) |
+| a VM Kanna Cloud made | runs tasks, like a Linux machine of yours | yes, once it has joined ([Cloud §6](kanna-cloud.md#6-enrollment)) |
 | your relay | an `iroh-relay` at a stable address, for reach from away | no |
 
 **Placement: where work goes.**
@@ -86,7 +86,7 @@ Networking is built into the daemon with **[iroh](https://github.com/n0-computer
 In short ([detail](machine-identity.md)):
 
 - **The daemon has `device.key`**, an Ed25519 key that is its iroh endpoint and signs for the device. The app has its own endpoint key, certified by `device.key`. The CLI goes through the local daemon.
-- **Pairing** is a PAKE over a one-time code, run directly between your two devices. You are the only party: no server takes part. A machine Kanna Cloud makes is handed the code as a token instead ([Cloud §6](kanna-cloud.md#6-cloud-machines-and-enrollment)).
+- **Pairing** is a PAKE over a one-time code, run directly between your two devices. You are the only party: no server takes part. A machine Kanna Cloud makes is handed the code as a token instead ([Cloud §6](kanna-cloud.md#6-enrollment)).
 - **The peers form a signed log**, replicated to every peer. A revocation beats any later add, and a name that comes back with another key is refused. Signing a peer takes a gesture in the app.
 
 ## 5. The app link over the network

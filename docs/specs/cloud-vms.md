@@ -73,7 +73,7 @@ sequenceDiagram
 
 ## 3. Enrollment
 
-[Cloud §6](kanna-cloud.md#6-cloud-machines-and-enrollment)'s token pairing, on the existing PAKE ([identity §2](machine-identity.md#2-pairing)) with three changes:
+[Cloud §6](kanna-cloud.md#6-enrollment)'s token pairing, on the existing PAKE ([identity §2](machine-identity.md#2-pairing)) with three changes:
 
 - **An offer with a token:** `kanna machine pair --token-file FILE` offers the token instead of a six-digit code: 22 to 128 letters, digits, `-` and `_` (the provisioner's are 32 base-62 characters, about 190 bits), for 30 minutes, three tries, one use. Neither the offer's reply nor `machine list` ever shows it.
 - **Pairing through the relay:** `kanna machine pair T --peer KEY` with no address dials KEY through this machine's own relay, which the provisioner made the VM's too.

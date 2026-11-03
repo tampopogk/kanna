@@ -1,6 +1,6 @@
 # Machines: Identity and Pairing
 
-**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Cloud:** [enrollment by token](kanna-cloud.md#6-cloud-machines-and-enrollment), [hosted peers](kanna-cloud.md#10-threat-model) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
+**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Cloud:** [enrollment by token](kanna-cloud.md#6-enrollment), [hosted peers](kanna-cloud.md#10-threat-model) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
 
 How one of your machines knows another is yours, with no account and no server. The rule, here and in [Kanna Cloud](kanna-cloud.md): **trust comes from your devices, never from a server.**
 
@@ -25,7 +25,7 @@ How one of your machines knows another is yours, with no account and no server. 
 
 ## 2. Pairing
 
-A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. (Kanna Cloud reuses it with a token instead of a typed code: [enrollment](kanna-cloud.md#6-cloud-machines-and-enrollment).)
+A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. (Kanna Cloud reuses it with a token instead of a typed code: [enrollment](kanna-cloud.md#6-enrollment).)
 
 ```mermaid
 sequenceDiagram
