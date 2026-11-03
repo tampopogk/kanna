@@ -799,22 +799,25 @@ impl CoreHandle {
         if kind == PaneType::Code && empty("path") {
             return Err(bad_request("code panes need a path"));
         }
-        if kind == PaneType::Diff && empty("path") {
-            return Err(bad_request("diff panes need a path: the folder git runs in"));
+        if matches!(kind, PaneType::Diff | PaneType::Log) && empty("path") {
+            return Err(bad_request(format!("{} panes need a path: the folder git runs in", kind.as_str())));
         }
         if kind == PaneType::Serial && empty("path") {
             return Err(bad_request("serial panes need a path: the port"));
         }
-        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Serial) {
-            return Err(bad_request("path is only for markdown, code, diff and serial panes"));
+        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial) {
+            return Err(bad_request("path is only for markdown, code, diff, log and serial panes"));
         }
         if (args.get("baud").is_some() || args.get("lineEnding").is_some()) && kind != PaneType::Serial {
             return Err(bad_request("baud and lineEnding are only for serial panes"));
         }
         let baud = read_baud(args.get("baud"))?;
         let line_ending = read_line_ending(args.get("lineEnding"))?;
-        if (args.get("args").is_some() || args.get("view").is_some()) && kind != PaneType::Diff {
-            return Err(bad_request("args and view are only for diff panes"));
+        if args.get("args").is_some() && !matches!(kind, PaneType::Diff | PaneType::Log) {
+            return Err(bad_request("args are only for diff and log panes"));
+        }
+        if args.get("view").is_some() && kind != PaneType::Diff {
+            return Err(bad_request("view is only for diff panes"));
         }
         let diff = read_diff_args(args.get("args"))?;
         let view = read_view(args.get("view"))?;
@@ -964,8 +967,8 @@ impl CoreHandle {
             if matches!(kind, PaneType::Code | PaneType::Md) {
                 pane.stop = args.get("tour").and_then(StopMark::from_json);
             }
-            if kind == PaneType::Diff {
-                pane.diff = Some(diff.unwrap_or_default());
+            if matches!(kind, PaneType::Diff | PaneType::Log) {
+                pane.git_args = Some(diff.unwrap_or_default());
                 pane.view = view;
             }
             if kind == PaneType::Serial {
@@ -1325,11 +1328,11 @@ impl CoreHandle {
             None
         };
         let mut changed = pane.clone();
-        if pane.kind == PaneType::Diff {
+        if matches!(pane.kind, PaneType::Diff | PaneType::Log) {
             if step.is_some() {
-                return Err(bad_request("a diff pane keeps no history"));
+                return Err(bad_request(format!("a {} pane keeps no history", pane.kind.as_str())));
             }
-            changed.diff = Some(read_diff_args(args.get("args"))?.unwrap_or_default());
+            changed.git_args = Some(read_diff_args(args.get("args"))?.unwrap_or_default());
         } else if matches!(pane.kind, PaneType::Md | PaneType::Code) {
             let code = pane.kind == PaneType::Code;
             if !code && args.get("line").is_some() {
@@ -1359,7 +1362,7 @@ impl CoreHandle {
             if pane.kind != PaneType::Web {
                 return Err(KmuxError::new(
                     "wrong_type",
-                    format!("{} is a {} pane; navigate only works on web, markdown, code and diff panes", pane.label(), pane.kind.as_str()),
+                    format!("{} is a {} pane; navigate only works on web, markdown, code, diff and log panes", pane.label(), pane.kind.as_str()),
                 ));
             }
             if let Some(step) = step {
@@ -1385,7 +1388,7 @@ impl CoreHandle {
             pane.path = changed.path;
             pane.line = changed.line;
             pane.url = changed.url;
-            pane.diff = changed.diff;
+            pane.git_args = changed.git_args;
         }
         let snapshot = self.reload(&pane.id, false).await;
         Ok(reply([("pane", self.summary(&pane.id, &snapshot))]))

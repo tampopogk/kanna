@@ -250,6 +250,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onStart = { [weak self] pane in self?.startContent(pane) }
         link.onStop = { [weak self] pane in self?.contents.stop(pane) }
         link.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
+        link.onLog = { [weak self] content, message in self?.contents.received(log: message, content: content) }
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
@@ -316,6 +317,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         contents.subscribeDiffs(on: machine)
+        contents.subscribeLogs(on: machine)
         contents.subscribeFiles(on: machine)
         contents.subscribeSerials(on: machine)
         loadRecent()
