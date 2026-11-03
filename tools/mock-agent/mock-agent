@@ -32,7 +32,16 @@ def composer():
     out("\r\n› \r\n  ? for shortcuts\x1b[1A\x1b[3G")
 
 
+REPORTS = os.environ.get("MOCK_AGENT_REPORTS") == "1"
+
+
+def report(state):
+    if REPORTS:
+        out(f"\x1b]7501;state={state}\x1b\\")
+
+
 def work(seconds):
+    report("working")
     out("\x1b]9;4;3\x07")
     start = time.monotonic()
     frame = 0
@@ -42,6 +51,7 @@ def work(seconds):
         frame += 1
         time.sleep(0.1)
     out("\r\x1b[2K\x1b]9;4;0\x07")
+    report("idle")
 
 
 CHOICES = ["Yes", "No"]

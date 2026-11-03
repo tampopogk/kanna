@@ -1,4 +1,4 @@
-use crate::db::{self, Change, Db, Message, Place, Row};
+use crate::db::{self, Change, Comment, Db, Message, Place, Row};
 use crate::desk_news::{self, Merge, News, What};
 use crate::messages::{self, Channel, Ready, PLANNER, USER};
 use crate::replica::{self, Grant, Hlc, Permit, Replica, Roster};
@@ -269,6 +269,32 @@ pub fn scripts(files: &[PathBuf]) -> Scripts {
         teardown: configured(files, "tasks", "teardown", command, "a shell command"),
         timeout: configured(files, "tasks", "timeout", timeout, "a number of seconds from 1 to 86400").unwrap_or(task_scripts::TIMEOUT),
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoverageSettings {
+    pub command: String,
+    pub every: u64,
+    pub timeout: u64,
+}
+
+pub fn coverage_settings(home: &Path, repo: &Path) -> Option<CoverageSettings> {
+    let mine = [home.join(".kanna-v4/config.json")];
+    let wanted = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+    let command = |value: &Value| {
+        value.as_object()?.iter().find_map(|(folder, command)| {
+            let folder = match folder.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => PathBuf::from(folder),
+            };
+            (folder.canonicalize().unwrap_or(folder) == wanted).then(|| command.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from)).flatten()
+        })
+    };
+    Some(CoverageSettings {
+        command: configured(&mine, "stats", "coverage", |v: &Value| Some(command(v)), "an object of project folders to shell commands")??,
+        every: configured(&mine, "stats", "coverageEvery", |v: &Value| v.as_u64().filter(|h| (1..=168).contains(h)), "a number of hours from 1 to 168").unwrap_or(6),
+        timeout: configured(&mine, "stats", "coverageTimeout", |v: &Value| v.as_u64().filter(|t| (60..=86400).contains(t)), "a number of seconds from 60 to 86400").unwrap_or(7200),
+    })
 }
 
 /// The planning agent's first message, which tells it it's the planner.
@@ -594,6 +620,7 @@ fn allowed(on: &[String], name: &str) -> bool {
 }
 
 enum Candidate {
+    Wake(Entry),
     Here(Entry),
     There { task: String, birth: String, owner: String },
     Take { task: String, birth: String, owner: String },
@@ -2084,6 +2111,16 @@ impl Tasks {
         }
     }
 
+    fn stopped_at(&self, pane: &str, last: &str) {
+        let Some(mut entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return };
+        entry.stopped = Some(last.to_string());
+        let _ = self.store(&entry, Place::Shelf, Some(pane), None);
+        if let Some(found) = self.entries.borrow_mut().iter_mut().find(|e| e.id == entry.id) {
+            *found = entry;
+        }
+        self.changed();
+    }
+
     fn stopped_by_itself(&self, pane: &str, why: &str, session: Option<String>) {
         let Some(mut entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return };
         entry.stopped = Some(why.to_string());
@@ -2117,58 +2154,16 @@ impl Tasks {
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
-            let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
-            let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
-            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).collect();
-            woken.sort_by(|a, b| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id)));
-            for entry in woken {
-                if busy >= slots {
-                    break;
-                }
-                busy += 1;
-                log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
-                self.wake(core, (*entry).clone());
-            }
-            let mut waiting: Vec<(bool, Hlc, Candidate)> = mine
-                .iter()
-                .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
-                .filter(|e| heard || e.birth.is_none() || e.on == [machines.me.name.clone()])
-                .map(|e| (mail.contains(&e.id), order(e), Candidate::Here((*e).clone())))
-                .collect();
-            let others = || {
-                let replica = self.replica.borrow();
-                let any = replica.records().any(|r| r.text("state") == Some("waiting") && r.text("owner").is_some_and(|o| o != replica.me()));
-                any
-            };
-            if let Some(project) = others().then(|| identity(&repo)).flatten() {
-                let replica = self.replica.borrow();
-                for record in replica.records() {
-                    let owner = record.text("owner").unwrap_or_default();
-                    let eligible = record.text("project") == Some(project.as_str())
-                        && record.text("state") == Some("waiting")
-                        && !owner.is_empty()
-                        && owner != replica.me()
-                        && !self.is_open(&record.task)
-                        && !asked.contains(&record.task)
-                        && replica.births(&record.task).len() == 1
-                        && allowed(&record.list("on"), &machines.me.name)
-                        && !self.refused.borrow().contains_key(&record.task)
-                        && record.list("after").iter().all(|id| !self.is_open(id) && !replica.open_task(id));
-                    let (task, birth, owner) = (record.task.clone(), record.birth.clone(), owner.to_string());
-                    if eligible && self.away_long(&owner, now) {
-                        waiting.push((false, record.born(), Candidate::Take { task, birth, owner }));
-                    } else if eligible && !self.is_away(&owner, now) {
-                        waiting.push((false, record.born(), Candidate::There { task, birth, owner }));
-                    }
-                }
-            }
-            waiting.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            for (_, _, candidate) in waiting {
+            for candidate in self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now) {
                 if busy >= slots {
                     break;
                 }
                 busy += 1;
                 match candidate {
+                    Candidate::Wake(entry) => {
+                        log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
+                        self.wake(core, entry);
+                    }
                     Candidate::Here(entry) => {
                         let (this, id) = (Rc::downgrade(self), entry.id.clone());
                         log!("kanna-daemon: {id} runs on the Shelf ({busy} of {slots} in {repo})");
@@ -2208,6 +2203,47 @@ impl Tasks {
                 }
             }
         }
+    }
+
+    fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<Candidate> {
+        let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
+        let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
+        let woken = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
+        let new = mine
+            .iter()
+            .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
+            .filter(|e| heard || e.birth.is_none() || e.on == [machines.me.name.clone()])
+            .map(|e| (order(e), Candidate::Here((*e).clone())));
+        let mut waiting: Vec<(Hlc, Candidate)> = woken.chain(new).collect();
+        let others = || {
+            let replica = self.replica.borrow();
+            let any = replica.records().any(|r| r.text("state") == Some("waiting") && r.text("owner").is_some_and(|o| o != replica.me()));
+            any
+        };
+        if let Some(project) = others().then(|| identity(repo)).flatten() {
+            let replica = self.replica.borrow();
+            for record in replica.records() {
+                let owner = record.text("owner").unwrap_or_default();
+                let eligible = record.text("project") == Some(project.as_str())
+                    && record.text("state") == Some("waiting")
+                    && !owner.is_empty()
+                    && owner != replica.me()
+                    && !self.is_open(&record.task)
+                    && !asked.contains(&record.task)
+                    && replica.births(&record.task).len() == 1
+                    && allowed(&record.list("on"), &machines.me.name)
+                    && !self.refused.borrow().contains_key(&record.task)
+                    && record.list("after").iter().all(|id| !self.is_open(id) && !replica.open_task(id));
+                let (task, birth, owner) = (record.task.clone(), record.birth.clone(), owner.to_string());
+                if eligible && self.away_long(&owner, now) {
+                    waiting.push((record.born(), Candidate::Take { task, birth, owner }));
+                } else if eligible && !self.is_away(&owner, now) {
+                    waiting.push((record.born(), Candidate::There { task, birth, owner }));
+                }
+            }
+        }
+        waiting.sort_by(|a, b| a.0.cmp(&b.0));
+        waiting.into_iter().map(|(_, candidate)| candidate).collect()
     }
 
     fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
@@ -2385,8 +2421,9 @@ impl Tasks {
                     Some("activated") => responder.reply(this.activated(&args)),
                     Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
+                    Some("comment") => this.comment(&args, responder),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, send or messages"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, send, comment or messages"))),
                 }
             }),
         );
@@ -2624,7 +2661,7 @@ impl Tasks {
             (id, entry.repo, Some(program(&entry.agent).to_string()))
         };
         let mode = if from == USER { None } else { who(args).and_then(|pane| self.permissions(pane)) };
-        let message = self.queue(&recipient, &repo, &from, text, mode)?;
+        let message = self.queue(&recipient, &repo, &from, text, mode, None)?;
         let pane = self.recipient_pane(&message, &self.planners());
         let state = match &pane {
             Some(pane) => self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
@@ -2642,8 +2679,72 @@ impl Tasks {
         Ok(Map::from_iter([("message".to_string(), json!(message.id)), ("to".to_string(), to), ("state".to_string(), json!(state)), ("warning".to_string(), opt(warning.as_deref()))]))
     }
 
-    fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>) -> Result<Message, KmuxError> {
-        let message = self.db.put_message(recipient, repo, from, text, mode).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
+    fn comment(&self, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let (Some(pane), Some(text)) = (string(args, "pane").map(|pane| core.pane(pane).map_or_else(|| pane.to_string(), |p| p.id)), string(args, "text").filter(|t| !t.trim().is_empty())) else {
+            return responder.reply(Err(bad("a comment needs the agent's pane and its text")));
+        };
+        let comment = match (string(args, "doc"), string(args, "thread")) {
+            (Some(file), Some(thread)) if Path::new(file).is_absolute() => Comment { file: file.into(), thread: thread.into() },
+            _ => return responder.reply(Err(bad("a comment needs its doc (an absolute path) and its thread"))),
+        };
+        if let Some((recipient, repo)) = self.comment_recipient(&pane) {
+            let reply = self.queue(&recipient, &repo, USER, text, None, Some(&comment)).map(|message| {
+                log!("kanna-daemon: {}'s comment {} waits for {}", comment.file, comment.thread, self.label_of(&recipient));
+                Map::from_iter([("state".to_string(), json!("waiting")), ("message".to_string(), json!(message.id)), ("to".to_string(), json!(self.label_of(&recipient)))])
+            });
+            return responder.reply(reply);
+        }
+        core.handle(json!({ "cmd": "send", "args": { "pane": pane, "text": text } }), move |reply| {
+            responder.reply(match failed(&reply) {
+                Some(error) => Err(error),
+                None => Ok(Map::from_iter([("state".to_string(), json!("sent"))])),
+            })
+        });
+    }
+
+    fn comment_recipient(&self, pane: &str) -> Option<(String, String)> {
+        let core = self.core.upgrade()?;
+        let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none());
+        if let Some(id) = self.task_of(pane).filter(|id| self.is_open(id)) {
+            let entry = self.known(&id)?;
+            let takes = if alive(&core, pane) { door(pane) } else { messages::AGENTS.contains(&program(&entry.agent)) };
+            return takes.then_some((id, entry.repo));
+        }
+        if !self.planners().iter().any(|p| p == pane) || !door(pane) {
+            return None;
+        }
+        let repo = core.pane(pane).and_then(|p| project(p.cwd.as_deref()))?.to_string_lossy().into_owned();
+        let probe = Message { id: 0, recipient: PLANNER.into(), repo: repo.clone(), sender: USER.into(), at: 0.0, delivered: None, text: String::new(), mode: None, comment: None };
+        (self.recipient_pane(&probe, &self.planners()).as_deref() == Some(pane)).then_some((PLANNER.into(), repo))
+    }
+
+    fn mark_sent(&self, list: &[Message]) {
+        let waiting = self.waiting.borrow();
+        for comment in list.iter().filter_map(|m| m.comment.as_ref()) {
+            if waiting.iter().any(|m| m.comment.as_ref() == Some(comment)) {
+                continue;
+            }
+            let marked = kanna_threads::update(
+                Path::new(&comment.file),
+                |doc| {
+                    let thread = doc["threads"].as_array_mut().and_then(|threads| threads.iter_mut().find(|t| t["id"] == json!(comment.thread)));
+                    if let Some(thread) = thread.filter(|t| t["status"] == json!("waiting")) {
+                        thread["status"] = json!("sent");
+                        thread["error"] = Value::Null;
+                    }
+                    Ok(())
+                },
+                |why| why,
+            );
+            if let Err(why) = marked {
+                log!("kanna-daemon: couldn't mark {}'s comment {} sent: {why}", comment.file, comment.thread);
+            }
+        }
+    }
+
+    fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> Result<Message, KmuxError> {
+        let message = self.db.put_message(recipient, repo, from, text, mode, comment).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
         log!("kanna-daemon: a message from {from} waits for {recipient}");
         self.waiting.borrow_mut().push(message.clone());
         self.refill();
@@ -2671,7 +2772,7 @@ impl Tasks {
                 self.known(id).ok_or_else(|| not_found(id))?.repo
             }
         };
-        Ok(self.queue(recipient, &repo, from, text, None)?.id)
+        Ok(self.queue(recipient, &repo, from, text, None, None)?.id)
     }
 
     pub fn waiting(&self, message: i64) -> bool {
@@ -2785,7 +2886,7 @@ impl Tasks {
 
     fn hand_over(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel) {
         let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
-        let text = messages::prompt(&list.iter().map(|m| (named(&m.sender), m.text.clone())).collect::<Vec<_>>());
+        let text = messages::prompt(&list.iter().map(|m| (m.comment.is_none().then(|| named(&m.sender)), m.text.clone())).collect::<Vec<_>>());
         let theirs = self.permissions(&pane);
         let modes: Option<Vec<&str>> = list.iter().map(|m| if messages::yours(&m.sender) { theirs } else { m.mode.as_deref() }).collect();
         let mode = modes.map(|modes| if modes.iter().all(|mode| *mode == messages::BYPASS) { messages::BYPASS } else { messages::PROMPTING });
@@ -2821,6 +2922,7 @@ impl Tasks {
             log!("kanna-daemon: couldn't mark {pane}'s messages delivered in {}: {error}", db::FILE);
         }
         self.waiting.borrow_mut().retain(|m| !ids.contains(&m.id));
+        self.mark_sent(&list);
         if let Some(turn) = self.turns.borrow_mut().get_mut(&pane) {
             let status = self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status);
             *turn = Turn::underway();
@@ -3370,9 +3472,17 @@ impl Tasks {
             }
             let (weak, tasks) = (core.weak(), Rc::downgrade(&this));
             let agent = this.pane_entry(&pane).map_or_else(|| core.pane(&pane).and_then(|p| p.command).unwrap_or_default(), |e| e.agent);
+            let last = core.pane(&pane).and_then(|p| p.status).and_then(|status| match status.as_str() {
+                "needs-you" => Some("needs-you"),
+                "idle" => Some("finished"),
+                _ => None,
+            });
             this.end_agent(&pane.clone(), &agent, move |session| {
                 let (Some(tasks), Some(core)) = (tasks.upgrade(), weak.upgrade()) else { return responder.reply(Err(gone())) };
                 tasks.keep_session(&pane, session);
+                if let Some(last) = last {
+                    tasks.stopped_at(&pane, last);
+                }
                 let session = tasks.pane_entry(&pane).and_then(|e| e.session);
                 tasks.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
                 tasks.refill();
@@ -3619,12 +3729,12 @@ impl Tasks {
     fn activated(&self, args: &Value) -> Result<Map, KmuxError> {
         let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
         let id = self.task_of(reference).unwrap_or_else(|| reference.to_string());
-        let entry = self.running.borrow().iter().find(|r| r.entry.id == id).map(|r| r.entry.clone()).ok_or_else(|| not_found(reference))?;
-        let by = who(args);
-        if let Err(error) = self.db.log(&id, &Change::new("activated").by(by)) {
+        if !self.running.borrow().iter().any(|r| r.entry.id == id) {
+            return Err(not_found(reference));
+        }
+        if let Err(error) = self.db.log(&id, &Change::new("activated").by(who(args))) {
             log!("kanna-daemon: couldn't save {id}'s activated in {}: {error}", db::FILE);
         }
-        self.tell_planner(&entry, What::Activated, by);
         Ok(Map::from_iter([("task".to_string(), json!(id))]))
     }
 
@@ -4033,7 +4143,7 @@ impl Tasks {
 
     fn tell(&self, id: &str, text: String) {
         let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == id) else { return };
-        match self.db.put_message(id, &entry.repo, KANNA, &text, Some(messages::PROMPTING)) {
+        match self.db.put_message(id, &entry.repo, KANNA, &text, Some(messages::PROMPTING), None) {
             Ok(message) => {
                 log!("kanna-daemon: a message from {KANNA} waits for {id}");
                 self.waiting.borrow_mut().push(message);
@@ -5197,6 +5307,103 @@ mod tests {
         tasks.status("term-7", Some("working"), false);
         tasks.status("term-7", Some("idle"), true);
         assert!(tasks.turns.borrow()["term-7"].ended(Instant::now()).is_some(), "its next turn is tracked again");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn runners_take_the_oldest_task_with_something_to_do() {
+        let state = std::env::temp_dir().join(format!("kanna-queue-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut alive = Pane::new("term-7", None, kanna_mux::PaneType::Term);
+        alive.state = PaneState::Running;
+        core.install_panes(vec![alive], 0, 7);
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+        let task = |id: &str, made_at: f64, folder: Option<&str>| Entry { id: id.into(), repo: "/r".into(), agent: "codex".into(), made_at, folder: folder.map(String::from), ..Default::default() };
+        let running = Entry { held: Some("term-7".into()), ..task("task-running", 0.0, Some("/r/0")) };
+        let stopped_old = task("task-stopped-old", 1.0, Some("/r/1"));
+        let quiet = task("task-quiet", 2.0, Some("/r/2"));
+        let new_old = task("task-new-old", 3.0, None);
+        let new_with_mail = task("task-new-with-mail", 4.0, None);
+        let stopped_new = task("task-stopped-new", 5.0, Some("/r/5"));
+        let new_new = task("task-new-new", 6.0, None);
+        let mine = [&new_new, &stopped_new, &running, &new_with_mail, &quiet, &stopped_old, &new_old];
+        for (id, recipient) in [(1, "task-stopped-new"), (2, "task-running"), (3, "task-new-with-mail"), (4, "task-stopped-old")] {
+            tasks.waiting.borrow_mut().push(Message { id, recipient: recipient.into(), repo: "/r".into(), sender: "user".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
+        }
+        let handle = tasks.core.upgrade().unwrap();
+        let queue: Vec<String> = tasks.candidates(&handle, "/r", &mine, &HashSet::new(), &tasks.machines(), true, &HashSet::new(), Instant::now()).into_iter().map(|candidate| match candidate {
+            Candidate::Wake(entry) => format!("wake {}", entry.id),
+            Candidate::Here(entry) => format!("start {}", entry.id),
+            Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
+        }).collect();
+        assert_eq!(queue, ["wake task-stopped-old", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, and a running or quiet stopped task isn't in it");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_comment_to_claude_waits_for_its_turn_then_arrives_with_its_own_header_and_its_thread_says_sent() {
+        let state = std::env::temp_dir().join(format!("kanna-comment-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        fs::create_dir_all(state.join(".git")).unwrap();
+        fs::write(state.join(".kanna/config.json"), r#"{"shelf": {"runners": 0}}"#).unwrap();
+        let doc = state.join("a.md");
+        fs::write(&doc, "# A\n\nThe strip scrolls.\n").unwrap();
+        kanna_threads::update(&doc, |d| -> Result<(), String> {
+            d["threads"] = json!([{ "id": "c1", "quote": "The strip scrolls.", "line": 3, "state": "open", "status": "waiting", "messages": [] }]);
+            Ok(())
+        }, |why| why).unwrap();
+        let socket = Path::new("/tmp").join(format!("kanna-comment-{}.sock", std::process::id()));
+        let _ = fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut panes = vec![];
+        for (id, status) in [("term-7", "working"), ("term-8", "idle")] {
+            let mut pane = Pane::new(id, None, kanna_mux::PaneType::Term);
+            pane.state = PaneState::Running;
+            pane.status = Some(status.into());
+            panes.push(pane);
+        }
+        core.install_panes(panes, 0, 8);
+        let (events, posted) = std::sync::mpsc::channel();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
+        tasks.install(&core);
+        let at = socket.clone();
+        *tasks.permissions.borrow_mut() = Some(Box::new(|_| Some(messages::BYPASS)));
+        *tasks.channel.borrow_mut() = Some(Box::new(move |pane| Some(if pane == "term-7" { Channel::Claude(Ok(at.clone())) } else { Channel::Other("copilot".into()) })));
+        for (id, pane, agent) in [("task-1dfb12c2", "term-7", "claude"), ("task-2e0c34bb", "term-8", "copilot")] {
+            tasks.entries.borrow_mut().push(Entry { id: id.into(), repo: state.to_str().unwrap().into(), agent: agent.into(), held: Some(pane.into()), ..Default::default() });
+        }
+        let text = "[kanna comment c1 · a.md:3]\n> The strip scrolls.\nSay what ⌃Tab does.";
+        let comment = |pane: &str| core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": pane, "text": text, "doc": doc, "thread": "c1" } }));
+        let status = || kanna_threads::read(&doc)["threads"][0]["status"].clone();
+
+        let reply = comment("term-7");
+        assert_eq!((reply["ok"].clone(), reply["state"].clone()), (json!(true), json!("waiting")), "{reply}");
+        tasks.status("term-7", Some("working"), false);
+        tasks.tick();
+        assert_eq!(tasks.waiting.borrow().len(), 1, "it waits while the agent works");
+        assert_eq!(status(), json!("waiting"));
+
+        tasks.status("term-7", Some("idle"), true);
+        tasks.tick();
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut line).unwrap();
+        let content: Value = serde_json::from_str::<Value>(&line).unwrap()["message"]["content"].clone();
+        assert_eq!(content, json!(format!("<cross-session-message from-mode=\"bypass\">\n{text}\n</cross-session-message>")), "its own header, no [message from], and the agent's own permissions, since it's yours");
+        let Ok(Event::Posted { token, result }) = posted.recv_timeout(Duration::from_secs(5)) else { panic!("never posted") };
+        tasks.posted(token, result);
+        assert_eq!(status(), json!("sent"), "delivered, its thread says so");
+        let listed = tasks.db.messages(Some("task-1dfb12c2")).unwrap();
+        assert_eq!(listed.iter().map(|m| (m.sender.as_str(), m.delivered.is_some(), m.comment.as_ref().map(|c| c.thread.as_str()))).collect::<Vec<_>>(), [("user", true, Some("c1"))], "kanna task messages shows it from you");
+
+        let typed = comment("term-8");
+        assert_ne!(typed["state"], json!("waiting"), "a copilot has no door, so it's typed: {typed}");
+        assert!(tasks.waiting.borrow().is_empty() && tasks.db.messages(Some("task-2e0c34bb")).unwrap().is_empty(), "and not queued");
+        let _ = fs::remove_file(&socket);
         fs::remove_dir_all(&state).unwrap();
     }
 
