@@ -385,6 +385,23 @@ pub struct Life {
 pub struct Db {
     conn: Connection,
     layout: RefCell<Option<Box<dyn Fn() -> Option<Value>>>>,
+    checkpoints: Option<std::sync::mpsc::Sender<()>>,
+}
+
+const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn checkpointing(path: PathBuf) -> Option<std::sync::mpsc::Sender<()>> {
+    let (stop, stopping) = std::sync::mpsc::channel::<()>();
+    let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
+        let Ok(conn) = Connection::open(&path) else { return };
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
+        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopping.recv_timeout(CHECKPOINT_EVERY) {
+            let started = std::time::Instant::now();
+            let _ = conn.query_row("pragma wal_checkpoint(passive)", [], |_| Ok(()));
+            crate::perf::since("db.checkpoint", started);
+        }
+    });
+    started.ok().map(|_| stop)
 }
 
 fn now() -> f64 {
@@ -445,7 +462,7 @@ fn open_checked(path: &Path) -> Opened {
     if found > version() {
         return Opened::Newer(found);
     }
-    let mut db = Db { conn, layout: RefCell::default() };
+    let mut db = Db { conn, layout: RefCell::default(), checkpoints: None };
     match db.migrate(found) {
         Ok(()) => Opened::Good(db),
         Err(error) => Opened::Bad(format!("migrating from version {found}: {error}")),
@@ -489,7 +506,7 @@ impl Db {
                 }
             }
         }
-        let db = match db {
+        let mut db = match db {
             Some(db) => db,
             None => Db::fresh(&path, state_dir, lost),
         };
@@ -499,15 +516,18 @@ impl Db {
         } else {
             let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
         }
+        if db.conn.path().is_some_and(|file| !file.is_empty()) && db.conn.pragma_update(None, "wal_autocheckpoint", 0).is_ok() {
+            db.checkpoints = checkpointing(path);
+        }
         db
     }
 
     fn fresh(path: &Path, state_dir: &Path, lost: bool) -> Db {
         let mut db = match connect(path) {
-            Ok(conn) => Db { conn, layout: RefCell::default() },
+            Ok(conn) => Db { conn, layout: RefCell::default(), checkpoints: None },
             Err(error) => {
                 say(format!("can't make {} ({error}); keeping tasks in memory only until the daemon restarts", path.display()));
-                Db { conn: Connection::open_in_memory().expect("an in-memory database"), layout: RefCell::default() }
+                Db { conn: Connection::open_in_memory().expect("an in-memory database"), layout: RefCell::default(), checkpoints: None }
             }
         };
         db.migrate(0).expect("a new database takes the schema");
@@ -1256,6 +1276,26 @@ fn row_from_saved(task: &Value, place: Place, pane: Option<&str>) -> Option<Row>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wal_is_checkpointed_beside_the_loop() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir);
+        let auto: i64 = db.conn.query_row("pragma wal_autocheckpoint", [], |row| row.get(0)).unwrap();
+        assert_eq!(auto, 0, "the loop's connection never checkpoints");
+        let size = || fs::metadata(dir.join(FILE)).unwrap().len();
+        let before = size();
+        db.put_layout(&json!({ "filler": "x".repeat(1 << 20) })).unwrap();
+        let by = std::time::Instant::now() + CHECKPOINT_EVERY * 4;
+        while size() == before {
+            assert!(std::time::Instant::now() < by, "nothing checkpointed the WAL");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        drop(db);
+        fs::remove_dir_all(&dir).unwrap();
+    }
     use kanna_mux::json::json;
 
     fn folder(name: &str) -> PathBuf {
