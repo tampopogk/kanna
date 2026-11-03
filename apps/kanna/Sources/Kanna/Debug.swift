@@ -68,7 +68,7 @@ extension AppController {
             let ms = { (value: Double) -> JSON in .number((value * 10).rounded() / 10) }
             let intervals = Perf.stats().map { stats -> JSON in
                 ["name": .string(stats.name), "count": .number(Double(stats.count)), "recent": .number(Double(stats.recent)),
-                 "p50": ms(stats.p50), "p95": ms(stats.p95), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
+                 "p50": ms(stats.p50), "p95": ms(stats.p95), "p99": ms(stats.p99), "max": ms(stats.max), "last": ms(stats.last), "detail": stats.detail.map { .string($0) } ?? .null]
             }
             let hangs = Perf.hangs().reversed().map { hang -> JSON in
                 ["at": .string(ISO8601DateFormatter().string(from: hang.at)), "ms": ms(hang.ms),
@@ -166,11 +166,11 @@ extension AppController {
             }
             let page = controller.deskView
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
-                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf)]
+                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf)]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
-            let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null] }
+            let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null, "stack": task.stack.map { .string($0) } ?? .null, "sub": .string(task.sub)] }
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "tasks": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
                     "strip": .bool(!controller.deskStrip.isHidden), "page": .bool(!controller.deskView.isHidden), "title": .string(controller.window.title),
                     "minimized": .bool(controller.window.isMiniaturized),
@@ -236,6 +236,7 @@ extension AppController {
             if let step = args["zoom"]?.number { markdown.zoom(by: Int(step)) }
             if let y = args["scroll"]?.number { markdown.scroll(toY: CGFloat(y)) }
             if let step = args["change"]?.number { markdown.jump(by: Int(step)) }
+            if let target = args["follow"]?.string { markdown.follow(target) }
             if case .array(let pick)? = args["select"], pick.count == 2, let at = pick[0].number, let length = pick[1].number {
                 markdown.select(NSRange(location: Int(at), length: Int(length)))
             }
@@ -258,7 +259,7 @@ extension AppController {
                     "layout_width": .number(Double(markdown.layoutWidth)), "threads": .array(threads),
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,
                     "active": markdown.activeThread.map { .string($0) } ?? .null, "agent": markdown.agent.map { .string($0) } ?? .null,
-                    "markup": .bool(markdown.markup), "view": .string(Self.identity(markdown)), "loads": .number(Double(markdown.loads)), "diff": markdown.diffBase.map { .string($0) } ?? .null,
+                    "markup": .bool(markdown.markup), "path": .string(markdown.path), "name": .string(markdown.docName), "view": .string(Self.identity(markdown)), "loads": .number(Double(markdown.loads)), "diff": markdown.diffBase.map { .string($0) } ?? .null,
                     "changes": markdown.diffBase == nil ? .null : .number(Double(markdown.changes.count)), "diff_error": markdown.diffError.map { .string($0) } ?? .null,
                     "box_parts": Self.boxParts(markdown.commentBoxParts), "box_shown": .bool(markdown.commentBoxShown),
                     "cards": .object(markdown.cards.mapValues { ["typing": .bool($0.typing), "waiting": $0.waiting.map { .string($0) } ?? .null, "reply": .bool($0.reply)] }),
@@ -289,6 +290,19 @@ extension AppController {
             out["captures"] = .array(code.highlights.spans.prefix(200).map { .array([.number(Double($0.range.location)), .number(Double($0.range.length)), .string($0.capture)]) })
             return out
         }
+        commands["debug.serial"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let serial = contents.serial(id) else { throw KannaError("wrong_type", "not a running serial pane") }
+            if let text = args["type"]?.string { serial.type(text, ending: args["ending"]?.bool ?? true) }
+            if let hex = args["hex"]?.bool { serial.set(hex: hex) }
+            if args["time"]?.bool != nil, args["time"]?.bool != serial.showTime { serial.toggleTime() }
+            if args["pause"]?.bool == true, !serial.paused { serial.togglePause() }
+            if args["follow"]?.bool == true { serial.follow() }
+            if args["clear"]?.bool == true { serial.clear() }
+            return ["text": .string(serial.text), "rows": .number(Double(serial.rows.count)), "state": .string(serial.state.state), "path": .string(serial.state.path),
+                    "baud": .number(Double(serial.state.baud)), "send": .bool(serial.sendEnabled), "status": .string(serial.statusText), "hex": .bool(serial.hex),
+                    "time": .bool(serial.showTime), "paused": .bool(serial.paused), "following": .bool(serial.following), "unseen": .number(Double(serial.unseen)),
+                    "history": .array(serial.history.map { .string($0) }), "failure": serial.failure.map { .string($0) } ?? .null]
+        }
         commands["debug.diff"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let diff = contents.diff(id) else { throw KannaError("wrong_type", "not a running diff pane") }
             if let keys = args["keys"]?.string { for key in keys { _ = diff.press(key == "~" ? "\r" : String(key)) } }
@@ -317,6 +331,27 @@ extension AppController {
                     "selected": diff.selectedFile.map { .string($0) } ?? .null, "sticky": diff.stickyFile.map { .string($0) } ?? .null,
                     "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }), "overview": overview,
                     "colors": .array((args["colors"]?.number).map { diff.colors(atRow: Int($0)).map { .string($0) } } ?? [])]
+        }
+        commands["debug.log"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let log = contents.log(id) else { throw KannaError("wrong_type", "not a running log pane") }
+            if let hash = args["select"]?.string { log.reveal(hash); log.select(hash) }
+            if let keys = args["keys"]?.string { for key in keys { _ = log.press(key == "~" ? "\r" : String(key)) } }
+            if let step = args["zoom"]?.number { log.zoom(by: Int(step)) }
+            if let hash = args["fold"]?.string { log.toggle(hash) }
+            if let query = args["find"]?.string { query.isEmpty ? log.closeFind() : log.find(query) }
+            if args["next"]?.bool == true { log.findStep(forward: true) }
+            if args["refresh"]?.bool == true { log.refresh() }
+            if args["copy"]?.bool == true { log.copyHash() }
+            if args["diff"]?.bool == true { log.openDiff() }
+            log.layoutSubtreeIfNeeded()
+            return ["command": .string(log.result?.command ?? ""), "range": .array((log.result?.range ?? []).map { .string($0) }), "main": .string(log.result?.main ?? ""),
+                    "error": log.result?.error.map { .string($0) } ?? .null, "rows": .array(log.debugRows.map(JSON.from)), "lanes": .number(Double(log.graph.lanes)),
+                    "total": .number(Double(log.result?.rows.count ?? 0)), "selected": log.selected.map { .string($0) } ?? .null,
+                    "serial": .number(Double(log.serial)), "stale": .bool(log.stale), "latest": log.pending.map { .number(Double($0.serial)) } ?? .null,
+                    "held": log.heldText.map { .string($0) } ?? .null, "notice": log.notice.map { .string($0) } ?? .null,
+                    "fresh": .array(log.fresh.sorted().map { .string($0) }), "open": .array(log.open.sorted().map { .string($0) }),
+                    "find": log.finding ? .string(log.query) : .null, "hits": .array(log.hits.map { .string($0) }),
+                    "detail": log.detail.map { .string($0.hash) } ?? .null, "detailShown": .bool(log.detailShown), "zoom": .number(Double(log.zoom)), "width": .number(log.bounds.width)]
         }
         commands["debug.ios"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
@@ -390,6 +425,11 @@ extension AppController {
         }
         guard let window else { throw KannaError("not_found", "no window") }
         guard let event = SyntheticKey.event(name, window: window) else { throw KannaError("bad_request", "unknown key \"\(name)\"") }
+        if args["real"]?.bool == true {
+            NSApp.sendEvent(event)
+            if let up = NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: event.modifierFlags, timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil, characters: event.characters ?? "", charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "", isARepeat: false, keyCode: event.keyCode) { NSApp.sendEvent(up) }
+            return ["real": true]
+        }
         if !event.modifierFlags.intersection([.command, .control, .option]).isEmpty, window.performKeyEquivalent(with: event)
             || Self.performResponderItem(event, in: window) || NSApp.mainMenu?.performKeyEquivalent(with: event) == true {
             return ["characters": .string(event.characters ?? ""), "charactersIgnoringModifiers": .string(event.charactersIgnoringModifiers ?? ""), "menu": true]

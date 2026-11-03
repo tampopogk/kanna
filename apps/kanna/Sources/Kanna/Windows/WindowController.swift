@@ -114,6 +114,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     func render(_ state: JSON, _ panes: PaneViews) {
         let span = Perf.begin(.render, "WindowController.render")
         defer { Perf.end(span) }
+        let shownBefore = tab
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
@@ -133,6 +134,13 @@ final class WindowController: NSObject, NSWindowDelegate {
         shown = Self.shownPanes(state)
         emptyDesk = desk && task == nil && ids.isEmpty
         pages = desk && task == nil ? Self.pages : []
+        if !pages.isEmpty {
+            if deskTask || shownBefore == nil && page == nil {
+                page = Self.pages[0]
+            } else if let tab, tab != shownBefore {
+                page = nil
+            }
+        }
         pageShown = pages.isEmpty ? nil : emptyDesk ? page ?? pages[0] : page
         tabBar.show(state, pages: pages, page: pageShown)
         if deskTask && emptyDesk { cheerAt = (cheerAt + 1) % DeskView.cheers.count }
@@ -202,7 +210,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         if taskless {
         } else if desk {
             deskStrip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: DeskStrip.height)
-            deskStrip.show(DeskOrder.byAge(others, made: \.made), keys: keys, waiting: shelf.count)
+            deskStrip.show(DeskOrder.strip(others), keys: keys, waiting: shelf.count)
             bounds = NSRect(x: 0, y: DeskStrip.height, width: bounds.width, height: bounds.height - DeskStrip.height)
         }
         var side = bounds

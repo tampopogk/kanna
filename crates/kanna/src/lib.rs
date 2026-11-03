@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod agents;
 pub mod args;
 pub mod commands;
@@ -5,6 +6,8 @@ pub mod complete;
 pub mod diagrams;
 pub mod machine;
 pub mod output;
+pub mod pipeline;
+pub mod serial;
 pub mod target;
 pub mod threads;
 
@@ -134,6 +137,11 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if let Some(extra) = args.first() {
         return Err(commands::usage(command.name, &format!("unexpected argument \"{extra}\"")));
     }
+    if command.name == "accounts" && request["local"] == "interactive" {
+        let mut mux = Session::connect(&target, env)?;
+        mux.host = host;
+        return accounts::run(&request, &mut |cmd, args| mux.call(cmd, args), json_output);
+    }
     if request.get("local").is_some() {
         let mut callers: Vec<String> = commands::caller().into_iter().collect();
         let terminal = callers.first().cloned();
@@ -151,8 +159,14 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "diagrams" {
         return diagrams::run(&request, json_output);
     }
+    if command.name == "pipeline" {
+        return pipeline::run(&request, json_output, &target);
+    }
     let mut mux = Session::connect(&target, env)?;
     mux.host = host;
+    if command.name == "serial" {
+        return serial::run(&request, &mut mux, json_output);
+    }
     if command.name == "machine" && request["action"] == "offer" {
         return machine::offer(&mut mux, json_output);
     }
@@ -188,12 +202,14 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
     }
     if command.name == "task" && request["action"] == "list" {
-        let mut asked = json!({ "action": "list", "merged": true });
+        let mut asked = json!({ "action": "list", "merged": true, "done": request["done"] == true });
         if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
             asked["repo"] = json!(repo);
         }
         if let Ok(found) = mux.call("tasks", asked.clone()) {
             reply["shelf"] = found["shelf"].clone();
+            reply["elsewhere"] = found["elsewhere"].clone();
+            reply["twice"] = found["twice"].clone();
             reply["agent"] = found["agent"].clone();
             output::name_out(&mut reply, &found["desk"]);
             if asked["repo"].is_string() {
@@ -202,9 +218,19 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             shorts.extend(output::shorts(&found));
             listed = true;
             reply["script"] = found["script"].clone();
+            if request["done"] == true {
+                reply["done"] = found["done"].clone();
+            }
         }
         if let Some(query) = request["query"].as_str() {
             output::keep_matching(&mut reply, query);
+            if let Some(id) = output::lone_task(&reply, query) {
+                if let Ok(shown) = mux.call("tasks", serde_json::json!({ "action": "show", "task": id })) {
+                    reply["found"] = shown["task"].clone();
+                }
+            }
+        } else {
+            output::keep_recent_done(&mut reply);
         }
     }
     if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {
@@ -240,9 +266,6 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         for failure in undrawn.iter().flatten() {
             eprintln!("{}", diagrams::line(failure));
         }
-    }
-    if command.name == "machine" && request["action"] == "update" && reply["machines"].as_array().is_some_and(|m| m.iter().any(|m| m["ok"] == false)) {
-        return Err(fail(exit::FAILED, "not every machine took the update"));
     }
     Ok(())
 }
@@ -319,7 +342,7 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "start", "stop", "setup", "pick", "shelve", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
+        "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "move", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
         "task" if request["action"] == "done" => "tasks",
         "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",
         "task" if request["action"] == "name" => "rename-pane",
@@ -676,6 +699,14 @@ mod tests {
     }
 
     #[test]
+    fn ready_set_and_clear_name_a_task_or_the_one_they_run_in() {
+        assert_eq!(parse("kanna task ready set 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
+        assert_eq!(parse("kanna task ready clear 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
+        assert!(parse("kanna task ready").is_err(), "outside a task's terminal it needs a TASK");
+        assert!(parse("kanna task ready 3f9a").is_err(), "it says set or clear");
+    }
+
+    #[test]
     fn every_documented_example_parses() {
         for command in COMMANDS {
             assert!(!command.examples.is_empty(), "{} has no examples", command.name);
@@ -801,6 +832,7 @@ mod tests {
             ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
             ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
             ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
+            ("kanna move build --background", json!({ "pane": "build", "background": true })),
             ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
             ("kanna move agent --tab tab-3", json!({ "pane": "agent", "tab": "tab-3" })),
             ("kanna move agent --tab --window win-2", json!({ "pane": "agent", "tab": "new", "window": "win-2" })),
@@ -845,6 +877,7 @@ mod tests {
             ("kanna markup a.md --dock", "a docked pane is a task's agent"),
             ("kanna move agent --dock --tab", "--dock goes on its own"),
             ("kanna move agent --dock --to b", "--dock goes on its own"),
+            ("kanna move build --background --tab", "--background goes on its own"),
         ] {
             let failure = parse(line).expect_err(line);
             assert_eq!(failure.code, exit::USAGE, "{line}");
@@ -967,4 +1000,31 @@ mod tests {
         assert_eq!(output::duration(50.0 * 3600.0), "2d");
     }
 
+    #[test]
+    fn a_schedule_takes_a_two_word_rule_quoted_or_not_a_target_and_the_rest_as_its_prompt() {
+        let git = |args: &[&str]| String::from_utf8(std::process::Command::new("git").args(args).output().unwrap().stdout).unwrap().trim().to_string();
+        let repo = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim_end_matches("/.git").to_string();
+        let want = json!({ "action": "add", "repo": repo, "rule": "weekdays 17:30", "target": "planner", "prompt": "Summarise what landed today.", "name": "evening" });
+        assert_eq!(parse("kanna schedule add 'weekdays 17:30' planner \"Summarise what landed today.\" --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule add weekdays 17:30 planner Summarise what landed today. --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule remove s3 --repo /tmp").unwrap().1, json!({ "action": "remove", "repo": "/tmp", "schedule": "s3" }));
+        assert_eq!(parse("kanna schedule list").unwrap().1, json!({ "action": "list", "repo": repo }));
+        let refused = |line: &str| parse(line).err().unwrap_or_else(|| panic!("{line} parsed")).message;
+        assert!(refused("kanna schedule add daily 09:00 planner").contains("needs a RULE, a TARGET and a PROMPT"));
+        assert!(refused("kanna schedule remove").contains("NAME or ID"));
+        assert!(refused("kanna schedule list --name x").contains("--name is for schedule add"));
+        assert!(refused("kanna schedule pause x").contains("unknown action"));
+    }
+
+    #[test]
+    fn schedules_list_as_columns_with_what_s_waiting() {
+        let reply = json!({ "schedules": [
+            { "schedule": "s1", "name": "quiz", "repo": "/Users/x/work/kanna-v4", "rule": "daily 09:00", "target": "planner", "nextText": "Sat 17 Oct 09:00", "waiting": true, "prompt": "Morning quiz check." },
+            { "schedule": "s12", "name": null, "repo": null, "rule": "every 2h", "target": "71af", "nextText": "Fri 16 Oct 14:00", "waiting": false, "prompt": "Run the tests." },
+        ]});
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &reply), "s1   quiz  kanna-v4  daily 09:00  planner  next Sat 17 Oct 09:00  waiting Morning quiz check.\ns12  -     -         every 2h     71af     next Fri 16 Oct 14:00          Run the tests.");
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &json!({ "schedules": [] })), "no schedules");
+        assert_eq!(output::schedule(&json!({ "action": "add" }), &reply["schedules"][0]), "s1 quiz: daily 09:00 → planner, next Sat 17 Oct 09:00");
+        assert_eq!(output::schedule(&json!({ "action": "remove" }), &json!({ "schedule": "s12", "name": null })), "removed s12");
+    }
 }
