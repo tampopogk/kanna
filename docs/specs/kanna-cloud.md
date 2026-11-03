@@ -201,7 +201,7 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 | Other tenants | none | VMs and host-enforced networks between them (§4); build Macs per [isolation](build-mac-isolation.md) |
 | The Cloud account key | — | lets whoever holds it ask for VMs on the account and be billed; it can't add a machine to the customer's, which still takes their gesture |
 
-- **A prompt-injected agent on a hosted VM** can read its `device.key` too; the `hosted` rule means it can't admit a peer either. Claude's settings deny reading the key; Codex, run with `--yolo`, can read it ([identity §4](machine-identity.md#4-risks)).
+- **A prompt-injected agent on a Cloud VM can read its `device.key`,** whichever agent it is: Kanna runs Claude with `--dangerously-skip-permissions` as it runs Codex with `--yolo`. Claude's `Read` deny rule stops only its file tools, and its sandbox's deny stops `cat` only while the sandbox is on, which it isn't by default and which a bypassing agent can step outside ([identity §4](machine-identity.md#4-risks)). So the design never relies on the agent not reading the key: on a Cloud VM the key can do nothing beyond being that VM (the `hosted` rule now; the link to Kanna Cloud of review c2, which takes the VM out of the customer's peer log, would leave it nothing to sign at all).
 - **The directory** is the operator's: it can withhold peers or delay revocations, which the customer's devices also carry to each other directly. It can't forge an add.
 
 ## 11. Open questions
