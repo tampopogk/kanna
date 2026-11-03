@@ -1503,6 +1503,41 @@ chrome_and_drops() {
   check wait_for 5 eval 'kanna read chrome_and_drops | tr -d "\\n" | sed "s/IN //g" | grep -qF "^[200~chrome_and_drops TEXT^[201~"'
 }
 
+comment_agents() {
+  comment_repo="$(e2e_repo comments)" || return 1
+  comment_fake="$KANNA_STATE_DIR/comment-agents"
+  mkdir -p "$comment_fake/bin" "$comment_repo/.kanna" || return 1
+  printf '{"version": 1, "shelf": {"runners": 2}}\n' >"$comment_repo/.kanna/config.json"
+  ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/bin/claude"
+  ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/copilot"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/claude" && chmod +x "$comment_fake/claude"
+}
+comment_held() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print((t.get("held") or "-") if t.get("running") else "stopped")' "$1"; }
+comment_claude() {
+  comment_task="$(cd "$comment_repo" && kanna --json task new "$1" "work 12" --agent "$comment_fake/claude" | field task.id)" || return 1
+  check wait_for 15 eval '[[ "$(comment_held "$comment_task")" == term-* ]]' || { comment_held "$comment_task"; return 1; }
+  comment_term="$(comment_held "$comment_task")"
+  check wait_for 10 is "$comment_term" status working || { kanna status explain "$comment_term"; return 1; }
+  kanna send-key "$comment_term" d r a f t >/dev/null
+}
+comment_waits() {
+  local thread="$1" status="$2" screen
+  check wait_for 5 eval '[[ "$($status)" == waiting ]]' || return 1
+  screen="$(kanna read "$comment_term")"
+  [[ "$screen" != *"kanna comment $thread"* ]] || { echo "a comment was typed mid-turn"; echo "$screen"; return 1; }
+  is "$comment_term" status working || { echo "the agent's turn ended before the check"; return 1; }
+}
+comment_arrived() {
+  local thread="$1" status="$2" screen
+  check wait_for 25 shows "$comment_term" "peer: \[kanna comment $thread · " || { kanna read "$comment_term"; tail -5 "$out/daemon.log"; return 1; }
+  check wait_for 5 eval '[[ "$($status)" == sent ]]' || return 1
+  screen="$(kanna read "$comment_term")"
+  [[ "$(grep -F "kanna comment" <<<"$screen" | grep -cv "peer: ")" == 0 ]] || { echo "a comment went into the prompt's draft"; echo "$screen"; return 1; }
+  [[ "$(cd "$comment_repo" && kanna task messages "$comment_task")" == *"user"*"kanna comment $thread"* ]] || { echo "task messages should list the comment from you"; (cd "$comment_repo" && kanna task messages "$comment_task"); return 1; }
+}
+
 scenario md_comments M4
 md_comments() {
   start_daemon && start_app || return 1
@@ -1587,7 +1622,48 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check wait_for 5 eval '[[ "$(md_comments_md | field markup)" == False ]]' || return 1
   check test "$(md_comments_md | field view)" == "$kept" || { echo "turning comments off should keep the view"; return 1; }
   KANNA_TERMINAL="$agent_id" kanna markup "$dir/review.md" --name doc2 --tab >/dev/null || return 1
-  check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc2\"}}" | field markup)" == True ]]'
+  check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"doc2\"}}" | field markup)" == True ]]' || return 1
+  comment_agents && comment_claude "Claude reads comments" || return 1
+  printf '# Notes\n\nThe strip scrolls, TELLCLAUDE when it must.\n\nAnd TELLCOPILOT too.\n' >"$comment_repo/notes.md"
+  kanna markup "$comment_repo/notes.md" --to "$comment_term" --name notes --window new >/dev/null || return 1
+  md_comments_md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"notes\"${1:-}}}"; }
+  check wait_for 5 eval '[[ "$(md_comments_md | field agent)" == "$comment_term" ]]' || { md_comments_md; return 1; }
+  md_comments_post() {
+    kanna focus notes >/dev/null; sleep 0.3
+    at="$(md_comments_md | field text | python3 -c 'import sys; print(sys.stdin.read().index(sys.argv[1]))' "$1")"
+    md_comments_md ",\"select\":[$at,${#1}]" >/dev/null
+    key cmd+return; check test "$(md_comments_md | field box)" == new || return 1
+    raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$2\"}}" >/dev/null
+    key cmd+return
+  }
+  is "$comment_term" status working || { echo "the agent's turn ended before the comment"; return 1; }
+  md_comments_post TELLCLAUDE "Say when"
+  comment_waits c1 "md_comments_thread c1 status" || { md_comments_md; return 1; }
+  check test "$(md_comments_md | field cards.c1.waiting)" == "Waiting · it goes to the agent when its turn is over" || { md_comments_md; return 1; }
+  md_comments_shot md_comments-waiting
+  check wait_for 15 shows "$comment_term" "› draft" || { kanna read "$comment_term"; return 1; }
+  comment_arrived c1 "md_comments_thread c1 status" || return 1
+  shows "$comment_term" "peer: > TELLCLAUDE" && shows "$comment_term" "peer: Say when" || { kanna read "$comment_term"; return 1; }
+  check wait_for 20 eval '[[ "$(comment_held "$comment_task")" == stopped ]]' || { echo "the Shelf task should stop after the comment's turn"; return 1; }
+  xy="$(md_comments_md ',"mark":"c1"')"
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"pane\":\"notes\",\"at\":[$(echo "$xy" | field x),$(echo "$xy" | field y)]}}" >/dev/null
+  check test "$(md_comments_md | field box)" == c1 || return 1
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"While you slept"}}' >/dev/null
+  key return
+  check wait_for 5 eval '[[ "$(md_comments_thread c1 status)" == waiting ]]' || { md_comments_md; return 1; }
+  key escape
+  check wait_for 20 eval '[[ "$(comment_held "$comment_task")" == term-* ]]' || { echo "a comment should wake the stopped Shelf task"; comment_held "$comment_task"; return 1; }
+  comment_term="$(comment_held "$comment_task")"
+  check wait_for 25 shows "$comment_term" "peer: While you slept" || { kanna read "$comment_term"; return 1; }
+  check wait_for 5 eval '[[ "$(md_comments_thread c1 status)" == sent ]]' || return 1
+  kanna open --window new --name copilot --cmd "$comment_fake/copilot" >/dev/null || return 1
+  check wait_for 10 shows copilot "mock-agent:" || return 1
+  kanna markup notes --to copilot >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(md_comments_md | field agent)" == "$(pane copilot id)" ]]' || { md_comments_md; return 1; }
+  md_comments_post TELLCOPILOT "Typed for you"
+  check wait_for 5 eval '[[ "$(md_comments_thread c2 status)" == sent ]]' || { md_comments_md; return 1; }
+  check wait_for 5 shows copilot "echo: \[kanna comment c2 · notes.md:5\]" || { kanna read copilot; return 1; }
+  check test "$(cd "$comment_repo" && kanna task messages | grep -c "kanna comment c2")" == 0
 }
 
 scenario md_image_reload M4
@@ -2061,6 +2137,33 @@ PY
   sleep 0.3; page_comments_shot page_comments-dots
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
   sleep 0.5; page_comments_shot page_comments-dark
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null
+  comment_agents && comment_claude "Claude reads page comments" || return 1
+  cp "$dir/page.html" "$comment_repo/page.html"
+  kanna markup "$comment_repo/page.html" --to "$comment_term" --name cpage --window new >/dev/null || return 1
+  page_comments_web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"cpage\"${1:-}}}"; }
+  page_comments_click() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"pane\":\"cpage\",$1}}" >/dev/null; }
+  check wait_for 5 eval '[[ "$(page_comments_web | field agent)" == "$comment_term" ]]' || { page_comments_web; return 1; }
+  check wait_for 5 eval 'page_comments_web ",\"find\":\"#go\"" | grep -q at' || return 1
+  page_comments_post() {
+    kanna focus cpage >/dev/null; sleep 0.3
+    page_comments_click "\"command\":true,\"at\":$(page_comments_web ",\"find\":\"$1\"" | field at)"
+    check wait_for 5 eval '[[ "$(page_comments_web | field box)" == new ]]' || { page_comments_web; return 1; }
+    raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$2\"}}" >/dev/null
+    key cmd+return
+  }
+  is "$comment_term" status working || { echo "the agent's turn ended before the comment"; return 1; }
+  page_comments_post "#go" "Bigger, Claude" || return 1
+  comment_waits c1 "page_comments_thread c1 status" || { page_comments_web; return 1; }
+  comment_arrived c1 "page_comments_thread c1 status" || return 1
+  shows "$comment_term" "peer: Bigger, Claude" && shows "$comment_term" "peer: > marked up: .kanna/docs/marks/page.html-c1.png" || { kanna read "$comment_term"; return 1; }
+  kanna open --window new --name copilot --cmd "$comment_fake/copilot" >/dev/null || return 1
+  check wait_for 10 shows copilot "mock-agent:" || return 1
+  kanna markup cpage --to copilot >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(page_comments_web | field agent)" == "$(pane copilot id)" ]]' || { page_comments_web; return 1; }
+  page_comments_post "#red" "Typed for you" || return 1
+  check wait_for 5 eval '[[ "$(page_comments_thread c2 status)" == sent ]]' || { page_comments_web; return 1; }
+  check wait_for 5 shows copilot "echo: \[kanna comment c2 · page.html:" || { kanna read copilot; return 1; }
 }
 
 scenario agent_status M4
