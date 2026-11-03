@@ -96,6 +96,12 @@ pub fn merged(repo: &Path, worktree: &Path) -> bool {
     moved && git(repo, &["merge-base", "--is-ancestor", &tip, "HEAD"]).is_ok()
 }
 
+pub fn ended_at(worktree: &Path) -> Option<(String, String)> {
+    let branch = git(worktree, &["branch", "--show-current"]).ok().filter(|b| !b.is_empty())?;
+    let tip = git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok()?;
+    (base(worktree).as_deref() != Some(tip.as_str())).then_some((branch, tip))
+}
+
 pub fn setup_record(worktree: &Path) -> Option<PathBuf> {
     git_dir(worktree).map(|dir| dir.join(RECORD))
 }

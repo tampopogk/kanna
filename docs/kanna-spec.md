@@ -66,6 +66,7 @@ flowchart TB
 | [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) · [markdown diff](specs/markdown-diff.md) | The app's panes, lent to the daemon |
 | [Code viewer](specs/code-viewer.md) · [code tour](specs/code-tour.md) | A highlighted code pane; the agent commenting on code |
 | [Diff viewer](specs/diff-viewer.md) | `git diff` in a native pane beside the agent, following the worktree |
+| [Commit graph](specs/commit-graph.md) | `git log` as a graph in a native pane, with task branches labelled and long merges folded |
 | [File panes](specs/file-panes.md) | the daemon reads and watches a markdown or code pane's file; the app only draws |
 | [Files and threads](specs/files-and-threads.md) | images, links, comment threads, a doc's diff base and screenshots go through the daemon, so a remote task's panes work |
 | [Serial monitor](specs/serial-monitor.md) | A pane on a serial port the daemon owns, shared with `kanna serial` for agents |
