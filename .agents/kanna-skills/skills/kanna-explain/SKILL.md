@@ -30,9 +30,35 @@ kanna comment .kanna/tmp/shelf.md:3 "The daemon owns the Shelf; the app only sho
 
 - **A diagram, not prose:** a mermaid `classDiagram` for a hierarchy, a `flowchart` for who calls whom, a `sequenceDiagram` for a flow, a `stateDiagram-v2` for states, a `gitGraph` for branches and merges, a layer diagram for a stack (the `layer-diagrams` skill), a table for a set of parallel things. A heading and the diagram; at most a line of text under it.
 - **Only those diagram types draw in Kanna.** Any other (`erDiagram`, `gantt`, `pie`, …) shows as "Unsupported diagram type" and its source.
+- **In a `sequenceDiagram`, no `;` or `#` in text:** mermaid reads `;` as the end of a statement (the diagram fails) and `#` as the start of a comment (the rest of the line goes). Write them as `#59;` and `#35;`, or reword.
 - **Check it draws before you present it:** `kanna open md` prints `FILE:LINE: message` for each diagram that won't draw (a parse error, a type Kanna doesn't draw), and `kanna diagrams check FILE` checks without opening. Fix every one.
 - **Then look at it:** take `kanna screenshot PANE` of the markdown pane, read the PNG, and fix labels that overlap or are cut off.
 - **Big picture first,** then the code it points to.
+
+## A change: its call tree first
+
+To walk the user through a change (yours, or a diff) that crosses more than one function or layer (CLI, daemon, app…), first write `.kanna/tmp/<topic>.md` with a ` ```calltree ` block: the calls the change runs through, in the process each runs in, each with its `file:line`. Kanna draws it as a call tree, a lane per process, each `file:line` opening the code. Open it, comment on it, then go through the code one part at a time with `kanna comment`, in call order. A change in one function goes straight to `kanna comment`.
+
+````markdown
+# Rename a Shelf task
+
+```calltree
+kanna CLI
+main          crates/kanna/src/lib.rs:17                kanna task name t12 "New name"
+  parse       crates/kanna/src/commands.rs:440          task name TASK NAME → request
+  wire        crates/kanna/src/lib.rs:316               task name with a TASK → tasks
+    -> socket {"cmd":"tasks","action":"name"}
+kanna-daemon
+    Tasks::name    crates/kanna-daemon/src/tasks.rs:1043  finds the task on the Shelf
+      rename_pane  crates/kanna-mux/src/core.rs:1371      its held agent's pane
+      store        crates/kanna-daemon/src/tasks.rs:1067  on the reply: the new name
+```
+````
+
+- **A line with no `PATH:LINE` names a process;** the calls under it are in its lane. **A call** is `NAME  PATH:LINE  NOTE`, fields split by two spaces, its depth its indent (two spaces a level), its path repo-relative. **`-> LABEL`** is a hop into the next process.
+- **A call stack is one call a level:** a backtrace goes in the same way.
+- **`kanna open md` checks it** like a diagram: a path or line that doesn't exist, an indent that jumps. Fix what it prints.
+- **Comment on a row** with `kanna comment DOC:LINE` at that call's line.
 
 ## Not code: a doc in a tab
 

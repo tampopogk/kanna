@@ -80,3 +80,18 @@ extension JSON: Codable {
         return (try? encoder.encode(self)) ?? Data("null".utf8)
     }
 }
+
+extension JSON {
+    static func from(_ value: Any) -> JSON {
+        switch value {
+        case let json as JSON: return json
+        case let bool as Bool: return .bool(bool)
+        case let int as Int: return .number(Double(int))
+        case let double as Double: return .number(double)
+        case let text as String: return .string(text)
+        case let list as [Any]: return .array(list.map(from))
+        case let fields as [String: Any]: return .object(fields.mapValues(from))
+        default: return .null
+        }
+    }
+}

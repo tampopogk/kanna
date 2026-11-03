@@ -1,0 +1,223 @@
+{"kind": "vm-create", "t": 1793650018.399232, "tenant": "tenant-a", "vm": "vm-a"}
+{"kind": "vm-create", "t": 1793650018.485269, "tenant": "tenant-b", "vm": "vm-b"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 31308, "t": 1793650018.558235, "tenant": "tenant-a", "vm": "vm-a"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 31309, "t": 1793650018.625867, "tenant": "tenant-b", "vm": "vm-b"}
+{"crash": false, "kind": "vm-stop", "t": 1793650155.514066, "vm": "vm-a"}
+{"kind": "vm-retire", "t": 1793650155.954001, "tenant": "tenant-a", "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793650219.2993448, "vm": "vm-b"}
+{"kind": "vm-retire", "t": 1793650219.7046552, "tenant": "tenant-b", "vm": "vm-b"}
+{"kind": "vm-create", "t": 1793650223.2210538, "tenant": "tenant-a", "vm": "vm-a"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 32498, "t": 1793650223.293493, "tenant": "tenant-a", "vm": "vm-a"}
+{"kind": "vm-create", "t": 1793650223.3885849, "tenant": "tenant-b", "vm": "vm-b"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 32506, "t": 1793650223.471052, "tenant": "tenant-b", "vm": "vm-b"}
+{"action": "status", "code": 401, "error": "unauthenticated", "kind": "tenant-refused", "t": 1793650304.5552409, "tenant": null}
+{"ignored": [], "job": "69d1563c-7218-4496-ba59-4a7b86280320", "kind": "submit", "t": 1793650314.002815, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "1fb4b1f7-8692-4706-9fd8-500f4025fa3c", "kind": "submit", "t": 1793650314.00896, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "1fb4b1f7-8692-4706-9fd8-500f4025fa3c", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650349.693033, "vm": "vm-b"}
+{"job": "69d1563c-7218-4496-ba59-4a7b86280320", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650350.7357829, "vm": "vm-a"}
+{"ignored": [], "job": "6d1fdcd3-8aad-4b68-8cc7-c9de505fcaeb", "kind": "submit", "t": 1793650391.216833, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "6d1fdcd3-8aad-4b68-8cc7-c9de505fcaeb", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650392.2526348, "vm": "vm-a"}
+{"ignored": [], "job": "9de7ed68-20a7-4f76-af2c-e3cb082280c7", "kind": "submit", "t": 1793650425.406535, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "9de7ed68-20a7-4f76-af2c-e3cb082280c7", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650426.454276, "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793650491.272581, "vm": "vm-a"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 33989, "t": 1793650491.386525, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "37a8de6a-9feb-44e0-83bf-aeac30462ee8", "kind": "submit", "t": 1793650525.0744698, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "37a8de6a-9feb-44e0-83bf-aeac30462ee8", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650526.6113138, "vm": "vm-a"}
+{"ignored": [], "job": "f85a3a25-f97b-414e-8b25-aeb016b89dc1", "kind": "submit", "t": 1793650538.198694, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "f85a3a25-f97b-414e-8b25-aeb016b89dc1", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650567.8693912, "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793650649.9526389, "vm": "vm-a"}
+{"kind": "vm-retire", "t": 1793650650.476678, "tenant": "tenant-a", "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793650714.7563589, "vm": "vm-b"}
+{"kind": "vm-retire", "t": 1793650715.206828, "tenant": "tenant-b", "vm": "vm-b"}
+{"kind": "vm-create", "t": 1793650715.341412, "tenant": "tenant-c", "vm": "golden-fix"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 35253, "t": 1793650715.4084659, "tenant": "tenant-c", "vm": "golden-fix"}
+{"ignored": [], "job": "51f07717-d43a-4ff3-9c5f-b2264242d364", "kind": "submit", "t": 1793650749.283479, "tenant": "tenant-c", "vm": "golden-fix"}
+{"job": "51f07717-d43a-4ff3-9c5f-b2264242d364", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650750.825865, "vm": "golden-fix"}
+{"crash": false, "kind": "vm-stop", "t": 1793650845.892373, "vm": "golden-fix"}
+{"crash": false, "kind": "vm-stop", "t": 1793650846.0322702, "vm": "golden-fix"}
+{"kind": "vm-retire", "t": 1793650846.039571, "tenant": "tenant-c", "vm": "golden-fix"}
+{"kind": "vm-create", "t": 1793650861.530685, "tenant": "tenant-a", "vm": "vm-a"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 36246, "t": 1793650861.605999, "tenant": "tenant-a", "vm": "vm-a"}
+{"kind": "vm-create", "t": 1793650861.696682, "tenant": "tenant-b", "vm": "vm-b"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 36254, "t": 1793650861.766356, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "d43fb35f-6b22-4b72-92e2-ef5cc6930c10", "kind": "submit", "t": 1793650898.655354, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "80af24fd-a389-4e36-a38d-69f7426478b0", "kind": "submit", "t": 1793650898.657495, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "80af24fd-a389-4e36-a38d-69f7426478b0", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650936.356586, "vm": "vm-a"}
+{"job": "d43fb35f-6b22-4b72-92e2-ef5cc6930c10", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650939.424402, "vm": "vm-b"}
+{"ignored": [], "job": "90a0dcb0-7688-4285-b1a0-3f9f7e945afa", "kind": "submit", "t": 1793650948.376582, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "90a0dcb0-7688-4285-b1a0-3f9f7e945afa", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650949.412895, "vm": "vm-a"}
+{"ignored": [], "job": "fdfd3ef7-73b1-49ed-b647-10447d43b89e", "kind": "submit", "t": 1793650960.2135282, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "78303596-f8de-45fa-a371-42fa47c5e5c1", "kind": "submit", "t": 1793650960.2164679, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "fdfd3ef7-73b1-49ed-b647-10447d43b89e", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650972.0169868, "vm": "vm-b"}
+{"job": "78303596-f8de-45fa-a371-42fa47c5e5c1", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650977.125962, "vm": "vm-a"}
+{"ignored": [], "job": "937aef0a-f374-45ed-8375-3158f34129ff", "kind": "submit", "t": 1793650979.711189, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "4da75cac-6c49-4a71-8143-3879c4a3bab6", "kind": "submit", "t": 1793650979.718805, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "4da75cac-6c49-4a71-8143-3879c4a3bab6", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650989.97715, "vm": "vm-b"}
+{"job": "937aef0a-f374-45ed-8375-3158f34129ff", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793650995.6030688, "vm": "vm-a"}
+{"ignored": [], "job": "a30ad293-28ae-4cf5-b158-e4b984e6be7d", "kind": "submit", "t": 1793651013.607002, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "eb6f48d6-498c-4804-ac77-96fc6f1f4197", "kind": "submit", "t": 1793651013.613482, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "eb6f48d6-498c-4804-ac77-96fc6f1f4197", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651024.407103, "vm": "vm-a"}
+{"job": "a30ad293-28ae-4cf5-b158-e4b984e6be7d", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651024.420506, "vm": "vm-b"}
+{"ignored": [], "job": "b7e1ebc5-3029-4f31-bd26-982bfcf1f1d6", "kind": "submit", "t": 1793651027.8882718, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "fc6bfa24-2812-4c16-acd6-649905b6e0be", "kind": "submit", "t": 1793651027.890272, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "fc6bfa24-2812-4c16-acd6-649905b6e0be", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651038.158533, "vm": "vm-a"}
+{"job": "b7e1ebc5-3029-4f31-bd26-982bfcf1f1d6", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651041.244792, "vm": "vm-b"}
+{"ignored": [], "job": "2a337b65-771e-4d9a-87e2-1d768fefbc93", "kind": "submit", "t": 1793651066.390933, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "2a337b65-771e-4d9a-87e2-1d768fefbc93", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651067.4487941, "vm": "vm-a"}
+{"ignored": [], "job": "3f1061e6-9a1b-4360-ae4c-e832ceb96185", "kind": "submit", "t": 1793651094.469095, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "3f1061e6-9a1b-4360-ae4c-e832ceb96185", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651111.375826, "vm": "vm-a"}
+{"ignored": [], "job": "992f505b-da34-47ba-87e5-b0ecc875dd2b", "kind": "submit", "t": 1793651123.63184, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "992f505b-da34-47ba-87e5-b0ecc875dd2b", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651128.279708, "vm": "vm-a"}
+{"ignored": [], "job": "d16c4a14-c99b-4a51-9ce9-fd9c1ea234be", "kind": "submit", "t": 1793651149.438487, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "d16c4a14-c99b-4a51-9ce9-fd9c1ea234be", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651154.586219, "vm": "vm-a"}
+{"ignored": [], "job": "be9d32eb-80ff-4b85-839e-0fa69578c929", "kind": "submit", "t": 1793651164.18645, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "be9d32eb-80ff-4b85-839e-0fa69578c929", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651169.330322, "vm": "vm-a"}
+{"ignored": [], "job": "2d05593e-fdde-4494-a62c-17c96623599d", "kind": "submit", "t": 1793651178.864213, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "2d05593e-fdde-4494-a62c-17c96623599d", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651189.623224, "vm": "vm-a"}
+{"ignored": [], "job": "1596856a-2aec-4ab0-9a56-da229ea066de", "kind": "submit", "t": 1793651204.293799, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "1596856a-2aec-4ab0-9a56-da229ea066de", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651216.269548, "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793651314.2814798, "vm": "vm-a"}
+{"kind": "vm-retire", "t": 1793651314.785867, "tenant": "tenant-a", "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793651379.174548, "vm": "vm-b"}
+{"kind": "vm-retire", "t": 1793651379.675466, "tenant": "tenant-b", "vm": "vm-b"}
+{"kind": "vm-create", "t": 1793651379.815247, "tenant": "tenant-c", "vm": "golden-fix"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 39229, "t": 1793651379.88395, "tenant": "tenant-c", "vm": "golden-fix"}
+{"ignored": [], "job": "196581a5-084a-4511-be61-a0bf7dfb472e", "kind": "submit", "t": 1793651416.700953, "tenant": "tenant-c", "vm": "golden-fix"}
+{"job": "196581a5-084a-4511-be61-a0bf7dfb472e", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651452.8910851, "vm": "golden-fix"}
+{"ignored": [], "job": "624551ac-2396-4726-ae64-d98a7af8ba86", "kind": "submit", "t": 1793651465.442527, "tenant": "tenant-c", "vm": "golden-fix"}
+{"job": "624551ac-2396-4726-ae64-d98a7af8ba86", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651466.4783401, "vm": "golden-fix"}
+{"ignored": [], "job": "c7ed74ff-1a03-452b-8822-be8699fc0648", "kind": "submit", "t": 1793651493.5814521, "tenant": "tenant-c", "vm": "golden-fix"}
+{"job": "c7ed74ff-1a03-452b-8822-be8699fc0648", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651506.043842, "vm": "golden-fix"}
+{"ignored": [], "job": "d437f698-ec06-49a1-9cbb-783d0167e262", "kind": "submit", "t": 1793651520.7442539, "tenant": "tenant-c", "vm": "golden-fix"}
+{"job": "d437f698-ec06-49a1-9cbb-783d0167e262", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651521.7900748, "vm": "golden-fix"}
+{"crash": false, "kind": "vm-stop", "t": 1793651593.688292, "vm": "golden-fix"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 40355, "t": 1793651593.824718, "tenant": "tenant-c", "vm": "golden-fix"}
+{"ignored": [], "job": "f417722e-4123-4d8f-9869-8926f0f472f6", "kind": "submit", "t": 1793651675.5181398, "tenant": "tenant-c", "vm": "golden-fix"}
+{"job": "f417722e-4123-4d8f-9869-8926f0f472f6", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651677.079502, "vm": "golden-fix"}
+{"ignored": [], "job": "0f517b54-2fb0-462b-b192-fe905acac190", "kind": "submit", "t": 1793651687.4752882, "tenant": "tenant-c", "vm": "golden-fix"}
+{"job": "0f517b54-2fb0-462b-b192-fe905acac190", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651688.533466, "vm": "golden-fix"}
+{"crash": false, "kind": "vm-stop", "t": 1793651783.525101, "vm": "golden-fix"}
+{"crash": false, "kind": "vm-stop", "t": 1793651783.664344, "vm": "golden-fix"}
+{"kind": "vm-retire", "t": 1793651783.677419, "tenant": "tenant-c", "vm": "golden-fix"}
+{"kind": "vm-create", "t": 1793651783.7981691, "tenant": "tenant-a", "vm": "vm-a"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 41419, "t": 1793651783.8804128, "tenant": "tenant-a", "vm": "vm-a"}
+{"kind": "vm-create", "t": 1793651783.974293, "tenant": "tenant-b", "vm": "vm-b"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 41431, "t": 1793651784.048788, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "2c036d2d-0f55-4ef5-af14-94117a208373", "kind": "submit", "t": 1793651830.410452, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "8286fffa-2285-4d03-9ba1-57ccc3992bdc", "kind": "submit", "t": 1793651830.412151, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "8286fffa-2285-4d03-9ba1-57ccc3992bdc", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651868.644332, "vm": "vm-a"}
+{"job": "2c036d2d-0f55-4ef5-af14-94117a208373", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651870.6823711, "vm": "vm-b"}
+{"ignored": [], "job": "444cabea-c457-4607-855e-f0605143300e", "kind": "submit", "t": 1793651872.9505532, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "2a6739b0-83af-4c13-8e6b-4242f737e3a3", "kind": "submit", "t": 1793651872.955722, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "2a6739b0-83af-4c13-8e6b-4242f737e3a3", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651884.1560938, "vm": "vm-a"}
+{"job": "444cabea-c457-4607-855e-f0605143300e", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651887.777328, "vm": "vm-b"}
+{"ignored": [], "job": "d60a6ee2-d70f-4bbf-b4d0-994207ceb463", "kind": "submit", "t": 1793651890.322483, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "13272672-7634-429d-807b-5392bae45b5f", "kind": "submit", "t": 1793651890.32951, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "13272672-7634-429d-807b-5392bae45b5f", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651903.684289, "vm": "vm-a"}
+{"job": "d60a6ee2-d70f-4bbf-b4d0-994207ceb463", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651905.248451, "vm": "vm-b"}
+{"ignored": [], "job": "a530c18e-300c-4b92-ba98-bb6032501721", "kind": "submit", "t": 1793651919.199351, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "e90661a4-27a6-4815-9d61-ff6a168a4420", "kind": "submit", "t": 1793651919.207864, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "e90661a4-27a6-4815-9d61-ff6a168a4420", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651929.46634, "vm": "vm-b"}
+{"job": "a530c18e-300c-4b92-ba98-bb6032501721", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793651935.146574, "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793652044.3305411, "vm": "vm-a"}
+{"kind": "vm-retire", "t": 1793652044.818832, "tenant": "tenant-a", "vm": "vm-a"}
+{"kind": "vm-create", "t": 1793652045.316292, "tenant": "tenant-a", "vm": "vm-a"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 42918, "t": 1793652045.4467552, "tenant": "tenant-a", "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793652109.749061, "vm": "vm-b"}
+{"kind": "vm-retire", "t": 1793652110.238471, "tenant": "tenant-b", "vm": "vm-b"}
+{"kind": "vm-create", "t": 1793652110.373389, "tenant": "tenant-b", "vm": "vm-b"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 43285, "t": 1793652110.442069, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "b33c9abf-e128-4026-8e75-403c3bcad32d", "kind": "submit", "t": 1793652204.239907, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "a041149a-57fd-4411-812a-11c70eb9b388", "kind": "submit", "t": 1793652204.241036, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "a041149a-57fd-4411-812a-11c70eb9b388", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652242.979302, "vm": "vm-a"}
+{"job": "b33c9abf-e128-4026-8e75-403c3bcad32d", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652242.981579, "vm": "vm-b"}
+{"ignored": [], "job": "8cb8e479-7e68-4172-89ad-70a13e696b67", "kind": "submit", "t": 1793652245.866525, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "53253eb4-99f0-4871-b3f5-f836e488049b", "kind": "submit", "t": 1793652245.873008, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "53253eb4-99f0-4871-b3f5-f836e488049b", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652256.6081831, "vm": "vm-a"}
+{"job": "8cb8e479-7e68-4172-89ad-70a13e696b67", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652261.765886, "vm": "vm-b"}
+{"ignored": [], "job": "512dbd2e-fbc1-4713-8db8-a9f56485e866", "kind": "submit", "t": 1793652264.50195, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "5a9c9bc7-2936-421b-b5ac-6a66b4dfa411", "kind": "submit", "t": 1793652264.5077739, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "512dbd2e-fbc1-4713-8db8-a9f56485e866", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652274.782915, "vm": "vm-a"}
+{"job": "5a9c9bc7-2936-421b-b5ac-6a66b4dfa411", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652275.329231, "vm": "vm-b"}
+{"ignored": [], "job": "e52292de-3388-46eb-8ea4-2b10fdec0860", "kind": "submit", "t": 1793652278.525517, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "61e12272-f187-4279-b4b4-6302b5b10195", "kind": "submit", "t": 1793652278.528948, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "61e12272-f187-4279-b4b4-6302b5b10195", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652291.951503, "vm": "vm-a"}
+{"job": "e52292de-3388-46eb-8ea4-2b10fdec0860", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652291.9516559, "vm": "vm-b"}
+{"ignored": [], "job": "6f4fa1f3-23fc-4697-8606-48ecc4a7e889", "kind": "submit", "t": 1793652294.9132988, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "4bab1c7b-6793-4dd2-b7ea-297821d628e2", "kind": "submit", "t": 1793652294.9204009, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "4bab1c7b-6793-4dd2-b7ea-297821d628e2", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652309.32602, "vm": "vm-b"}
+{"job": "6f4fa1f3-23fc-4697-8606-48ecc4a7e889", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652309.329959, "vm": "vm-a"}
+{"ignored": [], "job": "67da99e2-7d38-4818-8cc4-c56f6644125c", "kind": "submit", "t": 1793652312.248896, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "8d030f1e-b02d-40cf-ac73-e590c1209c20", "kind": "submit", "t": 1793652312.2548401, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "8d030f1e-b02d-40cf-ac73-e590c1209c20", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652322.521931, "vm": "vm-b"}
+{"job": "67da99e2-7d38-4818-8cc4-c56f6644125c", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652322.528785, "vm": "vm-a"}
+{"ignored": [], "job": "84c308c5-d084-42cf-81b5-eecda6846d94", "kind": "submit", "t": 1793652347.188267, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "84c308c5-d084-42cf-81b5-eecda6846d94", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652348.248641, "vm": "vm-a"}
+{"ignored": [], "job": "3cb678be-358f-4037-9c8d-dc949548ff0a", "kind": "submit", "t": 1793652348.568629, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "3cb678be-358f-4037-9c8d-dc949548ff0a", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652349.616183, "vm": "vm-b"}
+{"ignored": [], "job": "d6372930-80e3-4e08-a149-433414d7352b", "kind": "submit", "t": 1793652370.173318, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "d6372930-80e3-4e08-a149-433414d7352b", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652371.231623, "vm": "vm-a"}
+{"ignored": [], "job": "83a4e25e-ba74-44af-a383-349b5323db5b", "kind": "submit", "t": 1793652376.9234738, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "83a4e25e-ba74-44af-a383-349b5323db5b", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652377.983826, "vm": "vm-a"}
+{"ignored": [], "job": "aaa88978-b625-4fe4-91e3-c0408c269b99", "kind": "submit", "t": 1793652403.9039721, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "f402b353-4f85-4113-83ee-174b569b9044", "kind": "submit", "t": 1793652403.9127512, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "aaa88978-b625-4fe4-91e3-c0408c269b99", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652404.9412422, "vm": "vm-a"}
+{"job": "f402b353-4f85-4113-83ee-174b569b9044", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652404.952595, "vm": "vm-b"}
+{"ignored": [], "job": "b7848090-78c7-4c22-a11f-7cb46f5ce3be", "kind": "submit", "t": 1793652405.23164, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "5371e95f-b1ef-4db4-a296-cf75049dca8e", "kind": "submit", "t": 1793652405.234431, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "5371e95f-b1ef-4db4-a296-cf75049dca8e", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652427.156961, "vm": "vm-b"}
+{"job": "b7848090-78c7-4c22-a11f-7cb46f5ce3be", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652427.173363, "vm": "vm-a"}
+{"ignored": [], "job": "e37bf61d-bdba-45cd-a8e3-181587b69c13", "kind": "submit", "t": 1793652450.4891992, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "842b179a-6342-4b60-b1e6-3c6772721d0c", "kind": "submit", "t": 1793652450.492626, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "e37bf61d-bdba-45cd-a8e3-181587b69c13", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652451.511081, "vm": "vm-b"}
+{"job": "842b179a-6342-4b60-b1e6-3c6772721d0c", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652451.5167842, "vm": "vm-a"}
+{"ignored": [], "job": "406c7abe-cf7e-491e-a81e-2592355d68d3", "kind": "submit", "t": 1793652451.8533251, "tenant": "tenant-b", "vm": "vm-b"}
+{"ignored": [], "job": "ebfd2e82-3c2a-4475-b25f-531c9780c83e", "kind": "submit", "t": 1793652451.855714, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "ebfd2e82-3c2a-4475-b25f-531c9780c83e", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652463.7072058, "vm": "vm-a"}
+{"job": "406c7abe-cf7e-491e-a81e-2592355d68d3", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652463.711228, "vm": "vm-b"}
+{"ignored": [], "job": "f8e7cb38-ad5c-4e7a-a51d-c56808b20622", "kind": "submit", "t": 1793652491.177974, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "0f2e9304-7631-47e4-ac7a-d10ba1bb8cdc", "kind": "submit", "t": 1793652491.2014878, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "f8e7cb38-ad5c-4e7a-a51d-c56808b20622", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652492.199645, "vm": "vm-a"}
+{"job": "0f2e9304-7631-47e4-ac7a-d10ba1bb8cdc", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652492.232935, "vm": "vm-b"}
+{"ignored": [], "job": "d46d58f0-e390-4c2c-b311-66903e0152de", "kind": "submit", "t": 1793652499.436379, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "e2c5d61b-b72b-4bf3-b991-62c9c98f38b0", "kind": "submit", "t": 1793652499.437495, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "e2c5d61b-b72b-4bf3-b991-62c9c98f38b0", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652508.150648, "vm": "vm-b"}
+{"job": "d46d58f0-e390-4c2c-b311-66903e0152de", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652508.150815, "vm": "vm-a"}
+{"ignored": [], "job": "201c74d6-ccb5-4e46-a085-fb97958d09cc", "kind": "submit", "t": 1793652510.876039, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "fd5ad02b-63f8-4819-8feb-970ffc225bc9", "kind": "submit", "t": 1793652510.877443, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "201c74d6-ccb5-4e46-a085-fb97958d09cc", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652518.537547, "vm": "vm-a"}
+{"job": "fd5ad02b-63f8-4819-8feb-970ffc225bc9", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652518.539646, "vm": "vm-b"}
+{"ignored": [], "job": "a66bb65b-3e3e-4676-b966-ee706ea748e9", "kind": "submit", "t": 1793652521.4248772, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "9d165b96-2bad-4ac4-9a0e-e7bb528205c9", "kind": "submit", "t": 1793652521.430748, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "9d165b96-2bad-4ac4-9a0e-e7bb528205c9", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652529.124429, "vm": "vm-b"}
+{"job": "a66bb65b-3e3e-4676-b966-ee706ea748e9", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652529.646411, "vm": "vm-a"}
+{"ignored": [], "job": "4f688665-658d-432f-a6c4-53005a8c250e", "kind": "submit", "t": 1793652532.30241, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "64167bb0-20a6-41f7-a664-00f46812eb31", "kind": "submit", "t": 1793652532.3092191, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "64167bb0-20a6-41f7-a664-00f46812eb31", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652539.9845278, "vm": "vm-b"}
+{"job": "4f688665-658d-432f-a6c4-53005a8c250e", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652539.987942, "vm": "vm-a"}
+{"ignored": [], "job": "4fcdb5e9-1427-468e-9059-146eabd6feed", "kind": "submit", "t": 1793652542.53629, "tenant": "tenant-a", "vm": "vm-a"}
+{"ignored": [], "job": "3bde1556-67f4-42f1-9414-b08bb08ae03f", "kind": "submit", "t": 1793652542.53964, "tenant": "tenant-b", "vm": "vm-b"}
+{"job": "3bde1556-67f4-42f1-9414-b08bb08ae03f", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652550.726937, "vm": "vm-b"}
+{"job": "4fcdb5e9-1427-468e-9059-146eabd6feed", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652550.733212, "vm": "vm-a"}
+{"ignored": [], "job": "c6b0b1bd-aeaa-4e1f-98c5-54eb3030d159", "kind": "submit", "t": 1793652581.629761, "tenant": "tenant-a", "vm": "vm-a"}
+{"allowed": true, "job": "c6b0b1bd-aeaa-4e1f-98c5-54eb3030d159", "kind": "egress", "request": "CONNECT github.com:443 HTTP/1.1", "resolved": ["20.27.177.113"], "t": 1793652582.145976, "vm": "vm-a"}
+{"allowed": false, "job": "c6b0b1bd-aeaa-4e1f-98c5-54eb3030d159", "kind": "egress", "reason": "destination not on allowlist", "request": "CONNECT example.com:443 HTTP/1.1", "t": 1793652582.486484, "vm": "vm-a"}
+{"allowed": false, "job": "c6b0b1bd-aeaa-4e1f-98c5-54eb3030d159", "kind": "egress", "reason": "destination not on allowlist", "request": "CONNECT 172.16.0.1:443 HTTP/1.1", "t": 1793652582.5069, "vm": "vm-a"}
+{"allowed": false, "job": "c6b0b1bd-aeaa-4e1f-98c5-54eb3030d159", "kind": "egress", "reason": "destination not on allowlist", "request": "CONNECT 127.0.0.1:48800 HTTP/1.1", "t": 1793652582.520509, "vm": "vm-a"}
+{"allowed": false, "kind": "egress", "reason": "no active job capability for this VM", "request": "CONNECT github.com:443 HTTP/1.1", "t": 1793652582.532541, "vm": "vm-a"}
+{"allowed": false, "job": "c6b0b1bd-aeaa-4e1f-98c5-54eb3030d159", "kind": "egress", "reason": "only CONNECT is allowed", "request": "GET http://github.com/ HTTP/1.1", "t": 1793652582.543665, "vm": "vm-a"}
+{"job": "c6b0b1bd-aeaa-4e1f-98c5-54eb3030d159", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652583.1910772, "vm": "vm-a"}
+{"ignored": [], "job": "f89155e7-63f2-46cb-8e50-64cf61954a6a", "kind": "submit", "t": 1793652600.3817248, "tenant": "tenant-a", "vm": "vm-a"}
+{"job": "f89155e7-63f2-46cb-8e50-64cf61954a6a", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652601.439741, "vm": "vm-a"}
+{"crash": false, "kind": "vm-stop", "t": 1793652665.828993, "vm": "vm-a"}
+{"kind": "vm-retire", "t": 1793652666.3543732, "tenant": "tenant-a", "vm": "vm-a"}
+{"kind": "vm-create", "t": 1793652666.500289, "tenant": "tenant-c", "vm": "vm-c"}
+{"cpus": 6, "kind": "vm-start", "memory_gib": 8, "pid": 46308, "t": 1793652666.596928, "tenant": "tenant-c", "vm": "vm-c"}
+{"ignored": [], "job": "60fecf4f-eb5b-4e3e-9846-e606f22b2b75", "kind": "submit", "t": 1793652715.165453, "tenant": "tenant-c", "vm": "vm-c"}
+{"job": "60fecf4f-eb5b-4e3e-9846-e606f22b2b75", "kind": "job-end", "rejected": 0, "state": "finished", "t": 1793652722.32791, "vm": "vm-c"}
+{"action": "status", "code": 404, "error": "no such job", "kind": "tenant-refused", "t": 1793652723.0769541, "tenant": "tenant-b"}
+{"action": "status", "code": 404, "error": "no such job", "kind": "tenant-refused", "t": 1793652723.104954, "tenant": "tenant-c"}
+{"action": "artifacts", "code": 404, "error": "no such job", "kind": "tenant-refused", "t": 1793652723.141812, "tenant": "tenant-b"}
+{"action": "cancel", "code": 404, "error": "no such job", "kind": "tenant-refused", "t": 1793652723.184177, "tenant": "tenant-a"}
+{"action": "submit", "code": 404, "error": "no running guest for tenant", "kind": "tenant-refused", "t": 1793652723.217803, "tenant": "tenant-a"}
+{"action": "status", "code": 401, "error": "unauthenticated", "kind": "tenant-refused", "t": 1793652723.249059, "tenant": null}

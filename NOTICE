@@ -141,19 +141,55 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
+kojo
+https://github.com/jemdiggity/kojo
+MIT License, at kojo 90c4e23.
+================================================================================
+
+Derived from kojo:
+
+  crates/kanna-pipe
+      A Rust port of kojo's factory language, src/kojo/factory_spec.py:
+      the line grammar (stages, flow lines with pass, fail, max N, reset
+      and progress, comments), errors as FILE:LINE: message, the checks
+      in validate() (undefined stages, verdict-only pass and fail,
+      progress and reset sources and destinations, reachability, a max
+      on every loop), Factory.pick, Factory.worst and max_sessions, and
+      verdict_of. Kanna's stage kinds (agents, run, ask, merge), its
+      attributes (each, emits, on, within, resume), the budget and
+      revisions are Kanna's.
+
+MIT License
+
+Copyright (c) 2026 Jeremy Hale
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
 Kanna v3
 ================================================================================
 
 Derived from Kanna v3:
 
   crates/kanna-detect
-      A port of Kanna v3's crates/kanna3-detect (the rule engine, the rule
-      store with its remote index, hashes, HTTPS fetch and cache, the
-      version probe and the foreground-program check from crates/kanna3d's
-      terminal.rs), with v4's statuses, regions and progress tests.
-  agent-rules/*.json, agent-rules/corpus
-      From kanna3-detect's manifests/*.json and corpus/ (Kanna v3, by way of
-      Kanna v2's rules), with v4's status names.
+      The version probe and the foreground-program check, ported from Kanna
+      v3's crates/kanna3-detect and crates/kanna3d's terminal.rs.
   tools/agent-harness/mock_server.py
       From Kanna v3's tools/characterize/mock_server.py (the scripted
       Anthropic Messages, OpenAI Responses and Chat Completions server);

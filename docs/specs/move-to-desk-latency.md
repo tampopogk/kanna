@@ -27,8 +27,8 @@ sequenceDiagram
     D->>D: off the Shelf, on the Desk (kanna.db)
     D-->>A: tasks and layout notices: the card is on the Desk
     Note over A: the card is clickable, and an active pane shows a spinner
-    D->>K: next turn: restart the agent, then its tabs
-    K-->>D: running
+    D-)K: next turn: spawn the agent, then its tabs (not waited on)
+    K-->>D: replies, read as keeper events: running
     D-->>A: folder of the agent's new terminal, then its output
     D->>G: git branch --show-current
     G-->>D: branch
@@ -52,6 +52,7 @@ sequenceDiagram
 - **Branch lookups** go to a thread and come back as `Event::Branch`; the reply waits on them, the Desk doesn't.
 - **A restarted terminal's folder:** a restart gives the agent a new terminal ID ([IDs](presentation-layers.md#3-ids)), and the app files Desk cards by their terminal's folder. The daemon sends the app the new ID's folder as the ID changes, not once the terminal has started, so the card is filed under its project at once.
 - **The spinner:** a terminal pane the app has no started terminal for yet (`PaneView.waiting`) shows a small spinner, gone once its terminal attaches or the pane shows a message.
+- **Keeper spawns don't wait:** the restart sends its spawns and the loop goes on; each terminal starts when the keeper's reply comes back, so a busy or paused keeper doesn't hold up the Desk or anything else ([spawns without waiting](async-spawns.md)).
 - **The app's refreshes are deferred:** a daemon notice (`layout`, `tasks`, `status`, `folder`, `pane`, `start`) marks the app as needing a refresh (`refreshSoon`), and a run-loop observer refreshes once before the main thread sleeps, ahead of AppKit's drawing in the same pass. A command (from the CLI or the daemon) refreshes first if one is due, so it reads current state.
 - **`DeskView.lay` keeps unchanged rows:** a Desk or Shelf row whose task, width and state are the same is moved, not rebuilt, so only a new or changed row is drawn again.
 - **The app reads the daemon's lines** by searching only the bytes just read for the newline (`memchr`), so a large `tasks` notice (every Shelf task's first message) costs one pass, not one per read.
@@ -64,6 +65,7 @@ sequenceDiagram
 - With the mock agent, restarting an agent and two tabs takes about 8ms on a quiet machine, so the e2e also passes on the old order. The daemon test is what pins the order.
 - **e2e `perf_intervals`:** with 50 tasks on the Shelf (first messages of about 2,700 characters each, like the real ones), `click.pick.shown` for a stopped task is at most 100ms, a bound with room for a loaded machine.
 - **`task_scripts.rs`**, `a_worktrees_git_folder_is_found_without_running_git`: the git folder read from `.git` is the one `git rev-parse --absolute-git-dir` names, for the main checkout, a linked worktree and a folder inside it.
+- **e2e `pick_keeper_paused`:** the same with the run's own keeper paused (`SIGSTOP`): on the Desk within 200ms, and `kanna task list` answers meanwhile ([spawns without waiting](async-spawns.md#4-tested)).
 
 ### Readings with fifty Shelf tasks
 
@@ -88,6 +90,5 @@ What was slow:
 
 ## 5. Not yet
 
-- **Keeper spawns are synchronous:** every terminal start is a request to the keeper that the daemon's main thread waits on. It's normally a few milliseconds, and it now comes after the Desk change. Making spawns asynchronous is its own task.
 - **A task with no worktree yet** reaches the Desk once `git worktree add` (on a thread) is done, since its agent needs its folder to start in.
 - **Other crates' log lines** (`kanna-mux:`, `kanna-detect:`) aren't stamped: they print with `eprintln!` from their own crates.
