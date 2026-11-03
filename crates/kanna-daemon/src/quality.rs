@@ -317,7 +317,7 @@ fn fixes_tiles(facts: &Facts, first: i64) -> Vec<Value> {
     vec![
         tile("fixed", "Landings fixed later", share, Some("%"), format!("{later_fixed} of {} landings", landings.len()), 2, json!({ "kind": "line", "values": rate, "max": 100, "what": "of the week's landings were fixed later" })),
         tile("fixes", "Fixes", json!(per_day.last().copied().unwrap_or(0.0)), None, format!("today · {total} in 30 days"), 2, json!({ "kind": "columns", "values": per_day, "what": "fixes landed" })),
-        tile("tofix", "Landing to fix", middle.map_or(Value::Null, |m| json!(m.round())), Some("s"), if points.is_empty() { String::new() } else { format!("median of {}", points.len()) }, 2, json!({ "kind": "dots", "points": points, "line": line, "what": "7-day median" })),
+        tile("tofix", "How long bugs lived", middle.map_or(Value::Null, |m| json!(m.round())), Some("s"), if points.is_empty() { String::new() } else { format!("median of {} fix{}", points.len(), if points.len() == 1 { "" } else { "es" }) }, 2, json!({ "kind": "dots", "points": points, "line": line, "what": "7-day median" })),
     ]
 }
 

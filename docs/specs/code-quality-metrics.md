@@ -41,7 +41,7 @@ Each measure shows its value at main's last commit over a line of its value at e
 | Changed lines covered | how well each landing was tested | lines landed in the 30 days, still there, run by a test ÷ all of them (Google's delta coverage); a column per landing day | low columns on recent days |
 | Landings fixed later | how often a landing needed a fix | of the 30 days' landings, the share a later fix [traced back](#5-fixes) to; the line is each week's | rising (recent days read low: their fixes haven't come yet) |
 | Fixes | fixes landed per day | landings found to be [fixes](#5-fixes) | a run of them |
-| Landing to fix | how long a bug lived on main | per fix, from the landing it traced to; dots and a 7-day median | rising: bugs found later |
+| How long bugs lived | how long a bug sat on main before its fix landed | per fix, the time from the landing it [traced back](#5-fixes) to until the fix landed; a dot per fix, a 7-day median line, and the median as the figure | rising: bugs found later |
 
 - **Counted code:** `.rs`, `.swift` and `.py` files outside folders named `tests`, `Tests`, `test`, `benches`, `examples`, `vendor`, `third_party`, `references`, `fixtures`, `target` and `build`, and outside hidden folders. In Rust, `#[cfg(test)]` modules and `#[test]` functions are left out.
 - **Functions:** Rust `fn` items, Swift functions, `init`, `deinit`, subscripts and computed properties, and Python `def`s that SlopCodeBench reaches (module, class and function bodies). Closures count toward the function they're in.
