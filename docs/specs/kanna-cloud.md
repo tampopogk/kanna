@@ -8,11 +8,11 @@
 
 **The problem it solves.** Kanna's agents run on the customer's own machines, which limits them three ways:
 
-- **Capacity:** a laptop runs a few agents at once before it slows down, and a customer without a spare Linux box or Mac has nowhere else to send more.
+- **Capacity:** a laptop runs a few agents at once before it slows down, while a Shelf can hold far more work than that. Cloud can work through it with tens or hundreds of agents at once.
 - **Availability:** a task stops when the laptop sleeps, closes or leaves the network; work queued on the Shelf waits for it.
 - **Setup:** running a server of their own means buying it, installing Kanna, keeping it secure and updated, and giving it git and agent credentials by hand; building Apple code from Linux needs a Mac besides.
 
-Kanna Cloud removes all three for a price: the customer sends a task to the cloud and it runs now, on a clean machine of its own, whether their laptop is open or not, with Apple builds on Kanna's Macs. They manage nothing but the task.
+Kanna Cloud removes all three for a price. Its main use is **working through the customer's Shelf** with as many agents as the Shelf has tasks, with the laptop closed (§5). A single task sent to the cloud also runs at once, on a clean machine of its own, whether their laptop is open or not, with Apple builds on Kanna's Macs. They manage nothing but the task.
 
 It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the same software run by someone else**: whoever runs it is the operator, and everything below about Kanna as operator applies to them.
 
@@ -125,6 +125,17 @@ A task the customer sends to Cloud runs on a VM made for it alone, which they ne
 - **Done, stopped for good or moved off:** the VM's work is transferred back (or pushed, by the task), the customer's Kanna revokes its key and removes its deploy keys, and Kanna destroys the VM.
 - **The gesture:** a Cloud task asks once, when the customer first sends tasks to Cloud from a Mac, not per task: the app approves `task` VMs made for this account's requests, which the account key authenticates (§11).
 
+### The Shelf in the cloud
+
+The main use of Cloud: the customer's Shelf is worked through on the cloud, many tasks at once, whether their laptop is open or not.
+
+- **Cloud holds a copy of the Shelf** for each account that turns it on: every waiting task with its first message, project, agent and `--after` dependencies, kept in step with the customer's machines. A task added or changed on a machine reaches it, and its state comes back. It's a replica like any other machine's ([tasks §1–2](machine-tasks.md)), held by the service, not by a peer in the customer's log.
+- **Cloud is a Shelf runner** with a limit the customer sets (`shelf.cloud`, tasks at once) instead of `shelf.runners`: it starts waiting tasks oldest first, unblocked ones only, each on its own VM.
+- **Which tasks:** those sent with `--cloud`, and, when the customer turns it on, every waiting task their own machines haven't started within a delay. A task can be kept off the cloud (`--local`).
+- **With the laptop closed** nothing needs it: Cloud has the task, the repo's git access and the agent account (below). A task that needs the customer stops and waits, as on the Desk; when it's done its branch is pushed, and its record shows it done on every machine when they next sync.
+- **What Cloud must hold for that,** which the open-laptop path didn't: a git credential it can use alone (a GitHub App installed on the customer's repos, which mints short-lived tokens per task, rather than deploy keys their Mac adds), and the agent account (a Claude setup token or API key; a Codex ChatGPT login needs its holder on the service instead of the Mac). The operator could read both, as it can read everything on the VMs (§1).
+- **Scale:** hundreds of tasks at once is hundreds of VMs, so the backend matters (§4): a provider's capacity on demand, with the R720s as the cheap base.
+
 ## 6. Enrollment
 
 A Cloud task's VM joins the customer's machines with a one-time token their own Kanna made when it sent the task, instead of a typed code. The customer's own machines join a Cloud account by the usual code pairing ([identity §2](machine-identity.md#2-pairing)), with the directory carrying the PAKE so they needn't share a LAN; machines that move to Cloud publish the log they have, and nothing is paired again.
@@ -153,7 +164,7 @@ sequenceDiagram
 
 - **The directory** holds each account's published peer log (signed by the customer's devices, so it can withhold but not forge), each peer's relay URL and last addresses, and relays the PAKE for machines not on one LAN.
 - **Relays** are `iroh-relay`, as for a relay a customer runs; Kanna's are run for all tenants.
-- **Later, on the directory:** an always-on copy of the Shelf, encrypted with the customer's keys, so a task added on a closed laptop reaches the cloud; push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
+- **Later, on the directory:** push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
 - **A scheduler** can own every waiting task of a user's VMs and assign them centrally instead of runners asking ([tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **Placement by capability.** Each machine advertises its capabilities (OS, architecture, cores, RAM, Xcode versions, display) in its peer log entry ([identity §3](machine-identity.md#3-the-peer-log)). A task's `needs:` (`needs: xcode`, `needs: linux`) is matched against them, by a runner before it asks or by the scheduler, so a task goes only where it can run. It's Cloud's infrastructure: the app doesn't show capabilities ([links §5](machine-links.md#5-paths-the-machines-tab-and-offline)).
 
@@ -187,8 +198,9 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 
 - **What a hosted VM may run on the customer's other machines.** It can't change their machines (§10), but as one of them it can run commands and tasks on their Mac (`kanna --host mbp …`), as their Mac can on it, so its operator could too. **Proposed:** hosted peers reach only their own tasks' records and streams, never other machines' terminals or commands. It comes before Cloud tasks and before a second tenant.
 - **Cloud tasks without a gesture each.** **Proposed:** the customer approves once per Mac that `task` VMs made for their account's requests join without a sheet, since their own Kanna asked for each (it made the token).
-- **Where a Cloud task's work lands** when the customer's Macs are all closed. **Proposed:** the task pushes its branch with its git access, and the transfer back happens when a Mac next answers.
-- **A copy of agent secrets in the directory**, so a VM starts while the Mac is closed (the earlier plan). **Proposed:** none for now; needed for Cloud tasks with the Mac closed, together with the encrypted Shelf copy.
+- **Where a Cloud task's work lands** when the customer's Macs are all closed. **Proposed:** the task pushes its branch with its git access; the customer's machines see it done at their next sync and fetch the branch.
+- **Agent secrets and git access held by Cloud,** so tasks start while the Mac is closed (§5, the Shelf in the cloud). **Proposed:** yes, for accounts that turn the cloud Shelf on: the GitHub App for git, and the agent account kept by the service, encrypted at rest; a Codex ChatGPT login's holder moves to the service.
+- **Can Cloud's Shelf copy be encrypted from the operator?** **Proposed:** no: Cloud has to read a task to run it, and the VM sees its code anyway; it is encrypted at rest and in transit.
 - **The first tenant:** **Decided:** Cloud's VMs go on the host-enforced tenant network (§4) from the first; the network check runs on each host before a second tenant.
 - **A customer's own Mac as their private build Mac.** **Proposed:** not in the first Cloud milestone; the pool is Kanna's Macs.
 - **Billing:** VM and build-Mac time per account, with the account key; the directory's $5 a month as decided before.
