@@ -593,6 +593,7 @@ fn allowed(on: &[String], name: &str) -> bool {
 }
 
 enum Candidate {
+    Wake(Entry),
     Here(Entry),
     There { task: String, birth: String, owner: String },
     Take { task: String, birth: String, owner: String },
@@ -2090,58 +2091,16 @@ impl Tasks {
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
-            let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
-            let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
-            let mut woken: Vec<&&Entry> = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).collect();
-            woken.sort_by(|a, b| db::oldest_first((a.made_at, &a.id), (b.made_at, &b.id)));
-            for entry in woken {
-                if busy >= slots {
-                    break;
-                }
-                busy += 1;
-                log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
-                self.wake(core, (*entry).clone());
-            }
-            let mut waiting: Vec<(bool, Hlc, Candidate)> = mine
-                .iter()
-                .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
-                .filter(|e| heard || e.birth.is_none() || e.on == [machines.me.name.clone()])
-                .map(|e| (mail.contains(&e.id), order(e), Candidate::Here((*e).clone())))
-                .collect();
-            let others = || {
-                let replica = self.replica.borrow();
-                let any = replica.records().any(|r| r.text("state") == Some("waiting") && r.text("owner").is_some_and(|o| o != replica.me()));
-                any
-            };
-            if let Some(project) = others().then(|| identity(&repo)).flatten() {
-                let replica = self.replica.borrow();
-                for record in replica.records() {
-                    let owner = record.text("owner").unwrap_or_default();
-                    let eligible = record.text("project") == Some(project.as_str())
-                        && record.text("state") == Some("waiting")
-                        && !owner.is_empty()
-                        && owner != replica.me()
-                        && !self.is_open(&record.task)
-                        && !asked.contains(&record.task)
-                        && replica.births(&record.task).len() == 1
-                        && allowed(&record.list("on"), &machines.me.name)
-                        && !self.refused.borrow().contains_key(&record.task)
-                        && record.list("after").iter().all(|id| !self.is_open(id) && !replica.open_task(id));
-                    let (task, birth, owner) = (record.task.clone(), record.birth.clone(), owner.to_string());
-                    if eligible && self.away_long(&owner, now) {
-                        waiting.push((false, record.born(), Candidate::Take { task, birth, owner }));
-                    } else if eligible && !self.is_away(&owner, now) {
-                        waiting.push((false, record.born(), Candidate::There { task, birth, owner }));
-                    }
-                }
-            }
-            waiting.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            for (_, _, candidate) in waiting {
+            for candidate in self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now) {
                 if busy >= slots {
                     break;
                 }
                 busy += 1;
                 match candidate {
+                    Candidate::Wake(entry) => {
+                        log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
+                        self.wake(core, entry);
+                    }
                     Candidate::Here(entry) => {
                         let (this, id) = (Rc::downgrade(self), entry.id.clone());
                         log!("kanna-daemon: {id} runs on the Shelf ({busy} of {slots} in {repo})");
@@ -2181,6 +2140,47 @@ impl Tasks {
                 }
             }
         }
+    }
+
+    fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<Candidate> {
+        let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
+        let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
+        let woken = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
+        let new = mine
+            .iter()
+            .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
+            .filter(|e| heard || e.birth.is_none() || e.on == [machines.me.name.clone()])
+            .map(|e| (order(e), Candidate::Here((*e).clone())));
+        let mut waiting: Vec<(Hlc, Candidate)> = woken.chain(new).collect();
+        let others = || {
+            let replica = self.replica.borrow();
+            let any = replica.records().any(|r| r.text("state") == Some("waiting") && r.text("owner").is_some_and(|o| o != replica.me()));
+            any
+        };
+        if let Some(project) = others().then(|| identity(repo)).flatten() {
+            let replica = self.replica.borrow();
+            for record in replica.records() {
+                let owner = record.text("owner").unwrap_or_default();
+                let eligible = record.text("project") == Some(project.as_str())
+                    && record.text("state") == Some("waiting")
+                    && !owner.is_empty()
+                    && owner != replica.me()
+                    && !self.is_open(&record.task)
+                    && !asked.contains(&record.task)
+                    && replica.births(&record.task).len() == 1
+                    && allowed(&record.list("on"), &machines.me.name)
+                    && !self.refused.borrow().contains_key(&record.task)
+                    && record.list("after").iter().all(|id| !self.is_open(id) && !replica.open_task(id));
+                let (task, birth, owner) = (record.task.clone(), record.birth.clone(), owner.to_string());
+                if eligible && self.away_long(&owner, now) {
+                    waiting.push((record.born(), Candidate::Take { task, birth, owner }));
+                } else if eligible && !self.is_away(&owner, now) {
+                    waiting.push((record.born(), Candidate::There { task, birth, owner }));
+                }
+            }
+        }
+        waiting.sort_by(|a, b| a.0.cmp(&b.0));
+        waiting.into_iter().map(|(_, candidate)| candidate).collect()
     }
 
     fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
@@ -5170,6 +5170,38 @@ mod tests {
         tasks.status("term-7", Some("working"), false);
         tasks.status("term-7", Some("idle"), true);
         assert!(tasks.turns.borrow()["term-7"].ended(Instant::now()).is_some(), "its next turn is tracked again");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn runners_take_the_oldest_task_with_something_to_do() {
+        let state = std::env::temp_dir().join(format!("kanna-queue-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut alive = Pane::new("term-7", None, kanna_mux::PaneType::Term);
+        alive.state = PaneState::Running;
+        core.install_panes(vec![alive], 0, 7);
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), std::sync::mpsc::channel().0));
+        let task = |id: &str, made_at: f64, folder: Option<&str>| Entry { id: id.into(), repo: "/r".into(), agent: "codex".into(), made_at, folder: folder.map(String::from), ..Default::default() };
+        let running = Entry { held: Some("term-7".into()), ..task("task-running", 0.0, Some("/r/0")) };
+        let stopped_old = task("task-stopped-old", 1.0, Some("/r/1"));
+        let quiet = task("task-quiet", 2.0, Some("/r/2"));
+        let new_old = task("task-new-old", 3.0, None);
+        let new_with_mail = task("task-new-with-mail", 4.0, None);
+        let stopped_new = task("task-stopped-new", 5.0, Some("/r/5"));
+        let new_new = task("task-new-new", 6.0, None);
+        let mine = [&new_new, &stopped_new, &running, &new_with_mail, &quiet, &stopped_old, &new_old];
+        for (id, recipient) in [(1, "task-stopped-new"), (2, "task-running"), (3, "task-new-with-mail"), (4, "task-stopped-old")] {
+            tasks.waiting.borrow_mut().push(Message { id, recipient: recipient.into(), repo: "/r".into(), sender: "user".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None });
+        }
+        let handle = tasks.core.upgrade().unwrap();
+        let queue: Vec<String> = tasks.candidates(&handle, "/r", &mine, &HashSet::new(), &tasks.machines(), true, &HashSet::new(), Instant::now()).into_iter().map(|candidate| match candidate {
+            Candidate::Wake(entry) => format!("wake {}", entry.id),
+            Candidate::Here(entry) => format!("start {}", entry.id),
+            Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
+        }).collect();
+        assert_eq!(queue, ["wake task-stopped-old", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, and a running or quiet stopped task isn't in it");
         fs::remove_dir_all(&state).unwrap();
     }
 
