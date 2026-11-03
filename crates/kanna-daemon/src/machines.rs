@@ -26,7 +26,7 @@ pub struct Machines {
     withdraw: std::sync::OnceLock<Withdraw>,
 }
 
-struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>, PathBuf);
+struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>, PathBuf, PathBuf);
 
 impl Host for DaemonHost {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
@@ -58,6 +58,11 @@ impl Host for DaemonHost {
     fn inbox(&self) -> Option<PathBuf> {
         Some(self.2.clone())
     }
+
+    fn job(&self, from: String, stream: std::os::unix::net::UnixStream) {
+        let state_dir = self.3.clone();
+        let _ = std::thread::Builder::new().name("kanna.build.relay".into()).spawn(move || crate::builds::relay(&state_dir, &from, stream));
+    }
 }
 
 #[derive(Clone)]
@@ -86,6 +91,13 @@ impl Caller {
             Ok(Err(failure)) => Err(error(failure)),
             Err(_) => Err(KmuxError::new("unreachable", format!("{host} didn't answer in time"))),
         }
+    }
+}
+
+impl Caller {
+    pub fn job(&self, host: &str) -> Result<(std::os::unix::net::UnixStream, String), Failure> {
+        let opened = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.job(host)).await });
+        opened.unwrap_or_else(|_| Err(Failure::new("unreachable", format!("{host} didn't answer in time"))))
     }
 }
 
@@ -124,7 +136,7 @@ impl Machines {
             let saved = db.machines().unwrap_or_else(|_| json!({}));
             let mdns = std::env::var("KANNA_MACHINE_MDNS").map_or(true, |v| v != "0");
             let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns, release: release() };
-            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire, crate::transfer::inbox(state_dir)))))
+            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire, crate::transfer::inbox(state_dir), state_dir.to_path_buf()))))
         });
         Ok(Machines { runtime, node, withdraw: std::sync::OnceLock::new() })
     }
