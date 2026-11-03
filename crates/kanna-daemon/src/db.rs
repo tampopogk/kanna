@@ -385,12 +385,26 @@ pub struct Life {
 pub struct Db {
     conn: Connection,
     layout: RefCell<Option<Box<dyn Fn() -> Option<Value>>>>,
-    checkpoints: Option<std::sync::mpsc::Sender<()>>,
+    checkpoints: Option<Checkpoints>,
+}
+
+struct Checkpoints {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Checkpoints {
+    fn drop(&mut self) {
+        self.stop.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn checkpointing(path: PathBuf) -> Option<std::sync::mpsc::Sender<()>> {
+fn checkpointing(path: PathBuf) -> Option<Checkpoints> {
     let (stop, stopping) = std::sync::mpsc::channel::<()>();
     let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
         let Ok(conn) = Connection::open(&path) else { return };
@@ -401,7 +415,7 @@ fn checkpointing(path: PathBuf) -> Option<std::sync::mpsc::Sender<()>> {
             crate::perf::since("db.checkpoint", started);
         }
     });
-    started.ok().map(|_| stop)
+    started.ok().map(|thread| Checkpoints { stop: Some(stop), thread: Some(thread) })
 }
 
 fn now() -> f64 {
