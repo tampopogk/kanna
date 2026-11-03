@@ -442,7 +442,7 @@ impl Supervisor {
             std::thread::sleep(POLL);
         };
         unsafe { libc::kill(-pid, libc::SIGKILL) };
-        if term_at.is_some() {
+        if term_at.is_some() || job.state.lock().unwrap().cancel {
             return Ok(Phase::Cancelled);
         }
         Ok(match (status.code(), status.signal()) {

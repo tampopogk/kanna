@@ -1,0 +1,174 @@
+use kanna_guest::client::{self, Outcome, Pipe, Request};
+use kanna_guest::supervisor::{Config, Supervisor};
+use std::collections::BTreeMap;
+use std::io::{self, Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+fn temp(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("kanna-jobs-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.canonicalize().unwrap()
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+struct Rig {
+    socket: PathBuf,
+    state: PathBuf,
+    repo: PathBuf,
+}
+
+fn rig(name: &str) -> Rig {
+    let dir = temp(name);
+    let (socket, state, repo) = (dir.join("guest.sock"), dir.join("state"), dir.join("repo"));
+    let supervisor = Supervisor::new(Config::new(state.clone())).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let supervisor = supervisor.clone();
+            std::thread::spawn(move || {
+                let _ = supervisor.serve(conn);
+            });
+        }
+    });
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("src/committed.txt"), "committed\n").unwrap();
+    std::fs::write(repo.join("gone.txt"), "deleted later\n").unwrap();
+    std::fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "first"]);
+    Rig { socket, state, repo }
+}
+
+fn request(rig: &Rig, argv: &[&str]) -> (Request, client::Worktree) {
+    let worktree = client::worktree(&rig.repo).unwrap();
+    let request = Request { root: worktree.root.clone(), cwd: worktree.cwd.clone(), argv: argv.iter().map(|s| s.to_string()).collect(), env: BTreeMap::new(), fetch: vec![], ui: false, job: client::new_job() };
+    (request, worktree)
+}
+
+fn run(rig: &Rig, request: &Request, worktree: &client::Worktree) -> (Outcome, String, String) {
+    let socket = rig.socket.clone();
+    let connect = move || -> io::Result<Box<dyn Pipe>> { Ok(Box::new(UnixStream::connect(&socket)?)) };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let outcome = client::run(&connect, request, worktree, &mut out, &mut err);
+    (outcome, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
+}
+
+#[test]
+fn the_worktree_as_it_is_runs_on_the_guest_and_its_exit_code_comes_back() {
+    let rig = rig("exit");
+    std::fs::write(rig.repo.join("src/committed.txt"), "dirty\n").unwrap();
+    std::fs::write(rig.repo.join("untracked.txt"), "untracked\n").unwrap();
+    std::fs::write(rig.repo.join("ignored.txt"), "ignored\n").unwrap();
+    std::fs::remove_file(rig.repo.join("gone.txt")).unwrap();
+    let script = "cat src/committed.txt untracked.txt; test -e gone.txt && echo gone-is-there; test -e ignored.txt && echo ignored-is-there; git status --short; echo to-stderr >&2; exit 3";
+    let (req, worktree) = request(&rig, &["sh", "-c", script]);
+    let (outcome, out, err) = run(&rig, &req, &worktree);
+    assert_eq!(outcome, Outcome::Exited(3), "{err}");
+    assert!(out.starts_with("dirty\nuntracked\n"), "{out}");
+    assert!(!out.contains("gone-is-there") && !out.contains("ignored-is-there"), "{out}");
+    assert!(out.contains(" M src/committed.txt") && out.contains(" D gone.txt") && out.contains("?? untracked.txt"), "git on the guest sees the worktree's state: {out}");
+    assert_eq!(err, "to-stderr\n");
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(rig.repo.join(".kanna/build").join(&req.job).join("job.json")).unwrap()).unwrap();
+    assert_eq!(record["code"], 3);
+
+    let (again, worktree) = request(&rig, &["sh", "-c", "cat src/committed.txt"]);
+    let started = Instant::now();
+    let (outcome, out, _) = run(&rig, &again, &worktree);
+    assert_eq!((outcome, out.as_str()), (Outcome::Exited(0), "dirty\n"));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let manifest_blobs = std::fs::read_dir(rig.state.join("store")).unwrap().count();
+    assert!(manifest_blobs >= 3);
+}
+
+#[test]
+fn diagnostics_and_results_come_back_with_this_worktrees_paths() {
+    let rig = rig("diag");
+    let (mut req, worktree) = request(&rig, &["sh", "-c", "echo \"$PWD/src/committed.txt:1:2: error: bad\"; mkdir -p product.app/Contents && printf bin > product.app/Contents/exe && chmod +x product.app/Contents/exe && ln -s Contents product.app/Current; exit 1"]);
+    req.fetch = vec!["product.app".into(), "never.txt".into()];
+    let (outcome, out, err) = run(&rig, &req, &worktree);
+    assert_eq!(outcome, Outcome::Exited(1));
+    assert!(out.contains("/state/mirrors/local/"), "raw output is untouched: {out}");
+    let mapped = format!("{}/src/committed.txt:1:2: error: bad", rig.repo.display());
+    assert!(err.contains(&mapped), "{err}");
+    assert!(err.contains("never.txt wasn't produced"), "{err}");
+    let exe = rig.repo.join("product.app/Contents/exe");
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "bin");
+    assert!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&exe).unwrap().permissions()) & 0o111 != 0);
+    assert_eq!(std::fs::read_link(rig.repo.join("product.app/Current")).unwrap(), PathBuf::from("Contents"));
+    let diagnostics = std::fs::read_to_string(rig.repo.join(".kanna/build").join(&req.job).join("diagnostics.txt")).unwrap();
+    assert_eq!(diagnostics.trim(), mapped);
+}
+
+struct Dropping {
+    inner: UnixStream,
+    drops: bool,
+    seen: Vec<u8>,
+}
+
+impl Read for Dropping {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.drops && self.seen.windows(6).any(|w| w == b"line-2") {
+            let _ = self.inner.shutdown(std::net::Shutdown::Both);
+            return Err(io::Error::new(io::ErrorKind::ConnectionReset, "dropped"));
+        }
+        let n = self.inner.read(buf)?;
+        if self.drops {
+            self.seen.extend_from_slice(&buf[..n]);
+        }
+        Ok(n)
+    }
+}
+
+impl Write for Dropping {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+#[test]
+fn a_dropped_connection_reattaches_to_the_same_job() {
+    let rig = rig("drop");
+    let (req, worktree) = request(&rig, &["sh", "-c", "echo $KANNA_BUILD_JOB >> runs.log; for i in 1 2 3 4 5; do echo line-$i; sleep 0.3; done; cat runs.log | wc -l | tr -d ' '"]);
+    let socket = rig.socket.clone();
+    let calls = AtomicUsize::new(0);
+    let connect = move || -> io::Result<Box<dyn Pipe>> {
+        let inner = UnixStream::connect(&socket)?;
+        Ok(Box::new(Dropping { inner, drops: calls.fetch_add(1, Ordering::SeqCst) == 0, seen: vec![] }))
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let outcome = client::run(&connect, &req, &worktree, &mut out, &mut err);
+    let out = String::from_utf8_lossy(&out);
+    assert_eq!(outcome, Outcome::Exited(0), "{}", String::from_utf8_lossy(&err));
+    assert_eq!(out, "line-1\nline-2\nline-3\nline-4\nline-5\n1\n", "each line once, and the job ran once");
+}
+
+#[test]
+fn cancelling_stops_the_job_and_says_so() {
+    let rig = rig("cancel");
+    let (req, worktree) = request(&rig, &["sh", "-c", "echo started; sleep 30; echo never"]);
+    let socket = rig.socket.clone();
+    let job = req.job.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        let connect = move || -> io::Result<Box<dyn Pipe>> { Ok(Box::new(UnixStream::connect(&socket)?)) };
+        client::cancel(&connect, &job).unwrap();
+    });
+    let started = Instant::now();
+    let (outcome, out, _) = run(&rig, &req, &worktree);
+    canceller.join().unwrap();
+    assert_eq!((outcome, out.as_str()), (Outcome::Cancelled, "started\n"));
+    assert!(started.elapsed() < Duration::from_secs(15));
+}

@@ -98,7 +98,7 @@ impl Intake {
         if self.files.contains(&folded) || (!dir && self.dirs.contains(&folded)) {
             return Err(rejected(format!("{rel} collides with another returned file")));
         }
-        if self.files.len() >= MAX_FILES {
+        if self.files.len() + self.dirs.len() + parts.len() > MAX_FILES {
             return Err(rejected("too many returned files"));
         }
         if dir { self.dirs.insert(folded) } else { self.files.insert(folded) };
@@ -144,8 +144,22 @@ impl Intake {
     }
 
     pub fn link(&mut self, rel: &str, target: &str) -> io::Result<()> {
-        if target.is_empty() || target.contains('\0') || target.len() > 4096 {
-            return Err(rejected(format!("{rel} links to nothing usable")));
+        if target.is_empty() || target.contains('\0') || target.len() > 4096 || target.starts_with('/') {
+            return Err(rejected(format!("{rel} links to {target:?}, which isn't a relative path")));
+        }
+        if self.single {
+            return Err(rejected(format!("{rel} is a link, not a file")));
+        }
+        let mut depth = rel.split('/').count() as i64 - 1;
+        for part in target.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => depth -= 1,
+                _ => depth += 1,
+            }
+            if depth < 0 {
+                return Err(rejected(format!("{rel} links to {target:?}, outside what was returned")));
+            }
         }
         let parts = self.claim(rel, false)?;
         let parent = self.parent(&parts)?;
@@ -219,8 +233,12 @@ mod tests {
         let mut intake = Intake::new(&dir.join("out.xcresult"), false).unwrap();
         assert!(intake.file("../x", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
         assert!(intake.file("/etc/x", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
-        intake.link("up", "..").unwrap();
-        assert!(intake.file("up/secret", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
+        assert!(intake.link("up", "..").is_err());
+        assert!(intake.link("abs", "/etc").is_err());
+        assert!(intake.link("a/b/c", "../../../x").is_err());
+        intake.link("a/b/ok", "../sibling").unwrap();
+        intake.link("dir", "a").unwrap();
+        assert!(intake.file("dir/secret", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
         assert!(intake.file("a", false, 1, &sha256(b"y"), &mut &b"x"[..]).is_err());
         intake.file("B", false, 1, &sha256(b"x"), &mut &b"x"[..]).unwrap();
         assert!(intake.file("b", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());

@@ -24,7 +24,7 @@ pub fn bad(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-pub fn write_header(out: &mut impl Write, header: &Value, size: u64) -> io::Result<()> {
+pub fn write_header(out: &mut (impl Write + ?Sized), header: &Value, size: u64) -> io::Result<()> {
     let mut header = header.clone();
     if let Some(object) = header.as_object_mut() {
         object.insert("size".into(), size.into());
@@ -37,7 +37,7 @@ pub fn write_header(out: &mut impl Write, header: &Value, size: u64) -> io::Resu
     out.write_all(&encoded)
 }
 
-pub fn send(out: &mut impl Write, header: &Value, payload: &[u8]) -> io::Result<()> {
+pub fn send(out: &mut (impl Write + ?Sized), header: &Value, payload: &[u8]) -> io::Result<()> {
     let mut buffer = Vec::with_capacity(payload.len() + 256);
     write_header(&mut buffer, header, payload.len() as u64)?;
     buffer.extend_from_slice(payload);
@@ -45,7 +45,7 @@ pub fn send(out: &mut impl Write, header: &Value, payload: &[u8]) -> io::Result<
     out.flush()
 }
 
-pub fn send_reader(out: &mut impl Write, header: &Value, size: u64, from: &mut impl Read) -> io::Result<()> {
+pub fn send_reader(out: &mut (impl Write + ?Sized), header: &Value, size: u64, from: &mut (impl Read + ?Sized)) -> io::Result<()> {
     write_header(out, header, size)?;
     let copied = io::copy(&mut from.take(size), out)?;
     if copied != size {
@@ -54,7 +54,7 @@ pub fn send_reader(out: &mut impl Write, header: &Value, size: u64, from: &mut i
     out.flush()
 }
 
-pub fn read_header(input: &mut impl Read, max_payload: u64) -> io::Result<Frame> {
+pub fn read_header(input: &mut (impl Read + ?Sized), max_payload: u64) -> io::Result<Frame> {
     let mut length = [0u8; 4];
     input.read_exact(&mut length)?;
     let length = u32::from_be_bytes(length) as usize;
@@ -77,19 +77,19 @@ pub fn read_header(input: &mut impl Read, max_payload: u64) -> io::Result<Frame>
     Ok(Frame { header, size })
 }
 
-pub fn read_payload(input: &mut impl Read, frame: &Frame) -> io::Result<Vec<u8>> {
+pub fn read_payload(input: &mut (impl Read + ?Sized), frame: &Frame) -> io::Result<Vec<u8>> {
     let mut payload = vec![0u8; frame.size as usize];
     input.read_exact(&mut payload)?;
     Ok(payload)
 }
 
-pub fn read(input: &mut impl Read, max_payload: u64) -> io::Result<(Frame, Vec<u8>)> {
+pub fn read(input: &mut (impl Read + ?Sized), max_payload: u64) -> io::Result<(Frame, Vec<u8>)> {
     let frame = read_header(input, max_payload)?;
     let payload = read_payload(input, &frame)?;
     Ok((frame, payload))
 }
 
-pub fn skip(input: &mut impl Read, frame: &Frame) -> io::Result<()> {
+pub fn skip(input: &mut (impl Read + ?Sized), frame: &Frame) -> io::Result<()> {
     let skipped = io::copy(&mut input.take(frame.size), &mut io::sink())?;
     if skipped != frame.size {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "frame cut short"));
