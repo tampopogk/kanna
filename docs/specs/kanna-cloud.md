@@ -103,6 +103,8 @@ flowchart LR
 
 **Where VMs run is a backend, not the design.** The first backend is Incus on Dell R720s, bought because they are the cheapest yen per GB of RAM; later ones are likely AWS or GCP. `kanna-cloud` hides which: it makes, sets up and destroys a VM for a task, and each backend does that its own way (Incus on a host, or the provider's API). What the rest of Cloud relies on is the same for all of them: a fresh Linux VM per task, isolated as below, destroyed with its disks when the task is done. On a provider, the isolation is its VPC, security groups and per-VM disks instead of the host's bridge and ACL.
 
+**Kanna's public edge** (proposed) is the GCP e2-micro that already runs `relay.kanna.build`: the relay, and later the provisioning service's public endpoint. Nothing is forwarded inbound to the R720s. Each host, and each task's VM, dials out (to the relay, and the host to the service over an iroh link of its own), so the R720s stay behind the home router with no open port. Relayed traffic is terminal and diff streams, which are small, and GCP bills it as egress; a task's git and package traffic goes straight from the VM to the internet, never through the micro. If the relay gets busy, or a customer's Kanna can't punch through to a VM, a larger relay or one per region comes before any forwarding.
+
 With the R720 backend:
 
 1. **A host:** `scripts/cloud/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([installing a host](cloud-provisioning.md)); `kanna-cloud setup-host` adds Incus, the tenant bridge, its ACL and profile, and the pool.
