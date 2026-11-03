@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 const MAX_HEAD: usize = 16 * 1024;
 
@@ -40,16 +40,28 @@ impl Drop for JobProxy {
     }
 }
 
-fn forward(mut client: TcpStream, upstream: u16, authorization: &str) -> io::Result<()> {
+fn read_head(stream: &mut TcpStream) -> io::Result<Option<Vec<u8>>> {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
-        if head.len() >= MAX_HEAD || client.read(&mut byte)? == 0 {
-            return Ok(());
+        if head.len() >= MAX_HEAD || stream.read(&mut byte)? == 0 {
+            return Ok(None);
         }
         head.push(byte[0]);
     }
-    let text = String::from_utf8_lossy(&head);
+    Ok(Some(head))
+}
+
+fn forward(mut client: TcpStream, upstream: u16, authorization: &str) -> io::Result<()> {
+    let Some(head) = read_head(&mut client)? else { return Ok(()) };
+    let text = String::from_utf8_lossy(&head).into_owned();
+    let mut words = text.split_whitespace();
+    let (method, target) = (words.next().unwrap_or_default(), words.next().unwrap_or_default());
+    if method != "CONNECT" {
+        if let Some(rest) = target.strip_prefix("https://") {
+            return fetch_https(client, upstream, authorization, &text, method, rest);
+        }
+    }
     let has_auth = text.lines().any(|line| line.to_ascii_lowercase().starts_with("proxy-authorization:"));
     let mut server = TcpStream::connect(("127.0.0.1", upstream))?;
     if has_auth {
@@ -67,6 +79,83 @@ fn forward(mut client: TcpStream, upstream: u16, authorization: &str) -> io::Res
     let _ = io::copy(&mut server, &mut client);
     let _ = client.shutdown(Shutdown::Write);
     let _ = up.join();
+    Ok(())
+}
+
+fn tls_config() -> io::Result<Arc<rustls::ClientConfig>> {
+    static CONFIG: OnceLock<Result<Arc<rustls::ClientConfig>, String>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            use rustls_platform_verifier::BuilderVerifierExt;
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let config = rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .and_then(|b| b.with_platform_verifier())
+                .map_err(|e| e.to_string())?
+                .with_no_client_auth();
+            Ok(Arc::new(config))
+        })
+        .clone()
+        .map_err(io::Error::other)
+}
+
+fn refuse(client: &mut TcpStream, status: &str) -> io::Result<()> {
+    client.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+}
+
+fn fetch_https(mut client: TcpStream, upstream: u16, authorization: &str, head: &str, method: &str, rest: &str) -> io::Result<()> {
+    let (authority, path) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
+    let path = if path.is_empty() { "/".to_string() } else if path.starts_with('?') { format!("/{path}") } else { path.to_string() };
+    let authority = authority.rsplit_once('@').map(|(_, a)| a).unwrap_or(authority);
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) if !host.ends_with(']') || authority.starts_with('[') => (host, port.parse::<u16>().unwrap_or(0)),
+        _ => (authority, 443),
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() || port == 0 || host.contains(|c: char| c.is_whitespace() || c.is_control()) {
+        return refuse(&mut client, "400 Bad Request");
+    }
+    let body_length = head.lines().find_map(|line| line.split_once(':').filter(|(name, _)| name.trim().eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.trim().parse::<u64>().ok())).unwrap_or(0);
+    if head.lines().any(|line| line.split_once(':').is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("transfer-encoding"))) {
+        return refuse(&mut client, "411 Length Required");
+    }
+    let mut server = TcpStream::connect(("127.0.0.1", upstream))?;
+    let target = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    server.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{authorization}\r\n").as_bytes())?;
+    let Some(answer) = read_head(&mut server)? else { return refuse(&mut client, "502 Bad Gateway") };
+    let status = String::from_utf8_lossy(&answer).lines().next().unwrap_or_default().to_string();
+    if status.split_whitespace().nth(1) != Some("200") {
+        client.write_all(&answer)?;
+        return Ok(());
+    }
+    let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let connection = rustls::ClientConnection::new(tls_config()?, name).map_err(io::Error::other)?;
+    let mut tls = rustls::StreamOwned::new(connection, server);
+    let mut request = format!("{method} {path} HTTP/1.1\r\n");
+    let mut has_host = false;
+    for line in head.split("\r\n").skip(1).filter(|l| !l.is_empty()) {
+        let name = line.split_once(':').map(|(n, _)| n.trim().to_ascii_lowercase()).unwrap_or_default();
+        match name.as_str() {
+            "proxy-authorization" | "proxy-connection" | "connection" | "keep-alive" => continue,
+            "host" => has_host = true,
+            _ => {}
+        }
+        request.push_str(line);
+        request.push_str("\r\n");
+    }
+    if !has_host {
+        request.push_str(&format!("Host: {}\r\n", if port == 443 { host.to_string() } else { target.clone() }));
+    }
+    request.push_str("Connection: close\r\n\r\n");
+    tls.write_all(request.as_bytes())?;
+    io::copy(&mut (&mut client).take(body_length), &mut tls)?;
+    tls.flush()?;
+    match io::copy(&mut tls, &mut client) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {}
+        Err(e) => return Err(e),
+    }
+    let _ = client.shutdown(Shutdown::Write);
     Ok(())
 }
 
@@ -144,6 +233,40 @@ mod tests {
         let request = "CONNECT example.com:443 HTTP/1.1\r\nproxy-authorization: Basic other\r\n\r\n";
         ask(proxy.port, request);
         assert_eq!(heads.recv().unwrap(), request);
+    }
+
+    #[test]
+    fn an_absolute_https_request_becomes_an_authenticated_tunnel_carrying_tls() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let head = read_head(&mut stream).unwrap().unwrap();
+            stream.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
+            let mut first = [0u8; 1];
+            stream.read_exact(&mut first).unwrap();
+            (String::from_utf8(head).unwrap(), first[0])
+        });
+        let proxy = JobProxy::start(port, "cap1").unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
+        stream.write_all(b"GET https://deps.example.org/zlib.tar.gz HTTP/1.1\r\nHost: deps.example.org\r\n\r\n").unwrap();
+        let (head, first) = seen.join().unwrap();
+        assert_eq!(head, "CONNECT deps.example.org:443 HTTP/1.1\r\nHost: deps.example.org:443\r\nProxy-Authorization: Basic am9iOmNhcDE=\r\n\r\n");
+        assert_eq!(first, 0x16);
+    }
+
+    #[test]
+    fn a_refused_tunnel_is_answered_with_the_refusal() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_head(&mut stream).unwrap();
+            stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n").unwrap();
+        });
+        let proxy = JobProxy::start(port, "cap1").unwrap();
+        let reply = ask(proxy.port, "GET https://evil.example/x HTTP/1.1\r\n\r\n");
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
     }
 
     #[test]
