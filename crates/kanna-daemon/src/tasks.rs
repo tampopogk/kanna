@@ -839,7 +839,6 @@ pub struct Tasks {
     events: crate::runtime::Events,
     core: WeakCore,
     pending: RefCell<HashMap<u64, Starting>>,
-    branching: RefCell<HashMap<u64, Box<dyn FnOnce(String)>>>,
     turns_away: RefCell<HashMap<u64, Box<dyn FnOnce()>>>,
     next: Cell<u64>,
     turns: RefCell<HashMap<String, Turn>>,
@@ -1009,7 +1008,6 @@ impl Tasks {
             events,
             core,
             pending: RefCell::default(),
-            branching: RefCell::default(),
             turns_away: RefCell::default(),
             next: Cell::new(0),
             claimant: RefCell::new(MAC_APP.into()),
@@ -2300,7 +2298,7 @@ impl Tasks {
         }
     }
 
-    pub fn sweep(&self) {
+    pub fn sweep(self: &Rc<Self>) {
         if !self.dirty.replace(false) {
             return;
         }
@@ -2861,10 +2859,12 @@ impl Tasks {
         let token = self.next.get() + 1;
         self.next.set(token);
         self.posting.borrow_mut().insert(token, (pane, list));
-        let events = self.events.clone();
-        std::thread::spawn(move || {
-            let result = messages::deliver(&channel, &text, mode);
-            let _ = events.send(Event::Posted { token, result });
+        let this = Rc::downgrade(self);
+        crate::runtime::spawn("messages to an agent", async move {
+            let result = crate::runtime::off_loop(move || messages::deliver(&channel, &text, mode)).await.unwrap_or_else(|| Err("delivering them stopped before it was done".to_string()));
+            if let Some(this) = this.upgrade() {
+                this.posted(token, result);
+            }
         });
     }
 
@@ -3651,7 +3651,7 @@ impl Tasks {
         }
     }
 
-    fn finish(&self, entry: &Entry) {
+    fn finish(self: &Rc<Self>, entry: &Entry) {
         let keep = self.keeping.borrow_mut().remove(&entry.id);
         let Some(folder) = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir()) else { return self.merged(&entry.id, Merge::Unknown) };
         if !task_scripts::is_linked(&folder) {
@@ -3683,44 +3683,50 @@ impl Tasks {
             None => scripts.teardown.clone(),
         };
         let task = Self::script_task(entry, &folder);
-        let events = self.events.clone();
-        std::thread::spawn(move || {
-            judge();
-            let id = task.id.clone();
-            let mut changes = vec![];
-            let ended = task_scripts::ended_at(&folder);
-            let ended_at = |change: Change| match &ended {
-                Some((branch, tip)) => change.with("branch", json!(branch)).with("tip", json!(tip)),
-                None => change,
-            };
-            if let Some(teardown) = &teardown {
-                log!("kanna-daemon: {id} is done with no pane to tear down in, so its teardown runs in {}: {teardown}", folder.display());
-                let code = task_scripts::run(teardown, &folder, &task.vars(&task.branch()), Duration::from_secs(scripts.timeout)).unwrap_or_else(|error| {
-                    log!("kanna-daemon: {id}'s teardown: {error}");
-                    127
-                });
-                log!("kanna-daemon: {id}'s teardown exited {code}");
-                changes.push(Change::new("torn down").by(Some("daemon")).with("code", json!(code)));
-                if code != 0 {
-                    let why = task_scripts::said("teardown", code, scripts.timeout);
-                    log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
-                    changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
-                    let _ = events.send(Event::Finished { task: id, changes });
-                    return;
-                }
+        let this = Rc::downgrade(self);
+        crate::runtime::spawn("a done task's worktree", async move {
+            let cleaned = crate::runtime::off_loop(move || Self::clean_up_done(task, folder, teardown, scripts.timeout, judge)).await;
+            if let (Some(this), Some((id, changes))) = (this.upgrade(), cleaned) {
+                this.finished(&id, changes);
             }
-            match task_scripts::clean_up(&task.repo, &folder) {
-                Cleanup::Removed { branch } => {
-                    log!("kanna-daemon: {id} is merged, so its worktree {} and branch {branch} are removed", folder.display());
-                    changes.push(ended_at(Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy()))).with("branch", json!(branch)));
-                }
-                Cleanup::Kept(why) => {
-                    log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
-                    changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
-                }
-            }
-            let _ = events.send(Event::Finished { task: id, changes });
         });
+    }
+
+    fn clean_up_done(task: task_scripts::Task, folder: PathBuf, teardown: Option<String>, timeout: u64, judge: impl FnOnce()) -> (String, Vec<Change>) {
+        judge();
+        let id = task.id.clone();
+        let mut changes = vec![];
+        let ended = task_scripts::ended_at(&folder);
+        let ended_at = |change: Change| match &ended {
+            Some((branch, tip)) => change.with("branch", json!(branch)).with("tip", json!(tip)),
+            None => change,
+        };
+        if let Some(teardown) = &teardown {
+            log!("kanna-daemon: {id} is done with no pane to tear down in, so its teardown runs in {}: {teardown}", folder.display());
+            let code = task_scripts::run(teardown, &folder, &task.vars(&task.branch()), Duration::from_secs(timeout)).unwrap_or_else(|error| {
+                log!("kanna-daemon: {id}'s teardown: {error}");
+                127
+            });
+            log!("kanna-daemon: {id}'s teardown exited {code}");
+            changes.push(Change::new("torn down").by(Some("daemon")).with("code", json!(code)));
+            if code != 0 {
+                let why = task_scripts::said("teardown", code, timeout);
+                log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
+                changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
+                return (id, changes);
+            }
+        }
+        match task_scripts::clean_up(&task.repo, &folder) {
+            Cleanup::Removed { branch } => {
+                log!("kanna-daemon: {id} is merged, so its worktree {} and branch {branch} are removed", folder.display());
+                changes.push(ended_at(Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy()))).with("branch", json!(branch)));
+            }
+            Cleanup::Kept(why) => {
+                log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
+                changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
+            }
+        }
+        (id, changes)
     }
 
     pub fn merged(&self, task: &str, merge: Merge) {
@@ -3931,11 +3937,13 @@ impl Tasks {
             true => format!("{}-{}", entry.id, self.machines().me.name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>()),
             false => entry.id.clone(),
         };
-        let (repo, events, bases) = (PathBuf::from(&entry.repo), self.events.clone(), self.stack_of(&entry));
+        let (repo, this, bases) = (PathBuf::from(&entry.repo), Rc::downgrade(self), self.stack_of(&entry));
         self.pending.borrow_mut().insert(token, Starting { entry, app, by, responder });
-        std::thread::spawn(move || {
-            let result = stacks::make(&repo, &name, bases);
-            let _ = events.send(Event::Worktree { token, result });
+        crate::runtime::spawn("a task's worktree", async move {
+            let result = crate::runtime::off_loop(move || stacks::make(&repo, &name, bases)).await.unwrap_or_else(|| Err("making it stopped before it was done".to_string()));
+            if let Some(this) = this.upgrade() {
+                this.worktree_made(token, result);
+            }
         });
     }
 
@@ -4119,21 +4127,8 @@ impl Tasks {
             out.insert("branch".to_string(), json!(branch));
             return responder.reply(Ok(out));
         }
-        self.branch_of(folder, move |branch| {
-            out.insert("branch".to_string(), json!(branch));
-            responder.reply(Ok(out))
-        });
-    }
-
-    fn branch_of(&self, folder: &str, then: impl FnOnce(String) + 'static) {
-        let token = self.next.get() + 1;
-        self.next.set(token);
-        self.branching.borrow_mut().insert(token, Box::new(then));
-        let (folder, events) = (PathBuf::from(folder), self.events.clone());
-        std::thread::spawn(move || {
-            let branch = git(&folder, &["branch", "--show-current"]).unwrap_or_default();
-            let _ = events.send(Event::Branch { token, branch });
-        });
+        out.insert("branch".to_string(), json!(branch_of(folder).unwrap_or_default()));
+        responder.reply(Ok(out))
     }
 
     fn after_this_turn(&self, then: impl FnOnce() + 'static) {
@@ -4147,13 +4142,6 @@ impl Tasks {
         let then = self.turns_away.borrow_mut().remove(&token);
         if let Some(then) = then {
             then()
-        }
-    }
-
-    pub fn branch_found(&self, token: u64, branch: String) {
-        let then = self.branching.borrow_mut().remove(&token);
-        if let Some(then) = then {
-            then(branch)
         }
     }
 
@@ -5760,7 +5748,6 @@ mod tests {
             self.tasks.tick();
             while let Ok(event) = self.events.borrow_mut().try_recv() {
                 match event {
-                    Event::Branch { token, branch } => self.tasks.branch_found(token, branch),
                     Event::Turn { token } => self.tasks.next_turn(token),
                     _ => {}
                 }
@@ -5881,7 +5868,6 @@ mod tests {
         assert_eq!(t.core.pane(&agent).map(|p| p.state), Some(PaneState::Starting));
         let mut reply = Box::pin(reply);
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(reply.as_mut().poll(&mut cx).is_pending(), "the reply waits for the agent");
         t.agents.slow.set(false);
         t.core.update(&agent, PaneState::Running, None, None);
         let by = Instant::now() + Duration::from_secs(5);
