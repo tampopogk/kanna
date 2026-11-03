@@ -11,6 +11,13 @@ const FILES: usize = 40;
 
 const LISTED: usize = 8;
 
+const CC_TIP: &str = "CC is cyclomatic complexity: 1 plus each place a function can branch (each if, loop, match arm, && and ||), the number of paths through it a test would need. Over 10 is SlopCodeBench's line for a function too tangled to follow or test easily.";
+
+fn tipped(mut tile: Value, tip: &str) -> Value {
+    tile["tip"] = json!(tip);
+    tile
+}
+
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 fn function_row(ranked: &Ranked) -> Value {
@@ -435,16 +442,16 @@ pub fn code_section(facts: &Facts) -> Value {
         return empty;
     }
     let mut tiles = vec![
-        trend_tile("erosion", "Erosion", &erosion, first, Some("%"), "of complexity in functions over CC 10"),
+        tipped(trend_tile("erosion", "Erosion", &erosion, first, Some("%"), "of complexity in functions over CC 10"), CC_TIP),
         trend_tile("verbosity", "Verbosity", &verbosity, first, Some("%"), "of lines flagged, cloned or in trivial wrappers"),
-        trend_tile("high", "Functions over CC 10", &of(facts, "high"), first, None, "functions over CC 10"),
+        tipped(trend_tile("high", "Functions over CC 10", &of(facts, "high"), first, None, "functions over CC 10"), CC_TIP),
         trend_tile("dead", "Dead functions", &of(facts, "dead"), first, None, "functions nothing outside tests calls"),
         trend_tile("wrappers", "Trivial wrappers", &of(facts, "wrappers"), first, None, "functions whose body only returns one expression"),
         trend_tile("lines", "Code lines", &of(facts, "lines"), first, None, "lines of Rust and Swift outside tests"),
     ];
     tiles.extend(coverage_tiles(facts, first));
     tiles.extend(fixes_tiles(facts, first));
-    tiles.push(list("worst", "Worst functions", worst_functions(erosion.last().copied()), "complexity mass: CC × √lines", "No functions yet."));
+    tiles.push(tipped(list("worst", "Worst functions", worst_functions(erosion.last().copied()), "complexity mass: CC × √lines", "No functions yet."), CC_TIP));
     tiles.push(list("duplicated", "Most duplicated code", duplicated(verbosity.last().copied()), "lines in copies beyond the first", "No copies of 3 lines or more."));
     tiles.push(list("flagged", "Most flagged patterns", flagged(verbosity.last().copied()), "lines in code a rule would rewrite", "No rule matched."));
     tiles.push(list("hotspots", "Hotspots", hotspots(erosion.last().copied(), &churn), "landings that changed it × its cognitive complexity", "Nothing changed in 30 days."));
@@ -540,6 +547,9 @@ mod tests {
         assert_eq!(erosion["chart"]["values"][0], Value::Null, "nothing on main 29 days ago");
         assert!(tile_of(&report, "verbosity")["value"].as_f64().unwrap() > 0.0);
         assert_eq!(tile_of(&report, "high")["value"], json!(1.0));
+        assert!(tile_of(&report, "high")["tip"].as_str().unwrap().starts_with("CC is cyclomatic complexity"));
+        assert_eq!(tile_of(&report, "worst")["tip"], tile_of(&report, "erosion")["tip"]);
+        assert_eq!(tile_of(&report, "verbosity")["tip"], Value::Null);
         assert_eq!(tile_of(&report, "dead")["value"], json!(2.0), "unused, and start, which nothing calls");
         assert_eq!(tile_of(&report, "wrappers")["value"], json!(3.0), "pass, unused and start each return one expression");
         let flagged = &tile_of(&report, "flagged")["chart"]["rows"][0];

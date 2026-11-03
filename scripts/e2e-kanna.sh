@@ -4030,12 +4030,13 @@ r = json.loads(sys.argv[2])
 for sec in r["sections"]:
     for x in sec["tiles"]:
         got = shown[sec["id"], x["id"]]
-        assert got["label"] == x["label"] and got["note"] == x["note"], (got, x)
+        assert got["label"] == x["label"] and got["note"] == x["note"] and got["tip"] == x.get("tip"), (got, x)
         assert got["frame"] and got["frame"]["width"] > 100 and got["frame"]["height"] > 30, got
 assert shown["quiz", "right"]["figure"] == "75%" and shown["main", "commits"]["figure"] == "2", shown
 assert shown["tasks", "lead"]["figure"] not in ("", "—"), shown["tasks", "lead"]
 code = [s for s in json.loads(sys.argv[3]) if s["id"] == "code"][0]
 assert code["placeholder"] is False and code["tiles"] > 10, code
+assert shown["code", "high"]["tip"].startswith("CC is cyclomatic complexity"), shown["code", "high"]
 assert shown["code", "erosion"]["figure"] == "100%" and shown["code", "worst"]["rows"][0] == "busy", (shown["code", "erosion"], shown["code", "worst"])' "$(desk stats "$d")" "$json" "$(desk statsSections "$d")" || return 1
   local clicked; clicked="$(raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"stats\":\"worst\",\"row\":0,\"window\":\"$d\"}}")"
   check wait_for 10 eval 'kanna workspace list --all --json | python3 -c "import json, sys; panes = json.load(sys.stdin)[\"panes\"]; sys.exit(0 if any(p.get(\"type\") == \"code\" and p.get(\"path\", \"\").endswith(\"/src/lib.rs\") and p.get(\"line\") == 1 for p in panes) else 1)"' || { echo "stats_tab: clicking busy opened no code tab at src/lib.rs:1: $clicked $(state | tr -d '\n' | cut -c1-400)"; return 1; }

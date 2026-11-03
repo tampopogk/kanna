@@ -179,6 +179,7 @@ The `fixes` metric runs at each landing: a first-parent commit on main other tha
             "note": "573 lines · cognitive 220 · calls 246", "open": {"path": "crates/kanna-daemon/src/main.rs", "line": 217}}]}}
 ```
 
+- **`tip`:** a tile may carry one, shown on hovering its title and figure. Erosion, Functions over CC 10 and Worst functions explain CC and the line at 10.
 - **`open`:** `{path, line}` opens `kanna open code` at the repo's file in the window's new tab. `{commit}` opens `kanna open diff COMMIT^1 COMMIT`.
 - **The section** has no `placeholder` now. With no Rust or Swift code it has `empty` and no tiles.
 

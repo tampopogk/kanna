@@ -50,6 +50,7 @@ struct StatsTile: Equatable {
     let note: String
     let span: Int
     let chart: StatsChart
+    var tip: String?
 
     var figure: String { StatsFormat.figure(value, unit: unit) }
 }
@@ -77,7 +78,7 @@ struct StatsReport: Equatable {
                          placeholder: section["placeholder"]?.bool == true,
                          tiles: (section["tiles"]?.array ?? []).map { tile in
                              StatsTile(id: tile["id"]?.string ?? "", label: tile["label"]?.string ?? "", value: tile["value"]?.number, unit: tile["unit"]?.string,
-                                       note: tile["note"]?.string ?? "", span: Int(tile["span"]?.number ?? 2), chart: StatsChart(tile["chart"]))
+                                       note: tile["note"]?.string ?? "", span: Int(tile["span"]?.number ?? 2), chart: StatsChart(tile["chart"]), tip: tile["tip"]?.string)
                          })
         }
     }
@@ -226,6 +227,7 @@ final class StatsPage: NSView {
         var y = origin.y
         let name = label(tile.label, color: .secondaryLabelColor)
         name.frame = NSRect(x: origin.x, y: y, width: width, height: name.frame.height)
+        name.toolTip = tile.tip
         y += name.frame.height + 2
         if tile.chart.kind == "list" {
             if tile.chart.rows.isEmpty {
@@ -249,6 +251,7 @@ final class StatsPage: NSView {
         let big = hero && tile.chart.kind == "line"
         let value = label(tile.figure, size: big ? 32 : 24, weight: .semibold)
         value.frame.origin = NSPoint(x: origin.x, y: y)
+        value.toolTip = tile.tip
         value.setAccessibilityLabel("\(tile.label): \(tile.figure)\(tile.note.isEmpty ? "" : ", \(tile.note)")")
         if !tile.note.isEmpty {
             let note = label(tile.note, color: .secondaryLabelColor)
@@ -279,7 +282,7 @@ final class StatsPage: NSView {
         (report?.sections ?? []).flatMap { section in
             section.tiles.map { tile -> JSON in
                 ["section": .string(section.id), "id": .string(tile.id), "label": .string(tile.label), "figure": .string(["ranked", "list"].contains(tile.chart.kind) ? "" : tile.figure), "note": .string(tile.note),
-                 "rows": .array(tile.chart.kind == "list" ? tile.chart.rows.map { .string($0.label) } : []),
+                 "rows": .array(tile.chart.kind == "list" ? tile.chart.rows.map { .string($0.label) } : []), "tip": tile.tip.map { .string($0) } ?? .null,
                  "frame": tileFrames[tile.id].map { ["x": .number($0.minX), "y": .number($0.minY), "width": .number($0.width), "height": .number($0.height)] } ?? .null]
             }
         }
