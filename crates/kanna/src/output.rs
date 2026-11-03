@@ -787,6 +787,76 @@ pub fn quiz(request: &Value, reply: &Value) -> String {
     }
 }
 
+pub fn duration(seconds: f64) -> String {
+    let minutes = (seconds / 60.0).round() as i64;
+    match minutes {
+        m if m < 60 => format!("{m}m"),
+        m if m < 48 * 60 && m % 60 == 0 => format!("{}h", m / 60),
+        m if m < 48 * 60 => format!("{}h {}m", m / 60, m % 60),
+        m => format!("{}d", (m as f64 / 1440.0).round() as i64),
+    }
+}
+
+fn figure(value: &Value, unit: Option<&str>) -> String {
+    match (value.as_f64(), unit) {
+        (None, _) => "—".to_string(),
+        (Some(v), Some("%")) => format!("{}%", v.round() as i64),
+        (Some(v), Some("s")) => duration(v),
+        (Some(v), _) => format!("{}", v.round() as i64),
+    }
+}
+
+fn spark(values: &[Value], max: Option<f64>) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let top = max.unwrap_or_else(|| values.iter().filter_map(Value::as_f64).fold(0.0, f64::max)).max(1.0);
+    values.iter().map(|v| v.as_f64().map_or(' ', |v| BARS[((v / top).clamp(0.0, 1.0) * 7.0).round() as usize])).collect()
+}
+
+pub fn stats(_: &Value, reply: &Value) -> String {
+    let mut rows: Vec<[String; 5]> = vec![];
+    for section in reply["sections"].as_array().into_iter().flatten() {
+        let title = section["title"].as_str().unwrap_or("?").to_string();
+        let tiles = section["tiles"].as_array().cloned().unwrap_or_default();
+        if tiles.is_empty() {
+            rows.push([title, section["empty"].as_str().unwrap_or("").to_string(), String::new(), String::new(), String::new()]);
+            continue;
+        }
+        for (i, tile) in tiles.iter().enumerate() {
+            let chart = &tile["chart"];
+            let label = tile["label"].as_str().unwrap_or("?").to_string();
+            let head = if i == 0 { title.clone() } else { String::new() };
+            if chart["kind"] == "ranked" {
+                rows.push([head, label, String::new(), String::new(), String::new()]);
+                for row in chart["rows"].as_array().into_iter().flatten() {
+                    rows.push([String::new(), format!("  {}", row["label"].as_str().unwrap_or("?")), figure(&row["value"], Some("%")), row["note"].as_str().unwrap_or("").to_string(), String::new()]);
+                }
+                continue;
+            }
+            let values = match chart["kind"].as_str() {
+                Some("dots") => chart["line"].as_array().cloned().unwrap_or_default(),
+                _ => chart["values"].as_array().cloned().unwrap_or_default(),
+            };
+            let unit = tile["unit"].as_str();
+            rows.push([head, label, figure(&tile["value"], unit), tile["note"].as_str().unwrap_or("").to_string(), spark(&values, chart["max"].as_f64())]);
+        }
+    }
+    let width = |column: usize| rows.iter().filter(|r| !r[2].is_empty() || column < 1).map(|r| r[column].chars().count()).max().unwrap_or(0);
+    let widths = [width(0), width(1), width(2), width(3)];
+    let mut out = vec![];
+    if let Some(project) = reply["project"].as_str() {
+        out.push(format!("{} · main · last 30 days", home_relative(project)));
+    }
+    for row in &rows {
+        let line = if row[2].is_empty() && row[4].is_empty() {
+            format!("{:<w0$}  {}", row[0], row[1], w0 = widths[0])
+        } else {
+            format!("{:<w0$}  {:<w1$}  {:>w2$}  {:<w3$}  {}", row[0], row[1], row[2], row[3], row[4], w0 = widths[0], w1 = widths[1], w2 = widths[2], w3 = widths[3])
+        };
+        out.push(line.trim_end().to_string());
+    }
+    out.join("\n")
+}
+
 fn home_relative(path: &str) -> String {
     match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
         Some(rest) if rest.starts_with('/') => format!("~{rest}"),
