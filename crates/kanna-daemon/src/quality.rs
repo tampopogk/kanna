@@ -1,9 +1,9 @@
 use crate::db::Sample;
-use crate::stats::{area, local_day, section, tile, Commit, Context, Facts, DAYS};
+use crate::stats::{local_day, section, tile, Commit, Context, Facts, DAYS};
 use kanna_mux::json::{json, Value};
 use kanna_quality::szz;
 use kanna_quality::tree::{counted, Ranked, Tree, HIGH_COMPLEXITY};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 const WORST: usize = 10;
 
@@ -271,116 +271,6 @@ fn hotspots(latest: Option<&Sample>, churn: &[&Sample]) -> Vec<Value> {
     spots.into_iter().take(LISTED).map(|(file, changed, cognitive, score)| row(file.rsplit('/').next().unwrap_or(&file), file.clone(), score, format!("{changed} × {cognitive}"), format!("changed by {changed} landing{} · cognitive {cognitive}", if changed == 1 { "" } else { "s" }), at_line(&file, 1))).collect()
 }
 
-struct Fix<'a> {
-    sample: &'a Sample,
-    blamed: Option<&'a str>,
-}
-
-fn fix_rows(facts: &Facts) -> Vec<Fix<'_>> {
-    of(facts, "fixes").into_iter().filter(|s| s.doc["fix"].is_string()).map(|sample| Fix { sample, blamed: sample.doc["blamed"].as_str() }).collect()
-}
-
-fn fixes_tiles(facts: &Facts, first: i64) -> Vec<Value> {
-    let rows = of(facts, "fixes");
-    let landings: Vec<&&Sample> = rows.iter().filter(|s| s.doc["landing"] == json!(true)).collect();
-    let fixes = fix_rows(facts);
-    let blamed: HashSet<&str> = fixes.iter().filter_map(|f| f.blamed).collect();
-    let later_fixed = landings.iter().filter(|s| blamed.contains(s.commit.as_str())).count();
-    let rate: Vec<Value> = (first..first + DAYS)
-        .map(|day| {
-            let near: Vec<&&&Sample> = landings.iter().filter(|s| (day - 6..=day).contains(&local_day(s.at))).collect();
-            if near.is_empty() {
-                Value::Null
-            } else {
-                json!((near.iter().filter(|s| blamed.contains(s.commit.as_str())).count() as f64 * 1000.0 / near.len() as f64).round() / 10.0)
-            }
-        })
-        .collect();
-    let share = if landings.is_empty() { Value::Null } else { json!((later_fixed as f64 * 1000.0 / landings.len() as f64).round() / 10.0) };
-    let mut per_day = vec![0.0; DAYS as usize];
-    for fix in &fixes {
-        let index = local_day(fix.sample.at) - first;
-        if (0..DAYS).contains(&index) {
-            per_day[index as usize] += 1.0;
-        }
-    }
-    let points: Vec<Value> = fixes
-        .iter()
-        .filter_map(|fix| {
-            let introduced = fix.sample.doc["blamedAt"].as_f64()?;
-            let day = local_day(fix.sample.at) - first;
-            (0..DAYS).contains(&day).then(|| json!({ "day": day, "value": (fix.sample.at - introduced).max(0.0).round(), "label": short(&fix.sample.doc["subject"]) }))
-        })
-        .collect();
-    let line: Vec<Value> = (0..DAYS)
-        .map(|day| {
-            let mut near: Vec<f64> = points.iter().filter(|p| p["day"].as_i64().is_some_and(|d| d > day - 7 && d <= day)).filter_map(|p| p["value"].as_f64()).collect();
-            median(&mut near).map_or(Value::Null, |m| json!(m.round()))
-        })
-        .collect();
-    let mut all: Vec<f64> = points.iter().filter_map(|p| p["value"].as_f64()).collect();
-    let middle = median(&mut all);
-    let total: f64 = per_day.iter().sum();
-    vec![
-        tile("fixed", "Landings fixed later", share, Some("%"), format!("{later_fixed} of {} landings", landings.len()), 2, json!({ "kind": "line", "values": rate, "max": 100, "what": "of the week's landings were fixed later" })),
-        tile("fixes", "Fixes", json!(per_day.last().copied().unwrap_or(0.0)), None, format!("today · {total} in 30 days"), 2, json!({ "kind": "columns", "values": per_day, "what": "fixes landed" })),
-        tile("tofix", "How long bugs lived", middle.map_or(Value::Null, |m| json!(m.round())), Some("s"), if points.is_empty() { String::new() } else { format!("median of {} fix{}", points.len(), if points.len() == 1 { "" } else { "es" }) }, 2, json!({ "kind": "dots", "points": points, "line": line, "what": "7-day median" })),
-    ]
-}
-
-fn short(subject: &Value) -> String {
-    let text = subject.as_str().unwrap_or("");
-    let text = match text.strip_prefix("Merge ") {
-        Some(rest) => szz::branch_of(text).unwrap_or_else(|| rest.to_string()),
-        None => text.to_string(),
-    };
-    let mut cut: String = text.chars().take(60).collect();
-    if text.chars().count() > 60 {
-        cut.push('…');
-    }
-    cut
-}
-
-fn median(values: &mut [f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_by(f64::total_cmp);
-    let middle = values.len() / 2;
-    Some(if values.len() % 2 == 1 { values[middle] } else { (values[middle - 1] + values[middle]) / 2.0 })
-}
-
-fn causes(facts: &Facts) -> Vec<Value> {
-    let mut by: BTreeMap<&str, (Vec<&Sample>, &Value)> = BTreeMap::new();
-    for fix in fix_rows(facts) {
-        if let Some(blamed) = fix.blamed {
-            let entry = by.entry(blamed).or_insert((vec![], &fix.sample.doc["blamedSubject"]));
-            entry.0.push(fix.sample);
-        }
-    }
-    let mut rows: Vec<(&str, Vec<&Sample>, &Value)> = by.into_iter().map(|(c, (f, s))| (c, f, s)).collect();
-    rows.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
-    rows.into_iter()
-        .take(LISTED)
-        .map(|(commit, fixes, subject)| {
-            let by: Vec<String> = fixes.iter().take(2).map(|f| short(&f.doc["subject"])).collect();
-            row(&short(subject), commit[..commit.len().min(8)].to_string(), fixes.len() as f64, format!("{} fix{}", fixes.len(), if fixes.len() == 1 { "" } else { "es" }), format!("fixed by {}", by.join(", ")), json!({ "commit": commit }))
-        })
-        .collect()
-}
-
-fn fixes_by_area(facts: &Facts) -> Vec<Value> {
-    let mut areas: BTreeMap<String, usize> = BTreeMap::new();
-    for fix in fix_rows(facts) {
-        if let Some(file) = fix.sample.doc["files"].as_array().and_then(|f| f.first()).and_then(Value::as_str) {
-            *areas.entry(area(file)).or_default() += 1;
-        }
-    }
-    let mut rows: Vec<(String, usize)> = areas.into_iter().collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    rows.into_iter().take(LISTED).map(|(name, count)| row(&name, String::new(), count as f64, format!("{count}"), String::new(), Value::Null)).collect()
-}
-
 fn coverage_tiles(facts: &Facts, first: i64) -> Vec<Value> {
     let rows = of(facts, "coverage");
     let percent = |hit: f64, found: f64| if found > 0.0 { json!((hit * 1000.0 / found).round() / 10.0) } else { Value::Null };
@@ -450,14 +340,11 @@ pub fn code_section(facts: &Facts) -> Value {
         trend_tile("lines", "Code lines", &of(facts, "lines"), first, None, "lines of Rust and Swift outside tests"),
     ];
     tiles.extend(coverage_tiles(facts, first));
-    tiles.extend(fixes_tiles(facts, first));
     tiles.push(tipped(list("worst", "Worst functions", worst_functions(erosion.last().copied()), "complexity mass: CC × √lines", "No functions yet."), CC_TIP));
     tiles.push(list("duplicated", "Most duplicated code", duplicated(verbosity.last().copied()), "lines in copies beyond the first", "No copies of 3 lines or more."));
     tiles.push(list("flagged", "Most flagged patterns", flagged(verbosity.last().copied()), "lines in code a rule would rewrite", "No rule matched."));
     tiles.push(list("hotspots", "Hotspots", hotspots(erosion.last().copied(), &churn), "landings that changed it × its cognitive complexity", "Nothing changed in 30 days."));
     tiles.push(list("uncovered", "Least covered changed files", least_covered(facts), "changed lines tests didn't run", "No coverage run yet."));
-    tiles.push(list("causes", "Landings that needed the most fixes", causes(facts), "later fixes traced back to it", "No fix traced back to a landing in 30 days."));
-    tiles.push(list("fix-areas", "Fixes by area", fixes_by_area(facts), "fixes whose changed lines were written there", "No fixes in 30 days."));
     let mut code = section("code", "Code quality", note, tiles);
     if let Some(sampling) = &facts.sampling {
         code["note"] = json!(format!("{note} · {sampling}"));
@@ -539,7 +426,7 @@ mod tests {
         let (repo, landing) = fixture("section");
         let today = local_day(now());
         let samples = collect(&repo, day_start(today - DAYS + 1), &Default::default(), &Default::default());
-        let report = report("/r", &facts(today, vec![], samples, vec![]));
+        let report = report("/r", &facts(today, vec![], samples.clone(), vec![]));
         let erosion = tile_of(&report, "erosion");
         assert!(erosion["value"].as_f64().unwrap() > 50.0, "busy holds most of the mass: {erosion}");
         assert_eq!(erosion["unit"], json!("%"));
@@ -561,12 +448,11 @@ mod tests {
         assert_eq!(worst["rows"][0]["open"], json!({ "path": "src/lib.rs", "line": 1 }));
         let duplicated = &tile_of(&report, "duplicated")["chart"]["rows"][0];
         assert_eq!(duplicated["label"], json!("5 lines × 2"));
-        let fixed = tile_of(&report, "fixed");
-        assert_eq!(fixed["note"], json!("1 of 3 landings"));
-        let causes = &tile_of(&report, "causes")["chart"]["rows"];
-        assert_eq!(causes[0]["open"], json!({ "commit": landing }));
-        assert_eq!(causes[0]["label"], json!("feature"));
-        assert_eq!(tile_of(&report, "tofix")["value"], json!(2.0 * 86400.0));
+        let fix = samples.iter().filter(|s| s.metric == "fixes" && s.value == 1.0).collect::<Vec<_>>();
+        assert_eq!(fix.len(), 1, "the fix-busy landing, sampled for the factory's stats though Code quality doesn't show it");
+        assert_eq!(fix[0].doc["blamed"], json!(landing));
+        let ids: Vec<&str> = report["sections"][3]["tiles"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
+        assert!(!ids.iter().any(|id| ["fixed", "fixes", "tofix", "causes", "fix-areas"].contains(id)), "fixes are the factory's, not the code's: {ids:?}");
         assert_eq!(tile_of(&report, "hotspots")["chart"]["rows"][0]["detail"], json!("src/lib.rs"));
         assert_eq!(tile_of(&report, "lines-covered")["note"], json!("not set up: stats.coverage in ~/.kanna-v4/config.json"));
         let _ = fs::remove_dir_all(&repo);

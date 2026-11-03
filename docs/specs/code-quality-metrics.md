@@ -2,7 +2,7 @@
 
 **Status:** built · **Tests:** `kanna-quality`, `quality.rs`, `stats.rs`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/code-quality.html`](../../references/mockups/code-quality.html) · **Research:** [code quality](../research/code-quality.md) · **Builds on:** [Stats](stats.md)
 
-The Stats tab's Code quality section shows how good the code on main is and which way it's heading, as agents write most of it. It has four groups. **Shape** measures complexity, copies and dead code at every commit on main. **Coverage** is what the tests run. **Fixes** traces which landings later needed a fix. **Worst** lists the offenders, and each row opens the code. The measures come from [SlopCodeBench](../research/code-quality.md#1-slopcodebench), so this repo's numbers compare with the benchmark's agents and humans.
+The Stats tab's Code quality section shows how good the code on main is and which way it's heading, as agents write most of it. It has three groups. **Shape** measures complexity, copies and dead code at every commit on main. **Coverage** is what the tests run. **Worst** lists the offenders, and each row opens the code. Which landings later needed a fix is [sampled too](#5-fixes) but not shown here: how often and how soon bugs are caught says more about the process that makes the code than about the code, and belongs with that process's stats. The measures come from [SlopCodeBench](../research/code-quality.md#1-slopcodebench), so this repo's numbers compare with the benchmark's agents and humans.
 
 | Dark | Light |
 |---|---|
@@ -39,14 +39,11 @@ Each measure shows its value at main's last commit over a line of its value at e
 | Code lines | context, the denominator of the shares | Rust and Swift lines with code, outside tests | not judged alone |
 | Lines covered, Branches covered | what the tests run | from the last [coverage run](#4-coverage-runs) | falling |
 | Changed lines covered | how well each landing was tested | lines landed in the 30 days, still there, run by a test ÷ all of them (Google's delta coverage); a column per landing day | low columns on recent days |
-| Landings fixed later | how often a landing needed a fix | of the 30 days' landings, the share a later fix [traced back](#5-fixes) to; the line is each week's | rising (recent days read low: their fixes haven't come yet) |
-| Fixes | fixes landed per day | landings found to be [fixes](#5-fixes) | a run of them |
-| How long bugs lived | how long a bug sat on main before its fix landed | per fix, the time from the landing it [traced back](#5-fixes) to until the fix landed; a dot per fix, a 7-day median line, and the median as the figure | rising: bugs found later |
 
 - **Counted code:** `.rs`, `.swift` and `.py` files outside folders named `tests`, `Tests`, `test`, `benches`, `examples`, `vendor`, `third_party`, `references`, `fixtures`, `target` and `build`, and outside hidden folders. In Rust, `#[cfg(test)]` modules and `#[test]` functions are left out.
 - **Functions:** Rust `fn` items, Swift functions, `init`, `deinit`, subscripts and computed properties, and Python `def`s that SlopCodeBench reaches (module, class and function bodies). Closures count toward the function they're in.
 - **Code lines:** lines where a token starts, other than comments and, in Rust and Swift, a lone `}`, `;` or `,` (Python has no such lines, and SlopCodeBench counts Python by its tokens). A multi-line string counts on its first line, and a Python docstring not at all.
-- **Cost and stability:** Shape and Fixes are deterministic. The same commit always gives the same numbers, so any change is the code's. Coverage moves a little between runs when tests take different paths (timeouts, races).
+- **Cost and stability:** Shape and fixes are deterministic. The same commit always gives the same numbers, so any change is the code's. Coverage moves a little between runs when tests take different paths (timeouts, races).
 
 ### Matching SlopCodeBench
 
@@ -92,7 +89,7 @@ Each rule matches a shape SlopCodeBench flags in Python, in its Rust or Swift fo
 
 ## 2. The worst
 
-Seven lists, from main's last sampled commit. Each row with a file opens a code tab at its line in the Desk view's window. A landing's row opens its diff.
+Five lists, from main's last sampled commit. Each row opens a code tab at its line in the Desk view's window.
 
 | List | Rows, ranked by | Row shows |
 |---|---|---|
@@ -101,8 +98,6 @@ Seven lists, from main's last sampled commit. Each row with a file opens a code 
 | Most flagged patterns | lines a [rule](#the-rules) flags | rule, its biggest hit, places, the SlopCodeBench rules it ports |
 | Hotspots | landings that changed the file in 30 days × its cognitive complexity | file, changes × complexity |
 | Least covered changed files | changed lines no test ran | file, % of its changed lines covered |
-| Landings that needed the most fixes | fixes traced back to it | landing (branch or subject), the fixes |
-| Fixes by area | fixes whose blamed lines are in the area (two folders, as [Stats](stats.md#2-the-numbers)) | area, count |
 
 ## 3. Sampling
 
@@ -149,7 +144,7 @@ flowchart LR
 
 ## 5. Fixes
 
-The `fixes` metric runs at each landing: a first-parent commit on main other than `Merge main into …`.
+The `fixes` metric runs at each landing: a first-parent commit on main other than `Merge main into …`. It is sampled with the rest, so the stats of the process that makes the code (how many landings needed a fix, how long bugs lived, where they were) start with 30 days of history, but Code quality doesn't show it.
 
 - **A fix:** a landing is one if any of these hold:
   - It carries a `Fixes: COMMIT` trailer in any of its commits.
@@ -180,7 +175,7 @@ The `fixes` metric runs at each landing: a first-parent commit on main other tha
 ```
 
 - **`tip`:** a tile may carry one, shown on hovering its title and figure. Erosion, Functions over CC 10 and Worst functions explain CC and the line at 10.
-- **`open`:** `{path, line}` opens `kanna open code` at the repo's file in the window's new tab. `{commit}` opens `kanna open diff COMMIT^1 COMMIT`.
+- **`open`:** `{path, line}` opens `kanna open code` at the repo's file in the window's new tab. `{commit}` opens `kanna open diff COMMIT^1 COMMIT`; no Code quality list uses it now.
 - **The section** has no `placeholder` now. With no Rust or Swift code it has `empty` and no tiles.
 
 ## 7. Tests
@@ -197,7 +192,7 @@ The `fixes` metric runs at each landing: a first-parent commit on main other tha
   - SZZ on a fixture: a `fix-` landing blames the landing that wrote the line, and a branch's commit lands with its merge.
   - Changed lines by landing.
 - **`quality.rs`:**
-  - A fixture repo with a god function, a copied function, a wrapper and dead code, then a `fix-` landing: every tile and list as expected.
+  - A fixture repo with a god function, a copied function, a wrapper and dead code, then a `fix-` landing: every tile and list as expected, the fix sampled and traced to its landing, and no fix tile shown.
   - A coverage run in the daemon's own worktree from a stub command, leaving the checkout untouched. A failing command says so.
   - The opt-in comes only from your own settings.
 - **`stats.rs`:** a row per metric per commit, filling only what's missing, resampling a row from an older revision, and main's order kept when commit times tie or go back.
