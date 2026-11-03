@@ -225,6 +225,19 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         doc text not null default '{}' check (json_valid(doc)),
         at real not null
     );
+"), Step::Sql("
+    create table samples (
+        repo text not null,
+        commit_id text not null,
+        metric text not null,
+        at real not null,
+        value real not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        primary key (repo, commit_id, metric)
+    );
+    create index samples_by_time on samples (repo, at);
+"), Step::Sql("
+    alter table samples add column revision integer not null default 0;
 ")];
 
 pub const RECENT: usize = 10;
@@ -351,6 +364,25 @@ pub struct Schedule {
     pub message: Option<i64>,
     pub made_at: f64,
     pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sample {
+    pub commit: String,
+    pub metric: String,
+    pub at: f64,
+    pub value: f64,
+    pub doc: Value,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Life {
+    pub task: String,
+    pub name: String,
+    pub made: f64,
+    pub started: Option<f64>,
+    pub done: Option<f64>,
 }
 
 pub struct Db {
@@ -763,6 +795,59 @@ impl Db {
         rows.collect()
     }
 
+    pub fn sampled(&self, repo: &str, since: f64) -> rusqlite::Result<HashMap<(String, String), i64>> {
+        let mut statement = self.conn.prepare("select commit_id, metric, revision from samples where repo = ?1 and at >= ?2")?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?;
+        rows.collect()
+    }
+
+    pub fn samples(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Sample>> {
+        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and at >= ?2 order by at, commit_id, metric")?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))?;
+        rows.collect()
+    }
+
+    pub fn put_samples(&self, repo: &str, samples: &[Sample]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for sample in samples {
+            tx.execute(
+                "insert or replace into samples (repo, commit_id, metric, at, value, doc, revision) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6), ?7)",
+                params![repo, sample.commit, sample.metric, sample.at, sample.value, sample.doc.to_string(), sample.revision],
+            )?;
+        }
+        tx.commit()
+    }
+
+    pub fn latest_sample(&self, repo: &str, metric: &str) -> rusqlite::Result<Option<Sample>> {
+        self.conn
+            .query_row("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and metric = ?2 order by at desc, rowid desc limit 1", params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))
+            .optional()
+    }
+
+    pub fn branches(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare(
+            "select json_extract(e.doc, '$.branch'), coalesce(json_extract(t.doc, '$.name'), ''), coalesce(json_extract(t.doc, '$.message'), '')
+             from task_events e join tasks t on t.id = e.task
+             where t.repo = ?1 and e.what = 'done' and json_extract(e.doc, '$.branch') is not null",
+        )?;
+        let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+        rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
+    }
+
+    pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
+        let mut statement = self.conn.prepare(
+            "select t.id, coalesce(json_extract(t.doc, '$.name'), t.id),
+                    coalesce((select min(at) from task_events where task = t.id and what = 'made'), t.made_at),
+                    (select min(at) from task_events where task = t.id and what = 'started'),
+                    (select min(at) from task_events where task = t.id and what = 'done')
+             from tasks t
+             where t.repo = ?1 and (t.made_at >= ?2 or exists (select 1 from task_events e where e.task = t.id and e.at >= ?2 and e.what in ('made', 'started', 'done')))
+             order by t.made_at, t.id",
+        )?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(Life { task: r.get(0)?, name: r.get(1)?, made: r.get(2)?, started: r.get(3)?, done: r.get(4)? }))?;
+        rows.collect()
+    }
+
     pub fn touch_project(&self, path: &str) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
@@ -819,7 +904,7 @@ impl Db {
         let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
         let tx = self.conn.unchecked_transaction()?;
         let mut count = 0;
-        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
             count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
         }
         let folder = "json_extract(doc, '$.folder')";

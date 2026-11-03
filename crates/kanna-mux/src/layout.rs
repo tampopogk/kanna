@@ -108,6 +108,18 @@ pub trait LayoutHost {
 
     fn remove(&mut self, pane: &str);
 
+    fn remember(&mut self) {}
+
+    fn showing(&self, from: &str, among: &[String]) -> Option<String> {
+        let _ = (from, among);
+        None
+    }
+
+    fn dock_of(&self, pane: &str) -> Option<String> {
+        let _ = pane;
+        None
+    }
+
     fn rename(&mut self, from: &str, to: &str) {
         let _ = (from, to);
     }
@@ -306,6 +318,7 @@ pub fn serve(host: &mut dyn LayoutHost, request: &Value, panes: &Panes) -> Resul
     host.retitle(panes);
     let result = step(host, request, panes);
     host.retitle(panes);
+    host.remember();
     result
 }
 
@@ -321,6 +334,15 @@ fn step(host: &mut dyn LayoutHost, request: &Value, panes: &Panes) -> Result<Map
         "location" => {
             let location = string(request, "pane").and_then(|pane| host.location(pane));
             spot(&mut reply, location, None);
+        }
+        "showing" => {
+            let from = string(request, "from").ok_or_else(|| bad("showing needs from"))?;
+            let among = ids(request.get("among"))?;
+            reply.insert("pane".into(), host.showing(from, &among).map_or(Value::Null, Value::String));
+        }
+        "dock-of" => {
+            let pane = string(request, "pane").ok_or_else(|| bad("dock-of needs a pane"))?;
+            reply.insert("dock".into(), host.dock_of(pane).map_or(Value::Null, Value::String));
         }
         "panes-in" => {
             let scope = match (string(request, "tab"), string(request, "task")) {

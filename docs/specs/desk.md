@@ -64,8 +64,11 @@ flowchart LR
 
 ## 3. The Desk's tasks
 
-- **The strip lists the Desk's tasks other than the active one**, after a muted "⌘. Desk", in key order: the ⌘1 task first, then ⌘2 ([Desk view](desk-view.md#2--and-pull-back)), so the order changes as you switch tasks. Each shows its key, muted, before its name, with its [agent status](agent-status.md) and how long ago it was last active ("12m ago"), then how many are on the Shelf.
-- **Each task's time shows beside its name** (pictured above): how long ago it was last active, or needs you, muted, kept current while it's shown. When the strip is too narrow, titles truncate first, each in proportion to its length, down to a short floor; then the Shelf's count gives way; then the times.
+- **The strip** (pictured above) holds the Desk's tasks other than the active one, in key order, ⌘1 first ([Desk view](desk-view.md#2--and-pull-back)), so the order changes as you switch tasks. A task's key shows on hover; its time stays current. "⌘. Desk" shows the Desk view when clicked.
+- **A narrower strip gives way in this order**, each title in proportion to its length, down to a short floor:
+
+  ![The strip at four widths: everything fits; titles truncate; the Shelf's count goes; the times go. ⌘. Desk stays](strip-narrow.png)
+
 - **Click to make active:** the clicked task becomes active and the one before stays on the Desk. **⌘1** and **⌘2** make the Desk's other tasks active the same way, chosen by recency, not by place: ⌘1 the one left last (a stack), ⌘2 the one left longest ago. So ⌘1 twice goes back where you were, and ⌘2 again cycles through the Desk, whatever its number of tasks: through all three, or back and forth between two (the same task as ⌘1). ⌘3 does nothing. They're in the Task menu (Desk Task 1, 2). No key goes to a task that needs you: its amber dot shows it where it is.
 - **At most three tasks per project on an app's Desk,** active or not, running or stopped; another app has its own three ([each app's Desks](app-desk.md)). Moving a fourth to the Desk is refused ("Desk full") until one goes back to the Shelf or is Done; any number run on the Shelf ([tasks](tasks.md#5-stop-done-or-back-to-the-shelf)).
 - **Not active means hidden, not stopped.** Its terminals keep running in the daemon, and its tabs, the shown one, focus, [zoom](zoom.md) and scroll positions come back as they were.
@@ -80,7 +83,7 @@ flowchart LR
 The Desk view (pictured in [Desk view](desk-view.md)) shows the window's planning terminal, where you run your planning agent, docked on the left ([planning agent](planning-agent.md)), and on the right the Desk's tasks (oldest first, the active one in its place) above the Shelf, live, under a short encouraging line. What ⌘. does there and how its tasks are numbered: [Desk view §2](desk-view.md#2--and-pull-back).
 
 - **⌘F searches the Shelf** ([Shelf search](shelf-search.md)). A blocked Shelf task shows what it waits for and can't be moved to the Desk ([blocked tasks](task-dependencies.md)). Shelf tasks run by themselves, and their rows don't show how far they got ([Shelf runners](shelf-runners.md)).
-- **It holds no tabs but the fixed Desk and Machines** ([machine links §5](machine-links.md#5-paths-the-machines-tab-and-offline)), which the active task doesn't have: New Tab and the splits are off, and a pane opened onto it gets a plain window of its own ([planning agent](planning-agent.md#1-when-it-shows)).
+- **It holds no tabs but the fixed Desk, Machines and Stats** ([machine links §5](machine-links.md#5-paths-the-machines-tab-and-offline)), which the active task doesn't have: New Tab and the splits are off, and a pane opened onto it gets a plain window of its own ([planning agent](planning-agent.md#1-when-it-shows)).
 
 ## 5. CLI
 
@@ -148,7 +151,7 @@ flowchart TB
 | **Desk** | An app's window for a project, and the up to three tasks it holds |
 | **Active task** | The Desk task shown with its agent and tabs; stays active while the Desk view shows |
 | **Desk view** | The planning agent, the Desk's tasks and the Shelf, in the Desk window ([Desk view](desk-view.md)) |
-| **Strip** | The line under the active task: ⌘. Desk, the Desk's other tasks, the Shelf's count |
+| **Strip** | The line under the active task |
 | **Shelf** | A project's tasks Kanna has brought in, waiting, off the Desk ([tasks](tasks.md#3-the-shelf)) |
 | **Agent pane** | The docked pane where the task's agent runs: the Desk's one chat |
 | **Planning agent** | The Desk's own agent (its planner), docked in the Desk view; not a task |

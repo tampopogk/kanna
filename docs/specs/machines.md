@@ -4,7 +4,7 @@
 
 **Your machines** are the machines your daemons trust: paired by code, listed in your signed peer log, connected over iroh, sharing your Shelf and passing tasks between them. A MacBook Pro is usually the client; a Mac mini at home, a Linux box, or a VM Kanna Cloud made for you runs tasks too. Once a machine has joined, it's a peer like any other, whoever runs it. Kanna develops any project, not only Kanna.
 
-It's free and open source, with no account and no server of Kanna's: on the LAN, and from away through a relay of your own or an address you give. [Kanna Cloud](kanna-cloud.md) is a service that hands you machines; what it makes joins your machines, and the line between the two is enrollment.
+It's free and open source, with no account and no server of Kanna's: on the LAN, and from away through a relay of your own or an address you give. [Kanna Cloud](kanna-cloud.md) is Kanna's paid service that runs tasks on Kanna's infrastructure; nothing it runs ever joins your machines.
 
 **The first milestone** is your machines on the LAN, reached from away through your own relay or a fixed address. All of them are yours, so it needs no isolation between users.
 
@@ -29,7 +29,7 @@ It's free and open source, with no account and no server of Kanna's: on the LAN,
 - **You work on projects, not machines.** Kanna decides where a task runs (§2). The app shows a machine only where it matters: a slow path, an offline machine, the Machines tab.
 - **LAN first.** Machines connect directly whenever they can. A relay is only for when you're away or the LAN fails, and the app shows which path each machine is on.
 - **Free and complete on its own.** Everything here, your own relay included, is open source and needs no account. Trust never depends on an account or a server.
-- **Yours alone.** Every machine in your peer log runs only your work, so the boundary is the peer log, not a sandbox between users. Who runs a machine changes only how far you trust it ([Cloud §8](kanna-cloud.md#8-threat-model) for a VM Kanna runs).
+- **Yours alone.** Every machine in your peer log runs only your work, so the boundary is the peer log, not a sandbox between users. Who runs a machine changes only how far you trust it ([Cloud §10](kanna-cloud.md#10-threat-model) for a VM Kanna runs).
 - **End to end.** A relay carries only ciphertext and can't add a device.
 - **Every daemon can send and receive tasks**, Macs included, at a boundary: not started, or stopped at a turn's end.
 - **One protocol per build.** Daemons and apps of different releases work together while their protocol is the same; when it isn't, the Machines tab shows the machine as Incompatible and says which side to update.
@@ -37,7 +37,7 @@ It's free and open source, with no account and no server of Kanna's: on the LAN,
 
 ## 2. Machines and roles
 
-Every machine runs the same daemon and keeper. They differ in what each is for, which you say with placement preferences; matching tasks to machines by capability is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
+Every machine runs the same daemon and keeper. They differ in what each is for, which you say with placement preferences; matching tasks to machines by capability is [Kanna Cloud's](kanna-cloud.md#7-directory-and-relays).
 
 ```mermaid
 flowchart LR
@@ -62,7 +62,6 @@ flowchart LR
 | `mbp` | the client; still a Kanna machine for local projects | yes |
 | your Linux machines | run tasks: a box under the desk, a VM on it, a rented server | yes ([setup](machine-setup.md)) |
 | your other Macs | run tasks that need macOS, whole | yes |
-| a VM Kanna Cloud made | runs tasks, like a Linux machine of yours | yes, once it has joined ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)) |
 | your relay | an `iroh-relay` at a stable address, for reach from away | no |
 
 **Placement: where work goes.**
@@ -86,7 +85,7 @@ Networking is built into the daemon with **[iroh](https://github.com/n0-computer
 In short ([detail](machine-identity.md)):
 
 - **The daemon has `device.key`**, an Ed25519 key that is its iroh endpoint and signs for the device. The app has its own endpoint key, certified by `device.key`. The CLI goes through the local daemon.
-- **Pairing** is a PAKE over a one-time code, run directly between your two devices. You are the only party: no server takes part. A machine Kanna Cloud makes is handed the code as a token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
+- **Pairing** is a PAKE over a one-time code, run directly between your two devices. You are the only party: no server takes part.
 - **The peers form a signed log**, replicated to every peer. A revocation beats any later add, and a name that comes back with another key is refused. Signing a peer takes a gesture in the app.
 
 ## 5. The app link over the network
@@ -174,7 +173,7 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 
 | Term | Meaning |
 |---|---|
-| **Peer** | One machine's Kanna, known by its device key: the MBP, a Linux machine, a Mac, a Cloud VM |
+| **Peer** | One machine's Kanna, known by its device key: the MBP, a Linux machine, a Mac |
 | **iroh** | A Rust library for direct, encrypted QUIC connections between keys, with hole punching and relays |
 | **ALPN** | Application-Layer Protocol Negotiation: the name a connection asks for when it opens (`kanna/1`), so both ends agree what protocol it speaks before any data flows |
 | **Relay** | A server that forwards encrypted packets between peers that can't connect directly |
@@ -182,4 +181,4 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 | **Owner** | The machine that starts a task's agent, so it never starts twice; it can grant that to a runner that asks |
 | **Hybrid logical clock** | A timestamp that stays ordered across machines whose clocks drift |
 | **Your machines** | The machines in your peer log, whoever runs them |
-| **Kanna Cloud** | A service that hands you machines, which join yours ([spec](kanna-cloud.md)) |
+| **Kanna Cloud** | Kanna's paid service that runs your tasks on its infrastructure, reached through one link, never joining your machines ([spec](kanna-cloud.md)) |

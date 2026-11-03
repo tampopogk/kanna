@@ -35,6 +35,7 @@ public final class PageMarkupView: NSView {
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { drawMarks() } } }
     public var onSend: ((String, String, @escaping (String?) -> Void) -> Void)?
+    public var agentName: ((String) -> String)? { didSet { agentChanged() } }
 
     let bar = DocBar()
     let panel = ThreadPanel()
@@ -119,10 +120,12 @@ public final class PageMarkupView: NSView {
         }
         bar.threads.on = threadsVisible
         needsLayout = true
+        if !showThreads { closeBox() }
+        drawMarks()
     }
 
     func agentChanged() {
-        bar.agent.set(agent.map { "Agent: \($0)" } ?? "No agent: comments are saved, not sent")
+        bar.agent.set(agent.map { "Agent: \(agentName?($0) ?? $0)" } ?? "No agent: comments are saved, not sent")
         bar.agent.warn = agent == nil
         bar.needsLayout = true
         if threadsLoaded, let agent, record.agent != agent { change(.agent(agent)) }
@@ -183,6 +186,10 @@ public final class PageMarkupView: NSView {
     public var pageHash: String { pageHashValue }
     public var cards: [String: CardState] { panel.cardStates.mapValues { var card = $0; card.rect = convert(card.rect, from: nil); card.field = convert(card.field, from: nil); return card } }
 
+    public var marksShown: Bool { showThreads }
+    public var barText: [String] { [bar.path, bar.agent.label, bar.threads.label].filter { !$0.isHidden && $0.superview?.isHidden == false }.map(\.stringValue) }
+    public func pressThreads() { bar.threads.onPress?() }
+
     public var typingDots: [String] { overlay.marks.filter { $0.typing }.compactMap(\.thread) }
 
     public func rect(of selector: String) async -> NSRect? {
@@ -227,7 +234,7 @@ public final class PageMarkupView: NSView {
         overlay.marks = []
         overlay.areas = [:]
         let view = overlay.bounds
-        for thread in record.threads where onPage(thread) {
+        for thread in record.threads where showThreads && onPage(thread) {
             guard let rect = boxes[thread.id] else { continue }
             let area = MarkArea()
             area.frame = rect
@@ -253,7 +260,7 @@ public final class PageMarkupView: NSView {
         }
         overlay.point(at: overlay.pointer)
         panel.show(record.threads, active: active, waits: waits, notes: notes())
-        bar.threads.set("Threads \(record.threads.filter(\.isOpen).count)")
+        bar.threads.set("Threads (\(record.threads.filter(\.isOpen).count))")
         bar.needsLayout = true
     }
 
@@ -335,6 +342,7 @@ public final class PageMarkupView: NSView {
     }
 
     func openComposer(_ spot: PageSpot, rect: NSRect) {
+        if !showThreads { toggleThreads() }
         closeBox()
         pending = (spot, rect)
         overlay.draft = rect

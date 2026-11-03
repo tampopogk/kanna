@@ -43,7 +43,7 @@ General remarks that aren't about something in the doc go straight to the agent'
 Every doc works the same way; only what you can point at differs.
 
 - **Two kinds of doc.** A markdown file and an HTML page, opened for comments with `kanna markup FILE.md` or `kanna markup FILE.html`.
-- **Comments are opt-in.** `kanna open md` and `kanna open web` show the doc alone: no thread list, no marks, ⌘ gestures do nothing. Comments come on or go off in a pane that's already open with `kanna markup PANE` (`--off`) or **Pane ▸ Comments**; turning them off keeps its threads for next time.
+- **Comments are opt-in.** `kanna open md` and `kanna open web` show the doc alone: no thread list, no marks, ⌘ gestures do nothing. Comments come on in a pane that's already open with **Comments** in its bar, **Pane ▸ Comments**, `kanna markup PANE`, or `kanna markup FILE` run beside it, and go off with the menu item or `--off`; turning them off keeps its threads for next time ([markup toggle](markup-toggle.md)).
 - **Turning comments on or off keeps the pane.** Only the comment UI comes or goes: the toolbar's agent and Threads controls, the thread panel and the marks. The doc isn't read or drawn again and a page isn't reloaded, so the scroll, zoom, selection, history and a page's own state (its scripts' variables, a form half filled) stay as they were. `--to` only changes where comments go.
 - **Preview only.** The pane shows the file and reloads when it, or a local image it shows, changes on disk (within a second, at the same reading position and zoom); you don't edit in it. Comments are the only thing you add.
 - **With its changes marked** (`kanna open md FILE --diff REF`, [markdown diff](markdown-diff.md)), comments work the same.
@@ -74,7 +74,7 @@ Every doc works the same way; only what you can point at differs.
 
 **A comment is typed into the agent that opened the doc, as `kanna send` would, the moment you post it.** The same for every agent: Claude, Codex or anything else that reads its terminal.
 
-- **Which pane:** the terminal that ran `kanna markup` for the doc, or the one named by `--to PANE`, shown in the toolbar. `kanna markup PANE --to AGENT` sends a doc's comments somewhere else from then on. Comments turned on from the menu go to the pane's agent if it had one, else nowhere: they're saved, not sent.
+- **Which pane:** the terminal that ran `kanna markup` for the doc, or the one named by `--to PANE`, shown in the toolbar. `kanna markup PANE --to AGENT` sends a doc's comments somewhere else from then on. Comments turned on from the bar or the menu go to the agent of the place the doc is in, or one you pick ([markup toggle §2](markup-toggle.md#2-where-comments-go)).
 - **What's typed:** one paste, then Enter: a header naming the thread, file and line; what you pointed at, as `>` lines; then your words. For a passage that's the passage:
 
 ```
@@ -147,7 +147,7 @@ Run in the doc's repo, the doc is found from the thread ID, the docs whose comme
 
 | Command | Does |
 |---|---|
-| `kanna markup FILE.md\|FILE.html [--to PANE]` | Open a doc with comments, sent to this pane (or PANE) |
+| `kanna markup FILE.md\|FILE.html [--to PANE]` | Turn comments on in the pane of this workspace that shows the doc, or open one; sent to this pane (or PANE) |
 | `kanna markup PANE [--to PANE \| --off]` | Turn comments on or off in a pane already open, or send them elsewhere |
 | `kanna markup comments [--all]` | List the threads (open only, unless `--all`) |
 | `kanna markup show cN` | One thread: what it points at, line, messages, state |

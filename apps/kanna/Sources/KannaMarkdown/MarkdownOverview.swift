@@ -5,6 +5,7 @@ import KannaOverview
 struct MarkdownPictureKey: Equatable {
     var revision: Int
     var width: CGFloat
+    var height: CGFloat
     var dark: Bool
     var comments: [Int]
 
@@ -115,11 +116,14 @@ extension MarkdownLayoutManager {
 extension MarkdownPaneView {
     var overviewViewport: OverviewViewport {
         let clip = scrollView.contentView
-        var content: CGFloat = 0
-        if let container = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 {
-            content = layoutManager.usedRect(for: container).height + textView.textContainerInset.height * 2
-        }
+        let content = contentHeight
         return OverviewViewport(documentHeight: textView.frame.height, contentHeight: content, top: clip.bounds.minY, height: clip.bounds.height)
+    }
+
+    var contentHeight: CGFloat {
+        guard let container = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 else { return 0 }
+        layoutManager.ensureLayout(for: container)
+        return layoutManager.usedRect(for: container).height + textView.textContainerInset.height * 2
     }
 
     func sides(height: CGFloat? = nil, comments: Bool? = nil, forced: Bool? = nil) -> (overview: Bool, comments: Bool) {
@@ -156,7 +160,7 @@ extension MarkdownPaneView {
     }
 
     var pictureKey: MarkdownPictureKey {
-        MarkdownPictureKey(revision: revision, width: textView.frame.width, dark: MarkdownTheme.isDark(effectiveAppearance), comments: MarkdownPictureKey.comments(layoutManager.marks))
+        MarkdownPictureKey(revision: revision, width: textView.frame.width, height: contentHeight, dark: MarkdownTheme.isDark(effectiveAppearance), comments: MarkdownPictureKey.comments(layoutManager.marks))
     }
 
     func overviewChanged() {
@@ -175,7 +179,7 @@ extension MarkdownPaneView {
         guard key != drawnKey else { return }
         drawnKey = key
         let backing = window?.backingScaleFactor ?? 2
-        if let (image, scale) = layoutManager.picture(origin: textView.textContainerOrigin, contentHeight: overviewViewport.contentHeight, backing: backing, appearance: effectiveAppearance) {
+        if let (image, scale) = layoutManager.picture(origin: textView.textContainerOrigin, contentHeight: key.height, backing: backing, appearance: effectiveAppearance) {
             overview.content = .image(image, scale: scale)
         } else {
             overview.content = .empty
@@ -202,7 +206,9 @@ extension MarkdownPaneView {
 
     func updateOverviewViewport() {
         guard overviewShown else { return }
-        overview.viewport = overviewViewport
+        let viewport = overviewViewport
+        overview.viewport = viewport
+        if let drawnKey, drawnKey.height != viewport.contentHeight { overviewChanged() }
     }
 
     func scrollOverview(to top: CGFloat) {
