@@ -384,9 +384,9 @@ function shelfHTML(w) {
   return shelf(w).map((t, i) => {
     const meta = t.status === "needs" ? "needs you" : ago(t);
     return `<span class="item ${t.status === "needs" ? "needs" : ""}" data-pull="${t.id}" title="${titleOf(t)}"><span class="dot ${t.status}"></span><span class="nm">${titleOf(t)}</span><span class="meta">· ${meta}</span><span class="kb">⌘${i + 1}</span></span>`;
-  }).join("") + `<span class="spacer"></span>` + (waiting ? `<span class="backlog" title="⌘. Desk to see the Shelf">${waiting} on the Shelf</span>` : "") +
-    (waiting || shelf(w).length ? `<span class="sep"></span>` : "") +
-    `<span class="item hint" data-park="${w.desk}" title="The Desk view: the planning agent, the Desk's tasks and the Shelf"><span class="nm">⌘. Desk</span></span>`;
+  }).join("") + `<span class="spacer"></span>` + (shelf(w).length ? `<span class="sep"></span>` : "") +
+    `<span class="item hint" data-park="${w.desk}" title="The Desk view: the planning agent, the Desk's tasks and the Shelf"><span class="nm">⌘. Desk</span></span>` +
+    (waiting ? `<span class="backlog" title="⌘. Desk to see the Shelf">${waiting} on the Shelf</span>` : "");
 }
 
 function agentTerm(t) {

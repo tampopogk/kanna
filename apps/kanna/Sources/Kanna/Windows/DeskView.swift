@@ -231,9 +231,8 @@ final class DeskStrip: NSView {
         let chrome = items.reduce(0) { $0 + $1.chrome }
         let metas = items.map(\.metaWidth)
         let titles = items.map(\.titleWidth)
-        hint.frame.origin = NSPoint(x: bounds.width - hint.frame.width - 8, y: (Self.height - hint.frame.height) / 2)
-        let end = hint.frame.minX - 10
-        var room = end - 8 - gaps - chrome - metas.reduce(0, +)
+        let hintLeft = bounds.width - hint.frame.width - 8
+        var room = hintLeft - 10 - 8 - gaps - chrome - metas.reduce(0, +)
         let titleFloors = titles.map { min($0, Self.titleFloor) }.reduce(0, +)
         count.isHidden = waiting == 0
         if !count.isHidden, room - count.frame.width - 8 < titleFloors {
@@ -249,7 +248,8 @@ final class DeskStrip: NSView {
             item.frame.origin = NSPoint(x: x, y: (Self.height - item.frame.height) / 2)
             x += item.frame.width + 4
         }
-        count.frame.origin = NSPoint(x: end - count.frame.width, y: (Self.height - count.frame.height) / 2)
+        count.frame.origin = NSPoint(x: bounds.width - count.frame.width - 12, y: (Self.height - count.frame.height) / 2)
+        hint.frame.origin = NSPoint(x: hintLeft - (count.isHidden ? 0 : count.frame.width + 8), y: (Self.height - hint.frame.height) / 2)
         needsDisplay = true
     }
 
@@ -265,7 +265,7 @@ final class DeskStrip: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
-        if !stripItems.isEmpty || !count.isHidden { NSRect(x: hint.frame.minX - 5, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
+        if !stripItems.isEmpty { NSRect(x: hint.frame.minX - 5, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
     }
 }
 

@@ -3373,8 +3373,8 @@ desk_scrolls() {
   kanna task activate "Task 20" >/dev/null || { echo "desk_scrolls line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk strip)" == True && "$(desk title)" == "Task 20" ]]' || { desk stripLayout; return 1; }
   fits() { desk stripLayout "$1" | python3 -c 'import json, sys; g = json.load(sys.stdin); items = g["items"]
-end = g["countLeft"] if g["countLeft"] is not None else g["hintLeft"]
-sys.exit(not (len(items) == 2 and all(i["meta"].startswith("· ") for i in items) and all(i["right"] <= end for i in items) and end <= g["hintLeft"] and g["hintRight"] <= g["width"] and g["width"] - g["hintRight"] <= 12))'; }
+last = g["hintRight"] if g["countLeft"] is None else g["countLeft"]
+sys.exit(not (len(items) == 2 and all(i["meta"].startswith("· ") for i in items) and all(i["right"] <= g["hintLeft"] for i in items) and g["hintRight"] <= last <= g["width"] and (g["countLeft"] is not None or g["width"] - g["hintRight"] <= 12)))'; }
   check eval 'fits "\"size\":[900,420]"' || { desk stripLayout; return 1; }
   check test "$(desk waiting)" == "19 on the Shelf" || { desk waiting; return 1; }
   sleep 0.3; snap d1 desk_scrolls-strip-900 >/dev/null
