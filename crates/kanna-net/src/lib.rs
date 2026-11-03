@@ -2,21 +2,55 @@ mod client;
 pub mod log;
 mod node;
 pub mod pair;
-pub mod update;
+pub mod protocol;
 
 pub use iroh::SecretKey;
 pub use client::Client;
-pub use node::{Config, Failure, Host, Node, DEFAULT_PORT};
-pub use update::{Install, Tarball};
+pub use node::{Config, Failure, Host, Node, DEFAULT_PORT, PEER};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 pub const ALPN: &[u8] = b"kanna/1";
 
-pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
+pub fn relay_mode() -> iroh::RelayMode {
+    iroh::RelayMode::Custom(iroh::RelayMap::empty())
+}
 
-pub const UPDATE: &str = "update";
+#[derive(Clone, Debug, PartialEq)]
+pub struct Relay {
+    pub url: iroh::RelayUrl,
+    pub token: Option<String>,
+}
+
+impl Relay {
+    pub fn new(url: &str, token: Option<&str>) -> Result<Relay, Failure> {
+        let token = token.map(str::trim).filter(|t| !t.is_empty()).map(String::from);
+        Ok(Relay { url: relay_url(url)?, token })
+    }
+
+    pub fn from_request(request: &Value) -> Result<Option<Relay>, Failure> {
+        request["relay"].as_str().map(|url| Relay::new(url, request["relay_token"].as_str())).transpose()
+    }
+
+    pub(crate) fn config(&self) -> std::sync::Arc<iroh::RelayConfig> {
+        let config: iroh::RelayConfig = self.url.clone().into();
+        std::sync::Arc::new(match &self.token {
+            Some(token) => config.with_auth_token(token.clone()),
+            None => config,
+        })
+    }
+}
+
+pub fn relay_url(text: &str) -> Result<iroh::RelayUrl, Failure> {
+    let url: iroh::RelayUrl = text.parse().map_err(|_| Failure::new("bad_request", format!("\"{text}\" isn't a relay's URL: give one like https://relay.example.com")))?;
+    match url.scheme() {
+        "https" | "http" => Ok(url),
+        _ => Err(Failure::new("bad_request", format!("\"{text}\" isn't a relay's URL: it starts with https://"))),
+    }
+}
+
+pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refused {

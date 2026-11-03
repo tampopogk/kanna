@@ -8,8 +8,10 @@ final class DaemonLink: TerminalLink {
     private let commands: Commands
     private var terminals: [String: ExternalTerminal] = [:]
     private var sizes: [String: JSON] = [:]
+    private var offsets: [String: Double] = [:]
+    private var more: Set<String> = []
+    private var run: String?
     private(set) var attached = false
-    private var acks = false
     let machine: String?
     var client: String?
     private(set) var refusal: JSON?
@@ -25,9 +27,12 @@ final class DaemonLink: TerminalLink {
     var onFolder: ((String, String, JSON?) -> Void)?
     var onShelf: (([JSON], [JSON]) -> Void)?
     var onDiff: ((String, JSON) -> Void)?
+    var onLog: ((String, JSON) -> Void)?
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
     var onFile: ((String, JSON) -> Void)?
+    var onMarkup: ((String, JSON) -> Void)?
+    var onSerial: ((String, JSON) -> Void)?
     var onLost: (() -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
@@ -35,8 +40,8 @@ final class DaemonLink: TerminalLink {
 
     var socketPath: String { connection.path }
 
-    static let protocols: [JSON] = Protocols.mine.map { .number(Double($0)) }
-    static let localOnly: Set<String> = ["app.machine.confirm", "app.snap"]
+    static let remoteScrollback = 1000
+    static let localOnly: Set<String> = ["app.machine.confirm"]
 
     init(socketPath: String, commands: Commands, starter: DaemonStarter? = nil, machine: String? = nil, dial: (@Sendable () -> Int32?)? = nil) {
         self.commands = commands
@@ -46,7 +51,7 @@ final class DaemonLink: TerminalLink {
             path: socketPath,
             dial: dial,
             hello: { [weak self] in
-                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocols": .array(Self.protocols), "commit": .string(KannaBuild.commit)]
+                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocol": .number(Double(Protocols.mine)), "commit": .string(KannaBuild.commit)]
                 if machine == nil, let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
                 if let client = self?.client { args["client"] = .string(client) }
                 if machine == nil { args["relaunch"] = Self.relaunch }
@@ -94,7 +99,7 @@ final class DaemonLink: TerminalLink {
     private func connected() {
         if let settings = GhosttyRuntime.shared?.settings { send("settings", settings.objectFields) }
         for terminal in terminals.keys.sorted() {
-            send("attach", ["terminal": .string(terminal)])
+            attach(terminal)
             if case .object(let size)? = sizes[terminal] { send("resize", size) }
         }
     }
@@ -124,10 +129,12 @@ final class DaemonLink: TerminalLink {
             }
             attached = ok
             if ok {
-                acks = (message["protocol"]?.number ?? 0) >= Double(Protocols.flow)
                 starter?.attached()
                 refusal = nil
                 daemonInfo = message["daemon"]
+                let fresh = message["daemon"]?["run"]?.string
+                if fresh != run { offsets.removeAll() }
+                run = fresh
                 connection.accepted()
                 onAttach?(message)
             } else if message["error"]?["code"]?.string == "other_protocol" {
@@ -173,11 +180,12 @@ final class DaemonLink: TerminalLink {
         case "pane":
             if let pane = args["pane"] { onPane?(pane) }
         case "output":
-            let ack: () -> Void = { [weak self, acks] in
-                guard acks, let id = args["terminal"]?.string else { return }
+            let ack: () -> Void = { [weak self] in
+                guard let id = args["terminal"]?.string else { return }
                 self?.send("taken", ["terminal": .string(id)])
             }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
+                offsets[terminal.id] = args["offset"]?.number
                 consumed = false
                 let echo = Keys.echoing(terminal.id)
                 terminal.output(data) {
@@ -191,6 +199,8 @@ final class DaemonLink: TerminalLink {
         case "snapshot":
             if let id = args["terminal"]?.string { onSnapshot?(id) }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
+                offsets[terminal.id] = args["offset"]?.number
+                if args["more"]?.bool == true { more.insert(terminal.id) } else { more.remove(terminal.id) }
                 consumed = false
                 terminal.loadSnapshot(data) { connection.consumed(delivery) }
             }
@@ -209,8 +219,14 @@ final class DaemonLink: TerminalLink {
             onView?(args)
         case "diff":
             if let content = args["content"]?.string { onDiff?(content, args) }
+        case "log":
+            if let content = args["content"]?.string { onLog?(content, args) }
         case "file":
             if let content = args["content"]?.string { onFile?(content, args) }
+        case "markup":
+            if let content = args["content"]?.string { onMarkup?(content, args) }
+        case "serial":
+            if let content = args["content"]?.string { onSerial?(content, args) }
         case "tasks":
             if case .array(let tasks)? = args["shelf"] { onShelf?(tasks, args["desk"]?.array ?? []) }
         case "toast":
@@ -247,7 +263,24 @@ final class DaemonLink: TerminalLink {
 
     func opened(_ terminal: ExternalTerminal) {
         terminals[terminal.id] = terminal
-        send("attach", ["terminal": .string(terminal.id)])
+        offsets.removeValue(forKey: terminal.id)
+        attach(terminal.id)
+    }
+
+    private func attach(_ terminal: String) {
+        var args: [String: JSON] = ["terminal": .string(terminal)]
+        if machine != nil { args["scrollback"] = .number(Double(Self.remoteScrollback)) }
+        if let offset = offsets[terminal], let run {
+            args["from"] = .number(offset)
+            args["run"] = .string(run)
+        }
+        send("attach", args)
+    }
+
+    func scrolledToTop(_ terminal: ExternalTerminal) -> Bool {
+        guard attached, more.remove(terminal.id) != nil else { return false }
+        send("scrollback", ["terminal": .string(terminal.id)])
+        return true
     }
 
     func input(_ bytes: Data, from terminal: ExternalTerminal) {
@@ -269,6 +302,8 @@ final class DaemonLink: TerminalLink {
     func closed(_ terminal: ExternalTerminal) {
         terminals.removeValue(forKey: terminal.id)
         sizes.removeValue(forKey: terminal.id)
+        offsets.removeValue(forKey: terminal.id)
+        more.remove(terminal.id)
         Keys.forget(terminal.id)
         send("detach", ["terminal": .string(terminal.id)])
     }

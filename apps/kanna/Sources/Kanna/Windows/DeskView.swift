@@ -12,12 +12,13 @@ struct DeskTask: Equatable {
     var place: String?
     var offline = false
     var made = 0
+    var stack: String?
 
     @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : Self.since(leftAt) }
 
     @MainActor var sub: String {
         let status = status.map { $0 == "needs-you" ? "needs you" : $0 }.map { offline ? "last known: \($0)" : $0 }
-        return [status, detail.isEmpty ? nil : detail, offline ? "offline" : Self.since(leftAt)].compactMap { $0 }.joined(separator: " · ")
+        return [status, stack, detail.isEmpty ? nil : detail, offline ? "offline" : Self.since(leftAt)].compactMap { $0 }.joined(separator: " · ")
     }
 
     @MainActor static var skew: Double = 0
@@ -63,6 +64,23 @@ struct ShelfTask: Equatable {
     let madeAt: Double?
     var waits: [String] = []
     var agent: String?
+    var pane: String? = nil
+    var branch: String? = nil
+    var stack: String? = nil
+
+    static func stack(_ entry: JSON) -> String? {
+        func names(_ key: String) -> String {
+            guard case .array(let list)? = entry[key] else { return "" }
+            return list.compactMap { $0["name"]?.string.map { "\u{201C}\($0)\u{201D}" } ?? $0["id"]?.string }.joined(separator: ", ")
+        }
+        if entry["conflict"]?.string != nil { return "its blockers' branches conflict" }
+        let stale = names("stale"), bases = names("bases")
+        if !stale.isEmpty { return "stale · behind " + stale }
+        let ready: String? = entry["ready"]?["head"]?.string != nil ? "ready" : nil
+        let after: String? = bases.isEmpty ? nil : "merges after " + bases
+        let said = [ready, after].compactMap { $0 }
+        return said.isEmpty ? nil : said.joined(separator: " · ")
+    }
 
     static func program(_ command: String?) -> String? {
         guard let first = command?.split(whereSeparator: \.isWhitespace).first else { return nil }
@@ -79,7 +97,18 @@ struct ShelfTask: Equatable {
     static func words(_ query: String) -> [String] { query.split(whereSeparator: \.isWhitespace).map(String.init) }
 
     func matches(_ query: String) -> Bool {
-        Self.words(query).allSatisfy { word in [name, message ?? ""].contains { $0.range(of: word, options: .caseInsensitive) != nil } }
+        Self.words(query).allSatisfy { word in
+            Self.idStart(word).map { id.lowercased().hasPrefix($0) } == true || pane?.caseInsensitiveCompare(word) == .orderedSame
+                || [name, message, branch].contains { $0?.range(of: word, options: .caseInsensitive) != nil }
+        }
+    }
+
+    static func idStart(_ word: String) -> String? {
+        let word = word.lowercased()
+        let prefixed = word.hasPrefix("task-")
+        let hex = prefixed ? String(word.dropFirst(5)) : word
+        guard (prefixed ? 1 : 4)...8 ~= hex.count, hex.allSatisfy(\.isHexDigit) else { return nil }
+        return "task-" + hex
     }
 
     static func marked(_ text: String, _ query: String, font: NSFont, color: NSColor) -> NSMutableAttributedString {
@@ -304,7 +333,6 @@ private final class DeskStripItem: NSView {
         self.key?.font = .systemFont(ofSize: 11)
         self.key?.sizeToFit()
         self.key?.textColor = .tertiaryLabelColor
-        self.key?.isHidden = true
         meta.textColor = .tertiaryLabelColor
         titleWidth = min(title.frame.width, 260)
         paintTitle()
@@ -321,7 +349,7 @@ private final class DeskStripItem: NSView {
 
     var keyText: String? { key?.stringValue }
 
-    var chrome: CGFloat { 23 + 6 + 8 + (hover ? (key.map { $0.frame.width + 6 } ?? 0) : 0) }
+    var chrome: CGFloat { 23 + 6 + 8 + (key.map { $0.frame.width + 5 } ?? 0) }
 
     func refresh() {
         meta.stringValue = "· \(task.meta)"
@@ -330,12 +358,12 @@ private final class DeskStripItem: NSView {
     }
 
     func fit(title width: CGFloat, meta room: CGFloat) {
-        title.frame = NSRect(x: 23, y: (22 - title.frame.height) / 2, width: width, height: title.frame.height)
+        key?.frame.origin = NSPoint(x: 23, y: (22 - (key?.frame.height ?? 0)) / 2)
+        let start = key.map { $0.frame.maxX + 5 } ?? 23
+        title.frame = NSRect(x: start, y: (22 - title.frame.height) / 2, width: width, height: title.frame.height)
         meta.isHidden = room < 12
         meta.frame = NSRect(x: title.frame.maxX + 6, y: title.frame.minY, width: meta.isHidden ? 0 : room, height: meta.frame.height)
-        key?.isHidden = !hover
-        key?.frame.origin = NSPoint(x: meta.frame.maxX + 6, y: (22 - (key?.frame.height ?? 0)) / 2)
-        frame.size.width = (hover ? key?.frame.maxX ?? meta.frame.maxX : meta.frame.maxX) + 8
+        frame.size.width = meta.frame.maxX + 8
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -432,6 +460,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     var blockedShelf: [JSON] {
         rowViews.compactMap { $0 as? ShelfRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
+    }
+
+    var stackedShelf: [JSON] {
+        rowViews.compactMap { $0 as? ShelfRow }.filter { $0.task.stack != nil }.map { ["task": .string($0.task.id), "stack": .string($0.task.stack ?? ""), "sub": .string($0.subText)] }
     }
 
     var visibleShelf: [String] {
@@ -713,6 +745,10 @@ private final class ShelfRow: NSView {
     func refresh() {
         let small = NSFont.systemFont(ofSize: 12)
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
+        if let stack = task.stack {
+            let color: NSColor = stack.hasPrefix("ready") ? .systemGreen : stack.hasPrefix("merges") ? .secondaryLabelColor : .systemOrange
+            detail.append(NSAttributedString(string: stack + " · ", attributes: [.font: small, .foregroundColor: color]))
+        }
         detail.append(ShelfTask.marked(task.message.map { $0 + " · " } ?? "", query, font: small, color: .secondaryLabelColor))
         detail.append(NSAttributedString(string: task.after, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         sub.attributedStringValue = detail
@@ -722,7 +758,7 @@ private final class ShelfRow: NSView {
         NSColor.tertiaryLabelColor.setStroke()
         let ring = NSBezierPath(ovalIn: NSRect(x: 10.5, y: bounds.midY - 4, width: 8, height: 8))
         ring.lineWidth = 1.4
-        if task.blocked { ring.setLineDash([2, 2], count: 2, phase: 0) }
+        if task.blocked || task.stack?.hasPrefix("its blockers") == true { ring.setLineDash([2, 2], count: 2, phase: 0) }
         ring.stroke()
     }
 

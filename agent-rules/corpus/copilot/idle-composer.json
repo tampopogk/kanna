@@ -1,9 +1,0 @@
-{
-  "rows": [
-    "❯"
-  ],
-  "title": "GitHub Copilot",
-  "cliVersion": "1.0.89",
-  "expected": "idle",
-  "source": "slice0 behavior: parked composer"
-}

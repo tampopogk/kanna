@@ -136,9 +136,6 @@ impl Instance {
         App::connect(&self.socket())
     }
 
-    pub fn app_speaking(&self, protocols: [u32; 2]) -> App {
-        App::connect_speaking(&self.socket(), json!([]), protocols)
-    }
 }
 
 impl Drop for Instance {
@@ -182,7 +179,6 @@ fn daemon_command(dir: &Path, env: &[(String, String)]) -> Command {
         .env("SHELL", "/bin/sh")
         .env("KANNA_SOCKET", dir.join("kanna.sock"))
         .env("KANNA_STATE_DIR", dir.join("state"))
-        .env("KANNA_AGENT_RULES_URL", "none")
         .env("KANNA_KEEPER", keeper_binary())
         .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
         .env("KANNA_MACHINE_MDNS", "0")
@@ -201,6 +197,7 @@ pub struct App {
     pub view: Value,
     pub shows: bool,
     pub acks: bool,
+    pub hello: Value,
 }
 
 impl App {
@@ -209,16 +206,13 @@ impl App {
     }
 
     pub fn connect_with(socket: &Path, panes: Value) -> App {
-        App::connect_speaking(socket, panes, kanna_build::PROTOCOLS)
-    }
-
-    pub fn connect_speaking(socket: &Path, panes: Value, protocols: [u32; 2]) -> App {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let mut app = App::raw(socket);
-            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": protocols, "panes": panes}}));
+            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocol": kanna_build::PROTOCOL, "panes": panes}}));
             let hello = app.next().expect("no answer to app.hello");
             if hello["ok"] == true {
+                app.hello = hello;
                 return app;
             }
             assert!(hello["error"]["code"] == "app_attached" && Instant::now() < deadline, "{hello}");
@@ -230,7 +224,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        App { stream, reader, view: Value::Null, shows: true, acks: true }
+        App { stream, reader, view: Value::Null, shows: true, acks: true, hello: Value::Null }
     }
 
     pub fn answering(self) -> std::thread::JoinHandle<()> {
