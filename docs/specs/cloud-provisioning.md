@@ -78,6 +78,6 @@ sequenceDiagram
 
 `r720-1`: iDRAC 7 2.61.60.60 at 172.16.0.2 on its dedicated port, BIOS 2.7.0 (BIOS boot mode), 2 × Xeon E5-2690, 238 GiB, PERC H710 Mini with two 1.2 TB SAS drives in RAID 1 (the volume was already there and kept). No host Ethernet yet; Wi-Fi through a USB dongle: a Realtek RTL8811CU (USB `0bda:c811`, 802.11ac), driven by the kernel's own `rtw88_8821cu`, interface `wlxe0d768301a7a`. LOM port 1's MAC is D4:AE:52:A1:4C:B2.
 
-Installed 2026-10-21: Ubuntu 26.04.1, kernel 7.0.0-30, at 172.16.0.105 over Wi-Fi, MAC e0:d7:68:30:1a:7a (the one to reserve). The run took 22 minutes: 7 for POST and the installer's boot, 15 for the install, 5 for the first boot to report.
+Installed 2026-10-21: Ubuntu 26.04.1, kernel 7.0.0-30, first at 172.16.0.105 over Wi-Fi. It is now `jeremyhale@172.16.0.11`, a static address on its Ethernet port `eno1`; the R720s' static addresses are 172.16.0.11–15 (r720-N is .1N), and DHCP hands out from 172.16.0.50. The run took 22 minutes: 7 for POST and the installer's boot, 15 for the install, 5 for the first boot to report.
 
 When an install stops, the serial console offers a root shell ("An error occurred. Press enter to start a shell"): reach it with `ssh -t -i ~/.ssh/kanna-cloud-idrac root@IDRAC console com2` (end with `Ctrl-\`) once the script has stopped.
