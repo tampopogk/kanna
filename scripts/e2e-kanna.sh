@@ -4965,6 +4965,29 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
   check wait_for 5 eval '[[ "$(dwin "$desk8" dock.pane)" == "$(pane Asks id)" ]]' || { echo "shelf_runners: $(sid 2) didn't take $(sid 8)'s place on the Desk"; app_view; return 1; }
   [[ "$(ws $(tid 8) panes)" == *"\"$md\""* && "$(ws $(tid 2) panes)" != *"\"$md\""* ]] || { echo "shelf_runners: $(sid 8)'s tabs aren't in its workspace"; state; return 1; }
   [[ "$(KANNA_TERMINAL="$presenter" kanna open --name after --tab --no-wait)" == "opened "*" (after) in ws-"*" ($(sid 8), on the Desk), tab-"* ]] || { echo "shelf_runners: $(sid 8)'s open went elsewhere"; state; return 1; }
+  runners 0
+  for name in "Old stopped" "Old new" "New stopped" "New new"; do in_repo task new "$name" "work 1" --agent "$fake/codex" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }; done
+  for t in $(tid 9) $(tid 11); do
+    in_repo task start $t >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+    check wait_for 10 eval '[[ "$(of $t 2)" == running ]]' || { echo "shelf_runners: $t didn't start"; shelf; return 1; }
+    in_repo task stop $t >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+    check wait_for 15 eval '[[ "$(of $t 2)" == stopped:* ]]' || { echo "shelf_runners: $t didn't stop"; shelf; return 1; }
+  done
+  in_repo task send $(tid 11) "your turn, newer" >/dev/null && in_repo task send $(tid 9) "your turn, older" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  runners 1
+  seen="" most=0
+  for _ in $(seq 900); do
+    now="$(running)"
+    (( $(wc -w <<<"$now") > most )) && most=$(wc -w <<<"$now")
+    for t in $now; do [[ " $seen " == *" $t "* ]] || seen="$seen $t"; done
+    [[ "$(of $(tid 12) 2)" == stopped:* ]] && break
+    sleep 0.1
+  done
+  check test "$most" -le 1 || { echo "shelf_runners: $most ran at once with one runner"; return 1; }
+  check test "${seen# }" == "$(tid 9) $(tid 10) $(tid 11) $(tid 12)" || { echo "shelf_runners: they didn't take their turn by age: $seen, not $(tid 9) $(tid 10) $(tid 11) $(tid 12)"; shelf; return 1; }
+  for t in $(tid 9) $(tid 11); do
+    in_repo task messages $t | grep -q delivered || { echo "shelf_runners: $t didn't get its message"; in_repo task messages $t; return 1; }
+  done
 }
 
 scenario agent_messaging M4

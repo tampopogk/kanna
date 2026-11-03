@@ -67,7 +67,7 @@ sequenceDiagram
 flowchart TD
     M["a message for a task"] --> R{"its agent runs?"}
     R -->|yes| W["delivered at its turn's end"]
-    R -->|"no, on the Shelf"| B["it runs for it, as one of shelf.runners,<br/>ahead of tasks that haven't started"]
+    R -->|"no, on the Shelf"| B["it runs for it, as one of shelf.runners,<br/>taking its turn by age"]
     B --> W
     R -->|"no, on the Desk"| S["waits until you start it"]
     S --> W
@@ -75,8 +75,8 @@ flowchart TD
     E -->|yes| X["its next turn's end stops it, as before"]
 ```
 
-- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md): it waits for a free one, but goes before tasks that haven't started. With `shelf.runners` 0 it waits.
-- **A running Shelf task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message.
+- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md): it joins the one queue of Shelf tasks and takes its turn by when it was made, so an older task that hasn't started goes first and a newer one goes after. The planner's merge nudges message many tasks at once, and they shouldn't jump new work. With `shelf.runners` 0 it waits.
+- **A running Shelf task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message when its turn in the queue comes.
 - **A task stopped on the Desk stays stopped:** you stopped it. It gets its messages when you start it.
 - **Only a task whose agent takes messages runs for one:** a stopped task started as another agent isn't woken for a message it couldn't take.
 
