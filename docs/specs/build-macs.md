@@ -141,6 +141,7 @@ The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is 
 - **No eviction yet:** the guest's store, mirrors, DerivedData and job folders grow until a guest is retired.
 - **No readiness step:** a new guest boots into Setup Assistant's MiniBuddy screen, which XCUITests trip over; the [isolation model](../../references/prototypes/build-mac-isolation/README.md#surprises) dismisses it with a UI job per new guest. Builds and unit tests don't need it.
 - **Guest clocks don't sync** without a network; code signing and TLS depend on them.
+- **Submission isn't retried:** if the link between the machines drops while the snapshot or bundle is being sent (seen once, about a minute of `unreachable`), `kanna build` exits 125 and is run again; only an accepted job reattaches.
 - **Capabilities live in the daemon's memory:** restarting the build Mac's daemon ends every running job's egress (its proxy answers 407) though the guest and the job keep running.
 - **The master was promoted from a force-stopped clone** (see [guest image](#guest-image)); APFS and the apps in it came through, but a clean shutdown it never had.
 - **No Simulator leases, queue display or capability matching:** slice 12.
