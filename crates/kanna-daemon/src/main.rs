@@ -298,6 +298,12 @@ fn run() -> Result<(), String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone()), ("AGY_CLI_OSC7501".to_string(), "on".to_string())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
+    let kanna_cli = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("kanna"))).unwrap_or_default();
+    if let Some(shim) = builds::install_shim(&state_dir, &kanna_cli, builds::shim_wanted()) {
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        env.push(("PATH".to_string(), format!("{}:{path}", shim.display())));
+        env.push(("KANNA_BUILD_SHIM_DIR".to_string(), shim.to_string_lossy().into_owned()));
+    }
     let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
     let renaming = Rc::downgrade(&terminals);

@@ -79,6 +79,32 @@ fn splice(a: UnixStream, a_buffered: Vec<u8>, b: UnixStream) {
     let _ = forward.join();
 }
 
+pub const SHIMS: &[&str] = &["xcodebuild", "xcrun", "codesign", "swift"];
+
+pub fn install_shim(state_dir: &Path, kanna: &Path, wanted: bool) -> Option<PathBuf> {
+    if !wanted || !kanna.is_file() {
+        return None;
+    }
+    let dir = state_dir.join("shim");
+    std::fs::create_dir_all(&dir).ok()?;
+    for tool in SHIMS {
+        let link = dir.join(tool);
+        if std::fs::read_link(&link).ok().as_deref() != Some(kanna) {
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(kanna, &link).ok()?;
+        }
+    }
+    Some(dir)
+}
+
+pub fn shim_wanted() -> bool {
+    match std::env::var("KANNA_BUILD_SHIM").ok().as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => cfg!(target_os = "linux"),
+    }
+}
+
 pub fn guests_dir(state_dir: &Path) -> PathBuf {
     state_dir.join("guests")
 }
@@ -169,4 +195,23 @@ pub fn relay(state_dir: &Path, from: &str, mut stream: UnixStream) {
         return;
     }
     splice(stream, vec![], to_guest);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_shim_links_each_tool_to_kanna_once() {
+        let dir = std::env::temp_dir().join(format!("kanna-shim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let kanna = dir.join("kanna");
+        std::fs::write(&kanna, "").unwrap();
+        assert_eq!(install_shim(&dir, &kanna, false), None);
+        let shim = install_shim(&dir, &kanna, true).unwrap();
+        assert_eq!(std::fs::read_link(shim.join("xcodebuild")).unwrap(), kanna);
+        assert_eq!(install_shim(&dir, &kanna, true), Some(shim.clone()));
+        assert_eq!(std::fs::read_dir(&shim).unwrap().count(), SHIMS.len());
+    }
 }
