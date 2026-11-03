@@ -191,6 +191,10 @@ extension AppController {
         windows.contains { $0["dock"]?["pane"]?.string == pane } || deskEntries.contains { $0["task"]?.string == pane }
     }
 
+    func isShelfTask(_ pane: String) -> Bool {
+        shelf.contains { $0["held"]?.string == pane }
+    }
+
     func place(of pane: String) -> (folder: String, git: GitPlace?)? {
         guard let folder = folders[pane] else { return nil }
         guard MachineIDs.machine(of: pane) != nil else { return (folder, GitPlace.of(folder)) }
@@ -284,7 +288,8 @@ extension AppController {
             guard let id = entry["id"]?.string, let name = entry["name"]?.string else { return nil }
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry))
+            let status = offline(entry["machine"]?.string) ? nil : entry["running"]?.bool == true ? entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } : ShelfTask.last(stopped: entry["stopped"]?.string)
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status)
         }
     }
 

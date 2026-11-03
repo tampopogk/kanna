@@ -2057,6 +2057,16 @@ impl Tasks {
         }
     }
 
+    fn stopped_at(&self, pane: &str, last: &str) {
+        let Some(mut entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return };
+        entry.stopped = Some(last.to_string());
+        let _ = self.store(&entry, Place::Shelf, Some(pane), None);
+        if let Some(found) = self.entries.borrow_mut().iter_mut().find(|e| e.id == entry.id) {
+            *found = entry;
+        }
+        self.changed();
+    }
+
     fn stopped_by_itself(&self, pane: &str, why: &str, session: Option<String>) {
         let Some(mut entry) = self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned() else { return };
         entry.stopped = Some(why.to_string());
@@ -3343,9 +3353,17 @@ impl Tasks {
             }
             let (weak, tasks) = (core.weak(), Rc::downgrade(&this));
             let agent = this.pane_entry(&pane).map_or_else(|| core.pane(&pane).and_then(|p| p.command).unwrap_or_default(), |e| e.agent);
+            let last = core.pane(&pane).and_then(|p| p.status).and_then(|status| match status.as_str() {
+                "needs-you" => Some("needs-you"),
+                "idle" => Some("finished"),
+                _ => None,
+            });
             this.end_agent(&pane.clone(), &agent, move |session| {
                 let (Some(tasks), Some(core)) = (tasks.upgrade(), weak.upgrade()) else { return responder.reply(Err(gone())) };
                 tasks.keep_session(&pane, session);
+                if let Some(last) = last {
+                    tasks.stopped_at(&pane, last);
+                }
                 let session = tasks.pane_entry(&pane).and_then(|e| e.session);
                 tasks.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
                 tasks.refill();
