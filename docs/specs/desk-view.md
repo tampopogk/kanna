@@ -54,6 +54,7 @@ stateDiagram-v2
 - **A task shows the key that's uniquely its own,** the same in the strip and in the Desk view: ⌘1 on the task left last, ⌘2 on the one left longest ago when that's another task. With two tasks the other shows ⌘1; with no task active and three on the Desk, the middle one has no key. The Desk view's rows are oldest first, so their keys aren't in numeric order there.
 - **Hover hints.** A row shows its hint only while hovered: "⌘N · Make active →", or the active task's "⌘. · Back to it".
 - **The strip** lists the Desk's other tasks from its left edge, in key order: the ⌘1 task first (the one left last), then the ⌘2 task, then any task with no key. So it reorders as you switch tasks, and only then: a task that needs you keeps its place and its key, and shows it in amber, "needs you" in place of its time. Each shows its key, muted, before its name, all the time. At its right end, "N on the Shelf" and then a muted "⌘. Desk" that shows the Desk view when clicked. On a narrow strip the Shelf's count gives way before the times, and "⌘. Desk" stays.
+- **Dragging a Desk row onto the Shelf** moves that task there as it is: [Drag a Desk task to the Shelf](desk-row-shelve.md).
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
 - **The encouraging line** moves on each time the Desk view shows (before: each time the Desk was cleared).
 - **Closing a Desk window** leaves its tasks on the Desk, none active (before: it parked its task).

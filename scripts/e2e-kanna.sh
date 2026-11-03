@@ -2573,6 +2573,29 @@ move_to_shelf() {
   [[ "$(kanna task shelve nothing 2>&1)" == *'no running task "nothing"'* ]] || { echo "move_to_shelf line $LINENO"; return 1; }
 }
 
+scenario drag_to_shelf M4
+drag_to_shelf() {
+  start_daemon && start_app || return 1
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  drag_row() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"task\":\"$1\",\"window\":\"d1\",\"drop\":\"$2\"}}" | grep -q '"ok":true'; sleep 0.5; }
+  desk_task first && desk_task second || return 1
+  local front back pid
+  front="$(pane first id)" back="$(pane second id)" pid="$(pane second pid)"
+  kanna task activate first >/dev/null && kanna task park first >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk active)" == "$front" && "$(desk tasks.1.task)" == "$back" ]]' || { echo "drag_to_shelf: the Desk view doesn't show both tasks"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
+  drag_row "$back" desk || { echo "drag_to_shelf: the drag onto the Desk didn't run"; return 1; }
+  check test "$(ws $(tid 2) where)" == '{"desk": "mac"}' || { echo "drag_to_shelf: a drag dropped on the Desk moved the task"; state; return 1; }
+  check test "$(desk active)" == "$front" || { echo "drag_to_shelf: a drag dropped on the Desk made the task active"; return 1; }
+  drag_row "$back" shelf || { echo "drag_to_shelf: the drag onto the Shelf didn't run"; return 1; }
+  check wait_for 5 eval '[[ "$(ws $(tid 2) where)" == shelf ]]' || { echo "drag_to_shelf: the dragged task isn't on the Shelf"; state; return 1; }
+  check test "$(pane second pid)" == "$pid" || { echo "drag_to_shelf: the dragged task's agent stopped"; kanna workspace list --all; return 1; }
+  check wait_for 5 eval '[[ "$(desk shelf)" == "[\"$(tid 2)\"]" && "$(desk tasks.0.task)" == "$front" && "$(desk tasks.1)" == "" ]]' || { echo "drag_to_shelf: the Desk view didn't move the row to the Shelf"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
+  check test "$(desk active)" == "$front" || { echo "drag_to_shelf: shelving another task changed the active one"; return 1; }
+  check test "$(desk page)" == True || { echo "drag_to_shelf: the Desk view stopped showing"; return 1; }
+  drag_row "$front" shelf || { echo "drag_to_shelf: the drag of the active task didn't run"; return 1; }
+  check wait_for 5 eval '[[ "$(ws $(tid 1) where)" == shelf && "$(desk active)" == None && "$(desk page)" == True ]]' || { echo "drag_to_shelf: shelving the active task should leave none active, the Desk view showing"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
+}
+
 scenario shelf_and_back M4
 shelf_and_back() {
   start_daemon && start_app || { echo "shelf_and_back line $LINENO"; return 1; }

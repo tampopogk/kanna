@@ -400,6 +400,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     ]
     var onActivate: ((String) -> Void)?
     var onStart: ((String) -> Void)?
+    var onShelve: ((String) -> Void)?
     var onLeaveSearch: (() -> Void)?
     private var shown: DeskPage?
     private let scroller = NSScrollView()
@@ -412,6 +413,13 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     private var ticker: Timer?
     private var deskKept: [String: DeskRow] = [:]
     private var shelfKept: [String: ShelfRow] = [:]
+    private var shelfArea = NSRect.zero
+    private var deskHead = NSRect.zero
+    private var shelfHead: NSTextField?
+    private var shelfTally: NSTextField?
+    private var lifted: (row: DeskRow, copy: NSView, grip: NSPoint, over: Bool)?
+    private let zone = DropZone()
+    private let dropNote = NSTextField(labelWithString: "· Drop to move to the Shelf")
 
     override var isFlipped: Bool { true }
 
@@ -440,6 +448,8 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         searchKey.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         searchKey.textColor = .tertiaryLabelColor
         searchKey.sizeToFit()
+        dropNote.font = .systemFont(ofSize: 12)
+        dropNote.sizeToFit()
         paint()
     }
 
@@ -592,7 +602,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     private func lay(_ page: DeskPage, top: CGFloat) {
         let span = Perf.begin(.desk, "DeskView.lay")
-        document.subviews.filter { $0 !== search && $0 !== searchKey && !($0 is DeskRow) && !($0 is ShelfRow) }.forEach { $0.removeFromSuperview() }
+        document.subviews.filter { $0 !== search && $0 !== searchKey && $0 !== zone && $0 !== dropNote && !($0 is DeskRow) && !($0 is ShelfRow) }.forEach { $0.removeFromSuperview() }
         let (deskBefore, shelfBefore) = (deskKept, shelfKept)
         (deskKept, shelfKept) = ([:], [:])
         var made = 0
@@ -601,7 +611,9 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         let line = label(page.cheer, size: 13, color: .secondaryLabelColor)
         line.frame.origin = NSPoint(x: left, y: y)
         y += line.frame.height + 22
+        let deskTop = y
         y = header("Desk", detail: page.project, count: "\(page.running) of \(DeskPage.limit) tasks", y: y, left: left, width: width).bottom
+        deskHead = NSRect(x: left, y: deskTop, width: width, height: y - deskTop)
         if page.tasks.isEmpty {
             let none = label("Nothing on the Desk.", color: .secondaryLabelColor)
             none.frame.origin = NSPoint(x: left, y: y + 4)
@@ -612,6 +624,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
                 made += 1
                 let row = DeskRow(task: task, key: page.keys[task.id], width: width + 20, active: task.id == page.active)
                 row.onPress = { [weak self] in self?.onActivate?(task.id) }
+                row.onDown = { [weak self, weak row] event in
+                    guard let self, let row else { return }
+                    self.track(row, from: event)
+                }
                 return row
             }()
             deskKept[task.id] = row
@@ -620,11 +636,13 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             y += row.frame.height
         }
         y += 28
+        let shelfTop = y
         let hits = page.shelf.filter { $0.matches(query) }
         selected = min(selected, max(0, hits.count - 1))
         let head = header("Shelf", detail: nil, count: query.isEmpty ? "\(page.shelf.count) waiting" : "\(hits.count) of \(page.shelf.count)", y: y, left: left, width: width)
         let widest = ["\(page.shelf.count) waiting", "\(page.shelf.count) of \(page.shelf.count)"].map { ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width }.max() ?? 0
-        placeSearch(shown: !page.shelf.isEmpty, right: head.tally.maxX - ceil(widest), middle: head.tally.midY, left: left)
+        (shelfHead, shelfTally) = (head.title, head.tally)
+        placeSearch(shown: !page.shelf.isEmpty, right: head.tally.frame.maxX - ceil(widest), middle: head.tally.frame.midY, left: left)
         y = head.bottom
         if page.shelf.isEmpty {
             let none = label("Empty. Ask the planning agent for tasks.", color: .secondaryLabelColor)
@@ -648,6 +666,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             if row.superview !== document { document.addSubview(row) }
             y += row.frame.height
         }
+        shelfArea = NSRect(x: left - 16, y: shelfTop - 8, width: width + 32, height: y - shelfTop + 14)
         for (id, row) in deskBefore where deskKept[id] !== row { row.removeFromSuperview() }
         for (id, row) in shelfBefore where shelfKept[id] !== row { row.removeFromSuperview() }
         let note = label(page.note, color: .systemOrange)
@@ -655,6 +674,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         note.frame.origin = NSPoint(x: left, y: y + 8)
         document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 8 + note.frame.height + 40)
         scroll(toY: top)
+        decorate()
         Perf.end(span, "\(page.tasks.count + hits.count) rows, \(made) new")
         Clicks.laid(desk: page.tasks.map(\.id), shelf: page.shelf.map(\.id))
     }
@@ -676,7 +696,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         searchKey.isHidden = !query.isEmpty || search.currentEditor() != nil
     }
 
-    private func header(_ title: String, detail: String?, count: String, y: CGFloat, left: CGFloat, width: CGFloat) -> (bottom: CGFloat, tally: NSRect) {
+    private func header(_ title: String, detail: String?, count: String, y: CGFloat, left: CGFloat, width: CGFloat) -> (bottom: CGFloat, title: NSTextField, tally: NSTextField) {
         let head = label(title, weight: .semibold)
         head.frame.origin = NSPoint(x: left, y: y)
         if let detail {
@@ -685,7 +705,109 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         }
         let tally = label(count, color: .secondaryLabelColor)
         tally.frame.origin = NSPoint(x: left + width - tally.frame.width, y: y)
-        return (y + head.frame.height + 8, tally.frame)
+        return (y + head.frame.height + 8, head, tally)
+    }
+
+    var shelfDrop: NSPoint { document.convert(NSPoint(x: shelfArea.midX, y: shelfArea.minY + 24), to: nil) }
+
+    var deskDrop: NSPoint { document.convert(NSPoint(x: deskHead.midX, y: deskHead.midY), to: nil) }
+
+    var dragging: Bool { lifted != nil }
+
+    private func track(_ row: DeskRow, from down: NSEvent) {
+        guard let window else { return }
+        let start = down.locationInWindow
+        var moved = false
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
+            switch event.type {
+            case .leftMouseDragged:
+                if !moved, hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) > 4 {
+                    moved = true
+                    lift(row, at: start)
+                }
+                guard moved else { continue }
+                document.autoscroll(with: event)
+                follow(event.locationInWindow)
+            case .leftMouseUp:
+                guard moved else { row.onPress?(); return }
+                follow(event.locationInWindow)
+                let over = lifted?.over == true
+                land()
+                if over { onShelve?(row.task.id) }
+                return
+            case .keyDown where event.keyCode == 53:
+                if moved { land() }
+                return
+            default:
+                continue
+            }
+        }
+    }
+
+    private func lift(_ row: DeskRow, at point: NSPoint) {
+        let copy = NSView(frame: row.bounds)
+        copy.wantsLayer = true
+        copy.layer?.cornerRadius = 8
+        copy.layer?.borderWidth = 1
+        copy.layer?.borderColor = resolved(.separatorColor)
+        copy.layer?.backgroundColor = resolved(.windowBackgroundColor)
+        copy.shadow = NSShadow()
+        copy.layer?.shadowOpacity = 0.35
+        copy.layer?.shadowRadius = 14
+        copy.layer?.shadowOffset = CGSize(width: 0, height: -8)
+        if let rep = row.bitmapImageRepForCachingDisplay(in: row.bounds) {
+            row.cacheDisplay(in: row.bounds, to: rep)
+            let image = NSImage(size: row.bounds.size)
+            image.addRepresentation(rep)
+            let picture = NSImageView(frame: copy.bounds)
+            picture.image = image
+            copy.addSubview(picture)
+        }
+        addSubview(copy)
+        copy.frameCenterRotation = 1
+        row.alphaValue = 0.35
+        lifted = (row, copy, row.convert(point, from: nil), false)
+        follow(point)
+    }
+
+    private func follow(_ point: NSPoint) {
+        guard var drag = lifted else { return }
+        let here = convert(point, from: nil)
+        drag.copy.frameCenterRotation = 0
+        drag.copy.frame.origin = NSPoint(x: here.x - drag.grip.x, y: here.y - drag.grip.y)
+        drag.copy.frameCenterRotation = 1
+        drag.over = shelfArea.contains(document.convert(point, from: nil))
+        let changed = drag.over != lifted?.over
+        lifted = drag
+        if changed { decorate() }
+    }
+
+    private func land() {
+        guard let drag = lifted else { return }
+        drag.copy.removeFromSuperview()
+        drag.row.alphaValue = 1
+        lifted = nil
+        decorate()
+    }
+
+    private func decorate() {
+        guard let drag = lifted else {
+            zone.removeFromSuperview()
+            dropNote.removeFromSuperview()
+            shelfTally?.isHidden = false
+            search.isHidden = false
+            searchKey.isHidden = !query.isEmpty || search.currentEditor() != nil
+            return
+        }
+        if zone.superview !== document { document.addSubview(zone, positioned: .below, relativeTo: nil) }
+        zone.frame = shelfArea
+        zone.over = drag.over
+        if dropNote.superview !== document { document.addSubview(dropNote) }
+        if let head = shelfHead { dropNote.frame.origin = NSPoint(x: head.frame.maxX + 4, y: head.frame.minY) }
+        dropNote.textColor = drag.over ? .controlAccentColor : .secondaryLabelColor
+        shelfTally?.isHidden = true
+        search.isHidden = true
+        searchKey.isHidden = true
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
@@ -792,9 +914,54 @@ private final class ShelfRow: NSView {
 }
 
 @MainActor
+private final class DropZone: NSView {
+    private let edge = CAShapeLayer()
+    var over = false { didSet { paint() } }
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        edge.fillColor = nil
+        edge.lineWidth = 1.5
+        layer?.addSublayer(edge)
+        paint()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func layout() {
+        super.layout()
+        edge.frame = bounds
+        edge.path = CGPath(roundedRect: bounds.insetBy(dx: 0.75, dy: 0.75), cornerWidth: 10, cornerHeight: 10, transform: nil)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        paint()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func paint() {
+        edge.strokeColor = resolved(over ? .controlAccentColor : .separatorColor)
+        edge.lineDashPattern = over ? nil : [4, 3]
+        layer?.backgroundColor = over ? resolved(.controlAccentColor.withAlphaComponent(0.12)) : nil
+    }
+}
+
+@MainActor
 private final class DeskRow: NSView {
     let task: DeskTask
     var onPress: (() -> Void)?
+    var onDown: ((NSEvent) -> Void)?
     private let go: NSTextField
     private let sub = NSTextField(labelWithString: "")
 
@@ -873,5 +1040,7 @@ private final class DeskRow: NSView {
         paint()
     }
 
-    override func mouseDown(with event: NSEvent) { onPress?() }
+    override func mouseDown(with event: NSEvent) {
+        if let onDown { onDown(event) } else { onPress?() }
+    }
 }
