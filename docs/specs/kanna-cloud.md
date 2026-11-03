@@ -6,6 +6,14 @@
 
 **It runs on Kanna's infrastructure, not on [the customer's own machines](machines.md).** Those are the machines the customer decided to trust and that belong to them, in their signed peer log; nothing Kanna runs ever joins them. A Cloud task runs on a VM of Kanna's, which the customer never sees, names or manages, and their Kanna reaches it through Kanna Cloud, signed in with their account. Pairing machines and moving tasks between them is free and needs no Cloud account.
 
+**The problem it solves.** Kanna's agents run on the customer's own machines, which limits them three ways:
+
+- **Capacity:** a laptop runs a few agents at once before it slows down, and a customer without a spare Linux box or Mac has nowhere else to send more.
+- **Availability:** a task stops when the laptop sleeps, closes or leaves the network; work queued on the Shelf waits for it.
+- **Setup:** running a server of their own means buying it, installing Kanna, keeping it secure and updated, and giving it git and agent credentials by hand; building Apple code from Linux needs a Mac besides.
+
+Kanna Cloud removes all three for a price: the customer sends a task to the cloud and it runs now, on a clean machine of its own, whether their laptop is open or not, with Apple builds on Kanna's Macs. They manage nothing but the task.
+
 It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the same software run by someone else**: whoever runs it is the operator, and everything below about Kanna as operator applies to them.
 
 ## Contents
