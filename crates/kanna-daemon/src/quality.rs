@@ -11,6 +11,8 @@ const FILES: usize = 40;
 
 const LISTED: usize = 8;
 
+const SETTLED: f64 = 10.0;
+
 const CC_TIP: &str = "CC is cyclomatic complexity: 1 plus each place a function can branch (each if, loop, match arm, && and ||), the number of paths through it a test would need. Over 10 is SlopCodeBench's line for a function too tangled to follow or test easily.";
 
 fn tipped(mut tile: Value, tip: &str) -> Value {
@@ -80,13 +82,18 @@ pub fn verbosity(tree: &Tree) -> (f64, Value) {
     (share(tree.verbosity()), json!({ "clones": clones.duplicated_lines(), "wrappers": wrapper_lines, "flagged": flagged_lines, "lines": tree.lines(), "groups": groups, "rules": rules }))
 }
 
+fn of_functions(count: usize, tree: &Tree) -> f64 {
+    let all = tree.functions().len();
+    share((all > 0).then(|| count as f64 / all as f64))
+}
+
 pub fn high(tree: &Tree) -> (f64, Value) {
-    (tree.high() as f64, json!({ "functions": tree.functions().len() }))
+    (of_functions(tree.high(), tree), json!({ "count": tree.high(), "of": tree.functions().len() }))
 }
 
 pub fn dead(tree: &Tree) -> (f64, Value) {
     let dead = tree.dead();
-    (dead.len() as f64, json!({ "functions": dead.iter().take(WORST).map(function_row).collect::<Vec<_>>() }))
+    (of_functions(dead.len(), tree), json!({ "count": dead.len(), "of": tree.functions().len(), "functions": dead.iter().take(WORST).map(function_row).collect::<Vec<_>>() }))
 }
 
 pub fn wrappers(tree: &Tree) -> (f64, Value) {
@@ -157,27 +164,45 @@ fn daily(rows: &[&Sample], first: i64) -> Vec<Value> {
         .collect()
 }
 
-fn trend(values: &[Value], unit: &str) -> String {
+fn settled(lines: &[&Sample], first: i64) -> usize {
+    let latest = lines.last().map_or(0.0, |s| s.value);
+    daily(lines, first).iter().position(|v| v.as_f64().is_some_and(|v| v >= latest / SETTLED)).unwrap_or(0)
+}
+
+fn trend(values: &[Value], unit: &str, days: usize) -> String {
     let known: Vec<f64> = values.iter().filter_map(Value::as_f64).collect();
     let (Some(first), Some(last)) = (known.first(), known.last()) else { return String::new() };
     let change = last - first;
     let size = if unit == "%" { format!("{:.1} points", change.abs()) } else { format!("{}", change.abs().round()) };
     if change.abs() < 0.05 {
-        "level over 30 days".to_string()
+        format!("level over {days} days")
     } else {
-        format!("{} {size} in 30 days", if change > 0.0 { "up" } else { "down" })
+        format!("{} {size} in {days} days", if change > 0.0 { "up" } else { "down" })
     }
 }
 
-fn trend_tile(id: &str, label: &str, rows: &[&Sample], first: i64, unit: Option<&str>, what: &str) -> Value {
-    let values = daily(rows, first);
-    let note = trend(&values, unit.unwrap_or(""));
+fn trend_tile(id: &str, label: &str, rows: &[&Sample], first: i64, unit: Option<&str>, what: &str, from: usize) -> Value {
+    let mut values = daily(rows, first);
+    values[..from].fill(Value::Null);
+    let note = trend(&values, unit.unwrap_or(""), DAYS as usize - from);
     let value = rows.last().map_or(Value::Null, |s| json!(s.value));
     let mut chart = json!({ "kind": "line", "values": values, "what": what });
     if unit == Some("%") {
         chart["max"] = json!(100);
     }
     tile(id, label, value, unit, note, 2, chart)
+}
+
+fn share_tile(id: &str, label: &str, rows: &[&Sample], first: i64, what: &str, from: usize) -> Value {
+    let mut tile = trend_tile(id, label, rows, first, Some("%"), what, from);
+    if let Some(chart) = tile["chart"].as_object_mut() {
+        chart.remove("max");
+    }
+    if let Some(last) = rows.last() {
+        let trend = tile["note"].as_str().unwrap_or("").to_string();
+        tile["note"] = json!(format!("{} of {} · {trend}", last.doc["count"], last.doc["of"]));
+    }
+    tile
 }
 
 fn list(id: &str, label: &str, rows: Vec<Value>, what: &str, empty: &str) -> Value {
@@ -331,13 +356,14 @@ pub fn code_section(facts: &Facts) -> Value {
         empty["empty"] = json!("No Rust or Swift code on main in the last 30 days.");
         return empty;
     }
+    let from = settled(&of(facts, "lines"), first);
     let mut tiles = vec![
-        tipped(trend_tile("erosion", "Erosion", &erosion, first, Some("%"), "of complexity in functions over CC 10"), CC_TIP),
-        trend_tile("verbosity", "Verbosity", &verbosity, first, Some("%"), "of lines flagged, cloned or in trivial wrappers"),
-        tipped(trend_tile("high", "Functions over CC 10", &of(facts, "high"), first, None, "functions over CC 10"), CC_TIP),
-        trend_tile("dead", "Dead functions", &of(facts, "dead"), first, None, "functions nothing outside tests calls"),
-        trend_tile("wrappers", "Trivial wrappers", &of(facts, "wrappers"), first, None, "functions whose body only returns one expression"),
-        trend_tile("lines", "Code lines", &of(facts, "lines"), first, None, "lines of Rust and Swift outside tests"),
+        tipped(trend_tile("erosion", "Erosion", &erosion, first, Some("%"), "of complexity in functions over CC 10", from), CC_TIP),
+        trend_tile("verbosity", "Verbosity", &verbosity, first, Some("%"), "of lines flagged, cloned or in trivial wrappers", from),
+        tipped(share_tile("high", "Functions over CC 10", &of(facts, "high"), first, "of functions over CC 10", from), CC_TIP),
+        share_tile("dead", "Dead functions", &of(facts, "dead"), first, "of functions nothing outside tests calls", from),
+        trend_tile("wrappers", "Trivial wrappers", &of(facts, "wrappers"), first, None, "functions whose body only returns one expression", 0),
+        trend_tile("lines", "Code lines", &of(facts, "lines"), first, None, "lines of Rust and Swift outside tests", 0),
     ];
     tiles.extend(coverage_tiles(facts, first));
     tiles.push(tipped(list("worst", "Worst functions", worst_functions(erosion.last().copied()), "complexity mass: CC × √lines", "No functions yet."), CC_TIP));
@@ -422,6 +448,21 @@ mod tests {
     }
 
     #[test]
+    fn a_share_s_trend_starts_once_main_has_a_tenth_of_today_s_code() {
+        let sample = |at: f64, value: f64| Sample { commit: String::new(), metric: "lines".into(), at, value, doc: json!({}), revision: 1 };
+        let today = local_day(now());
+        let first = today - DAYS + 1;
+        let lines = [sample(noon(first + 2), 96.0), sample(noon(first + 3), 9765.0), sample(noon(today), 55000.0)];
+        let rows: Vec<&Sample> = lines.iter().collect();
+        assert_eq!(settled(&rows, first), 3);
+        let shares = [sample(noon(first + 2), 40.0), sample(noon(first + 3), 6.9), sample(noon(today), 8.8)];
+        let tile = trend_tile("high", "High", &shares.iter().collect::<Vec<_>>(), first, Some("%"), "what", 3);
+        assert_eq!(tile["note"], json!("up 1.9 points in 27 days"), "not down 31.2 from the day main had five functions");
+        assert_eq!(tile["chart"]["values"][2], Value::Null);
+        assert_eq!(tile["chart"]["values"][3], json!(6.9));
+    }
+
+    #[test]
     fn the_code_section_trends_each_measure_and_lists_the_worst() {
         let (repo, landing) = fixture("section");
         let today = local_day(now());
@@ -433,11 +474,14 @@ mod tests {
         assert_eq!(erosion["chart"]["values"].as_array().unwrap().len(), 30);
         assert_eq!(erosion["chart"]["values"][0], Value::Null, "nothing on main 29 days ago");
         assert!(tile_of(&report, "verbosity")["value"].as_f64().unwrap() > 0.0);
-        assert_eq!(tile_of(&report, "high")["value"], json!(1.0));
+        let high = tile_of(&report, "high");
+        assert_eq!((high["value"].clone(), high["unit"].clone()), (json!(16.7), json!("%")), "one of six functions");
+        assert!(high["note"].as_str().unwrap().starts_with("1 of 6 · "), "{high}");
+        assert_eq!(high["chart"]["max"], Value::Null, "a share this small needs its own scale");
         assert!(tile_of(&report, "high")["tip"].as_str().unwrap().starts_with("CC is cyclomatic complexity"));
         assert_eq!(tile_of(&report, "worst")["tip"], tile_of(&report, "erosion")["tip"]);
         assert_eq!(tile_of(&report, "verbosity")["tip"], Value::Null);
-        assert_eq!(tile_of(&report, "dead")["value"], json!(2.0), "unused, and start, which nothing calls");
+        assert_eq!(tile_of(&report, "dead")["value"], json!(33.3), "unused, and start, which nothing calls, of six functions");
         assert_eq!(tile_of(&report, "wrappers")["value"], json!(3.0), "pass, unused and start each return one expression");
         let flagged = &tile_of(&report, "flagged")["chart"]["rows"][0];
         assert_eq!(flagged["label"], json!("loop-accumulate"));

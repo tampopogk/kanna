@@ -142,7 +142,7 @@ On main at 3966e489: 277 Rust and Swift files outside tests, 54,900 code lines a
 | Code lines | 4,210 | 54,900 |
 | Erosion | 48.5% | 61.1% |
 | Verbosity | 9.6% | 11.3% |
-| Functions over CC 10 | 25 | 469 |
+| Functions over CC 10 | 25 (5.5%) | 469 (8.9%) |
 | Trivial wrappers | 107 | 1,275 |
 | Gini of cognitive complexity | 0.71 | 0.73 |
 

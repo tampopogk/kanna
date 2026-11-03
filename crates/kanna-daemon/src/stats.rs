@@ -52,8 +52,8 @@ pub const METRICS: &[Metric] = &[
     Metric { name: "fixes", revision: 0, sample: Sampler::Commit(quality::fixes) },
     Metric { name: "erosion", revision: 1, sample: Sampler::Tree(quality::erosion) },
     Metric { name: "verbosity", revision: 1, sample: Sampler::Tree(quality::verbosity) },
-    Metric { name: "high", revision: 1, sample: Sampler::Tree(quality::high) },
-    Metric { name: "dead", revision: 1, sample: Sampler::Tree(quality::dead) },
+    Metric { name: "high", revision: 2, sample: Sampler::Tree(quality::high) },
+    Metric { name: "dead", revision: 2, sample: Sampler::Tree(quality::dead) },
     Metric { name: "wrappers", revision: 1, sample: Sampler::Tree(quality::wrappers) },
     Metric { name: "lines", revision: 1, sample: Sampler::Tree(quality::lines) },
 ];

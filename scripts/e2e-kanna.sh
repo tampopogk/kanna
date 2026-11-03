@@ -4007,7 +4007,7 @@ assert t["tasks", "ended"]["note"] == "today · 1 in 30 days", t["tasks", "ended
 assert t["tasks", "lead"]["note"] == "median of 1" and t["tasks", "lead"]["unit"] == "s", t["tasks", "lead"]
 assert "placeholder" not in s["code"], s["code"]
 assert t["code", "erosion"]["value"] == 100 and t["code", "erosion"]["unit"] == "%", t["code", "erosion"]
-assert t["code", "high"]["value"] == 1 and t["code", "lines"]["value"] == 13, (t["code", "high"], t["code", "lines"])
+assert t["code", "high"]["value"] == 100 and t["code", "high"]["unit"] == "%" and t["code", "high"]["note"].startswith("1 of 1 · ") and t["code", "lines"]["value"] == 13, (t["code", "high"], t["code", "lines"])
 w = t["code", "worst"]["chart"]["rows"][0]
 assert w["label"] == "busy" and w["open"] == {"path": "src/lib.rs", "line": 1}, w
 assert t["code", "lines-covered"]["note"].startswith("not set up"), t["code", "lines-covered"]' "$json" "$repo" || return 1
