@@ -9,6 +9,7 @@ mod agents;
 mod app_link;
 mod tasks;
 mod db;
+mod desk_news;
 mod host;
 mod keeper;
 mod content_ids;
@@ -110,6 +111,7 @@ pub enum Event {
     Turn { token: u64 },
     Posted { token: u64, result: Result<(), String> },
     Finished { task: String, changes: Vec<db::Change> },
+    Merged { task: String, merge: desk_news::Merge },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
     Log { id: String, log: Value },
@@ -141,7 +143,7 @@ impl Event {
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
-            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } | Event::Merged { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::Log { .. } => "loop.log",
             Event::File { .. } => "loop.file",
@@ -755,6 +757,7 @@ fn run() -> Result<(), String> {
             Event::Turn { token } => tasks.next_turn(token),
             Event::Posted { token, result } => tasks.posted(token, result),
             Event::Finished { task, changes } => tasks.finished(&task, changes),
+            Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
             Event::Log { id, log } => logs.loaded(&id, log),
