@@ -56,7 +56,7 @@ flowchart LR
 ```
 
 - **`DeskView` owns the selection:** a task ID and whether the list has the keyboard (the search field is editing, or, with no field over an empty Shelf, `DeskView` is first responder). Rows are built from it; `selected` on a row is what the search's selection was.
-- **One handler for the keys,** `DeskView.perform(_:)`, reached from the search field's `control(_:textView:doCommandBy:)`, from `DeskView`'s own `keyDown` (`interpretKeyEvents`) and from the Task menu items. ⌘↩ arrives as `noop:` or `insertNewline:` with ⌘ held, read from the event.
+- **One handler for the keys,** `DeskView.perform(_:)`, reached from the search field's `control(_:textView:doCommandBy:)`, from `DeskView`'s own `keyDown` (`interpretKeyEvents`) and from the Task menu items. ⌘↩ is taken in `DeskView.performKeyEquivalent`, which sees the key before the field editor and the menu.
 - **Actions go where clicks go:** `onStart` (pick), `onActivate`, and new `onShelve` and `onRun` sending the daemon's `tasks` `shelve`, `start` and `stop`. The app turns the daemon's `task_limit` and `blocked` errors into the notes above, for clicks and keys alike.
 - **The Shelf's running state** comes from the `tasks` notice's `running` and `held` (its agent's pane, whose status the app already has).
 - **`debug.desk`** reports `search.selection` (the task ID), `search.keyed`, each row's hint and the menu items' titles and keys.

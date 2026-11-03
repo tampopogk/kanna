@@ -2257,7 +2257,7 @@ print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["hi
   key cmd+.
   check wait_for 5 eval '[[ "$(desk page)" == True && "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the active task moved in the Desk view"; rows; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$(tid 4)"'","window":"d1"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk note)" == *"3 tasks on the Desk"* ]]' || { desk note; return 1; }
+  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)." ]]' || { desk note; return 1; }
   stop_app; start_app || { echo "desk_shelf line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk lead)" == "$planner" ]]' || { echo "desk_shelf: the planning terminal didn't survive the app's restart"; kanna workspace list --all; return 1; }
   local refused; refused="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"blank\",\"repo\":\"$repo\"}}")"
@@ -3145,6 +3145,107 @@ shelf_search() {
   local listed; listed="$(cd "$repo" && kanna task list shelf | placed)"
   check test "$(wc -l <<<"$listed" | tr -d ' ')" == 2 || { echo "$listed"; return 1; }
   [[ "$listed" == *"Start tasks past the Shelf"*"Desk"* && "$listed" == *"$(sid 3)"*"Shelf"* ]] || { echo "shelf_search: kanna task list QUERY"; echo "$listed"; return 1; }
+}
+
+scenario desk_keys M4
+desk_keys() {
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_keys line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "desk_keys line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  search() { desk search."$1"; }
+  hint() { desk search.hints | python3 -c 'import json, sys; rows = [r for r in json.load(sys.stdin) if r["task"] == sys.argv[1] or r["selected"] and sys.argv[1] == "selected"]
+print(rows[0][sys.argv[2]] if rows else "")' "$1" "$2"; }
+  type() { raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$1\"}}" >/dev/null; sleep 0.3; }
+  state_of() { (cd "$repo" && kanna task list) | placed | awk -v n="$1" '$2 == n { print $3 " " $4 }'; }
+  menu_key() { raw '{"id":1,"cmd":"debug.menu"}' | python3 -c 'import json, sys; items = json.load(sys.stdin)["items"]
+print(next((i["shortcut"] for i in items if i["menu"] == "Task" and i["item"] == sys.argv[1]), "none"))' "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "desk_keys: no planning terminal"; kanna workspace list --all; return 1; }
+  local name
+  for name in Alpha Bravo Charlie Delta; do (cd "$repo" && kanna task new "$name" "hello" --agent "$agent") >/dev/null || { echo "desk_keys line $LINENO"; return 1; }; done
+  (cd "$repo" && kanna task new Echo "hello" --agent "$agent" --after "$(tid 1)") >/dev/null || { echo "desk_keys line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(desk shelf)" == *"$(tid 5)"* && "$(search shown)" == True ]]' || { desk shelf; return 1; }
+  check test "$(desk responder)" == TerminalSurfaceView || { desk responder; return 1; }
+
+  key cmd+f
+  check test "$(menu_key "Move to Shelf")" == "⇧⌘⌫" || { echo "desk_keys: Move to Shelf has no key"; return 1; }
+  check test "$(search keyed),$(search selection)" == "True,$(tid 1)" || { echo "desk_keys: ⌘F didn't select the first Shelf row"; desk search; return 1; }
+  check test "$(menu_key "Move to Desk")" == "↩" || { echo "desk_keys: the Task menu doesn't show ↩"; raw '{"id":1,"cmd":"debug.menu"}'; return 1; }
+  check test "$(menu_key "Start")" == "⌘↩" || { echo "desk_keys: the Task menu doesn't show ⌘↩"; return 1; }
+  check test "$(hint selected go)" == "↩ Move to Desk" || { desk search.hints; return 1; }
+  check test "$(hint selected alt)" == "⌘↩ Start" || { desk search.hints; return 1; }
+  key return
+  check wait_for 10 eval '[[ "$(desk shelf)" != *"$(tid 1)"* && "$(desk tasks.0.title)" == Alpha ]]' || { echo "desk_keys: ↩ didn't move Alpha to the Desk"; desk shelf; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(search selection)" == "$(tid 1)" && "$(hint selected go)" == "↩ Make active" ]]' || { echo "desk_keys: the selection didn't follow Alpha to the Desk"; desk search; return 1; }
+  check test "$(hint selected alt)" == "⇧⌘⌫ Move to Shelf" || { desk search.hints; return 1; }
+  check test "$(desk page),$(search keyed)" == "True,True" || { echo "desk_keys: moving to the Desk left the Desk view"; return 1; }
+  key down; key return
+  check wait_for 10 eval '[[ "$(desk running)" == 2 ]]' || { desk note; return 1; }
+  key down; key return
+  check wait_for 10 eval '[[ "$(desk running)" == 3 ]]' || { desk note; return 1; }
+  check test "$(search selection)" == "$(tid 3)" || { desk search; return 1; }
+
+  key down
+  check test "$(search selection),$(hint selected go)" == "$(tid 4),Desk full" || { echo "desk_keys: a full Desk's Shelf row"; desk search; return 1; }
+  key return
+  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)." ]]' || { echo "desk_keys: a full Desk didn't refuse"; desk note; return 1; }
+  check test "$(desk running)" == 3 || { echo "desk_keys: a fourth task went to the Desk"; return 1; }
+  [[ "$(desk shelf)" == *"$(tid 4)"* ]] || { echo "desk_keys: Delta left the Shelf"; return 1; }
+  key down
+  check test "$(hint selected go)" == "Blocked: waits for Alpha" || { echo "desk_keys: a blocked row didn't say why"; desk search.hints; return 1; }
+  key return
+  check wait_for 5 eval '[[ "$(desk note)" == *"waits for “Alpha”: it can move once that"* ]]' || { desk note; return 1; }
+  key cmd+return
+  check wait_for 5 eval '[[ "$(desk note)" == *"waits for “Alpha”: it can start once that"* ]]' || { echo "desk_keys: a blocked task started"; desk note; return 1; }
+  key down
+  check test "$(search selection)" == "$(tid 5)" || { echo "desk_keys: ↓ ran past the last row"; desk search; return 1; }
+
+  key up; key cmd+return
+  check wait_for 10 eval '[[ "$(state_of Delta)" =~ ^Shelf\ (idle|working)$ ]]' || { echo "desk_keys: ⌘↩ didn't start Delta on the Shelf"; (cd "$repo" && kanna task list); return 1; }
+  check wait_for 5 eval '[[ "$(hint selected alt)" == "⌘↩ Stop" ]]' || { desk search.hints; return 1; }
+  [[ "$(desk shelf)" == *"$(tid 4)"* ]] || { echo "desk_keys: starting Delta moved it"; return 1; }
+  key cmd+return
+  check wait_for 10 eval '[[ "$(state_of Delta)" == "Shelf stopped" ]]' || { echo "desk_keys: ⌘↩ didn't stop Delta"; (cd "$repo" && kanna task list); return 1; }
+
+  key cmd+up
+  check test "$(search selection)" == "$(tid 1)" || { echo "desk_keys: ⌘↑ didn't go to the first row"; desk search; return 1; }
+  key end
+  check test "$(search selection)" == "$(tid 5)" || { echo "desk_keys: End didn't go to the last row"; desk search; return 1; }
+  key home
+  check test "$(search selection)" == "$(tid 1)" || { desk search; return 1; }
+  key cmd+down
+  check test "$(search selection)" == "$(tid 5)" || { desk search; return 1; }
+
+  key cmd+up; key down
+  check test "$(search selection)" == "$(tid 2)" || { desk search; return 1; }
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.3; snap d1 desk_keys-light >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.3; snap d1 desk_keys-dark >/dev/null
+  key cmd+shift+delete
+  check wait_for 10 eval '[[ "$(desk running)" == 2 && "$(desk shelf)" == *"$(tid 2)"* ]]' || { echo "desk_keys: ⇧⌘⌫ didn't move Bravo to the Shelf"; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(search selection)" == "$(tid 2)" && "$(hint selected go)" == "↩ Move to Desk" ]]' || { echo "desk_keys: the selection didn't follow Bravo to the Shelf"; desk search; return 1; }
+
+  key cmd+up; key down
+  check test "$(search selection)" == "$(tid 3)" || { desk search; return 1; }
+  key return
+  check wait_for 10 eval '[[ "$(desk title)" == Charlie && "$(desk page)" == False ]]' || { echo "desk_keys: ↩ didn't make Charlie active"; desk title; return 1; }
+  check test "$(search keyed)" == False || { echo "desk_keys: the selection kept the keyboard with the task shown"; return 1; }
+  check test "$(menu_key "Move to Desk")" == "" || { echo "desk_keys: ↩ stayed a menu key"; return 1; }
+
+  key cmd+.
+  check wait_for 5 eval '[[ "$(desk page)" == True ]]' || return 1
+  key cmd+f; type del
+  check test "$(search found),$(search selection)" == '["'"$(tid 4)"'"],'"$(tid 4)" || { desk search; return 1; }
+  key up
+  check test "$(search selection)" == "$(tid 3)" || { echo "desk_keys: ↑ from a match didn't reach the Desk's rows"; desk search; return 1; }
+  key escape
+  check test "$(search query),$(search keyed)" == ",True" || { desk search; return 1; }
+  key escape
+  check test "$(desk responder),$(search keyed)" == "TerminalSurfaceView,False" || { echo "desk_keys: esc didn't go back to the planning terminal"; desk responder; return 1; }
+  check test "$(hint "$(tid 3)" selected)" == False || { echo "desk_keys: the selection still shows"; desk search.hints; return 1; }
 }
 
 scenario task_start_stop M4
@@ -4171,7 +4272,7 @@ blocked_tasks() {
   check test "$(desk scroll.blocked.1.waits)" == '["Screenshot command", "Status fix"]' || { desk scroll.blocked; return 1; }
   sleep 0.5; snap "$w" blocked_tasks-blocked >/dev/null
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$(tid 3)"'","window":"'"$w"'"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk note)" == *"waits for $(sid 1)"* ]]' || { echo "blocked_tasks: clicking a blocked row didn't say why"; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(desk note)" == "“Diff viewer” waits for “Screenshot command”: it can move once that'"'"'s done." ]]' || { echo "blocked_tasks: clicking a blocked row didn't say why"; desk note; return 1; }
   check test "$(desk running)" == 0 || { echo "blocked_tasks: clicking a blocked row started it"; return 1; }
   local started pane; started="$(kanna task pick $(tid 1))" && [[ "$started" =~ ^"moved $(sid 1) to the Desk: "(term-[0-9]+) ]] || { echo "blocked_tasks line $LINENO: $started"; return 1; }
   pane="${BASH_REMATCH[1]}"

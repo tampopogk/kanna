@@ -93,7 +93,10 @@ extension AppController {
         ])
         _ = menu("Task", [
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
-            ("Move to Shelf", #selector(deferTask), nil, nil),
+            ("Move to Shelf", #selector(deferTask), nil, .shiftCmd("\u{7f}")),
+            nil,
+            ("Move to Desk", #selector(deskEnter), nil, nil),
+            ("Start", #selector(deskRun), nil, nil),
             nil,
             ("Task Waiting Longest", #selector(activateWaitingTask), nil, .shiftCmd("A")),
             nil,
@@ -177,6 +180,7 @@ extension AppController {
     private var allMenus: [NSMenu] {
         func within(_ menu: NSMenu) -> [NSMenu] {
             menu.delegate?.menuNeedsUpdate?(menu)
+            menu.update()
             return [menu] + menu.items.compactMap(\.submenu).flatMap(within)
         }
         return (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(within)
@@ -287,7 +291,15 @@ extension AppController {
         case #selector(toggleDeskView):
             item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
             return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
-        case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
+        case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil || deskSelection?.onDesk == true
+        case #selector(deskEnter):
+            let task = deskSelection
+            item.title = task.map { $0.onDesk ? ($0.active ? "Show Active Task" : "Make Active") : "Move to Desk" } ?? "Move to Desk"
+            return task != nil
+        case #selector(deskRun):
+            let task = deskSelection
+            item.title = task?.running == true ? "Stop" : "Start"
+            return task.map { !$0.onDesk } ?? false
         case #selector(activateWaitingTask): return waitingTask != nil
         case #selector(activateDeskTask1): return keyedDeskTask(1) != nil
         case #selector(activateDeskTask2): return keyedDeskTask(2) != nil
@@ -441,7 +453,33 @@ extension AppController {
         return keyedDeskTask(1)
     }
 
+    private var deskView: DeskView? {
+        keyWindow?["id"]?.string.flatMap { controllers[$0] }.map(\.deskView)
+    }
+
+    private var deskSelection: (id: String, onDesk: Bool, blocked: Bool, running: Bool, active: Bool)? { deskView?.selectedTask }
+
+    @objc func deskEnter() { deskView?.enter() }
+
+    @objc func deskRun() { deskView?.run() }
+
+    func deskKeysChanged() {
+        let keyed = deskView?.keyed == true
+        for item in NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? [] {
+            switch item.action {
+            case #selector(deskEnter)?:
+                item.keyEquivalent = keyed ? "\r" : ""
+                item.keyEquivalentModifierMask = []
+            case #selector(deskRun)?:
+                item.keyEquivalent = keyed ? "\r" : ""
+                item.keyEquivalentModifierMask = keyed ? .command : []
+            default: break
+            }
+        }
+    }
+
     @objc func deferTask() {
+        if deskView?.shelveSelected() == true { return }
         guard let window = keyWindow?["id"]?.string, let pane = keyWindow?["dock"]?["pane"]?.string else { return }
         request("tasks", ["action": "shelve", "task": .string(pane)]) { [weak self] reply in
             guard let self, reply["ok"]?.bool != true, let controller = controllers[window] else { return }
