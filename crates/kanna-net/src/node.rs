@@ -75,6 +75,7 @@ pub trait Host: Send + Sync + 'static {
     fn inbox(&self) -> Option<std::path::PathBuf> {
         None
     }
+    fn job(&self, _from: String, _stream: std::os::unix::net::UnixStream) {}
 }
 
 pub struct Config {
@@ -526,6 +527,29 @@ impl Node {
             let _ = send.finish();
             return;
         }
+        if kind == "job" {
+            if cert.is_some() {
+                let _ = write_line(&mut send, &refusal(&Failure::new("not_a_daemon", "only a machine's daemon sends a job"))).await;
+                let _ = send.finish();
+                return;
+            }
+            let Ok((ours, theirs)) = std::os::unix::net::UnixStream::pair() else { return };
+            self.0.host.job(from, theirs);
+            let (node, remote) = (self.clone(), remote.clone());
+            let watched = async move {
+                while revoked.changed().await.is_ok() {
+                    if node.admit(&remote, None).is_err() {
+                        return;
+                    }
+                }
+                std::future::pending::<()>().await
+            };
+            tokio::select! {
+                () = splice_unix(ours, send, recv) => {}
+                () = watched => {}
+            }
+            return;
+        }
         if kind == "control" || kind == "sync" {
             while let Ok(mut request) = read_line(&mut recv, MAX_LINE).await {
                 if let Err(failure) = self.admit(&remote, cert.as_ref()) {
@@ -834,6 +858,13 @@ impl Node {
         Ok(reply)
     }
 
+    pub async fn job(&self, host: &str) -> Result<(std::os::unix::net::UnixStream, String), Failure> {
+        let (send, recv, name) = self.stream(host, "job").await?;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|e| Failure::new("failed", e.to_string()))?;
+        tokio::spawn(splice_unix(ours, send, recv));
+        Ok((theirs, name))
+    }
+
     pub async fn sync(&self, host: &str) -> Result<Value, Failure> {
         let (mut send, mut recv, name) = self.control_stream(host).await?;
         let synced = self.sync_over(&mut send, &mut recv).await;
@@ -1125,6 +1156,20 @@ pub(crate) async fn splice(tcp: tokio::net::TcpStream, mut send: SendStream, mut
     };
     let outbound = async move {
         let _ = tokio::io::copy(&mut from_tcp, &mut send).await;
+        let _ = send.finish();
+    };
+    tokio::join!(inbound, outbound);
+}
+
+pub(crate) async fn splice_unix(unix: std::os::unix::net::UnixStream, mut send: SendStream, mut recv: BufReader<RecvStream>) {
+    let Ok(unix) = unix.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(unix)) else { return };
+    let (mut from_unix, mut to_unix) = unix.into_split();
+    let inbound = async move {
+        let _ = tokio::io::copy(&mut recv, &mut to_unix).await;
+        let _ = to_unix.shutdown().await;
+    };
+    let outbound = async move {
+        let _ = tokio::io::copy(&mut from_unix, &mut send).await;
         let _ = send.finish();
     };
     tokio::join!(inbound, outbound);

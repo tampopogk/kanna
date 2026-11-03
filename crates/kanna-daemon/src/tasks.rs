@@ -240,6 +240,11 @@ pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     configured(std::slice::from_ref(mine), "pipelines", "agents", read, "an object of agent names to commands").flatten().unwrap_or_else(|| agent.into())
 }
 
+pub fn build_mac(mine: &Path) -> Option<String> {
+    let read = |value: &Value| value.as_str().map(str::trim).filter(|m| !m.is_empty()).map(String::from);
+    configured(std::slice::from_ref(&mine.to_path_buf()), "build", "mac", read, "the name of one of your machines")
+}
+
 pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;

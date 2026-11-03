@@ -7,6 +7,7 @@ macro_rules! log {
 mod accounts;
 mod agents;
 mod app_link;
+mod builds;
 mod tasks;
 mod db;
 mod desk_news;
@@ -269,6 +270,8 @@ fn run() -> Result<(), String> {
     );
     let wire = Arc::new(wire::Wire::new(events.clone()));
     server.take_over(HELLO, app_link::takeover(events.clone(), wire.clone()));
+    let build_callers: builds::Callers = Default::default();
+    server.take_over(builds::OPEN, builds::takeover(build_callers.clone()));
     let server = std::mem::ManuallyDrop::new(server);
     match inherited_listener()? {
         Some(listener) => server.start_with(listener),
@@ -365,6 +368,9 @@ fn run() -> Result<(), String> {
             log!("kanna-daemon: {}", machines.describe());
             let machines = Rc::new(machines);
             machines.install(&core);
+            if let Some(caller) = machines.caller() {
+                let _ = build_callers.set(caller);
+            }
             Some(machines)
         }
         Err(reason) => {

@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod agents;
 pub mod args;
+pub mod build;
 pub mod commands;
 pub mod complete;
 pub mod diagrams;
@@ -18,13 +19,70 @@ use serde_json::{json, Value};
 use target::{process_env, Backend, Choice, Env, Session, Target};
 
 pub fn main() -> std::process::ExitCode {
-    match run(std::env::args().skip(1).collect(), &process_env) {
+    let argv0 = std::env::args().next().unwrap_or_default();
+    if let Some(tool) = build::shim_name(&argv0) {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        return match shim(tool, &argv0, args) {
+            Ok(code) => std::process::ExitCode::from(code.clamp(0, 255) as u8),
+            Err(failure) => {
+                eprintln!("kanna build: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "build") {
+        if args.get(1).is_some_and(|a| a == "--help" || a == "-h") {
+            println!("{}", build::HELP);
+            return std::process::ExitCode::SUCCESS;
+        }
+        let code = build::parse(&args[1..]).and_then(|options| build::run(build_socket(&process_env)?, options));
+        return match code {
+            Ok(code) => std::process::ExitCode::from(code.clamp(0, 255) as u8),
+            Err(failure) => {
+                eprintln!("kanna: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
+    match run(args, &process_env) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(failure) => {
             eprintln!("kanna: {}", failure.message);
             std::process::ExitCode::from(failure.code)
         }
     }
+}
+
+fn build_socket(env: Env) -> Result<std::path::PathBuf, Failure> {
+    let target = Target::resolve(&kanna_build::Build::current(), Choice { mux: None, instance: None, background: false, fresh: false }, env)?;
+    Ok(target.socket)
+}
+
+fn swift_goes_to_the_mac() -> bool {
+    let Ok(here) = std::env::current_dir() else { return false };
+    let Ok(worktree) = kanna_guest::client::worktree(&here) else { return false };
+    let config = std::fs::read(worktree.root.join(".kanna/config.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).unwrap_or(Value::Null);
+    config["build"]["swift"] == "mac"
+}
+
+fn shim(tool: &str, argv0: &str, args: Vec<String>) -> Result<i32, Failure> {
+    if tool == "swift" && !swift_goes_to_the_mac() {
+        use std::os::unix::process::CommandExt;
+        let me = std::fs::canonicalize(std::env::current_exe().unwrap_or_default()).unwrap_or_default();
+        let shim_dir = std::path::Path::new(argv0).parent().and_then(|d| d.canonicalize().ok());
+        let path = std::env::var("PATH").unwrap_or_default();
+        let next = path.split(':').map(|dir| std::path::Path::new(dir).join(tool)).find(|candidate| candidate.is_file() && candidate.parent().and_then(|d| d.canonicalize().ok()) != shim_dir && std::fs::canonicalize(candidate).ok().as_ref() != Some(&me));
+        let Some(next) = next else { return Err(fail(exit::FAILED, "swift: there's no swift on this machine, and this repo doesn't send swift to the build Mac (build.swift in .kanna/config.json)")) };
+        let error = std::process::Command::new(next).args(args).exec();
+        return Err(fail(exit::FAILED, format!("swift: {error}")));
+    }
+    let argv = std::iter::once(tool.to_string()).chain(args).collect();
+    build::run(build_socket(&process_env)?, build::Options { mac: None, fetch: fetch_policy(), ui: std::env::var("KANNA_BUILD_UI").is_ok_and(|v| v == "1"), argv })
+}
+
+fn fetch_policy() -> Vec<String> {
+    std::env::var("KANNA_BUILD_FETCH").map(|v| v.split(':').filter(|p| !p.is_empty()).map(String::from).collect()).unwrap_or_default()
 }
 
 pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {

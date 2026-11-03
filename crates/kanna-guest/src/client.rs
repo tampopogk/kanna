@@ -21,6 +21,8 @@ const RECONNECT_FOR: Duration = Duration::from_secs(600);
 
 const DIAGNOSTICS_SHOWN: usize = 40;
 
+const MAX_FRAME: u64 = 2 << 20;
+
 pub struct Request {
     pub root: PathBuf,
     pub cwd: String,
@@ -205,7 +207,7 @@ impl Receiver<'_> {
 
     fn receive(&mut self, conn: &mut dyn Pipe) -> io::Result<Option<Outcome>> {
         loop {
-            let frame = frame::read_header(conn, crate::intake::MAX_FILE)?;
+            let frame = frame::read_header(conn, MAX_FRAME)?;
             match frame.op() {
                 "started" => {
                     let started = &frame.header["started"];
@@ -215,10 +217,11 @@ impl Receiver<'_> {
                     let fd = frame.header["fd"].as_u64().unwrap_or(1).clamp(1, 2) as usize;
                     let at = frame.header["at"].as_u64().unwrap_or(0);
                     let payload = frame::read_payload(conn, &frame)?;
-                    if at + payload.len() as u64 > self.at[fd - 1] {
+                    let end = at.checked_add(payload.len() as u64).ok_or_else(|| frame::bad("output offset overflows"))?;
+                    if end > self.at[fd - 1] {
                         let skip = self.at[fd - 1].saturating_sub(at) as usize;
                         self.output(fd, &payload[skip.min(payload.len())..])?;
-                        self.at[fd - 1] = at + payload.len() as u64;
+                        self.at[fd - 1] = end;
                     }
                 }
                 "exit" => {
@@ -273,6 +276,9 @@ pub fn run(connect: Connect, request: &Request, worktree: &Worktree, out: &mut d
     let staging = std::env::temp_dir().join(format!("kanna-build-{}", request.job));
     let result = submit_and_follow(connect, request, worktree, &staging, out, err);
     let _ = std::fs::remove_dir_all(&staging);
+    if let Outcome::Failed(why) = &result {
+        let _ = writeln!(err, "kanna build: {why}");
+    }
     result
 }
 
@@ -373,9 +379,6 @@ fn finish(receiver: &mut Receiver, outcome: &Outcome) {
     let refused: Vec<&String> = receiver.notes.iter().filter(|n| n.starts_with("refused") || n.starts_with("couldn't") || n.contains("wasn't produced")).collect();
     for note in refused {
         let _ = writeln!(receiver.err, "kanna build: {note}");
-    }
-    if let Outcome::Failed(why) = outcome {
-        let _ = writeln!(receiver.err, "kanna build: {why}");
     }
     let _ = receiver.err.flush();
 }

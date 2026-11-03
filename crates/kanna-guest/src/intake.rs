@@ -150,16 +150,18 @@ impl Intake {
         if self.single {
             return Err(rejected(format!("{rel} is a link, not a file")));
         }
-        let mut depth = rel.split('/').count() as i64 - 1;
+        let mut up = 0usize;
+        let mut named = false;
         for part in target.split('/') {
             match part {
                 "" | "." => {}
-                ".." => depth -= 1,
-                _ => depth += 1,
+                ".." if named => return Err(rejected(format!("{rel} links to {target:?}, which climbs after a name"))),
+                ".." => up += 1,
+                _ => named = true,
             }
-            if depth < 0 {
-                return Err(rejected(format!("{rel} links to {target:?}, outside what was returned")));
-            }
+        }
+        if up >= rel.split('/').count() {
+            return Err(rejected(format!("{rel} links to {target:?}, outside what was returned")));
         }
         let parts = self.claim(rel, false)?;
         let parent = self.parent(&parts)?;
@@ -237,6 +239,8 @@ mod tests {
         assert!(intake.link("abs", "/etc").is_err());
         assert!(intake.link("a/b/c", "../../../x").is_err());
         intake.link("a/b/ok", "../sibling").unwrap();
+        intake.link("here", ".").unwrap();
+        assert!(intake.link("escape", "here/..").is_err());
         intake.link("dir", "a").unwrap();
         assert!(intake.file("dir/secret", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
         assert!(intake.file("a", false, 1, &sha256(b"y"), &mut &b"x"[..]).is_err());
