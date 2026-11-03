@@ -675,9 +675,13 @@ JSON
   check test "$(mdo overview.wanted '' shortdoc)" == False || { echo "a doc that fits wants the overview"; return 1; }
   check test "$(mdo overview.shown '' shortdoc)" == False || return 1
   kanna close shortdoc >/dev/null
-  kanna markup longdoc >/dev/null || return 1
   mdwin 1500
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || return 1
+  local page_width page_lines; page_width="$(mdo layout_width)"; page_lines="$(mdo lines ',"lines":true')"
+  kanna markup longdoc >/dev/null || return 1
   check wait_for 5 eval '[[ "$(mdo markup)" == True && "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1500 pt with comments: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check test "$(mdo layout_width)" == "$page_width" || { echo "the comments list moved the page: width $page_width, then $(mdo layout_width)"; return 1; }
+  check test "$(mdo lines ',"lines":true')" == "$page_lines" || { echo "the comments list changed the line breaks"; return 1; }
   check wait_for 5 eval '[[ "$(mdo overview.marks_by_kind.comment)" == 1 ]]' || { echo "comment marks: $(mdo overview.marks_by_kind)"; return 1; }
   mdo overview.shown ',"overview_hover":true' >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
@@ -686,7 +690,7 @@ JSON
   mdshot markdown_overview-threads-dark
   mdo overview.shown ',"overview_hover":false' >/dev/null
   mdwin 1000
-  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt the overview should go first: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt both stay: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
   mdshot markdown_overview-narrow
   mdwin 500
   check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == False ]]' || { echo "at 500 pt: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
@@ -1958,9 +1962,11 @@ HTML
   page_comments_plain ',"js":"window.kept = 42; window.scrollTo(0, 300); window.scrollY"' >/dev/null
   check wait_for 5 eval '[[ "$(page_comments_plain ",\"js\":\"window.scrollY\"" | field value)" == 300 ]]' || { page_comments_plain ',"js":"window.scrollY"'; return 1; }
   kept="$(page_comments_kept)"
+  local page_width; page_width="$(page_comments_plain | field page_width)"
   KANNA_TERMINAL="$agent_id" kanna markup plain | grep -qF "comments on in" || return 1
   check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == True ]]' && check wait_for 5 eval 'page_comments_plain | grep -q threads' || { page_comments_plain; return 1; }
   check test "$(page_comments_kept)" == "$kept" || { echo "turning comments on should keep the web view, its page, its scroll and its JS state ($kept)"; return 1; }
+  check test "$(page_comments_plain | field page_width)" == "$page_width" || { echo "the comments list moved the page: width $page_width, then $(page_comments_plain | field page_width)"; return 1; }
   kanna markup plain --off | grep -qF "comments off in" || return 1
   check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == False ]]' || return 1
   [[ "$(page_comments_plain)" != *threads* ]] || { echo "turning comments off should take the comment UI away"; return 1; }

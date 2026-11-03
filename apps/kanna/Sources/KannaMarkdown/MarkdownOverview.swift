@@ -26,7 +26,6 @@ enum MarkdownOverviewLayout {
     static let gutter: CGFloat = 20
     static let margin: CGFloat = 28
     static let padding: CGFloat = 5
-    static let comments = OverviewPanel(name: "comments", width: ThreadPanel.width, columns: 0, room: ThreadPanel.width)
 
     static var digit: CGFloat { ("0" as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: MarkdownTheme.bodySize)]).width }
 
@@ -39,10 +38,8 @@ enum MarkdownOverviewLayout {
     static func scale(column: CGFloat) -> CGFloat { OverviewMetrics.thumbWidth / max(1, column + gutter) }
 
     static func shown(overview: Bool, comments wantsComments: Bool, forced: Bool, width: CGFloat, zoom: CGFloat, digit: CGFloat) -> (overview: Bool, comments: Bool) {
-        let pinned = wantsComments && forced
-        let wanted = (overview ? [OverviewPanel.overview] : []) + (wantsComments && !forced ? [comments] : [])
-        let shown = OverviewLayout.shown(wanted, width: width - (pinned ? comments.width : 0), columnWidth: digit * zoom) { textColumn(room: $0, zoom: zoom) }
-        return (shown.contains(.overview), pinned || shown.contains(comments))
+        let shown = OverviewLayout.shown(overview ? [.overview] : [], width: width, columnWidth: digit * zoom) { textColumn(room: $0, zoom: zoom) }
+        return (shown.contains(.overview), wantsComments && (forced || width >= ThreadPanel.width * 2))
     }
 }
 

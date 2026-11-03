@@ -213,13 +213,13 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let rule = shown.overview ? OverviewMetrics.width : 0
         overviewShown = shown.overview
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
-        scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side - rule), height: height)
+        scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - rule), height: height)
         scrollView.hasVerticalScroller = !shown.overview
-        overview.frame = NSRect(x: bounds.width - side - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
+        overview.frame = NSRect(x: bounds.width - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
         overview.isHidden = !shown.overview
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
-        panel.frame = NSRect(x: bounds.width - side, y: 0, width: side, height: height)
+        panel.frame = NSRect(x: max(0, bounds.width - rule - side), y: 0, width: side, height: height)
         updateInset()
         if overviewShown {
             if drawnKey != pictureKey { overviewChanged() }

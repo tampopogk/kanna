@@ -67,7 +67,7 @@ Every doc works the same way; only what you can point at differs.
 - **A page's view.** A thread on a page remembers which view of it it was on (the part of the URL after `#`), shows its mark only there, and takes you there when you open it from the list.
 - **Threads live beside the file, not in it.** A thread has an ID (`c1`, `c2`, … per doc), what it points at, its messages, and whether it's open or resolved.
 - **Resolved threads stay marked**, more faintly than open ones, and clicking the mark opens the thread to read or reopen it. The list beside the doc hides them until you ask; resolving can be undone.
-- **The thread list** sits on the pane's right; in a pane narrower than twice its width it hides until you press **Threads**.
+- **The thread list** floats over the right of the page without moving it ([comments overlay](comments-overlay.md)); in a pane narrower than twice its width it hides until you press **Threads**.
 - **Not committed.** Threads, and the marked-up copies sent to the agent, are stored in `<repo>/.kanna/docs/`. Kanna doesn't commit them or change `.gitignore`; whether a team commits `.kanna/` is its own decision.
 
 ## 3. Reaching the agent
