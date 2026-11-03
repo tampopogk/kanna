@@ -3953,7 +3953,28 @@ stats_tab() {
   local repo; repo="$(e2e_repo stats)" || { echo "stats_tab line $LINENO"; return 1; }
   local day=86400 now; now="$(date +%s)"
   dated() { GIT_AUTHOR_DATE="@$1 +0000" GIT_COMMITTER_DATE="@$1 +0000" git -C "$repo" -c user.email=e@e -c user.name=e "${@:2}"; }
-  dated $((now - 3 * day)) commit -q --allow-empty -m plain || { echo "stats_tab line $LINENO"; return 1; }
+  mkdir -p "$repo/src" && cat >"$repo/src/lib.rs" <<'RUST'
+pub fn busy(a: u8, b: bool) -> u8 {
+    if a > 1 && b {
+        if a > 2 {
+            return 1;
+        }
+    } else if a > 3 || !b {
+        for i in 0..a {
+            if i == 4 {
+                return 2;
+            }
+        }
+    }
+    match a {
+        1 => 1,
+        2 => 2,
+        3 => 3,
+        _ => 4,
+    }
+}
+RUST
+  git -C "$repo" add src && dated $((now - 3 * day)) commit -q -m plain || { echo "stats_tab line $LINENO"; return 1; }
   git -C "$repo" checkout -q -b feature && dated $((now - 2 * day)) commit -q --allow-empty -m one && dated $((now - 2 * day + 60)) commit -q --allow-empty -m two || { echo "stats_tab line $LINENO"; return 1; }
   git -C "$repo" checkout -q main && dated "$now" merge -q --no-ff -m "Merge feature" feature || { echo "stats_tab line $LINENO"; return 1; }
   start_daemon || { echo "stats_tab line $LINENO"; return 1; }
@@ -3965,7 +3986,9 @@ stats_tab() {
   one="$(new_task "Stats one" "" stats)" && two="$(new_task "Stats two" "" stats)" && three="$(new_task "Stats three" "" stats)" || { echo "stats_tab line $LINENO"; return 1; }
   kanna task start "$one" >/dev/null && kanna task start "$three" >/dev/null || { echo "stats_tab line $LINENO"; return 1; }
   kanna task done "$one" >/dev/null || { echo "stats_tab line $LINENO"; return 1; }
-  local json; json="$(cd "$repo" && kanna stats --json)" || { echo "stats_tab: kanna stats --json failed"; return 1; }
+  local json
+  sampled() { json="$(cd "$repo" && kanna stats --json)" && python3 -c 'import json, sys; c = [s for s in json.loads(sys.argv[1])["sections"] if s["id"] == "code"][0]; sys.exit(0 if "sampling" not in c["note"] and any(t["id"] == "erosion" and t["value"] is not None for t in c["tiles"]) else 1)' "$json"; }
+  check wait_for 20 sampled || { echo "stats_tab: kanna stats --json never had the code sampled: $json"; return 1; }
   check python3 -c 'import json, sys
 r = json.loads(sys.argv[1])
 assert r["project"] == sys.argv[2], r["project"]
@@ -3982,7 +4005,12 @@ assert t["tasks", "made"]["note"] == "today · 3 in 30 days", t["tasks", "made"]
 assert t["tasks", "started"]["note"] == "today · 2 in 30 days", t["tasks", "started"]
 assert t["tasks", "ended"]["note"] == "today · 1 in 30 days", t["tasks", "ended"]
 assert t["tasks", "lead"]["note"] == "median of 1" and t["tasks", "lead"]["unit"] == "s", t["tasks", "lead"]
-assert s["code"]["placeholder"] is True and s["code"]["tiles"] == [], s["code"]' "$json" "$repo" || return 1
+assert "placeholder" not in s["code"], s["code"]
+assert t["code", "erosion"]["value"] == 100 and t["code", "erosion"]["unit"] == "%", t["code", "erosion"]
+assert t["code", "high"]["value"] == 1 and t["code", "lines"]["value"] == 19, (t["code", "high"], t["code", "lines"])
+w = t["code", "worst"]["chart"]["rows"][0]
+assert w["label"] == "busy" and w["open"] == {"path": "src/lib.rs", "line": 1}, w
+assert t["code", "lines-covered"]["note"].startswith("not set up"), t["code", "lines-covered"]' "$json" "$repo" || return 1
   [[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*), sum(value) from samples where metric = 'commits'")" == "3|4.0" ]] || { echo "stats_tab: the samples are $(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select metric, value from samples")"; return 1; }
   (cd "$repo" && kanna stats) | grep -qE '^Main +Commits +3  today · 4 in 30 days ' || { echo "stats_tab: kanna stats prints"; (cd "$repo" && kanna stats); return 1; }
   start_app || { echo "stats_tab line $LINENO"; return 1; }
@@ -4007,7 +4035,12 @@ for sec in r["sections"]:
 assert shown["quiz", "right"]["figure"] == "75%" and shown["main", "commits"]["figure"] == "3", shown
 assert shown["tasks", "lead"]["figure"] not in ("", "—"), shown["tasks", "lead"]
 code = [s for s in json.loads(sys.argv[3]) if s["id"] == "code"][0]
-assert code["placeholder"] is True and code["empty"].startswith("Not measured yet"), code' "$(desk stats "$d")" "$json" "$(desk statsSections "$d")" || return 1
+assert code["placeholder"] is False and code["tiles"] > 10, code
+assert shown["code", "erosion"]["figure"] == "100%" and shown["code", "worst"]["rows"][0] == "busy", (shown["code", "erosion"], shown["code", "worst"])' "$(desk stats "$d")" "$json" "$(desk statsSections "$d")" || return 1
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"stats\":\"worst\",\"row\":0,\"window\":\"$d\"}}" >/dev/null
+  check wait_for 10 eval 'kanna workspace list --all --json | python3 -c "import json, sys; panes = [p for w in json.load(sys.stdin)[\"workspaces\"] for t in w.get(\"tabs\", []) for p in t.get(\"panes\", [])]; sys.exit(0 if any(p.get(\"type\") == \"code\" and p.get(\"path\", \"\").endswith(\"/src/lib.rs\") and p.get(\"line\") == 1 for p in panes) else 1)"' || { echo "stats_tab: clicking busy opened no code tab at src/lib.rs:1"; kanna workspace list --all --json; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Stats\",\"window\":\"$d\"}}" >/dev/null
+  check wait_for 5 eval '[[ "$(desk statsPage "$d")" == True ]]' || { echo "stats_tab: back to the Stats tab"; return 1; }
   sleep 0.5; snap "$d" stats_tab-dark >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
   snap "$d" stats_tab-light >/dev/null

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code Quality Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --series: #3987e5; --wash: rgba(57,135,229,.12); --context: #5b616b; --grid: #262a31; --axis: #3a404a;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+  --series: #2a78d6; --wash: rgba(42,120,214,.10); --context: #b9bec7; --grid: #eceef1; --axis: #c9cdd4;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 820px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { color: var(--text); font-size: 12px; font-weight: 600; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 34%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; }
+.term .p { color: var(--warn); } .term .m { color: var(--machine); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; height: 26px; padding: 0 10px; color: var(--muted); white-space: nowrap; cursor: pointer; border-radius: 6px; }
+.dtab.fixed { font-weight: 500; }
+.dtab.on { color: var(--text); background: var(--panel); }
+.dtabs .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; }
+
+.page { flex: 1; overflow: auto; padding: 28px 32px 40px; position: relative; }
+.page h2 { font-size: 22px; margin: 0; }
+.page .sub { color: var(--muted); margin: 4px 0 0; }
+.section { margin-top: 30px; max-width: 980px; }
+.section > .sh { display: flex; align-items: baseline; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.section > .sh b { font-size: 13px; }
+.section > .sh span { color: var(--muted); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px 22px; margin-top: 14px; }
+.grid.two { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.tile { min-width: 0; }
+.tile.wide { grid-column: span 2; }
+.tile .label { color: var(--muted); font-size: 12px; }
+.tile .value { font-size: 24px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+.tile .value small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+.tile.hero .value { font-size: 34px; }
+.chart { position: relative; height: 84px; margin-top: 8px; }
+.tile.hero .chart { height: 120px; }
+.chart svg { display: block; overflow: visible; }
+.chart text { font: 10px var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
+.empty-note { color: var(--muted); font-size: 12px; margin-top: 10px; max-width: 520px; }
+
+.ranked { margin-top: 10px; }
+.ranked .r { display: grid; grid-template-columns: 140px 1fr 86px; align-items: center; gap: 10px; height: 24px; }
+.ranked .r .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ranked .r .v { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.ranked .track { height: 8px; position: relative; }
+.ranked .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--series); border-radius: 0 4px 4px 0; }
+.ranked .r:hover .fill { filter: brightness(1.15); }
+
+.placeholder { margin-top: 14px; padding: 18px 20px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); }
+.placeholder b { color: var(--text); font-weight: 600; }
+
+.tip { position: absolute; pointer-events: none; z-index: 10; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.tip b { font-size: 13px; }
+.tip span { color: var(--muted); }
+
+.grid.six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.span2 { grid-column: span 2; } .span3 { grid-column: span 3; } .span4 { grid-column: span 4; } .span6 { grid-column: span 6; }
+@media (max-width: 760px) { .grid.six { grid-template-columns: 1fr; } .span2, .span3, .span4, .span6 { grid-column: auto; } }
+.list { margin-top: 10px; }
+.list .r { display: grid; grid-template-columns: 1fr 92px; column-gap: 8px; padding: 3px 6px; margin: 0 -6px; border-radius: 5px; height: 38px; box-sizing: border-box; cursor: default; }
+.list .r.open { cursor: pointer; }
+.list .r.open:hover { background: var(--wash); }
+.list .n { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list .f { text-align: right; font-variant-numeric: tabular-nums; }
+.list .d { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list .b { position: relative; height: 6px; margin-top: 5px; }
+.list .b i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--series); border-radius: 0 3px 3px 0; }
+.opened { position: fixed; right: 16px; bottom: 16px; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font: 12px var(--mono); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Code quality: the Stats tab's fourth section</h1>
+    <p>How good the code on main is and which way it's heading. Shape (erosion, verbosity, functions over CC 10, dead functions, wrappers, code lines) is sampled at every commit on main; coverage at the last coverage run; fixes traced back to the landings that needed them (SZZ). The lists name the worst; a click opens the code (the mockup shows what it would open). Data: kanna-v4's own main on 2026-11-03, from <code>kanna stats --json</code>.</p>
+    <div class="controls"><button id="theme">Light / dark</button></div>
+  </div>
+  <div id="stage"></div>
+</main>
+<script>
+const REPLY = /*REPLY*/null/*END*/;
+const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const DAYS = REPLY.days.length;
+const short = i => { const d = new Date(REPLY.days[i] + "T12:00"); return i === DAYS - 1 ? "today" : d.toLocaleDateString("en", { month: "short", day: "numeric" }); };
+const fmtDay = i => i === DAYS - 1 ? "Today" : new Date(REPLY.days[i] + "T12:00").toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
+const dur = s => { const h = s / 3600; return h < 1 ? `${Math.round(s / 60)}m` : h < 48 ? `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`.replace(/ 0m$/, "") : `${Math.round(h / 24)}d`; };
+const fig = (v, unit) => v == null ? "—" : unit === "%" ? `${Math.round(v * 10) / 10}%` : unit === "s" ? dur(v) : `${Math.round(v * 10) / 10}`;
+const nice = v => { if (v <= 5) return Math.max(1, Math.ceil(v)); const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; };
+const charts = [];
+const W = 34, PAD = 18;
+function draw(el) {
+  const t = charts[+el.dataset.chart], c = t.chart, w = el.clientWidth, h = el.clientHeight;
+  const x0 = W, x1 = w - 2, y0 = h - PAD, y1 = 4;
+  const vals = c.kind === "dots" ? c.points.map(p => p.value) : c.values;
+  const p90 = a => { const s = a.slice().sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * 0.9))] || 1; };
+  const max = c.max ?? nice(c.kind === "dots" ? p90(vals) : Math.max(1, ...vals.filter(v => v != null)));
+  const xs = i => x0 + (i + 0.5) * (x1 - x0) / DAYS, ys = v => y0 - (Math.min(v, max) / max) * (y0 - y1);
+  let g = `<line x1="${x0}" x2="${x1}" y1="${y1}" y2="${y1}" stroke="var(--grid)"/><line x1="${x0}" x2="${x1}" y1="${y0}" y2="${y0}" stroke="var(--axis)"/>`;
+  g += `<text x="${x0 - 6}" y="${y1 + 3}" text-anchor="end">${t.unit === "%" ? max + "%" : t.unit === "s" ? dur(max) : max}</text><text x="${x0 - 6}" y="${y0 + 3}" text-anchor="end">0</text>`;
+  for (const i of [0, 15, DAYS - 1]) g += `<text x="${xs(i)}" y="${h - 3}" text-anchor="${i === 0 ? "start" : i === DAYS - 1 ? "end" : "middle"}">${short(i)}</text>`;
+  if (c.kind === "columns") {
+    const bw = Math.max(2, Math.min(24, (x1 - x0) / DAYS - 2));
+    vals.forEach((v, i) => { if (v) g += `<rect x="${xs(i) - bw / 2}" y="${ys(v)}" width="${bw}" height="${y0 - ys(v)}" rx="1.5" fill="var(--series)"/>`; });
+  } else if (c.kind === "line") {
+    const pts = vals.map((v, i) => v == null ? null : [xs(i), ys(v)]);
+    const runs = []; let run = [];
+    pts.forEach(p => { if (p) run.push(p); else if (run.length) { runs.push(run); run = []; } });
+    if (run.length) runs.push(run);
+    for (const r of runs) {
+      g += `<path d="M${r[0][0]},${y0} ${r.map(p => "L" + p.join(",")).join(" ")} L${r[r.length - 1][0]},${y0} Z" fill="var(--wash)"/>`;
+      g += `<path d="${r.map((p, k) => (k ? "L" : "M") + p.join(",")).join(" ")}" fill="none" stroke="var(--series)" stroke-width="2" stroke-linejoin="round"/>`;
+    }
+    const last = pts[DAYS - 1];
+    if (last) g += `<circle cx="${last[0]}" cy="${last[1]}" r="4" fill="var(--series)" stroke="var(--bg)" stroke-width="2"/>`;
+  } else if (c.kind === "dots") {
+    c.points.forEach(p => { g += `<circle cx="${xs(p.day)}" cy="${ys(p.value)}" r="3" fill="var(--context)"/>`; });
+    const pts = c.line.map((v, i) => v == null ? null : [xs(i), ys(v)]).filter(Boolean);
+    if (pts.length > 1) g += `<path d="${pts.map((p, k) => (k ? "L" : "M") + p.join(",")).join(" ")}" fill="none" stroke="var(--series)" stroke-width="2"/>`;
+  }
+  g += `<line class="hair" x1="0" x2="0" y1="${y1}" y2="${y0}" stroke="var(--muted)" visibility="hidden"/>`;
+  el.innerHTML = `<svg width="${w}" height="${h}">${g}</svg>`;
+  el.onpointermove = e => {
+    const px = e.clientX - el.getBoundingClientRect().left;
+    const i = Math.max(0, Math.min(DAYS - 1, Math.floor((px - x0) / ((x1 - x0) / DAYS))));
+    const hair = el.querySelector(".hair"); hair.setAttribute("x1", xs(i)); hair.setAttribute("x2", xs(i)); hair.setAttribute("visibility", "visible");
+    const v = c.kind === "dots" ? c.line[i] : vals[i];
+    const on = c.kind === "dots" ? c.points.filter(p => p.day === i).map(p => `${esc(p.label)} · ${dur(p.value)}`).join("<br>") : "";
+    showTip(`<span>${fmtDay(i)}</span><br><b>${fig(v, t.unit)}</b> <span>${esc(c.what)}</span>${on ? "<br>" + on : ""}`, e);
+  };
+  el.onpointerleave = () => { el.querySelector(".hair").setAttribute("visibility", "hidden"); hideTip(); };
+}
+function showTip(html, e) {
+  const tip = document.querySelector(".tip"), page = document.querySelector(".page"), box = page.getBoundingClientRect();
+  tip.innerHTML = html; tip.hidden = false;
+  let x = e.clientX - box.left + page.scrollLeft + 12; const y = e.clientY - box.top + page.scrollTop + 14;
+  if (x + tip.offsetWidth > page.scrollWidth - 8) x -= tip.offsetWidth + 24;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { const tip = document.querySelector(".tip"); if (tip) tip.hidden = true; }
+function list(t) {
+  const rows = t.chart.rows;
+  if (!rows.length) return `<p class="empty-note">${esc(t.chart.empty)}</p>`;
+  const top = Math.max(...rows.map(r => r.value || 0)) || 1;
+  return `<div class="list">${rows.map(r => `<div class="r ${r.open ? "open" : ""}" title="${esc(r.label)}: ${esc(r.figure)}, ${esc(t.chart.what)}" data-open='${esc(JSON.stringify(r.open))}'>
+    <span class="n">${esc(r.label)}</span><span class="f">${esc(r.figure)}</span>
+    <span class="d">${esc([r.detail, r.note].filter(Boolean).join(" · "))}</span><span class="b"><i style="width:${(r.value || 0) / top * 100}%"></i></span></div>`).join("")}</div>`;
+}
+function tile(t) {
+  const span = `span${t.span || 2}`;
+  if (t.chart.kind === "list") return `<div class="tile ${span}"><div class="label">${esc(t.label)}</div>${list(t)}</div>`;
+  charts.push(t);
+  return `<div class="tile ${span}"><div class="label">${esc(t.label)}</div><div class="value">${fig(t.value, t.unit)}${t.note ? `<small>${esc(t.note)}</small>` : ""}</div><div class="chart" data-chart="${charts.length - 1}"></div></div>`;
+}
+function render() {
+  charts.length = 0;
+  const code = REPLY.sections.find(s => s.id === "code");
+  const page = `<h2>Stats</h2><p class="sub">${esc(REPLY.project.replace(/^\/Users\/[^/]+/, "~"))} · main · last 30 days</p>
+    <div class="section"><div class="sh"><b>${esc(code.title)}</b><span>${esc(code.note)}</span></div>
+    <div class="grid six">${code.tiles.map(tile).join("")}</div></div><div class="tip" hidden></div>`;
+  document.getElementById("stage").innerHTML = `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where">Desk</span></div>
+    <div class="content"><div class="docs"><div class="dtabs"><span class="dtab fixed">Desk</span><span class="dtab fixed">Machines</span><span class="dtab fixed on">Stats</span></div>
+    <div class="page">${page}</div></div></div></div>`;
+  document.querySelectorAll("[data-chart]").forEach(draw);
+  document.querySelectorAll(".list .r.open").forEach(r => r.onclick = () => {
+    const o = JSON.parse(r.dataset.open);
+    let n = document.querySelector(".opened"); if (!n) { n = document.createElement("div"); n.className = "opened"; document.body.append(n); }
+    n.textContent = o.commit ? `kanna open diff ${o.commit.slice(0, 8)}^1 ${o.commit.slice(0, 8)} --tab` : `kanna open code ${o.path}:${o.line} --tab`;
+  });
+}
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; render(); };
+if (location.hash.includes("picture")) document.body.classList.add("picture");
+if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
+addEventListener("resize", () => document.querySelectorAll("[data-chart]").forEach(draw));
+render();
+</script>
+</body>
+</html>

@@ -494,6 +494,11 @@ extension AppController {
             guard controller.deskView.visibleShelf.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
             window = controller.window
             point = spot.center
+        } else if let tile = args["stats"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let list = controller.statsPage.lists[tile], let spot = list.center(of: Int(args["row"]?.number ?? 0)) else { throw KannaError("not_found", "no row \(Int(args["row"]?.number ?? 0)) in \(id)'s Stats list \(tile)") }
+            window = controller.window
+            point = spot
         } else if let page = args["page"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.tabBar.pageItems.first(where: { $0.title == page }) else { throw KannaError("not_found", "no \(page) tab on \(id)") }
