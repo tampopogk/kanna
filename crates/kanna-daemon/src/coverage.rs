@@ -1,6 +1,6 @@
 use crate::db::{self, Db, Sample};
 use crate::stats::{day_start, local_day, main_ref, DAYS};
-use crate::tasks::{config_files, coverage_settings, git, CoverageSettings};
+use crate::tasks::{coverage_settings, git, CoverageSettings};
 use crate::Event;
 use kanna_mux::json::{json, Value};
 use kanna_quality::coverage::{changed, parse, totals};
@@ -62,7 +62,7 @@ impl Coverage {
     }
 
     pub fn consider(&self, repo: &str) {
-        let Some(settings) = coverage_settings(&config_files(Path::new(repo))) else { return };
+        let Some(settings) = coverage_settings(&crate::agents::home(), Path::new(repo)) else { return };
         if self.running.borrow().contains_key(repo) {
             return;
         }

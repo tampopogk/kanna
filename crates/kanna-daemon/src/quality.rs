@@ -343,7 +343,7 @@ fn coverage_tiles(facts: &Facts, first: i64) -> Vec<Value> {
     let latest = rows.last();
     let status = facts.coverage.as_ref().map(|c| c.to_string());
     let Some(latest) = latest else {
-        let note = status.unwrap_or_else(|| "not set up: stats.coverage in .kanna/config.json".to_string());
+        let note = status.unwrap_or_else(|| "not set up: stats.coverage in ~/.kanna-v4/config.json".to_string());
         return vec![tile("lines-covered", "Lines covered", Value::Null, Some("%"), note, 2, json!({ "kind": "line", "values": vec![Value::Null; DAYS as usize], "max": 100, "what": "of the lines tests ran" }))];
     };
     let of_key = |key: &str| percent(latest.doc[key]["hit"].as_f64().unwrap_or(0.0), latest.doc[key]["found"].as_f64().unwrap_or(0.0));
@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(causes[0]["label"], json!("feature"));
         assert_eq!(tile_of(&report, "tofix")["value"], json!(2.0 * 86400.0));
         assert_eq!(tile_of(&report, "hotspots")["chart"]["rows"][0]["detail"], json!("src/lib.rs"));
-        assert_eq!(tile_of(&report, "lines-covered")["note"], json!("not set up: stats.coverage in .kanna/config.json"));
+        assert_eq!(tile_of(&report, "lines-covered")["note"], json!("not set up: stats.coverage in ~/.kanna-v4/config.json"));
         let _ = fs::remove_dir_all(&repo);
     }
 
@@ -534,6 +534,14 @@ mod tests {
         assert_eq!(tile_of(&report, "branches-covered")["value"], json!(50.0));
         assert_eq!(tile_of(&report, "changed-covered")["value"], json!(66.7));
         assert_eq!(tile_of(&report, "uncovered")["chart"]["rows"][0]["note"], json!("1 of 3 changed lines not run"));
+        let home = state.join("home");
+        fs::create_dir_all(home.join(".kanna-v4")).unwrap();
+        fs::write(home.join(".kanna-v4/config.json"), json!({ "stats": { "coverage": { "~/elsewhere": "true", repo.to_string_lossy(): "\"$KANNA_REPO/scripts/coverage.sh\"" }, "coverageEvery": 2 } }).to_string()).unwrap();
+        assert_eq!(crate::tasks::coverage_settings(&home, &repo), Some(CoverageSettings { command: "\"$KANNA_REPO/scripts/coverage.sh\"".into(), every: 2, timeout: 7200 }));
+        assert_eq!(crate::tasks::coverage_settings(&home, &home), None, "only the projects you name in your own settings");
+        fs::create_dir_all(repo.join(".kanna")).unwrap();
+        fs::write(repo.join(".kanna/config.json"), json!({ "stats": { "coverage": { repo.to_string_lossy(): "touch pwned" } } }).to_string()).unwrap();
+        assert_eq!(crate::tasks::coverage_settings(&state, &repo), None, "a repo can't name its own coverage command");
         let failing = CoverageSettings { command: "exit 3".into(), every: 6, timeout: 60 };
         assert!(crate::coverage::run(&repo, &head, &failing, &state, now()).unwrap_err().starts_with("it exited 3 without writing $KANNA_COVERAGE"));
         let _ = fs::remove_dir_all(&repo);

@@ -272,12 +272,22 @@ pub struct CoverageSettings {
     pub timeout: u64,
 }
 
-pub fn coverage_settings(files: &[PathBuf]) -> Option<CoverageSettings> {
-    let command = |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from);
+pub fn coverage_settings(home: &Path, repo: &Path) -> Option<CoverageSettings> {
+    let mine = [home.join(".kanna-v4/config.json")];
+    let wanted = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+    let command = |value: &Value| {
+        value.as_object()?.iter().find_map(|(folder, command)| {
+            let folder = match folder.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => PathBuf::from(folder),
+            };
+            (folder.canonicalize().unwrap_or(folder) == wanted).then(|| command.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from)).flatten()
+        })
+    };
     Some(CoverageSettings {
-        command: configured(files, "stats", "coverage", command, "a shell command")?,
-        every: configured(files, "stats", "coverageEvery", |v: &Value| v.as_u64().filter(|h| (1..=168).contains(h)), "a number of hours from 1 to 168").unwrap_or(6),
-        timeout: configured(files, "stats", "coverageTimeout", |v: &Value| v.as_u64().filter(|t| (60..=86400).contains(t)), "a number of seconds from 60 to 86400").unwrap_or(7200),
+        command: configured(&mine, "stats", "coverage", |v: &Value| Some(command(v)), "an object of project folders to shell commands")??,
+        every: configured(&mine, "stats", "coverageEvery", |v: &Value| v.as_u64().filter(|h| (1..=168).contains(h)), "a number of hours from 1 to 168").unwrap_or(6),
+        timeout: configured(&mine, "stats", "coverageTimeout", |v: &Value| v.as_u64().filter(|t| (60..=86400).contains(t)), "a number of seconds from 60 to 86400").unwrap_or(7200),
     })
 }
 
