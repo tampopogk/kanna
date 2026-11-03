@@ -62,15 +62,8 @@ fn forward(mut client: TcpStream, upstream: u16, authorization: &str) -> io::Res
             return fetch_https(client, upstream, authorization, &text, method, rest);
         }
     }
-    let has_auth = text.lines().any(|line| line.to_ascii_lowercase().starts_with("proxy-authorization:"));
     let mut server = TcpStream::connect(("127.0.0.1", upstream))?;
-    if has_auth {
-        server.write_all(&head)?;
-    } else {
-        server.write_all(&head[..head.len() - 2])?;
-        server.write_all(authorization.as_bytes())?;
-        server.write_all(b"\r\n")?;
-    }
+    server.write_all(&head)?;
     let (mut client_read, mut server_write) = (client.try_clone()?, server.try_clone()?);
     let up = std::thread::spawn(move || {
         let _ = io::copy(&mut client_read, &mut server_write);
@@ -217,13 +210,12 @@ mod tests {
     }
 
     #[test]
-    fn a_connect_without_credentials_gets_the_jobs() {
+    fn a_connect_without_credentials_is_passed_as_is_so_zig_falls_back_to_absolute_form() {
         let (port, heads) = upstream();
         let proxy = JobProxy::start(port, "cap1").unwrap();
-        let reply = ask(proxy.port, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n");
-        assert!(reply.ends_with("pong"));
-        let head = heads.recv().unwrap();
-        assert_eq!(head, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: Basic am9iOmNhcDE=\r\n\r\n");
+        let request = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
+        assert!(ask(proxy.port, request).ends_with("pong"));
+        assert_eq!(heads.recv().unwrap(), request);
     }
 
     #[test]
