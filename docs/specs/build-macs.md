@@ -91,7 +91,9 @@ flowchart LR
 - **The guest image** has Xcode, a non-admin `kanna-build` user logged in at boot, `kanna-guest` in its LaunchAgents (`serve --vsock --egress 3129 --require-console`), and the Rust toolchain in its home ([guest image](#guest-image)).
 
 <a id="guest-image"></a>
-**Guest image (first version):** the isolation model's master, with `~kanna-build/.kanna-guest/bin/kanna-guest`, its LaunchAgent in `~kanna-build/Library/LaunchAgents/dev.kanna.guest.plist` and rustup's toolchain in `~kanna-build/.cargo`, installed as `kanna-build` through a job and promoted from a cleanly stopped clone. Rebuilding the master from Apple's image installs them system-wide instead.
+**Guest image (first version):** the isolation model's master (its admin password is random and its sshd off, so nothing is installed as admin), with `~kanna-build/.kanna-guest/bin/kanna-guest`, its LaunchAgent in `~kanna-build/Library/LaunchAgents/dev.kanna.guest.plist` (`launchctl bootstrap gui/502`) and rustup's minimal toolchain in `~kanna-build/.cargo`, installed as `kanna-build` by one job through the model's broker. The clone was then synced and force-stopped, since a shutdown asked of loginwindow never came (Setup Assistant's MiniBuddy screen is in front), and promoted as the master. Rebuilding the master from Apple's image installs them system-wide instead.
+
+**Updating a guest's `kanna-guest`:** a job copies the new binary from the worktree over `~/.kanna-guest/bin/kanna-guest` and ends with `launchctl kickstart -k gui/$(id -u)/dev.kanna.guest`; that job reports `the supervisor restarted while the job ran` (exit 125), and the next job runs on the new one. A master is updated the same way in a clone that has run no tenant's job.
 
 ## 5. The pool
 
