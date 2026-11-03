@@ -180,7 +180,8 @@ impl Guests {
             headers.push(line);
         }
         let refuse = |writer: &mut UnixStream, code: &str, why: &str| {
-            let _ = writer.write_all(format!("HTTP/1.1 {code}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+            let challenge = if code.starts_with("407") { "Proxy-Authenticate: Basic realm=\"kanna job\"\r\n" } else { "" };
+            let _ = writer.write_all(format!("HTTP/1.1 {code}\r\n{challenge}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
             why.to_string()
         };
         let mut parts = request.split_whitespace();
