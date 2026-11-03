@@ -8,8 +8,12 @@ extension AppController {
             guard let self, let controller else { return }
             self.openFromStats(open, repo: path, machine: machine, window: controller.id)
         }
+        controller.statsPage.onDays = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            loadStats(controller)
+        }
         if controller.stats?.project != path { controller.stats = nil }
-        request("stats", ["repo": .string(path)], on: .some(machine)) { [weak self, weak controller] reply in
+        request("stats", ["repo": .string(path), "days": .number(Double(controller.statsPage.runDays))], on: .some(machine)) { [weak self, weak controller] reply in
             guard let self, let controller, controller.projectRoot == root, let report = StatsReport(reply) else { return }
             controller.stats = report
             if controller.shownPage == WindowController.pages[2] { redraw(controller) }

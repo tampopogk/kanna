@@ -928,6 +928,22 @@ fn figure(value: &Value, unit: Option<&str>) -> String {
     }
 }
 
+fn table_lines(chart: &Value) -> Vec<String> {
+    let columns = chart["columns"].as_array().cloned().unwrap_or_default();
+    let cells = |row: &Value| -> Vec<String> { row["cells"].as_array().into_iter().flatten().map(|c| c["text"].as_str().unwrap_or("").to_string()).collect() };
+    let mut lines: Vec<Vec<String>> = vec![columns.iter().map(|c| c["title"].as_str().unwrap_or("").replace('\n', " ")).collect()];
+    lines.extend(chart["rows"].as_array().into_iter().flatten().map(cells));
+    let width = |column: usize| lines.iter().filter_map(|l| l.get(column)).map(|t| t.chars().count()).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..columns.len()).map(width).collect();
+    lines
+        .iter()
+        .map(|line| {
+            let cell = |(i, text): (usize, &String)| if columns[i]["right"] == true { format!("{text:>w$}", w = widths[i]) } else { format!("{text:<w$}", w = widths[i]) };
+            line.iter().enumerate().map(cell).collect::<Vec<_>>().join("  ").trim_end().to_string()
+        })
+        .collect()
+}
+
 fn spark(values: &[Value], max: Option<f64>) -> String {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let top = max.unwrap_or_else(|| values.iter().filter_map(Value::as_f64).fold(0.0, f64::max)).max(1.0);
@@ -959,6 +975,21 @@ pub fn stats(_: &Value, reply: &Value) -> String {
                 }
                 continue;
             }
+            if chart["kind"] == "table" {
+                rows.push([head, label, String::new(), String::new(), String::new()]);
+                for line in table_lines(chart) {
+                    rows.push([String::new(), format!("  {line}"), String::new(), String::new(), String::new()]);
+                }
+                if let Some(note) = tile["note"].as_str().filter(|n| !n.is_empty()) {
+                    rows.push([String::new(), format!("  {note}"), String::new(), String::new(), String::new()]);
+                }
+                continue;
+            }
+            if chart["kind"] == "runs" {
+                let medians: Vec<&str> = chart["medians"].as_array().into_iter().flatten().filter_map(|m| m["label"].as_str()).collect();
+                rows.push([head, format!("{label}: {}", medians.join(", ")), String::new(), String::new(), String::new()]);
+                continue;
+            }
             if chart["kind"] == "ranked" {
                 rows.push([head, label, String::new(), String::new(), String::new()]);
                 for row in chart["rows"].as_array().into_iter().flatten() {
@@ -978,7 +1009,12 @@ pub fn stats(_: &Value, reply: &Value) -> String {
     let widths = [width(0), width(1), width(2), width(3)];
     let mut out = vec![];
     if let Some(project) = reply["project"].as_str() {
-        out.push(format!("{} · main · last 30 days", home_relative(project)));
+        let window = match reply.get("days") {
+            Some(Value::Number(days)) => format!("last {days} days"),
+            Some(Value::Null) => "all runs".to_string(),
+            _ => "last 30 days".to_string(),
+        };
+        out.push(format!("{} · main · {window}", home_relative(project)));
     }
     for row in &rows {
         let line = if row[2].is_empty() && row[4].is_empty() {

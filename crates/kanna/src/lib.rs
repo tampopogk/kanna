@@ -1090,6 +1090,26 @@ mod tests {
     }
 
     #[test]
+    fn stats_pipelines_asks_for_its_window_and_prints_tables_and_medians() {
+        let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
+        assert_eq!(parse("kanna stats pipelines").unwrap().1, json!({ "repo": repo, "pipelines": true }));
+        assert_eq!(parse("kanna stats pipelines --days 0").unwrap().1, json!({ "repo": repo, "pipelines": true, "days": 0 }));
+        assert!(parse("kanna stats --days 3").is_err());
+        assert!(parse("kanna stats pipelines --days soon").is_err());
+        let reply = json!({ "project": "/r", "days": 90, "sections": [{ "id": "pipelines", "title": "Pipelines", "tiles": [
+            { "id": "pipelines", "label": "", "value": null, "note": "Per run: medians.", "chart": { "kind": "table", "columns": [{ "title": "Pipeline" }, { "title": "Time to land,\nmedian", "right": true }], "rows": [{ "cells": [{ "text": "feature rev 2" }, { "text": "3.4h" }] }] } },
+            { "id": "run-land", "label": "Time to land", "value": null, "note": "", "chart": { "kind": "runs", "medians": [{ "label": "feature rev 2 median 3.4h" }] } },
+        ] }] });
+        let text = output::stats(&json!({}), &reply);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "/r · main · last 90 days");
+        assert_eq!(lines[2], "             Pipeline       Time to land, median");
+        assert_eq!(lines[3], "             feature rev 2                  3.4h");
+        assert_eq!(lines[4], "             Per run: medians.");
+        assert_eq!(lines[5], "           Time to land: feature rev 2 median 3.4h");
+    }
+
+    #[test]
     fn stats_print_a_line_a_tile_with_its_sparkline() {
         let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
         assert_eq!(parse("kanna stats").unwrap().1, json!({ "repo": repo }));

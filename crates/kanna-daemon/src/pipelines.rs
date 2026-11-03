@@ -364,7 +364,7 @@ fn summary_table(groups: &[Group]) -> Value {
         let share = if ended > 0 { format!("{landed} ({:.0}%)", landed as f64 * 100.0 / ended as f64) } else { format!("{landed}") };
         let mean = |pick: &dyn Fn(&Numbers) -> Option<f64>| figure(g.med(pick), tenth);
         json!({ "series": g.series, "pipeline": g.pipeline, "cells": [
-            cell(g.label()), cell(g.runs.len().to_string()), cell(share),
+            json!({ "text": g.label(), "swatch": true }), cell(g.runs.len().to_string()), cell(share),
             bar(land(g), most_land, figure(land(g), hours)),
             cell(mean(&|r| Some(r.sessions as f64))),
             bar(tokens(g), most_tokens, figure(tokens(g), amount)),
@@ -373,7 +373,7 @@ fn summary_table(groups: &[Group]) -> Value {
             cell(delta_text(g.med(|r| r.quality.erosion), g.med(|r| r.quality.verbosity))),
         ]})
     }).collect::<Vec<_>>();
-    json!({ "kind": "table", "columns": columns(&["Pipeline", "Runs", "Landed", "Time to land,\nmedian", "Sessions", "Tokens", "Rework\nloops", "Review\nfindings", "Your\ninterventions", "Bugs traced\nback", "Changed lines\ncovered", "Quality delta\nerosion / verbosity"], 1), "rows": rows, "what": "pipelines" })
+    json!({ "kind": "table", "columns": columns(&["Pipeline", "Runs", "Landed", "Time to land,\nmedian", "Sessions", "Tokens", "Rework\nloops", "Review\nfindings", "Your\ninterventions", "Bugs traced\nback", "Changed lines\ncovered", "Quality\ndelta"], 1), "rows": rows, "what": "pipelines" })
 }
 
 fn seen_text(ended: f64, today: i64) -> String {
@@ -487,7 +487,8 @@ fn dots(id: &str, label: &str, unit: &str, groups: &[Group], from: f64, to: f64,
         }
     }
     let note = format!("{unit} · one dot per run, dashed: each pipeline's median");
-    tile(id, label, Value::Null, None, note, 2, json!({ "kind": "runs", "points": points, "medians": lines, "max": nice(top), "from": from, "to": to, "what": label }))
+    let max = nice(top);
+    tile(id, label, Value::Null, None, note, 2, json!({ "kind": "runs", "points": points, "medians": lines, "max": max, "ticks": [shown(max / 2.0), shown(max)], "from": from, "to": to, "what": label }))
 }
 
 pub fn section_of(runs: &[Numbers], stages: &HashMap<String, Vec<StageRow>>, days: Option<i64>, from: f64, now: f64, today: i64) -> Value {
@@ -512,10 +513,10 @@ pub fn section_of(runs: &[Numbers], stages: &HashMap<String, Vec<StageRow>>, day
         }
         names
     });
-    let summary_note = format!("Per run unless said otherwise: medians. Tokens: in, cache writes and out; cache reads are in the JSON. Bugs traced back: fix commits on main blamed to the run's merge (SZZ). Changed lines covered: lines the run's merge changed that a test later ran. Quality delta: points erosion and verbosity moved at the merge. {CAVEAT}");
+    let summary_note = format!("Per run unless said otherwise: medians. Tokens: in, cache writes and out; cache reads are in the JSON. Bugs traced back: fix commits on main blamed to the run's merge (SZZ). Changed lines covered: lines the run's merge changed that a test later ran. Quality delta: the points erosion / verbosity moved at the merge. {CAVEAT}");
     let mut body = section("pipelines", "Pipelines", note, vec![
-        tile("pipelines", "Runs compared", Value::Null, None, summary_note, 6, summary_table(&found)),
-        dots("run-land", "Time to land", "hours", &found, from, now, |r| r.to_land.map(|s| s / HOUR), |v| format!("{}", hours(v * HOUR))),
+        tile("pipelines", "", Value::Null, None, summary_note, 6, summary_table(&found)),
+        dots("run-land", "Time to land", "hours", &found, from, now, |r| r.to_land.map(|s| s / HOUR), |v| hours(v * HOUR)),
         dots("run-tokens", "Tokens", "millions", &found, from, now, |r| Some(r.tokens() as f64 / 1e6), |v| amount(v * 1e6)),
         dots("run-rework", "Rework loops", "fix visits", &found, from, now, |r| Some(r.rework as f64), tenth),
         tile("recent", "Recent runs", Value::Null, None, String::new(), 6, runs_table(&found, &recent, today)),

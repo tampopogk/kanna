@@ -1,6 +1,6 @@
 # Software factory
 
-**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates, fan-out, revisions, the Run tab and metrics not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [Kojo](kojo.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
+**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); metrics built ([pipeline metrics](pipeline-metrics.md)); gates, fan-out, revisions and the Run tab not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [Kojo](kojo.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
 
 A **pipeline** says how an approved change gets built: its stages (plan, build, review, tests), who does each (an agent or code), and where a failure goes (a bounded loop back to a fix). Any task's agent can **run** one; the daemon drives it in the task's background terminals, a **Run** tab shows where it is, and the finished branch is handed back to the task, where you review and merge it. Every stage's numbers and your interventions go in `kanna.db`, to compare and tune pipelines.
 
@@ -121,6 +121,8 @@ sequenceDiagram
 
 ## 5. Metrics
 
+Built as [pipeline metrics](pipeline-metrics.md), which says what each number is read from.
+
 Every visit writes a row; everything below is a query over them, shown on the Run tab for one run and on the Stats tab's **Pipelines** section across runs, grouped by pipeline and revision (a pipeline's text hash), so a changed arrow is a new line to compare.
 
 | Per visit | From |
@@ -134,15 +136,15 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 
 | Per run | Is |
 |---|---|
-| time to hand back; active time | started to handed back; the sum of visits |
+| time to land; time to hand back; active time | started to the merge on main; started to handed back; the sum of visits |
 | sessions, turns, tokens, cost | sums |
 | rework loops | visits of any stage beyond its first, by stage |
 | review findings; test failures | sums; `run` visits that failed |
 | interventions | the sum, by kind |
-| outcome | handed back, stopped (why), stuck |
+| outcome | landed, handed back, stopped (why), stuck |
 | bugs traced back; changed lines covered; quality delta | from [code quality metrics](code-quality-metrics.md): fix commits on main blamed to the run's commits (SZZ), lines the run changed that a test executes, erosion and verbosity before and after, each sampled later and joined by the run's commits once the task's branch merges |
 
-- **Comparison:** runs, handed-back share, medians of the rest, and a dot per run over time, so a pipeline change shows as a step; a stage's times split by machine. SZZ's noise caveat (F1 about 0.6) shows with its column.
+- **Comparison:** runs, landed share, medians of the rest, and a dot per run over time, so a pipeline change shows as a step; a stage's times split by machine. SZZ's noise caveat (F1 about 0.6) shows with its column.
 - **For agents:** `kanna run show RUN --json` and `kanna stats pipelines --json` give the same numbers.
 
 ## 6. How it's built

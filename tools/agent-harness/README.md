@@ -40,6 +40,14 @@ Codex starts a detached `codex app-server --managed-daemon` from its CODEX_HOME 
 
 `signals.py` reads recordings and lists, with time and phase, every BEL, OSC 0/1/2 (title), OSC 9 (notification), OSC 9;4 (progress), OSC 777 (notification), OSC 99, OSC 1337 and focus-reporting request. `--no-titles` leaves titles out; `--json` prints them as JSON; `--text N` prints the last N characters of the screen text instead.
 
+## Session-file fixtures
+
+`crates/kanna-daemon/tests/fixtures/sessions/` holds a run's `runs/*/home/.claude/projects/*/*.jsonl` and `runs/*/home/.codex/sessions/**/rollout-*.jsonl`, trimmed to the lines `usage.rs` reads and with paths and prompts taken out. The mock's usage has cache figures so they show there. When an agent changes its format, record again and redo them:
+
+```sh
+python3 tools/agent-harness/run.py --out tools/agent-harness/out/usage --agents claude,codex --terminals kanna --settings default --focus here --jobs 2
+```
+
 ## Files
 
 | File | Is |

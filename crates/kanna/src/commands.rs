@@ -749,10 +749,10 @@ pub static COMMANDS: &[Command] = &[
         name: "stats",
         group: "Information",
         summary: "Print this project's numbers over the last 30 days, as the Desk view's Stats tab shows them.",
-        usage: "kanna stats",
-        options: &[],
-        notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality isn't measured yet. Each line is a number, its note and a sparkline of its 30 days, oldest first.",
-        examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them.")],
+        usage: "kanna stats\n       kanna stats pipelines [--json] [--days N]",
+        options: &[("--days N", "pipelines: runs started in the last N days; 0 for every run. Default: 30.")],
+        notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Pipelines: runs compared by pipeline and revision. Each line is a number, its note and a sparkline of its 30 days, oldest first. pipelines prints the runs compared, with --json the numbers per pipeline, per run and per stage and machine.",
+        examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them."), ("kanna stats pipelines --days 90", "Runs of the last 90 days by pipeline and revision.")],
         parse: parse_stats,
         show: output::stats,
     },
@@ -1080,9 +1080,22 @@ fn parse_quiz(args: &mut Argv) -> Result<Value, Failure> {
     Ok(out)
 }
 
-fn parse_stats(_: &mut Argv) -> Result<Value, Failure> {
+fn parse_stats(args: &mut Argv) -> Result<Value, Failure> {
+    let days = args.option("--days")?;
+    let what = args.positional();
     let repo = repo_here().map_err(|_| usage("stats", "stats are a git repo's: run this in one"))?;
-    Ok(json!({ "repo": repo }))
+    let mut out = json!({ "repo": repo });
+    match what.as_deref() {
+        None if days.is_some() => return Err(usage("stats", "--days is for stats pipelines")),
+        None => return Ok(out),
+        Some("pipelines") => out["pipelines"] = json!(true),
+        Some(other) => return Err(usage("stats", &format!("unknown \"{other}\" (pipelines)"))),
+    }
+    if let Some(days) = days {
+        let days = days.parse::<u32>().map_err(|_| usage("stats", "--days takes a number of days"))?;
+        out["days"] = json!(days);
+    }
+    Ok(out)
 }
 
 fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
