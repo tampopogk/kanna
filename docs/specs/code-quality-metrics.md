@@ -27,6 +27,8 @@ The Stats tab's Code quality section shows how good the code on main is and whic
 
 Each measure shows its value at main's last commit over a line of its value at each day's last commit. Each line ends on today, and its note says how much it moved in 30 days.
 
+**CC** is a function's cyclomatic complexity (McCabe): 1 plus each place its path can branch, so each `if`, loop, `match` arm, `&&` and `||` (full list in the [glossary](#8-glossary)). It counts the independent paths a test would need to cover. **CC 10** is the line SlopCodeBench draws, from radon's grades: up to 10 is simple, and a function over it is a god-function candidate. A 50-line function with an `if` per field might be CC 12; this repo's worst, the daemon's `run`, is CC 237.
+
 | Tile | Measures | Computed | A bad trend |
 |---|---|---|---|
 | Erosion | complexity concentrated in big functions | SlopCodeBench's: Σ CC×√lines over functions with CC > 10, ÷ Σ over all functions | rising: new work piles into functions that are already complex |
