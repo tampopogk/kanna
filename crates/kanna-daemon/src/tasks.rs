@@ -665,6 +665,11 @@ fn uuid() -> Result<String, String> {
     Ok(format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]))
 }
 
+fn free_ids(repo: &Path) -> Option<Vec<String>> {
+    git(repo, &["rev-parse", "--show-toplevel"]).ok()?;
+    Some((0..8).filter_map(|_| db::random_id().ok()).filter(|id| !taken(repo, id)).collect())
+}
+
 fn taken(repo: &Path, name: &str) -> bool {
     repo.join(WORKTREES).join(name).exists() || git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_ok()
 }
@@ -2376,7 +2381,7 @@ impl Tasks {
                     }
                 }
                 match args.get("action").and_then(Value::as_str) {
-                    Some("new") => responder.reply(this.add(&args)),
+                    Some("new") => this.adding(args, responder),
                     Some("resolve") => responder.reply(this.find(&args)),
                     Some("edit") => responder.reply(this.edit(&args)),
                     Some("ready") => responder.reply(this.mark(&args)),
@@ -2843,14 +2848,20 @@ impl Tasks {
         log!("kanna-daemon: gave {pane} {} message(s)", ids.len());
     }
 
+    #[cfg(test)]
     fn mint(&self, args: &Value, name: Option<String>, message: Option<String>) -> Result<Entry, KmuxError> {
+        let ids = string(args, "repo").and_then(|repo| free_ids(Path::new(repo)));
+        self.mint_from(args, name, message, ids)
+    }
+
+    fn mint_from(&self, args: &Value, name: Option<String>, message: Option<String>, ids: Option<Vec<String>>) -> Result<Entry, KmuxError> {
         let repo = string(args, "repo").filter(|r| Path::new(r).is_absolute() && Path::new(r).is_dir()).ok_or_else(|| bad("a task needs its repo: an absolute path to a folder"))?;
-        if git(Path::new(repo), &["rev-parse", "--show-toplevel"]).is_err() {
+        let Some(ids) = ids else {
             return Err(bad(format!("{repo} isn't a git repo: a task works in a worktree of the repo, so set one up first (git init)")));
-        }
+        };
         self.placed(repo)?;
         let by = string(args, "by").and_then(|by| self.core.upgrade()?.pane(by)).map(|pane| pane.id);
-        let id = self.db.new_id(|id| !taken(Path::new(repo), id) && self.replica.borrow().births(id).is_empty()).map_err(|error| {
+        let id = self.db.new_id(ids, |id| self.replica.borrow().births(id).is_empty()).map_err(|error| {
             log!("kanna-daemon: couldn't save a new task ID in {}: {error}", db::FILE);
             KmuxError::new("failed", format!("couldn't save a new task ID: {error}"))
         })?;
@@ -2868,11 +2879,32 @@ impl Tasks {
         })
     }
 
+    #[cfg(test)]
     fn add(&self, args: &Value) -> Result<Map, KmuxError> {
+        let ids = string(args, "repo").and_then(|repo| free_ids(Path::new(repo)));
+        self.add_from(args, ids)
+    }
+
+    fn adding(self: &Rc<Self>, args: Value, responder: Responder) {
+        let repo = string(&args, "repo").filter(|r| Path::new(r).is_absolute() && Path::new(r).is_dir()).map(PathBuf::from);
+        let Some(repo) = repo else { return responder.reply(self.add_from(&args, None)) };
+        let this = Rc::downgrade(self);
+        crate::runtime::spawn("a new task", async move {
+            let looked_at = repo.clone();
+            let ids = crate::runtime::off_loop(move || free_ids(&looked_at)).await.flatten();
+            if let Some(main) = project(repo.to_str()) {
+                crate::projects::identity_now(&main).await;
+            }
+            let Some(this) = this.upgrade() else { return };
+            responder.reply(this.add_from(&args, ids));
+        });
+    }
+
+    fn add_from(&self, args: &Value, ids: Option<Vec<String>>) -> Result<Map, KmuxError> {
         let name = string(args, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad("a task needs a name"))?.to_string();
         let message = string(args, "message").map(str::trim).filter(|m| !m.is_empty()).map(String::from);
         let after = self.blockers(args, "")?.unwrap_or_default();
-        let entry = Entry { after, ..self.mint(args, Some(name), message)? };
+        let entry = Entry { after, ..self.mint_from(args, Some(name), message, ids)? };
         self.store(&entry, Place::Shelf, None, Some(Change { to: Some(Place::Shelf), ..Change::new("made") }.by(entry.by.as_deref().or(who(args)))))?;
         let value = self.described(&entry);
         insert_in_order(&mut self.entries.borrow_mut(), entry);

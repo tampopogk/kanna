@@ -627,9 +627,8 @@ impl Db {
             .optional()
     }
 
-    pub fn new_id(&self, free: impl Fn(&str) -> bool) -> rusqlite::Result<String> {
-        for _ in 0..8 {
-            let id = random_id()?;
+    pub fn new_id(&self, candidates: Vec<String>, free: impl Fn(&str) -> bool) -> rusqlite::Result<String> {
+        for id in candidates {
             if self.conn.query_row("select 1 from tasks where id = ?1", [&id], |_| Ok(())).optional()?.is_none() && free(&id) {
                 return Ok(id);
             }
@@ -1168,7 +1167,7 @@ pub fn short_id<'a>(id: &str, open: impl Iterator<Item = &'a str>) -> String {
     format!("{TASK}{}", &hex[..len])
 }
 
-fn random_id() -> rusqlite::Result<String> {
+pub fn random_id() -> rusqlite::Result<String> {
     let mut bytes = [0u8; 4];
     fs::File::open("/dev/urandom").and_then(|mut random| std::io::Read::read_exact(&mut random, &mut bytes)).map_err(|e| rusqlite::Error::InvalidParameterName(format!("can't read /dev/urandom: {e}")))?;
     Ok(format!("{TASK}{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()))
@@ -1355,7 +1354,7 @@ mod tests {
     fn a_change_and_its_event_are_written_together_and_unknown_doc_keys_are_kept() {
         let dir = folder("put");
         let db = Db::open(&dir);
-        let id = db.new_id(|_| true).unwrap();
+        let id = db.new_id(vec![random_id().unwrap()], |_| true).unwrap();
         assert!(is_task_id(&id), "{id}");
         let mut row = Row { id: id.clone(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": "A", "later": "kept" }) };
         db.put(&row, Some(&Change::new("made").by(Some("p1")))).unwrap();
@@ -1380,7 +1379,7 @@ mod tests {
         let db = Db::open(&dir);
         assert_eq!(db.layout().unwrap(), None);
         db.saves_layout_with_done(|| Some(json!({ "workspaces": [] })));
-        let mut row = Row { id: db.new_id(|_| true).unwrap(), repo: "/r".into(), place: Place::Desk, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
+        let mut row = Row { id: db.new_id(vec![random_id().unwrap()], |_| true).unwrap(), repo: "/r".into(), place: Place::Desk, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
         db.put(&row, None).unwrap();
         assert_eq!(db.layout().unwrap(), None, "only a done task writes the layout");
         row.place = Place::Done;

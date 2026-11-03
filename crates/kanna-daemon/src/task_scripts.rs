@@ -63,9 +63,7 @@ pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
 }
 
 pub fn is_linked(worktree: &Path) -> bool {
-    let common = git(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().and_then(|d| fs::canonicalize(d).ok());
-    let own = git_dir(worktree).and_then(|d| fs::canonicalize(d).ok());
-    common.is_some() && own.is_some() && common != own
+    git_dir(worktree).is_some_and(|own| own.join("commondir").is_file())
 }
 
 pub fn record_base(worktree: &Path) {
