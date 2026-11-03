@@ -93,7 +93,7 @@ flowchart LR
 
 | Piece | Runs on | Is |
 |---|---|---|
-| Tenant VMs | R720 hosts, Incus | the Linux VM one Cloud task runs on |
+| Tenant VMs | a backend: R720 hosts with Incus now, AWS or GCP later | the Linux VM one Cloud task runs on |
 | Provisioning service | Kanna's servers | accounts and account keys; takes requests, makes and releases VMs on hosts (before it exists, `kanna-cloud` by hand) |
 | Directory | Kanna's servers | each account's published peer log, relay URLs and addresses; carries PAKE messages |
 | Relays | Kanna's servers | `iroh-relay`, the same as one a customer runs themselves |
@@ -101,11 +101,15 @@ flowchart LR
 
 **Provisioning, internal** ([how Kanna provisions](cloud-vms.md)):
 
+**Where VMs run is a backend, not the design.** The first backend is Incus on Dell R720s, bought because they are the cheapest yen per GB of RAM; later ones are likely AWS or GCP. `kanna-cloud` hides which: it makes, sets up and destroys a VM for a task, and each backend does that its own way (Incus on a host, or the provider's API). What the rest of Cloud relies on is the same for all of them: a fresh Linux VM per task, isolated as below, destroyed with its disks when the task is done. On a provider, the isolation is its VPC, security groups and per-VM disks instead of the host's bridge and ACL.
+
+With the R720 backend:
+
 1. **A host:** `scripts/cloud/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([installing a host](cloud-provisioning.md)); `kanna-cloud setup-host` adds Incus, the tenant bridge, its ACL and profile, and the pool.
 2. **A VM:** `kanna-cloud provision` makes an Incus VM (Ubuntu 26.04, stock cloud image) for one Cloud task, runs [server setup](machine-setup.md) in it, and has it wait to be enrolled with the request's token (§6).
 3. **Releasing** destroys it with its disks, snapshots, logs and network state; nothing of it is reused (§10).
 
-- **Networking:** a tenant VM reaches the internet and relays, never another tenant's VM, the host's management or Kanna's LAN; enforced on the host, IPv4 and IPv6. Customers reach their VMs through iroh: direct when it can punch through, else relayed.
+- **Networking, on any backend:** a tenant VM reaches the internet and relays, never another tenant's VM, the host's or provider's management or Kanna's LAN; enforced outside the VM (on the host, or by the provider's network), IPv4 and IPv6. Customers reach their VMs through iroh: direct when it can punch through, else relayed.
 - **Before the service exists** the customer's request and Kanna's answer are passed by hand: sending a task to the cloud prints a request (its token), Kanna runs `kanna-cloud provision --request …`, and gives back the VM's key, which the customer's Kanna enrolls and moves the task to. The service carries the same two messages later.
 
 ## 5. Cloud tasks
