@@ -494,6 +494,7 @@ extension AppController {
 
     private func click(_ args: JSON) throws -> [String: JSON] {
         let window: NSWindow, point: NSPoint
+        var drop: NSPoint?
         if let reference = args["pane"]?.string {
             let id = try resolve(reference)
             guard let view = panes[id], let paneWindow = view.window else { throw KannaError("not_found", "pane \"\(id)\" is not on screen") }
@@ -509,6 +510,14 @@ extension AppController {
             guard let spot = spots.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not on \(id)'s Desk") }
             window = controller.window
             point = spot.center
+            if let target = args["drop"]?.string {
+                guard !controller.deskView.isHidden else { throw KannaError("bad_request", "drop needs \(id)'s Desk view showing") }
+                switch target {
+                case "shelf": drop = controller.deskView.shelfDrop
+                case "desk": drop = controller.deskView.deskDrop
+                default: throw KannaError("bad_request", "drop is shelf or desk")
+                }
+            }
         } else if let task = args["shelf"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.deskView.shelfRows.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) isn't on \(id)'s Shelf") }
@@ -560,7 +569,7 @@ extension AppController {
             return [:]
         }
         PageMarkupView.scriptedCommand = args["command"]?.bool == true
-        var drag: NSPoint?
+        var drag = drop
         if case .array(let list)? = args["to"], let reference = args["pane"]?.string, let view = panes[try resolve(reference)] {
             let to = list.compactMap(\.number).map { CGFloat($0) }
             guard to.count == 2 else { throw KannaError("bad_request", "to is [x, y]") }
