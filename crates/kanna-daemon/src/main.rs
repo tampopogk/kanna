@@ -26,6 +26,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod replica;
+mod stamped;
 mod stats;
 mod reader;
 mod runtime;

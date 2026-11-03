@@ -581,8 +581,13 @@ fn who(args: &Value) -> Option<&str> {
     Some(string(args, "by").filter(|by| !by.is_empty()).unwrap_or("user"))
 }
 
+thread_local! {
+    static MAINS: crate::stamped::Stamped<Option<PathBuf>> = crate::stamped::Stamped::default();
+}
+
 fn identity(repo: &str) -> Option<String> {
-    project(Some(repo)).and_then(|main| crate::projects::identity(&main))
+    let marker = Path::new(repo).join(".git");
+    MAINS.with(|mains| mains.get(&marker, || project(Some(repo)))).and_then(|main| crate::projects::identity(&main))
 }
 
 fn order(entry: &Entry) -> Hlc {
@@ -676,13 +681,7 @@ fn taken(repo: &Path, name: &str) -> bool {
 
 /// The branch checked out in a worktree, read from its HEAD without running git.
 pub fn branch_of(folder: &str) -> Option<String> {
-    let dot = Path::new(folder).join(".git");
-    let git_dir = match fs::read_to_string(&dot) {
-        Ok(link) => PathBuf::from(link.strip_prefix("gitdir:")?.trim()),
-        Err(_) => dot,
-    };
-    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    head.trim().strip_prefix("ref: refs/heads/").map(String::from)
+    task_scripts::branch_in(&task_scripts::own_dir(Path::new(folder))?)
 }
 
 /// Makes a worktree in `.kanna-worktrees/NAME` on a new branch NAME, and returns its folder and branch.

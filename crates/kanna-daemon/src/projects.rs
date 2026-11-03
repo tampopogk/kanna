@@ -12,6 +12,7 @@ enum Root {
 thread_local! {
     static ROOTS: std::cell::RefCell<std::collections::HashMap<PathBuf, Root>> = std::cell::RefCell::default();
     static ON_FOUND: std::cell::RefCell<Vec<Rc<dyn Fn()>>> = std::cell::RefCell::default();
+    static ORIGINS: crate::stamped::Stamped<Option<String>> = crate::stamped::Stamped::default();
 }
 
 pub fn on_found(found: Rc<dyn Fn()>) {
@@ -137,7 +138,12 @@ pub fn home_place(main: &Path) -> PathBuf {
 }
 
 fn git_origin(main: &Path) -> Option<String> {
-    let config = std::fs::read_to_string(main.join(".git/config")).ok()?;
+    let config = main.join(".git/config");
+    ORIGINS.with(|origins| origins.get(&config, || read_origin(&config)))
+}
+
+fn read_origin(config: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(config).ok()?;
     let mut inside = false;
     for line in config.lines().map(str::trim) {
         if line.starts_with('[') {
