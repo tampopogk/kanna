@@ -16,21 +16,28 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 
 const CONFIRM: &str = "app.machine.confirm";
 
+pub type Withdraw = std::sync::Arc<dyn Fn(&str) -> Option<bool> + Send + Sync>;
+
 const EXCHANGE_WAIT: Duration = Duration::from_secs(20);
 
 pub struct Machines {
     runtime: tokio::runtime::Runtime,
     node: Result<Node, String>,
+    withdraw: std::sync::OnceLock<Withdraw>,
 }
 
 struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>, PathBuf);
 
 impl Host for DaemonHost {
-    fn request(&self, _from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
+    fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
         if let Some(refused) = refuse_remote(&request) {
             return reply(refused);
         }
-        let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::Request(request, reply));
+        let event = match request.get("cmd").and_then(Value::as_str) == Some(crate::accounts::COMMAND) {
+            true => Event::PeerRequest { from, request, reply },
+            false => Event::Request(request, reply),
+        };
+        let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(event);
     }
 
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>) {
@@ -50,6 +57,35 @@ impl Host for DaemonHost {
 
     fn inbox(&self) -> Option<PathBuf> {
         Some(self.2.clone())
+    }
+}
+
+#[derive(Clone)]
+pub struct Caller {
+    handle: tokio::runtime::Handle,
+    node: Node,
+}
+
+const CALL_WAIT: Duration = Duration::from_secs(60);
+
+impl Caller {
+    pub fn key(&self) -> String {
+        self.node.key()
+    }
+
+    pub fn status(&self) -> Value {
+        self.node.status()
+    }
+
+    pub fn call(&self, host: &str, cmd: &str, args: Value) -> Result<Value, KmuxError> {
+        let request = json!({ "id": 1, "cmd": cmd, "args": args });
+        let reply = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.call(host, request)).await });
+        match reply {
+            Ok(Ok(reply)) if reply["ok"] == true => Ok(reply),
+            Ok(Ok(reply)) => Err(KmuxError::new(reply["error"]["code"].as_str().unwrap_or("failed"), reply["error"]["message"].as_str().unwrap_or("failed"))),
+            Ok(Err(failure)) => Err(error(failure)),
+            Err(_) => Err(KmuxError::new("unreachable", format!("{host} didn't answer in time"))),
+        }
     }
 }
 
@@ -90,7 +126,15 @@ impl Machines {
             let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns, release: release() };
             runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire, crate::transfer::inbox(state_dir)))))
         });
-        Ok(Machines { runtime, node })
+        Ok(Machines { runtime, node, withdraw: std::sync::OnceLock::new() })
+    }
+
+    pub fn before_revoke(&self, withdraw: Withdraw) {
+        let _ = self.withdraw.set(withdraw);
+    }
+
+    pub fn caller(&self) -> Option<Caller> {
+        self.node.as_ref().ok().map(|node| Caller { handle: self.runtime.handle().clone(), node: node.clone() })
     }
 
     pub fn describe(&self) -> String {
@@ -142,10 +186,29 @@ impl Machines {
                 let peer = string(&args, "peer").map(String::from);
                 self.spawn(responder, async move { node.pair(&code, peer.as_deref()).await })
             }
-            "revoke" | "ping" | "sync" => match needs_host(host) {
+            "revoke" => match needs_host(host) {
+                Ok(host) => {
+                    let withdraw = self.withdraw.get().cloned();
+                    self.spawn(responder, async move {
+                        let withdrawn = match withdraw {
+                            Some(withdraw) => {
+                                let host = host.clone();
+                                tokio::task::spawn_blocking(move || withdraw(&host)).await.ok().flatten()
+                            }
+                            None => None,
+                        };
+                        let mut revoked = node.revoke(&host).await?;
+                        if let Some(withdrawn) = withdrawn {
+                            revoked["accounts"] = json!(withdrawn);
+                        }
+                        Ok(revoked)
+                    })
+                }
+                Err(e) => responder.reply(Err(e)),
+            },
+            "ping" | "sync" => match needs_host(host) {
                 Ok(host) => self.spawn(responder, async move {
                     match action.as_str() {
-                        "revoke" => node.revoke(&host).await,
                         "ping" => node.ping(&host).await,
                         _ => node.sync(&host).await,
                     }

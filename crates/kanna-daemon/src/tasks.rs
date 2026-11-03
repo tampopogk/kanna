@@ -548,21 +548,24 @@ pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, pro
     }
 }
 
-static CODEX_REMOTE: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+static CODEX_REMOTE: std::sync::OnceLock<(String, String, PathBuf)> = std::sync::OnceLock::new();
 
 pub fn serve_codex_remotely(helper: &Path, dir: &Path) {
-    let _ = CODEX_REMOTE.set((quote(&helper.to_string_lossy()), quote(&dir.to_string_lossy())));
+    let _ = CODEX_REMOTE.set((quote(&helper.to_string_lossy()), quote(&dir.to_string_lossy()), dir.to_path_buf()));
 }
 
 fn in_its_terminal(agent: &str) -> String {
-    wrapped(agent, CODEX_REMOTE.get())
+    let remote = CODEX_REMOTE.get();
+    let account = program(agent) == "claude" && remote.is_some_and(|(_, _, state)| crate::accounts::has_credential(state, "claude"));
+    wrapped(agent, remote.map(|(helper, dir, _)| (helper.as_str(), dir.as_str())), account)
 }
 
-fn wrapped(agent: &str, remote: Option<&(String, String)>) -> String {
-    match (program(agent) == "codex" && !agent.split_whitespace().any(|w| w == "--no-daemon"), remote) {
-        (true, Some((helper, dir))) => crate::codex_remote::command(helper, dir, agent),
-        (true, None) => format!("{agent} --no-daemon"),
-        (false, _) => agent.to_string(),
+fn wrapped(agent: &str, remote: Option<(&str, &str)>, account: bool) -> String {
+    match (program(agent), agent.split_whitespace().any(|w| w == "--no-daemon"), remote) {
+        ("codex", false, Some((helper, dir))) => crate::codex_remote::command(helper, dir, agent),
+        ("codex", false, None) => format!("{agent} --no-daemon"),
+        ("claude", _, Some((helper, dir))) if account => format!("{helper} {} {dir} {agent}", crate::accounts::FLAG),
+        _ => agent.to_string(),
     }
 }
 
@@ -4835,9 +4838,17 @@ mod tests {
         assert_eq!(in_its_terminal("/opt/bin/codex --yolo"), "/opt/bin/codex --yolo --no-daemon");
         assert_eq!(in_its_terminal("codex --no-daemon --yolo"), "codex --no-daemon --yolo");
         assert_eq!(in_its_terminal("claude"), "claude");
-        let remote = ("'/K/kanna-daemon'".to_string(), "'/s/kanna dev'".to_string());
-        assert_eq!(wrapped("/opt/bin/codex --yolo", Some(&remote)), "'/K/kanna-daemon' --codex-remote '/s/kanna dev' /opt/bin/codex --yolo");
-        assert_eq!(wrapped("claude", Some(&remote)), "claude");
+        let remote = ("'/K/kanna-daemon'", "'/s/kanna dev'");
+        assert_eq!(wrapped("/opt/bin/codex --yolo", Some(remote), false), "'/K/kanna-daemon' --codex-remote '/s/kanna dev' /opt/bin/codex --yolo");
+        assert_eq!(wrapped("claude", Some(remote), false), "claude");
+    }
+
+    #[test]
+    fn claude_starts_with_your_account_only_when_you_have_one() {
+        let remote = ("'/K/kanna-daemon'", "'/s/kanna dev'");
+        assert_eq!(wrapped("claude --dangerously-skip-permissions", Some(remote), true), "'/K/kanna-daemon' --with-account '/s/kanna dev' claude --dangerously-skip-permissions");
+        assert_eq!(wrapped("claude", None, true), "claude");
+        assert_eq!(wrapped("codex", Some(remote), true), "'/K/kanna-daemon' --codex-remote '/s/kanna dev' codex");
     }
 
     #[test]

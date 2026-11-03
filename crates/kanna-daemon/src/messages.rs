@@ -146,23 +146,7 @@ pub fn deliver(channel: &Channel, text: &str, mode: Option<&str>) -> Result<(), 
 }
 
 pub fn codex_turn(socket: &Path, text: &str) -> Result<(), String> {
-    let failed = |error: std::io::Error| format!("{}: {error}", socket.display());
-    let mut stream = UnixStream::connect(socket).map_err(failed)?;
-    stream.set_read_timeout(Some(TURN_TIMEOUT)).map_err(failed)?;
-    stream.set_write_timeout(Some(TURN_TIMEOUT)).map_err(failed)?;
-    stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: a2FubmEta2FubmEta2FubmE=\r\nSec-WebSocket-Version: 13\r\n\r\n").map_err(failed)?;
-    let mut head = Vec::new();
-    while !head.ends_with(b"\r\n\r\n") {
-        let mut byte = [0u8; 1];
-        stream.read_exact(&mut byte).map_err(failed)?;
-        head.push(byte[0]);
-    }
-    if !head.starts_with(b"HTTP/1.1 101") {
-        return Err(format!("codex's app-server refused the connection: {}", String::from_utf8_lossy(&head).lines().next().unwrap_or("")));
-    }
-    let mut rpc = Rpc { stream, next: 0 };
-    rpc.call("initialize", json!({ "clientInfo": { "name": "kanna", "version": env!("CARGO_PKG_VERSION") } }))?;
-    rpc.send(&json!({ "jsonrpc": "2.0", "method": "initialized" })).map_err(failed)?;
+    let mut rpc = Rpc::open(socket, Some(TURN_TIMEOUT), None)?;
     let loaded = rpc.call("thread/loaded/list", json!({}))?;
     let mut thread = None;
     for id in loaded["data"].as_array().into_iter().flatten().filter_map(Value::as_str) {
@@ -176,13 +160,42 @@ pub fn codex_turn(socket: &Path, text: &str) -> Result<(), String> {
     rpc.call("turn/start", json!({ "threadId": thread, "input": [{ "type": "text", "text": text }] })).map(|_| ())
 }
 
-struct Rpc {
+pub struct Rpc {
     stream: UnixStream,
     next: u64,
 }
 
 impl Rpc {
-    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    pub fn open(socket: &Path, timeout: Option<Duration>, capabilities: Option<Value>) -> Result<Rpc, String> {
+        let failed = |error: std::io::Error| format!("{}: {error}", socket.display());
+        let mut stream = UnixStream::connect(socket).map_err(failed)?;
+        stream.set_read_timeout(timeout).map_err(failed)?;
+        stream.set_write_timeout(timeout).map_err(failed)?;
+        stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: a2FubmEta2FubmEta2FubmE=\r\nSec-WebSocket-Version: 13\r\n\r\n").map_err(failed)?;
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).map_err(failed)?;
+            head.push(byte[0]);
+        }
+        if !head.starts_with(b"HTTP/1.1 101") {
+            return Err(format!("codex's app-server refused the connection: {}", String::from_utf8_lossy(&head).lines().next().unwrap_or("")));
+        }
+        let mut rpc = Rpc { stream, next: 0 };
+        let mut hello = json!({ "clientInfo": { "name": "kanna", "version": env!("CARGO_PKG_VERSION") } });
+        if let Some(capabilities) = capabilities {
+            hello["capabilities"] = capabilities;
+        }
+        rpc.call("initialize", hello)?;
+        rpc.send(&json!({ "jsonrpc": "2.0", "method": "initialized" })).map_err(failed)?;
+        Ok(rpc)
+    }
+
+    pub fn wait_forever(&self) {
+        let _ = self.stream.set_read_timeout(None);
+    }
+
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         self.next += 1;
         let id = self.next;
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).map_err(|error| format!("codex's app-server: {error}"))?;
@@ -198,7 +211,7 @@ impl Rpc {
         }
     }
 
-    fn send(&mut self, message: &Value) -> std::io::Result<()> {
+    pub fn send(&mut self, message: &Value) -> std::io::Result<()> {
         self.frame(0x1, message.to_string().as_bytes())
     }
 
@@ -221,7 +234,7 @@ impl Rpc {
         self.stream.write_all(&frame)
     }
 
-    fn receive(&mut self) -> std::io::Result<String> {
+    pub fn receive(&mut self) -> std::io::Result<String> {
         let mut message = Vec::new();
         loop {
             let mut head = [0u8; 2];

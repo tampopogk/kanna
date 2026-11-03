@@ -289,7 +289,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
     assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff, serial
-commands: agents, arrange, capabilities, close, comment, crashes, desk, desks, diffs, file.read, files, focus, list, machine, markup, markup.agent, markup.edit, markup.post, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, replica, resize, restart, run, schedule, screenshot, send, send-key, serial, status, task, tasks, threads, toast, tour, window, zoom"), "{capabilities}");
+commands: accounts, agents, arrange, capabilities, close, comment, crashes, desk, desks, diffs, file.read, files, focus, list, machine, markup, markup.agent, markup.edit, markup.post, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, replica, resize, restart, run, schedule, screenshot, send, send-key, serial, status, task, tasks, threads, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -574,11 +574,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 36);
+    assert_eq!(commands.lines().count(), 37);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 36);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 37);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 

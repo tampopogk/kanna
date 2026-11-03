@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod agents;
 pub mod args;
 pub mod commands;
@@ -135,6 +136,11 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     };
     if let Some(extra) = args.first() {
         return Err(commands::usage(command.name, &format!("unexpected argument \"{extra}\"")));
+    }
+    if command.name == "accounts" && request["local"] == "interactive" {
+        let mut mux = Session::connect(&target, env)?;
+        mux.host = host;
+        return accounts::run(&request, &mut |cmd, args| mux.call(cmd, args), json_output);
     }
     if request.get("local").is_some() {
         let mut callers: Vec<String> = commands::caller().into_iter().collect();
