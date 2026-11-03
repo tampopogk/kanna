@@ -178,6 +178,7 @@ extension AppController {
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
+                    "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
                     "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.deskTasks.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
@@ -229,6 +230,27 @@ extension AppController {
             reply["agent"] = markup.agent.map { .string($0) } ?? .null
             reply["hash"] = .string(markup.pageHash)
             return reply
+        }
+        commands["debug.comments"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string else { throw KannaError("bad_request", "debug.comments needs a pane") }
+            let markdown = contents.markdown(id), web = contents.web(id)
+            guard markdown != nil || web != nil else { throw KannaError("wrong_type", "not a running md or web pane") }
+            switch args["press"]?.string {
+            case "comments": markdown?.pressComments() ?? web?.pressComments()
+            case "threads": markdown?.pressThreads() ?? web?.markup?.pressThreads()
+            case "menu": switchComments(id)
+            default: break
+            }
+            if let agent = args["pick"]?.string {
+                guard let menu = agentMenu, menu.pane == id, menu.choices.contains(where: { $0.pane == agent }) else { throw KannaError("not_found", "no agent menu offering \(agent)") }
+                agentMenu = nil
+                request("markup", ["pane": .string(id), "agent": .string(agent)])
+            }
+            let menu: JSON = agentMenu.flatMap { $0.pane == id ? .array($0.choices.map { ["pane": .string($0.pane), "name": .string($0.name), "detail": .string($0.detail)] }) : nil } ?? .null
+            return ["bar": .array((markdown?.barText ?? web?.barText ?? []).map { .string($0) }),
+                    "comments_button": .bool(markdown?.commentsButtonShown ?? web?.commentsButtonShown ?? false),
+                    "marks": .bool(markdown?.marksShown ?? web?.markup?.marksShown ?? false),
+                    "markup": .bool(markdown?.markup ?? web?.markable ?? false), "menu": menu]
         }
         commands["debug.md"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let markdown = contents.markdown(id) else { throw KannaError("wrong_type", "not a running md pane") }

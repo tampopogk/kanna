@@ -26,6 +26,7 @@ mod project_import;
 mod projects;
 mod quiz;
 mod replica;
+mod stats;
 mod reader;
 mod runs;
 mod schedule;
@@ -119,6 +120,7 @@ pub enum Event {
     Log { id: String, log: Value },
     File { id: String, read: files::Read },
     Serial(serial::SerialEvent),
+    Sampled { repo: String, samples: Result<Vec<db::Sample>, String> },
     KeeperReadable,
     KeeperHeard,
     KeeperLost(String),
@@ -150,6 +152,7 @@ impl Event {
             Event::Log { .. } => "loop.log",
             Event::File { .. } => "loop.file",
             Event::Serial(_) => "loop.serial",
+            Event::Sampled { .. } => "loop.stats",
             Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
@@ -447,6 +450,8 @@ fn run() -> Result<(), String> {
     logs.install(&core);
     let refs = Rc::downgrade(&tasks);
     *logs.task_refs.borrow_mut() = Some(Box::new(move || refs.upgrade().map(|tasks| tasks.refs()).unwrap_or_default()));
+    let stats = Rc::new(stats::Stats::new(db.clone(), events.clone()));
+    stats.install(&core);
     let host = Rc::new(Host::new(terminals.clone(), serial.clone()));
     core.set_host(Some(host.clone()));
     let noted = core.weak();
@@ -785,6 +790,7 @@ fn run() -> Result<(), String> {
                 threads.loaded(&id, read);
             }
             Event::Serial(event) => serial.event_in(event),
+            Event::Sampled { repo, samples } => stats.sampled(&repo, samples),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {

@@ -335,8 +335,14 @@ extension AppController {
     }
 
     @objc func toggleComments() {
-        guard let pane = focusedPane, contents.web(pane) != nil || contents.markdown(pane) != nil else { return }
-        request("markup", commentsOn(pane) ? ["pane": .string(pane), "off": true] : ["pane": .string(pane)])
+        guard let pane = focusedPane else { return }
+        switchComments(pane)
+    }
+
+    func switchComments(_ pane: String) {
+        guard contents.web(pane) != nil || contents.markdown(pane) != nil else { return }
+        if commentsOn(pane) { return request("markup", ["pane": .string(pane), "off": true]) }
+        turnOnComments(pane, under: nil)
     }
 
     private func commentsOn(_ pane: String) -> Bool {
