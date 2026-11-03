@@ -136,7 +136,9 @@ impl Guests {
             let recorded = std::fs::read_to_string(self.dir().join(&name).join("vm.pid")).ok().and_then(|p| p.trim().parse::<i32>().ok());
             if let Some(pid) = recorded.filter(|pid| alive(*pid) && runs_kanna_vm(*pid)) {
                 log!("kanna-daemon: guest {name} is already running (pid {pid}); adopting it");
-                running.adopted.insert(name, pid);
+                running.adopted.insert(name.clone(), pid);
+                drop(running);
+                self.serve_egress(&name);
                 continue;
             }
             drop(running);
