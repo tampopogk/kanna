@@ -4,7 +4,7 @@
 
 **Kanna Cloud is Kanna's product:** a paid service that runs work for its customers on Kanna's servers. A customer uses it from Kanna itself (the app and the `kanna` CLI), signed in to a Cloud account. **They see only tasks:** any task can run on the cloud instead of on one of their machines, and Kanna provisions whatever it runs on. Hosts, VMs and their records are Kanna's internal business, run with Kanna's own tool, `kanna-cloud`, which no customer installs.
 
-**It runs on Kanna's infrastructure, not on [the customer's own machines](machines.md).** Those are the machines the customer decided to trust and that belong to them, in their signed peer log; nothing Kanna runs ever joins them. A Cloud task runs on a VM of Kanna's, which the customer never sees, names or manages, and their Kanna reaches it through Kanna Cloud, signed in with their account. They work without Cloud and don't depend on it: a customer, or anyone using Kanna, can have several, pair them and move tasks between them for free.
+**It runs on Kanna's infrastructure, not on [the customer's own machines](machines.md).** Those are the machines the customer decided to trust and that belong to them, in their signed peer log; nothing Kanna runs ever joins them. A Cloud task runs on a VM of Kanna's, which the customer never sees, names or manages, and their Kanna reaches it through Kanna Cloud, signed in with their account. Pairing machines and moving tasks between them is free and needs no Cloud account.
 
 It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the same software run by someone else**: whoever runs it is the operator, and everything below about Kanna as operator applies to them.
 
