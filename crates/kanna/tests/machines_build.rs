@@ -66,6 +66,8 @@ fn a_task_machine_builds_on_the_build_macs_guest_through_its_daemon() {
     let repo = repo(&linux);
     std::fs::write(repo.join("Sources/App.swift"), "let a = 2\n").unwrap();
     std::fs::write(repo.join("new.swift"), "untracked\n").unwrap();
+    let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(repo.join("big.bin"), &big).unwrap();
 
     let out = cli(&linux.dir).current_dir(&repo).env("KANNA_SOCKET", linux.socket()).args(["build", "--mac", "mac", "--", "sh", "-c", "cat Sources/App.swift new.swift; echo \"$PWD/Sources/App.swift:1:5: error: nope\"; exit 7"]).output().unwrap();
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -74,6 +76,8 @@ fn a_task_machine_builds_on_the_build_macs_guest_through_its_daemon() {
     assert!(stdout.contains("/mirrors/linux/app/"), "the build Mac names the task machine's mirror after the machine that asked: {stdout}");
     assert!(stderr.contains(&format!("{}/Sources/App.swift:1:5: error: nope", repo.display())), "{stderr}");
     assert!(guest_state.join("mirrors/linux/app").is_dir());
+    let laid = std::fs::read(guest_state.join("mirrors/linux/app").read_dir().unwrap().next().unwrap().unwrap().path().join("src/big.bin")).unwrap();
+    assert!(laid == big, "a 3 MB file arrives whole");
 
     std::fs::create_dir_all(linux.dir.join("home/.kanna-v4")).unwrap();
     std::fs::write(linux.dir.join("home/.kanna-v4/config.json"), r#"{"build": {"mac": "mac"}}"#).unwrap();
