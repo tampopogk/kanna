@@ -1,6 +1,6 @@
-# Kanna Cloud: A User's VM
+# Kanna Cloud: How Kanna Provisions
 
-**Status:** built in slice 9 (`kanna cloud`, `scripts/cloud/`), first stage: the operator is the only tenant · **Part of:** [Kanna Cloud §3–4](kanna-cloud.md#3-provisioning) · **After:** [installing a host](cloud-provisioning.md) · **Model:** [cloud-tenant-vms](../../references/prototypes/cloud-tenant-vms/README.md)
+**Status:** built in slice 9 inside `kanna` (`kanna cloud`, `scripts/cloud/`); **being split** (2026-11-03): host and VM work moves to Kanna's internal `kanna-cloud` CLI and the customer keeps `kanna cloud request`, `accept` and `release` ([Cloud §4](kanna-cloud.md#4-how-kanna-runs-it)); the commands below are the version before the split · **Part of:** [Kanna Cloud §4](kanna-cloud.md#4-how-kanna-runs-it) · **After:** [installing a host](cloud-provisioning.md) · **Model:** [cloud-tenant-vms](../../references/prototypes/cloud-tenant-vms/README.md)
 
 How a host becomes Kanna machines: Incus on the host, then `kanna cloud provision`, which makes one user's VM, sets it up with [server setup](machine-setup.md), enrolls it into that user's machines by token, marked `hosted`, and gives it git credentials of its own. `kanna cloud release` takes it all back. Both run on the Mac, which is the operator's and, in this first stage, also the user's.
 
@@ -73,7 +73,7 @@ sequenceDiagram
 
 ## 3. Enrollment
 
-[Cloud §4](kanna-cloud.md#4-enrollment-by-token)'s token pairing, on the existing PAKE ([identity §2](machine-identity.md#2-pairing)) with three changes:
+[Cloud §6](kanna-cloud.md#6-cloud-machines-and-enrollment)'s token pairing, on the existing PAKE ([identity §2](machine-identity.md#2-pairing)) with three changes:
 
 - **An offer with a token:** `kanna machine pair --token-file FILE` offers the token instead of a six-digit code: 22 to 128 letters, digits, `-` and `_` (the provisioner's are 32 base-62 characters, about 190 bits), for 30 minutes, three tries, one use. Neither the offer's reply nor `machine list` ever shows it.
 - **Pairing through the relay:** `kanna machine pair T --peer KEY` with no address dials KEY through this machine's own relay, which the provisioner made the VM's too.
@@ -86,7 +86,7 @@ The provisioner runs the offer in the VM over `ssh … incus exec`, reads its ke
 
 - **A deploy key per repo, per VM** (`--repo OWNER/REPO`, several separated by commas): made in the VM (`ssh-keygen -t ed25519`, `~/.ssh/kanna-owner--repo`, lowercased: owners never hold `--`, so two repos never share a name), so its private half never leaves it, and added with write access by the Mac's `gh` (`POST repos/OWNER/REPO/keys`, titled `Kanna Cloud NAME (kc-…)`). GitHub lets a deploy key serve one repo, so each gets an ssh `Host` alias and git `url.….insteadOf` rules for both `git@github.com:OWNER/REPO` and `https://github.com/OWNER/REPO`: any clone or remote of that repo uses its key. github.com's host key is pinned from GitHub's published one, not learned on first use. Each key's ID goes in the record as soon as GitHub returns it. The repo is cloned into `~/repos/OWNER/REPO`.
 - **Git identity:** the Mac's global `user.name` and `user.email` are set in the VM, so agents' commits are the user's.
-- **Agent accounts:** nothing more. The VM joined, so the Mac supplies it the Claude setup token and API keys, and Codex's ChatGPT login stays on the Mac as its holder ([agent sign-in §2](agent-sign-in.md#2-how-a-machine-gets-them)). Signing in on the VM itself (`kanna accounts sign-in`) works as on any machine, and leaves a login there the operator can read ([Cloud §7](kanna-cloud.md#7-agent-sign-in-on-kanna-run-machines)).
+- **Agent accounts:** nothing more. The VM joined, so the Mac supplies it the Claude setup token and API keys, and Codex's ChatGPT login stays on the Mac as its holder ([agent sign-in §2](agent-sign-in.md#2-how-a-machine-gets-them)). Signing in on the VM itself (`kanna accounts sign-in`) works as on any machine, and leaves a login there the operator can read ([Cloud §9](kanna-cloud.md#9-agent-sign-in-on-kanna-run-machines)).
 
 ## 5. Releasing
 

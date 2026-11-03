@@ -1,6 +1,6 @@
 # Machines: Setting Up a Linux Machine
 
-**Status:** built in slice 1 (`scripts/server-setup.sh`), the release tarball in slice 6 · **Part of:** [your machines](machines.md) · **Used by:** [Kanna Cloud's provisioning](kanna-cloud.md#3-provisioning)
+**Status:** built in slice 1 (`scripts/server-setup.sh`), the release tarball in slice 6 · **Part of:** [your machines](machines.md) · **Used by:** [Kanna Cloud's provisioning](kanna-cloud.md#4-how-kanna-runs-it)
 
 How any Linux machine becomes one of your machines: a box of your own, or a VM Kanna Cloud makes for you. The script and the unit are the same in both; only who runs them differs.
 
@@ -56,5 +56,5 @@ The daemon logs to the journal (`journalctl --user -u kanna-daemon`).
 
 ## 4. Joining and updating
 
-- **Joining:** you pair the machine by code ([identity §2](machine-identity.md#2-pairing)), set up its git credentials ([tasks §4](machine-tasks.md#4-repos-and-credentials)), then give it your agent accounts ([agent sign-in](agent-sign-in.md)). A Kanna Cloud VM joins by token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
+- **Joining:** you pair the machine by code ([identity §2](machine-identity.md#2-pairing)), set up its git credentials ([tasks §4](machine-tasks.md#4-repos-and-credentials)), then give it your agent accounts ([agent sign-in](agent-sign-in.md)). A Kanna Cloud VM joins by token instead ([Cloud §6](kanna-cloud.md#6-cloud-machines-and-enrollment)).
 - **Updating** is yours: run `scripts/server-setup.sh --tarball` again with a newer release's Linux tarball (x86_64, `baseline` CPU, so older Xeons such as the R720s' Ivy Bridge run it), or install it your own way. The daemon restarts, upgrading the keeper when its build differs ([keeper upgrade](keeper-upgrade.md)), and terminals survive ([restarting](daemon-restart.md)). Machines work together only while their protocol is the same, so after a release that changes it, update each machine; until then the Machines tab shows it as Incompatible and says which side to update ([versions](machine-versions.md)).

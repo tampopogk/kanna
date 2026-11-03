@@ -38,7 +38,7 @@ The first milestone: your own machines, LAN first, your own relay or a fixed add
 
 ## Kanna Cloud
 
-After your machines' first milestone. Its first stage has the operator as the only tenant; a second tenant needs the tenant isolation models to pass.
+After your machines' first milestone. Kanna Cloud is Kanna's product ([Cloud](kanna-cloud.md)): customers ask from their own Kanna, Kanna provisions with its internal `kanna-cloud`. Its first stage has Kanna as the only tenant; a second tenant needs the tenant isolation models to pass and hosted peers' reach limited (C4).
 
 | Risk | Model | Shows | Before slices |
 |---|---|---|---|
@@ -48,11 +48,13 @@ After your machines' first milestone. Its first stage has the operator as the on
 
 | # | Task | Slice | After |
 |---|---|---|---|
-| 9 | Cloud 9: Provisioning | **Built** ([a user's VM](cloud-vms.md)): `kanna cloud setup-host`, `provision` and `release` from the Mac over ssh; VMs on the host-enforced tenant network from the first; enrollment by token through the Mac's relay; `hosted` in the peer log (protocol 5); a deploy key per repo made in the VM. [Cloud §3–4](kanna-cloud.md#3-provisioning): after [the host install](cloud-provisioning.md), Incus, `kanna cloud provision` (a VM for one user made, set up and enrolled by token), the `hosted` mark in the peer log, per-VM git credentials, release destroying the VM. **Changed:** Cloud operator work, not the user's LAN; agent sign-in is S1, which it uses. | 6, S1 |
-| C1 | Cloud: directory and relays | Accounts, the directory publishing peer logs and relaying the PAKE, Kanna's relays ([Cloud §5](kanna-cloud.md#5-directory-and-relays)). | 9 |
+| 9 | Cloud 9: Provisioning | Kanna's internal `kanna-cloud` CLI ([how Kanna provisions](cloud-vms.md)): host setup (Incus, the tenant network, the pool), making a VM for a customer's request, server setup in it, release that leaves nothing. The customer's side in `kanna`: `kanna cloud request` (a token), `kanna cloud accept KEY` (enrolled as `hosted`, with deploy keys the VM makes and the customer's own `gh` adds), `kanna cloud release` (revoke, remove deploy keys). The two passed by hand until C1. The `hosted` mark in the peer log (protocol 5). **Changed:** provisioning is Kanna's, never a customer command; built first inside `kanna` and being split out (2026-11-03). | 6, S1 |
+| C4 | Cloud: hosted peers' reach | A `hosted` machine reaches only its own tasks' records and streams on your other machines: no `--host` commands, terminals or other tasks ([Cloud §11](kanna-cloud.md#11-open-questions)). | 9 |
+| C1 | Cloud: accounts, directory and relays | Cloud accounts and the account key in the Mac's Keychain; the provisioning service that takes `kanna cloud` requests and returns the accept, replacing the hand-off; the directory publishing peer logs and relaying the PAKE; Kanna's relays ([Cloud §3–4, §7](kanna-cloud.md#7-directory-and-relays)). **Changed:** accounts and the provisioning service join it. | 9 |
+| C5 | Cloud: Cloud tasks | `kanna task new … --on cloud` and `kanna task move TASK cloud`: a VM per task, enrolled as `hosted` and `task`, not in the Machines tab; repo cloned with the customer's git access; the task moved there and its work back by task transfer; the VM destroyed when the task is done ([Cloud §5](kanna-cloud.md#5-cloud-tasks)). | C1, C4, 11 |
 | 7 | Cloud 7: xcodebuild redirect to a build Mac | The shim's first version ([build Macs §6](build-macs.md#6-build-order)): worktree sync over a `sync` stream, a durable supervisor, tenant-exclusive macOS VMs on this MBP and later the mini, no host execution, mapped diagnostics, `kanna build -- SCRIPT`. **Changed:** Cloud's; the isolation model must pass first. | 2, both build-Mac models |
 | 12 | Cloud 12: Build jobs and iOS from remote tasks | A job queue across a pool of build Macs matched by capability (arch, macOS, Xcode), slots, Simulator leases, tenant-exclusive macOS VM slots behind a restricted host VM manager, the `.app` fetched to the MBP (no ssh to replace). **Changed:** Cloud's. | 7, 5 |
-| C2 | Cloud: placement by capability | A task's `needs:` against the capabilities in each machine's peer log entry, for runners asking and the scheduler ([Cloud §5](kanna-cloud.md#5-directory-and-relays)). | 10, C1 |
-| C3 | *(not yet a task)* Cloud: other tenants | The host-enforced tenant network, quotas, billing. | 9, C1, Linux tenant model |
+| C2 | Cloud: placement by capability | A task's `needs:` against the capabilities in each machine's peer log entry, for runners asking and the scheduler ([Cloud §7](kanna-cloud.md#7-directory-and-relays)); a Cloud task's `needs: xcode` sends its builds to a build Mac. | 10, C1 |
+| C3 | *(not yet a task)* Cloud: other tenants | Quotas, billing per account, the network check on every host. | C1, C4, Linux tenant model |
 
 **Later, not yet tasks:** the encrypted Shelf copy, push, the phone away from the LAN.

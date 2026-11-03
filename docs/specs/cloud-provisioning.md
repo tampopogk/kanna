@@ -1,8 +1,8 @@
 # Kanna Cloud: Installing a Host
 
-**Part of:** [Kanna Cloud §3](kanna-cloud.md#3-provisioning)
+**Part of:** [Kanna Cloud §4](kanna-cloud.md#4-how-kanna-runs-it)
 
-`scripts/cloud/provision-idrac.sh` takes a Dell PowerEdge (Kanna Cloud's R720s) from powered off to Ubuntu Server you can ssh into, through its iDRAC alone: no monitor, no USB stick, no PXE server. It runs on the operator's Mac. Its files and Keychain items are named `kanna-cloud`; a run moves ones an earlier version named `kanna-fleet` (the folders, the iDRAC key, the Keychain items it uses), and hosts installed before keep their `kanna-fleet-report` unit. Making users' VMs on the host is the next step ([Cloud §3](kanna-cloud.md#3-provisioning)).
+`scripts/cloud/provision-idrac.sh` takes a Dell PowerEdge (Kanna Cloud's R720s) from powered off to Ubuntu Server you can ssh into, through its iDRAC alone: no monitor, no USB stick, no PXE server. It runs on the operator's Mac. Its files and Keychain items are named `kanna-cloud`; a run moves ones an earlier version named `kanna-fleet` (the folders, the iDRAC key, the Keychain items it uses), and hosts installed before keep their `kanna-fleet-report` unit. Making users' VMs on the host is the next step ([Cloud §4](kanna-cloud.md#4-how-kanna-runs-it)).
 
 ```sh
 scripts/cloud/provision-idrac.sh --idrac 172.16.0.2 --hostname r720-1 --wifi-ssid SSID
