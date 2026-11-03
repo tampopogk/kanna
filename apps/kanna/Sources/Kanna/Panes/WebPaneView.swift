@@ -21,6 +21,11 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var agent: String? { didSet { markup?.agent = agent } }
     var agentStatus: String? { didSet { markup?.agentStatus = agentStatus } }
     var onSend: DocSend? { didSet { markup?.onSend = onSend } }
+    var onMarkup: ((PageMarkupView?) -> Void)?
+    var onComments: ((NSView) -> Void)?
+    var agentName: ((String) -> String)? { didSet { markup?.agentName = agentName } }
+    private let bar = DocBar()
+    private var barShown = false
 
     var markable: Bool { didSet { if markable != oldValue { markUp(webView.url ?? url) } } }
     private(set) var loads = 0
@@ -37,6 +42,11 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
             MainActor.assumeIsolated { self?.onTitleChange?(view.title ?? "") }
         }
         addSubview(webView)
+        bar.comments.isHidden = false
+        bar.comments.onPress = { [weak self] in
+            guard let self else { return }
+            onComments?(bar.comments)
+        }
         notice.alignment = .center
         notice.font = .systemFont(ofSize: 13)
         notice.textColor = .secondaryLabelColor
@@ -60,7 +70,9 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     }
 
     private func markUp(_ url: URL?) {
-        let page = markable ? PageMarkupView.page(for: url) : nil
+        let local = PageMarkupView.page(for: url)
+        showBar(markable ? nil : local)
+        let page = markable ? local : nil
         guard page != markup?.path else { return }
         markup?.stop()
         markup?.removeFromSuperview()
@@ -70,6 +82,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
             view.agent = agent
             view.agentStatus = agentStatus
             view.onSend = onSend
+            view.agentName = agentName
             addSubview(view, positioned: .below, relativeTo: notice)
             markup = view
         } else {
@@ -77,7 +90,23 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         }
         relay.target = markup
         needsLayout = true
+        onMarkup?(markup)
     }
+
+    private func showBar(_ page: String?) {
+        barShown = page != nil
+        if let page {
+            bar.path.stringValue = (page as NSString).lastPathComponent
+            if bar.superview == nil { addSubview(bar) }
+        } else {
+            bar.removeFromSuperview()
+        }
+        needsLayout = true
+    }
+
+    var commentsButtonShown: Bool { barShown }
+    var barText: [String] { barShown ? [bar.path.stringValue, bar.comments.label.stringValue] : markup?.barText ?? [] }
+    func pressComments() { bar.comments.onPress?() }
 
     var zoom: CGFloat { webView.magnification }
 
@@ -97,7 +126,9 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
 
     override func layout() {
         super.layout()
-        if let markup { markup.frame = bounds } else { webView.frame = bounds }
+        let barHeight: CGFloat = barShown ? 34 : 0
+        bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
+        if let markup { markup.frame = bounds } else { webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - barHeight)) }
         let width = min(bounds.width - 40, 420)
         let size = notice.sizeThatFits(NSSize(width: width, height: .greatestFiniteMagnitude))
         notice.frame = NSRect(x: (bounds.width - width) / 2, y: (bounds.height - size.height) / 2, width: width, height: size.height)

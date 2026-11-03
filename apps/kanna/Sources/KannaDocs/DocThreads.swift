@@ -163,140 +163,51 @@ public enum DocDelivery: Equatable, Sendable {
 
 public typealias DocSend = (_ agent: String, _ text: String, _ doc: String, _ thread: String, _ done: @escaping (DocDelivery) -> Void) -> Void
 
-public struct DocStore {
-    public let file: String
-    public let path: String
+public struct DocEdit: Equatable {
+    public var state: String?
+    public var status: String?
+    public var error: String??
+    public var line: Int?
+    public var message: DocMessage?
 
-    public init(file: String) {
-        self.file = file
-        let root = Self.repoRoot(of: file)
-        let relative = Self.relative(file, to: root)
-        path = root + "/.kanna/docs/" + relative.replacingOccurrences(of: "/", with: "__") + ".json"
+    public init(state: String? = nil, status: String? = nil, error: String?? = nil, line: Int? = nil, message: DocMessage? = nil) {
+        self.state = state
+        self.status = status
+        self.error = error
+        self.line = line
+        self.message = message
     }
 
-    public var relativeName: String { Self.relative(file, to: Self.repoRoot(of: file)) }
-
-    package static func repoRoot(of file: String) -> String {
-        let start = URL(fileURLWithPath: file).deletingLastPathComponent().standardizedFileURL
-        var folder = start
-        while true {
-            if FileManager.default.fileExists(atPath: folder.appendingPathComponent(".git").path) { return folder.path }
-            let up = folder.deletingLastPathComponent()
-            if up.path == folder.path { return start.path }
-            folder = up
+    public init(delivered: DocDelivery, line: Int) {
+        switch delivered {
+        case .sent: self.init(status: "sent", error: .some(nil), line: line)
+        case .waiting: self.init(error: .some(nil), line: line)
+        case .failed(let why): self.init(status: "unsent", error: .some(why), line: line)
         }
     }
+}
 
-    package static func relative(_ file: String, to root: String) -> String {
-        file.hasPrefix(root + "/") ? String(file.dropFirst(root.count + 1)) : (file as NSString).lastPathComponent
+public enum DocChange: Equatable {
+    case post(DocThread, mark: Data?)
+    case edit(String, DocEdit)
+    case agent(String)
+}
+
+public struct DocAnswer {
+    public var id: String?
+    public var record: DocRecord?
+    public var error: String?
+
+    public init(id: String? = nil, record: DocRecord? = nil, error: String? = nil) {
+        self.id = id
+        self.record = record
+        self.error = error
     }
+}
 
-    public var stamp: Date? { (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date }
+public typealias DocChanger = (DocChange, @escaping @MainActor (DocAnswer) -> Void) -> Void
 
-    public func read() -> DocRecord {
-        guard let data = Self.readNoFollow(path), let record = try? JSONDecoder().decode(DocRecord.self, from: data) else {
-            return DocRecord(file: file)
-        }
-        return record
-    }
-
-    package static func readNoFollow(_ path: String) -> Data? {
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return nil }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        return try? handle.readToEnd()
-    }
-
-    package static func realFolder(_ path: String) throws {
-        if mkdir(path, 0o755) != 0, errno != EEXIST { throw CocoaError(.fileWriteNoPermission) }
-        var info = stat()
-        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw CocoaError(.fileWriteInvalidFileName) }
-    }
-
-    package func delivered(_ id: String, _ delivery: DocDelivery, line: Int) {
-        try? update { record in
-            guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-            switch delivery {
-            case .sent: (record.threads[index].status, record.threads[index].error) = ("sent", nil)
-            case .waiting: record.threads[index].error = nil
-            case .failed(let why): (record.threads[index].status, record.threads[index].error) = ("unsent", why)
-            }
-            record.threads[index].line = line
-        }
-    }
-
-    @discardableResult
-    public func update<T>(_ change: (inout DocRecord) -> T) throws -> T {
-        let folder = (path as NSString).deletingLastPathComponent
-        try Self.realFolder((folder as NSString).deletingLastPathComponent)
-        try Self.realFolder(folder)
-        let lock = open(path + ".lock", O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard lock >= 0 else { throw CocoaError(.fileWriteNoPermission) }
-        defer { close(lock) }
-        flock(lock, LOCK_EX)
-        defer { flock(lock, LOCK_UN) }
-        var record = read()
-        let result = change(&record)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        let data = try encoder.encode(record)
-        let temporary = path + ".\(UUID().uuidString).tmp"
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
-        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        do {
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } catch {
-            unlink(temporary)
-            throw error
-        }
-        guard rename(temporary, path) == 0 else {
-            unlink(temporary)
-            throw CocoaError(.fileWriteUnknown)
-        }
-        return result
-    }
-
-    var marksFolder: String { (path as NSString).deletingLastPathComponent + "/marks" }
-
-    func markFile(_ id: String) -> String {
-        marksFolder + "/" + ((path as NSString).lastPathComponent as NSString).deletingPathExtension + "-\(id).png"
-    }
-
-    static let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-
-    public func mark(_ id: String) -> String? {
-        guard Self.isThreadID(id), let data = Self.readNoFollow(markFile(id)), data.starts(with: Self.png) else { return nil }
-        return Self.relative(markFile(id), to: Self.repoRoot(of: file))
-    }
-
-    @discardableResult
-    public func saveMark(_ id: String, png data: Data) throws -> String {
-        guard Self.isThreadID(id), data.starts(with: Self.png) else { throw CocoaError(.fileWriteInvalidFileName) }
-        let docs = (path as NSString).deletingLastPathComponent
-        try Self.realFolder((docs as NSString).deletingLastPathComponent)
-        try Self.realFolder(docs)
-        try Self.realFolder(marksFolder)
-        let target = markFile(id)
-        let temporary = target + ".\(UUID().uuidString).tmp"
-        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
-        guard fd >= 0 else { throw CocoaError(.fileWriteNoPermission) }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        do {
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } catch {
-            unlink(temporary)
-            throw error
-        }
-        guard rename(temporary, target) == 0 else {
-            unlink(temporary)
-            throw CocoaError(.fileWriteUnknown)
-        }
-        return Self.relative(target, to: Self.repoRoot(of: file))
-    }
-
+public enum Doc {
     public static func isThreadID(_ id: String) -> Bool {
         id.count > 1 && id.count < 12 && id.first == "c" && id.dropFirst().allSatisfy(\.isASCII) && id.dropFirst().allSatisfy(\.isNumber)
     }

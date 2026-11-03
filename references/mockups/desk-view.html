@@ -96,12 +96,14 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .strip .hint kbd { font: 11px var(--mono); }
 .strip .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; }
 .strip .item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; min-width: 0; }
-.strip .item:hover { color: var(--text); background: var(--panel); }
+.strip .item:hover, .strip .item.hover { color: var(--text); background: var(--panel); }
 .strip .item.needs { color: var(--warn); }
 .strip .item .nm { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .strip .item .kb { display: none; font-size: 11px; }
-.strip .item:hover .kb { display: inline; }
-.strip .count { margin-left: auto; white-space: nowrap; padding: 3px 8px; }
+.strip .item:hover .kb, .strip .item.hover .kb { display: inline; }
+.strip .count { white-space: nowrap; padding: 3px 8px; }
+.strip .spacer { flex: 1; }
+.strip .hint { flex: none; }
 
 .menubar { position: relative; z-index: 5; height: 26px; display: flex; align-items: center; gap: 2px; padding: 0 10px; margin: 0 0 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
 body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0 0 1px; }
@@ -121,7 +123,7 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
 <main>
   <div class="intro">
     <h1>Desk view: the planner, the Desk's three tasks, the Shelf below</h1>
-    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1, ⌘2, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
+    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1, ⌘2) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below, in key order (⌘1 first, then ⌘2), each showing its key on hover, then ⌘. Desk and the Shelf's count at its right end. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="ring" title="A Desk task that isn't active stops to ask you something">Simulate: a Desk task needs you</button>
@@ -130,7 +132,6 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
     <div class="keys">
       <span><kbd>⌘.</kbd> the Desk view ⇄ the active task</span>
       <span><kbd>⌘1</kbd> <kbd>⌘2</kbd> the Desk's other tasks: <kbd>⌘1</kbd> the one left last, again flips back; <kbd>⌘2</kbd> the one left longest ago, again cycles through them all</span>
-      <span><kbd>⇧⌘A</kbd> the Desk task waiting longest for you</span>
       <span><kbd>⌘F</kbd> search the Shelf (Desk view): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Desk, <kbd>esc</kbd> clear</span>
     </div>
   </div>
@@ -179,8 +180,7 @@ const shelf = () => s.tasks.filter(t => t.place === "shelf");
 const active = () => task(s.active);
 const byAge = list => list.slice().sort((a, b) => a.madeAt - b.madeAt);
 const others = () => {
-  const rest = onDesk().filter(t => t.id !== s.active).sort((a, b) => b.leftAt - a.leftAt);
-  return rest.filter(t => t.status === "needs").concat(rest.filter(t => t.status !== "needs"));
+  return onDesk().filter(t => t.id !== s.active).sort((a, b) => b.leftAt - a.leftAt);
 };
 const keyOf = t => { const i = others().indexOf(t); return i >= 0 && i < 2 ? "⌘" + (i + 1) : ""; };
 const words = q => q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -228,8 +228,9 @@ function taskHTML(t) {
 
 function stripHTML() {
   const waiting = shelf().length;
-  return `<span class="hint" data-toggle title="The Desk view: the planner, the Desk's tasks and the Shelf"><kbd>⌘.</kbd> Desk</span>${others().length ? `<span class="sep"></span>` : ""}` +
-    byAge(others()).map(t => `<span class="item ${t.status === "needs" ? "needs" : ""}" data-activate="${t.id}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span class="nm">${esc(t.title)}</span><span class="meta">· ${t.status === "needs" ? "needs you" : ago(t.leftAt) + " ago"}</span><span class="kb">${keyOf(t)}</span></span>`).join("") +
+  return others().map(t => `<span class="item ${t.status === "needs" ? "needs" : ""} ${t.id === hovered ? "hover" : ""}" data-activate="${t.id}" title="${esc(t.title)}"><span class="dot ${t.status}"></span><span class="nm">${esc(t.title)}</span><span class="meta">· ${t.status === "needs" ? "needs you" : ago(t.leftAt) + " ago"}</span><span class="kb">${keyOf(t)}</span></span>`).join("") +
+    `<span class="spacer"></span>` + (others().length ? `<span class="sep"></span>` : "") +
+    `<span class="hint" data-toggle title="The Desk view: the planner, the Desk's tasks and the Shelf"><kbd>⌘.</kbd> Desk</span>` +
     (waiting ? `<span class="count">${waiting} on the Shelf</span>` : "");
 }
 
@@ -263,7 +264,6 @@ function menubar() {
   const drop = `<div class="drop">
     ${item(inTask ? "Show Desk" : "Show Active Task", "⌘.", toggleOn, "toggle")}
     ${item("Move to Shelf", "", inTask, "shelve")}
-    <hr>${item("Task Waiting Longest", "⇧⌘A", !!waitingLongest(), "waiting")}
     <hr>${[1, 2].map(n => item(`Desk Task ${n}`, `⌘${n}`, !!slot(n), "slot" + n)).join("")}
   </div>`;
   document.getElementById("menubar").innerHTML = ["Kanna", "File", "Edit", "Pane", "View", "Task", "Window"].map(m =>
@@ -313,7 +313,6 @@ function moveToShelf() {
   render();
 }
 
-function waitingLongest() { return others().filter(t => t.status === "needs").sort((a, b) => (a.needsAt || 0) - (b.needsAt || 0))[0]; }
 
 document.addEventListener("click", e => {
   const el = sel => e.target.closest(sel);
@@ -323,7 +322,6 @@ document.addEventListener("click", e => {
     const m = mi.dataset.menu;
     if (m === "toggle") return toggle();
     if (m === "shelve") return moveToShelf();
-    if (m === "waiting") return activate(waitingLongest().id);
     if (m.startsWith("slot")) return activate(others()[Number(m.slice(4)) - 1].id);
     return render();
   }
@@ -350,7 +348,6 @@ document.addEventListener("keydown", e => {
   if (!e.metaKey) return;
   if (!e.shiftKey && e.key === ".") { e.preventDefault(); return toggle(); }
   if (!e.shiftKey && /^[12]$/.test(e.key)) { const t = others()[Number(e.key) - 1]; if (t) { e.preventDefault(); activate(t.id); } return; }
-  if (e.shiftKey && e.key.toLowerCase() === "a") { e.preventDefault(); const t = waitingLongest(); if (t) activate(t.id); return; }
   if (!e.shiftKey && e.key.toLowerCase() === "f" && s.view === "desk") { const f = document.querySelector("[data-find]"); if (f) { e.preventDefault(); s.finding = true; f.focus(); f.select(); } }
 });
 document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
@@ -359,7 +356,7 @@ document.getElementById("ring").onclick = () => { const t = others().find(t => t
 if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
 if (location.hash.includes("full")) { task("p3").place = "shelf"; task("p3").by = "the planning agent"; task("p3").prompt = "Fold the repeated desk() helpers into one"; moveToDesk("p9"); }
-if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").needsAt = Date.now(); }
+if (location.hash.includes("needs")) { task("p3").status = "needs"; task("p3").needsAt = Date.now(); }
 if (location.hash.includes("desk")) s.view = "desk";
 const pointed = location.hash.match(/hover=([^&]*)/);
 if (pointed) hovered = pointed[1];

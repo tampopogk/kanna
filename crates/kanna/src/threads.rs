@@ -43,15 +43,19 @@ pub fn run(request: &Value, json_output: bool, callers: &[String]) -> Result<(),
         }
         "reply" => {
             let text = request["text"].as_str().unwrap_or_default().to_string();
+            let mut reopened = false;
             update(&file, |doc| {
                 let thread = thread_mut(doc, id.unwrap_or_default(), &file)?;
                 if let Some(messages) = thread["messages"].as_array_mut() {
                     messages.push(json!({ "who": "agent", "text": text, "at": now() }));
                 }
                 thread["status"] = json!("replied");
+                reopened = thread["state"] == "resolved";
+                thread["state"] = json!("open");
                 Ok(())
             })?;
-            println!("replied to {}", id.unwrap_or_default());
+            let note = if reopened { ", reopened" } else { "" };
+            println!("replied to {}{note}", id.unwrap_or_default());
         }
         "resolve" | "reopen" => {
             let state = if action == "resolve" { "resolved" } else { "open" };
@@ -414,6 +418,11 @@ mod tests {
         assert_eq!(shown["threads"][0]["line"], 3);
         assert!(show(&shown["threads"][0], "docs/specs/desk.md").starts_with("c1 · docs/specs/desk.md:3 · resolved\n> The Shelf holds\nyou: Why?\nagent: Because."));
         assert!(run(&json!({ "local": "reply", "id": "c9", "text": "x", "doc": file }), false, &[]).is_err());
+        run(&json!({ "local": "reply", "id": "c1", "text": "Done.", "doc": file }), false, &[]).unwrap();
+        let thread = &read(&file)["threads"][0];
+        assert_eq!((thread["state"].clone(), thread["status"].clone()), (json!("open"), json!("replied")));
+        assert_eq!(thread["messages"][2]["text"], "Done.");
+        run(&json!({ "local": "resolve", "id": "c1", "doc": file }), false, &[]).unwrap();
         let ink = json!({ "marks": [{ "kind": "strike", "strokes": [[[0, 4], [90, 5]]], "anchor": { "line": 9, "text": "The Shelf holds the rest." }, "words": "the rest." }] });
         update(&file, |doc| {
             doc["threads"].as_array_mut().unwrap().push(json!({ "id": "c2", "quote": "", "line": 9, "state": "open", "status": "sent", "messages": [], "ink": ink }));

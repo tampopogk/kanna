@@ -32,9 +32,11 @@ sequenceDiagram
     Note over A: its turn runs on
     D->>A: once its turn is over: c2 as a message
     D->>F: c2 Sent
-    A->>A: edits the file
-    A->>F: kanna markup reply c2 "…"
+    A->>F: kanna markup reply c2 "I'll …"
     F->>Doc: c2 shows the reply
+    A->>A: edits the file (longer work in the background)
+    A->>F: kanna markup reply c2 "Done: …"
+    F->>Doc: c2 shows what landed
     You->>Doc: read it, resolve
 ```
 
@@ -45,7 +47,7 @@ General remarks that aren't about something in the doc go straight to the agent'
 Every doc works the same way; only what you can point at differs.
 
 - **Two kinds of doc.** A markdown file and an HTML page, opened for comments with `kanna markup FILE.md` or `kanna markup FILE.html`.
-- **Comments are opt-in.** `kanna open md` and `kanna open web` show the doc alone: no thread list, no marks, ⌘ gestures do nothing. Comments come on or go off in a pane that's already open with `kanna markup PANE` (`--off`) or **Pane ▸ Comments**; turning them off keeps its threads for next time.
+- **Comments are opt-in.** `kanna open md` and `kanna open web` show the doc alone: no thread list, no marks, ⌘ gestures do nothing. Comments come on in a pane that's already open with **Comments** in its bar, **Pane ▸ Comments**, `kanna markup PANE`, or `kanna markup FILE` run beside it, and go off with the menu item or `--off`; turning them off keeps its threads for next time ([markup toggle](markup-toggle.md)).
 - **Turning comments on or off keeps the pane.** Only the comment UI comes or goes: the toolbar's agent and Threads controls, the thread panel and the marks. The doc isn't read or drawn again and a page isn't reloaded, so the scroll, zoom, selection, history and a page's own state (its scripts' variables, a form half filled) stay as they were. `--to` only changes where comments go.
 - **Preview only.** The pane shows the file and reloads when it, or a local image it shows, changes on disk (within a second, at the same reading position and zoom); you don't edit in it. Comments are the only thing you add.
 - **With its changes marked** (`kanna open md FILE --diff REF`, [markdown diff](markdown-diff.md)), comments work the same.
@@ -76,7 +78,7 @@ Every doc works the same way; only what you can point at differs.
 
 **A comment is a message to the agent that opened the doc**, left the way `kanna task send` leaves one ([agent messaging](agent-messaging.md)): kept in `kanna.db` and handed to the agent through its own door once its turn is over. So a comment posted mid-turn never lands as an interjection, never joins a draft you left in the agent's prompt, isn't lost while the agent is stopped, and shows in `kanna task messages`, from `user`.
 
-- **Which pane:** the terminal that ran `kanna markup` for the doc, or the one named by `--to PANE`, shown in the toolbar. `kanna markup PANE --to AGENT` sends a doc's comments somewhere else from then on. Comments turned on from the menu go to the pane's agent if it had one, else nowhere: they're saved, not sent.
+- **Which pane:** the terminal that ran `kanna markup` for the doc, or the one named by `--to PANE`, shown in the toolbar. `kanna markup PANE --to AGENT` sends a doc's comments somewhere else from then on. Comments turned on from the bar or the menu go to the agent of the place the doc is in, or one you pick ([markup toggle §2](markup-toggle.md#2-where-comments-go)).
 - **Agents with a door get messages:** a task's Claude (its messaging socket) or Codex (its app-server), or the repo's planner, as [agent messaging](agent-messaging.md#2-delivery) delivers them. A stopped Shelf task runs for a comment; a task stopped on the Desk gets it when you start it.
 - **Every other agent is typed into**, as before: Copilot, OpenCode, agy, a terminal that isn't a task's agent or a planner, or a Claude or Codex with no door. The comment goes in as one paste, then Enter, as `kanna send` does, the moment you post it, so it can still join a draft or land mid-turn there.
 - **What the agent gets:** a header naming the thread, file and line; what you pointed at, as `>` lines; then your words. For a passage that's the passage:
@@ -108,8 +110,8 @@ Make the title bar quieter.
 
 - **Replies you add to a thread** are sent the same way, under the same header.
 - **Its own header, not a sender's:** a comment keeps its `[kanna comment …]` header in the agent's prompt, without the `[message from …]` other messages carry; several waiting at once go in one prompt, a blank line apart, with any other messages.
-- **How to answer is a skill, not part of the message.** The `kanna-markup` skill in kanna-skills, which Kanna installs for every agent once you agree ([agent setup](agent-setup.md)), tells the agent that a `[kanna comment …]` is a review comment, to fix the doc, then answer with `kanna markup reply cN`.
-- **The agent replies; you resolve.** An answered thread stays open, so you read the reply beside the doc and resolve it yourself (or reply again). The agent resolves only when you ask.
+- **How to answer is a skill, not part of the message.** The `kanna-markup` skill in kanna-skills, which Kanna installs for every agent once you agree ([agent setup](agent-setup.md)), tells the agent that a `[kanna comment …]` is a review comment and to answer it with `kanna markup reply cN` before doing the work: the answer, or what it'll change and how it read the comment. Work longer than a quick doc edit goes to a subagent or the background so the turn ends, since the next comment reaches it only when it does; a second reply in the thread says what landed.
+- **The agent replies; you resolve.** An answered thread stays open, so you read the reply beside the doc and resolve it yourself (or reply again). The agent resolves only when you ask. A reply to a thread you've resolved reopens it, so the agent's later reply (what landed, after you resolved its first) shows where you look rather than under *Show resolved*.
 - **No agent** (the doc has none, or its pane is closed and wasn't a task's): posting still saves the thread, and it says why it wasn't sent.
 
 ```mermaid
@@ -121,6 +123,7 @@ stateDiagram-v2
     replied --> waiting: you reply again
     sent --> resolved: you resolve
     replied --> resolved: you resolve
+    resolved --> replied: kanna markup reply
     resolved --> waiting: reopen and reply
 ```
 
@@ -156,11 +159,11 @@ Run in the doc's repo, the doc is found from the thread ID, the docs whose comme
 
 | Command | Does |
 |---|---|
-| `kanna markup FILE.md\|FILE.html [--to PANE]` | Open a doc with comments, sent to this pane (or PANE) |
+| `kanna markup FILE.md\|FILE.html [--to PANE]` | Turn comments on in the pane of this workspace that shows the doc, or open one; sent to this pane (or PANE) |
 | `kanna markup PANE [--to PANE \| --off]` | Turn comments on or off in a pane already open, or send them elsewhere |
 | `kanna markup comments [--all]` | List the threads (open only, unless `--all`) |
 | `kanna markup show cN` | One thread: what it points at, line, messages, state |
-| `kanna markup reply cN TEXT` | Answer a thread |
+| `kanna markup reply cN TEXT` | Answer a thread, reopening it if resolved |
 | `kanna markup resolve cN` / `reopen cN` | Resolve or reopen a thread |
 
 ## 6. How it's built
@@ -174,10 +177,12 @@ flowchart LR
     subgraph daemon["daemon"]
         M["messages<br/>(kanna.db)"]
         T["terminals"]
+        D["thread watches<br/>markup.*"]
     end
     A["agent's door<br/>Claude socket, Codex app-server"]
     CLI["kanna markup reply / show / …<br/>(from the agent)"]
-    V <-->|"read, write, watch"| F
+    V <-->|"markup.subscribe, markup.post, markup.edit"| D
+    D <-->|"read, write, watch"| F
     V -->|"tasks comment"| M
     M -->|"its turn is over"| A
     M -->|"Sent"| F
@@ -187,7 +192,7 @@ flowchart LR
 ```
 
 - **Threads live in files**, `<repo>/.kanna/docs/<path>.json`, one per doc, which the app, `kanna markup comments|show|reply|resolve|reopen` and the reference model all read and write the same way (one format, one lock file), so answering works with the app closed and the pane picks up a reply when the file changes.
-- **Sending** is the daemon's `tasks` action `comment` (`pane`, `text`, `doc`: the doc's absolute path, `thread`). When the pane is a task's agent, or the repo's planner, whose agent takes messages, the daemon queues it in `messages` with the thread (its `comment` column) and answers `waiting`; on delivery it marks the thread Sent in its file, through the same `kanna-threads` code and lock as the CLI, unless another of its comments still waits. Otherwise it types it with `send`, as a bracketed paste then Return ([kanna send](kanna-send.md)), and answers `sent`. The app writes the thread Waiting before it asks and, on a `waiting` answer, leaves the status to the daemon. `kanna markup` passes the pane it runs in (`$KANNA_TERMINAL`, which Kanna sets in every terminal), and the doc remembers it. Comments on or off are the pane's `markup` flag, set by `open` or the `markup` command.
+- **Sending** is the daemon's `tasks` action `comment` (`pane`, `text`, `doc`: the doc's absolute path, `thread`). When the pane is a task's agent, or the repo's planner, whose agent takes messages, the daemon queues it in `messages` with the thread (its `comment` column) and answers `waiting`; on delivery it marks the thread Sent in its file, through the same `kanna-threads` code and lock as the CLI, unless another of its comments still waits. Otherwise it types it with `send`, as a bracketed paste then Return ([kanna send](kanna-send.md)), and answers `sent`. The app posts the thread Waiting before it asks and, on a `waiting` answer, leaves the status to the daemon. `kanna markup` passes the pane it runs in (`$KANNA_TERMINAL`, which Kanna sets in every terminal), and the doc remembers it. Comments on or off are the pane's `markup` flag, set by `open` or the `markup` command.
 - **A live flag.** The `markup` command sets the pane's `markup` and `agent` and, while the pane is starting or running, tells the app with a `pane` notice (the pane's record) instead of restarting it; the app hands the record to the pane's view, which adds or takes away its comment UI (`MarkdownPaneView.set(markup:)`, `WebPaneView.markable`) and its agent. A web pane already moves its web view in and out of the comment view as it navigates between a local page and anything else, so turning comments on is the same move. A pane that isn't running (failed, or never shown) is started again, as before, so `kanna markup` still brings it up.
 
 ```mermaid
@@ -206,7 +211,7 @@ sequenceDiagram
 - **Other fields that still restart a pane.** `navigate` (a new path, line, URL or diff), `kanna comment` on a code pane (its note is fixed when the code view is made) and a tour's step on a code or markdown pane all go through the daemon's `reload`, which stops the pane's view and makes a new one. Each re-reads the file; a web pane's `navigate` loads its new URL in a new web view. They could become live changes the same way.
 - **The app** adds the thread panel, marks and the comment box to a markdown or web pane with comments on, one shared set of views (`KannaDocs`), and gets thread changes over the app link like any other pane update. A page is worked from a script world of its own (`WKContentWorld`), which the page's scripts can't see or call; its marked-up copy is the web view's own screenshot.
 - **Stored** in `<repo>/.kanna/docs/`, one file per doc, so threads survive restarts.
-- **Checks:** both panes have the native comment UI, with the [mockup](../../references/mockups/doc-markup.html)'s thread cards and waiting states (e2e `md_comments` drives the markdown pane, `page_comments` a page, and both screenshot it; both turn comments on in a scrolled pane and check it's the same view, read once, at the same scroll, and the page's script state survives; both post to the mock agent as a `claude` task on its socket mid-turn and check the comment waits, never reaches the terminal or the draft typed there, arrives after the turn and turns Sent, and that a comment to a `copilot` pane is still typed; `md_comments` also checks a reply wakes the stopped Shelf task); `cargo test -p kanna-daemon` checks a comment as a message (its header kept, from `user`, its thread marked Sent) and the typed fallback; the panes get the agent's status from the app's `status` notices. The thread files keep the reference model's format, so the prototype's `kanna-doc reply` and `resolve` still work on them.
+- **Checks:** both panes have the native comment UI, with the [mockup](../../references/mockups/doc-markup.html)'s thread cards and waiting states (e2e `md_comments` drives the markdown pane, `page_comments` a page, and both screenshot it; both turn comments on in a scrolled pane and check it's the same view, read once, at the same scroll, and the page's script state survives; both post to the mock agent as a `claude` task on its socket mid-turn and check the comment waits, never reaches the terminal or the draft typed there, arrives after the turn and turns Sent, and that a comment to a `copilot` pane is still typed; `md_comments` also checks a reply wakes the stopped Shelf task); `cargo test -p kanna-daemon` checks a comment as a message (its header kept, from `user`, its thread marked Sent) and the typed fallback; the panes get the agent's status from the app's `status` notices. The app reads and writes threads only through the doc's daemon ([files and threads](files-and-threads.md)), so a remote task's threads work as a local one's; the thread files keep the reference model's format, so the prototype's `kanna-doc reply` and `resolve` still work on them.
 
 ## 7. Glossary
 
