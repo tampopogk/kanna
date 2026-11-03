@@ -118,6 +118,7 @@ package final class DocBar: FlippedView {
         for view in [path, agent, threads, diff, comments] { addSubview(view) }
         threads.on = true
         comments.isHidden = true
+        diff.isHidden = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

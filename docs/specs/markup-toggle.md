@@ -1,6 +1,6 @@
 # Markup Toggle
 
-**Status:** building · **Mockup:** [`references/mockups/markup-toggle.html`](../../references/mockups/markup-toggle.html) · **Part of:** [doc markup](doc-markup.md)
+**Status:** built · **Mockup:** [`references/mockups/markup-toggle.html`](../../references/mockups/markup-toggle.html) · **Part of:** [doc markup](doc-markup.md)
 
 Two ways to turn comments on in a doc that's already open, instead of opening it again in a new pane: **Comments** in the doc's bar, and `kanna markup FILE` finding the pane that already shows FILE.
 
