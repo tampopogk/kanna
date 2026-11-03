@@ -172,3 +172,20 @@ fn cancelling_stops_the_job_and_says_so() {
     assert_eq!((outcome, out.as_str()), (Outcome::Cancelled, "started\n"));
     assert!(started.elapsed() < Duration::from_secs(15));
 }
+
+#[test]
+fn a_worktree_of_thousands_of_files_goes_in_one_job_and_a_rebuild_sends_one() {
+    let rig = rig("many");
+    for i in 0..2000 {
+        std::fs::write(rig.repo.join("src").join(format!("file-{i:04}.swift")), format!("let v{i} = {i}\n")).unwrap();
+    }
+    let (req, worktree) = request(&rig, &["sh", "-c", "ls src | wc -l | tr -d ' '"]);
+    let (outcome, out, err) = run(&rig, &req, &worktree);
+    assert_eq!((outcome, out.as_str()), (Outcome::Exited(0), "2001\n"), "{err}");
+    let stored = std::fs::read_dir(rig.state.join("store")).unwrap().count();
+    std::fs::write(rig.repo.join("src/file-0007.swift"), "let changed = 1\n").unwrap();
+    let (req, worktree) = request(&rig, &["sh", "-c", "cat src/file-0007.swift"]);
+    let (outcome, out, _) = run(&rig, &req, &worktree);
+    assert_eq!((outcome, out.as_str()), (Outcome::Exited(0), "let changed = 1\n"));
+    assert_eq!(std::fs::read_dir(rig.state.join("store")).unwrap().count(), stored + 1, "only the changed file travelled");
+}

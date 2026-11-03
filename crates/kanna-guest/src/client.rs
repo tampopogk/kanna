@@ -210,7 +210,8 @@ impl Receiver<'_> {
             let frame = frame::read_header(conn, MAX_FRAME)?;
             match frame.op() {
                 "started" => {
-                    let started = &frame.header["started"];
+                    let payload = frame::read_payload(conn, &frame)?;
+                    let started: Value = serde_json::from_slice(&payload).unwrap_or(Value::Null);
                     self.map = started["map"].as_array().into_iter().flatten().filter_map(|p| Some((p[0].as_str()?.to_string(), p[1].as_str()?.to_string()))).collect();
                 }
                 "out" => {
@@ -253,9 +254,10 @@ fn outcome(status: &Value) -> Outcome {
     }
 }
 
-fn send_snapshot(conn: &mut dyn Pipe, root: &Path, staging: &Path, entries: &[Entry], need: &Frame) -> io::Result<()> {
+fn send_snapshot(conn: &mut dyn Pipe, root: &Path, staging: &Path, entries: &[Entry], need: &Frame, lists: &[u8]) -> io::Result<()> {
+    let lists: Value = serde_json::from_slice(lists).map_err(|e| frame::bad(format!("the build Mac's list of files isn't JSON: {e}")))?;
     if need.header["commit"] != true {
-        let haves: Vec<String> = need.header["heads"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|h| git(root, &["cat-file", "-e", &format!("{h}^{{commit}}")]).is_ok()).map(|h| format!("^{h}")).collect();
+        let haves: Vec<String> = lists["heads"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|h| git(root, &["cat-file", "-e", &format!("{h}^{{commit}}")]).is_ok()).map(|h| format!("^{h}")).collect();
         let bundle = staging.join(".bundle");
         let mut args = vec!["bundle".to_string(), "create".into(), "-q".into(), bundle.to_string_lossy().into_owned(), "HEAD".into()];
         args.extend(haves);
@@ -265,7 +267,7 @@ fn send_snapshot(conn: &mut dyn Pipe, root: &Path, staging: &Path, entries: &[En
         frame::send_reader(conn, &json!({ "op": "bundle" }), size, &mut std::fs::File::open(&bundle)?)?;
     }
     let sizes: BTreeMap<&str, u64> = entries.iter().filter_map(|e| match &e.kind { Kind::File { hash, size, .. } => Some((hash.as_str(), *size)), _ => None }).collect();
-    for hash in need.header["blobs"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+    for hash in lists["blobs"].as_array().into_iter().flatten().filter_map(Value::as_str) {
         let Some(size) = sizes.get(hash) else { return Err(frame::bad(format!("the build Mac asked for {hash}, which isn't in the snapshot"))) };
         frame::send_reader(conn, &json!({ "op": "blob", "hash": hash }), *size, &mut std::fs::File::open(staging.join(hash))?)?;
     }
@@ -307,10 +309,10 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
     let submitted = (|| -> io::Result<Option<(Box<dyn Pipe>, bool)>> {
         let mut conn = connect()?;
         frame::send(&mut conn, &header, &manifest::encode(&entries))?;
-        let (reply, payload) = frame::read(&mut conn, 1 << 20)?;
+        let (reply, payload) = frame::read(&mut conn, 64 << 20)?;
         match reply.op() {
             "need" => {
-                send_snapshot(&mut *conn, &request.root, staging, &entries, &reply)?;
+                send_snapshot(&mut *conn, &request.root, staging, &entries, &reply, &payload)?;
                 Ok(Some((conn, true)))
             }
             "exists" => Ok(Some((conn, true))),

@@ -282,7 +282,8 @@ impl Supervisor {
         let mut need: Vec<String> = entries.iter().filter_map(|e| match &e.kind { Kind::File { hash, .. } if !store.join(hash).exists() => Some(hash.clone()), _ => None }).collect();
         need.sort();
         need.dedup();
-        frame::send(conn, &json!({ "op": "need", "blobs": need, "commit": known, "heads": heads }), b"")?;
+        let lists = serde_json::to_vec(&json!({ "blobs": need, "heads": heads })).unwrap_or_default();
+        frame::send(conn, &json!({ "op": "need", "commit": known }), &lists)?;
         let mut missing: HashSet<String> = need.into_iter().collect();
         let mut bundle = None;
         loop {
@@ -520,7 +521,7 @@ impl Supervisor {
                 (state.phase.clone(), state.started.clone(), state.artifacts_ready)
             };
             if !announced && started.is_object() {
-                frame::send(conn, &json!({ "op": "started", "job": job.id, "started": started }), b"")?;
+                frame::send(conn, &json!({ "op": "started", "job": job.id }), &serde_json::to_vec(&started).unwrap_or_default())?;
                 announced = true;
             }
             let mut sent = false;
