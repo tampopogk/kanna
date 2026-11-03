@@ -48,7 +48,7 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 - **A kind** is a quiz answer's `kind`. **An area** is the answer's file's first two folders (`crates/kanna-daemon`, `docs/specs`), or its one folder, or the file at the root. The five areas with the most answers show, the rest as Other, last.
 - **A commit reached main** on the day of the first-parent commit on main that brought it: a plain commit brings itself, a merge the commits of its branch (not the merge itself).
 - **First started**: a task's first `started` event; a restart doesn't count again. **Ended**: its `done` event.
-- **Made to merged**: from the task's `made` to the merge on main that landed its branch: the first merge after it was made whose message names the branch (`Merge branch 'stats-tab'`), the branch its `cleaned up` event names. A task kept unmerged has no time. The chart's scale ends at the 90th percentile; longer tasks show as a caret at the top.
+- **Made to merged**: from the task's `made` event to its `cleaned up` event: Kanna writes that when the task is done and its branch is found on main, and removes its worktree and branch. Merge messages take no fixed form, so the merge commit isn't looked for. A task done unmerged (`kept`) has no time. The chart's scale ends at the 90th percentile; longer tasks show as a caret at the top.
 
 ## 3. Where they come from
 
@@ -76,7 +76,7 @@ flowchart LR
 | `metric` | text | `commits`, `merged`, … |
 | `at` | real | the commit's committer time: the day it counts for |
 | `value` | real | the number |
-| `doc` | JSON | the rest: a merge's branch and task |
+| `doc` | JSON | the rest, by metric |
 
 - **The sampler catches up** on a worker thread, off the daemon's main thread, when a `stats` request comes and when a merged task is cleaned up: for each metric, the first-parent commits on main in the last 30 days with no row for it, oldest first. The request waits for it (git only, milliseconds a commit) and then answers. One catch-up per repo at a time; a request during one waits for it.
 - **Every sampled commit gets a row for every metric,** 0 when nothing applies, so a missing row always means "not sampled yet", and a new metric fills in its 30 days by itself.
@@ -115,7 +115,7 @@ Main          Commits                        28  today · 616 in 30 days  ▃▂
 
 ## 6. Tests
 
-- `stats.rs`: each number from a fixture db and repo (quiz answers across days and kinds, task events with restarts, a repo with plain commits and merges of task branches): the grade as of each day, misses asked again, areas and Other, commits a merge brought, first starts only, made to merged by branch; the sampler writes a row per metric per commit, fills a new metric's 30 days, and never runs git in a checkout's worktree.
+- `stats.rs`: each number from a fixture db and repo (quiz answers across days and kinds, task events with restarts, a repo with plain commits and merges of task branches): the grade as of each day, misses asked again, areas and Other, commits a merge brought, first starts only, made to merged from the cleanup; the sampler writes a row per metric per commit, fills a new metric's 30 days, and never runs git in a checkout's worktree.
 - The CLI: the request, the text and the JSON.
 - e2e `stats_tab` on a private instance with a fixture repo, quiz answers and task events: the tab after Machines, ⇧⌘] to it, its page's tiles and values against `kanna stats --json`, snapshots in light and dark.
 
