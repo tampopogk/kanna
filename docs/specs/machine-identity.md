@@ -1,6 +1,6 @@
 # Machines: Identity and Pairing
 
-**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Cloud:** [enrollment by token](kanna-cloud.md#6-enrollment), [hosted peers](kanna-cloud.md#10-threat-model) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
+**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
 
 How one of your machines knows another is yours, with no account and no server. The rule, here and in [Kanna Cloud](kanna-cloud.md): **trust comes from your devices, never from a server.**
 
@@ -25,7 +25,7 @@ How one of your machines knows another is yours, with no account and no server. 
 
 ## 2. Pairing
 
-A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. (Kanna Cloud reuses it with a token instead of a typed code: [enrollment](kanna-cloud.md#6-enrollment).)
+A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part.
 
 ```mermaid
 sequenceDiagram
@@ -65,7 +65,6 @@ The peers are a **signed log**, not a record that replicates by last writer wins
 
 - **An add counts only through a chain of adds from the anchor,** and an add signed by a key that is later revoked counts only if the revocation saw it (it is among the revocation's ancestors). So a stolen key that pretends it never saw its revocation can't admit a new key on that stale branch, and a key it admitted there can't admit another. Revocations always count, so two devices revoking each other both end up revoked.
 - **A revoked key can never re-add itself,** or be re-added under another name; a new key has to be paired.
-- **Hosted peers** ([Cloud §10](kanna-cloud.md#10-threat-model)): an add can carry `hosted: true`, which the device that enrolls a Kanna Cloud VM sets ([enrollment](cloud-vms.md#3-enrollment)). A key is hosted once an add that counts marks it, and stays hosted: an add of it without the mark is refused (`hosted_downgrade`), as is marking a key already added plain (`hosted_upgrade`). An add signed by a hosted key is refused and never counts (`hosted_signer`), and a hosted key's revocation counts only for itself. The view ignores such entries even when an older peer stored them, and works out which keys are hosted from adds that count, so a hosted key can't mark another key hosted. `machine status` marks each peer `hosted`, and a daemon answers a hosted peer's `machine` requests only for `status` and `ping`.
 - **A name that comes back with another key** is refused (`identity_mismatch`, as in v2).
 - **Two devices revoking each other** (a stolen laptop forging timestamps) both end up revoked. You re-pair from a third device, or from the one you still hold, with a code.
 - **Addresses:** an entry carries the peer's relay URL and last-known addresses. `kanna machine addr NAME HOST` adds one by hand, so a user with a VPN reaches a machine from away for free.
@@ -83,7 +82,7 @@ The peers are a **signed log**, not a record that replicates by last writer wins
   - **Codex:** nothing. Codex denies reads only in a permission profile (`[permissions.NAME.filesystem]`, `"PATH" = "deny"`), which can't be used beside `sandbox_mode`, and Kanna starts Codex with `--yolo` (`sandbox_mode="danger-full-access"`), so a Codex agent can read the key.
 - **A machine that runs your agent sees your code.** End-to-end encryption protects what passes through a relay, not what runs on a host.
 - **A stolen key can still revoke on a stale branch:** those revocations stand (they must, for mutual revocation), so a thief can shut honest machines out until they re-pair. It can't let anything in.
-- **On machines someone else runs,** the operator can sign with `device.key` too: that's Kanna Cloud's threat model ([Cloud §10](kanna-cloud.md#10-threat-model)).
+- **Kanna Cloud's VMs are never peers:** a customer's Kanna reaches them through its link to Kanna Cloud, for one task each ([Cloud §6](kanna-cloud.md#6-the-link-to-kanna-cloud)), so no key someone else holds is ever in your peer log.
 
 ## 5. Interfaces
 
