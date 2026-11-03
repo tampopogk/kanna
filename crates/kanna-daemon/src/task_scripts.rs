@@ -51,7 +51,14 @@ fn quote(text: &str) -> String {
 }
 
 pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
-    git(worktree, &["rev-parse", "--absolute-git-dir"]).ok().map(PathBuf::from)
+    let root = worktree.ancestors().find(|dir| dir.join(".git").exists())?;
+    let marker = root.join(".git");
+    if marker.is_dir() {
+        return Some(marker);
+    }
+    let text = fs::metadata(&marker).ok().filter(|m| m.len() <= 4096).and_then(|_| fs::read_to_string(&marker).ok())?;
+    let dir = root.join(text.lines().next()?.strip_prefix("gitdir:")?.trim());
+    dir.is_dir().then_some(dir)
 }
 
 pub fn is_linked(worktree: &Path) -> bool {
@@ -64,6 +71,12 @@ pub fn record_base(worktree: &Path) {
     let Some(dir) = git_dir(worktree) else { return };
     let base = git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]).unwrap_or_default();
     let _ = fs::write(dir.join(BASE), format!("{base}\n"));
+}
+
+pub fn set_base(worktree: &Path, base: &str) {
+    if let Some(dir) = git_dir(worktree) {
+        let _ = fs::write(dir.join(BASE), format!("{base}\n"));
+    }
 }
 
 pub fn base(worktree: &Path) -> Option<String> {
@@ -181,6 +194,23 @@ impl Task {
     }
 }
 
+pub fn stage_command(vars: &[(&str, String)], command: &str, timeout: u64, log: &Path, exit: &Path) -> String {
+    let vars: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+    let exit = exit.to_string_lossy();
+    format!(
+        "printf 'Running: %s\\n\\n' {shown}; {{ {vars} perl -e 'alarm shift; exec @ARGV' {timeout} \"${{SHELL:-/bin/zsh}}\" -lc {shown}; printf '%s\\n' \"$?\" > {part}; }} 2>&1 | tee {log}; mv {part} {exit}",
+        shown = quote(command),
+        vars = vars.join(" "),
+        part = quote(&format!("{exit}.part")),
+        exit = quote(&exit),
+        log = quote(&log.to_string_lossy()),
+    )
+}
+
+pub fn timed_out(code: i32) -> bool {
+    code == TIMED_OUT
+}
+
 pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration) -> Result<i32, String> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
     let mut cmd = Command::new(shell);
@@ -264,8 +294,23 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         let repo = fs::canonicalize(&repo).unwrap();
         sh(&repo, "git init -q -b main && printf 'target\\n' > .gitignore && git add .gitignore && git -c user.email=e@e -c user.name=e commit -q -m first");
-        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2").unwrap();
+        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2", None).unwrap();
         (fs::canonicalize(dir).unwrap(), PathBuf::from(folder))
+    }
+
+    #[test]
+    fn a_worktrees_git_folder_is_found_without_running_git() {
+        let (dir, worktree) = repo("gitdir");
+        let repo = dir.join("repo");
+        fs::create_dir_all(worktree.join("src/deep")).unwrap();
+        let canonical = |p: PathBuf| fs::canonicalize(p).unwrap();
+        for folder in [&repo, &worktree, &worktree.join("src/deep")] {
+            let asked = git(folder, &["rev-parse", "--absolute-git-dir"]).unwrap();
+            assert_eq!(canonical(git_dir(folder).unwrap()), canonical(PathBuf::from(asked)), "{}", folder.display());
+        }
+        assert!(is_linked(&worktree) && !is_linked(&repo));
+        assert_eq!(git_dir(Path::new("/")), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

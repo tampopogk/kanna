@@ -95,8 +95,6 @@ extension AppController {
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
             ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
-            ("Task Waiting Longest", #selector(activateWaitingTask), nil, .shiftCmd("A")),
-            nil,
             ("Desk Task 1", #selector(activateDeskTask1), "goto_tab:1", .cmd("1")),
             ("Desk Task 2", #selector(activateDeskTask2), "goto_tab:2", .cmd("2")),
         ])
@@ -107,7 +105,7 @@ extension AppController {
             ("Free Window", #selector(freeWindow), nil, nil),
             nil,
             ("Next Window", #selector(nextWindow), nil, .cmd("`")),
-            ("Previous Window", #selector(previousWindow), nil, .shiftCmd("`")),
+            ("Previous Window", #selector(previousWindow), nil, .cmd("~")),
             nil,
         ])
         if let at = windowMenu.items.firstIndex(where: { $0.title == "Free Window" }) {
@@ -282,7 +280,7 @@ extension AppController {
         case #selector(movePaneToNewWindow): return focusedPane.map { !frozen($0) } ?? false
         case #selector(closeFocusedPane): return focusedPane.map { !docked($0) } ?? false
         case #selector(nextTab), #selector(previousTab), #selector(moveTabToNewWindow), #selector(closeWindow): return keyWindow != nil
-        case #selector(nextWindow), #selector(previousWindow): return windows.count > 1
+        case #selector(nextWindow), #selector(previousWindow): return cyclable.count > 1
         case #selector(freeWindow): return keyWindow?["workspace"]?.string != nil
         case #selector(newTabInKeyWindow), #selector(splitRight), #selector(splitDown), #selector(webRight), #selector(webDown),
              #selector(iosRight), #selector(iosDown), #selector(markdownRight), #selector(markdownDown): return !showingDeskView
@@ -290,7 +288,6 @@ extension AppController {
             item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
             return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
         case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
-        case #selector(activateWaitingTask): return waitingTask != nil
         case #selector(activateDeskTask1): return keyedDeskTask(1) != nil
         case #selector(activateDeskTask2): return keyedDeskTask(2) != nil
         default: return true
@@ -456,17 +453,6 @@ extension AppController {
     @objc func activateDeskTask1() { activateDeskTask(1) }
     @objc func activateDeskTask2() { activateDeskTask(2) }
 
-    private var waitingTask: (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.deskTasks,
-              let task = agentStatuses.waitingLongest(among: tasks.map(\.id)) else { return nil }
-        return (task, window)
-    }
-
-    @objc func activateWaitingTask() {
-        guard let (task, window) = waitingTask else { return }
-        activateTask(task, into: window)
-    }
-
     private func keyedDeskTask(_ place: Int) -> (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }
         return DeskOrder.task(tasks, key: place).map { ($0.id, id) }
@@ -480,10 +466,14 @@ extension AppController {
     @objc func nextWindow() { cycleWindow(1) }
     @objc func previousWindow() { cycleWindow(-1) }
 
+    private var cyclable: [String] {
+        windows.compactMap { $0["id"]?.string }.filter { controllers[$0].map { !$0.window.isMiniaturized } ?? false }
+    }
+
     private func cycleWindow(_ step: Int) {
-        let ids = windows.compactMap { $0["id"]?.string }
+        let ids = cyclable
         guard !ids.isEmpty else { return }
-        let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? 0
+        let at = ids.firstIndex { $0 == keyWindow?["id"]?.string } ?? (step > 0 ? -1 : 0)
         let next = ids[((at + step) % ids.count + ids.count) % ids.count]
         show(window: next)
         if let pane = window(next)?["focused"]?.string { giveKeyboard(pane) }

@@ -45,7 +45,7 @@ stateDiagram-v2
 - **⌘. doesn't move a task**: it toggles the window between the active task and the Desk view, and the task stays active ([Desk view §2](desk-view.md#2--and-pull-back)).
 - **Its name** is the docked pane's name, else its terminal's title. **Its folder and branch** are the docked pane's working directory and that folder's git branch, shown, never changed.
 - **Done** closes the task's panes, ending its agent and terminals.
-- **A task belongs to a project**: the git repository its folder is in (else the folder), and a Desk holds only its project's tasks. Making and naming tasks: [tasks](tasks.md).
+- **A task belongs to a project**: the git repository its folder is in (else the folder), and a Desk holds only its project's tasks; a Desk's project is its planning terminal's ([a Desk's project](desk-project.md)). Making and naming tasks: [tasks](tasks.md).
 
 ## 2. The active task
 
@@ -54,7 +54,7 @@ flowchart LR
     A["agent: the docked pane<br/>(the chat)"] --- D["docs: the window's tabs<br/>doc · page · image · terminal"]
 ```
 
-- **One active task per Desk.** Making a task active (click, ⌘1, ⌘2, ⇧⌘A, `kanna task activate`) leaves the one active before on the Desk, not active. If the task is already on another Desk window, that window comes to the front and nothing moves. Closing a Desk window leaves its tasks on the Desk, none active.
+- **One active task per Desk.** Making a task active (click, ⌘1, ⌘2, `kanna task activate`) leaves the one active before on the Desk, not active. If the task is already on another Desk window, that window comes to the front and nothing moves. Closing a Desk window leaves its tasks on the Desk, none active.
 - **The agent pane** is the agent's terminal, untouched, under a header with Park (pictured above; it shows the Desk view). The header leaves out the task's name (the title bar shows it) and its [status](agent-status.md) (the agent is in view; the strip shows the others'). It's the only chat: you talk to the agent there, and doc comments arrive there ([doc markup](doc-markup.md)). Its width is the task's: it comes back with the task, whichever Desk it's made active on.
 - **Docs are the window's tabs.** Each is an ordinary tab: markdown (with comments), a web page, an image, video or PDF (shown in a web pane), or a terminal (tests, a server), and a tab can hold splits.
   - **What opens a tab:** the agent running `kanna open md|web FILE` from its pane, a markdown link, or **+**.
@@ -64,9 +64,9 @@ flowchart LR
 
 ## 3. The Desk's tasks
 
-- **The strip lists the Desk's tasks other than the active one**, after a muted "⌘. Desk", oldest first (by when each task was made, as the [Desk view](desk-view.md#2--and-pull-back) lists them), each with its [agent status](agent-status.md) and how long ago it was last active ("12m ago"), then how many are on the Shelf.
-- **Each task's time shows beside its name** (pictured above): how long ago it was last active, or needs you, muted, kept current while it's shown. Its ⌘ key shows on hover. When the strip is too narrow, titles truncate first, each in proportion to its length, down to a short floor; then the Shelf's count gives way; then the times.
-- **Click to make active:** the clicked task becomes active and the one before stays on the Desk. **⌘1** and **⌘2** make the Desk's other tasks active the same way, chosen by recency, not by place, with **Needs you** ahead: ⌘1 the one left last (a stack), ⌘2 the one left longest ago. So ⌘1 twice goes back where you were, and ⌘2 again cycles through the Desk, whatever its number of tasks: through all three, or back and forth between two (the same task as ⌘1). ⌘3 does nothing. **⇧⌘A** makes active the task that has needed you longest. They're in the Task menu (Desk Task 1, 2, Task Waiting Longest).
+- **The strip lists the Desk's tasks other than the active one**, after a muted "⌘. Desk", in key order: the ⌘1 task first, then ⌘2 ([Desk view](desk-view.md#2--and-pull-back)), so the order changes as you switch tasks. Each shows its key, muted, before its name, with its [agent status](agent-status.md) and how long ago it was last active ("12m ago"), then how many are on the Shelf.
+- **Each task's time shows beside its name** (pictured above): how long ago it was last active, or needs you, muted, kept current while it's shown. When the strip is too narrow, titles truncate first, each in proportion to its length, down to a short floor; then the Shelf's count gives way; then the times.
+- **Click to make active:** the clicked task becomes active and the one before stays on the Desk. **⌘1** and **⌘2** make the Desk's other tasks active the same way, chosen by recency, not by place: ⌘1 the one left last (a stack), ⌘2 the one left longest ago. So ⌘1 twice goes back where you were, and ⌘2 again cycles through the Desk, whatever its number of tasks: through all three, or back and forth between two (the same task as ⌘1). ⌘3 does nothing. They're in the Task menu (Desk Task 1, 2). No key goes to a task that needs you: its amber dot shows it where it is.
 - **At most three tasks per project on an app's Desk,** active or not, running or stopped; another app has its own three ([each app's Desks](app-desk.md)). Moving a fourth to the Desk is refused ("Desk full") until one goes back to the Shelf or is Done; any number run on the Shelf ([tasks](tasks.md#5-stop-done-or-back-to-the-shelf)).
 - **Not active means hidden, not stopped.** Its terminals keep running in the daemon, and its tabs, the shown one, focus, [zoom](zoom.md) and scroll positions come back as they were.
 - **The Desk view has its own zoom.** ⇧⌘↩ on it zooms the planner, and it stays zoomed (or not) whatever the tasks do:
@@ -87,7 +87,7 @@ The Desk view (pictured in [Desk view](desk-view.md)) shows the window's plannin
 | Command | Does |
 |---|---|
 | `kanna task list [QUERY] [--all]` | The caller's repo's tasks, the Desk's under a Desk heading, then the Shelf's: ID, name, state (`merged` once its branch is in main, `replied` while its message to the planner waits), and only what else matters: an agent other than the default, what it waits for by name, when a Desk task was last active; `--all` every repo's, naming the others' ([task list](task-list.md)); QUERY filters by name and first message |
-| `kanna task activate ID` | Make a Desk task active and show it: on the caller's Desk, else on a Desk on its project, else a new one (relayed to the app; [the CLI acts on its caller](cli-caller.md)) |
+| `kanna task activate ID` | Make a Desk task active and show it: on the caller's Desk if it's on the task's project, else on a Desk on its project, else a new one (relayed to the app; [the CLI acts on its caller](cli-caller.md)) |
 | `kanna task park [ID]` | ⌘.: show the Desk view of the task's Desk (default: the caller's own; outside a Kanna terminal ID is needed); the task stays active (relayed to the app) |
 | `kanna task done ID` | End a task: close its panes |
 | `kanna task new`, `start`, `stop`, `pick`, `shelve`, `name` | Make, run, stop, move and name tasks: [tasks](tasks.md#7-cli) |

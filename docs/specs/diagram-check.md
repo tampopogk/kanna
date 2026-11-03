@@ -7,7 +7,7 @@ A markdown pane draws ` ```mermaid ` blocks itself, and shows `Diagram error: â€
 - `kanna open md FILE` opens the pane and prints a line for each diagram that won't draw.
 - `kanna diagrams check FILE...` checks without opening anything, and exits 1 if any fail.
 
-The check is what the pane does, minus drawing: the same layout call, the same list of types the app draws.
+The check is what the pane does, minus drawing: the same layout call, the same list of types the app draws. It checks ` ```calltree ` blocks too ([call tree](call-tree.md)), against the doc's repo.
 
 ## Contents
 

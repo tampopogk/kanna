@@ -30,16 +30,16 @@ flowchart LR
 
 ## 2. The hello
 
-`app.hello {pid, app, protocols: [min, max], commit, client, build?}`; `build` is sent to the local daemon only.
+`app.hello {pid, app, protocol, commit, client, build?}`; `build` is sent to the local daemon only.
 
 | | Local daemon | Remote daemon |
 |---|---|---|
 | `build` mismatch | `other_build`; the daemon stops and the app starts its own ([daemon build](daemon-build.md)) | not checked |
-| No protocol in common | `other_protocol {mine, commit, version}`, the daemon keeps running | the same |
+| Another protocol | `other_protocol {protocol, commit, version}`, the daemon keeps running | the same |
 | Reply | `{ok, protocol, daemon: {pid, build, commit, machine, capabilities: {os, arch, cores}}, panes, layout}` | the same |
 | App already attached | `app_attached` if it is local; a local app **takes over** from a remote one | `app_attached` |
 
-- **Protocols:** `kanna_build::PROTOCOLS = [1, 1]` today (Kanna.app's `Protocols.mine` must match; a test checks), shared with the daemons' own streams ([updates §6](machine-update.md#6-protocols)); the highest both support is used. `commit` is the build's short commit (`KANNA_COMMIT`, else `git rev-parse --short=12`), shown with `other_protocol`. The app shows a refused machine as Offline with the refusal in its tooltip, and one of another protocol says which side is older and how to update it ([updates §6](machine-update.md#6-protocols)); it never starts, stops or replaces a remote daemon, and a remote `quit` doesn't quit the app.
+- **Protocol:** `kanna_build::PROTOCOL = 4` today (Kanna.app's `Protocols.mine` must match; a test checks), shared with the daemons' own streams; the app and daemon must speak the same one ([versions §2](machine-versions.md#2-protocols)). `commit` is the build's short commit (`KANNA_COMMIT`, else `git rev-parse --short=12`), shown with `other_protocol`. The app shows a refused machine as Offline with the refusal in its tooltip, and one of another protocol as Incompatible, saying which side is older and how to update it ([versions §2](machine-versions.md#2-protocols)); it never starts, stops or replaces a remote daemon, and a remote `quit` doesn't quit the app.
 - **`DaemonStarter` is the local link's only.** A remote link that drops redials with backoff up to 30 s.
 - **`client`** is this Mac's machine name. The daemon makes it the default claimant (§4) while that app is attached.
 
@@ -48,7 +48,7 @@ flowchart LR
 - **Qualified at the boundary.** A remote link rewrites every ID it receives to `ID@machine` (`term-41@r720-1`), and strips its own suffix from every ID it sends. Both ways, only strings under ID keys (`id`, `pane`, `terminal`, `workspace`, `window`, `tab`, `task`, `planner`, `agent`, `owner`, `from`, …) that match `(task|ws|win|tab|term|diff|file|page|ios)-[alnum]+` are rewritten, so paths and text are never touched. An ID that already carries another machine's suffix is re-qualified to the sender, so a peer can't name another machine's panes.
 - **Routing.** Input, resize, attach, `diff.subscribe`, `file.subscribe` and app requests go to the link named by the ID's suffix; an unqualified ID is local. A request that names no ID takes `args.machine`. The daemon passes a pane reference containing `@` through to the app unchanged, so `kanna` on one machine can name another's pane through the app.
 - **Merged views.** The app keeps each machine's layout, Shelf, panes and folder places separately, and draws their union: workspaces and windows are tagged with their machine, and every view is keyed by (machine, ID).
-- **Local only.** A remote link's `app.machine.confirm` (signing a peer takes a gesture on this Mac's own daemon) and `app.snap` are refused. A daemon certifies an endpoint (`machine certify`) only for its own machine's app: a request from another machine, by `machine call` or over a remote app link, gets `local_only`, since the certificate is signed as this device and would outlive the requester's revocation. A remote daemon can't open an iOS pane, or a web pane other than `http(s)`; a page on its loopback goes through a [port tunnel](port-tunnels.md).
+- **Local only.** A remote link's `app.machine.confirm` (signing a peer takes a gesture on this Mac's own daemon) is refused; `app.snap` carries the file's text since [Machines 4](files-and-threads.md), so it's answered for any machine. A daemon certifies an endpoint (`machine certify`) only for its own machine's app: a request from another machine, by `machine call` or over a remote app link, gets `local_only`, since the certificate is signed as this device and would outlive the requester's revocation. A remote daemon can't open an iOS pane, or a web pane other than `http(s)`; a page on its loopback goes through a [port tunnel](port-tunnels.md).
 
 ## 4. Projects, Desks and claims
 

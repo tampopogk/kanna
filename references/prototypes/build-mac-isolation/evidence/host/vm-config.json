@@ -1,0 +1,20 @@
+{
+  "audio_devices" : 0,
+  "console_devices" : 0,
+  "cpus" : 6,
+  "directory_sharing_devices" : 0,
+  "graphics" : "1440x900 headless, no view",
+  "memory_gib" : 8,
+  "network" : "one virtio NIC on a host socketpair; the host reads and discards every frame",
+  "network_devices" : 1,
+  "serial_ports" : 0,
+  "socket_devices" : 1,
+  "storage_devices" : 1,
+  "usb_controllers" : 0,
+  "vsock_guest_connect_ports" : [
+    7000
+  ],
+  "vsock_host_listen_ports" : [
+    7001
+  ]
+}
