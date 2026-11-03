@@ -89,7 +89,7 @@ body.picture .hint { display: none; }
 <main>
   <div class="intro">
     <h1>Turning markup on in a doc that's already open</h1>
-    <p>Every markdown pane, and every web pane showing a local page, has the bar at the top. Beside the file path (and <i>vs main</i> when its changes are marked) is <b>Comments</b>: unlit when off, lit when on. Turning it on adds the agent chip, Threads and the marks, in place: same scroll, zoom and selection. Off takes them away and leaves the threads in the file.</p>
+    <p>Every markdown pane, and every web pane showing a local page, has the bar at the top. Beside the file path (and <i>vs main</i> when its changes are marked) is <b>Comments</b>: unlit when off, lit when on. Turning it on brings a <b>Threads</b> button beside it, which shows and hides the thread list, plus the agent chip and the marks, in place: same scroll, zoom and selection. Off takes them away and leaves the threads in the file.</p>
     <p>Where the comments go depends on where the doc is: a Desk task's docked agent, the planner in the Desk view, or, in a free window, an agent you pick. <code>kanna markup FILE</code> from an agent reuses a pane in its own workspace that already shows FILE.</p>
     <div class="controls">
       <span class="seg" id="scene">
@@ -158,7 +158,7 @@ const scenes = {
   }
 };
 
-let scene = "task", on = false, asking = false, cliRan = false, tab = 0, to = null;
+let scene = "task", on = false, list = true, asking = false, cliRan = false, tab = 0, to = null;
 
 function bar(s) {
   const d = s.doc;
@@ -166,11 +166,9 @@ function bar(s) {
   const parts = [`<span class="path">${d.path}</span>`];
   if (d.diff) parts.push(`<span class="chip press">${d.diff}</span>`);
   parts.push(`<span class="${lit}" id="comments">Comments</span>`);
+  if (on) parts.push(`<span class="chip press ${list ? "on" : ""}" id="threadsBtn">Threads 1</span>`);
   parts.push(`<span class="spacer"></span>`);
-  if (on) {
-    parts.push(`<span class="chip">${to || s.agent}</span>`);
-    parts.push(`<span class="chip on press">Threads 1</span>`);
-  }
+  if (on) parts.push(`<span class="chip">${to || s.agent}</span>`);
   let menu = "";
   if (asking) {
     menu = `<div class="menu" id="menu" style="left:${180}px">
@@ -186,7 +184,7 @@ function bar(s) {
 }
 
 function mdBody(s) {
-  const panel = on ? `<div class="threads"><div class="top">1 open</div>
+  const panel = on && list ? `<div class="threads"><div class="top">1 open</div>
     <div class="card"><div class="q">the redirect keeps the query string</div><b>You</b> Also the fragment?<br><b class="agent">Agent</b> Yes: it's kept too, now said in §2.</div></div>` : "";
   const scrolled = s.doc.tab === 1 ? `<h2>3. Tasks on the Desk</h2><p>Up to three of the project's tasks sit on its Desk, one of them active. The others wait in the strip along the bottom, still running.</p><p>⌘. toggles between the active task and the Desk view.</p>` :
     `<h2>${s.doc.path.split("/").pop().replace(".md", "")}</h2>
@@ -196,7 +194,7 @@ function mdBody(s) {
 }
 
 function webBody() {
-  const panel = on ? `<div class="threads"><div class="top">1 open</div>
+  const panel = on && list ? `<div class="threads"><div class="top">1 open</div>
     <div class="card"><div class="q">a box on the page</div><b>You</b> Quieter title bar.</div></div>` : "";
   return `<div class="split"><div class="page"><h2>Kanna Desk</h2><div>Three tasks, one active.</div>
     <div class="row"><div class="tile"><i class="pdot"></i></div><div class="tile"></div><div class="tile"></div></div></div>${panel}</div>`;
@@ -232,6 +230,8 @@ function render() {
     else { on = true; }
     render();
   };
+  const t = document.getElementById("threadsBtn");
+  if (t) t.onclick = () => { list = !list; render(); };
   document.querySelectorAll("#menu .i").forEach(i => i.onclick = (e) => {
     e.stopPropagation();
     to = "Agent: " + i.dataset.to; asking = false; on = true; render();
@@ -240,7 +240,7 @@ function render() {
 }
 
 function pick(name) {
-  scene = name; on = false; asking = false; cliRan = false; to = null;
+  scene = name; on = false; list = true; asking = false; cliRan = false; to = null;
   tab = scenes[name].shown ?? 0;
   render();
 }
