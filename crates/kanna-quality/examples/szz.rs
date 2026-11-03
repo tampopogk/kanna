@@ -4,21 +4,21 @@ fn main() {
     let repo = Path::new(".");
     let t = std::time::Instant::now();
     let log = git(repo, &["log", "--first-parent", "--format=%H%x09%ct%x09%s", "main"]).unwrap();
-    let mut fixes = 0; let mut blamed_total = std::collections::BTreeMap::<String, usize>::new();
-    let at: std::collections::HashMap<String, (i64, String)> = log.lines().map(|l| { let p: Vec<&str> = l.splitn(3, '\t').collect(); (p[0].to_string(), (p[1].parse().unwrap(), p[2].chars().take(70).collect())) }).collect();
+    let rows: Vec<Vec<&str>> = log.lines().map(|l| l.splitn(3, '\t').collect()).collect();
+    let at: std::collections::HashMap<&str, (i64, &str)> = rows.iter().map(|p| (p[0], (p[1].parse().unwrap(), p[2]))).collect();
+    let (mut fixes, mut blamed) = (0, std::collections::BTreeMap::<&str, usize>::new());
     let mut delays = vec![];
-    for line in log.lines() {
-        let p: Vec<&str> = line.splitn(3, '\t').collect();
-        let Some(w) = szz::fix_word(szz::first_sentence(p[2])) else { continue };
+    for p in &rows {
+        let Some(reason) = szz::fix_reason(p[2], None) else { continue };
         fixes += 1;
-        let parent = format!("{}^1", p[0]);
-        let removed = szz::removed_lines(repo, &parent, p[0]).unwrap();
-        let blamed = szz::blame(repo, &parent, &removed).unwrap();
-        println!("FIX [{w}] {} → {}", &p[2].chars().take(90).collect::<String>(), blamed.iter().map(|b| format!("{}({})", &b.commit[..8], b.lines)).collect::<Vec<_>>().join(" "));
-        for b in &blamed { *blamed_total.entry(b.commit.clone()).or_default() += 1; if let Some((t0, _)) = at.get(&b.commit) { delays.push((p[1].parse::<i64>().unwrap() - t0) as f64 / 3600.0); } }
+        let found = szz::introduced(repo, p[0]).unwrap();
+        println!("FIX [{reason}] {} → {}", p[2].chars().take(80).collect::<String>(), found.as_ref().map(|i| format!("{} ({} lines) {}", &i.commit[..8], i.lines, at.get(i.commit.as_str()).map(|x| x.1.chars().take(50).collect::<String>()).unwrap_or_default())).unwrap_or("-".into()));
+        if let Some(i) = found {
+            let key = at.get_key_value(i.commit.as_str()).map(|(k, _)| *k).unwrap_or("?");
+            *blamed.entry(key).or_default() += 1;
+            if let Some((t0, _)) = at.get(i.commit.as_str()) { delays.push((p[1].parse::<i64>().unwrap() - t0) as f64 / 3600.0); }
+        }
     }
-    println!("fixes {fixes} landings {} blamed landings {} in {:?}", log.lines().count(), blamed_total.len(), t.elapsed());
-    delays.sort_by(f64::total_cmp); if !delays.is_empty() { println!("median hours to fix {:.1}", delays[delays.len()/2]); }
-    let mut top: Vec<_> = blamed_total.into_iter().collect(); top.sort_by_key(|x| std::cmp::Reverse(x.1));
-    for (c, n) in top.iter().take(8) { println!("{n} {} {}", &c[..8], at.get(c).map(|x| x.1.clone()).unwrap_or_default()); }
+    delays.sort_by(f64::total_cmp);
+    println!("fixes {fixes} of {} landings; {} blamed landings; median {:.1} h; in {:?}", rows.len(), blamed.len(), delays.get(delays.len() / 2).copied().unwrap_or(0.0), t.elapsed());
 }

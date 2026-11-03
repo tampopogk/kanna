@@ -2,8 +2,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+const SAFE: [&str; 4] = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+
 pub fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git").arg("-C").arg(repo).args(args).stdin(Stdio::null()).output().map_err(|e| format!("couldn't run git: {e}"))?;
+    let out = Command::new("git").args(SAFE).arg("-C").arg(repo).args(args).stdin(Stdio::null()).output().map_err(|e| format!("couldn't run git: {e}"))?;
     if !out.status.success() {
         return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -35,7 +37,7 @@ pub struct Blobs {
 
 impl Blobs {
     pub fn open(repo: &Path) -> Result<Blobs, String> {
-        let mut child = Command::new("git").arg("-C").arg(PathBuf::from(repo)).args(["cat-file", "--batch"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("couldn't run git cat-file: {e}"))?;
+        let mut child = Command::new("git").args(SAFE).arg("-C").arg(PathBuf::from(repo)).args(["cat-file", "--batch"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("couldn't run git cat-file: {e}"))?;
         let input = child.stdin.take().ok_or("no stdin for git cat-file")?;
         let output = BufReader::new(child.stdout.take().ok_or("no stdout for git cat-file")?);
         Ok(Blobs { child, input, output })

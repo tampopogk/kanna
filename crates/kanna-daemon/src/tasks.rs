@@ -265,6 +265,22 @@ pub fn scripts(files: &[PathBuf]) -> Scripts {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoverageSettings {
+    pub command: String,
+    pub every: u64,
+    pub timeout: u64,
+}
+
+pub fn coverage_settings(files: &[PathBuf]) -> Option<CoverageSettings> {
+    let command = |value: &Value| value.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from);
+    Some(CoverageSettings {
+        command: configured(files, "stats", "coverage", command, "a shell command")?,
+        every: configured(files, "stats", "coverageEvery", |v: &Value| v.as_u64().filter(|h| (1..=168).contains(h)), "a number of hours from 1 to 168").unwrap_or(6),
+        timeout: configured(files, "stats", "coverageTimeout", |v: &Value| v.as_u64().filter(|t| (60..=86400).contains(t)), "a number of seconds from 60 to 86400").unwrap_or(7200),
+    })
+}
+
 /// The planning agent's first message, which tells it it's the planner.
 pub const PLANNER_ROLE: &str = "You are the Kanna planning agent.";
 

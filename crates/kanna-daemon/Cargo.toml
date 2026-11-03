@@ -17,6 +17,7 @@ kanna-log = { path = "../kanna-log" }
 kanna-threads = { path = "../kanna-threads" }
 kanna-net = { path = "../kanna-net" }
 kanna-pipe = { path = "../kanna-pipe" }
+kanna-quality = { path = "../kanna-quality" }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 notify = "8"
 base64 = "0.22"

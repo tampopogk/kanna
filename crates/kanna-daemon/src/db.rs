@@ -815,6 +815,22 @@ impl Db {
         tx.commit()
     }
 
+    pub fn latest_sample(&self, repo: &str, metric: &str) -> rusqlite::Result<Option<Sample>> {
+        self.conn
+            .query_row("select commit_id, metric, at, value, doc from samples where repo = ?1 and metric = ?2 order by at desc, rowid desc limit 1", params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?) }))
+            .optional()
+    }
+
+    pub fn branches(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare(
+            "select json_extract(e.doc, '$.branch'), coalesce(json_extract(t.doc, '$.name'), ''), coalesce(json_extract(t.doc, '$.message'), '')
+             from task_events e join tasks t on t.id = e.task
+             where t.repo = ?1 and e.what = 'done' and json_extract(e.doc, '$.branch') is not null",
+        )?;
+        let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+        rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
+    }
+
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
         let mut statement = self.conn.prepare(
             "select t.id, coalesce(json_extract(t.doc, '$.name'), t.id),
