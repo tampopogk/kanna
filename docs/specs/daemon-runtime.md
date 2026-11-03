@@ -57,7 +57,7 @@ flowchart LR
 - **No `RefCell` borrow across an `.await`.** Copy out what the wait needs, drop the borrow, await, borrow again.
 - **No blocking call on the loop or in a local task**: no `std::process::Command`, no `std::fs` beyond a small known file, no sqlite3 subprocess, no sleeps, no blocking sockets. Programs use `tokio::process`; files `tokio::fs`; anything else blocking goes in `spawn_blocking` and is awaited.
 - **Recheck after every await.** The task, pane or request may be gone, or changed, by the time the wait ends: look it up again by ID, and answer or drop accordingly.
-- **Spawn through `runtime::spawn(name, future)`**, never `spawn_local` directly, so the guard times every poll under that name.
+- **Spawn through `runtime::spawn(name, future)`**, never `spawn_local` directly, so the guard times every poll under that name. The daemon enters its `LocalSet` as it starts, so a spawn before the loop waits for it, and one after the loop is dropped.
 - **A value a view needs but can't wait for** is looked up beside the loop: the view shows what's known, and whoever showed nothing is told when it's found (`projects::identity`, `on_found`). What must have the true answer awaits it (`identity_now`). What the daemon already knows about at its start is looked up before the loop (`prime`).
 - **A new hand-written thread plus a result `Event` is no longer how to get off the loop.** The existing ones (`Worktree`, `Branch`, `Posted`, `Finished`, `RulesUpdated`) become local tasks when their handler is converted. The file and diff watchers stay threads: they live as long as a view and wait on `notify`, not on one call.
 
@@ -90,10 +90,8 @@ Found by reading every handler and chore (October 2026). Each line is converted 
 
 | What | Reached from | Waits on |
 |---|---|---|
-| `mint`, `taken` | `tasks new` | `git rev-parse`, per candidate ID |
-| `task_scripts::is_linked` | `tasks done`, `stop`, the sweep | `git rev-parse` |
-| `opencode_session`, `first_session_since` | `Event::Status` (every one, until a session is found), `tasks start`, `planner start/quit` | `/usr/bin/sqlite3` |
-| `latest_codex_session`, `first_codex_session` | the same | reading `~/.codex/sessions` |
+| `stacks::head`, `dirty`, `in_main`, `contains`, `tasks.rs` `git` calls | stacked tasks' base checks, `branch --show-current` | `git`, several per call |
+| `identity` in `project_import::plan` | `project import` | answers `None` until the lookup ends: needs `identity_now` |
 | `agents::merge` | `agents status/ask/setup/update` | `git merge-file`, per file |
 | `project_import` | `project import` | `git`, `cp -R`, rewriting session files: unbounded |
 | `crashes` scan | the crash tick while the app is gone | reading DiagnosticReports |
