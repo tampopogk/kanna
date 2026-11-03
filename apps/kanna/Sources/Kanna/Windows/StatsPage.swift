@@ -5,6 +5,9 @@ struct StatsRow: Equatable {
     let label: String
     let value: Double?
     let note: String
+    var detail = ""
+    var figure = ""
+    var open: JSON?
 }
 
 struct StatsPoint: Equatable {
@@ -21,16 +24,21 @@ struct StatsChart: Equatable {
     let points: [StatsPoint]
     let line: [Double?]
     let what: String
+    let empty: String?
 
     init(_ json: JSON?) {
         let numbers = { (key: String) in (json?[key]?.array ?? []).map { $0.number } }
         kind = json?["kind"]?.string ?? ""
         values = numbers("values")
         max = json?["max"]?.number
-        rows = (json?["rows"]?.array ?? []).map { StatsRow(label: $0["label"]?.string ?? "", value: $0["value"]?.number, note: $0["note"]?.string ?? "") }
+        rows = (json?["rows"]?.array ?? []).map {
+            StatsRow(label: $0["label"]?.string ?? "", value: $0["value"]?.number, note: $0["note"]?.string ?? "", detail: $0["detail"]?.string ?? "", figure: $0["figure"]?.string ?? "",
+                     open: $0["open"].flatMap { $0 == .null ? nil : $0 })
+        }
         points = (json?["points"]?.array ?? []).map { StatsPoint(day: Int($0["day"]?.number ?? 0), value: $0["value"]?.number ?? 0, label: $0["label"]?.string ?? "") }
         line = numbers("line")
         what = json?["what"]?.string ?? ""
+        empty = json?["empty"]?.string
     }
 }
 
@@ -42,6 +50,7 @@ struct StatsTile: Equatable {
     let note: String
     let span: Int
     let chart: StatsChart
+    var tip: String?
 
     var figure: String { StatsFormat.figure(value, unit: unit) }
 }
@@ -69,7 +78,7 @@ struct StatsReport: Equatable {
                          placeholder: section["placeholder"]?.bool == true,
                          tiles: (section["tiles"]?.array ?? []).map { tile in
                              StatsTile(id: tile["id"]?.string ?? "", label: tile["label"]?.string ?? "", value: tile["value"]?.number, unit: tile["unit"]?.string,
-                                       note: tile["note"]?.string ?? "", span: Int(tile["span"]?.number ?? 2), chart: StatsChart(tile["chart"]))
+                                       note: tile["note"]?.string ?? "", span: Int(tile["span"]?.number ?? 2), chart: StatsChart(tile["chart"]), tip: tile["tip"]?.string)
                          })
         }
     }
@@ -97,6 +106,8 @@ final class StatsPage: NSView {
     private(set) var report: StatsReport?
     private var location = ""
     private(set) var tileFrames: [String: NSRect] = [:]
+    var onOpen: ((JSON) -> Void)?
+    private(set) var lists: [String: StatsList] = [:]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -150,6 +161,7 @@ final class StatsPage: NSView {
     private func lay() {
         document.subviews.forEach { $0.removeFromSuperview() }
         tileFrames = [:]
+        lists = [:]
         let left: CGFloat = 32, gap: CGFloat = 22
         let width = max(280, min(980, scroller.contentSize.width - left * 2))
         var y: CGFloat = 28
@@ -215,7 +227,21 @@ final class StatsPage: NSView {
         var y = origin.y
         let name = label(tile.label, color: .secondaryLabelColor)
         name.frame = NSRect(x: origin.x, y: y, width: width, height: name.frame.height)
+        name.toolTip = tile.tip
         y += name.frame.height + 2
+        if tile.chart.kind == "list" {
+            if tile.chart.rows.isEmpty {
+                let note = label(tile.chart.empty ?? "", color: .secondaryLabelColor, wraps: width)
+                note.frame.origin = NSPoint(x: origin.x, y: y + 6)
+                return note.frame.maxY
+            }
+            let rows = StatsList(rows: tile.chart.rows, width: width, what: tile.chart.what)
+            rows.onOpen = { [weak self] open in self?.onOpen?(open) }
+            lists[tile.id] = rows
+            rows.frame.origin = NSPoint(x: origin.x, y: y + 6)
+            document.addSubview(rows)
+            return rows.frame.maxY
+        }
         if tile.chart.kind == "ranked" {
             let rows = StatsRanked(rows: tile.chart.rows, width: width)
             rows.frame.origin = NSPoint(x: origin.x, y: y + 6)
@@ -225,6 +251,7 @@ final class StatsPage: NSView {
         let big = hero && tile.chart.kind == "line"
         let value = label(tile.figure, size: big ? 32 : 24, weight: .semibold)
         value.frame.origin = NSPoint(x: origin.x, y: y)
+        value.toolTip = tile.tip
         value.setAccessibilityLabel("\(tile.label): \(tile.figure)\(tile.note.isEmpty ? "" : ", \(tile.note)")")
         if !tile.note.isEmpty {
             let note = label(tile.note, color: .secondaryLabelColor)
@@ -254,7 +281,8 @@ final class StatsPage: NSView {
     var shownTiles: [JSON] {
         (report?.sections ?? []).flatMap { section in
             section.tiles.map { tile -> JSON in
-                ["section": .string(section.id), "id": .string(tile.id), "label": .string(tile.label), "figure": .string(tile.chart.kind == "ranked" ? "" : tile.figure), "note": .string(tile.note),
+                ["section": .string(section.id), "id": .string(tile.id), "label": .string(tile.label), "figure": .string(["ranked", "list"].contains(tile.chart.kind) ? "" : tile.figure), "note": .string(tile.note),
+                 "rows": .array(tile.chart.kind == "list" ? tile.chart.rows.map { .string($0.label) } : []), "tip": tile.tip.map { .string($0) } ?? .null,
                  "frame": tileFrames[tile.id].map { ["x": .number($0.minX), "y": .number($0.minY), "width": .number($0.width), "height": .number($0.height)] } ?? .null]
             }
         }
@@ -347,6 +375,104 @@ private final class StatsRanked: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
+@MainActor
+final class StatsList: NSView {
+    static let height: CGFloat = 38
+    let rows: [StatsRow]
+    var onOpen: ((JSON) -> Void)?
+    private var hovered: Int?
+
+    override var isFlipped: Bool { true }
+
+    init(rows: [StatsRow], width: CGFloat, what: String) {
+        self.rows = rows
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: CGFloat(rows.count) * Self.height))
+        let top = rows.compactMap(\.value).max() ?? 0
+        let figures: CGFloat = 92
+        for (i, row) in rows.enumerated() {
+            let y = CGFloat(i) * Self.height
+            let name = NSTextField(labelWithString: row.label)
+            name.font = .systemFont(ofSize: 12, weight: .medium)
+            name.lineBreakMode = .byTruncatingTail
+            name.frame = NSRect(x: 0, y: y + 2, width: width - figures - 8, height: 17)
+            let figure = NSTextField(labelWithString: row.figure)
+            figure.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            figure.alignment = .right
+            figure.frame = NSRect(x: width - figures, y: y + 2, width: figures, height: 17)
+            let under = [row.detail, row.note].filter { !$0.isEmpty }.joined(separator: " · ")
+            let detail = NSTextField(labelWithString: under)
+            detail.font = .systemFont(ofSize: 11)
+            detail.textColor = .secondaryLabelColor
+            detail.lineBreakMode = .byTruncatingMiddle
+            detail.frame = NSRect(x: 0, y: y + 19, width: width - 8, height: 15)
+            let bar = StatsBar(share: top > 0 ? (row.value ?? 0) / top : 0)
+            bar.frame = NSRect(x: width - figures, y: y + 22, width: figures, height: 6)
+            for view in [name, figure, detail, bar] as [NSView] {
+                view.toolTip = "\(row.label): \(row.figure), \(what)\(row.open == nil ? "" : ". Click to open it.")"
+                addSubview(view)
+            }
+            detail.frame.size.width = width - figures - 14
+            name.setAccessibilityLabel("\(row.label), \(row.figure), \(under)")
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func center(of row: Int) -> NSPoint? {
+        guard rows.indices.contains(row) else { return nil }
+        let spot = NSRect(x: 0, y: CGFloat(row) * Self.height, width: bounds.width, height: Self.height)
+        scrollToVisible(spot)
+        return convert(NSPoint(x: spot.midX, y: spot.midY), to: nil)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        frame.contains(point) ? self : nil
+    }
+
+    private func index(_ event: NSEvent) -> Int? {
+        let point = convert(event.locationInWindow, from: nil)
+        let i = Int(point.y / Self.height)
+        return bounds.contains(point) && rows.indices.contains(i) ? i : nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .cursorUpdate], owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let i = index(event).flatMap { rows[$0].open == nil ? nil : $0 }
+        guard i != hovered else { return }
+        hovered = i
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovered = nil
+        needsDisplay = true
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        (index(event).flatMap { rows[$0].open } == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let i = index(event), rows[i].open != nil else { return }
+        while let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            guard next.type == .leftMouseUp else { continue }
+            if index(next) == i, let open = rows[i].open { onOpen?(open) }
+            return
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let hovered else { return }
+        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.12).setFill()
+        NSBezierPath(roundedRect: NSRect(x: -6, y: CGFloat(hovered) * Self.height - 1, width: bounds.width + 12, height: Self.height - 2), xRadius: 5, yRadius: 5).fill()
+    }
 }
 
 private final class StatsBar: NSView {

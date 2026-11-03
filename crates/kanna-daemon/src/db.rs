@@ -236,6 +236,8 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         primary key (repo, commit_id, metric)
     );
     create index samples_by_time on samples (repo, at);
+"), Step::Sql("
+    alter table samples add column revision integer not null default 0;
 ")];
 
 pub const RECENT: usize = 10;
@@ -371,6 +373,7 @@ pub struct Sample {
     pub at: f64,
     pub value: f64,
     pub doc: Value,
+    pub revision: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -792,15 +795,15 @@ impl Db {
         rows.collect()
     }
 
-    pub fn sampled(&self, repo: &str, since: f64) -> rusqlite::Result<HashSet<(String, String)>> {
-        let mut statement = self.conn.prepare("select commit_id, metric from samples where repo = ?1 and at >= ?2")?;
-        let rows = statement.query_map(params![repo, since], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    pub fn sampled(&self, repo: &str, since: f64) -> rusqlite::Result<HashMap<(String, String), i64>> {
+        let mut statement = self.conn.prepare("select commit_id, metric, revision from samples where repo = ?1 and at >= ?2")?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?;
         rows.collect()
     }
 
     pub fn samples(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Sample>> {
-        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc from samples where repo = ?1 and at >= ?2 order by at, commit_id, metric")?;
-        let rows = statement.query_map(params![repo, since], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?) }))?;
+        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and at >= ?2 order by at, commit_id, metric")?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))?;
         rows.collect()
     }
 
@@ -808,11 +811,27 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         for sample in samples {
             tx.execute(
-                "insert or replace into samples (repo, commit_id, metric, at, value, doc) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6))",
-                params![repo, sample.commit, sample.metric, sample.at, sample.value, sample.doc.to_string()],
+                "insert or replace into samples (repo, commit_id, metric, at, value, doc, revision) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6), ?7)",
+                params![repo, sample.commit, sample.metric, sample.at, sample.value, sample.doc.to_string(), sample.revision],
             )?;
         }
         tx.commit()
+    }
+
+    pub fn latest_sample(&self, repo: &str, metric: &str) -> rusqlite::Result<Option<Sample>> {
+        self.conn
+            .query_row("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and metric = ?2 order by at desc, rowid desc limit 1", params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))
+            .optional()
+    }
+
+    pub fn branches(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare(
+            "select json_extract(e.doc, '$.branch'), coalesce(json_extract(t.doc, '$.name'), ''), coalesce(json_extract(t.doc, '$.message'), '')
+             from task_events e join tasks t on t.id = e.task
+             where t.repo = ?1 and e.what = 'done' and json_extract(e.doc, '$.branch') is not null",
+        )?;
+        let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+        rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
     }
 
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
