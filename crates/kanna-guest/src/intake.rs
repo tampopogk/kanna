@@ -15,8 +15,6 @@ pub const MAX_FILES: usize = 200_000;
 
 const MAX_COMPONENT: usize = 255;
 
-const REPLACEABLE: &[&str] = &["xcresult", "xcarchive", "app", "appex", "framework", "dSYM", "ipa", "png", "json", "txt", "zip"];
-
 pub fn rejected(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
 }
@@ -53,17 +51,39 @@ fn open_dir_at(dir: &OwnedFd, name: &str, create: bool) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-fn open_root(path: &Path) -> io::Result<OwnedFd> {
+fn open_base(path: &Path) -> io::Result<OwnedFd> {
     let name = CString::new(path.as_os_str().as_bytes()).map_err(|_| rejected("NUL in a path"))?;
-    let fd = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    let fd = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+fn random_name(prefix: &str) -> String {
+    let mut random = [0u8; 6];
+    let _ = getrandom::getrandom(&mut random);
+    format!("{prefix}{}", crate::manifest::hex(&random))
+}
+
+fn exists_at(dir: &OwnedFd, name: &CString) -> bool {
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    unsafe { libc::fstatat(dir.as_raw_fd(), name.as_ptr(), &mut stat, libc::AT_SYMLINK_NOFOLLOW) == 0 }
+}
+
+fn rename_at(dir: &OwnedFd, from: &str, to: &str) -> io::Result<()> {
+    let (from, to) = (cstring(from)?, cstring(to)?);
+    if unsafe { libc::renameat(dir.as_raw_fd(), from.as_ptr(), dir.as_raw_fd(), to.as_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 pub struct Intake {
-    staging: PathBuf,
+    folder: PathBuf,
+    parent: OwnedFd,
+    staging: String,
+    name: String,
     dest: PathBuf,
     root: OwnedFd,
     files: BTreeSet<String>,
@@ -73,15 +93,17 @@ pub struct Intake {
 }
 
 impl Intake {
-    pub fn new(dest: &Path, single: bool) -> io::Result<Intake> {
-        let parent = dest.parent().ok_or_else(|| rejected(format!("{} has no folder", dest.display())))?;
-        std::fs::create_dir_all(parent)?;
-        let mut random = [0u8; 6];
-        let _ = getrandom::getrandom(&mut random);
-        let staging = parent.join(format!(".kanna-in-{}", crate::manifest::hex(&random)));
-        std::fs::create_dir(&staging)?;
-        let root = open_root(&staging)?;
-        Ok(Intake { staging, dest: dest.to_path_buf(), root, files: BTreeSet::new(), dirs: BTreeSet::new(), total: 0, single })
+    pub fn new(base: &Path, rel: &str, single: bool) -> io::Result<Intake> {
+        let steps = parts(rel)?;
+        let mut parent = open_base(base)?;
+        for step in &steps[..steps.len() - 1] {
+            parent = open_dir_at(&parent, step, true)?;
+        }
+        let folder = steps[..steps.len() - 1].iter().fold(base.to_path_buf(), |path, step| path.join(step));
+        let staging = random_name(".kanna-in-");
+        let root = open_dir_at(&parent, &staging, true)?;
+        let name = steps[steps.len() - 1].to_string();
+        Ok(Intake { dest: folder.join(&name), folder, parent, staging, name, root, files: BTreeSet::new(), dirs: BTreeSet::new(), total: 0, single })
     }
 
     fn claim(&mut self, rel: &str, dir: bool) -> io::Result<Vec<String>> {
@@ -172,33 +194,39 @@ impl Intake {
         Ok(())
     }
 
-    pub fn finish(self) -> io::Result<PathBuf> {
+    pub fn finish(self, replace: bool) -> io::Result<PathBuf> {
         let source = if self.single {
-            let only: Vec<_> = std::fs::read_dir(&self.staging)?.collect::<Result<_, _>>()?;
+            let only: Vec<_> = std::fs::read_dir(self.folder.join(&self.staging))?.collect::<Result<_, _>>()?;
             match only.as_slice() {
-                [one] => one.path(),
-                _ => return Err(rejected("expected exactly one returned file")),
+                [one] => format!("{}/{}", self.staging, one.file_name().to_string_lossy()),
+                _ => {
+                    self.abandon();
+                    return Err(rejected("expected exactly one returned file"));
+                }
             }
         } else {
             self.staging.clone()
         };
-        if let Ok(meta) = std::fs::symlink_metadata(&self.dest) {
-            let extension = self.dest.extension().and_then(|e| e.to_str()).unwrap_or_default();
-            if !REPLACEABLE.contains(&extension) && !self.dest.to_string_lossy().contains("/.kanna/build/") {
-                let _ = std::fs::remove_dir_all(&self.staging);
-                return Err(rejected(format!("{} is already there and isn't a build product; not replacing it", self.dest.display())));
+        if exists_at(&self.parent, &cstring(&self.name)?) {
+            if !replace {
+                let dest = self.dest.clone();
+                self.abandon();
+                return Err(rejected(format!("{} is already there and kanna build didn't put it there; not replacing it", dest.display())));
             }
-            if meta.is_dir() { std::fs::remove_dir_all(&self.dest)? } else { std::fs::remove_file(&self.dest)? }
+            let old = random_name(".kanna-old-");
+            rename_at(&self.parent, &self.name, &old)?;
+            let old = self.folder.join(old);
+            if std::fs::symlink_metadata(&old)?.is_dir() { std::fs::remove_dir_all(&old)? } else { std::fs::remove_file(&old)? }
         }
-        std::fs::rename(&source, &self.dest)?;
+        rename_at(&self.parent, &source, &self.name)?;
         if self.single {
-            let _ = std::fs::remove_dir_all(&self.staging);
+            let _ = std::fs::remove_dir_all(self.folder.join(&self.staging));
         }
         Ok(self.dest)
     }
 
     pub fn abandon(self) {
-        let _ = std::fs::remove_dir_all(&self.staging);
+        let _ = std::fs::remove_dir_all(self.folder.join(&self.staging));
     }
 }
 
@@ -218,11 +246,11 @@ mod tests {
     fn a_bundle_arrives_with_its_modes_and_links() {
         let dir = temp("bundle");
         let dest = dir.join("Kanna.app");
-        let mut intake = Intake::new(&dest, false).unwrap();
+        let mut intake = Intake::new(&dir, "Kanna.app", false).unwrap();
         intake.dir("Contents").unwrap();
         intake.file("Contents/MacOS/Kanna", true, 3, &sha256(b"bin"), &mut &b"bin"[..]).unwrap();
         intake.link("Contents/Current", "MacOS").unwrap();
-        intake.finish().unwrap();
+        intake.finish(false).unwrap();
         let exe = std::fs::metadata(dest.join("Contents/MacOS/Kanna")).unwrap();
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&exe.permissions()) & 0o777, 0o755);
         assert_eq!(std::fs::read_link(dest.join("Contents/Current")).unwrap(), PathBuf::from("MacOS"));
@@ -232,7 +260,7 @@ mod tests {
     fn traversal_links_checksums_and_collisions_are_refused() {
         let dir = temp("refused");
         std::fs::write(dir.join("secret"), "s").unwrap();
-        let mut intake = Intake::new(&dir.join("out.xcresult"), false).unwrap();
+        let mut intake = Intake::new(&dir, "out.xcresult", false).unwrap();
         assert!(intake.file("../x", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
         assert!(intake.file("/etc/x", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
         assert!(intake.link("up", "..").is_err());
@@ -246,17 +274,31 @@ mod tests {
         assert!(intake.file("a", false, 1, &sha256(b"y"), &mut &b"x"[..]).is_err());
         intake.file("B", false, 1, &sha256(b"x"), &mut &b"x"[..]).unwrap();
         assert!(intake.file("b", false, 1, &sha256(b"x"), &mut &b"x"[..]).is_err());
-        intake.finish().unwrap();
+        intake.finish(false).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("secret")).unwrap(), "s");
     }
 
     #[test]
-    fn something_else_already_there_isnt_replaced() {
+    fn something_already_there_is_replaced_only_when_allowed() {
         let dir = temp("kept");
-        std::fs::create_dir_all(dir.join("Sources")).unwrap();
-        let mut intake = Intake::new(&dir.join("Sources"), false).unwrap();
-        intake.file("x", false, 1, &sha256(b"x"), &mut &b"x"[..]).unwrap();
-        assert!(intake.finish().is_err());
-        assert!(dir.join("Sources").is_dir());
+        std::fs::write(dir.join("package.json"), "mine").unwrap();
+        let mut intake = Intake::new(&dir, "package.json", true).unwrap();
+        intake.file("package.json", false, 1, &sha256(b"x"), &mut &b"x"[..]).unwrap();
+        assert!(intake.finish(false).is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("package.json")).unwrap(), "mine");
+        let mut intake = Intake::new(&dir, "package.json", true).unwrap();
+        intake.file("package.json", false, 1, &sha256(b"x"), &mut &b"x"[..]).unwrap();
+        intake.finish(true).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("package.json")).unwrap(), "x");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_destination_under_a_linked_folder_is_refused() {
+        let dir = temp("linked");
+        let outside = temp("linked-outside");
+        std::os::unix::fs::symlink(&outside, dir.join("out")).unwrap();
+        assert!(Intake::new(&dir, "out/Kanna.app", false).is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 }

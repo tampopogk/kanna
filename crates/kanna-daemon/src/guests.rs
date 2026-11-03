@@ -17,7 +17,7 @@ const CAPABILITY_LIFE: Duration = Duration::from_secs(12 * 3600);
 
 const RESTART_AFTER: Duration = Duration::from_secs(5);
 
-const DEFAULT_ALLOW: &[&str] = &["github.com:443", "codeload.github.com:443", "objects.githubusercontent.com:443", "crates.io:443", "index.crates.io:443", "static.crates.io:443", "static.rust-lang.org:443", "ziglang.org:443", "pkg.machengine.org:443", "swiftpackageindex.com:443", "deps.files.ghostty.org:443"];
+const DEFAULT_ALLOW: &[&str] = &["github.com:443", "codeload.github.com:443", "objects.githubusercontent.com:443", "crates.io:443", "index.crates.io:443", "static.crates.io:443", "static.rust-lang.org:443", "ziglang.org:443", "pkg.machengine.org:443", "swiftpackageindex.com:443", "deps.files.ghostty.org:443", "codeberg.org:443"];
 
 #[derive(Clone)]
 struct Capability {

@@ -143,13 +143,18 @@ fn fetch_https(mut client: TcpStream, upstream: u16, authorization: &str, head: 
     tls.write_all(request.as_bytes())?;
     io::copy(&mut (&mut client).take(body_length), &mut tls)?;
     tls.flush()?;
-    match io::copy(&mut tls, &mut client) {
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {}
-        Err(e) => return Err(e),
+    if let Err(e) = io::copy(&mut tls, &mut client) {
+        reset(&client);
+        return Err(e);
     }
     let _ = client.shutdown(Shutdown::Write);
     Ok(())
+}
+
+fn reset(stream: &TcpStream) {
+    use std::os::fd::AsRawFd;
+    let linger = libc::linger { l_onoff: 1, l_linger: 0 };
+    unsafe { libc::setsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_LINGER, &linger as *const _ as *const libc::c_void, std::mem::size_of::<libc::linger>() as libc::socklen_t) };
 }
 
 pub fn base64(bytes: &[u8]) -> String {

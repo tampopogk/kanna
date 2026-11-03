@@ -103,6 +103,23 @@ pub fn listed(root: &Path) -> io::Result<Vec<String>> {
     Ok(out.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| String::from_utf8_lossy(s).into_owned()).collect())
 }
 
+const PRODUCTS: &str = ".kanna/build/products";
+
+fn products(root: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(root.join(PRODUCTS)).unwrap_or_default().lines().map(String::from).collect()
+}
+
+fn record_product(root: &Path, path: &Path) {
+    if path.starts_with(root.join(".kanna/build")) {
+        return;
+    }
+    let mut known = products(root);
+    if known.insert(path.to_string_lossy().into_owned()) {
+        let _ = std::fs::create_dir_all(root.join(".kanna/build"));
+        let _ = std::fs::write(root.join(PRODUCTS), known.into_iter().map(|p| p + "\n").collect::<String>());
+    }
+}
+
 pub fn results_dir(root: &Path, job: &str) -> PathBuf {
     root.join(".kanna/build").join(job)
 }
@@ -137,18 +154,32 @@ impl Receiver<'_> {
         Ok(())
     }
 
-    fn destination(&self, header: &Value) -> Option<(PathBuf, bool)> {
-        let results = results_dir(&self.request.root, &self.request.job);
+    fn destination(&self, header: &Value) -> Option<(PathBuf, String)> {
+        let root = &self.request.root;
+        let inside = |path: &Path| path.strip_prefix(root).ok().map(|rel| rel.to_string_lossy().into_owned()).filter(|rel| !rel.is_empty());
         if let Some(to) = header["to"].as_str() {
-            return self.expected_to.contains(to).then(|| (PathBuf::from(to), false));
+            if !self.expected_to.contains(to) {
+                return None;
+            }
+            let to = Path::new(to);
+            return match inside(to) {
+                Some(rel) => Some((root.clone(), rel)),
+                None => Some((to.parent()?.to_path_buf(), to.file_name()?.to_string_lossy().into_owned())),
+            };
         }
         if let Some(name) = header["name"].as_str() {
-            return (manifest::safe_relative(name).is_ok() && !name.contains('/')).then(|| (results.join(name), false));
+            let rel = format!(".kanna/build/{}/{name}", self.request.job);
+            return (manifest::safe_relative(name).is_ok() && !name.contains('/')).then(|| (root.clone(), rel));
         }
         if let Some(rel) = header["fetch"].as_str() {
-            return self.request.fetch.iter().any(|f| f == rel).then(|| (self.request.root.join(rel), false));
+            return self.request.fetch.iter().any(|f| f == rel).then(|| (root.clone(), rel.to_string()));
         }
         None
+    }
+
+    fn may_replace(&self, dest: &Path) -> bool {
+        dest.starts_with(self.request.root.join(".kanna/build")) && !dest.starts_with(self.request.root.join(PRODUCTS))
+            || products(&self.request.root).contains(&dest.to_string_lossy().into_owned())
     }
 
     fn artifact(&mut self, conn: &mut dyn Pipe, header: &Value) -> io::Result<()> {
@@ -160,7 +191,13 @@ impl Receiver<'_> {
         let destination = self.destination(header);
         let single = header["dir"] != true;
         let mut intake = match &destination {
-            Some((path, _)) => Some(Intake::new(path, single)?),
+            Some((base, rel)) => match Intake::new(base, rel, single) {
+                Ok(intake) => Some(intake),
+                Err(e) => {
+                    self.notes.push(format!("refused an artifact: {e}"));
+                    None
+                }
+            },
             None => {
                 self.notes.push(format!("refused an artifact the job didn't ask for: {header}"));
                 None
@@ -196,8 +233,15 @@ impl Receiver<'_> {
                     intake.abandon();
                     self.notes.push(format!("refused an artifact: {why}"));
                 }
-                None => match intake.finish() {
-                    Ok(path) => self.notes.push(format!("{}", path.display())),
+                None => match {
+                    let dest = destination.as_ref().map(|(base, rel)| base.join(rel)).unwrap_or_default();
+                    let replace = self.may_replace(&dest);
+                    intake.finish(replace)
+                } {
+                    Ok(path) => {
+                        record_product(&self.request.root, &path);
+                        self.notes.push(format!("{}", path.display()));
+                    }
                     Err(e) => self.notes.push(format!("couldn't keep an artifact: {e}")),
                 },
             }

@@ -109,6 +109,40 @@ fn diagnostics_and_results_come_back_with_this_worktrees_paths() {
     assert_eq!(diagnostics.trim(), mapped);
 }
 
+#[test]
+fn a_fetch_replaces_only_what_kanna_build_put_there() {
+    let rig = rig("ledger");
+    std::fs::write(rig.repo.join("notes.json"), "mine").unwrap();
+    std::fs::create_dir_all(rig.repo.join("target")).unwrap();
+    std::fs::write(rig.repo.join(".gitignore"), "target/\n").unwrap();
+    let (mut req, worktree) = request(&rig, &["sh", "-c", "mkdir -p target && echo built-$RANDOM > target/out.json && echo theirs > notes.json"]);
+    req.fetch = vec!["target/out.json".into(), "notes.json".into()];
+    let (outcome, _, err) = run(&rig, &req, &worktree);
+    assert_eq!(outcome, Outcome::Exited(0));
+    assert!(err.contains("kanna build didn't put it there"), "{err}");
+    assert_eq!(std::fs::read_to_string(rig.repo.join("notes.json")).unwrap(), "mine");
+    let first = std::fs::read_to_string(rig.repo.join("target/out.json")).unwrap();
+    let (mut req, worktree) = request(&rig, &["sh", "-c", "mkdir -p target && echo again > target/out.json"]);
+    req.fetch = vec!["target/out.json".into()];
+    let (outcome, _, err) = run(&rig, &req, &worktree);
+    assert_eq!(outcome, Outcome::Exited(0), "{err}");
+    assert_ne!(first, "again\n");
+    assert_eq!(std::fs::read_to_string(rig.repo.join("target/out.json")).unwrap(), "again\n");
+}
+
+#[test]
+fn a_fetch_under_a_linked_folder_is_refused() {
+    let rig = rig("linkedfetch");
+    let outside = temp("linkedfetch-outside");
+    std::os::unix::fs::symlink(&outside, rig.repo.join("out")).unwrap();
+    std::fs::write(rig.repo.join(".gitignore"), "out\n").unwrap();
+    let (mut req, worktree) = request(&rig, &["sh", "-c", "mkdir -p out && echo x > out/p.txt"]);
+    req.fetch = vec!["out/p.txt".into()];
+    let (_, _, err) = run(&rig, &req, &worktree);
+    assert!(err.contains("refused an artifact: out isn't a folder"), "{err}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+}
+
 struct Dropping {
     inner: UnixStream,
     drops: bool,
