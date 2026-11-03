@@ -45,12 +45,13 @@ ws-3 (task-1dfb, Fix login), on the Shelf
   focus: diff, zoomed
   *tab-211 "diff"  diff
    tab-212 "login.md"  file-5:1/2 | term-6:1/2
+  background: term-31
   win-40
     focus: term-9
     *tab-30 "Tab 1"  term-9
 ```
 
-`*` is the shown tab. From a pane in a free window, it's that window; from a pane with no window (Kanna.app closed), it says so.
+`*` is the shown tab. `background:` lists the workspace's terminals in no tab, such as a run's stage terminals ([workspaces §1](workspaces.md#1-the-model)); `--json` has them as each workspace's `background`. From a pane in a free window, it's that window; from a pane with no window (Kanna.app closed), it says so.
 
 ```text
 *win-45  free
@@ -81,7 +82,7 @@ Unplaced panes
 term-500 (logs)
 ```
 
-A Desk is the app's, so it isn't listed; a planner is a workspace like any other.
+Each of the app's Desks is listed under Windows, first (` d1  Desk on ~/work/app, shows ws-3 (task-1dfb, Fix login)`), its planner as `ws-5, d1's planner` and the task it shows as `…, on the Desk, shown in d1`; `--json` lists them as `desks` ([Desk windows](desk-windows.md)). A planner is a workspace like any other.
 
 `--json` prints the daemon's list reply: the caller's workspace, or with `--all` everything, as `kanna list --json` did (windows, panes, workspaces), with each workspace's shown tab, focus, zoom and its windows' tabs added. e2e scenarios and `tests/cli.rs` read `kanna workspace list --all --json`.
 

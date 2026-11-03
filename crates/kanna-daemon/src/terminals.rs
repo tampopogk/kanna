@@ -1,11 +1,14 @@
-use crate::pty::{self, Adopted, Spawned, Spawner, Spec};
-use crate::reader::{Feed, Reader, Taken};
+use crate::pty::{self, Adopted, Heard, Spawned, Spawner, Spec};
+use crate::reader::{Feed, Noticed, Reader, Replayed, Typing};
+use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
 use crate::Event;
-use kanna_mux::json::Map;
+use kanna_mux::json::{json, Map, Value};
 use kanna_mux::{terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use kanna_vt::{Key, KeyError};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -20,9 +23,7 @@ use std::time::Duration;
 pub type OnStart = Box<dyn Fn(&str)>;
 
 pub struct Attach {
-    pub cols: u16,
-    pub rows: u16,
-    pub snapshot: Result<Vec<u8>, kanna_vt::Error>,
+    pub snapshot: Result<(), kanna_vt::Error>,
     pub exit_code: Option<i32>,
 }
 
@@ -60,6 +61,17 @@ impl Terminal {
     }
 }
 
+struct Starting {
+    id: String,
+    pane: String,
+    serial: u64,
+    command: Option<String>,
+    size: (u16, u16),
+    pixels: (u16, u16),
+    hung_up: bool,
+    stopped: bool,
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct Restored {
     pub adopted: usize,
@@ -75,16 +87,18 @@ pub struct Terminals {
     events: Sender<Event>,
     env: Vec<(String, String)>,
     live: RefCell<HashMap<String, Terminal>>,
+    starting: RefCell<HashMap<u64, Starting>>,
     serial: Cell<u64>,
     sizes: RefCell<HashMap<String, (u16, u16)>>,
     changed: Cell<bool>,
     settings: RefCell<Settings>,
     pub on_start: RefCell<Option<OnStart>>,
     pub detector: RefCell<Option<Rc<Detector>>>,
+    wire: Arc<Wire>,
 }
 
 impl Terminals {
-    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: Sender<Event>, env: Vec<(String, String)>) -> Terminals {
+    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: Sender<Event>, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
         let settings = RefCell::new(store.load_settings());
         Terminals {
             settings,
@@ -94,11 +108,13 @@ impl Terminals {
             events,
             env,
             live: RefCell::default(),
+            starting: RefCell::default(),
             serial: Cell::new(0),
             sizes: RefCell::default(),
             changed: Cell::new(false),
             on_start: RefCell::new(None),
             detector: RefCell::new(None),
+            wire,
         }
     }
 
@@ -163,17 +179,17 @@ impl Terminals {
         self.live.borrow().get(id).is_some_and(|t| t.serial == serial && t.exit_code.is_none())
     }
 
-    pub fn output(&self, id: &str, serial: u64) -> (Option<Taken>, Option<String>) {
-        let (taken, cwd) = {
+    pub fn noticed(&self, id: &str, serial: u64) -> Option<Noticed> {
+        let noticed = {
             let live = self.live.borrow();
-            let Some(terminal) = live.get(id).filter(|t| t.serial == serial) else { return (None, None) };
-            let mut feed = Feed::lock(&terminal.feed);
-            (feed.take(), feed.take_cwd())
+            let terminal = live.get(id).filter(|t| t.serial == serial)?;
+            let noticed = Feed::lock(&terminal.feed).noticed();
+            noticed
         };
-        if let Some(cwd) = &cwd {
+        if let Some(cwd) = &noticed.cwd {
             self.moved(id, cwd.clone());
         }
-        (taken, cwd)
+        Some(noticed)
     }
 
     fn moved(&self, id: &str, cwd: String) {
@@ -209,6 +225,7 @@ impl Terminals {
             let found = live.iter_mut().find(|(_, t)| t.keeper == keeper && t.pid == pid && t.exit_code.is_none() && t.pty.is_some());
             found.map(|(id, terminal)| {
                 terminal.exit_code = Some(code);
+                self.wire.remove(id);
                 if let Some(detector) = self.detector.borrow().as_ref() {
                     detector.forget(id, terminal.serial);
                 }
@@ -248,18 +265,14 @@ impl Terminals {
         Some(code)
     }
 
-    pub fn write(&self, id: &str, bytes: Vec<u8>) {
-        if let Some(pty) = self.live.borrow().get(id).and_then(Terminal::running) {
-            let _ = pty.input.send(bytes);
-        }
-    }
-
     pub fn resize(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
         let mut live = self.live.borrow_mut();
-        let terminal = live.get_mut(id)?;
+        let Some(terminal) = live.get_mut(id) else { return self.resize_starting(id, cols, rows, width, height) };
         let mut feed = Feed::lock(&terminal.feed);
         if cols > MAX_SIDE || rows > MAX_SIDE {
             log!("kanna-daemon: refused to make {id} {cols}×{rows}: at most {MAX_SIDE} cells a side");
+            let grid = grid(id, feed.cols, feed.rows);
+            self.wire.after_output(id, &mut feed, &grid);
             return Some((feed.cols, feed.rows));
         }
         let (cols, rows) = (cols.max(1), rows.max(1));
@@ -274,15 +287,124 @@ impl Terminals {
                 let _ = pty.input.send(replies);
             }
         }
+        self.wire.after_output(id, &mut feed, &grid(id, cols, rows));
         Some((cols, rows))
     }
 
-    pub fn attach(&self, id: &str) -> Option<Attach> {
+    fn resize_starting(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
+        let mut starting = self.starting.borrow_mut();
+        let start = starting.values_mut().find(|s| s.id == id && !s.stopped)?;
+        if cols <= MAX_SIDE && rows <= MAX_SIDE {
+            (start.size, start.pixels) = ((cols.max(1), rows.max(1)), (width, height));
+            self.sizes.borrow_mut().insert(start.pane.clone(), start.size);
+        }
+        Some(start.size)
+    }
+
+    pub fn heard(&self, heard: Vec<Heard>) -> Vec<(String, i32)> {
+        let mut ended = Vec::new();
+        for heard in heard {
+            match heard {
+                Heard::Exited { keeper, pid, code } => ended.extend(self.exited(&keeper, pid, code)),
+                Heard::Spawned(tag, spawned) => self.spawned(tag, spawned),
+            }
+        }
+        ended
+    }
+
+    fn spawned(&self, tag: u64, spawned: std::io::Result<Spawned>) {
+        let Some(start) = self.starting.borrow_mut().remove(&tag) else { return };
+        if start.stopped {
+            if spawned.is_ok() {
+                self.spawner.close(&start.id);
+            }
+            return;
+        }
+        let (cols, rows) = start.size;
+        let started = spawned.and_then(|spawned| {
+            pty::set_size(&spawned.master, cols, rows, start.pixels.0, start.pixels.1);
+            let feed = Feed::new(cols, rows, &self.settings())?;
+            Feed::lock(&feed).resize(&start.id, cols, rows, start.pixels.0, start.pixels.1);
+            self.run(&start.id, &start.pane, &start.id, start.serial, spawned, feed)
+        });
+        match started {
+            Ok(mut terminal) => {
+                terminal.pixels = start.pixels;
+                let pid = terminal.pid;
+                self.live.borrow_mut().insert(start.id.clone(), terminal);
+                self.changed.set(true);
+                if let Some(on_start) = self.on_start.borrow().as_ref() {
+                    on_start(&start.id);
+                }
+                self.report_running(&start.pane, pid);
+                if start.hung_up {
+                    unsafe {
+                        libc::kill(-pid, libc::SIGHUP);
+                        libc::kill(pid, libc::SIGHUP);
+                    }
+                }
+            }
+            Err(error) => {
+                let what = start.command.as_deref().unwrap_or("the shell");
+                self.report(&start.pane, PaneState::Failed, None, Some(format!("could not start {what}: {error}")))
+            }
+        }
+    }
+
+    pub fn attach(&self, id: &str, shown: bool, history: Option<usize>, from: Option<u64>) -> Option<Attach> {
         let live = self.live.borrow();
         let t = live.get(id)?;
         let mut feed = Feed::lock(&t.feed);
-        let snapshot = feed.snapshot();
-        Some(Attach { cols: feed.cols, rows: feed.rows, snapshot, exit_code: t.exit_code.filter(|_| t.exit_reported) })
+        let messages = match from.and_then(|from| feed.replay(from)) {
+            Some(replayed) => replayed
+                .into_iter()
+                .map(|item| match item {
+                    Replayed::Output(bytes, offset) => crate::wire::output(id, &bytes, offset),
+                    Replayed::Grid(cols, rows) => grid(id, cols, rows),
+                })
+                .collect(),
+            None => match feed.snapshot(history) {
+                Ok(snapshot) => vec![
+                    json!({ "cmd": "snapshot", "args": { "terminal": id, "data": BASE64.encode(&snapshot.data), "offset": snapshot.offset, "more": snapshot.more } }),
+                    grid(id, feed.cols, feed.rows),
+                ],
+                Err(error) => {
+                    feed.shown = false;
+                    feed.discard();
+                    return Some(Attach { snapshot: Err(error), exit_code: None });
+                }
+            },
+        };
+        if shown {
+            self.wire.shown(id, &mut feed, &messages);
+        }
+        Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
+    }
+
+    pub fn hide(&self, id: &str) {
+        if let Some(terminal) = self.live.borrow().get(id) {
+            let mut feed = Feed::lock(&terminal.feed);
+            feed.shown = false;
+            feed.discard();
+        }
+    }
+
+    pub fn hide_all(&self) {
+        for terminal in self.live.borrow().values() {
+            let mut feed = Feed::lock(&terminal.feed);
+            feed.shown = false;
+            feed.discard();
+        }
+    }
+
+    pub fn after_output(&self, id: &str, message: &Value) {
+        if let Some(terminal) = self.live.borrow().get(id) {
+            self.wire.after_output(id, &mut Feed::lock(&terminal.feed), message);
+        }
+    }
+
+    pub fn wire(&self) -> &Arc<Wire> {
+        &self.wire
     }
 
     pub fn mark_changed(&self) {
@@ -341,6 +463,7 @@ impl Terminals {
         for (id, terminal) in self.live.borrow_mut().iter_mut().filter(|(_, t)| t.exit_code.is_none() && t.pty.is_some()) {
             terminal.exit_code = Some(code);
             terminal.exit_reported = true;
+            self.wire.remove(id);
             if let Some(detector) = self.detector.borrow().as_ref() {
                 detector.forget(id, terminal.serial);
             }
@@ -539,19 +662,10 @@ impl PaneHost for Terminals {
         let serial = self.next_serial();
         let spec = self.spec(pane, &id);
         self.set_status(&pane.id, None);
-        let started = self.spawner.spawn(&spec).and_then(|spawned| {
-            let feed = Feed::new(spec.cols, spec.rows, &self.settings())?;
-            self.run(&id, &pane.id, &id, serial, spawned, feed)
-        });
-        match started {
-            Ok(terminal) => {
-                let pid = terminal.pid;
-                self.live.borrow_mut().insert(id.clone(), terminal);
-                self.changed.set(true);
-                if let Some(on_start) = self.on_start.borrow().as_ref() {
-                    on_start(&id);
-                }
-                self.report_running(&pane.id, pid);
+        match self.spawner.spawn(&spec) {
+            Ok(tag) => {
+                let start = Starting { id, pane: pane.id.clone(), serial, command: spec.command, size: (spec.cols, spec.rows), pixels: (0, 0), hung_up: false, stopped: false };
+                self.starting.borrow_mut().insert(tag, start);
             }
             Err(error) => {
                 let what = spec.command.as_deref().unwrap_or("the shell");
@@ -562,7 +676,11 @@ impl PaneHost for Terminals {
 
     fn stop(&self, pane: &Pane) {
         let id = Self::of(pane);
+        for start in self.starting.borrow_mut().values_mut().filter(|s| s.id == id) {
+            start.stopped = true;
+        }
         let removed = self.live.borrow_mut().remove(id);
+        self.wire.remove(id);
         if let (Some(terminal), Some(detector)) = (&removed, self.detector.borrow().as_ref()) {
             detector.forget(id, terminal.serial);
         }
@@ -580,6 +698,9 @@ impl PaneHost for Terminals {
     }
 
     fn end(&self, pane: &Pane) {
+        for start in self.starting.borrow_mut().values_mut().filter(|s| s.id == Self::of(pane)) {
+            start.hung_up = true;
+        }
         let pid = self.live.borrow().get(Self::of(pane)).filter(|t| t.exit_code.is_none()).map(|t| t.pid);
         if let Some(pid) = pid.filter(|pid| *pid > 0) {
             unsafe {
@@ -695,19 +816,23 @@ impl Terminals {
     fn run(&self, id: &str, pane: &str, keeper: &str, serial: u64, spawned: Spawned, feed: Arc<Mutex<Feed>>) -> std::io::Result<Terminal> {
         let Spawned { pid, master } = spawned;
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
-        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), input.clone(), self.events.clone())?;
+        let typing = Typing::default();
+        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone())?;
         let mut writer = File::from(master.try_clone()?);
+        let written = typing.clone();
         std::thread::Builder::new().name(format!("kanna.write.{id}")).spawn(move || {
             for bytes in inputs {
                 if writer.write_all(&bytes).is_err() {
                     return;
                 }
+                crate::reader::written(&written);
             }
         })?;
         self.store.track(id, feed.clone());
         if let Some(detector) = self.detector.borrow().as_ref() {
             detector.watch(id, serial, feed.clone(), master.try_clone()?);
         }
+        self.wire.add(id, serial, reader.resumer()?, input.clone(), typing, feed.clone());
         Ok(Terminal {
             pane: pane.into(),
             serial,
@@ -720,5 +845,93 @@ impl Terminals {
             exit_reported: false,
             drained: false,
         })
+    }
+}
+
+fn grid(id: &str, cols: u16, rows: u16) -> Value {
+    json!({ "cmd": "grid", "args": { "terminal": id, "cols": cols, "rows": rows } })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::Host;
+    use crate::keeper::Keeper;
+    use kanna_mux::json::{json, Value};
+    use std::io::{BufRead, BufReader};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::net::UnixListener;
+    use std::path::Path;
+    use std::time::Instant;
+
+    fn fake_keeper(listener: UnixListener, spawns: Sender<u64>, release: mpsc::Receiver<()>) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut lines = BufReader::new(stream.try_clone().unwrap());
+            let send = |reply: Value, fds: &[i32]| {
+                let bytes = format!("{reply}\n");
+                kanna_keeper::fdpass::send(stream.as_raw_fd(), bytes.as_bytes(), fds, false).unwrap();
+            };
+            let mut line = String::new();
+            while lines.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let req: Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                let tag = req["req"].clone();
+                match req["op"].as_str() {
+                    Some("hello") => send(json!({"ok": true, "version": kanna_keeper::PROTOCOL_VERSION, "pid": 4242, "req": tag}), &[]),
+                    Some("spawn") => {
+                        spawns.send(tag.as_u64().unwrap()).unwrap();
+                        release.recv().unwrap();
+                        let (mut master, mut child) = (0, 0);
+                        assert_eq!(unsafe { libc::openpty(&mut master, &mut child, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
+                        send(json!({"ok": true, "id": req["id"], "pid": 4243, "cmd": ["sleep"], "fds": 1, "req": tag}), &[master]);
+                        unsafe { libc::close(master) };
+                        std::mem::forget(unsafe { OwnedFd::from_raw_fd(child) });
+                    }
+                    _ => send(json!({"ok": true, "req": tag}), &[]),
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn a_spawn_whose_reply_is_held_doesnt_hold_up_other_commands() {
+        let dir = std::env::temp_dir().join(format!("kdt{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (spawns, spawned) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let fake = fake_keeper(UnixListener::bind(dir.join("keeper.sock")).unwrap(), spawns, released);
+        let (events, _inbox) = mpsc::channel();
+        let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
+        let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
+        let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
+        let core = kanna_mux::Core::default();
+        *terminals.core.borrow_mut() = Some(core.weak());
+        core.set_host(Some(Rc::new(Host::new(terminals.clone(), serial))));
+        let opened = Rc::new(RefCell::new(None));
+        let answer = opened.clone();
+        core.handle(json!({"cmd": "open", "args": {"type": "term", "cmd": "sleep 30"}}), move |reply| *answer.borrow_mut() = Some(reply));
+        spawned.recv_timeout(Duration::from_secs(5)).expect("the keeper was asked to spawn");
+        let listed = core.handle_blocking(json!({"cmd": "list"}));
+        assert_eq!(listed["ok"], true, "{listed}");
+        let pane = listed["panes"][0]["id"].as_str().unwrap().to_string();
+        assert_eq!(core.pane(&pane).map(|p| p.state), Some(PaneState::Starting));
+        assert!(opened.borrow().is_none(), "open waits for the terminal to start");
+        release.send(()).unwrap();
+        let by = Instant::now() + Duration::from_secs(5);
+        while opened.borrow().is_none() {
+            assert!(Instant::now() < by, "the spawn's reply never finished the start");
+            assert!(terminals.heard(keeper.take().unwrap()).is_empty());
+            core.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let reply = opened.borrow_mut().take().unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(core.pane(&pane).map(|p| (p.state, p.pid)), Some((PaneState::Running, Some(4243))));
+        assert!(terminals.attach(core.pane(&pane).unwrap().terminal.as_deref().unwrap(), false, None, None).is_some());
+        drop((terminals, keeper));
+        drop(fake);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

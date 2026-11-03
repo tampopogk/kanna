@@ -43,15 +43,19 @@ pub fn run(request: &Value, json_output: bool, callers: &[String]) -> Result<(),
         }
         "reply" => {
             let text = request["text"].as_str().unwrap_or_default().to_string();
+            let mut reopened = false;
             update(&file, |doc| {
                 let thread = thread_mut(doc, id.unwrap_or_default(), &file)?;
                 if let Some(messages) = thread["messages"].as_array_mut() {
                     messages.push(json!({ "who": "agent", "text": text, "at": now() }));
                 }
                 thread["status"] = json!("replied");
+                reopened = thread["state"] == "resolved";
+                thread["state"] = json!("open");
                 Ok(())
             })?;
-            println!("replied to {}", id.unwrap_or_default());
+            let note = if reopened { ", reopened" } else { "" };
+            println!("replied to {}{note}", id.unwrap_or_default());
         }
         "resolve" | "reopen" => {
             let state = if action == "resolve" { "resolved" } else { "open" };
@@ -142,7 +146,9 @@ fn with_lines(mut doc: Value) -> Value {
     let Some(source) = doc["file"].as_str().and_then(|f| std::fs::read_to_string(f).ok()) else { return doc };
     for thread in doc["threads"].as_array_mut().into_iter().flatten() {
         let line = thread["line"].as_i64().unwrap_or(1);
-        let (found, detached) = if let Some(page) = thread.get("page").filter(|p| p.is_object()) {
+        let (found, detached) = if let Some(ink) = thread.get("ink").filter(|i| i.is_object()) {
+            (line_of(&source, ink["marks"][0]["anchor"]["text"].as_str().unwrap_or_default(), line).0, false)
+        } else if let Some(page) = thread.get("page").filter(|p| p.is_object()) {
             (line_of(&source, page["text"].as_str().unwrap_or_default(), line).0, false)
         } else if let Some(image) = thread["image"].as_str() {
             image_line(&source, image, line)
@@ -184,6 +190,10 @@ pub fn printable(text: &str) -> String {
 }
 
 fn what(thread: &Value) -> String {
+    if let Some(marks) = thread["ink"]["marks"].as_array() {
+        let kinds: Vec<&str> = marks.iter().map(|m| m["kind"].as_str().unwrap_or("writing")).collect();
+        return format!("ink, {} mark{}: {}", marks.len(), if marks.len() == 1 { "" } else { "s" }, kinds.join(", "));
+    }
     match thread.get("page").filter(|p| p.is_object()) {
         Some(page) => describe_page(page),
         None => match thread["image"].as_str() {
@@ -217,7 +227,12 @@ pub fn show(thread: &Value, file: &str) -> String {
         if thread["detached"] == true { " · detached: the quote is no longer in the file" } else { "" }
     );
     let mark = thread["mark"].as_str().map(|m| format!("\n> marked up: {m}")).unwrap_or_default();
-    if let Some(page) = thread.get("page").filter(|p| p.is_object()) {
+    if let Some(ink) = thread.get("ink").filter(|i| i.is_object()) {
+        for line in ink_lines(ink) {
+            out += &format!("\n{line}");
+        }
+        out += &mark;
+    } else if let Some(page) = thread.get("page").filter(|p| p.is_object()) {
         let n = |i: usize| page["box"][i].as_i64().unwrap_or(0);
         out += &format!("\n> {}\n> box {},{} to {},{} px{mark}", describe_page(page), n(0), n(1), n(0) + n(2), n(1) + n(3));
     } else if let Some(image) = thread["image"].as_str() {
@@ -244,6 +259,113 @@ fn describe_page(page: &Value) -> String {
         return format!("{place}, element {selector}{}", if quote.is_empty() { String::new() } else { format!(" \"{quote}\"") });
     }
     format!("{place}, a box")
+}
+
+pub fn ink_lines(ink: &Value) -> Vec<String> {
+    let marks = ink["marks"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut lines = Vec::new();
+    if ink["view"].is_object() {
+        lines.push(format!("> {}", describe_view(&ink["view"])));
+    }
+    lines.push(format!("> ink, {} mark{}, numbered in the picture:", marks.len(), if marks.len() == 1 { "" } else { "s" }));
+    for (n, mark) in marks.iter().enumerate() {
+        lines.push(format!("> {} {}", n + 1, describe_mark(mark, ink["view"].is_object())));
+        let note = flat(mark["note"].as_str().unwrap_or_default(), 400);
+        if !note.is_empty() {
+            lines.push(format!(">   note: {note}"));
+        }
+    }
+    lines
+}
+
+fn describe_view(view: &Value) -> String {
+    let hash = flat(view["hash"].as_str().unwrap_or_default(), 100);
+    let place = if hash.is_empty() { "the page".to_string() } else { format!("the page at {hash}") };
+    let n = |key: &str, i: usize| view[key][i].as_i64();
+    match (n("viewport", 0), n("viewport", 1), n("scroll", 0), n("scroll", 1)) {
+        (Some(w), Some(h), Some(x), Some(y)) => format!("{place}, in a {w}×{h} view, scrolled to {x},{y}"),
+        _ => place,
+    }
+}
+
+fn describe_mark(mark: &Value, page: bool) -> String {
+    let kind = mark["kind"].as_str().filter(|k| ["circle", "underline", "strike", "cross", "arrow", "writing"].contains(k)).unwrap_or("writing");
+    let verb = match kind {
+        "circle" => Some("circle around"),
+        "underline" => Some("underline under"),
+        "strike" => Some("strike through"),
+        "cross" => Some("cross over"),
+        _ => None,
+    };
+    let words = flat(mark["words"].as_str().unwrap_or_default(), 120);
+    let anchor = &mark["anchor"];
+    let to = Some(&mark["to"]).filter(|t| kind == "arrow" && t.is_object());
+    let side = if mark["side"] == "before" { "before" } else { "after" };
+    let text = |place: &Value, cap: usize| flat(place["text"].as_str().unwrap_or_default(), cap);
+    if page {
+        let element = |place: &Value| format!("element {} \"{}\"", flat(place["selector"].as_str().unwrap_or_default(), 200), text(place, 120));
+        if let (Some(verb), false) = (verb, words.is_empty()) {
+            let quoted = if words == text(anchor, 120) { String::new() } else { format!(", the text \"{words}\"") };
+            return format!("{verb} {}{quoted}{}", element(anchor), at(box_of(&anchor["box"])));
+        }
+        if let Some(to) = to {
+            return format!("arrow from {} to {side} {}", element(anchor), element(to));
+        }
+        let read = if kind == "writing" { ", read it in the picture" } else { "" };
+        return format!("{kind} near {}{}{read}", element(anchor), at(bounds(mark)));
+    }
+    let line = |place: &Value| format!("line {}", place["line"].as_i64().unwrap_or(1));
+    if let (Some(verb), false) = (verb, words.is_empty()) {
+        return format!("{verb} \"{words}\" ({})", line(anchor));
+    }
+    if let Some(to) = to {
+        return format!("arrow from \"{}\" ({}) to {side} \"{}\" ({})", trim(&text(anchor, usize::MAX)), line(anchor), trim(&text(to, usize::MAX)), line(to));
+    }
+    if kind == "writing" {
+        return format!("writing beside {}, read it in the picture", line(anchor));
+    }
+    format!("{kind} at {}, around nothing", line(anchor))
+}
+
+fn box_of(value: &Value) -> Option<[i64; 4]> {
+    let values = value.as_array().filter(|v| v.len() == 4)?;
+    let mut out = [0; 4];
+    for (slot, v) in out.iter_mut().zip(values) {
+        *slot = v.as_i64()?;
+    }
+    Some(out)
+}
+
+fn bounds(mark: &Value) -> Option<[i64; 4]> {
+    let origin = box_of(&mark["anchor"]["box"])?;
+    let points: Vec<(f64, f64)> = mark["strokes"].as_array()?.iter().flat_map(|s| s.as_array().cloned().unwrap_or_default()).filter_map(|p| Some((p[0].as_f64()?, p[1].as_f64()?))).collect();
+    let fold = |pick: fn(&(f64, f64)) -> f64, min: bool| points.iter().map(pick).fold(if min { f64::MAX } else { f64::MIN }, if min { f64::min } else { f64::max });
+    if points.is_empty() {
+        return None;
+    }
+    let (left, top) = ((origin[0] as f64 + fold(|p| p.0, true)).round() as i64, (origin[1] as f64 + fold(|p| p.1, true)).round() as i64);
+    let (right, bottom) = ((origin[0] as f64 + fold(|p| p.0, false)).round() as i64, (origin[1] as f64 + fold(|p| p.1, false)).round() as i64);
+    Some([left, top, right - left, bottom - top])
+}
+
+fn at(rect: Option<[i64; 4]>) -> String {
+    rect.map(|b| format!(" at {},{} to {},{} px", b[0], b[1], b[0] + b[2], b[1] + b[3])).unwrap_or_default()
+}
+
+fn flat(text: &str, cap: usize) -> String {
+    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().map(|c| if c.is_control() || c == '\u{2028}' || c == '\u{2029}' { '?' } else { c }).collect();
+    match one.char_indices().nth(cap.saturating_sub(1)) {
+        Some((at, _)) if one.chars().count() > cap => format!("{}…", &one[..at]),
+        _ => one,
+    }
+}
+
+fn trim(text: &str) -> String {
+    if text.chars().count() <= 34 {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(33).collect();
+    format!("{}…", cut.trim_end_matches(|c: char| c.is_whitespace() || ",;:.".contains(c)))
 }
 
 fn describe_region(region: &Value) -> String {
@@ -296,6 +418,23 @@ mod tests {
         assert_eq!(shown["threads"][0]["line"], 3);
         assert!(show(&shown["threads"][0], "docs/specs/desk.md").starts_with("c1 · docs/specs/desk.md:3 · resolved\n> The Shelf holds\nyou: Why?\nagent: Because."));
         assert!(run(&json!({ "local": "reply", "id": "c9", "text": "x", "doc": file }), false, &[]).is_err());
+        run(&json!({ "local": "reply", "id": "c1", "text": "Done.", "doc": file }), false, &[]).unwrap();
+        let thread = &read(&file)["threads"][0];
+        assert_eq!((thread["state"].clone(), thread["status"].clone()), (json!("open"), json!("replied")));
+        assert_eq!(thread["messages"][2]["text"], "Done.");
+        run(&json!({ "local": "resolve", "id": "c1", "doc": file }), false, &[]).unwrap();
+        let ink = json!({ "marks": [{ "kind": "strike", "strokes": [[[0, 4], [90, 5]]], "anchor": { "line": 9, "text": "The Shelf holds the rest." }, "words": "the rest." }] });
+        update(&file, |doc| {
+            doc["threads"].as_array_mut().unwrap().push(json!({ "id": "c2", "quote": "", "line": 9, "state": "open", "status": "sent", "messages": [], "ink": ink }));
+            Ok(())
+        })
+        .unwrap();
+        run(&json!({ "local": "reply", "id": "c2", "text": "Cut it.", "doc": file }), false, &[]).unwrap();
+        run(&json!({ "local": "resolve", "id": "c2", "doc": file }), false, &[]).unwrap();
+        let shown = with_lines(read(&file));
+        let thread = &shown["threads"][1];
+        assert_eq!((thread["ink"].clone(), thread["state"].clone(), thread["line"].clone()), (ink, json!("resolved"), json!(3)));
+        assert!(show(thread, "docs/specs/desk.md").ends_with("> 1 strike through \"the rest.\" (line 9)\nagent: Cut it."));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -321,6 +460,38 @@ mod tests {
         assert_eq!(printable("ok\u{1b}]52;c;x\u{7}\nnext\u{9b}2J"), "ok]52;c;x\nnext2J");
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::remove_dir_all(&linked).unwrap();
+    }
+
+    #[test]
+    fn ink_threads_show_their_marks_as_the_agent_got_them() {
+        let place = |line: i64, text: &str| json!({ "line": line, "text": text });
+        let panes = place(7, "Panes only: a container holds panes, not splits or other containers.");
+        let thread = json!({ "id": "c2", "quote": "", "line": 7, "state": "open", "mark": ".kanna/docs/marks/docs__specs__tab-container.md-c2.png", "messages": [],
+            "ink": { "marks": [
+                { "kind": "circle", "strokes": [[[2, 1], [80, 0]]], "anchor": panes, "words": "Panes only:" },
+                { "kind": "writing", "strokes": [[[96, 0]]], "anchor": panes },
+                { "kind": "arrow", "strokes": [[[-12, 4], [-10, -390]]], "anchor": place(23, "The panes inside stay ordinary panes, with their own IDs."),
+                  "to": place(3, "A tab container is a slot in a split that holds several panes."), "side": "after", "tip": 1, "note": "say this up front" },
+                { "kind": "strike", "strokes": [[[180, 8], [360, 9]]], "anchor": place(14, "Click a tab to show it; middle-click or × to close it."), "words": "middle-click or × to close it." }
+            ] } });
+        assert_eq!(show(&thread, "docs/specs/tab-container.md"), "c2 · docs/specs/tab-container.md:7 · open
+> ink, 4 marks, numbered in the picture:
+> 1 circle around \"Panes only:\" (line 7)
+> 2 writing beside line 7, read it in the picture
+> 3 arrow from \"The panes inside stay ordinary pa…\" (line 23) to after \"A tab container is a slot in a sp…\" (line 3)
+>   note: say this up front
+> 4 strike through \"middle-click or × to close it.\" (line 14)
+> marked up: .kanna/docs/marks/docs__specs__tab-container.md-c2.png");
+        assert_eq!(what(&thread), "ink, 4 marks: circle, writing, arrow, strike");
+        let page = json!({ "view": { "hash": "", "viewport": [1220, 816], "scroll": [0, 40] }, "marks": [
+            { "kind": "writing", "strokes": [[[620, 4], [640, 12]], [[630, 20], [650, 24]]],
+              "anchor": { "line": 15, "text": "Name Jeremy Hale", "selector": "#settings .row:nth-of-type(1)", "box": [40, 100, 600, 40] } }
+        ] });
+        assert_eq!(ink_lines(&page), [
+            "> the page, in a 1220×816 view, scrolled to 0,40",
+            "> ink, 1 mark, numbered in the picture:",
+            "> 1 writing near element #settings .row:nth-of-type(1) \"Name Jeremy Hale\" at 660,104 to 690,124 px, read it in the picture",
+        ]);
     }
 
     #[test]

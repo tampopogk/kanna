@@ -11,11 +11,13 @@ flowchart LR
     CLI["kanna CLI, agents"] -->|"socket: tasks …"| D
     CLI -->|"socket: quiz …"| Q
     APP["Kanna app<br/>Desks, Desk view, menus"] -->|"socket: commands"| OWN
+    CLI -->|"socket: schedule …"| S
     subgraph DP["Kanna daemon (the only writer)"]
         D["tasks.rs<br/>tasks · events"] --> DB["db.rs<br/>migrations · recovery"]
         Q["quiz.rs<br/>rounds · answers"] --> DB
         OWN["layout.rs<br/>park · activate · hold · release"] -->|"moved: task, from, to, by"| D
         OWN --> DB
+        S["schedule.rs<br/>schedules"] --> DB
     end
     DB --> F[("kanna.db<br/>WAL")]
     DB -. "first run" .-> J[("backlog.json")]
@@ -23,7 +25,7 @@ flowchart LR
     classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
     classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
     classDef ext fill:#6b4f2f,stroke:#e0a960,color:#ffffff
-    class APP,D,Q,DB kanna
+    class APP,D,Q,S,DB kanna
     class OWN kmux
     class CLI ext
 ```
@@ -81,6 +83,8 @@ flowchart LR
 - **Recovery.** On open the daemon runs `PRAGMA quick_check`. A file it can't open or that fails the check is moved aside as `kanna.db.bad-TIME`, with its `-wal`; the daemon then restores the last good copy (`kanna.db.bak`, written with SQLite's backup API at each start once the db checks out) and logs what it did and that changes since that start are lost. With no good copy it imports `backlog.json.imported` if there is one, else starts empty, and says which in its log. A missing `kanna.db` with a `kanna.db.bak` or `backlog.json.imported` beside it is restored the same way. A `backlog.json` found beside a working db (written by an older Kanna run since) adds the tasks the db lacks. A write that fails is logged and the command fails; one after the change has happened (an agent already started) still fails the command, and memory keeps what happened. A db file that can't be made at all is logged and the tasks are kept in memory until the daemon restarts.
 
 **What stays where it is.** Each app's physical state (window frames, text sizes) stays in its own `app-state.json` ([windows](windows.md#2-what-the-app-keeps)). Doc threads stay beside their docs ([doc markup](doc-markup.md)), where an agent reads them. Settings stay JSON files people edit.
+
+**runs, run_revisions, run_stages, run_events**: the software factory's runs, one row per run, revision, stage visit and event ([software factory §6](software-factory.md#6-how-its-built)).
 
 ## Quiz results
 
@@ -147,6 +151,10 @@ sequenceDiagram
 | `seq` | integer | the order, highest first |
 
 - **The app writes them** (`projects touch`, through `projects.rs`) whenever one of its Desks' project changes; the eleventh drops the oldest. Listing forgets a folder that's gone; `projects clear` empties the table.
+
+## Schedules
+
+**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, and a JSON `doc` (who made it). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
 
 ## Planners
 

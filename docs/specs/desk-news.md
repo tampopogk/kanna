@@ -78,10 +78,10 @@ sequenceDiagram
 ## 4. How it's built
 
 - **`desk_news.rs`** (daemon): `News` gathers `Item`s (repo, task, name, what, merged, when) and decides when a repo's burst is due (`due`) and its lines (`lines`). Pure, unit-tested.
-- **`Tasks::tell`** (`tasks.rs`) is called beside the event it reports: `started` (picked, to the Desk), `shelve`, `take_off` (done from the Shelf), `sweep` (done from the Desk) and `activated`. It skips a change whose `by` is one of the repo's planner panes, and a repo with none.
+- **`Tasks::tell_planner`** (`tasks.rs`) is called beside the event it reports: `started` (picked, to the Desk), `shelve`, `take_off` (done from the Shelf), `sweep` (done from the Desk) and `activated`. It skips a change whose `by` is one of the repo's planner panes, and a repo with none.
 - **The caller of a Desk task's done:** `done` and `torn_down` put the pane's `by` in `ending` before closing it; `sweep` takes it from there for the `done` event and the news.
-- **Merged:** `finish`'s thread decides it first (`task_scripts::merged`: `kanna-base`, `merge-base --is-ancestor`), before teardown and clean-up, and sends `Event::Merged`; a task with no worktree is not merged at once. The `done` item waits for it.
-- **Flushing:** `Tasks::tick` posts each due burst with `Tasks::post("desk", repo, text)`, the door crash reports use, and wakes again at the next burst's time.
+- **Merged:** `finish`'s thread decides it first (`task_scripts::merge`, on `task_scripts::merged`: `kanna-base`, `merge-base --is-ancestor`), before teardown and clean-up, and sends `Event::Merged`; a task with no worktree is not merged at once. The `done` item waits for it.
+- **Flushing:** `Tasks::tick` posts each due burst with `Tasks::post` (from `desk` to `planner`), the door crash reports use, and wakes again at the next burst's time.
 - **The app** (`AppDesk.activateTask`) sends `activated` when it changes a Desk's `active`, with the `by` of the `desk {action: activate}` request that asked; the daemon records an `activated` event on the task.
 
 ## 5. Glossary

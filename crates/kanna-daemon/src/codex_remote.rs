@@ -1,3 +1,6 @@
+use crate::accounts::{self, Accounts, Credential};
+use crate::messages::Rpc;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -16,6 +19,8 @@ const UNPROMPTED_CONFIG: [&str; 4] = ["-c", "approval_policy=\"never\"", "-c", "
 pub fn command(helper: &str, dir: &str, agent: &str) -> String {
     format!("{helper} {FLAG} {dir} {agent}")
 }
+
+const EPHEMERAL: [&str; 2] = ["-c", "cli_auth_credentials_store=\"ephemeral\""];
 
 const SOCKET_PATH_MAX: usize = 100;
 
@@ -47,10 +52,13 @@ fn short_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/kanna-{}", unsafe { libc::getuid() }))
 }
 
-pub fn server_args(args: &[String], listen: &str) -> Vec<String> {
+pub fn server_args(args: &[String], listen: &str, supplied: bool) -> Vec<String> {
     let mut server = vec!["app-server".to_string()];
     if unprompted(args) {
         server.extend(UNPROMPTED_CONFIG.map(String::from));
+    }
+    if supplied {
+        server.extend(EPHEMERAL.map(String::from));
     }
     for pair in args.windows(2).filter(|pair| pair[0] == "-c" || pair[0] == "--config") {
         server.extend(["-c".to_string(), pair[1].clone()]);
@@ -96,7 +104,9 @@ pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
     }
     sweep(&folder);
     let listen = format!("unix://{}", socket.display());
-    let server = children.spawn(Command::new(program).args(server_args(args, &listen)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()));
+    let daemon = std::env::var_os("KANNA_SOCKET").filter(|s| !s.is_empty()).map_or_else(|| dir.join(kanna_build::SOCKET), PathBuf::from);
+    let supplied = supplied(dir, &daemon);
+    let server = children.spawn(Command::new(program).args(server_args(args, &listen, supplied.is_some())).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()));
     let mut server = match server {
         Ok(server) => server,
         Err(error) => return alone(&children, program, args, &format!("couldn't start {program} app-server: {error}")),
@@ -110,6 +120,11 @@ pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    if let Some(supplied) = supplied {
+        if let Err(why) = sign_in(&socket, supplied, daemon) {
+            eprintln!("kanna: Codex couldn't use your account ({why}): sign in here, or with kanna accounts sign-in codex");
+        }
+    }
     let status = children.spawn(Command::new(program).args(tui_args(args, &listen))).and_then(|mut tui| tui.wait());
     let _ = server.kill();
     let _ = server.wait();
@@ -119,6 +134,61 @@ pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
         Err(error) => {
             eprintln!("kanna: couldn't run {program}: {error}");
             127
+        }
+    }
+}
+
+enum Supplied {
+    ApiKey(String),
+    Tokens { account: String, tokens: Value },
+}
+
+fn supplied(dir: &Path, daemon: &Path) -> Option<Supplied> {
+    let accounts = Accounts::open(dir, accounts::secrets(dir), Box::new(accounts::CodexRefresher));
+    match accounts.credential("codex")? {
+        Credential::CodexApiKey(key) => Some(Supplied::ApiKey(key)),
+        Credential::CodexHolder { account, .. } => match accounts::ask_daemon(daemon, json!({ "action": "token", "account": account })) {
+            Ok(reply) => Some(Supplied::Tokens { account, tokens: reply["tokens"].clone() }),
+            Err(why) => {
+                eprintln!("kanna: couldn't get your Codex account's token ({why}), so Codex uses this machine's own sign-in");
+                None
+            }
+        },
+        Credential::Env(..) => None,
+    }
+}
+
+fn sign_in(socket: &Path, supplied: Supplied, daemon: PathBuf) -> Result<(), String> {
+    let mut rpc = Rpc::open(socket, Some(STARTUP), Some(json!({ "experimentalApi": true })))?;
+    match supplied {
+        Supplied::ApiKey(key) => rpc.call("account/login/start", json!({ "type": "apiKey", "apiKey": key })).map(|_| ()),
+        Supplied::Tokens { account, tokens } => {
+            let mut login = tokens.clone();
+            login["type"] = json!("chatgptAuthTokens");
+            rpc.call("account/login/start", login)?;
+            rpc.wait_forever();
+            let current = tokens["accessToken"].as_str().unwrap_or_default().to_string();
+            let _ = std::thread::Builder::new().name("kanna.codex-renewals".into()).spawn(move || renew(rpc, &account, current, &daemon));
+            Ok(())
+        }
+    }
+}
+
+fn renew(mut rpc: Rpc, account: &str, mut current: String, daemon: &Path) {
+    while let Ok(text) = rpc.receive() {
+        let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+        if message["method"] != "account/chatgptAuthTokens/refresh" || message.get("id").is_none() {
+            continue;
+        }
+        let reply = match accounts::ask_daemon(daemon, json!({ "action": "token", "account": account, "previous": current })) {
+            Ok(reply) => {
+                current = reply["tokens"]["accessToken"].as_str().unwrap_or_default().to_string();
+                json!({ "jsonrpc": "2.0", "id": message["id"], "result": reply["tokens"] })
+            }
+            Err(why) => json!({ "jsonrpc": "2.0", "id": message["id"], "error": { "code": -32000, "message": why } }),
+        };
+        if rpc.send(&reply).is_err() {
+            break;
         }
     }
 }
@@ -194,10 +264,11 @@ mod tests {
     fn its_permissions_go_to_the_server_and_the_tui_attaches_to_it() {
         let args = |line: &str| line.split(' ').map(String::from).collect::<Vec<_>>();
         let listen = "unix:///s/codex-7.sock";
-        assert_eq!(server_args(&args("--yolo resume 019f"), listen), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" --listen unix:///s/codex-7.sock"));
+        assert_eq!(server_args(&args("--yolo resume 019f"), listen, false), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" --listen unix:///s/codex-7.sock"));
         assert_eq!(tui_args(&args("--yolo resume 019f"), listen), args("resume 019f --remote unix:///s/codex-7.sock"), "a remote resume refuses permission flags");
-        assert_eq!(server_args(&args("-a on-request"), listen), args("app-server --listen unix:///s/codex-7.sock"), "a codex that asks keeps asking");
-        assert_eq!(server_args(&args("--yolo -c model_auto_compact_token_limit=300000 hi"), listen), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 --listen unix:///s/codex-7.sock"), "the app-server compacts, so it gets the settings");
+        assert_eq!(server_args(&args("-a on-request"), listen, false), args("app-server --listen unix:///s/codex-7.sock"), "a codex that asks keeps asking");
+        assert_eq!(server_args(&args("--yolo -c model_auto_compact_token_limit=300000 hi"), listen, false), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 --listen unix:///s/codex-7.sock"), "the app-server compacts, so it gets the settings");
+        assert_eq!(server_args(&args("--yolo hi"), listen, true), args("app-server -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c cli_auth_credentials_store=\"ephemeral\" --listen unix:///s/codex-7.sock"), "a supplied account stays in the server's memory, never in your auth.json");
         assert_eq!(tui_args(&args("-a on-request --no-daemon"), listen), args("-a on-request --remote unix:///s/codex-7.sock"));
     }
 

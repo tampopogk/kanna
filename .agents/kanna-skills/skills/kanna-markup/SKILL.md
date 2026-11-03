@@ -36,12 +36,42 @@ Make the title bar quieter.
 
 The line is where that text is in the HTML, when it's found. Open the marked-up copy (it's relative to the repo root) to see what they mean before you answer.
 
+### Ink
+
+The user can also draw on a doc. Their marks come as one comment, one numbered line per mark, with the note they typed on a mark under it, and a picture of the doc with the ink and the same numbers drawn on:
+
+```
+[kanna comment c2 · docs/specs/tab-container.md:7]
+> ink, 4 marks, numbered in the picture:
+> 1 circle around "Panes only:" (line 7)
+> 2 writing beside line 7, read it in the picture
+> 3 arrow from "The panes inside stay ordinary pa…" (line 23) to after "A tab container is a slot in a sp…" (line 3)
+>   note: say this up front
+> 4 strike through "middle-click or × to close it." (line 14)
+> marked up: .kanna/docs/marks/docs__specs__tab-container.md-c2.png
+```
+
+On a page, marks name parts by CSS path and text, with boxes in page pixels, as page comments do. Always open the picture: it shows what the words can't, such as the user's writing and how far a stroke reaches.
+
+| Mark | Means |
+|---|---|
+| strike, cross | cut it |
+| arrow | move what's at its start to before or after what's at its tip |
+| circle, underline | this: see the note, or the writing beside it; with neither, ask what should change |
+| writing | read it from the picture: a word, a `?`, a correction |
+
+Answer mark by mark, by number, naming what each touched and how you read it, so a misread shows in your first reply: `kanna markup reply c2 "1, 2: you circled \"Panes only\" with a ? … 3: I'll move \"The panes inside…\" after the opening. 4: I'll cut \"middle-click or ×\"."`. Marks whose text you changed leave the doc by themselves.
+
 ## Answering a comment
 
-1. Read the passage in the file (the line is where it is now) and do what the comment asks: change the doc, or answer the question.
-2. Reply in the thread, briefly, saying what you changed or answering:
-   `kanna markup reply c2 "Added: ⌃Tab scrolls the next tab into view."`
-3. **Leave it open.** The user resolves a thread once they've read your reply; resolving it yourself hides the reply from them. Resolve only when they ask you to.
+Kanna types the next comment in only when your turn ends, so a turn spent working holds up every comment after it. Answer first, work after:
+
+1. **Reply first, right away.** Read the passage in the file (the line is where it is now), then reply in the thread before anything else: answer the question, or say what you'll change and how you read the comment, so a misread shows before the work:
+   `kanna markup reply c2 "I'll add that ⌃Tab scrolls the next tab into view, under Keys."`
+2. **Do the work without holding the turn.** A quick doc edit you make now. Anything longer (code, builds, tests) goes to a subagent or a background command, and your turn ends so the next comment can come in.
+3. **Reply again in the same thread when it's done,** saying what landed:
+   `kanna markup reply c2 "Added under Keys: ⌃Tab scrolls the next tab into view."`
+4. **Leave it open.** The user resolves a thread once they've read your reply; resolving it yourself hides the reply from them. Resolve only when they ask you to. A reply to a thread they've resolved opens it again, so your second reply still reaches them.
 
 Reply in the thread, not only in the chat: the user reads replies beside the doc.
 
@@ -49,11 +79,11 @@ Reply in the thread, not only in the chat: the user reads replies beside the doc
 
 | Command | Does |
 |---|---|
-| `kanna markup FILE.md`, `kanna markup FILE.html` | Show a markdown file or a local page (a mockup) in a Kanna pane with comments; comments on it come to you (`--to PANE`: to another terminal) |
+| `kanna markup FILE.md`, `kanna markup FILE.html` | Show a markdown file or a local page (a mockup) in a new Kanna pane with comments; comments on it come to you (`--to PANE`: to another terminal). If it's already open (`kanna workspace list`), use `kanna markup PANE` instead |
 | `kanna markup PANE`, `kanna markup PANE --off` | Turn comments on (coming to you) or off in a pane already open; `kanna open md` and `kanna open web` show docs without them |
 | `kanna markup comments [--all]` | The open comments on your docs (`--all`: resolved too) |
 | `kanna markup show cN` | One thread: what it points at, its line, every message |
-| `kanna markup reply cN TEXT` | Answer a thread |
+| `kanna markup reply cN TEXT` | Answer a thread; a resolved one opens again |
 | `kanna markup resolve cN`, `kanna markup reopen cN` | Resolve a thread (only when the user asks), or reopen one |
 
 Run them from your own terminal, in the doc's repo: the doc is found from the thread ID, the docs whose comments come to your pane first. Pass `--doc FILE` if that's ambiguous.

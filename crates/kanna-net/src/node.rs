@@ -1,15 +1,14 @@
 use crate::log::PeerLog;
 use crate::pair::{hello_a, hello_b, pake_bytes, pake_hex, Offer, Party, Role};
-use crate::update::{self, Install};
-use crate::{is_key, Refused, ALPN, KINDS, UPDATE};
+use crate::protocol;
+use crate::{is_key, relay_mode, relay_url, Refused, Relay, ALPN, KINDS};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -23,9 +22,15 @@ const PAIRING: &str = "pair";
 
 const APP_HELLO: &str = "app.hello";
 
+pub const PEER: &str = "peer";
+
+const REPLICA: &str = "replica";
+
 pub(crate) const MAX_HEADER: u64 = 64 << 10;
 
 pub(crate) const MAX_LINE: u64 = 16 << 20;
+
+const MAX_TRANSFER: u64 = 4 << 30;
 
 pub(crate) const DIAL: Duration = Duration::from_secs(10);
 
@@ -66,8 +71,10 @@ pub trait Host: Send + Sync + 'static {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>);
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>);
     fn save(&self, state: Value);
-    fn restart(&self);
     fn app(&self, _from: String, _hello: Value, _stream: std::os::unix::net::UnixStream) {}
+    fn inbox(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 pub struct Config {
@@ -78,7 +85,6 @@ pub struct Config {
     pub port: Option<u16>,
     pub mdns: bool,
     pub release: Value,
-    pub install: Option<Install>,
 }
 
 #[derive(Clone)]
@@ -90,8 +96,6 @@ pub(crate) struct Inner {
     pub(crate) host: Box<dyn Host>,
     capabilities: Value,
     pub(crate) release: Value,
-    pub(crate) install: Option<Install>,
-    pub(crate) updating: AtomicBool,
     state: Mutex<State>,
     outcome: watch::Sender<Option<Result<Value, Failure>>>,
     revoked: watch::Sender<u64>,
@@ -100,6 +104,7 @@ pub(crate) struct Inner {
 pub(crate) struct State {
     pub(crate) name: String,
     port: u16,
+    relay: Option<Relay>,
     log: Option<PeerLog>,
     broken: Option<String>,
     addrs: BTreeMap<String, Vec<String>>,
@@ -124,7 +129,7 @@ pub fn valid_name(name: &str) -> bool {
 }
 
 async fn bind(secret: &SecretKey, port: u16) -> Result<Endpoint, String> {
-    let builder = || Endpoint::builder(presets::Minimal).secret_key(secret.clone()).alpns(vec![ALPN.to_vec()]).relay_mode(RelayMode::Disabled);
+    let builder = || Endpoint::builder(presets::Minimal).secret_key(secret.clone()).alpns(vec![ALPN.to_vec()]).relay_mode(relay_mode());
     if port != 0 {
         if let Ok(fixed) = builder().bind_addr(SocketAddr::from(([0, 0, 0, 0], port))) {
             if let Ok(endpoint) = fixed.bind().await {
@@ -153,8 +158,12 @@ impl Node {
         };
         let name = saved["name"].as_str().filter(|n| valid_name(n)).map(String::from).unwrap_or(config.name);
         let addrs = saved["addrs"].as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), strings(v))).collect()).unwrap_or_default();
-        let state = State { name, port, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new(), releases: HashMap::new() };
-        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, install: config.install, updating: AtomicBool::new(false), state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
+        let relay = saved["relay"].as_str().and_then(|url| Relay::new(url, saved["relay_token"].as_str()).ok());
+        if let Some(relay) = &relay {
+            endpoint.insert_relay(relay.url.clone(), relay.config()).await;
+        }
+        let state = State { name, port, relay, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new(), releases: HashMap::new() };
+        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
         }
@@ -213,6 +222,10 @@ impl Node {
 
     fn snapshot(state: &State) -> Value {
         let mut saved = json!({ "name": state.name, "port": state.port, "addrs": state.addrs });
+        if let Some(relay) = &state.relay {
+            saved["relay"] = json!(relay.url.to_string());
+            saved["relay_token"] = json!(relay.token);
+        }
         if let Some(log) = &state.log {
             saved["anchor"] = log.anchor().clone();
             saved["entries"] = json!(log.entries());
@@ -229,7 +242,8 @@ impl Node {
 
     fn descriptor(&self) -> Value {
         let addrs: Vec<String> = self.0.endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
-        json!({ "name": self.state().name, "key": self.key(), "capabilities": self.0.capabilities, "relay": null, "addrs": addrs })
+        let state = self.state();
+        json!({ "name": state.name, "key": self.key(), "capabilities": self.0.capabilities, "relay": state.relay.as_ref().map(|r| r.url.to_string()), "addrs": addrs })
     }
 
     pub(crate) fn usable(&self) -> Result<(), Failure> {
@@ -251,6 +265,7 @@ impl Node {
                     let path = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| if p.is_ip() { "direct" } else { "relay" }));
                     let mut addrs = strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default());
                     addrs.extend(state.addrs.get(key).cloned().unwrap_or_default());
+                    let relay = state.relay.as_ref().map(|r| r.url.to_string()).or_else(|| view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)));
                     peers.push(json!({
                         "name": name,
                         "key": key,
@@ -260,6 +275,7 @@ impl Node {
                         "conflict": keys.len() > 1,
                         "path": path,
                         "addrs": addrs,
+                        "relay": relay,
                         "release": state.releases.get(key).cloned().unwrap_or(if *key == me { self.0.release.clone() } else { Value::Null }),
                     }));
                 }
@@ -274,6 +290,9 @@ impl Node {
             "port": state.port,
             "release": self.0.release,
             "addrs": addrs,
+            "relay": state.relay.as_ref().map(|r| r.url.to_string()),
+            "relay_token": state.relay.as_ref().is_some_and(|r| r.token.is_some()),
+            "home_relay": self.0.endpoint.addr().relay_urls().next().map(|r| r.to_string()),
             "paired": state.log.is_some(),
             "log": state.log.as_ref().map(|l| l.id().to_string()),
             "broken": state.broken,
@@ -297,6 +316,23 @@ impl Node {
         }
         self.save();
         Ok(json!({ "name": name }))
+    }
+
+    pub fn relay_token(&self) -> Option<String> {
+        self.state().relay.as_ref().and_then(|r| r.token.clone())
+    }
+
+    pub async fn set_relay(&self, url: Option<&str>, token: Option<&str>) -> Result<Value, Failure> {
+        let relay = url.map(|url| Relay::new(url, token)).transpose()?;
+        let old = std::mem::replace(&mut self.state().relay, relay.clone());
+        if let Some(old) = old.filter(|old| Some(&old.url) != relay.as_ref().map(|r| &r.url)) {
+            self.0.endpoint.remove_relay(&old.url).await;
+        }
+        if let Some(relay) = &relay {
+            self.0.endpoint.insert_relay(relay.url.clone(), relay.config()).await;
+        }
+        self.save();
+        Ok(json!({ "relay": relay.as_ref().map(|r| r.url.to_string()), "token": relay.is_some_and(|r| r.token.is_some()) }))
     }
 
     pub fn offer(&self) -> Result<Value, Failure> {
@@ -365,14 +401,6 @@ impl Node {
         }
     }
 
-    pub(crate) fn trusted(&self) -> Vec<String> {
-        self.state().log.as_ref().map(|l| l.view().trusted().into_iter().collect()).unwrap_or_default()
-    }
-
-    pub(crate) fn capabilities_of(&self, key: &str) -> Value {
-        self.state().log.as_ref().and_then(|l| l.view().descriptors.get(key).map(|d| d["capabilities"].clone())).unwrap_or(Value::Null)
-    }
-
     pub(crate) fn forget(&self, key: &str) {
         self.state().conns.remove(key);
     }
@@ -430,16 +458,6 @@ impl Node {
             let _ = send.finish();
             return;
         }
-        if kind == UPDATE {
-            match self.admit(&remote, None) {
-                Ok(_) => self.receive_update(&header, &mut send, &mut recv).await,
-                Err(failure) => {
-                    let _ = write_line(&mut send, &refusal(&failure)).await;
-                }
-            }
-            let _ = send.finish();
-            return;
-        }
         if !KINDS.contains(&kind.as_str()) {
             let _ = write_line(&mut send, &refusal(&Failure::new("unknown_stream", format!("no stream kind \"{kind}\"")))).await;
             let _ = send.finish();
@@ -455,10 +473,9 @@ impl Node {
                 return;
             }
         };
-        let mine = self.protocols();
-        let theirs = if cert.is_some() { mine } else { update::protocols(&header["protocols"]).unwrap_or([1, 1]) };
-        let Some(protocol) = update::common(mine, theirs) else {
-            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {}–{}", self.state().name, mine[0], mine[1]) }, "release": self.0.release });
+        let mine = self.protocol();
+        if cert.is_none() && protocol::of(&header) != Some(mine) {
+            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {mine}", self.state().name) }, "release": self.0.release });
             let _ = write_line(&mut send, &refused).await;
             let _ = send.finish();
             return;
@@ -475,7 +492,7 @@ impl Node {
             },
             None => None,
         };
-        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": protocol, "release": self.0.release })).await.is_err() {
+        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": mine, "release": self.0.release })).await.is_err() {
             return;
         }
         if let Some(tcp) = target {
@@ -495,15 +512,44 @@ impl Node {
             }
             return;
         }
-        if kind == "control" {
-            while let Ok(request) = read_line(&mut recv, MAX_LINE).await {
+        if kind == "sync" && cert.is_some() {
+            let _ = write_line(&mut send, &refusal(&Failure::new("not_a_daemon", "only a machine's daemon syncs"))).await;
+            let _ = send.finish();
+            return;
+        }
+        if kind == "transfer" {
+            let reply = match cert {
+                Some(_) => refusal(&Failure::new("not_a_daemon", "only a machine's daemon sends a task")),
+                None => self.take_transfer(&remote, &from, &mut recv).await,
+            };
+            let _ = write_line(&mut send, &reply).await;
+            let _ = send.finish();
+            return;
+        }
+        if kind == "control" || kind == "sync" {
+            while let Ok(mut request) = read_line(&mut recv, MAX_LINE).await {
                 if let Err(failure) = self.admit(&remote, cert.as_ref()) {
                     let id = request.get("id").cloned().unwrap_or(Value::Null);
                     let _ = write_line(&mut send, &json!({ "id": id, "ok": false, "error": { "code": failure.code, "message": failure.message } })).await;
                     break;
                 }
-                if request["cmd"] == APP_HELLO {
+                if kind == "control" && request["cmd"] == APP_HELLO {
                     return self.bridge(remote, cert, from, request, send, recv).await;
+                }
+                let replica = request["cmd"] == REPLICA;
+                if kind == "sync" && !replica {
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    if write_line(&mut send, &json!({ "id": id, "ok": false, "error": { "code": "bad_request", "message": "a sync stream carries only replica requests" } })).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                if let Some(args) = request.get_mut("args").and_then(Value::as_object_mut) {
+                    if kind == "sync" {
+                        args.insert(PEER.into(), json!(remote));
+                    } else if replica {
+                        args.remove(PEER);
+                    }
                 }
                 let reply = self.control(&from, request).await;
                 if write_line(&mut send, &reply).await.is_err() {
@@ -557,6 +603,44 @@ impl Node {
         let _ = send.finish();
     }
 
+    async fn take_transfer(&self, remote: &str, from: &str, recv: &mut BufReader<RecvStream>) -> Value {
+        let header = match read_line(recv, MAX_LINE).await {
+            Ok(header) => header,
+            Err(e) => return refusal(&Failure::new("bad_request", format!("no transfer header: {e}"))),
+        };
+        let id = header["id"].as_str().unwrap_or_default().to_string();
+        if id.is_empty() || id.len() > 96 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return refusal(&Failure::new("bad_request", "a transfer needs an ID of letters, digits and dashes"));
+        }
+        let Some(size) = header["size"].as_u64().filter(|size| *size <= MAX_TRANSFER) else {
+            return refusal(&Failure::new("too_big", format!("a transfer carries at most {} MB", MAX_TRANSFER >> 20)));
+        };
+        let Some(inbox) = self.0.host.inbox() else { return refusal(&Failure::new("unavailable", "this machine takes no transfers")) };
+        let file = inbox.join(format!("{id}.in"));
+        if let Err(e) = receive_file(recv, &inbox, &file, size).await {
+            return refusal(&Failure::new("unreachable", format!("lost the transfer on the way: {e}")));
+        }
+        let mut args = header["args"].as_object().cloned().unwrap_or_default();
+        args.insert("action".into(), json!("transfer"));
+        args.insert("id".into(), json!(id));
+        args.insert("file".into(), json!(file.to_string_lossy()));
+        args.insert(PEER.into(), json!(remote));
+        self.control(from, json!({ "id": 1, "cmd": REPLICA, "args": args })).await
+    }
+
+    pub async fn transfer(&self, key: &str, id: &str, args: Value, path: &std::path::Path) -> Result<Value, Failure> {
+        self.usable()?;
+        let name = self.name_of(key);
+        let size = tokio::fs::metadata(path).await.map_err(|e| Failure::new("failed", format!("can't read {}: {e}", path.display())))?.len();
+        let (mut send, mut recv, _) = self.open_to(key, "transfer", json!({})).await?;
+        let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
+        write_line(&mut send, &json!({ "id": id, "size": size, "args": args })).await.map_err(lost)?;
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| Failure::new("failed", format!("can't read {}: {e}", path.display())))?;
+        tokio::io::copy(&mut file, &mut send).await.map_err(|e| lost(e.to_string()))?;
+        let _ = send.finish();
+        read_line(&mut recv, MAX_LINE).await.map_err(lost)
+    }
+
     async fn control(&self, from: &str, request: Value) -> Value {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         if request["cmd"] == "machine.sync" {
@@ -608,6 +692,10 @@ impl Node {
         let mut direct: Vec<SocketAddr> = addrs.iter().filter_map(|a| a.parse().ok()).collect();
         direct.extend(state.nearby.get(key).map(|n| n.addrs.clone()).unwrap_or_default());
         let mut addr = EndpointAddr::new(id);
+        let theirs = state.log.as_ref().and_then(|l| l.view().descriptors.get(key).and_then(|d| d["relay"].as_str().and_then(|r| relay_url(r).ok())));
+        for relay in state.relay.iter().map(|r| &r.url).chain(theirs.iter()) {
+            addr = addr.with_relay_url(relay.clone());
+        }
         for socket in direct {
             addr = addr.with_ip_addr(socket);
         }
@@ -650,8 +738,8 @@ impl Node {
         Ok((conn, true))
     }
 
-    pub(crate) fn protocols(&self) -> [u32; 2] {
-        update::protocols(&self.0.release["protocols"]).unwrap_or([1, 1])
+    pub(crate) fn protocol(&self) -> u32 {
+        protocol::of(&self.0.release).unwrap_or(0)
     }
 
     async fn open(&self, conn: &Connection, kind: &str, name: &str) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
@@ -662,7 +750,7 @@ impl Node {
         let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
         let (mut send, recv) = conn.open_bi().await.map_err(|e| lost(e.to_string()))?;
         let mut recv = BufReader::new(recv);
-        let mut header = json!({ "kind": kind, "protocols": self.protocols() });
+        let mut header = json!({ "kind": kind, "protocol": self.protocol() });
         if let (Some(header), Some(extra)) = (header.as_object_mut(), extra.as_object()) {
             header.extend(extra.clone());
         }
@@ -675,14 +763,13 @@ impl Node {
         if ack["ok"] != true {
             let failure = Failure::from_reply(&ack);
             if failure.code == "other_protocol" {
-                return Err(Failure::new("other_protocol", update::other_protocol(name, &ack["release"], self.protocols())));
+                return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
             }
             return Err(Failure::new(&failure.code, format!("{name} refused this machine: {}", failure.message)));
         }
-        if kind != UPDATE && !update::agreed(&ack, self.protocols()) {
+        if protocol::of(&ack) != Some(self.protocol()) {
             let _ = send.finish();
-            let release = if ack["release"].is_object() { ack["release"].clone() } else { json!({ "protocols": [1, 1] }) };
-            return Err(Failure::new("other_protocol", update::other_protocol(name, &release, self.protocols())));
+            return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
         }
         Ok((send, recv, ack))
     }
@@ -704,19 +791,17 @@ impl Node {
         }
     }
 
-    pub(crate) async fn release_of(&self, key: &str) -> Result<Value, Failure> {
-        let (mut send, _, ack) = self.open_to(key, "control", json!({})).await?;
-        let _ = send.finish();
-        Ok(ack["release"].clone())
+    async fn control_stream(&self, host: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {
+        self.stream(host, "control").await
     }
 
-    async fn control_stream(&self, host: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {
+    async fn stream(&self, host: &str, kind: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {
         self.usable()?;
         let key = self.resolve(host)?;
         if key == self.key() {
             return Err(Failure::new("bad_request", format!("{host} is this machine")));
         }
-        let (send, recv, _) = self.open_to(&key, "control", json!({})).await?;
+        let (send, recv, _) = self.open_to(&key, kind, json!({})).await?;
         Ok((send, recv, self.name_of(&key)))
     }
 
@@ -733,6 +818,15 @@ impl Node {
 
     pub async fn call(&self, host: &str, request: Value) -> Result<Value, Failure> {
         let (mut send, mut recv, name) = self.control_stream(host).await?;
+        let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
+        write_line(&mut send, &request).await.map_err(lost)?;
+        let reply = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;
+        let _ = send.finish();
+        Ok(reply)
+    }
+
+    pub async fn exchange(&self, host: &str, request: Value) -> Result<Value, Failure> {
+        let (mut send, mut recv, name) = self.stream(host, "sync").await?;
         let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
         write_line(&mut send, &request).await.map_err(lost)?;
         let reply = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;
@@ -1044,6 +1138,19 @@ async fn refuse(send: &mut SendStream, failure: Failure) -> Result<Value, Failur
 
 fn unix_time() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+async fn receive_file<R: tokio::io::AsyncRead + Unpin>(recv: &mut R, inbox: &std::path::Path, file: &std::path::Path, size: u64) -> Result<(), String> {
+    tokio::fs::create_dir_all(inbox).await.map_err(|e| e.to_string())?;
+    let part = file.with_extension("part");
+    let mut out = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
+    let copied = tokio::io::copy(&mut (&mut *recv).take(size), &mut out).await.map_err(|e| e.to_string())?;
+    if copied != size {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(format!("{copied} of {size} bytes came"));
+    }
+    out.sync_all().await.map_err(|e| e.to_string())?;
+    tokio::fs::rename(&part, file).await.map_err(|e| e.to_string())
 }
 
 pub(crate) async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(recv: &mut R, max: u64) -> Result<Value, String> {
