@@ -107,6 +107,8 @@ fn diagnostics_and_results_come_back_with_this_worktrees_paths() {
     assert_eq!(std::fs::read_link(rig.repo.join("product.app/Current")).unwrap(), PathBuf::from("Contents"));
     let diagnostics = std::fs::read_to_string(rig.repo.join(".kanna/build").join(&req.job).join("diagnostics.txt")).unwrap();
     assert_eq!(diagnostics.trim(), mapped);
+    let staged = rig.state.join("jobs").join(&req.job).join("fetched/0/product.app/Contents/exe");
+    assert_eq!(std::fs::read_to_string(staged).unwrap(), "bin", "a fetched product is frozen in the job's folder before the mirror is released");
 }
 
 #[test]

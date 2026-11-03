@@ -505,14 +505,13 @@ impl Supervisor {
             list.push(entry);
         }
         let src = mirror.join("src");
-        for rel in request["fetch"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        for (index, rel) in request["fetch"].as_array().into_iter().flatten().filter_map(Value::as_str).enumerate() {
             if manifest::safe_relative(rel).is_err() {
                 continue;
             }
-            let path = src.join(rel);
-            let entry = match std::fs::symlink_metadata(&path) {
-                Ok(_) => json!({ "path": path, "fetch": rel }),
-                Err(_) => json!({ "fetch": rel, "missing": true }),
+            let entry = match stage(&src.join(rel), &job.dir.join("fetched").join(index.to_string())) {
+                Some(path) => json!({ "path": path, "fetch": rel }),
+                None => json!({ "fetch": rel, "missing": true }),
             };
             list.push(entry);
         }
@@ -736,6 +735,15 @@ pub fn now() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+fn stage(path: &Path, folder: &Path) -> Option<PathBuf> {
+    std::fs::symlink_metadata(path).ok()?;
+    std::fs::create_dir_all(folder).ok()?;
+    let staged = folder.join(path.file_name()?);
+    let flags = if cfg!(target_os = "macos") { "-cRP" } else { "-RP" };
+    let copied = Command::new("cp").arg(flags).arg(path).arg(&staged).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    copied.is_ok_and(|s| s.success()).then_some(staged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,3 +789,4 @@ mod tests {
         assert!(!src.join("dir").exists());
     }
 }
+
