@@ -37,7 +37,7 @@ It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the sam
 
 | Offer | The customer does | Kanna does | The customer sees |
 |---|---|---|---|
-| **Cloud tasks** | `kanna task new … --on cloud`, or moves a task there (`kanna task move TASK cloud`) | makes a VM for that task alone, runs it there, destroys the VM when the task is done (§5) | the task, on their Desk or Shelf like any other; never the VM |
+| **Cloud tasks** | `kanna task new … --cloud`, or moves a task there (`kanna task move TASK --cloud`) | makes a VM for that task alone, runs it there, destroys the VM when the task is done (§5) | the task, on their Desk or Shelf like any other; never the VM |
 | **Directory and relays** | signs their machines in to their account | publishes their peer log, carries pairing, relays traffic (§7) | their machines finding each other anywhere |
 | **Build Macs** | runs a task (on the cloud or a Linux machine of theirs) that builds Apple code | runs the build on a macOS VM of theirs (§8) | `xcodebuild` working as if local |
 
