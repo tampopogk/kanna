@@ -52,7 +52,7 @@ sequenceDiagram
 
 - **Only at its prompt:** a message waits while the agent is working, and while it needs you. It goes as soon as the agent [reports](agent-status.md#3-the-report-osc-7501) idle, the [turn's end](shelf-runners.md#2-how-its-built) the runners use.
 - **Claude takes it on its messaging socket:** every Claude Code session listens on a Unix socket for messages from other local sessions, and Kanna writes the message there as one JSON line. Claude shows it as "Another Claude session sent a message:".
-- **It says the sender's permissions:** Claude holds a message for your approval when its sender's permission class (`bypass` or `prompting`) isn't its own, or when the sender states none and Claude bypasses prompts, as Kanna's agents do. So Kanna wraps the message in Claude's envelope with `from-mode`: a task's or planner's own class, from its command line when it sends (`--dangerously-skip-permissions`, `--yolo`, `--permission-mode bypassPermissions` and the like mean `bypass`); for a message from you or one of your schedules, the recipient's, since you could type it yourself. Several messages at once are `bypass` only if every one is. A prompting agent's message to an unprompted Claude waits for your approval in that Claude.
+- **It says the sender's permissions:** Claude holds a message for your approval when its sender's permission class (`bypass` or `prompting`) isn't its own, or when the sender states none and Claude bypasses prompts, as Kanna's agents do. So Kanna wraps the message in Claude's envelope with `from-mode`: a task's or planner's own class, from its command line when it sends (`--dangerously-skip-permissions`, `--yolo`, `--permission-mode bypassPermissions` and the like mean `bypass`); for a message from you, one of your schedules or the planner's [Desk news](desk-news.md) (`desk`, reporting what you or Kanna did), the recipient's, since you could type it yourself. Several messages at once are `bypass` only if every one is. A prompting agent's message to an unprompted Claude waits for your approval in that Claude.
 - **`from-mode` is Claude's check, not Kanna's boundary:** Kanna passes it on so Claude doesn't hold every message, and enforces nothing with it. A Codex turn carries no mode, and the sender is the `by` the client names (`$KANNA_TERMINAL`), not one Kanna checks against the connection. Neither gives anyone more than they had: whatever can reach `kanna.sock` can already type into any agent's prompt (`kanna send`) and answer its approval menu (`kanna send-key`), and any process of yours can write to Claude's messaging socket or Codex's app-server directly. The boundary is who can reach `kanna.sock`. An agent whose permission rules allow `kanna task send` but not `kanna send` can still get a `--yolo` Codex to act for it.
 - **Codex takes it through its app-server:** Kanna starts every Codex with an app-server of its own ([Codex's app-server](codex-app-server.md)), and a message is a `turn/start` on its session. The TUI shows it as a prompt.
 - **Your prompt is left alone:** neither touches what's in the agent's input, so a draft you left there, or the agent's suggested next prompt, stays as it is, and a message doesn't wait on your typing.
@@ -67,7 +67,7 @@ sequenceDiagram
 flowchart TD
     M["a message for a task"] --> R{"its agent runs?"}
     R -->|yes| W["delivered at its turn's end"]
-    R -->|"no, on the Shelf"| B["it runs for it, as one of shelf.runners,<br/>ahead of tasks that haven't started"]
+    R -->|"no, on the Shelf"| B["it runs for it, as one of shelf.runners,<br/>taking its turn by age"]
     B --> W
     R -->|"no, on the Desk"| S["waits until you start it"]
     S --> W
@@ -75,8 +75,8 @@ flowchart TD
     E -->|yes| X["its next turn's end stops it, as before"]
 ```
 
-- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md): it waits for a free one, but goes before tasks that haven't started. With `shelf.runners` 0 it waits.
-- **A running Shelf task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message.
+- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md): it joins the one queue of Shelf tasks and takes its turn by when it was made, so an older task that hasn't started goes first and a newer one goes after. The planner's merge nudges message many tasks at once, and they shouldn't jump new work. With `shelf.runners` 0 it waits.
+- **A running Shelf task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message when its turn in the queue comes.
 - **A task stopped on the Desk stays stopped:** you stopped it. It gets its messages when you start it.
 - **Only a task whose agent takes messages runs for one:** a stopped task started as another agent isn't woken for a message it couldn't take.
 

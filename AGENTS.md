@@ -15,6 +15,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 
 - No AI attribution in commits: no `Co-Authored-By` trailer for an AI.
 - No PRs: a branch merges straight into main.
+- A fix of something already on main names the commit that brought the bug in a `Fixes: COMMIT` trailer, when you know it: the Stats tab traces fixes by it ([code quality metrics](docs/specs/code-quality-metrics.md#5-fixes)).
 - Unrelated work gets its own task (`kanna task new`), even when it comes up mid-task.
 
 ## Running inside Kanna
