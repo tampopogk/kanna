@@ -3711,7 +3711,7 @@ loop_latency() {
   readings="$(raw '{"id":1,"cmd":"debug.daemon.perf"}' | python3 -c 'import json, sys
 r = json.load(sys.stdin); r = r.get("result", r)
 loop = [i for i in r["intervals"] if i["name"].startswith("loop.")]
-for i in loop: print("%s p99 %sms max %sms (%s)" % (i["name"], i["p99"], i["max"], i["count"]))
+for i in r["intervals"]: print("%s p50 %sms p99 %sms max %sms (%s)" % (i["name"], i["p50"], i["p99"], i["max"], i["count"]))
 print("worst", max(i["p99"] for i in loop))')"
   echo "loop_latency: $n tasks, $rounds rounds of list, pick 3, list, shelve 3:"; grep -v '^worst' <<<"$readings" | sed 's/^/  /'
   tail -n +"$((mark + 1))" "$out/daemon.log" | grep 'kanna-daemon: slow: ' | sed 's/^/  /'
