@@ -229,12 +229,13 @@ impl Supervisor {
         if let Some(dir) = developer_dir {
             env.push(("DEVELOPER_DIR".to_string(), dir.to_string()));
         }
-        if let Some(proxy) = &self.config.proxy {
-            for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"] {
-                env.push((name.to_string(), proxy.clone()));
-            }
-        }
         env
+    }
+
+    fn proxy_env(&self, capability: Option<&str>) -> Vec<(String, String)> {
+        let (Some(proxy), Some(capability)) = (&self.config.proxy, capability.filter(|c| c.len() <= 128 && c.bytes().all(|b| b.is_ascii_alphanumeric()))) else { return vec![] };
+        let proxy = proxy.replace("{capability}", capability);
+        ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"].iter().map(|name| (name.to_string(), proxy.clone())).collect()
     }
 
     fn run(self: &Arc<Self>, conn: &mut (impl Read + Write), first: &Frame, payload: &[u8]) -> io::Result<()> {
@@ -391,6 +392,7 @@ impl Supervisor {
             }
         }
         env.push(("KANNA_BUILD_JOB".to_string(), job.id.clone()));
+        env.extend(self.proxy_env(request["capability"].as_str()));
         let xcode = output_of("/usr/bin/xcodebuild", &["-version"], &env);
         let cache = mirror.join("derived").join(&manifest::sha256(xcode.as_bytes())[..12]);
         let results = job.dir.join("results");

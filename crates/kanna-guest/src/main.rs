@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: kanna-guest serve --socket PATH [--state DIR] [--proxy URL] [--require-console]";
+const USAGE: &str = "usage: kanna-guest serve (--socket PATH | --vsock) [--egress LOCAL_PORT] [--state DIR] [--path PATH] [--require-console]";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -12,6 +12,8 @@ fn main() {
         std::process::exit(2);
     }
     let mut socket = None;
+    let mut vsock = None;
+    let mut egress = None;
     let home = std::env::var("HOME").unwrap_or_default();
     let mut config = Config::new(PathBuf::from(home).join(".kanna-build"));
     let mut rest = args[1..].iter();
@@ -19,7 +21,8 @@ fn main() {
         match arg.as_str() {
             "--socket" => socket = rest.next().map(PathBuf::from),
             "--state" => config.state = rest.next().map(PathBuf::from).unwrap_or(config.state),
-            "--proxy" => config.proxy = rest.next().cloned(),
+            "--vsock" => vsock = Some(kanna_guest::vsock::JOB_PORT),
+            "--egress" => egress = rest.next().and_then(|p| p.parse::<u16>().ok()),
             "--path" => config.path = rest.next().cloned().unwrap_or(config.path),
             "--require-console" => config.require_console = true,
             _ => {
@@ -28,10 +31,17 @@ fn main() {
             }
         }
     }
-    let Some(socket) = socket else {
+    if let Some(port) = egress {
+        config.proxy = Some(format!("http://job:{{capability}}@127.0.0.1:{port}"));
+        if let Err(e) = kanna_guest::vsock::relay_egress(port, kanna_guest::vsock::EGRESS_PORT) {
+            eprintln!("kanna-guest: can't relay egress on 127.0.0.1:{port}: {e}");
+            std::process::exit(1);
+        }
+    }
+    if socket.is_none() && vsock.is_none() {
         eprintln!("{USAGE}");
         std::process::exit(2);
-    };
+    }
     let supervisor = match Supervisor::new(config) {
         Ok(supervisor) => supervisor,
         Err(e) => {
@@ -39,6 +49,26 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Some(port) = vsock {
+        let listener = match kanna_guest::vsock::Listener::bind(port) {
+            Ok(listener) => listener,
+            Err(e) => {
+                eprintln!("kanna-guest: can't listen on vsock port {port}: {e}");
+                std::process::exit(1);
+            }
+        };
+        eprintln!("kanna-guest: serving jobs on vsock port {port}");
+        loop {
+            let Ok(conn) = listener.accept() else { continue };
+            let supervisor = supervisor.clone();
+            let _ = std::thread::Builder::new().name("kanna-guest conn".into()).spawn(move || {
+                if let Err(e) = supervisor.serve(conn) {
+                    eprintln!("kanna-guest: {e}");
+                }
+            });
+        }
+    }
+    let Some(socket) = socket else { return };
     let _ = std::fs::remove_file(&socket);
     let listener = match UnixListener::bind(&socket) {
         Ok(listener) => listener,

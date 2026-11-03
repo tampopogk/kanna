@@ -4,3 +4,4 @@ pub mod manifest;
 pub mod paths;
 pub mod supervisor;
 pub mod client;
+pub mod vsock;
