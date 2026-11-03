@@ -46,6 +46,8 @@ mod serial;
 mod store;
 mod stacks;
 mod task_scripts;
+mod pipelines;
+mod usage;
 mod terminals;
 mod transfer;
 mod toasts;
@@ -123,6 +125,7 @@ pub enum Event {
     File { id: String, read: files::Read },
     Serial(serial::SerialEvent),
     Sampled(stats::Sampled),
+    Measured(runs::Measured),
     Covered(coverage::Covered),
     KeeperReadable,
     KeeperHeard,
@@ -156,6 +159,7 @@ impl Event {
             Event::File { .. } => "loop.file",
             Event::Serial(_) => "loop.serial",
             Event::Sampled(_) => "loop.stats",
+            Event::Measured(_) => "loop.runs",
             Event::Covered(_) => "loop.coverage",
             Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
@@ -365,7 +369,7 @@ fn run() -> Result<(), String> {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
     }));
-    let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks)));
+    let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks), events.clone()));
     runs.install(&core);
     let closing = Rc::downgrade(&runs);
     *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {
@@ -795,6 +799,7 @@ fn run() -> Result<(), String> {
             }
             Event::Serial(event) => serial.event_in(event),
             Event::Sampled(sampled) => stats.sampled(sampled),
+            Event::Measured(measured) => runs.measured(measured),
             Event::Covered(covered) => stats.coverage().covered(covered),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();

@@ -1,4 +1,5 @@
 use crate::db::{self, Answer, Db, Life, Sample};
+use crate::pipelines;
 use crate::quality;
 use crate::tasks::git;
 use crate::Event;
@@ -147,7 +148,7 @@ pub fn catch_up(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<St
     Ok(())
 }
 
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let of_era = year - era * 400;
@@ -191,6 +192,7 @@ fn date(day: i64) -> String {
 }
 
 pub struct Facts {
+    pub pipelines: Option<Value>,
     pub today: i64,
     pub answers: Vec<Answer>,
     pub samples: Vec<Sample>,
@@ -365,14 +367,14 @@ pub fn report(project: &str, facts: &Facts) -> Map {
     Map::from_iter([
         ("project".to_string(), json!(project)),
         ("days".to_string(), json!(days)),
-        ("sections".to_string(), json!([quiz(facts), main_section(facts), tasks_section(facts), quality::code_section(facts)])),
+        ("sections".to_string(), Value::Array([quiz(facts), main_section(facts), tasks_section(facts), quality::code_section(facts)].into_iter().chain(facts.pipelines.clone()).collect())),
     ])
 }
 
 pub struct Stats {
     db: Rc<Db>,
     events: Sender<Event>,
-    waiting: RefCell<HashMap<String, Vec<Responder>>>,
+    waiting: RefCell<HashMap<String, Vec<(Responder, Wanted)>>>,
     running: RefCell<HashMap<String, Option<String>>>,
     coverage: Rc<crate::coverage::Coverage>,
 }
@@ -382,9 +384,36 @@ fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
     KmuxError::new("failed", format!("couldn't {what}: {error}"))
 }
 
+#[derive(Clone, Copy)]
+struct Wanted {
+    only: bool,
+    days: Option<i64>,
+}
+
+struct Unlanded {
+    run: String,
+    base: String,
+    tip: String,
+    started: f64,
+}
+
+fn landings(repo: &Path, unlanded: &[Unlanded]) -> Vec<(String, String, f64)> {
+    unlanded
+        .iter()
+        .filter_map(|run| {
+            let made = git(repo, &["rev-list", "--count", &format!("{}..{}", run.base, run.tip)]).ok()?.trim().parse::<u64>().ok()?;
+            let commits = first_parents(repo, run.started - 86400.0).ok()?;
+            let reaches = |commit: &str| git(repo, &["merge-base", "--is-ancestor", &run.tip, commit]).is_ok();
+            let (commit, at) = pipelines::landing_of(&commits, reaches).filter(|_| made > 0)?;
+            Some((run.run.clone(), commit, at))
+        })
+        .collect()
+}
+
 pub struct Sampled {
     pub repo: String,
     pub samples: Result<Vec<Sample>, String>,
+    pub landings: Vec<(String, String, f64)>,
     pub progress: Option<String>,
     pub done: bool,
 }
@@ -410,17 +439,26 @@ impl Stats {
         );
     }
 
+    fn days(args: &Value, key: &str) -> Option<i64> {
+        match args.get(key).and_then(Value::as_i64) {
+            Some(0) => None,
+            Some(days) => Some(days),
+            None => Some(DAYS),
+        }
+    }
+
     fn ask(&self, args: &Value, responder: Responder) {
         let Some(repo) = string(args, "repo").filter(|r| Path::new(r).is_absolute()).and_then(|r| project(Some(r))) else {
             return responder.reply(Err(KmuxError::new("bad_request", "say which repo: an absolute path to a folder in a git repo")));
         };
         let repo = repo.to_string_lossy().to_string();
         self.coverage.consider(&repo);
+        let wanted = Wanted { only: args.get("pipelines") == Some(&Value::Bool(true)), days: Stats::days(args, "days") };
         if let Some(waiting) = self.waiting.borrow_mut().get_mut(&repo) {
-            return waiting.push(responder);
+            return waiting.push((responder, wanted));
         }
         if self.running.borrow().contains_key(&repo) {
-            return responder.reply(self.read(&repo));
+            return responder.reply(self.read(&repo, wanted));
         }
         let since = day_start(local_day(now()) - DAYS + 1);
         let sampled = match self.db.sampled(&repo, since) {
@@ -431,21 +469,31 @@ impl Stats {
             log!("kanna-daemon: couldn't read {repo}'s tasks' branches in {}: {error}", db::FILE);
             HashMap::new()
         });
-        self.waiting.borrow_mut().insert(repo.clone(), vec![responder]);
+        let unlanded = self.db.runs(Some(&repo)).unwrap_or_default().into_iter().filter(|r| r.outcome.as_deref() == Some("handed back") && r.doc.get("landing").is_none()).filter_map(|r| {
+            let tip = self.db.stages(&r.id).ok()?.iter().rev().find_map(|s| string(&s.doc, "end").filter(|e| !e.is_empty()).map(String::from))?;
+            Some(Unlanded { run: r.id.clone(), base: string(&r.doc, "base").unwrap_or("").to_string(), tip, started: r.started_at })
+        }).collect::<Vec<_>>();
+        self.waiting.borrow_mut().insert(repo.clone(), vec![(responder, wanted)]);
         self.running.borrow_mut().insert(repo.clone(), None);
         let events = self.events.clone();
         std::thread::spawn(move || {
             let mut deliver = |samples: Vec<Sample>, progress: Option<Progress>| {
                 let progress = progress.map(|p| format!("sampling {} of {} commits", p.sampled, p.of));
-                let _ = events.send(Event::Sampled(Sampled { repo: repo.clone(), samples: Ok(samples), progress, done: false }));
+                let _ = events.send(Event::Sampled(Sampled { repo: repo.clone(), samples: Ok(samples), landings: vec![], progress, done: false }));
             };
             let result = catch_up(&PathBuf::from(&repo), since, &sampled, &tasks, &mut deliver);
-            let _ = events.send(Event::Sampled(Sampled { repo, samples: result.map(|_| vec![]), progress: None, done: true }));
+            let landings = landings(Path::new(&repo), &unlanded);
+            let _ = events.send(Event::Sampled(Sampled { repo, samples: result.map(|_| vec![]), landings, progress: None, done: true }));
         });
     }
 
     pub fn sampled(&self, sampled: Sampled) {
-        let Sampled { repo, samples, progress, done } = sampled;
+        let Sampled { repo, samples, landings, progress, done } = sampled;
+        for (run, commit, at) in landings {
+            if let Err(error) = self.db.patch_run(&run, &json!({ "landing": commit, "landedAt": at })) {
+                log!("kanna-daemon: couldn't save where {run} landed: {error}");
+            }
+        }
         match samples {
             Ok(samples) if !samples.is_empty() => {
                 if let Err(error) = self.db.put_samples(&repo, &samples) {
@@ -464,13 +512,43 @@ impl Stats {
         if responders.is_empty() {
             return;
         }
-        let reply = self.read(&repo);
-        for responder in responders {
-            responder.reply(reply.clone());
+        for (responder, wanted) in responders {
+            responder.reply(self.read(&repo, wanted));
         }
     }
 
-    fn read(&self, repo: &str) -> Result<Map, KmuxError> {
+    fn run_numbers(&self, repo: &str, days: Option<i64>) -> Result<(Vec<pipelines::Numbers>, HashMap<String, Vec<db::StageRow>>, f64), KmuxError> {
+        let rows = self.db.runs(Some(repo)).map_err(|e| failed("read the runs", e))?;
+        let revisions = pipelines::revisions(&rows);
+        let samples = self.db.samples_of(repo, &["fixes", "erosion", "verbosity", "coverage"]).map_err(|e| failed("read the samples", e))?;
+        let quality = pipelines::join_quality(&samples);
+        let names = self.db.names(repo).map_err(|e| failed("read the tasks", e))?;
+        let time = now();
+        let from = days.map_or_else(|| rows.iter().map(|r| r.started_at).fold(time, f64::min), |days| day_start(local_day(time) - days + 1));
+        let (mut numbers, mut stages) = (vec![], HashMap::new());
+        for row in rows.iter().filter(|r| r.started_at >= from) {
+            let visits = self.db.stages(&row.id).map_err(|e| failed("read the visits", e))?;
+            let events = self.db.run_events(&row.id).map_err(|e| failed("read the events", e))?;
+            let revision = revisions.get(&(row.pipeline.clone(), row.revision_hash.clone())).copied().unwrap_or(1);
+            let mut one = pipelines::numbers(row, &visits, &events, revision, time);
+            if let Some(name) = names.get(&row.task) {
+                one.name = name.clone();
+            }
+            if let Some(landing) = &one.landing {
+                one.quality = quality(landing);
+            }
+            numbers.push(one);
+            stages.insert(row.id.clone(), visits);
+        }
+        Ok((numbers, stages, from))
+    }
+
+    fn read(&self, repo: &str, wanted: Wanted) -> Result<Map, KmuxError> {
+        let (runs, stages, from) = self.run_numbers(repo, wanted.days)?;
+        if wanted.only {
+            let Value::Object(report) = pipelines::report(repo, &runs, &stages, wanted.days, from, now(), local_day(now())) else { return Ok(Map::new()) };
+            return Ok(report);
+        }
         let today = local_day(now());
         let since = day_start(today - DAYS + 1);
         let facts = Facts {
@@ -478,6 +556,7 @@ impl Stats {
             answers: self.db.answers(repo, false).map_err(|e| failed("read the quiz answers", e))?,
             samples: self.db.samples(repo, since).map_err(|e| failed("read the samples", e))?,
             lives: self.db.lives(repo, since).map_err(|e| failed("read the task events", e))?,
+            pipelines: Some(pipelines::section_of(&runs, &stages, wanted.days, from, now(), today)),
             sampling: self.running.borrow().get(repo).cloned().flatten(),
             coverage: self.coverage.status(repo),
         };
@@ -508,7 +587,7 @@ pub mod tests {
     }
 
     pub fn facts(today: i64, answers: Vec<Answer>, samples: Vec<Sample>, lives: Vec<Life>) -> Facts {
-        Facts { today, answers, samples, lives, sampling: None, coverage: None }
+        Facts { pipelines: None, today, answers, samples, lives, sampling: None, coverage: None }
     }
 
     pub fn collect(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>) -> Vec<Sample> {
