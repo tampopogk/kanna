@@ -231,6 +231,27 @@ extension AppController {
             reply["hash"] = .string(markup.pageHash)
             return reply
         }
+        commands["debug.comments"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string else { throw KannaError("bad_request", "debug.comments needs a pane") }
+            let markdown = contents.markdown(id), web = contents.web(id)
+            guard markdown != nil || web != nil else { throw KannaError("wrong_type", "not a running md or web pane") }
+            switch args["press"]?.string {
+            case "comments": markdown?.pressComments() ?? web?.pressComments()
+            case "threads": markdown?.pressThreads() ?? web?.markup?.pressThreads()
+            case "menu": switchComments(id)
+            default: break
+            }
+            if let agent = args["pick"]?.string {
+                guard let menu = agentMenu, menu.pane == id, menu.choices.contains(where: { $0.pane == agent }) else { throw KannaError("not_found", "no agent menu offering \(agent)") }
+                agentMenu = nil
+                request("markup", ["pane": .string(id), "agent": .string(agent)])
+            }
+            let menu: JSON = agentMenu.flatMap { $0.pane == id ? .array($0.choices.map { ["pane": .string($0.pane), "name": .string($0.name), "detail": .string($0.detail)] }) : nil } ?? .null
+            return ["bar": .array((markdown?.barText ?? web?.barText ?? []).map { .string($0) }),
+                    "comments_button": .bool(markdown?.commentsButtonShown ?? web?.commentsButtonShown ?? false),
+                    "marks": .bool(markdown?.marksShown ?? web?.markup?.marksShown ?? false),
+                    "markup": .bool(markdown?.markup ?? web?.markable ?? false), "menu": menu]
+        }
         commands["debug.md"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let markdown = contents.markdown(id) else { throw KannaError("wrong_type", "not a running md pane") }
             if let step = args["zoom"]?.number { markdown.zoom(by: Int(step)) }

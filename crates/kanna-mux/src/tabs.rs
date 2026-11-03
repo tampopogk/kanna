@@ -48,6 +48,7 @@ pub struct Tabs {
     pub focused: Option<String>,
     pub zoom: bool,
     pub count: usize,
+    pub recent: Vec<String>,
 }
 
 impl Tabs {
@@ -65,6 +66,11 @@ impl Tabs {
             }
         };
         rename(&mut self.focused);
+        for id in &mut self.recent {
+            if id == from {
+                *id = to.into();
+            }
+        }
         for tab in &mut self.tabs {
             if let Some(root) = &mut tab.root {
                 walk(root, from, to);
@@ -114,6 +120,24 @@ impl Tabs {
             self.tabs[t].last_focus = Some(id.into());
         }
         self.focused = Some(id.into());
+    }
+
+    pub(crate) fn remember(&mut self) {
+        let ids = self.panes();
+        if let Some(focused) = self.focused.clone().filter(|f| ids.contains(f)) {
+            if self.recent.first() != Some(&focused) {
+                self.recent.retain(|id| *id != focused);
+                self.recent.insert(0, focused);
+            }
+        }
+        self.recent.retain(|id| ids.contains(id));
+    }
+
+    pub fn latest<'a>(&self, among: &'a [String]) -> Option<&'a String> {
+        if let Some(focused) = among.iter().find(|id| Some(*id) == self.focused.as_ref()) {
+            return Some(focused);
+        }
+        self.recent.iter().find_map(|id| among.iter().find(|a| *a == id)).or_else(|| among.first())
     }
 
     pub(crate) fn settle_focus(&mut self, beside: Option<&String>) {
