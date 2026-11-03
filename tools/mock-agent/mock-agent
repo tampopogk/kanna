@@ -332,7 +332,7 @@ def reported(state):
 
 
 def answer(line):
-    if line.split()[:1] == ["report"]:
+    if line.split()[:1] in (["report"], ["later"]):
         return answering(line)
     reported("working")
     try:
@@ -369,6 +369,9 @@ def answering(line):
             out("TURN_DONE\r\n")
         else:
             out("Declined.\r\n")
+    elif words[:1] == ["later"] and len(words) > 2:
+        threading.Timer(float(words[1]), out, [f"\x1b]7501;{words[2]}\x1b\\"]).start()
+        out(f"later: {words[2]}\r\n")
     elif words[:1] == ["report"]:
         out(f"\x1b]7501;{words[1] if len(words) > 1 else ''}\x1b\\")
         out(f"reported: {words[1] if len(words) > 1 else ''}\r\n")

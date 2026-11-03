@@ -186,6 +186,21 @@ sequenceDiagram
 
 - **The daemon writes them** (`project` `never`, from `planner.sh`) and reads them (`project` `asked`); importing the project deletes its row.
 
+## Status reports
+
+**Built.** Each terminal's latest [agent status](agent-status.md#5-across-a-daemon-restart) records, so an idle agent isn't grey after the daemon restarts.
+
+**status_reports**: one row per terminal with records.
+
+| Column | Type | Holds |
+|---|---|---|
+| `terminal` | text, key | the terminal (`term-41`) |
+| `at` | real | when it was last written |
+| `doc` | JSON | `owner` (the process group that sent them) and `records`, oldest first: `id`, `state`, `need`, `progress`, `app`, `title`, `message` |
+
+- **The daemon writes them** on each change of a terminal's records and when it stops; a terminal with none has no row. It deletes the row when the terminal ends and, at start, every row whose terminal didn't come back.
+- **Read once,** at start, to restore each terminal taken back from the keeper. Not a history: recording status changes over time is a separate decision (below).
+
 ## Crashes
 
 **Built.** Each crash record the daemon has seen in `crashes/` ([crashes](crashes.md)).
@@ -202,7 +217,7 @@ sequenceDiagram
 
 **Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
 
-**Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again; a project's planner kept across a restart), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves: the internal moves behind ⌘. and making a task active), e2e `task_history` (import, every event of a task's life with who did it, the app's park (⌘.), a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).
+**Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again; a project's planner kept across a restart), `reports.rs`'s tests (status reports kept, replaced, cleared and pruned), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves: the internal moves behind ⌘. and making a task active), e2e `task_history` (import, every event of a task's life with who did it, the app's park (⌘.), a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).
 
 **Why not JSON files and an `events.jsonl`.** Both would work for the first table and one log. The db wins once anything reads history back: the Desk's and the Shelf's history is a query by repo and time, "how long did it wait on me" a join of status changes, and a JSON log means reading the whole file and writing its indexes by hand. A change to a task and its event are one transaction, so they can't disagree after a crash; with two files they can. `backlog.json` is rewritten whole on every change (71 KB today, growing with every first message); a row update is a page or two. Migrations have a number and run in a transaction rather than being guessed from what keys a file has. The cost is one C dependency, compiled in, and a file people can't open in an editor, which the CLI covers. Moving away from JSON is cheap now and dearer with every table.
 

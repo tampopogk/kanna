@@ -1,4 +1,5 @@
 use crate::pty::{self, Adopted, Heard, Spawned, Spawner, Spec};
+use crate::reports::Kept;
 use crate::reader::{Feed, Noticed, Reader, Replayed, Typing};
 use crate::wire::Wire;
 use crate::settings::Settings;
@@ -494,7 +495,11 @@ impl Terminals {
         self.store.stop();
     }
 
-    pub fn restore(&self, adopted: Vec<Adopted>) -> Restored {
+    pub fn running(&self) -> Vec<String> {
+        self.live.borrow().iter().filter(|(_, t)| t.running().is_some()).map(|(id, _)| id.clone()).collect()
+    }
+
+    pub fn restore(&self, adopted: Vec<Adopted>, mut reports: HashMap<String, Kept>) -> Restored {
         let saved = self.store.load();
         let (mut counter, mut terminals) = (saved.counter, saved.terminals);
         for id in saved.records.iter().flat_map(|r| [&r.id, &r.pane, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
@@ -517,7 +522,8 @@ impl Terminals {
                     pane.state = PaneState::Running;
                     exits.extend(pty.exit.map(|code| (record.keeper.clone(), pty.pid, code)));
                     restored.adopted += 1;
-                    self.adopt(&record.id, &record.pane, &record.keeper, pty, snapshot)
+                    let kept = reports.remove(&record.id).filter(|_| i64::from(pty.pid) == record.pid);
+                    self.adopt(&record.id, &record.pane, &record.keeper, pty, snapshot, kept)
                 }
                 None if record.state == PaneState::Exited => {
                     pane.state = PaneState::Exited;
@@ -562,7 +568,7 @@ impl Terminals {
             pane.state = PaneState::Running;
             let keeper = pty.id.clone();
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
-            match self.adopt(&id, &id, &keeper, pty, None) {
+            match self.adopt(&id, &id, &keeper, pty, None, None) {
                 Ok(terminal) => {
                     log!("kanna-daemon: took back the keeper's {keeper} as {id}, which the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
@@ -590,7 +596,7 @@ impl Terminals {
         restored
     }
 
-    fn adopt(&self, id: &str, pane: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>) -> std::io::Result<Terminal> {
+    fn adopt(&self, id: &str, pane: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>, kept: Option<Kept>) -> std::io::Result<Terminal> {
         let settings = self.settings();
         let restored = snapshot.and_then(|snapshot| match Feed::restore(&snapshot, &settings) {
             Ok(feed) => Some(feed),
@@ -612,6 +618,9 @@ impl Terminals {
                 screen.resize(id, cols, rows, 0, 0);
             }
             screen.unsaved |= fresh;
+            if let Some(kept) = kept {
+                screen.restore_statuses(kept.owner, kept.records);
+            }
             (cols, rows)
         };
         pty::set_size(&pty.master, cols, rows, 0, 0);
@@ -817,7 +826,15 @@ impl Terminals {
         let Spawned { pid, master } = spawned;
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
         let typing = Typing::default();
-        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone())?;
+        self.store.track(id, feed.clone());
+        if let Some(detector) = self.detector.borrow().as_ref() {
+            detector.watch(id, serial, feed.clone(), master.try_clone()?);
+        }
+        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone()).inspect_err(|_| {
+            if let Some(detector) = self.detector.borrow().as_ref() {
+                detector.forget(id, serial);
+            }
+        })?;
         let mut writer = File::from(master.try_clone()?);
         let written = typing.clone();
         std::thread::Builder::new().name(format!("kanna.write.{id}")).spawn(move || {
@@ -828,10 +845,6 @@ impl Terminals {
                 crate::reader::written(&written);
             }
         })?;
-        self.store.track(id, feed.clone());
-        if let Some(detector) = self.detector.borrow().as_ref() {
-            detector.watch(id, serial, feed.clone(), master.try_clone()?);
-        }
         self.wire.add(id, serial, reader.resumer()?, input.clone(), typing, feed.clone());
         Ok(Terminal {
             pane: pane.into(),
