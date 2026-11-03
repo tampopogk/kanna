@@ -94,7 +94,7 @@ impl Guests {
         let mut entry = entry;
         entry["at"] = json!(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir().join(guest).join("egress.log")) {
-            let _ = writeln!(file, "{entry}");
+            let _ = file.write_all(format!("{entry}\n").as_bytes());
         }
     }
 
