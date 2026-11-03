@@ -1,10 +1,10 @@
 # Kanna Cloud
 
-**Status:** planned; enrollment by token and the `hosted` mark built (slice 9), provisioning being split into Kanna's internal `kanna-cloud` · **Builds on:** [your machines](machines.md) · **Parts:** [installing a host](cloud-provisioning.md), [how Kanna provisions](cloud-vms.md), [build Macs](build-macs.md), [build Mac isolation](build-mac-isolation.md) · **Order:** [build order](machines-build-order.md#kanna-cloud)
+**Status:** planned; enrollment by token and the `hosted` mark built (slice 9), provisioning being split into Kanna's internal `kanna-cloud` · **Beside:** [the customer's own machines](machines.md) · **Parts:** [installing a host](cloud-provisioning.md), [how Kanna provisions](cloud-vms.md), [build Macs](build-macs.md), [build Mac isolation](build-mac-isolation.md) · **Order:** [build order](machines-build-order.md#kanna-cloud)
 
 **Kanna Cloud is Kanna's product:** a paid service that runs work for its customers on Kanna's servers. A customer uses it from Kanna itself (the app and the `kanna` CLI), signed in to a Cloud account. **They see only tasks:** any task can run on the cloud instead of on one of their machines, and Kanna provisions whatever it runs on. Hosts, VMs and their records are Kanna's internal business, run with Kanna's own tool, `kanna-cloud`, which no customer installs.
 
-**It runs on Kanna's infrastructure, not on [your machines](machines.md).** Your machines are the ones you decided to trust and that belong to you, in your signed peer log; nothing Kanna runs ever joins them. A Cloud task runs on a VM of Kanna's, which the customer never sees, names or manages, and their Kanna reaches it through Kanna Cloud, signed in with their account. Your machines work without Cloud and don't depend on it: you can have several, pair them and move tasks between them for free.
+**It runs on Kanna's infrastructure, not on [the customer's own machines](machines.md).** Those are the machines the customer decided to trust and that belong to them, in their signed peer log; nothing Kanna runs ever joins them. A Cloud task runs on a VM of Kanna's, which the customer never sees, names or manages, and their Kanna reaches it through Kanna Cloud, signed in with their account. They work without Cloud and don't depend on it: a customer, or anyone using Kanna, can have several, pair them and move tasks between them for free.
 
 It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the same software run by someone else**: whoever runs it is the operator, and everything below about Kanna as operator applies to them.
 
@@ -27,11 +27,11 @@ It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the sam
 
 - **Customers see tasks, not machines.** No customer command reaches a host, names a VM or asks for a machine. Making, setting up and destroying VMs is Kanna's (`kanna-cloud`, and later the provisioning service behind accounts).
 - **A VM never holds two customers.** Each is one customer's, from creation to destruction, and is never handed to another.
-- **The operator can see your code.** A machine that runs your agent sees your code, your agent's credentials and its transcripts, whoever operates it. End-to-end encryption protects only what passes through the directory and relays.
-- **Trust still comes from your devices.** Cloud can withhold but never forge; adding a machine to yours takes a signature from one of your own devices and a gesture in the app.
-- **Kanna-run machines can't change your machines.** A VM Kanna runs is marked `hosted` in your peer log; its key admits and revokes no one but itself (§10).
+- **The operator can see the customer's code.** A machine that runs a customer's agent sees their code, their agent's credentials and its transcripts, whoever operates it. End-to-end encryption protects only what passes through the directory and relays.
+- **Trust still comes from the customer's devices.** Cloud can withhold but never forge; adding a machine to theirs takes a signature from one of their own devices and a gesture in the app.
+- **Kanna-run machines can't change the customer's machines.** A VM Kanna runs is marked `hosted` in their peer log; its key admits and revokes no one but itself (§10).
 - **Tenants are isolated by VMs,** Linux and macOS alike, with the network enforced on the host. Host accounts are never the boundary.
-- **Cloud covers only what needs servers:** Cloud tasks, the directory and relays, build Macs, and later the phone away from the LAN, push and an always-on Shelf copy. Everything else is your machines' own, and free.
+- **Cloud covers only what needs servers:** Cloud tasks, the directory and relays, build Macs, and later the phone away from the LAN, push and an always-on Shelf copy. Everything else is the customer's own machines', and free.
 
 ## 2. What a customer gets
 
@@ -55,9 +55,9 @@ Kanna never holds the customer's GitHub sign-in: their own Kanna adds and remove
 
 ```mermaid
 flowchart LR
-    subgraph YOU["your machines"]
+    subgraph YOU["the customer's own machines"]
         MBP["Kanna.app + daemon<br/>mbp"]
-        OWN["your own Linux / Macs"]
+        OWN["their own Linux / Macs"]
     end
     subgraph K["Kanna Cloud (the operator's)"]
         DIR["directory<br/>accounts · published peer logs<br/>PAKE relay"]
@@ -88,7 +88,7 @@ flowchart LR
 | Tenant VMs | R720 hosts, Incus | the Linux VM one Cloud task runs on |
 | Provisioning service | Kanna's servers | accounts and account keys; takes requests, makes and releases VMs on hosts (before it exists, `kanna-cloud` by hand) |
 | Directory | Kanna's servers | each account's published peer log, relay URLs and addresses; carries PAKE messages |
-| Relays | Kanna's servers | `iroh-relay`, the same as one you run yourself |
+| Relays | Kanna's servers | `iroh-relay`, the same as one a customer runs themselves |
 | Build Macs | Kanna's Macs | tenant-exclusive macOS VMs that run Linux tasks' Apple builds |
 
 **Provisioning, internal** ([how Kanna provisions](cloud-vms.md)):
@@ -113,7 +113,7 @@ A task the customer sends to Cloud runs on a VM made for it alone, which they ne
 
 ## 6. Enrollment
 
-A Cloud task's VM joins your machines with a one-time token your own Kanna made when it sent the task, instead of a code you type. Your own machines join a Cloud account by the usual code pairing ([identity §2](machine-identity.md#2-pairing)), with the directory carrying the PAKE so they needn't share a LAN; machines that move to Cloud publish the log they have, and nothing is paired again.
+A Cloud task's VM joins the customer's machines with a one-time token their own Kanna made when it sent the task, instead of a typed code. The customer's own machines join a Cloud account by the usual code pairing ([identity §2](machine-identity.md#2-pairing)), with the directory carrying the PAKE so they needn't share a LAN; machines that move to Cloud publish the log they have, and nothing is paired again.
 
 ```mermaid
 sequenceDiagram
@@ -132,46 +132,46 @@ sequenceDiagram
     A->>D: publish the log
 ```
 
-- **Different trust from the LAN.** On the LAN you are the only party to pairing. Here Kanna wrote T into the VM, so the PAKE protects the VM's enrollment from everyone except the operator, who runs the VM anyway. What still holds: the operator can't add any other key to your machines, since an add needs a non-hosted device's signature and your gesture.
-- **The gesture** is the one approval of Cloud tasks on that Mac (§5): your Kanna made the token for a task you sent, so it adds that VM without asking again. Nothing else is ever added without a gesture.
+- **Different trust from the LAN.** On the LAN the customer is the only party to pairing. Here Kanna wrote T into the VM, so the PAKE protects the VM's enrollment from everyone except the operator, who runs the VM anyway. What still holds: the operator can't add any other key to the customer's machines, since an add needs a non-hosted device's signature and their gesture.
+- **The gesture** is the one approval of Cloud tasks on that Mac (§5): the customer's Kanna made the token for a task they sent, so it adds that VM without asking again. Nothing else is ever added without a gesture.
 
 ## 7. Directory and relays
 
-- **The directory** holds each account's published peer log (signed by your devices, so it can withhold but not forge), each peer's relay URL and last addresses, and relays the PAKE for machines not on one LAN.
-- **Relays** are `iroh-relay`, as for your own relay; Kanna's are run for all tenants.
-- **Later, on the directory:** an always-on copy of the Shelf, encrypted with your keys, so a task added on a closed laptop reaches your VMs; push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
+- **The directory** holds each account's published peer log (signed by the customer's devices, so it can withhold but not forge), each peer's relay URL and last addresses, and relays the PAKE for machines not on one LAN.
+- **Relays** are `iroh-relay`, as for a relay a customer runs; Kanna's are run for all tenants.
+- **Later, on the directory:** an always-on copy of the Shelf, encrypted with the customer's keys, so a task added on a closed laptop reaches the cloud; push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
 - **A scheduler** can own every waiting task of a user's VMs and assign them centrally instead of runners asking ([tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **Placement by capability.** Each machine advertises its capabilities (OS, architecture, cores, RAM, Xcode versions, display) in its peer log entry ([identity §3](machine-identity.md#3-the-peer-log)). A task's `needs:` (`needs: xcode`, `needs: linux`) is matched against them, by a runner before it asks or by the scheduler, so a task goes only where it can run. It's Cloud's infrastructure: the app doesn't show capabilities ([links §5](machine-links.md#5-paths-the-machines-tab-and-offline)).
 
 ## 8. Build Macs
 
-A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a build Mac against the agent's worktree, as if Xcode were local, and a remote task's `.app` is fetched to the MBP's Simulator ([build Macs](build-macs.md)). Build Macs form a **pool** shared by tenants, so every build runs in a macOS VM exclusive to one tenant, and the host never runs project code ([isolation](build-mac-isolation.md)). Build Macs are a Cloud feature: your machines aren't designed around them, and a self-hoster who wants them runs the same pool software, for example in their own Kanna Cloud.
+A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a build Mac against the agent's worktree, as if Xcode were local, and a remote task's `.app` is fetched to the MBP's Simulator ([build Macs](build-macs.md)). Build Macs form a **pool** shared by tenants, so every build runs in a macOS VM exclusive to one tenant, and the host never runs project code ([isolation](build-mac-isolation.md)). Build Macs are a Cloud feature: the customer's own machines aren't designed around them, and a self-hoster who wants them runs the same pool software, for example in their own Kanna Cloud.
 
 ## 9. Agent sign-in on Kanna-run machines
 
-[Agent sign-in](agent-sign-in.md) belongs to your machines: accounts are added once on the Mac and supplied to each machine. On a VM Kanna runs:
+[Agent sign-in](agent-sign-in.md) belongs to the customer's own machines: accounts are added once on the Mac and supplied to each machine. On a VM Kanna runs:
 
-- **What sits on the VM, the operator can read:** a Claude setup token or an API key is there in its environment. Short-lived credentials are preferred: Codex's holder model gives the VM only access tokens, with the holder on one of your own devices, never a hosted VM.
-- **Released or revoked, its credentials are rotated:** the app asks you to rotate a long-lived token or key a released VM held, and revokes its deploy key.
+- **What sits on the VM, the operator can read:** a Claude setup token or an API key is there in its environment. Short-lived credentials are preferred: Codex's holder model gives the VM only access tokens, with the holder on one of the customer's own devices, never a hosted VM.
+- **Released or revoked, its credentials are rotated:** the app asks the customer to rotate a long-lived token or key a released VM held, and revokes its deploy key.
 
 ## 10. Threat model
 
-| Risk | On a machine you run | On a VM Kanna runs |
+| Risk | On a machine the customer runs | On a VM Kanna runs |
 |---|---|---|
-| Who holds `device.key` | your daemon, `0600` in its state folder | the VM's daemon, made on its first boot inside the VM; the provisioner never sees it |
-| Who can sign with it | you and your agents (a single-tenant risk: [identity §4](machine-identity.md#4-risks)) | also the operator: host root reads a guest's disk and memory, and the R720s' CPUs have no memory encryption to stop it |
+| Who holds `device.key` | the customer's daemon, `0600` in its state folder | the VM's daemon, made on its first boot inside the VM; the provisioner never sees it |
+| Who can sign with it | the customer and their agents (a single-tenant risk: [identity §4](machine-identity.md#4-risks)) | also the operator: host root reads a guest's disk and memory, and the R720s' CPUs have no memory encryption to stop it |
 | What a signature can do | add and revoke peers (with a gesture) | nothing beyond being that VM: a `hosted` key's adds and revokes of others don't count |
-| Your code and credentials | yours | visible to the operator (§1, §3) |
-| Reassignment | — | never: a released VM is destroyed with its disks and snapshots, your app revokes its key, and the next user gets a new VM with a new key |
+| The customer's code and credentials | theirs | visible to the operator (§1, §3) |
+| Reassignment | — | never: a released VM is destroyed with its disks and snapshots, the customer's app revokes its key, and the next customer gets a new VM with a new key |
 | Other tenants | none | VMs and host-enforced networks between them (§4); build Macs per [isolation](build-mac-isolation.md) |
-| The Cloud account key | — | lets whoever holds it ask for VMs on the account and be billed; it can't add a machine to yours, which still takes your gesture |
+| The Cloud account key | — | lets whoever holds it ask for VMs on the account and be billed; it can't add a machine to the customer's, which still takes their gesture |
 
 - **A prompt-injected agent on a hosted VM** can read its `device.key` too; the `hosted` rule means it can't admit a peer either. Claude's settings deny reading the key; Codex, run with `--yolo`, can read it ([identity §4](machine-identity.md#4-risks)).
-- **The directory** is the operator's: it can withhold peers or delay revocations, which your devices also carry to each other directly. It can't forge an add.
+- **The directory** is the operator's: it can withhold peers or delay revocations, which the customer's devices also carry to each other directly. It can't forge an add.
 
 ## 11. Open questions
 
-- **What a hosted VM may run on your other machines.** It can't change your machines (§10), but as one of them it can run commands and tasks on your Mac (`kanna --host mbp …`), as your Mac can on it, so its operator could too. **Proposed:** hosted peers reach only their own tasks' records and streams, never other machines' terminals or commands. It comes before Cloud tasks and before a second tenant.
+- **What a hosted VM may run on the customer's other machines.** It can't change their machines (§10), but as one of them it can run commands and tasks on their Mac (`kanna --host mbp …`), as their Mac can on it, so its operator could too. **Proposed:** hosted peers reach only their own tasks' records and streams, never other machines' terminals or commands. It comes before Cloud tasks and before a second tenant.
 - **Cloud tasks without a gesture each.** **Proposed:** the customer approves once per Mac that `task` VMs made for their account's requests join without a sheet, since their own Kanna asked for each (it made the token).
 - **Where a Cloud task's work lands** when the customer's Macs are all closed. **Proposed:** the task pushes its branch with its git access, and the transfer back happens when a Mac next answers.
 - **A copy of agent secrets in the directory**, so a VM starts while the Mac is closed (the earlier plan). **Proposed:** none for now; needed for Cloud tasks with the Mac closed, together with the encrypted Shelf copy.
@@ -189,7 +189,7 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 | **Cloud account key** | What authenticates a customer's Kanna to the service |
 | **`kanna-cloud`** | Kanna's internal operator CLI: hosts, VMs, releases; never shipped to customers |
 | **Tenant** | One customer (an account), owner of their VMs and peer log |
-| **Hosted peer** | A machine in your peer log that the operator runs, marked `hosted` when you add it |
+| **Hosted peer** | A machine in a customer's peer log that the operator runs, marked `hosted` when they add it |
 | **Directory** | Cloud's service that publishes each account's peer log and relays pairing |
 | **Enrollment token** | The one-time code a provisioned VM pairs with: made by the customer's Kanna, put in the VM by the provisioner |
 | **Incus** | The VM and container manager on the R720 hosts |
