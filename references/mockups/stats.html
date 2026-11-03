@@ -88,7 +88,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Stats: a project's numbers over the last 30 days</h1>
-    <p>A third fixed tab in the Desk view, after Desk and Machines. Each number is today's value over a small chart of the last 30 days; hover a chart for a day's value. Quiz: the share of kept quiz answers you got right in the 30 days before each day, by kind and by area, and the misses still to come back. Main: commits and merges (tasks landed) per day. Tasks: made, started and ended per day, and how long each task took from made to merged. Code quality is a placeholder for the next task.</p>
+    <p>A third fixed tab in the Desk view, after Desk and Machines. Each number is today's value over a small chart of the last 30 days; hover a chart for a day's value. Quiz: the share of kept quiz answers you got right in the 30 days before each day, by kind and by area, and the misses still to come back. Main: commits and merges (tasks landed) per day. Tasks: made, started and ended per day, and how long each task took from made to done. Code quality is a placeholder for the next task.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="empty">A new project</button>
@@ -195,7 +195,7 @@ function draw(el) {
     let text;
     if (c.kind === "dots") {
       const on = vals.filter(p => p.day === i);
-      text = `<b>${c.med[i] == null ? "—" : hours(c.med[i])}</b> <span>7-day median</span><br>${on.length ? on.map(p => `${esc(p.name)} · ${hours(p.hours)}`).join("<br>") : `<span>Nothing merged</span>`}`;
+      text = `<b>${c.med[i] == null ? "—" : hours(c.med[i])}</b> <span>7-day median</span><br>${on.length ? on.map(p => `${esc(p.name)} · ${hours(p.hours)}`).join("<br>") : `<span>No task done</span>`}`;
     } else {
       const v = vals[i];
       text = `<b>${v == null ? "—" : c.opts.unit === "%" ? v + "%" : v}</b> <span>${esc(c.opts.what(v))}</span>`;
@@ -251,7 +251,7 @@ function render() {
         ${tile("Made", last(d.made), `today · ${sum(d.made)} in 30 days`, chart("columns", d.made, { what: v => v === 1 ? "task made" : "tasks made" }))}
         ${tile("Started", last(d.started), `today · ${sum(d.started)} in 30 days`, chart("columns", d.started, { what: v => v === 1 ? "task started" : "tasks started" }))}
         ${tile("Ended", last(d.ended), `today · ${sum(d.ended)} in 30 days`, chart("columns", d.ended, { what: v => v === 1 ? "task ended" : "tasks ended" }))}
-        ${tile("Made to merged", leads.length ? hours(median(leads)) : "—", leads.length ? `median of ${leads.length}` : "", chart("dots", d.lead, { unit: "h" }), "wide")}
+        ${tile("Made to done", leads.length ? hours(median(leads)) : "—", leads.length ? `median of ${leads.length}` : "", chart("dots", d.lead, { unit: "h" }), "wide")}
       </div></div>
     <div class="section"><div class="sh"><b>Code quality</b><span>how good the code is, and its trend</span></div>
       <div class="placeholder"><b>Not measured yet.</b> Measures of the code on main, sampled at each new commit, come here.</div></div>

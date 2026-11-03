@@ -28,9 +28,9 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 - **A fixed tab**, like Desk and Machines ([machine links §5](machine-links.md#5-paths-the-machines-tab-and-offline)): no close button, in Next and Previous Tab's order after Machines, ← and → when focused. Only in the Desk view; the active task has none.
 - **The Desk's project**, on the machine its Desk is on: the app asks that machine's daemon.
 - **Asked when shown** and every minute while it shows; nothing is asked while it's hidden. A reply that hasn't come yet leaves the last page drawn.
-- **Every chart has a hover readout** for the day under the pointer: that day's value, and for made to merged the tasks merged that day. Each tile's accessibility label says its value and note, and each chart's says its 30 values.
+- **Every chart has a hover readout** for the day under the pointer: that day's value, and for made to done the tasks done that day. Each tile's accessibility label says its value and note, and each chart's says its 30 values.
 - **Days are the daemon's local days**: today and the 29 before it.
-- **Empty:** with no quiz answers the Quiz section says how to get some; a count with no events is a flat chart at 0; made to merged with nothing merged shows "—".
+- **Empty:** with no quiz answers the Quiz section says how to get some; a count with no events is a flat chart at 0; made to done with nothing done shows "—".
 
 ## 2. The numbers
 
@@ -42,13 +42,13 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 | Main | Commits | commits that reached main today | per day (columns) | how much code lands |
 | | Tasks landed | merges into main today | per day (columns) | how much work lands, counted the way it's delivered |
 | Tasks | Made, Started, Ended | tasks made, first started and done today | per day (columns) | the flow through the Shelf and the Desk: made faster than ended means the Shelf grows |
-| | Made to merged | median time, last 30 days | a dot per merged task on its merge day, the 7-day median as a line | how long work takes from asking to landing |
+| | Made to done | median time, last 30 days | a dot per task on the day it was done, the 7-day median as a line | how long a task takes from asking to finished |
 | Code quality | (placeholder) | "Not measured yet" | | where the next task's metrics go |
 
 - **A kind** is a quiz answer's `kind`. **An area** is the answer's file's first two folders (`crates/kanna-daemon`, `docs/specs`), or its one folder, or the file at the root. The five areas with the most answers show, the rest as Other, last.
 - **A commit reached main** on the day of the first-parent commit on main that brought it: a plain commit brings itself, a merge the commits of its branch (not the merge itself).
 - **First started**: a task's first `started` event; a restart doesn't count again. **Ended**: its `done` event.
-- **Made to merged**: from the task's `made` event to its `cleaned up` event: Kanna writes that when the task is done and its branch is found on main, and removes its worktree and branch. Merge messages take no fixed form, so the merge commit isn't looked for. A task done unmerged (`kept`) has no time. The chart's scale ends at the 90th percentile; longer tasks show as a caret at the top.
+- **Made to done**: from a task's `made` event to its `done` event, whether it was merged or not, counted on the day it was done. The chart's scale ends at the 90th percentile; longer tasks show as a caret at the top.
 
 ## 3. Where they come from
 
@@ -78,7 +78,7 @@ flowchart LR
 | `value` | real | the number |
 | `doc` | JSON | the rest, by metric |
 
-- **The sampler catches up** on a worker thread, off the daemon's main thread, when a `stats` request comes and when a merged task is cleaned up: for each metric, the first-parent commits on main in the last 30 days with no row for it, oldest first. The request waits for it (git only, milliseconds a commit) and then answers. One catch-up per repo at a time; a request during one waits for it.
+- **The sampler catches up** on a worker thread, off the daemon's main thread, when a `stats` request comes and when a task is done: for each metric, the first-parent commits on main in the last 30 days with no row for it, oldest first. The request waits for it (git only, milliseconds a commit) and then answers. One catch-up per repo at a time; a request during one waits for it.
 - **Every sampled commit gets a row for every metric,** 0 when nothing applies, so a missing row always means "not sampled yet", and a new metric fills in its 30 days by itself.
 - **It reads main without touching any checkout:** `git log` and `git rev-list` on the main checkout's refs. A metric that needs the files ([§4](#4-adding-a-metric)) gets its commit checked out in a worktree of the sampler's own in the build target ([build targets](build-targets.md)), never the user's checkout.
 
@@ -115,7 +115,7 @@ Main          Commits                        28  today · 616 in 30 days  ▃▂
 
 ## 6. Tests
 
-- `stats.rs`: each number from a fixture db and repo (quiz answers across days and kinds, task events with restarts, a repo with plain commits and merges of task branches): the grade as of each day, misses asked again, areas and Other, commits a merge brought, first starts only, made to merged from the cleanup; the sampler writes a row per metric per commit, fills a new metric's 30 days, and never runs git in a checkout's worktree.
+- `stats.rs`: each number from a fixture db and repo (quiz answers across days and kinds, task events with restarts, a repo with plain commits and merges of task branches): the grade as of each day, misses asked again, areas and Other, commits a merge brought, first starts only, made to done; the sampler writes a row per metric per commit, fills a new metric's 30 days, and never runs git in a checkout's worktree.
 - The CLI: the request, the text and the JSON.
 - e2e `stats_tab` on a private instance with a fixture repo, quiz answers and task events: the tab after Machines, ⇧⌘] to it, its page's tiles and values against `kanna stats --json`, snapshots in light and dark.
 
