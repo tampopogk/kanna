@@ -1024,6 +1024,13 @@ impl Tasks {
     }
 
     pub fn view(&self) -> Value {
+        let started = Instant::now();
+        let view = self.viewed();
+        crate::perf::since("tasks.view", started);
+        view
+    }
+
+    fn viewed(&self) -> Value {
         let tasks = self.entries.borrow().clone().iter().map(|e| self.described(e)).collect();
         let order = self.db.made_order().unwrap_or_default();
         let mut running: Vec<(usize, Entry, String)> = self.running.borrow().iter().map(|r| (order.iter().position(|id| *id == r.entry.id).unwrap_or(usize::MAX), r.entry.clone(), r.pane.clone())).collect();
@@ -2943,6 +2950,13 @@ impl Tasks {
     }
 
     fn list(&self, args: &Value) -> Map {
+        let started = Instant::now();
+        let list = self.listing(args);
+        crate::perf::since("tasks.list", started);
+        list
+    }
+
+    fn listing(&self, args: &Value) -> Map {
         let repo = string(args, "repo");
         let core = self.core.upgrade();
         let entries = self.entries.borrow().clone();

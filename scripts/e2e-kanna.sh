@@ -3681,14 +3681,14 @@ task_list_speed() {
   started="$(find "$repo/.kanna-worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
   (( started == n )) || { echo "task_list_speed: $started of $n tasks have a worktree"; return 1; }
   raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
-  for i in 1 2 3 4 5; do
-    ms="$( { /usr/bin/time -p kanna task list --json >/dev/null; } 2>&1 | awk '/^real/ {printf "%d", $2 * 1000}')"
+  for ((i = 1; i <= 20; i++)); do
+    ms="$(cd "$repo" && { /usr/bin/time -p kanna task list --json | grep -q "Task $n"; } 2>&1 | awk '/^real/ {printf "%d", $2 * 1000}')"
     (( ms > worst )) && worst=$ms
   done
   echo "task_list_speed: $n stopped tasks with worktrees; kanna task list took at most ${worst}ms; daemon $(raw '{"id":1,"cmd":"debug.daemon.perf"}' | python3 -c 'import json, sys
 r = json.load(sys.stdin); r = r.get("result", r)
-i = {i["name"]: i for i in r["intervals"]}.get("loop.async", {})
-print("loop.async max %sms" % i.get("max"))')"
+i = {i["name"]: i for i in r["intervals"]}
+print("loop.async max %sms, tasks.list p50 %sms max %sms" % (i.get("loop.async", {}).get("max"), i.get("tasks.list", {}).get("p50"), i.get("tasks.list", {}).get("max")))')"
   (( worst < 300 )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
 }
 
