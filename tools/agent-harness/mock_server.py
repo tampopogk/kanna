@@ -70,7 +70,7 @@ def turn_for(body):
     for rule in SCENARIO["rules"]:
         if rule["match"] in prompt:
             if rule.get("tool") and tool_names(body) and not tool_answered(body, rule["match"]):
-                return {"kind": "tool", "command": rule["tool"], "args": rule.get("args", {})}
+                return {"kind": "tool", "command": rule["tool"], "args": rule.get("args", {}), "claude_args": rule.get("claude_args", {})}
             return {"kind": "text", "text": "\n".join(rule.get("after_tool" if rule.get("tool") else "text", rule.get("text", [])))}
     return {"kind": "text", "text": SCENARIO["fallback"]}
 
@@ -174,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
         mid = "msg_" + uuid.uuid4().hex[:12]
         model = body.get("model", "mock-model")
         if turn["kind"] == "tool":
-            block = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "Bash", "input": {"command": turn["command"], "description": "Create the probe file"}}
+            block = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "Bash", "input": {"command": turn["command"], "description": "Create the probe file", **turn.get("claude_args", {})}}
             content, stop = [block], "tool_use"
         else:
             content, stop = [{"type": "text", "text": turn["text"]}], "end_turn"

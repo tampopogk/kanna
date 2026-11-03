@@ -261,7 +261,7 @@ def main():
             return 1
         print(f"# Handoff\n\nmock handoff of session {id}: the next step is to finish the draft.")
         return 0
-    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, ask, report STATUS or exit\r\n")
+    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
     out(f"{'resumed' if resumed else 'session'} {id}\r\n")
@@ -341,6 +341,18 @@ def answer(line):
         reported("idle")
 
 
+def woken(child, wake):
+    child.wait()
+    out("\r\nBACKGROUND_EXITED\r\n")
+    if wake is None:
+        return
+    time.sleep(0.05)
+    reported("working")
+    work(wake)
+    out("WOKE_DONE\r\n")
+    reported("idle")
+
+
 def answering(line):
     words = line.split()
     out("\x1b[J\r\n")
@@ -369,6 +381,11 @@ def answering(line):
             out("TURN_DONE\r\n")
         else:
             out("Declined.\r\n")
+    elif words[:1] == ["background"] and len(words) > 1:
+        child = subprocess.Popen(["sleep", words[1]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+        wake = float(words[3]) if words[2:3] == ["wake"] and len(words) > 3 else None
+        threading.Thread(target=woken, args=(child, wake), daemon=True).start()
+        out(f"BACKGROUND_STARTED {child.pid}\r\n")
     elif words[:1] == ["report"]:
         out(f"\x1b]7501;{words[1] if len(words) > 1 else ''}\x1b\\")
         out(f"reported: {words[1] if len(words) > 1 else ''}\r\n")
