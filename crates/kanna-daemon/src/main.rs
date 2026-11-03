@@ -248,6 +248,8 @@ fn run() -> Result<(), String> {
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
     }
 
+    let local = tokio::task::LocalSet::new();
+    let _on_the_loop = local.enter();
     let (events, mut inbox) = runtime::channel();
     let db = Rc::new(db::Db::open(&state_dir));
     content_ids::migrate(&state_dir, &db);
@@ -676,7 +678,7 @@ fn run() -> Result<(), String> {
         app.quit();
     };
     let runtime = runtime::build()?;
-    tokio::task::LocalSet::new().block_on(&runtime, async { loop {
+    local.block_on(&runtime, async { loop {
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
