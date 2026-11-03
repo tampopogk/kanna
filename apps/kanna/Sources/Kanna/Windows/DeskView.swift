@@ -232,14 +232,14 @@ final class DeskStrip: NSView {
         let metas = items.map(\.metaWidth)
         let titles = items.map(\.titleWidth)
         hint.frame.origin = NSPoint(x: bounds.width - hint.frame.width - 8, y: (Self.height - hint.frame.height) / 2)
-        let end = hint.frame.minX - 9
-        var room = end - 8 - 8 - gaps - chrome - metas.reduce(0, +)
+        let end = hint.frame.minX - 10
+        var room = end - 8 - gaps - chrome - metas.reduce(0, +)
         let titleFloors = titles.map { min($0, Self.titleFloor) }.reduce(0, +)
         count.isHidden = waiting == 0
-        if !count.isHidden, room - count.frame.width - 12 < titleFloors {
+        if !count.isHidden, room - count.frame.width - 8 < titleFloors {
             count.isHidden = true
         }
-        if !count.isHidden { room -= count.frame.width + 12 }
+        if !count.isHidden { room -= count.frame.width + 8 }
         let fitted = Self.shrink(titles, to: room, floor: Self.titleFloor)
         let leftover = room - fitted.reduce(0, +)
         let fittedMetas = leftover < 0 ? Self.shrink(metas, to: metas.reduce(0, +) + leftover, floor: 0) : metas
@@ -249,7 +249,7 @@ final class DeskStrip: NSView {
             item.frame.origin = NSPoint(x: x, y: (Self.height - item.frame.height) / 2)
             x += item.frame.width + 4
         }
-        count.frame.origin = NSPoint(x: end - count.frame.width - 4, y: (Self.height - count.frame.height) / 2)
+        count.frame.origin = NSPoint(x: end - count.frame.width, y: (Self.height - count.frame.height) / 2)
         needsDisplay = true
     }
 
