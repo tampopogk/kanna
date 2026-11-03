@@ -363,7 +363,7 @@ fn coverage_tiles(facts: &Facts, first: i64) -> Vec<Value> {
     vec![
         tile("lines-covered", "Lines covered", of_key("lines"), Some("%"), ran, 2, json!({ "kind": "line", "values": series("lines"), "max": 100, "what": "of the lines tests ran" })),
         tile("branches-covered", "Branches covered", of_key("branches"), Some("%"), String::new(), 2, json!({ "kind": "line", "values": series("branches"), "max": 100, "what": "of the branches tests took" })),
-        tile("changed-covered", "Changed lines covered", percent(hit, found), Some("%"), format!("{} of {} lines landed in 30 days", hit, found), 2, json!({ "kind": "columns", "values": changed.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect::<Vec<_>>(), "max": 100, "what": "of the lines landed that day, covered" })),
+        tile("changed-covered", "Changed lines covered", percent(hit, found), Some("%"), format!("of {found} lines landed in 30 days"), 2, json!({ "kind": "columns", "values": changed.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect::<Vec<_>>(), "max": 100, "what": "of the lines landed that day, covered" })),
     ]
 }
 
