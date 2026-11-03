@@ -164,14 +164,15 @@ body.picture .cmd input::placeholder { color: transparent; }
 .keys kbd { font: 11px var(--mono); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel2); }
 .nowin { color: var(--muted); padding: 40px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
 .shelf .item.needs { color: var(--warn); }
-.shelf .item.hint { opacity: .75; margin-right: 6px; }
+.shelf .item.hint { opacity: .75; flex: none; }
+.shelf .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; flex: none; }
 .row.waiting .t .n { font-weight: 500; }
 .row.waiting .dot { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
 .row .go.off { color: var(--muted); }
 .row.waiting .go { visibility: visible; color: var(--muted); }
 .row.waiting:hover .go:not(.off) { color: var(--accent); }
 .empty .note { color: var(--warn); font-size: 12px; margin: 6px 0 0; min-height: 16px; }
-.shelf .backlog { margin-left: auto; color: var(--muted); white-space: nowrap; padding: 3px 8px; }
+.shelf .backlog { color: var(--muted); white-space: nowrap; padding: 3px 8px; }
 .shelf .backlog.gone { display: none; }
 .where .unnamed { color: var(--muted); font-weight: 400; font-style: italic; }
 .group .gh { align-items: center; gap: 12px; }
@@ -380,10 +381,12 @@ function windowHTML(w) {
 
 function shelfHTML(w) {
   const waiting = backlog(repoOf(w)).length;
-  return `<span class="item hint" data-park="${w.desk}" title="The Desk view: the planning agent, the Desk's tasks and the Shelf"><span class="nm">⌘. Desk</span></span>` + shelf(w).map((t, i) => {
+  return shelf(w).map((t, i) => {
     const meta = t.status === "needs" ? "needs you" : ago(t);
     return `<span class="item ${t.status === "needs" ? "needs" : ""}" data-pull="${t.id}" title="${titleOf(t)}"><span class="dot ${t.status}"></span><span class="nm">${titleOf(t)}</span><span class="meta">· ${meta}</span><span class="kb">⌘${i + 1}</span></span>`;
-  }).join("") + (waiting ? `<span class="backlog" title="⌘. Desk to see the Shelf">${waiting} on the Shelf</span>` : "");
+  }).join("") + `<span class="spacer"></span>` + (shelf(w).length ? `<span class="sep"></span>` : "") +
+    `<span class="item hint" data-park="${w.desk}" title="The Desk view: the planning agent, the Desk's tasks and the Shelf"><span class="nm">⌘. Desk</span></span>` +
+    (waiting ? `<span class="backlog" title="⌘. Desk to see the Shelf">${waiting} on the Shelf</span>` : "");
 }
 
 function agentTerm(t) {

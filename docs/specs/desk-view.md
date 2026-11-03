@@ -6,9 +6,9 @@ Kanna's task words say where a task is from the user's side. The **Desk** holds 
 
 | Desk view | The active task |
 |---|---|
-| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, the strip below starting with a muted ⌘. Desk, then the Desk's other tasks in key order, each key before its name: ⌘1 on the one left last, then ⌘2, the one that needs you showing it in amber where it is](desk-view-task.png) |
+| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, and the strip below, one task hovered to show its key](desk-view-task.png) |
 
-*(From the mockup: `#picture-desk&hover=p3` and `#picture`.)*
+*(From the mockup: `#picture-desk&hover=p3` and `#picture-needs&hover=p3`.)*
 
 ## Contents
 
@@ -53,7 +53,7 @@ stateDiagram-v2
 - **⌘1 and ⌘2 pick among the Desk's tasks other than the active one** by recency, not by place: ⌘1 the one left most recently, ⌘2 the one left longest ago. ⌘1 pressed again goes back to the task you came from; ⌘2 pressed again cycles through the Desk whatever its number of tasks: through all three, or, with two, back and forth (with one other task ⌘1 and ⌘2 both go to it). With no task active they work the same over the Desk's tasks. Those two cover a full Desk, so there's no ⌘3. The Task menu has Desk Task 1 and 2, each enabled whenever its key does something.
 - **A task shows the key that's uniquely its own,** the same in the strip and in the Desk view: ⌘1 on the task left last, ⌘2 on the one left longest ago when that's another task. With two tasks the other shows ⌘1; with no task active and three on the Desk, the middle one has no key. The Desk view's rows are oldest first, so their keys aren't in numeric order there.
 - **Hover hints.** A row shows its hint only while hovered: "⌘N · Make active →", or the active task's "⌘. · Back to it".
-- **The strip** starts with a muted "⌘. Desk" that shows the Desk view when clicked, then the Desk's other tasks in key order: the ⌘1 task first (the one left last), then the ⌘2 task, then any task with no key. So it reorders as you switch tasks, and only then: a task that needs you keeps its place and its key, and shows it in amber, "needs you" in place of its time. Each shows its key, muted, before its name, all the time. Then "N on the Shelf".
+- **The strip** (pictured above) goes in key order: the ⌘1 task, then ⌘2, then any task with no key. So it reorders as you switch tasks, and only then: a task that needs you keeps its place and its key. A task's key shows on hover ([Desk](desk.md#3-the-desks-tasks)).
 - **Dragging a Desk row onto the Shelf** moves that task there as it is: [Drag a Desk task to the Shelf](desk-row-shelve.md).
 - **A running Shelf task's row** shows its status: [Shelf row status](shelf-row-status.md).
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
@@ -108,5 +108,5 @@ stateDiagram-v2
 | **Desk** | A project's window, and the up to three tasks it holds |
 | **Active task** | The Desk task shown with its agent and tabs; stays active while the Desk view shows |
 | **Desk view** | The planning agent, the Desk's tasks and the Shelf, in the Desk window |
-| **Strip** | The line under the active task: ⌘. Desk, the Desk's other tasks, the Shelf's count |
+| **Strip** | The line under the active task |
 | **Shelf** | A project's tasks Kanna has brought in, waiting; `shelf.runners` of them run at once |
