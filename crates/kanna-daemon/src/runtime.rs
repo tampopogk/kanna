@@ -42,6 +42,10 @@ pub fn spawn(name: &'static str, future: impl Future<Output = ()> + 'static) {
     runtime.block_on(local);
 }
 
+pub async fn off_loop<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    tokio::task::spawn_blocking(work).await.ok()
+}
+
 struct Timed<F> {
     name: &'static str,
     future: Pin<Box<F>>,

@@ -146,11 +146,13 @@ impl Entry {
         }
     }
 
-    fn resumable(mut self) -> Entry {
-        if let (None, Some(folder), Some(find)) = (&self.session, &self.folder, agent(&self.agent).and_then(|a| a.find)) {
-            self.session = find(Path::new(folder));
-        }
-        self
+    fn looks_for_session(&self) -> bool {
+        self.session.is_none() && self.folder.is_some() && agent(&self.agent).is_some_and(|a| a.find.is_some())
+    }
+
+    async fn found_session(&self) -> Option<String> {
+        let (folder, find) = (self.folder.clone()?, agent(&self.agent)?.find?);
+        crate::runtime::off_loop(move || find(Path::new(&folder))).await.flatten()
     }
 }
 
@@ -804,6 +806,7 @@ pub struct Tasks {
     turns: RefCell<HashMap<String, Turn>>,
     quitting: RefCell<HashMap<String, Quitting>>,
     launching: RefCell<HashSet<String>>,
+    finding: RefCell<HashSet<String>>,
     failed: RefCell<HashSet<String>>,
     setting_up: RefCell<HashMap<String, SettingUp>>,
     tearing_down: RefCell<HashMap<String, TearingDown>>,
@@ -974,6 +977,7 @@ impl Tasks {
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
+            finding: RefCell::default(),
             failed: RefCell::default(),
             setting_up: RefCell::default(),
             tearing_down: RefCell::default(),
@@ -1828,7 +1832,7 @@ impl Tasks {
         self.refill();
     }
 
-    pub fn status(&self, pane: &str, status: Option<&str>, ended: bool) {
+    pub fn status(self: &Rc<Self>, pane: &str, status: Option<&str>, ended: bool) {
         let now = Instant::now();
         let status = status.and_then(Status::parse);
         let mut ready = self.ready.borrow_mut();
@@ -1846,14 +1850,29 @@ impl Tasks {
         self.find_session(pane);
     }
 
-    fn find_session(&self, pane: &str) {
-        let found = |entry: &Entry| Some(entry).filter(|e| e.session.is_none() && e.folder.is_some()).map(|e| e.clone().resumable()).filter(|e| e.session.is_some());
-        let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| (r.entry.clone(), r.place));
-        let (entry, place) = match running {
-            Some((entry, place)) => (found(&entry), place),
-            None => (self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).and_then(found), Place::Shelf),
-        };
-        let Some(entry) = entry else { return };
+    fn find_session(self: &Rc<Self>, pane: &str) {
+        let wanted = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone());
+        let wanted = wanted.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned());
+        let Some(entry) = wanted.filter(Entry::looks_for_session) else { return };
+        if !self.finding.borrow_mut().insert(pane.to_string()) {
+            return;
+        }
+        let (this, pane) = (Rc::downgrade(self), pane.to_string());
+        crate::runtime::spawn("finding a task's session", async move {
+            let session = entry.found_session().await;
+            let Some(this) = this.upgrade() else { return };
+            this.finding.borrow_mut().remove(&pane);
+            if let Some(session) = session {
+                this.session_found(&pane, &entry.id, session);
+            }
+        });
+    }
+
+    fn session_found(&self, pane: &str, id: &str, session: String) {
+        let running = self.running.borrow().iter().find(|r| r.pane == pane && r.entry.id == id).map(|r| (r.entry.clone(), r.place));
+        let found = running.or_else(|| self.entries.borrow().iter().find(|e| e.id == id && e.held.as_deref() == Some(pane)).map(|e| (e.clone(), Place::Shelf)));
+        let Some((entry, place)) = found.filter(|(entry, _)| entry.session.is_none()) else { return };
+        let entry = Entry { session: Some(session), ..entry };
         let _ = self.store(&entry, place, Some(pane), Some(Change::new("session").by(Some("daemon")).with("session", opt(entry.session.as_deref()))));
         if let Some(r) = self.running.borrow_mut().iter_mut().find(|r| r.pane == pane) {
             r.entry.session = entry.session.clone();
@@ -1864,6 +1883,21 @@ impl Tasks {
         if let Some(core) = self.core.upgrade() {
             core.set_command(pane, entry.command(None));
         }
+    }
+
+    fn resumed(self: &Rc<Self>, mut entry: Entry, then: impl FnOnce(&Rc<Tasks>, Entry) + 'static) {
+        if !entry.looks_for_session() {
+            return then(self, entry);
+        }
+        self.launching.borrow_mut().insert(entry.id.clone());
+        let this = Rc::downgrade(self);
+        crate::runtime::spawn("a task's session to resume", async move {
+            let session = entry.found_session().await;
+            let Some(this) = this.upgrade() else { return };
+            this.launching.borrow_mut().remove(&entry.id);
+            entry.session = session;
+            then(&this, entry);
+        });
     }
 
     fn refill(&self) {
@@ -2197,11 +2231,11 @@ impl Tasks {
             }
         };
         match entry.held.clone().filter(|pane| core.pane(pane).is_some()) {
-            Some(pane) => {
-                self.launching.borrow_mut().insert(entry.id.clone());
-                let (this, id) = (Rc::downgrade(self), entry.id.clone());
-                self.revive(&pane, Some(self.again(&entry)), move |result| {
-                    let Some(this) = this.upgrade() else { return };
+            Some(pane) => self.resumed(entry, move |this, entry| {
+                this.launching.borrow_mut().insert(entry.id.clone());
+                let (weak, id) = (Rc::downgrade(this), entry.id.clone());
+                this.revive(&pane, Some(this.again(&entry)), move |result| {
+                    let Some(this) = weak.upgrade() else { return };
                     this.launching.borrow_mut().remove(&id);
                     match result {
                         Ok(pane) => {
@@ -2211,7 +2245,7 @@ impl Tasks {
                         Err(error) => failed(error),
                     }
                 });
-            }
+            }),
             None => self.prepare(Entry { held: None, ..entry }, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
                 if let Err(error) = result {
                     failed(error);
@@ -3161,8 +3195,8 @@ impl Tasks {
             let said = task_scripts::said("teardown", code, tearing.timeout);
             log!("kanna-daemon: {id}'s {said}, so it isn't done: its pane shows why");
             self.note(pane, Change::new("teardown failed").by(Some("daemon")).with("code", json!(code)).with("why", json!(said)));
-            core.set_command(pane, tearing.entry.clone().resumable().command(None));
-            return;
+            let pane = pane.to_string();
+            return self.resumed(tearing.entry, move |_, entry| core.set_command(&pane, entry.command(None)));
         }
         if !tearing.on_shelf {
             self.ending.borrow_mut().insert(pane.to_string(), tearing.by);
@@ -3193,7 +3227,7 @@ impl Tasks {
 
     fn planner(self: &Rc<Self>, args: &Value, responder: Responder) {
         match string(args, "step") {
-            Some("start") => responder.reply(self.planner_starts(args)),
+            Some("start") => self.planner_starts_found(args, responder),
             Some("quit") => self.planner_quit(args, responder),
             _ => responder.reply(Err(bad("planner needs a step: start or quit"))),
         }
@@ -3207,7 +3241,24 @@ impl Tasks {
         Ok((pane.to_string(), project, context))
     }
 
-    fn planner_starts(&self, args: &Value) -> Result<Map, KmuxError> {
+    fn planner_starts_found(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let wanted = std::cell::Cell::new(None);
+        let looked = self.planner_starts(args, |since| {
+            wanted.set(Some(since));
+            None
+        }, true);
+        let Some(since) = wanted.get() else { return responder.reply(looked) };
+        let Ok((_, project, context)) = Self::planner_in(args) else { return responder.reply(looked) };
+        let Some(program) = string(args, "agent").and_then(|name| planner_program(name, context)) else { return responder.reply(looked) };
+        let (this, args) = (Rc::downgrade(self), args.clone());
+        crate::runtime::spawn("a planner's session", async move {
+            let found = crate::runtime::off_loop(move || first_session_since(&program, &project, since)).await.flatten();
+            let Some(this) = this.upgrade() else { return };
+            responder.reply(this.planner_starts(&args, |_| found, false));
+        });
+    }
+
+    fn planner_starts(&self, args: &Value, find: impl FnOnce(SystemTime) -> Option<String>, probing: bool) -> Result<Map, KmuxError> {
         let (pane, project, context) = Self::planner_in(args)?;
         let prompts = prompts(&config_files(&project));
         let name = string(args, "agent").ok_or_else(|| bad("say which agent"))?;
@@ -3216,7 +3267,14 @@ impl Tasks {
         let kept = self.db.planner(&key).ok().flatten();
         let core = self.core.upgrade();
         let live = |other: &str| core.as_ref().is_some_and(|core| alive(core, other));
-        let back = comeback(kept.as_ref(), name, &pane, live, |since| first_session_since(&program, &project, since));
+        let asked = std::cell::Cell::new(false);
+        let back = comeback(kept.as_ref(), name, &pane, live, |since| {
+            asked.set(true);
+            find(since)
+        });
+        if probing && asked.get() {
+            return Ok(Map::new());
+        }
         let label = project.file_name().map_or_else(|| key.clone(), |n| n.to_string_lossy().to_string());
         let group = string(args, "group").filter(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit()));
         let after = kept.as_ref().and_then(|k| string(k, "group")).filter(|before| Some(*before) != group).filter(|_| matches!(back, Comeback::Resume(_))).map(String::from);
@@ -3257,22 +3315,33 @@ impl Tasks {
             let text = string(&reply, "text").unwrap_or_default();
             let said = kanna_detect::program::known_agent(self::program(&program)).and_then(Quit::of).and_then(|q| q.session_in(text));
             let started = kept.get("started").and_then(Value::as_f64).map(|at| UNIX_EPOCH + Duration::from_secs_f64(at));
-            let session = said.or_else(|| string(&kept, "session").map(String::from)).or_else(|| started.and_then(|since| first_session_since(&program, &project, since)));
-            let mut doc = kept.clone();
-            doc["session"] = opt(session.as_deref());
-            doc["running"] = json!(false);
-            if let Err(error) = this.db.put_planner(&key, &doc) {
-                log!("kanna-daemon: can't keep {key}'s planner: {error}");
-            }
-            let again = session.map(|session| resumed_as(&program, context, prompts, &session));
-            responder.reply(Ok(Map::from_iter([("again".to_string(), opt(again.as_deref()))])))
+            let session = said.or_else(|| string(&kept, "session").map(String::from));
+            let finish = move |this: &Tasks, session: Option<String>| {
+                let mut doc = kept.clone();
+                doc["session"] = opt(session.as_deref());
+                doc["running"] = json!(false);
+                if let Err(error) = this.db.put_planner(&key, &doc) {
+                    log!("kanna-daemon: can't keep {key}'s planner: {error}");
+                }
+                let again = session.map(|session| resumed_as(&program, context, prompts, &session));
+                responder.reply(Ok(Map::from_iter([("again".to_string(), opt(again.as_deref()))])))
+            };
+            let (None, Some(since)) = (&session, started) else { return finish(&this, session) };
+            let looked_up = planner_program(&name, context).unwrap_or_default();
+            let weak = Rc::downgrade(&this);
+            crate::runtime::spawn("a planner's session", async move {
+                let found = crate::runtime::off_loop(move || first_session_since(&looked_up, &project, since)).await.flatten();
+                if let Some(this) = weak.upgrade() {
+                    finish(&this, found);
+                }
+            });
         });
     }
 
     fn pick(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(id) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
         let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(id))) };
-        if self.pending.borrow().values().any(|p| p.entry.id == entry.id) {
+        if self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
             return responder.reply(Err(bad(format!("{id} is starting"))));
         }
         if let Err(error) = self.startable(&entry) {
@@ -3288,7 +3357,7 @@ impl Tasks {
         let by = who(args).map(String::from);
         let found = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
         if let Some(entry) = found {
-            if self.pending.borrow().values().any(|p| p.entry.id == entry.id) {
+            if self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
                 return responder.reply(Err(bad(format!("{reference} is starting"))));
             }
             if let Err(error) = self.startable(&entry) {
@@ -3298,12 +3367,14 @@ impl Tasks {
             let this = Rc::downgrade(self);
             return match entry.held.clone().filter(|pane| core.pane(pane).is_some()) {
                 Some(pane) if alive(&core, &pane) => responder.reply(Err(running(&id))),
-                Some(pane) => self.revive(&pane, Some(self.again(&entry)), move |result| {
-                    if let (Ok(pane), Some(this)) = (&result, this.upgrade()) {
-                        this.restarted(pane);
-                        this.note(pane, Change::new("started").by(by.as_deref()));
-                    }
-                    responder.reply(result.map(|pane| started_here(&id, &pane, Place::Shelf.as_str())))
+                Some(pane) => self.resumed(entry, move |tasks, entry| {
+                    tasks.revive(&pane, Some(tasks.again(&entry)), move |result| {
+                        if let (Ok(pane), Some(this)) = (&result, this.upgrade()) {
+                            this.restarted(pane);
+                            this.note(pane, Change::new("started").by(by.as_deref()));
+                        }
+                        responder.reply(result.map(|pane| started_here(&id, &pane, Place::Shelf.as_str())))
+                    })
                 }),
                 None => self.prepare(Entry { held: None, ..entry }, None, by, Answer::To(responder)),
             };
@@ -3323,14 +3394,20 @@ impl Tasks {
                 return responder.reply(Err(error));
             }
             let id = entry.as_ref().map_or_else(|| pane.clone(), |e| e.id.clone());
-            let again = Rc::downgrade(&this);
-            let command = entry.map(|e| this.again(&e));
-            this.revive(&pane.clone(), command, move |result| {
-                if let (Ok(pane), Some(this)) = (&result, again.upgrade()) {
-                    this.note(pane, Change::new("started").by(by.as_deref()));
-                }
-                responder.reply(result.map(|pane| started_here(&id, &pane, Place::Desk.as_str())))
-            });
+            let revive = move |this: &Rc<Tasks>, entry: Option<Entry>| {
+                let again = Rc::downgrade(this);
+                let command = entry.map(|e| this.again(&e));
+                this.revive(&pane.clone(), command, move |result| {
+                    if let (Ok(pane), Some(this)) = (&result, again.upgrade()) {
+                        this.note(pane, Change::new("started").by(by.as_deref()));
+                    }
+                    responder.reply(result.map(|pane| started_here(&id, &pane, Place::Desk.as_str())))
+                });
+            };
+            match entry {
+                Some(entry) => this.resumed(entry, move |this, entry| revive(this, Some(entry))),
+                None => revive(&this, None),
+            }
         });
     }
 
@@ -3444,7 +3521,7 @@ impl Tasks {
                 log!("kanna-daemon: {}'s setup failed (exit {code}), and its agent starts anyway", entry.id);
                 Self::first_command(entry)
             }
-            _ => entry.clone().resumable().command(None),
+            _ => entry.command(None),
         }
     }
 
@@ -3614,6 +3691,10 @@ impl Tasks {
     }
 
     fn setup(self: &Rc<Self>, args: &Value, responder: Responder) {
+        self.setup_found(args, responder, None);
+    }
+
+    fn setup_found(self: &Rc<Self>, args: &Value, responder: Responder, looked: Option<Option<String>>) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let Some(reference) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
         let held = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
@@ -3661,9 +3742,22 @@ impl Tasks {
                 responder.reply(Ok(Map::from_iter([("task".to_string(), json!(id)), ("pane".to_string(), json!(tab)), ("tab".to_string(), json!(tab))])))
             });
         }
+        let looked_up = match looked {
+            Some(session) => Entry { session, ..entry.clone() },
+            None if entry.looks_for_session() => {
+                let (this, args) = (Rc::downgrade(self), args.clone());
+                return crate::runtime::spawn("a task's session to set up", async move {
+                    let session = entry.found_session().await;
+                    if let Some(this) = this.upgrade() {
+                        this.setup_found(&args, responder, Some(session));
+                    }
+                });
+            }
+            None => entry.clone(),
+        };
         let then = match task_scripts::setup(&folder) {
             Some(Setup::Failed(_)) => Self::first_command(&entry),
-            _ => entry.clone().resumable().command(None),
+            _ => looked_up.command(None),
         };
         let Some(pane) = pane else {
             task_scripts::forget_setup(&folder);
@@ -3719,7 +3813,7 @@ impl Tasks {
         }
         if let Some(folder) = entry.folder.clone() {
             if Path::new(&folder).is_dir() {
-                return self.launch(Starting { entry: entry.resumable(), app, by, responder }, folder, None);
+                return self.resumed(entry, move |this, entry| this.launch(Starting { entry, app, by, responder }, folder, None));
             }
             (entry.folder, entry.session) = (None, None);
         }
@@ -3886,28 +3980,33 @@ impl Tasks {
             let entry = Entry { held: None, ..entry };
             let folder = entry.folder.clone().unwrap_or_default();
             let live = weak.upgrade().is_some_and(|core| alive(&core, &pane));
-            let command = (!live).then(|| this.again(&entry));
-            let entry = if live { entry } else { entry.resumable() };
-            let id = entry.id.clone();
-            let picked = this.started(&pane, entry, &app, by.as_deref());
-            let Some(command) = command else {
-                return this.with_branch(picked.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
-            };
-            log!("kanna-daemon: {id} is on {app}'s Desk, and its agent and tabs start");
-            let again = Rc::downgrade(&this);
-            this.after_this_turn(move || {
-                let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
-                let again = Rc::downgrade(&this);
-                this.revive(&pane.clone(), Some(command), move |result| {
-                    let Some(this) = again.upgrade() else { return };
-                    match &result {
-                        Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
-                        Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
-                    }
-                    let out = picked.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
-                    this.with_branch(out, &folder, None, responder);
+            let place = move |this: &Rc<Tasks>, entry: Entry| {
+                let command = (!live).then(|| this.again(&entry));
+                let id = entry.id.clone();
+                let picked = this.started(&pane, entry, &app, by.as_deref());
+                let Some(command) = command else {
+                    return this.with_branch(picked.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
+                };
+                log!("kanna-daemon: {id} is on {app}'s Desk, and its agent and tabs start");
+                let again = Rc::downgrade(this);
+                this.after_this_turn(move || {
+                    let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
+                    let again = Rc::downgrade(&this);
+                    this.revive(&pane.clone(), Some(command), move |result| {
+                        let Some(this) = again.upgrade() else { return };
+                        match &result {
+                            Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
+                            Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
+                        }
+                        let out = picked.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
+                        this.with_branch(out, &folder, None, responder);
+                    });
                 });
-            });
+            };
+            match live {
+                true => place(&this, entry),
+                false => this.resumed(entry, place),
+            }
         });
     }
 
