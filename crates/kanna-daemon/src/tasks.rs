@@ -2448,15 +2448,24 @@ impl Tasks {
     }
 
     fn import(self: &Rc<Self>, args: &Value, responder: Responder) {
-        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let Some(repos) = self.repos.borrow().clone() else { return responder.reply(Err(bad("this Kanna keeps no projects folder"))) };
         let home = crate::agents::home();
         let Some(path) = string(args, "path").map(|p| project_import::expand(p, &home)).filter(|p| p.is_absolute()) else { return responder.reply(Err(bad("say which project: kanna project import PATH"))) };
         let homes: Vec<PathBuf> = std::iter::once(home).chain(std::env::var_os("HOME").map(PathBuf::from)).collect();
-        let plan = match project_import::plan(&repos, &path, &homes) {
-            Ok(plan) => plan,
-            Err(error) => return responder.reply(Err(error)),
-        };
+        let (this, args) = (Rc::downgrade(self), args.clone());
+        crate::runtime::spawn("a project import's plan", async move {
+            let planned = crate::runtime::off_loop(move || project_import::plan(&repos, &path, &homes)).await;
+            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+            match planned {
+                Some(Ok(plan)) => this.import_planned(plan, &args, responder),
+                Some(Err(error)) => responder.reply(Err(error)),
+                None => responder.reply(Err(KmuxError::new("failed", "the import's plan stopped before it was done"))),
+            }
+        });
+    }
+
+    fn import_planned(self: &Rc<Self>, plan: project_import::Import, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let shown = crate::projects::tilde(&plan.from);
         let starting = self.pending.borrow().values().any(|p| plan.holds(&p.entry.repo)) || self.tearing_down.borrow().values().any(|t| plan.holds(&t.entry.repo)) || self.setting_up.borrow().values().any(|s| plan.holds(&s.worktree.to_string_lossy()));
         if starting || self.importing.borrow().is_some() {
@@ -2496,11 +2505,15 @@ impl Tasks {
         let terminals = ending.clone();
         let ended = Join::new(ending.len(), move |errors| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
-            let result = match errors.is_empty() {
-                true => project_import::copy(&plan),
-                false => Err(format!("couldn't stop every terminal: {}", errors.join("; "))),
-            };
-            this.restart_after_import(plan, tasks, terminals, by, result, responder);
+            if !errors.is_empty() {
+                return this.restart_after_import(plan, tasks, terminals, by, Err(format!("couldn't stop every terminal: {}", errors.join("; "))), responder);
+            }
+            let (weak, copying) = (Rc::downgrade(&this), plan.clone());
+            crate::runtime::spawn("a project import's copy", async move {
+                let moved = crate::runtime::off_loop(move || project_import::moved(&copying)).await.unwrap_or_else(|| Err("the copy stopped before it was done".to_string()));
+                let Some(this) = weak.upgrade() else { return responder.reply(Err(gone())) };
+                this.restart_after_import(plan, tasks, terminals, by, moved, responder);
+            });
         });
         for pane in ending {
             let join = ended.clone();
@@ -2521,15 +2534,14 @@ impl Tasks {
         }
     }
 
-    fn restart_after_import(self: &Rc<Self>, plan: project_import::Import, tasks: Vec<String>, terminals: Vec<String>, by: Option<String>, copied: Result<project_import::Copied, String>, responder: Responder) {
+    fn restart_after_import(self: &Rc<Self>, plan: project_import::Import, tasks: Vec<String>, terminals: Vec<String>, by: Option<String>, moved: Result<project_import::Moved, String>, responder: Responder) {
         self.importing.borrow_mut().take();
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
         let mut reply = Map::new();
-        if let Ok(copied) = &copied {
-            let mut sessions = project_import::Carried::default();
+        let failure = moved.as_ref().err().cloned();
+        if let Ok(project_import::Moved { copied, sessions, mentions }) = moved {
+            let mut sessions = sessions;
             for from in plan.froms() {
-                let found = project_import::Stores::here().carry(&from, &plan.to);
-                sessions = project_import::Carried { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
                 if let Err(error) = self.db.relocate(&from.to_string_lossy(), &plan.to.to_string_lossy()) {
                     log!("kanna-daemon: couldn't point {}'s records at {} in {}: {error}", from.display(), plan.to.display(), db::FILE);
                     sessions.kept.push(format!("{}: {error}", db::FILE));
@@ -2554,10 +2566,9 @@ impl Tasks {
             reply.insert("sessions".into(), sessions.to_value());
             reply.insert("tasks".into(), json!(tasks));
             reply.insert("terminals".into(), json!(terminals));
-            reply.insert("mentions".into(), json!(project_import::mentions(&crate::agents::home(), &plan.to, &plan.from)));
+            reply.insert("mentions".into(), json!(mentions));
         }
         let this = Rc::downgrade(self);
-        let failure = copied.err();
         let restarted = Join::new(tasks.len() + terminals.len(), move |errors| {
             if let Some(this) = this.upgrade() {
                 this.changed();

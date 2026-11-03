@@ -71,13 +71,24 @@ pub async fn place_now(cwd: &str) -> Value {
     place(cwd)
 }
 
+fn first_commit_blocking(main: &Path) -> Option<String> {
+    let out = std::process::Command::new("git").arg("-C").arg(main).args(FIRST_COMMIT).stderr(std::process::Stdio::null()).output().ok()?;
+    root_of(&out.stdout)
+}
+
 pub fn prime(main: &Path) {
     if origin(main).is_some() || known_root(main).is_some() {
         return;
     }
-    let out = std::process::Command::new("git").arg("-C").arg(main).args(FIRST_COMMIT).stderr(std::process::Stdio::null()).output();
-    if let Some(sha) = out.ok().and_then(|out| root_of(&out.stdout)) {
+    if let Some(sha) = first_commit_blocking(main) {
         ROOTS.with(|roots| roots.borrow_mut().insert(main.to_path_buf(), Root::Found(sha)));
+    }
+}
+
+pub fn identity_off_loop(main: &Path) -> Option<String> {
+    match origin(main) {
+        Some(url) => Some(format!("url:{url}")),
+        None => Some(format!("commit:{}", first_commit_blocking(main)?)),
     }
 }
 
