@@ -29,7 +29,16 @@ struct Capability {
 #[derive(Default)]
 struct Running {
     children: HashMap<String, Child>,
+    adopted: HashMap<String, i32>,
     stopped: std::collections::HashSet<String>,
+}
+
+fn alive(pid: i32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
+}
+
+fn runs_kanna_vm(pid: i32) -> bool {
+    Command::new("/bin/ps").args(["-o", "command=", "-p", &pid.to_string()]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains("kanna-vm run")).unwrap_or(false)
 }
 
 pub static GUESTS: std::sync::OnceLock<Arc<Guests>> = std::sync::OnceLock::new();
@@ -118,11 +127,18 @@ impl Guests {
             if running.stopped.contains(&name) {
                 continue;
             }
-            let alive = running.children.get_mut(&name).is_some_and(|c| matches!(c.try_wait(), Ok(None)));
-            if alive {
+            let owned = running.children.get_mut(&name).is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+            if owned || running.adopted.get(&name).is_some_and(|pid| alive(*pid)) {
                 continue;
             }
             running.children.remove(&name);
+            running.adopted.remove(&name);
+            let recorded = std::fs::read_to_string(self.dir().join(&name).join("vm.pid")).ok().and_then(|p| p.trim().parse::<i32>().ok());
+            if let Some(pid) = recorded.filter(|pid| alive(*pid) && runs_kanna_vm(*pid)) {
+                log!("kanna-daemon: guest {name} is already running (pid {pid}); adopting it");
+                running.adopted.insert(name, pid);
+                continue;
+            }
             drop(running);
             if let Some(child) = self.spawn(&name) {
                 self.running.lock().unwrap_or_else(|p| p.into_inner()).children.insert(name, child);
@@ -141,6 +157,7 @@ impl Guests {
         match child {
             Ok(child) => {
                 log!("kanna-daemon: guest {name} started (pid {})", child.id());
+                let _ = std::fs::write(dir.join("vm.pid"), child.id().to_string());
                 Some(child)
             }
             Err(e) => {
@@ -276,7 +293,7 @@ impl Guests {
     fn list(&self) -> Vec<Value> {
         let running = self.running.lock().unwrap_or_else(|p| p.into_inner());
         self.names().into_iter().map(|name| {
-            let pid = running.children.get(&name).map(|c| c.id());
+            let pid = running.children.get(&name).map(|c| c.id() as i32).or_else(|| running.adopted.get(&name).copied());
             let ready = self.dir().join(&name).join("agent.sock").exists();
             json!({ "name": name, "pid": pid, "stopped": running.stopped.contains(&name), "socket": ready })
         }).collect()
@@ -285,6 +302,16 @@ impl Guests {
     fn stop(&self, name: &str) {
         let mut running = self.running.lock().unwrap_or_else(|p| p.into_inner());
         running.stopped.insert(name.to_string());
+        if let Some(pid) = running.adopted.remove(name) {
+            unsafe { libc::kill(pid, libc::SIGINT) };
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline && alive(pid) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            if alive(pid) {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
         if let Some(mut child) = running.children.remove(name) {
             unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
             let deadline = Instant::now() + Duration::from_secs(20);
