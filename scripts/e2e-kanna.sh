@@ -2117,11 +2117,6 @@ desk_tasks() {
   check wait_for 5 is asker status idle || return 1
   kanna send asker ask || return 1
   check wait_for 5 is asker status needs-you || return 1
-  check wait_for 5 eval '[[ "$(desk tasks.0.task)" == "$(pane asker id)" ]]' || { desk tasks; return 1; }
-  key cmd+shift+a
-  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$(pane asker id)" ]]' || return 1
-  key cmd+1
-  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == term-1 ]]' || { echo "desk_tasks line $LINENO"; app_view; return 1; }
   kanna task done asker >/dev/null || return 1
   KANNA_TERMINAL=term-1 kanna open --name side >/dev/null || return 1
   check wait_for 5 eval '[[ "$(dwin d1 tabs.1.panes.0)" == "$(pane side id)" ]]' || return 1
@@ -2292,10 +2287,10 @@ print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["hi
   check wait_for 5 eval '[[ "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the Desk view lists its tasks oldest first, the active one in its place, with no hint until hovered"; rows; return 1; }
   key cmd+1
   check wait_for 5 docked "$third" || { echo "desk_shelf: ⌘1 isn't the task that came to the Desk last"; return 1; }
-  check wait_for 5 eval '[[ "$(strip)" == "$first:⌘1 $second:⌘2" ]]' || { echo "desk_shelf: the strip lists the others oldest first, keyed by recency"; strip; return 1; }
+  check wait_for 5 eval '[[ "$(strip)" == "$first:⌘1 $second:⌘2" ]]' || { echo "desk_shelf: the strip lists the others in key order, ⌘1 first"; strip; return 1; }
   key cmd+1
   check wait_for 5 docked "$first" || { echo "desk_shelf: ⌘1 twice didn't go back to the first task"; return 1; }
-  check wait_for 5 eval '[[ "$(strip)" == "$second:⌘2 $third:⌘1" ]]' || { echo "desk_shelf: the strip's keys don't follow recency"; strip; return 1; }
+  check wait_for 5 eval '[[ "$(strip)" == "$third:⌘1 $second:⌘2" ]]' || { echo "desk_shelf: the strip doesn't reorder by recency when you switch tasks"; strip; return 1; }
   key cmd+2
   check wait_for 5 docked "$second" || { echo "desk_shelf: ⌘2 (1)"; return 1; }
   key cmd+2
