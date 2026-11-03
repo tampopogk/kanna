@@ -184,6 +184,11 @@ pub fn relay(state_dir: &Path, from: &str, mut stream: UnixStream) {
         Ok(found) => found,
         Err(message) => return refuse(&mut stream, message),
     };
+    if header["op"] == "run" {
+        if let Some(guests) = crate::guests::GUESTS.get() {
+            header["capability"] = json!(guests.issue(&guest, header["job"].as_str().unwrap_or_default()));
+        }
+    }
     let mut to_guest = match UnixStream::connect(&socket) {
         Ok(conn) => conn,
         Err(e) => return refuse(&mut stream, format!("guest {guest} isn't answering: {e}")),

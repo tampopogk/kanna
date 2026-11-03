@@ -2002,6 +2002,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "core-foundation-sys",
+ "getrandom 0.2.17",
  "kanna-build",
  "kanna-crash",
  "kanna-detect",

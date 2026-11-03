@@ -8,6 +8,7 @@ mod accounts;
 mod agents;
 mod app_link;
 mod builds;
+mod guests;
 mod tasks;
 mod db;
 mod desk_news;
@@ -369,6 +370,12 @@ fn run() -> Result<(), String> {
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
+    let guests = guests::Guests::new(&state_dir);
+    guests.install(&core);
+    if cfg!(target_os = "macos") {
+        guests.start();
+    }
+    let _ = guests::GUESTS.set(guests);
     let machines = match machines::Machines::start(&state_dir, &db, events.clone(), wire.clone()) {
         Ok(machines) => {
             log!("kanna-daemon: {}", machines.describe());

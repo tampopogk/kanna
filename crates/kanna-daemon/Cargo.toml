@@ -21,6 +21,7 @@ kanna-pipe = { path = "../kanna-pipe" }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 notify = "8"
 base64 = "0.22"
+getrandom = "0.2"
 libc = "0.2"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde_json = { version = "1", features = ["preserve_order"] }

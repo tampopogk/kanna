@@ -266,7 +266,11 @@ impl Supervisor {
         std::fs::write(dir.join("manifest.json"), payload)?;
         let mut request = first.header.clone();
         request["snapshot"] = json!(manifest::sha256(payload));
-        std::fs::write(dir.join("request.json"), serde_json::to_vec_pretty(&request).unwrap_or_default())?;
+        let mut kept = request.clone();
+        if let Some(object) = kept.as_object_mut() {
+            object.remove("capability");
+        }
+        std::fs::write(dir.join("request.json"), serde_json::to_vec_pretty(&kept).unwrap_or_default())?;
         let repo = self.config.state.join("repos").join(names[0]).join(format!("{}.git", names[1]));
         if !repo.join("HEAD").exists() {
             std::fs::create_dir_all(&repo)?;
