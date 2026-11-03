@@ -63,7 +63,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 kbd { font: 11px var(--mono); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel2); }
 
 /* pipeline source */
-.code { flex: 0 0 46%; min-width: 0; display: flex; flex-direction: column; }
+.code { flex: 0 0 48%; min-width: 0; display: flex; flex-direction: column; }
 .src { flex: 1; overflow: auto; background: var(--term); font: 12px/1.65 var(--mono); padding: 12px 0; }
 .src .ln { display: flex; }
 .src .ln i { flex: none; width: 40px; text-align: right; padding-right: 12px; color: var(--muted); opacity: .6; font-style: normal; }
@@ -158,7 +158,7 @@ table.t.wrap td { white-space: normal; }
 <main>
   <div class="intro">
     <h1>The software factory: a pipeline's definition, a run on the Desk, and runs compared</h1>
-    <p>A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.pipe</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. The spec and mockup are made and approved in the task's chat first, as always; then its agent runs the pipeline (<code>kanna run start feature</code>): the task looks as it always does, its agent on the left and tabs on the right, and the pipeline builds under the hood in workers, agent sessions and commands in hidden terminals, driven by the daemon. The <b>Run</b> tab draws where it is; a <b>watch</b> tab shows the current stage's agent at work. A run is one task wherever tasks show. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
+    <p>A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.kojo</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. The spec and mockup are made and approved in the task's chat first, as always; then its agent runs the pipeline (<code>kanna run start feature</code>): the task looks as it always does, its agent on the left and tabs on the right, and the pipeline builds under the hood in workers, agent sessions and commands in hidden terminals, driven by the daemon. The <b>Run</b> tab draws where it is; a <b>watch</b> tab shows the current stage's agent at work. A run is one task wherever tasks show. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
     <div class="controls">
       <button data-scene="define">Definition</button>
       <button data-scene="run">A run on the Desk</button>
@@ -176,20 +176,19 @@ table.t.wrap td { white-space: normal; }
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let scene = "run";
 
-// ---------- the pipeline (feature.pipe) ----------
+// ---------- the pipeline (feature.kojo) ----------
 const SRC = `# Kanna's usual flow, once the spec and mockup are approved in the task's chat:
-# plan, build, review, e2e, your go-ahead, merge.
+# plan, build, review, e2e; then the run hands its branch back to the task's
+# worktree, where you review it before it merges.
 budget  = 40 sessions, 8h
 
 plan    = claude prompt plan emits             # splits the work; may add stages
 build   = claude prompt build each plan.parts  # a worktree and pane per part, inside the run
 join    = merge build                          # the parts' branches into the run's
 check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
-review  = codex:high prompt review verdict     # fresh reviewer; ends VERDICT: PASS|FAIL
+review  = codex:high prompt review verdict     # fresh reviewer; reports pass or fail
 fix     = claude prompt fix guard check        # rolled back if check gets worse
 e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
-ship    = ask "Land it on main?"               # you, with the diff in the tabs
-land    = merge main
 
 plan -> build -> join -> check
 check  -[fail, max 3, progress]-> fix -> check
@@ -197,9 +196,7 @@ check  -> review
 review -[fail, max 3]-> fix
 review -> e2e
 e2e    -[fail, max 2]-> fix
-e2e    -> ship
-ship   -[fail, max 2]-> fix
-ship   -> land -> done`;
+e2e    -> done`;
 
 function hl(line) {
   const [code, ...rest] = line.split("#");
@@ -210,7 +207,7 @@ function hl(line) {
     out = out.replace(/\bdone\b/, `<span class="fn">done</span>`);
   } else {
     out = out.replace(/^(\s*)([a-z_][a-z0-9_]*)(\s*=\s*)/, (m, a, n, e) => `${a}<span class="nm">${n}</span>${e}`);
-    out = out.replace(/\b(claude|codex|copilot|opencode|agy)(:[a-z]+)?/, m => `<span class="fn">${m}</span>`);
+    out = out.replace(/\b(claude|codex|opencode|agy)(:[a-z]+)?/, m => `<span class="fn">${m}</span>`);
     out = out.replace(/\b(ask|run|merge|prompt|verdict|each|guard|emits|by|x\d|within|resume|sessions|model)\b/g, m => `<span class="kw">${m}</span>`);
     out = out.replace(/&quot;[^&]*&quot;/g, m => `<span class="str">${m}</span>`);
     out = out.replace(/\b(\d+h?)\b/g, m => `<span class="num">${m}</span>`);
@@ -225,20 +222,17 @@ const NODES = [
   { id: "join", x: 254, y: 60, w: 58, kind: "merge", who: "git" },
   { id: "check", x: 334, y: 60, w: 72, kind: "cmd", who: "check.sh" },
   { id: "review", x: 428, y: 60, w: 72, kind: "agent", who: "codex" },
-  { id: "e2e", x: 522, y: 60, w: 66, kind: "cmd", who: "e2e · mini" },
-  { id: "ship", x: 610, y: 60, w: 62, kind: "ask", who: "you" },
-  { id: "land", x: 694, y: 60, w: 58, kind: "merge", who: "main" },
-  { id: "done", x: 774, y: 60, w: 56, kind: "done", who: "" },
+  { id: "e2e", x: 522, y: 60, w: 76, kind: "cmd", who: "e2e · mini" },
+  { id: "done", x: 620, y: 60, w: 56, kind: "done", who: "" },
   { id: "fix", x: 428, y: 152, w: 72, kind: "agent", who: "claude" },
 ];
 const H = 34;
 const EDGES = [
   { a: "plan", b: "build" }, { a: "build", b: "join" }, { a: "join", b: "check" },
-  { a: "check", b: "review" }, { a: "review", b: "e2e" }, { a: "e2e", b: "ship" }, { a: "ship", b: "land" }, { a: "land", b: "done" },
+  { a: "check", b: "review" }, { a: "review", b: "e2e" }, { a: "e2e", b: "done" },
   { a: "check", b: "fix", loop: true, label: "fail · max 3 · progress", level: 126, dx: -16, side: "left" },
   { a: "review", b: "fix", loop: true, label: "fail · max 3", side: "right" },
   { a: "e2e", b: "fix", loop: true, label: "fail · max 2", level: 140, dx: 16, side: "right" },
-  { a: "ship", b: "fix", loop: true, label: "no · max 2", level: 154, dx: 30, side: "right" },
   { a: "fix", b: "check", back: true },
 ];
 const nodeById = id => NODES.find(n => n.id === id);
@@ -257,7 +251,7 @@ function graphSVG(state, taken) {
         `<text class="elabel loop" x="${(cx(A) + cx(B)) / 2}" y="${y - 4}" text-anchor="middle">${e.label}</text>`;
     }
     if (e.back) return `<path class="${cls}" d="M${A.x} ${A.y + H / 2} L${B.x + B.w / 2 - 6} ${A.y + H / 2} L${B.x + B.w / 2 - 6} ${B.y + H + 3}"/>` +
-      `<text class="elabel" x="${A.x - 8}" y="${A.y + H / 2 - 6}" text-anchor="end">then check again</text>`;
+      `<text class="elabel" x="${B.x + B.w / 2 - 14}" y="${A.y + H / 2 + 4}" text-anchor="end">then check again</text>`;
     // loop into fix (below): straight down, or down to a level, across, then down
     const sx = cx(A), tx = cx(B) + (e.dx || 0), ty = B.y;
     const path = e.level
@@ -280,28 +274,28 @@ function graphSVG(state, taken) {
   return `<svg viewBox="0 0 880 205"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="context-stroke"/></marker></defs>` +
     EDGES.map(seg).join("") + NODES.map(node).join("") + `</svg>`;
 }
-const LEGEND = `<div class="legend"><span><i></i>agent session</span><span><i class="cmd"></i>command</span><span><i class="ask"></i>asks you</span><span><i style="background:var(--panel2)"></i>merge</span><span><i class="ok"></i>passed</span><span><i class="bad"></i>failed</span><span><i class="now"></i>running</span><span><i class="wait"></i>waiting on you</span><span>×N visits</span></div>`;
+const LEGEND = `<div class="legend"><span><i></i>agent session</span><span><i class="cmd"></i>command</span><span><i class="ok"></i>passed</span><span><i class="bad"></i>failed</span><span><i class="now"></i>running</span><span><i class="wait"></i>waiting on you</span><span>×N visits</span></div>`;
 
 // ---------- scene: definition ----------
 function defineHTML() {
   const lines = SRC.split("\n");
   return `<div class="window">
-    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>feature.pipe</b> · .kanna/pipelines · kanna-v4</span></div>
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>feature.kojo</b> · .kanna/pipelines · kanna-v4</span></div>
     <div class="content">
-      <div class="code"><div class="head">.kanna/pipelines/feature.pipe<span class="spacer"></span>saved · <b>valid</b>: worst case 21 sessions of 40</div>
+      <div class="code"><div class="head">.kanna/pipelines/feature.kojo<span class="spacer"></span>saved · <b>valid</b>: worst case 17 sessions of 40</div>
         <div class="src">${lines.map((l, i) => `<div class="ln"><i>${i + 1}</i><span class="t">${hl(l)}</span></div>`).join("")}</div></div>
       <div class="docs"><div class="dtabs"><div class="dtab on">Pipeline</div><div class="dtab">prompts/spec.md</div><div class="dtab">prompts/review.md</div><span class="add">+</span></div>
         <div class="doc">
-          <div class="runhead"><h2>feature</h2><span class="sub">9 stages · 4 loops · 1 question for you · fan-out at <span class="mono">build</span> · <span class="mono">e2e</span> on mini</span></div>
+          <div class="runhead"><h2>feature</h2><span class="sub">7 stages · 3 loops · fan-out at <span class="mono">build</span> · <span class="mono">e2e</span> on mini</span></div>
           <div class="graph">${graphSVG({})}</div>${LEGEND}
           <div class="sec">What each kind does</div>
           <table class="t wrap">
             <tr><th>Stage</th><th>Runs</th><th>Verdict</th><th>Feeds the next stage</th></tr>
-            <tr><td class="mono">plan, build, fix</td><td>a fresh agent session in the task's worktree, in its docked pane</td><td>—</td><td>its final answer; <span class="mono">plan.parts</span>, a named JSON block</td></tr>
-            <tr><td class="mono">review</td><td>a fresh agent, <span class="mono">verdict</span></td><td>its last line, <span class="mono">VERDICT: PASS|FAIL</span></td><td>the review text, under a heading</td></tr>
+            <tr><td class="mono">plan, build, fix</td><td>a fresh agent session in a worker of the run: its worktree and a background terminal</td><td>—</td><td>its final answer; <span class="mono">plan.parts</span>, a named JSON block</td></tr>
+            <tr><td class="mono">review</td><td>a fresh agent, <span class="mono">verdict</span></td><td>the one it reports: <span class="mono">kanna run done pass|fail</span></td><td>the review text, under a heading</td></tr>
             <tr><td class="mono">check, e2e</td><td>a command in the worktree</td><td>exit 0 passes</td><td>the output's tail, failures first</td></tr>
-            <tr><td class="mono">ship</td><td>you: the task's agent asks in its chat, and the Run tab shows a card</td><td>yes or no</td><td>your note</td></tr>
-            <tr><td class="mono">join, land</td><td>git</td><td>clean merge passes</td><td>the conflicts</td></tr>
+            <tr><td class="mono">join</td><td>git</td><td>clean merge passes</td><td>the conflicts</td></tr>
+            <tr><td class="mono">done</td><td>the run hands its branch back to the task's worktree, where you review it and merge it</td><td>—</td><td>—</td></tr>
             <tr><td class="mono">… on mini</td><td>any stage on another of your machines: a worker there, the branch sent over, its result and commits brought back</td><td>as its kind</td><td>as its kind</td></tr>
           </table>
           <div class="sec">Rules the file is checked against</div>
@@ -328,28 +322,28 @@ const RUN = {
   ],
   later: [
     { stage: "review", visit: 2, who: "codex:high", took: "9m", verdict: "pass", turns: 8, tok: "210k", note: "no findings" },
-    { stage: "e2e", visit: 1, who: "e2e-kanna on mini", took: "14m", verdict: "pass", turns: "", tok: "", note: "41 scenarios, including diff_dark" },
-    { stage: "ship", visit: 1, who: "you", took: "", verdict: "wait", turns: "", tok: "", note: "waiting 12m · the diff is in the tabs" },
+    { stage: "e2e", visit: 1, who: "e2e-kanna on mini", took: "14m", verdict: "fail", turns: "", tok: "", note: "1 of 41 scenarios failed: diff_dark, in light mode" },
+    { stage: "fix", visit: 3, who: "claude", took: "", verdict: "wait", turns: 4, tok: "64k", note: "needs you 12m: which appearance the gutter follows" },
   ],
 };
 const runMarks = () => ({
   plan: { state: "pass" }, build: { state: "pass", visits: 3 }, join: { state: "pass" },
-  check: { state: "pass", visits: 3 }, fix: { state: "pass", visits: 2 }, review: { state: "now", visits: 2 }, e2e: { dim: true }, ship: { dim: true }, land: { dim: true }, done: { dim: true },
+  check: { state: "pass", visits: 3 }, fix: { state: "pass", visits: 2 }, review: { state: "now", visits: 2 }, e2e: { dim: true }, done: { dim: true },
 });
 const runTaken = ["plan>build", "build>join", "join>check", "check>fix", "fix>check", "check>review", "review>fix"];
 
 function agentPane(gate, watch) {
   const log = gate ? [
     `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> claude`, ``,
-    `<span class="p">&gt;</span> [message from run-7f3a] ship asks: Land it on main? (review passed, e2e passed on mini: 41 scenarios)`, ``,
-    `<span class="m">●</span> The pipeline is at <b>ship</b>, the last gate before main. The diff is in the tabs (3 files, +212 −48), beside the spec and mockup you approved.`, ``,
-    `  Yes lands it on main; no, with a note, sends it back to fix.`, ``,
+    `<span class="p">&gt;</span> [message from run-7f3a] fix needs you: Should the gutter follow macOS's appearance or Kanna's own theme? (e2e failed diff_dark on mini, in light mode)`, ``,
+    `<span class="m">●</span> The run is paused at <b>fix</b>. Review passed; e2e on mini failed one scenario, diff_dark in light mode, and the spec doesn't say which appearance the gutter follows.`, ``,
+    `  Tell me which and I'll resume it with your answer.`, ``,
     `<span class="p">❯</span> ▍`,
   ] : [
     `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> claude`, ``,
     `<span class="m">●</span> Spec and mockup updated: the gutter keeps the code's hue in both themes. Both are in the tabs.`, ``,
     `<span class="p">&gt;</span> good. build it with the feature pipeline.`, ``,
-    `<span class="m">●</span> Started <b>run-7f3a</b> (feature): plan → build → check → review → e2e → ship → land. The Run tab shows where it is; I'll tell you when it lands or asks you to ship.`, ``,
+    `<span class="m">●</span> Started <b>run-7f3a</b> (feature): plan → build → check → review → e2e. The Run tab shows where it is; I'll tell you when it hands its branch back or needs you.`, ``,
     `<span class="p">&gt;</span> [message from run-7f3a] check failed (2 tests), fix running`, ``,
     `<span class="m">●</span> Two unit tests failed after the three build parts were joined; the pipeline is fixing and will re-check. Nothing for you yet.`, ``,
     `<span class="p">&gt;</span> what's it doing now?`, ``,
@@ -371,27 +365,27 @@ function watchHTML() {
 
 function runTabHTML(gate) {
   const marks = gate
-    ? { ...runMarks(), review: { state: "pass", visits: 2 }, e2e: { state: "pass" }, ship: { state: "wait" }, land: { dim: true }, done: { dim: true } }
+    ? { ...runMarks(), review: { state: "pass", visits: 2 }, e2e: { state: "fail" }, fix: { state: "wait", visits: 3 }, done: { dim: true } }
     : runMarks();
-  const taken = gate ? runTaken.concat(["review>e2e", "e2e>ship"]) : runTaken;
+  const taken = gate ? runTaken.concat(["review>e2e", "e2e>fix"]) : runTaken;
   const rows = gate ? RUN.visits.slice(0, -1).concat(RUN.later) : RUN.visits;
   const vcls = v => v === "pass" || v === "yes" ? "v-pass" : v === "fail" || v === "no" ? "v-fail" : v === "now" ? "v-now" : v === "wait" ? "v-wait" : "";
   const vtxt = v => v === "now" ? "running" : v === "wait" ? "waiting" : v;
   return `<div class="doc">
     <div class="runhead"><h2>${esc(RUN.task)}</h2><span class="sub">run-7f3a · pipeline <b>feature</b> rev 2 · started ${RUN.started} by the task's agent · ${gate ? "1h 58m" : "1h 22m"}</span>
       <span class="acts"><button>Watch</button><button>Pause</button><button>Skip stage</button><button>Retry stage</button><button>Edit pipeline</button><button>Stop</button></span></div>
-    ${gate ? `<div class="gate"><span class="dot needs"></span><div class="q"><b>Land it on main?</b><div class="rev">ship · review passed, e2e passed on mini · no goes back to <span class="mono">fix</span> (2 left) · the diff is in the tabs</div></div><button class="on">Yes</button><button>No</button><input placeholder="a note for fix (with No)"></div>` : ""}
+    ${gate ? `<div class="gate"><span class="dot needs"></span><div class="q"><b>fix needs you: Should the gutter follow macOS's appearance or Kanna's own theme?</b><div class="rev">fix · 3rd visit, after e2e failed diff_dark on mini · your answer resumes it</div></div><input placeholder="your answer for fix"><button class="on">Resume</button></div>` : ""}
     <div class="graph">${graphSVG(marks, taken)}</div>${LEGEND}
     <div class="kpis">
-      <div class="kpi"><div class="v">${gate ? "13" : "10"}</div><div class="l">stage visits · ${gate ? "9" : "8"} of 40 sessions</div></div>
+      <div class="kpi"><div class="v">${gate ? "12" : "10"}</div><div class="l">stage visits · ${gate ? "9" : "8"} of 40 sessions</div></div>
       <div class="kpi"><div class="v">${gate ? "1h 58m" : "1h 22m"}</div><div class="l">wall · <span class="v-wait">${gate ? "12m" : "0"}</span> waiting on you</div></div>
       <div class="kpi"><div class="v">${gate ? "86" : "78"}</div><div class="l">agent turns</div></div>
       <div class="kpi"><div class="v">${gate ? "2.8M" : "2.6M"}</div><div class="l">tokens · $${gate ? "13.10" : "12.10"}</div></div>
-      <div class="kpi"><div class="v">2</div><div class="l">rework loops</div></div>
+      <div class="kpi"><div class="v">${gate ? "3" : "2"}</div><div class="l">rework loops</div></div>
       <div class="kpi"><div class="v">0</div><div class="l">your interventions</div></div>
       <div class="kpi"><div class="v">+212 −48</div><div class="l">lines · 3 files</div></div>
     </div>
-    ${`<p class="rev"><b>Revision 2</b> by stage <span class="mono">plan</span> at 10:41: added <span class="mono">e2e-dark = run scripts/e2e-kanna.sh diff_dark</span> after <span class="mono">e2e</span> · still 21 of 40 sessions worst case · <span style="color:var(--accent)">show diff</span></p>`}
+    ${`<p class="rev"><b>Revision 2</b> by stage <span class="mono">plan</span> at 10:41: added <span class="mono">e2e-dark = run scripts/e2e-kanna.sh diff_dark</span> after <span class="mono">e2e</span> · still 17 of 40 sessions worst case · <span style="color:var(--accent)">show diff</span></p>`}
     <div class="sec">Stages, in order</div>
     <table class="t">
       <tr><th>#</th><th>Stage</th><th>Who</th><th class="r">Took</th><th>Verdict</th><th class="r">Turns</th><th class="r">Tokens</th><th>Notes</th></tr>
@@ -406,7 +400,7 @@ function runHTML(gate, watch) {
   return `<div class="window">
     <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${esc(RUN.task)}</b> · claude · ${gate ? "needs you" : "idle"}</span></div>
     <div class="content">${agentPane(gate)}
-      <div class="docs"><div class="dtabs">${tabs.map((f, i) => `<div class="dtab ${i === on ? "on" : ""}">${esc(f)}${i === 0 ? `<span class="n">${gate ? "8/9" : "5/9"}</span>` : ""}${i === 1 && !gate ? `<span class="dot working" style="width:6px;height:6px"></span>` : ""}</div>`).join("")}<span class="add">+</span></div>
+      <div class="docs"><div class="dtabs">${tabs.map((f, i) => `<div class="dtab ${i === on ? "on" : ""}">${esc(f)}${i === 0 ? `<span class="n">${gate ? "6/7" : "5/7"}</span>` : ""}${i === 1 && !gate ? `<span class="dot working" style="width:6px;height:6px"></span>` : ""}</div>`).join("")}<span class="add">+</span></div>
       ${watch ? watchHTML() : runTabHTML(gate)}</div>
     </div>
     <div class="strip"><span class="hint"><kbd>⌘.</kbd> Desk</span><span class="sep"></span><span class="item"><span class="dot idle"></span><span>Typing lag in terminals</span><span style="color:var(--muted)">· 40m ago</span></span><span class="item"><span class="dot idle"></span><span>Commit graph pane</span><span style="color:var(--muted)">· 2h ago</span></span><span class="count">7 on the Shelf</span></div>

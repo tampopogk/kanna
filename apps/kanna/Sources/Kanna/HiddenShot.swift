@@ -64,9 +64,9 @@ extension AppController {
         } else {
             throw KannaError("unavailable", "pane \(pane) hasn't started: nothing is drawn yet")
         }
-        let url = try screenshotURL(args, name: pane)
-        try Snapshot.write(Snapshot.png(image), to: url, replacing: args["force"]?.bool == true)
-        var reply: [String: JSON] = ["path": .string(url.path), "pane": .string(pane), "hidden": true,
+        let png = try Snapshot.png(image)
+        guard png.count <= Self.largestShot else { throw KannaError("too_big", "the picture is over \(Self.largestShot >> 20) MiB") }
+        var reply: [String: JSON] = ["png": .string(png.base64EncodedString()), "pane": .string(pane), "hidden": true,
                                      "width": .number(Double(image.width)), "height": .number(Double(image.height))]
         if let window { reply["window"] = .string(window) }
         return reply

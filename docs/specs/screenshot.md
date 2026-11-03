@@ -60,15 +60,16 @@ sequenceDiagram
     participant A as Kanna.app
     C->>D: screenshot {pane: diff, path: /work/diff.png}
     Note over C: --out made absolute where kanna runs, else {dir: $TMPDIR}
-    D->>A: screenshot {pane: term-4, path, force?}
-    Note over A: show occluded terminals to Ghostty, wait for their frames<br/>capture the window, cut out the pane, write the PNG
-    A->>D: {path, window: win-1, pane: term-4, width, height}
+    D->>A: screenshot {pane: term-4}
+    Note over A: show occluded terminals to Ghostty, wait for their frames<br/>capture the window, cut out the pane
+    A->>D: {png, window: win-1, pane: term-4, width, height}
+    Note over D: writes the PNG, puts its path in the reply
     D->>C: reply
     Note over C: prints the path (--json: the reply)
 ```
 
 - **The daemon passes it on** as it passes `debug.*`, with the pane's name turned into its ID (`crates/kanna-daemon/src/main.rs`); with no app attached it's `no_app`. The app always answers it, `KANNA_DEBUG` or not (`apps/kanna/Sources/Kanna/Screenshot.swift`).
-- **The app writes the file**, so the image never crosses the socket, whose lines stop at 16 MiB.
+- **The daemon writes the file** from the PNG the app sends back (`crates/kanna-daemon/src/screenshot.rs`), so a shot of another machine's pane lands on that machine. A picture over 11 MiB is refused (`too_big`), so the reply fits the link's 16 MiB lines.
 - **Capture is `CGWindowListCreateImage`**, looked up at run time: obsoleted in the macOS 15 SDK but still exported, and an app may capture its own windows without the screen-recording permission ScreenCaptureKit needs. It copies what the window server has.
 - **Occluded terminals are drawn first.** A window behind others (every `--bg` window, or one you've covered) is occluded, so its terminals are hidden from Ghostty, which stops drawing them: one resized while hidden (by a split) holds a frame never drawn, and comes out as blocks of colour. Before capturing, each such terminal is shown to Ghostty until its layer has a new frame (at most 1 s), and hidden again after.
 - **`debug.snapshot` shares the capture** (`Snapshot.swift`), for the tests: every pane of a window as its own PNG.
@@ -92,8 +93,8 @@ sequenceDiagram
     else web, markdown, code, diff, serial
         A->>O: the pane's own view, borrowed and put back
     end
-    A->>A: capture O, write the PNG
-    A->>D: {path, pane, hidden: true, width, height}
+    A->>A: capture O
+    A->>D: {png, pane, hidden: true, width, height}
 ```
 
 - **Shown or hidden** is the app's call: a pane is showing when its window has it in the shown tab (or docked) and isn't minimised.

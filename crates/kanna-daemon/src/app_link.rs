@@ -3,7 +3,7 @@ use crate::files::Files;
 use crate::serial::Serial;
 use crate::layout::DaemonLayout;
 use crate::perf;
-use crate::wire::{Wire, FLOW_PROTOCOL};
+use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::terminals::Terminals;
 use crate::Event;
@@ -12,7 +12,7 @@ use base64::Engine;
 use kanna_mux::json::{encode, json, string, Map, Value};
 use kanna_mux::{pane_record, pane_table, write_all, KmuxError, Pane, PaneState, PaneType, Responder, Takeover, WeakCore};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -124,7 +124,9 @@ pub const APP_PREFIX: &str = "debug.";
 
 pub const APP_ASK: &str = "app.";
 
-pub const PROTOCOLS: (u64, u64) = (kanna_build::PROTOCOLS[0] as u64, kanna_build::PROTOCOLS[1] as u64);
+pub const RELAY_TOKEN: &str = "machine.relay_token";
+
+pub const PROTOCOL: u64 = kanna_build::PROTOCOL as u64;
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
@@ -228,32 +230,39 @@ pub struct AppLink {
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
     files: Rc<Files>,
+    threads: Rc<Files>,
     serial: Rc<Serial>,
     layout: Rc<DaemonLayout>,
     app: RefCell<Option<Connection>>,
     pending: RefCell<HashMap<u64, (Instant, Responder)>>,
     timeout: Duration,
     next_id: Cell<u64>,
-    attached: RefCell<HashSet<String>>,
+    attached: RefCell<HashMap<String, Option<usize>>>,
     unsent: RefCell<HashMap<String, Instant>>,
     stopping: Cell<bool>,
     tasks: RefCell<Option<Weak<crate::tasks::Tasks>>>,
     build: Option<String>,
+    run: String,
     listener: Option<OwnedFd>,
     handed: Cell<bool>,
     pub machine: RefCell<Option<Box<dyn Fn() -> Value>>>,
+    pub logs: RefCell<Option<Rc<crate::logs::Logs>>>,
 }
 
 impl AppLink {
-    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: Rc<Files>, serial: Rc<Serial>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
+    pub fn new(core: WeakCore, terminals: Rc<Terminals>, diffs: Rc<Diffs>, files: (Rc<Files>, Rc<Files>), serial: Rc<Serial>, layout: Rc<DaemonLayout>, timeout: Duration, build: Option<String>, listener: Option<OwnedFd>) -> AppLink {
+        let (files, threads) = files;
+        let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         AppLink {
             build,
+            run: format!("{:x}-{:x}", std::process::id(), started.as_nanos()),
             listener,
             handed: Cell::new(false),
             core,
             terminals,
             diffs,
             files,
+            threads,
             serial,
             layout,
             app: RefCell::new(None),
@@ -265,6 +274,7 @@ impl AppLink {
             unsent: RefCell::default(),
             stopping: Cell::new(false),
             machine: RefCell::new(None),
+            logs: RefCell::new(None),
         }
     }
 
@@ -296,7 +306,7 @@ impl AppLink {
     }
 
     fn shows(&self, pane: &str) -> bool {
-        !self.behind() && self.attached.borrow().contains(pane)
+        !self.behind() && self.attached.borrow().contains_key(pane)
     }
 
     pub fn caught_up(&self, conn: u64) {
@@ -304,16 +314,16 @@ impl AppLink {
             Some(app) if app.id == conn => app.behind.set(false),
             _ => return,
         }
-        let mut panes: Vec<String> = self.attached.borrow().iter().cloned().collect();
+        let mut panes: Vec<String> = self.attached.borrow().keys().cloned().collect();
         panes.sort();
         for pane in panes {
-            self.attach(&pane);
+            self.attach(&pane, None);
         }
     }
 
     pub fn resync(&self, pane: &str) {
         if self.shows(pane) {
-            self.attach(pane);
+            self.attach(pane, None);
         }
     }
 
@@ -345,15 +355,11 @@ impl AppLink {
             return false;
         }
         let args = hello.get("args").cloned().unwrap_or(Value::Null);
-        let (low, high) = match args.get("protocols").and_then(Value::as_array).map(|r| r.iter().filter_map(Value::as_u64).collect::<Vec<_>>()) {
-            Some(range) if range.len() == 2 => (range[0], range[1]),
-            _ => (1, 1),
-        };
-        let protocol = high.min(PROTOCOLS.1);
-        if protocol < low.max(PROTOCOLS.0) {
-            let theirs = if low == high { format!("{low}") } else { format!("{low}–{high}") };
-            log!("kanna-daemon: an app speaking protocol {theirs} said hello; this daemon speaks {}–{}", PROTOCOLS.0, PROTOCOLS.1);
-            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocols {}–{} and the app {theirs}", PROTOCOLS.0, PROTOCOLS.1) }, "mine": [PROTOCOLS.0, PROTOCOLS.1], "commit": kanna_build::COMMIT, "version": kanna_build::VERSION }));
+        let protocol = args.get("protocol").and_then(Value::as_u64);
+        if protocol != Some(PROTOCOL) {
+            let theirs = protocol.map_or("an older protocol".to_string(), |p| format!("protocol {p}"));
+            log!("kanna-daemon: an app speaking {theirs} said hello; this daemon speaks {PROTOCOL}");
+            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocol {PROTOCOL} and the app {theirs}") }, "protocol": PROTOCOL, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION }));
             let _ = stream.shutdown(Shutdown::Read);
             return false;
         }
@@ -371,18 +377,18 @@ impl AppLink {
         }
         let pid = args.get("pid").cloned().unwrap_or(Value::Null);
         match (&remote, args.get("client").and_then(Value::as_str)) {
-            (Some(from), client) => log!("kanna-daemon: the app on {} attached from another machine (pid {pid}, protocol {protocol})", client.unwrap_or(from)),
+            (Some(from), client) => log!("kanna-daemon: the app on {} attached from another machine (pid {pid})", client.unwrap_or(from)),
             (None, _) => log!("kanna-daemon: the app attached (pid {pid})"),
         }
         self.layout.flush();
         let panes = self.core.upgrade().map_or(Value::Array(vec![]), |core| core.with_panes(pane_table));
-        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION, "protocols": [PROTOCOLS.0, PROTOCOLS.1], "machine": null, "capabilities": null });
+        let mut daemon = json!({ "pid": std::process::id(), "build": self.build, "run": self.run, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION, "protocol": PROTOCOL, "machine": null, "capabilities": null });
         if let Some(describe) = self.machine.borrow().as_ref() {
             let machine = describe();
             daemon["machine"] = machine["name"].clone();
             daemon["capabilities"] = machine["capabilities"].clone();
         }
-        let reply = json!({ "id": id, "ok": true, "protocol": protocol, "listener": listener.is_some(), "daemon": daemon, "panes": panes, "layout": self.layout.view() });
+        let reply = json!({ "id": id, "ok": true, "protocol": PROTOCOL, "listener": listener.is_some(), "daemon": daemon, "panes": panes, "layout": self.layout.view() });
         if listener.is_some() {
             if !write_with(&stream, &reply, listener) {
                 let _ = stream.shutdown(Shutdown::Both);
@@ -395,7 +401,7 @@ impl AppLink {
         if let Some(tasks) = self.tasks.borrow().as_ref().and_then(|b| b.upgrade()) {
             *tasks.claimant.borrow_mut() = claimant.unwrap_or_else(|| kanna_mux::MAC_APP.into());
         }
-        self.terminals.wire().connect(conn, out.clone(), protocol >= FLOW_PROTOCOL);
+        self.terminals.wire().connect(conn, out.clone());
         *self.app.borrow_mut() = Some(Connection { id: conn, remote, out, stream, behind: Cell::new(false), cut: Cell::new(false), keeps: listener.is_some() });
         let statuses: Vec<(String, String)> = self.core.upgrade().map_or(vec![], |core| {
             core.with_panes(|panes| panes.iter().filter_map(|p| p.status().map(|s| (p.id.clone(), s.to_string()))).collect())
@@ -488,12 +494,17 @@ impl AppLink {
         let prefix = view_prefix(conn);
         self.diffs.leave(|view| view.starts_with(&prefix));
         self.files.leave(|view| view.starts_with(&prefix));
+        if let Some(logs) = self.logs.borrow().as_ref() {
+            logs.leave(|view| view.starts_with(&prefix));
+        }
+        self.threads.leave(|view| view.starts_with(&prefix));
         self.serial.leave_views(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
         for responder in pending {
             responder.reply(Err(KmuxError::new("app_gone", "Kanna.app went away before answering")));
         }
         let Some(core) = self.core.upgrade() else { return };
+        core.handle(json!({ "id": 0, "cmd": "desks", "args": { "desks": [] } }), |_| {});
         let starting: Vec<Pane> = core.with_panes(|panes| panes.iter().filter(|p| p.kind != PaneType::Term && p.state == PaneState::Starting).cloned().collect());
         for pane in starting {
             self.terminals.unshown(&pane);
@@ -534,6 +545,20 @@ impl AppLink {
                 self.diffs.unsubscribe(&view);
                 return None;
             }
+            ("log.subscribe", Some(view)) => {
+                let reply = match self.logs.borrow().as_ref() {
+                    Some(logs) => logs.subscribe(&view, &args),
+                    None => Err(KmuxError::new("unsupported", "this daemon keeps no logs")),
+                };
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("log.unsubscribe", Some(view)) => {
+                if let Some(logs) = self.logs.borrow().as_ref() {
+                    logs.unsubscribe(&view);
+                }
+                return None;
+            }
             ("file.subscribe", Some(view)) => {
                 let reply = self.files.subscribe(&view, &args);
                 self.answer_subscribe(&message, reply);
@@ -557,7 +582,29 @@ impl AppLink {
                 self.files.unsubscribe(&view);
                 return None;
             }
+            ("markup.subscribe", Some(view)) => {
+                let mut args = args.clone();
+                args["kind"] = json!("threads");
+                let reply = self.threads.subscribe(&view, &args);
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("markup.unsubscribe", Some(view)) => {
+                self.threads.unsubscribe(&view);
+                return None;
+            }
             _ => {}
+        }
+        if string(&message, "cmd") == Some(RELAY_TOKEN) {
+            let local = self.app.borrow().as_ref().is_some_and(|app| app.remote.is_none());
+            let id = message.get("id").cloned().unwrap_or(Value::Null);
+            let token = self.machine.borrow().as_ref().map(|describe| describe()["relay_token"].clone()).unwrap_or(Value::Null);
+            self.send(if local {
+                json!({ "id": id, "ok": true, "token": token })
+            } else {
+                json!({ "id": id, "ok": false, "error": { "code": "local_only", "message": "a relay's token goes only to this machine's own app" } })
+            });
+            return None;
         }
         if message.get("id").is_some() {
             return Some(message);
@@ -566,8 +613,19 @@ impl AppLink {
         let terminal = string(&args, "terminal").unwrap_or_default().to_string();
         match string(&message, "cmd").unwrap_or_default() {
             "attach" => {
-                if !self.attached.borrow().contains(&terminal) {
-                    self.attach(&terminal);
+                if !self.attached.borrow().contains_key(&terminal) {
+                    let history = args.get("scrollback").and_then(Value::as_u64).map(|rows| rows as usize);
+                    self.attached.borrow_mut().insert(terminal.clone(), history);
+                    let from = args.get("from").and_then(Value::as_u64).filter(|_| string(&args, "run") == Some(self.run.as_str()));
+                    self.attach(&terminal, from);
+                }
+            }
+            "scrollback" => {
+                if let Some(history) = self.attached.borrow_mut().get_mut(&terminal) {
+                    *history = None;
+                }
+                if self.shows(&terminal) {
+                    self.attach(&terminal, None);
                 }
             }
             "detach" => {
@@ -644,11 +702,19 @@ impl AppLink {
         }
     }
 
-    pub fn file(&self, views: &[String], payload: &Value) {
+    pub fn log(&self, views: &[String], payload: &Value) {
         let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
         let prefix = view_prefix(conn);
         if views.iter().any(|view| view.starts_with(&prefix)) {
-            self.notify("file", payload.clone());
+            self.notify("log", payload.clone());
+        }
+    }
+
+    pub fn file(&self, cmd: &str, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify(cmd, payload.clone());
         }
     }
 
@@ -672,10 +738,10 @@ impl AppLink {
         self.notify("stop", json!({ "pane": pane }));
     }
 
-    fn attach(&self, pane: &str) {
-        self.attached.borrow_mut().insert(pane.into());
+    fn attach(&self, pane: &str, from: Option<u64>) {
+        let history = *self.attached.borrow_mut().entry(pane.into()).or_default();
         let shows = self.shows(pane) && self.app.borrow().as_ref().is_some_and(|app| !app.cut.get());
-        let Some(attach) = self.terminals.attach(pane, shows) else { return };
+        let Some(attach) = self.terminals.attach(pane, shows, history, from) else { return };
         if let Err(error) = attach.snapshot {
             let retry = Instant::now() + SNAPSHOT_RETRY;
             if self.unsent.borrow_mut().insert(pane.into(), retry).is_none() {
@@ -706,7 +772,7 @@ impl AppLink {
             self.folder(&pane.id, cwd);
         }
         if self.shows(terminal) {
-            self.attach(terminal);
+            self.attach(terminal, None);
         }
     }
 
@@ -747,8 +813,8 @@ impl AppLink {
         let due: Vec<String> = self.unsent.borrow().iter().filter(|(_, retry)| **retry <= now).map(|(pane, _)| pane.clone()).collect();
         for pane in due {
             self.unsent.borrow_mut().remove(&pane);
-            if self.attached.borrow().contains(&pane) {
-                self.attach(&pane);
+            if self.attached.borrow().contains_key(&pane) {
+                self.attach(&pane, None);
             }
         }
         let late: Vec<u64> = self.pending.borrow().iter().filter(|(_, (deadline, _))| *deadline <= now).map(|(id, _)| *id).collect();
