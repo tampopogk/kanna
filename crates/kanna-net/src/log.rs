@@ -125,7 +125,7 @@ impl PeerLog {
             adds.retain(|id| {
                 let body = &self.events[*id]["body"];
                 let signer = body["signer"].as_str().unwrap_or_default();
-                if view.hosted.contains(signer) {
+                if hosted.contains(signer) || view.hosted.contains(signer) {
                     return false;
                 }
                 let unseen = view.revoked.contains(signer) && !seen.get(signer).is_some_and(|s| s.contains(*id));
@@ -194,6 +194,9 @@ impl PeerLog {
                 }
                 if past.hosted.contains(key) && payload["hosted"] != true {
                     return Err(Refused::new("hosted_downgrade"));
+                }
+                if payload["hosted"] == true && past.trusted().contains(key) && !past.hosted.contains(key) {
+                    return Err(Refused::new("hosted_upgrade"));
                 }
                 Ok(())
             }
@@ -711,5 +714,33 @@ pub mod tests {
             }
             assert_eq!(log.view().trusted(), expected);
         }
+    }
+
+    #[test]
+    fn a_key_added_unhosted_on_one_branch_and_hosted_on_another_admits_no_one_in_any_order() {
+        let (mut mbp, mut box_, observer) = machines();
+        let mut k = Device::new("cloud-2");
+        let plain = mbp.entry("add", k.descriptor());
+        mbp.log().merge(std::slice::from_ref(&plain)).unwrap();
+        let mut log = PeerLog::new(mbp.log().anchor().clone());
+        log.sync(&mbp.log().export()).unwrap();
+        k.log = Some(log);
+        let child = k.entry("add", Device::new("child").descriptor());
+        let mut hosted = k.descriptor();
+        hosted["hosted"] = json!(true);
+        let marked = box_.entry("add", hosted.clone());
+        box_.log().merge(std::slice::from_ref(&marked)).unwrap();
+        let entries = [plain, child, marked];
+        for order in permutations(&entries) {
+            let mut log = observer.log.clone().unwrap();
+            for entry in &order {
+                log.merge(std::slice::from_ref(entry)).unwrap();
+            }
+            let view = log.view();
+            assert!(view.hosted.contains(&k.key()) && view.trusted().contains(&k.key()));
+            assert_eq!(view.resolve("child", &Device::new("child").key()).unwrap_err().code, "unpaired");
+        }
+        let upgrade = mbp.entry("add", hosted);
+        assert_eq!(code(mbp.log().merge(&[upgrade])), "hosted_upgrade");
     }
 }

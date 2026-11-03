@@ -507,5 +507,9 @@ async fn a_vm_enrolled_by_token_through_a_relay_is_hosted_and_admits_no_one() {
     assert_eq!(refused.code, "hosted_signer", "{refused:?}");
     assert_eq!(other.status()["paired"], false);
     assert_eq!(vm.revoke("mbp").await.unwrap_err().code, "hosted_signer");
+    let through = vm.call("mbp", json!({ "id": 3, "cmd": "machine", "args": { "action": "revoke", "host": "other" } })).await.unwrap();
+    assert_eq!(through["error"]["code"], "hosted_signer", "{through}");
+    let listed = vm.call("mbp", json!({ "id": 4, "cmd": "machine", "args": { "action": "status" } })).await.unwrap();
+    assert_eq!(listed["ok"], true, "{listed}");
     mbp.call("cloud-1", json!({ "id": 2, "cmd": "list" })).await.unwrap();
 }

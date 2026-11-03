@@ -135,6 +135,7 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 
 ## 9. Open questions
 
+- **What a hosted VM may run on your other machines.** It can't change your machines (§8), but as one of them it can run commands and tasks on your Mac (`kanna --host mbp …`), as your Mac can on it, so its operator could too. **Proposed:** hosted peers get commands into their own tasks only, not other machines' terminals or commands; it needs a slice before a tenant other than the operator.
 - **A copy of agent secrets in the directory**, so a machine enrolls while the Mac is closed (the earlier plan). **Proposed:** none: enrollment needs the gesture, so the app is open anyway, and a copy only adds what the operator could take.
 - **The first tenant:** r720-1's earlier VMs sit behind NAT on a bridge that reaches the LAN. **Decided:** Cloud's VMs go on the host-enforced tenant network (§3) from the first one; the network check runs on each host before a second tenant ([a user's VM §1](cloud-vms.md#1-the-host)).
 - **A Cloud user's own Mac as their private build Mac.** **Proposed:** not in the first Cloud milestone; the pool is Kanna's Macs.

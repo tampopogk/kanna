@@ -231,14 +231,17 @@ fn provision(request: &Value, json_output: bool, target: &Target) -> Result<(), 
     let memory = request["memory"].as_str().unwrap_or("8GiB");
     let disk = request["disk"].as_str().unwrap_or("40GiB");
     step(&format!("Making {instance} on {host} for {name}: {IMAGE}, {cpus} CPUs, {memory}, {disk}"));
-    ssh(host.as_str(), &format!("sudo incus init {IMAGE} {instance} --vm --no-profiles --profile kcloud-tenant && sudo incus start {instance}"), Some(instance_config(&name, &token, cpus, memory, disk).as_bytes()))?;
     let mut record = json!({ "name": name, "host": host, "instance": instance, "created": unix_time(), "repos": [], "relay": relay_url });
     save(&record)?;
+    let made = ssh(host.as_str(), &format!("sudo incus init {IMAGE} {instance} --vm --no-profiles --profile kcloud-tenant && sudo incus start {instance}"), Some(instance_config(&name, &token, cpus, memory, disk).as_bytes()));
+    if let Err(failure) = made {
+        return Err(failed(format!("{}
+kanna cloud release {name} removes whatever was made", failure.message)));
+    }
     let result = enroll(&host, &instance, &name, &token, &relay_url, relay["token"].as_str(), tarball.as_deref(), request["agents"].as_str().unwrap_or("claude,codex"), &mut mac, &mut record);
     let result = result.and_then(|()| save(&record)).and_then(|()| {
         for repo in &repos {
             credentials(&host, &instance, &name, repo, &mut record)?;
-            save(&record)?;
         }
         git_identity(&host, &instance)
     });
@@ -279,6 +282,7 @@ fn enroll(host: &str, instance: &str, name: &str, token: &str, relay: &str, rela
     let status = Command::new("ssh")
         .args(["-o", "BatchMode=yes", host, "--", &as_kanna(instance, &setup)])
         .stdin(Stdio::null())
+        .stdout(Stdio::from(std::io::stderr()))
         .status()
         .map_err(|e| failed(format!("can't run ssh: {e}")))?;
     if !status.success() {
@@ -302,13 +306,17 @@ fn enroll(host: &str, instance: &str, name: &str, token: &str, relay: &str, rela
     })?;
     let key = offered["key"].as_str().unwrap_or_default().to_string();
     record["key"] = json!(key);
-    let paired = mac.call("machine", json!({ "action": "pair", "code": token, "peer": key, "hosted": true }));
+    save(record)?;
+    let paired = match mac.call("machine", json!({ "action": "pair", "code": token, "peer": key, "hosted": true })) {
+        Ok(paired) => paired,
+        Err(e) => {
+            let _ = offer.kill();
+            let _ = offer.wait();
+            return Err(failed(format!("enrolling {name}: {}", Failure::from(e).message)));
+        }
+    };
     let joined = lines.next().and_then(Result::ok).unwrap_or_default();
     let _ = offer.wait();
-    let paired = paired.map_err(|e| {
-        let failure = Failure::from(e);
-        failed(format!("enrolling {name}: {}", failure.message))
-    })?;
     if paired["key"] != key.as_str() {
         return Err(failed(format!("enrolled {} instead of {name}", paired["key"])));
     }
@@ -327,7 +335,7 @@ fn gh(args: &[&str]) -> Result<String, Failure> {
 }
 
 fn slug(repo: &str) -> String {
-    repo.replace(['/', '.'], "-").to_lowercase()
+    repo.replacen('/', "--", 1).to_lowercase()
 }
 
 fn credentials(host: &str, instance: &str, name: &str, repo: &str, record: &mut Value) -> Result<(), Failure> {
@@ -343,14 +351,15 @@ fn credentials(host: &str, instance: &str, name: &str, repo: &str, record: &mut 
     let added = gh(&["api", "-X", "POST", &format!("repos/{repo}/keys"), "-f", &format!("title={title}"), "-f", &format!("key={public}"), "-F", "read_only=false"])?;
     let id = serde_json::from_str::<Value>(&added).ok().and_then(|v| v["id"].as_u64()).ok_or_else(|| failed(format!("GitHub didn't say which key it added to {repo}")))?;
     record["repos"].as_array_mut().unwrap().push(json!({ "repo": repo, "deploy_key": id }));
+    save(record)?;
     let alias = format!("github.com-kanna-{slug}");
     let configure = format!(
         "set -e; touch ~/.ssh/config ~/.ssh/known_hosts; chmod 600 ~/.ssh/config; grep -qxF {known} ~/.ssh/known_hosts || echo {known} >> ~/.ssh/known_hosts; grep -q '^Host {alias}$' ~/.ssh/config || printf 'Host {alias}\\n  HostName github.com\\n  User git\\n  IdentityFile {key_path}\\n  IdentitiesOnly yes\\n' >> ~/.ssh/config; \
          git config --global --replace-all url.git@{alias}:{repo}.insteadOf git@github.com:{repo} '^git@github.com:{repo}$'; \
          git config --global --add url.git@{alias}:{repo}.insteadOf https://github.com/{repo}; \
-         mkdir -p ~/repos; [ -d ~/repos/{dir} ] || git clone -q git@github.com:{repo}.git ~/repos/{dir}",
+         mkdir -p ~/repos/{owner}; [ -d ~/repos/{repo} ] || git clone -q git@github.com:{repo}.git ~/repos/{repo}",
         known = quote(GITHUB_HOST_KEY),
-        dir = repo.rsplit('/').next().unwrap_or(repo)
+        owner = repo.split('/').next().unwrap_or(repo)
     );
     ssh(host, &as_kanna(instance, &configure), None)?;
     Ok(())
@@ -502,6 +511,8 @@ mod tests {
         for bad in ["kanna", "a/b/c", "../x", "a/..", "a/b c", "a/"] {
             assert!(!valid_repo(bad), "{bad}");
         }
-        assert_eq!(slug("TampopoGK/kanna.app"), "tampopogk-kanna-app");
+        assert_eq!(slug("TampopoGK/kanna.app"), "tampopogk--kanna.app");
+        assert_ne!(slug("acme/foo.bar"), slug("acme/foo-bar"));
+        assert_ne!(slug("a-b/c"), slug("a/b-c"));
     }
 }

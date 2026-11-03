@@ -661,6 +661,13 @@ impl Node {
                 Err(failure) => json!({ "id": id, "ok": false, "error": { "code": failure.code, "message": failure.message } }),
             };
         }
+        let hosted = self.state().log.as_ref().is_some_and(|l| {
+            let view = l.view();
+            view.hosted.contains(from) || view.key_of(from).is_some_and(|k| view.hosted.contains(&k))
+        });
+        if hosted && request["cmd"] == "machine" && !matches!(request["args"]["action"].as_str().unwrap_or("status"), "status" | "ping") {
+            return json!({ "id": id, "ok": false, "error": { "code": "hosted_signer", "message": "a machine Kanna Cloud runs can only list and ping your machines through another, never pair, revoke or change one" } });
+        }
         let (tx, rx) = oneshot::channel();
         self.0.host.request(from.to_string(), request, Box::new(move |reply| {
             let _ = tx.send(reply);
