@@ -13,7 +13,7 @@ So the loop runs on a **tokio runtime** (current-thread, with a `LocalSet`), and
 3. [A handler that waits](#3-a-handler-that-waits)
 4. [The guard](#4-the-guard)
 5. [What blocks today](#5-what-blocks-today)
-6. [Open questions](#6-open-questions)
+6. [Decisions](#6-decisions)
 7. [Glossary](#7-glossary)
 
 ## 1. Threads
@@ -46,7 +46,7 @@ flowchart LR
 ```
 
 - **The loop** is one task on the runtime. It takes `Event`s off the `Inbox` (a tokio unbounded channel: any thread sends without blocking) and handles each, as before, then does its chores (saving, the layout, crash ticks, task sweeps).
-- **kanna-mux's Core** keeps its own small executor for requests, pumped by the loop (`core.poll`) and woken through `Event::Wake`. Futures it polls run on the runtime's thread, so they may await tokio I/O too.
+- **kanna-mux's Core** runs its request futures on its own small executor for now, pumped by the loop (`core.poll`) and woken through `Event::Wake`. They run on the runtime's thread, so they may await tokio I/O too. Moving them onto the `LocalSet` is decided ([§6](#6-decisions)).
 - **Local tasks** are what a handler spawns to wait (§3). They run on the same thread, between the loop's events, and own `Rc` state like the loop does.
 - **The byte path stays on its own threads**: the app link's reader and writer, each pty's reader and writer, and `wire.rs`. A keystroke and its echo never touch the runtime ([input latency §3](input-latency.md#3-the-byte-path)).
 - **machines.rs** keeps its own multi-thread runtime for the iroh endpoint: its futures are `Send` and it already talks to the loop through `Event`s.
@@ -98,10 +98,10 @@ Found by reading every handler and chore (October 2026). Each line is converted 
 | the keeper's requests | `close`, exit acks (spawns no longer wait: [async spawns](async-spawns.md)) | a round trip on `keeper.sock` (ms) |
 | `Db` | almost every handler | sqlite in-process (ms; up to its 5s busy timeout) |
 
-## 6. Open questions
+## 6. Decisions
 
-- **sqlite (`Db`).** One `rusqlite` connection in an `Rc`, called from about 60 places, often inside a handler's synchronous logic and some in transactions. A call is usually under a few ms, but waits up to 5s when another process holds the lock. Making each call `async` reaches into nearly every handler. The better design: the loop keeps what it reads in memory (it mostly does), and writes go to a writer thread in order, unawaited; reads only at startup. Cost: a writer thread, and a read-after-write path for the few reads left.
-- **Two executors.** kanna-mux's Core keeps its own executor beside tokio's. Spawning its futures on the `LocalSet` instead would drop `Event::Wake` and `core.poll`, but kanna-mux would depend on tokio, and the CLI and `kanna-layout` use it too. Left as is.
+- **sqlite: a writer thread.** `Db` is one `rusqlite` connection, called from about 60 places, often inside a handler's synchronous logic and some in transactions; a call can wait up to its 5s busy timeout when another process holds the lock. Making each call `async` would reach into nearly every handler, so instead the loop keeps what it reads in memory, and writes go to a writer thread in order, unawaited. Reads from disk happen only at the start; the few reads left need a read-after-write path.
+- **One executor: tokio.** kanna-mux's own executor goes. Core's futures spawn on the `LocalSet`, so `Event::Wake`, the loop's `core.poll` and `core.set_wakeup` go too, and the guard times Core's polls like any other local task. Only the daemon runs a `Core` (the CLI and `kanna-layout` use kanna-mux's other parts), so kanna-mux takes on tokio for that alone; `handle_blocking`, used by kanna-mux's and the daemon's tests, needs a runtime of its own there.
 
 ## 7. Glossary
 
