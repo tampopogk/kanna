@@ -1,3 +1,4 @@
+use crate::egress::JobProxy;
 use crate::frame::{self, bad, Frame};
 use crate::manifest::{self, Entry, Kind};
 use crate::paths::{self, Roots};
@@ -28,7 +29,7 @@ const ENV_ALLOWED: &[&str] = &["KANNA_CHANNEL", "CI", "LANG", "LC_ALL", "RUST_BA
 pub struct Config {
     pub state: PathBuf,
     pub path: String,
-    pub proxy: Option<String>,
+    pub egress: Option<u16>,
     pub require_console: bool,
 }
 
@@ -36,7 +37,7 @@ impl Config {
     pub fn new(state: PathBuf) -> Config {
         let home = std::env::var("HOME").unwrap_or_default();
         let path = format!("{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
-        Config { state, path, proxy: None, require_console: false }
+        Config { state, path, egress: None, require_console: false }
     }
 }
 
@@ -232,10 +233,12 @@ impl Supervisor {
         env
     }
 
-    fn proxy_env(&self, capability: Option<&str>) -> Vec<(String, String)> {
-        let (Some(proxy), Some(capability)) = (&self.config.proxy, capability.filter(|c| c.len() <= 128 && c.bytes().all(|b| b.is_ascii_alphanumeric()))) else { return vec![] };
-        let proxy = proxy.replace("{capability}", capability);
-        ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"].iter().map(|name| (name.to_string(), proxy.clone())).collect()
+    fn job_proxy(&self, capability: Option<&str>) -> io::Result<Option<(JobProxy, Vec<(String, String)>)>> {
+        let (Some(upstream), Some(capability)) = (self.config.egress, capability.filter(|c| c.len() <= 128 && c.bytes().all(|b| b.is_ascii_alphanumeric()))) else { return Ok(None) };
+        let proxy = JobProxy::start(upstream, capability)?;
+        let url = format!("http://job:{capability}@127.0.0.1:{}", proxy.port);
+        let env = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY"].iter().map(|name| (name.to_string(), url.clone())).collect();
+        Ok(Some((proxy, env)))
     }
 
     fn run(self: &Arc<Self>, conn: &mut (impl Read + Write), first: &Frame, payload: &[u8]) -> io::Result<()> {
@@ -397,7 +400,10 @@ impl Supervisor {
             }
         }
         env.push(("KANNA_BUILD_JOB".to_string(), job.id.clone()));
-        env.extend(self.proxy_env(request["capability"].as_str()));
+        let job_proxy = self.job_proxy(request["capability"].as_str())?;
+        if let Some((_, proxy_env)) = &job_proxy {
+            env.extend(proxy_env.iter().cloned());
+        }
         let xcode = output_of("/usr/bin/xcodebuild", &["-version"], &env);
         let cache = mirror.join("derived").join(&manifest::sha256(xcode.as_bytes())[..12]);
         let results = job.dir.join("results");

@@ -32,7 +32,7 @@ fn main() {
         }
     }
     if let Some(port) = egress {
-        config.proxy = Some(format!("http://job:{{capability}}@127.0.0.1:{port}"));
+        config.egress = Some(port);
         if let Err(e) = kanna_guest::vsock::relay_egress(port, kanna_guest::vsock::EGRESS_PORT) {
             eprintln!("kanna-guest: can't relay egress on 127.0.0.1:{port}: {e}");
             std::process::exit(1);
