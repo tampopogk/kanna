@@ -1,6 +1,6 @@
 # Commit Graph
 
-**Status:** designed · **Mockup:** [`references/mockups/log.html`](../../references/mockups/log.html) · **Builds on:** [diff viewer](diff-viewer.md), [app panes](app-panes.md), [task list](task-list.md)
+**Status:** built (2026-11-03) · **Tested:** `cargo test -p kanna-log`, `swift test --filter KannaLogTests`, CLI tests `a_log_pane_runs_git_log…` and `the_daemon_logs_a_subscribed_repo…`, e2e `log_pane` · **Mockup:** [`references/mockups/log.html`](../../references/mockups/log.html) · **Builds on:** [diff viewer](diff-viewer.md), [app panes](app-panes.md), [task list](task-list.md)
 
 A **log pane** shows the repo's history as a graph, natively, as a tab beside the agent. Commits are rows, branches are coloured lanes, merges are curves. A branch that is a task's says which task it is, where the task is (Desk, Shelf) and how far it is ahead of and behind main, or that it's merged. It answers the planner's question "which tasks have landed, and which are behind?" at a glance, and a task's "where is my branch against main?". It holds still while you read, like the diff pane.
 
@@ -91,6 +91,9 @@ So that main reads as a line of merges, a branch merged into main's first-parent
 ## 5. Rules
 
 - **It holds still while you read.** When a ref moves (a commit, a merge, a rebase, a branch made or deleted, a task done or renamed), the daemon logs again and sends the new rows; the pane keeps showing the old ones, and the header says **N new commits** (or **changed** when commits went away or labels changed), a link. Nothing on screen moves. ⌘R (View › Reload) or a click takes the new rows, keeps the selected commit and scroll position (by hash), and marks the new commits for a moment.
+
+![The built pane in the e2e fixture: a commit on lived is held behind "1 new commit" while main 8 stays selected; Merge long is folded and the octopus merge opens a lane per parent](commit-graph-built-held.png)
+
 - **A pane with nothing to read takes new rows at once,** as the diff pane: while it waits for its first log, or shows git's error.
 - **git failing:** a range git refuses shows git's error in place of the graph; a failure while reading keeps the graph and shows the error in the header, in red, as the diff pane does.
 - **Selecting a commit** (a click, `j`/`k`) shows its **detail** on the right: subject and full message, hash (with **Copy hash**), author, date, parents (a click selects one, unfolding if needed), labels, and its files with lines added and removed (a merge's against its first parent). The detail is fetched when selected (`log.commit`), not sent with the rows.

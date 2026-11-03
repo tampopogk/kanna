@@ -274,7 +274,8 @@ public final class LogPaneView: NSView {
 
     public func openDiff(_ hash: String? = nil) {
         guard let hash = hash ?? selected, let row = row(of: hash) else { return }
-        onOpenDiff?(hash, row.parents.isEmpty ? ["4b825dc642cb6eb9a060e54bf8d69288fbee4904", hash] : ["\(hash)^!"])
+        let short = String(hash.prefix(12))
+        onOpenDiff?(hash, row.parents.isEmpty ? ["4b825dc642cb6eb9a060e54bf8d69288fbee4904", short] : ["\(short)^!"])
     }
 
     public func copyHash() {

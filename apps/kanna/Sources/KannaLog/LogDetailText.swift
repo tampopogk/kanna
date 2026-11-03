@@ -60,7 +60,7 @@ enum LogDetailText {
         add("\n", LogTheme.sans(size: 6 * z))
         if !body.isEmpty { add(body + "\n\n", LogTheme.sans(size: 12 * z), spacing: 4 * z) }
         let total = detail.files.reduce(0) { $0 + ($1.added ?? 0) + ($1.removed ?? 0) }
-        add("\(detail.files.count) file\(detail.files.count == 1 ? "" : "s")\(detail.parents.count > 1 ? " (against its first parent)" : "") · \(total) lines\n", small, LogTheme.muted, spacing: 4 * z)
+        add("\(detail.files.count) file\(detail.files.count == 1 ? "" : "s")\(detail.parents.count > 1 ? " (against its first parent)" : "") · \(total) line\(total == 1 ? "" : "s")\n", small, LogTheme.muted, spacing: 4 * z)
         for file in detail.files {
             add(file.status + "  ", LogTheme.mono(size: 11 * z, weight: .semibold), LogTheme.status(file.status))
             add(file.path, mono)

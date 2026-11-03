@@ -2867,7 +2867,7 @@ assert len(rows) == 25 and by["Merge long"]["open"] and by["long 3"]["lane"] > 0
   check eval '[[ "$(logpane open)" == *"$merge"* ]]' || { echo "find didn't unfold its merge: $(logpane open)"; return 1; }
   logpane hits ',"find":""' >/dev/null
   logpane selected ",\"select\":\"$(hash_of "lived 2")\",\"keys\":\"~\"" >/dev/null
-  check wait_for 5 eval 'kanna workspace list --all --json | grep -q "$(hash_of "lived 2")^!"' || { echo "↩ opened no diff of lived 2"; kanna workspace list --all; return 1; }
+  check wait_for 5 eval 'kanna workspace list --all --json | grep -q "$(hash_of "lived 2" | cut -c1-12)^!"' || { echo "↩ opened no diff of lived 2"; kanna workspace list --all; return 1; }
   kanna focus history >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.4
   raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane-light.png" "$out/" 2>/dev/null

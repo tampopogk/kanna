@@ -333,9 +333,9 @@ extension AppController {
         }
         commands["debug.log"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let log = contents.log(id) else { throw KannaError("wrong_type", "not a running log pane") }
+            if let hash = args["select"]?.string { log.reveal(hash); log.select(hash) }
             if let keys = args["keys"]?.string { for key in keys { _ = log.press(key == "~" ? "\r" : String(key)) } }
             if let step = args["zoom"]?.number { log.zoom(by: Int(step)) }
-            if let hash = args["select"]?.string { log.reveal(hash); log.select(hash) }
             if let hash = args["fold"]?.string { log.toggle(hash) }
             if let query = args["find"]?.string { query.isEmpty ? log.closeFind() : log.find(query) }
             if args["next"]?.bool == true { log.findStep(forward: true) }
