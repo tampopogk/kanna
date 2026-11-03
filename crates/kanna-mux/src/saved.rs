@@ -62,6 +62,9 @@ fn put_workspace(out: &mut Map, ws: &Workspace) {
     if let Some(at) = ws.left_at {
         out.insert("leftAt".into(), num(at));
     }
+    if !ws.background.is_empty() {
+        out.insert("background".into(), ws.background.clone().into());
+    }
 }
 
 fn counters(model: &Model) -> Value {
@@ -149,6 +152,11 @@ fn build(node: &Value, panes: &HashSet<String>, placed: &mut HashSet<String>) ->
 }
 
 impl Reader<'_> {
+    fn background(&mut self, item: &Value) -> Vec<String> {
+        let saved = item.get("background").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+        saved.filter(|id| self.panes.contains(*id)).filter(|id| self.placed.insert(id.to_string())).map(String::from).collect()
+    }
+
     fn tabs(&mut self, item: &Value) -> Result<Tabs, KmuxError> {
         let saved = item.get("tabs").and_then(Value::as_array).ok_or_else(|| bad(&format!("window {}", quoted(item.get("id")))))?;
         let mut tabs = Tabs::default();
@@ -324,7 +332,9 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
         match dock {
             Some(dock) => {
                 claim(id)?;
-                workspaces.push(read_workspace(id, item, dock, tabs, place));
+                let mut ws = read_workspace(id, item, dock, tabs, place);
+                ws.background = reader.background(item);
+                workspaces.push(ws);
             }
             None => orphans.push(tabs),
         }

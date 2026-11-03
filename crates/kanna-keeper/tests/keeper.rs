@@ -1,4 +1,4 @@
-use kanna_keeper::client::{Client, Exited, SpawnRequest};
+use kanna_keeper::client::{Client, Exited, Heard, SpawnRequest};
 use kanna_keeper::ExitStatus;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -1020,6 +1020,33 @@ fn the_upgrades_pause_counts_against_a_waiting_spawns_timeout() {
     let took = asked.elapsed();
     assert!(error.contains("timed out"), "{error}");
     assert!(took < Duration::from_millis(3000), "the spawn failed after {took:?}, its timeout is 2 s");
+}
+
+#[test]
+fn spawns_sent_together_answer_in_turn_while_other_requests_are_answered() {
+    let f = Fixture::new();
+    let mut c = f.client();
+    let first = c.send_spawn(&SpawnRequest::command("t1", "echo one; exit 4")).unwrap();
+    let second = c.send_spawn(&SpawnRequest::command("t2", "echo two")).unwrap();
+    let failed = c.send_spawn(&SpawnRequest::command("t1", "true")).unwrap();
+    assert_eq!(c.hello().unwrap().1, f.keeper_pid());
+    let mut spawned = std::collections::HashMap::new();
+    wait_for("three spawn replies", || {
+        for heard in c.poll().unwrap() {
+            match heard {
+                Heard::Spawned(tag, pty) => drop(spawned.insert(tag, pty)),
+                Heard::Exited(exit) => panic!("{}'s exit came before the replies", exit.id),
+            }
+        }
+        spawned.len() == 3
+    });
+    let one = spawned.remove(&first).unwrap().unwrap();
+    let two = spawned.remove(&second).unwrap().unwrap();
+    assert_eq!((one.id.as_str(), two.id.as_str()), ("t1", "t2"));
+    let error = spawned.remove(&failed).unwrap().unwrap_err().to_string();
+    assert!(error.contains("exists"), "{error}");
+    let (exit, out) = exit_reading(&mut c, &one.master);
+    assert_eq!((exit.id.as_str(), exit.status), ("t1", ExitStatus::Code(4)), "{out}");
 }
 
 #[test]

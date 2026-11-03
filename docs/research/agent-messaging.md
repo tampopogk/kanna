@@ -84,7 +84,7 @@ Delivery (B), the [Shelf runners](../specs/shelf-runners.md) and agent status al
 | Signal | claude | codex | copilot, opencode, antigravity | Tells needs you from idle | Setup | Delay |
 |---|---|---|---|---|---|---|
 | **Screen rules + 3s hold** (built) | yes | yes | yes | yes | none | 3s |
-| **OSC 7501** ([agent status §4](../specs/agent-status.md#4-the-agents-own-report-osc-7501), built) | 2.1.295+ | 0.163.0+ | no | yes (`blocked`) | none: Kanna answers the probe | none |
+| **OSC 7501** ([agent status §4](../specs/agent-status.md#3-the-report-osc-7501), built) | 2.1.295+ | 0.163.0+ | no | yes (`blocked`) | none: Kanna answers the probe | none |
 | **Stop hook** | yes; not on Esc, and not while asking (that's `PermissionRequest` or `Notification`) | yes | per their docs: copilot `agentStop`, antigravity `Stop`, opencode a plugin on `session.idle` | only with a second hook | a hook in each agent's settings; codex makes you trust it | none |
 | **codex `notify`** (`agent-turn-complete`) | – | yes | – | no | `notify` in `~/.codex/config.toml` | none |
 

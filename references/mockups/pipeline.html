@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --tint: rgba(122, 162, 255, .18); --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  --kw: #c792ea; --str: #c3e88d; --num: #f78c6c; --cm: #6b7280; --fn: #82aaff;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --tint: rgba(47, 99, 216, .14); --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --kw: #7c3aed; --str: #3f7d20; --num: #c2410c; --cm: #8b93a0; --fn: #1d4ed8;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 980px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover, button.on { border-color: var(--accent); }
+button.on { background: var(--tint); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 760px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--bg); }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.where b { color: var(--text); font-weight: 600; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 36%; min-width: 0; display: flex; flex-direction: column; }
+.head { flex: none; min-height: 34px; padding: 4px 10px 4px 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.head b { color: var(--text); font-weight: 600; }
+.head .spacer { flex: 1; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+.dot.working { background: var(--accent); } .dot.needs { background: var(--warn); } .dot.idle { background: var(--ok); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; color: var(--text); }
+.term .c { color: var(--accent); } .term .p { color: var(--warn); } .term .g { color: var(--muted); } .term .m { color: var(--machine); } .term .ok { color: var(--ok); } .term .bad { color: var(--bad); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; overflow: hidden; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; color: var(--muted); white-space: nowrap; border-radius: 6px; }
+.dtab.on { color: var(--text); background: var(--panel); }
+.dtab .n { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 0 5px; }
+.dtabs .add { color: var(--muted); padding: 0 8px; font-size: 15px; }
+.doc { flex: 1; overflow: auto; padding: 18px 24px; }
+.strip { height: 30px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); overflow: hidden; }
+.strip .hint { opacity: .75; white-space: nowrap; padding: 3px 8px; border-radius: 6px; }
+.strip .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; }
+.strip .item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+.strip .count { margin-left: auto; white-space: nowrap; padding: 3px 8px; }
+kbd { font: 11px var(--mono); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel2); }
+
+/* pipeline source */
+.code { flex: 0 0 48%; min-width: 0; display: flex; flex-direction: column; }
+.src { flex: 1; overflow: auto; background: var(--term); font: 12px/1.65 var(--mono); padding: 12px 0; }
+.src .ln { display: flex; }
+.src .ln i { flex: none; width: 40px; text-align: right; padding-right: 12px; color: var(--muted); opacity: .6; font-style: normal; }
+.src .ln span.t { white-space: pre; }
+.kw { color: var(--kw); } .str { color: var(--str); } .num { color: var(--num); } .cm { color: var(--cm); } .fn { color: var(--fn); } .nm { color: var(--text); font-weight: 600; }
+.src .ln.hot { background: var(--tint); }
+
+/* graph */
+.graph { position: relative; }
+.graph svg { width: 100%; height: auto; display: block; }
+.node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; rx: 7; }
+.node text { fill: var(--text); font: 600 11.5px var(--sans); }
+.node .k { fill: var(--muted); font: 10px var(--sans); }
+.node.pass rect { stroke: var(--ok); } .node.pass .mk { fill: var(--ok); }
+.node.fail rect { stroke: var(--bad); } .node.fail .mk { fill: var(--bad); }
+.node.now rect { stroke: var(--accent); stroke-width: 2; fill: var(--tint); }
+.node.wait rect { stroke: var(--warn); stroke-width: 2; }
+.node.ask rect { rx: 14; }
+.node.run rect { stroke-dasharray: 0; }
+.node.cmd text { font-family: var(--mono); font-weight: 500; }
+.node.cmd rect { fill: var(--term); }
+.node.merge rect { fill: var(--panel2); }
+.node.done rect { fill: transparent; stroke: var(--muted); stroke-dasharray: 3 3; rx: 14; }
+.node.dim { opacity: .55; }
+.edge { fill: none; stroke: var(--muted); stroke-width: 1.3; marker-end: url(#arr); }
+.edge.loop { stroke: var(--warn); }
+.edge.taken { stroke: var(--text); stroke-width: 1.6; }
+.edge.loop.taken { stroke: var(--warn); }
+.elabel { fill: var(--muted); font: 10px var(--mono); }
+.elabel.loop { fill: var(--warn); }
+.badge { fill: var(--panel2); stroke: var(--line); }
+.badge-t { fill: var(--muted); font: 10px var(--mono); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 11.5px; margin: 6px 0 0; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 1.5px solid var(--line); vertical-align: -1px; margin-right: 5px; background: var(--panel); }
+.legend i.ok { border-color: var(--ok); } .legend i.bad { border-color: var(--bad); } .legend i.now { border-color: var(--accent); background: var(--tint); } .legend i.wait { border-color: var(--warn); } .legend i.cmd { background: var(--term); } .legend i.ask { border-radius: 6px; }
+
+/* run tab */
+.runhead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.runhead h2 { font-size: 17px; margin: 0; }
+.runhead .sub { color: var(--muted); }
+.runhead .acts { margin-left: auto; display: flex; gap: 6px; }
+.runhead .acts button { padding: 3px 9px; }
+.kpis { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; min-width: 96px; }
+.kpi .v { font-size: 16px; font-weight: 600; }
+.kpi .l { color: var(--muted); font-size: 11px; }
+.gate { border: 1px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--panel)); border-radius: 9px; padding: 10px 14px; margin: 0 0 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.gate b { font-weight: 600; }
+.gate .q { flex: 1; min-width: 200px; }
+.gate input { font: 12px var(--sans); color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; width: 240px; }
+table.t { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.t th { text-align: left; color: var(--muted); font-weight: 500; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.t td { padding: 5px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); white-space: nowrap; vertical-align: middle; }
+table.t td.r, table.t th.r { text-align: right; font-variant-numeric: tabular-nums; }
+table.t tr.now td { background: var(--tint); }
+table.t tr.dim td { color: var(--muted); }
+table.t .mono { font-family: var(--mono); font-size: 11.5px; }
+table.t.wrap td { white-space: normal; }
+.v-pass { color: var(--ok); } .v-fail { color: var(--bad); } .v-now { color: var(--accent); } .v-wait { color: var(--warn); }
+.sec { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 6px; }
+.rev { color: var(--muted); font-size: 12px; }
+.rev b { color: var(--text); font-weight: 600; }
+
+/* stats page */
+.fixed { display: flex; gap: 2px; padding: 0 10px; height: 34px; align-items: center; border-bottom: 1px solid var(--line); }
+.fixed .ft { padding: 4px 10px; border-radius: 6px; color: var(--muted); }
+.fixed .ft.on { color: var(--text); background: var(--panel); }
+.stats { flex: 1; overflow: auto; padding: 22px 32px; }
+.stats h2 { font-size: 20px; margin: 0 0 4px; }
+.stats .sub { color: var(--muted); margin: 0 0 16px; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+.filters .f { border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; background: var(--panel); color: var(--text); }
+.filters .f.on { border-color: var(--accent); }
+.sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.bar { } /* (chrome bar above) */
+.hbar { display: inline-block; height: 8px; border-radius: 0 3px 3px 0; vertical-align: middle; margin-right: 6px; }
+.small { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 6px 0 18px; }
+.chart { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px 8px; }
+.chart h4 { margin: 0 0 2px; font-size: 12px; font-weight: 600; }
+.chart .u { color: var(--muted); font-size: 11px; margin: 0 0 6px; }
+.chart svg { width: 100%; height: 120px; display: block; }
+.chart .ax { stroke: var(--line); stroke-width: 1; }
+.chart .tk { fill: var(--muted); font: 10px var(--sans); }
+.chart circle { stroke: var(--panel); stroke-width: 2; }
+.chart .med { stroke-width: 2; stroke-dasharray: 4 3; opacity: .8; }
+.lg { display: flex; gap: 14px; color: var(--muted); font-size: 11.5px; margin: 0 0 10px; align-items: center; }
+.note { color: var(--muted); font-size: 11.5px; margin: 8px 0 0; }
+.tip { position: absolute; pointer-events: none; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 11px; color: var(--text); box-shadow: var(--shadow); white-space: nowrap; display: none; z-index: 3; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>The software factory: a pipeline's definition, a run on the Desk, and runs compared</h1>
+    <p>A pipeline is a small text file in the repo (<code>.kanna/pipelines/feature.kojo</code>) that says which stages a change goes through: an agent session, a command, a question for you, or a merge, joined by arrows with gates and bounded loops. The spec and mockup are made and approved in the task's chat first, as always; then its agent runs the pipeline (<code>kanna run start feature</code>): the task looks as it always does, its agent on the left and tabs on the right, and the pipeline builds under the hood in workers, agent sessions and commands in hidden terminals, driven by the daemon. The <b>Run</b> tab draws where it is; a <b>watch</b> tab shows the current stage's agent at work. A run is one task wherever tasks show. Every stage's time, turns, tokens, verdicts and your interventions are kept, so pipelines can be compared on the Stats tab and tuned.</p>
+    <div class="controls">
+      <button data-scene="define">Definition</button>
+      <button data-scene="run">A run on the Desk</button>
+      <button data-scene="gate">… waiting on you</button>
+      <button data-scene="watch">… watching a stage</button>
+      <button data-scene="metrics">Runs compared</button>
+      <span style="width:12px"></span>
+      <button id="theme">Light / dark</button>
+    </div>
+  </div>
+  <div id="stage"></div>
+  <div class="tip" id="tip"></div>
+</main>
+<script>
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let scene = "run";
+
+// ---------- the pipeline (feature.kojo) ----------
+const SRC = `# Kanna's usual flow, once the spec and mockup are approved in the task's chat:
+# plan, build, review, e2e; then the run hands its branch back to the task's
+# worktree, where you review it before it merges.
+budget  = 40 sessions, 8h
+
+plan    = claude prompt plan emits             # splits the work; may add stages
+build   = claude prompt build each plan.parts  # a worktree and pane per part, inside the run
+join    = merge build                          # the parts' branches into the run's
+check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
+review  = codex:high prompt review verdict     # fresh reviewer; reports pass or fail
+fix     = claude prompt fix guard check        # rolled back if check gets worse
+e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
+
+plan -> build -> join -> check
+check  -[fail, max 3, progress]-> fix -> check
+check  -> review
+review -[fail, max 3]-> fix
+review -> e2e
+e2e    -[fail, max 2]-> fix
+e2e    -> done`;
+
+function hl(line) {
+  const [code, ...rest] = line.split("#");
+  const comment = rest.length ? `<span class="cm">#${esc(rest.join("#"))}</span>` : "";
+  let out = esc(code);
+  if (/->/.test(code)) {
+    out = out.replace(/-\[([^\]]*)\]-&gt;|-&gt;/g, m => `<span class="kw">${m.replace(/\d+/g, d => `<span class="num">${d}</span>`)}</span>`);
+    out = out.replace(/\bdone\b/, `<span class="fn">done</span>`);
+  } else {
+    out = out.replace(/^(\s*)([a-z_][a-z0-9_]*)(\s*=\s*)/, (m, a, n, e) => `${a}<span class="nm">${n}</span>${e}`);
+    out = out.replace(/\b(claude|codex|opencode|agy)(:[a-z]+)?/, m => `<span class="fn">${m}</span>`);
+    out = out.replace(/\b(ask|run|merge|prompt|verdict|each|guard|emits|by|x\d|within|resume|sessions|model)\b/g, m => `<span class="kw">${m}</span>`);
+    out = out.replace(/&quot;[^&]*&quot;/g, m => `<span class="str">${m}</span>`);
+    out = out.replace(/\b(\d+h?)\b/g, m => `<span class="num">${m}</span>`);
+  }
+  return out + comment;
+}
+
+// nodes with hand-laid positions; the run scenes light them
+const NODES = [
+  { id: "plan", x: 70, y: 60, w: 64, kind: "agent", who: "claude" },
+  { id: "build", x: 156, y: 60, w: 76, kind: "agent", who: "claude ×3" },
+  { id: "join", x: 254, y: 60, w: 58, kind: "merge", who: "git" },
+  { id: "check", x: 334, y: 60, w: 72, kind: "cmd", who: "check.sh" },
+  { id: "review", x: 428, y: 60, w: 72, kind: "agent", who: "codex" },
+  { id: "e2e", x: 522, y: 60, w: 76, kind: "cmd", who: "e2e · mini" },
+  { id: "done", x: 620, y: 60, w: 56, kind: "done", who: "" },
+  { id: "fix", x: 428, y: 152, w: 72, kind: "agent", who: "claude" },
+];
+const H = 34;
+const EDGES = [
+  { a: "plan", b: "build" }, { a: "build", b: "join" }, { a: "join", b: "check" },
+  { a: "check", b: "review" }, { a: "review", b: "e2e" }, { a: "e2e", b: "done" },
+  { a: "check", b: "fix", loop: true, label: "fail · max 3 · progress", level: 126, dx: -16, side: "left" },
+  { a: "review", b: "fix", loop: true, label: "fail · max 3", side: "right" },
+  { a: "e2e", b: "fix", loop: true, label: "fail · max 2", level: 140, dx: 16, side: "right" },
+  { a: "fix", b: "check", back: true },
+];
+const nodeById = id => NODES.find(n => n.id === id);
+const cx = n => n.x + n.w / 2;
+
+function graphSVG(state, taken) {
+  const marks = state || {};
+  const was = taken || [];
+  const seg = (e) => {
+    const A = nodeById(e.a), B = nodeById(e.b);
+    const cls = `edge ${e.loop ? "loop" : ""} ${was.includes(e.a + ">" + e.b) ? "taken" : ""}`;
+    if (!e.loop && !e.back) return `<path class="${cls}" d="M${A.x + A.w} ${A.y + H / 2} L${B.x - 3} ${B.y + H / 2}"/>`;
+    if (e.via === "below") {
+      const y = A.y + H + 26;
+      return `<path class="${cls}" d="M${cx(A)} ${A.y + H} L${cx(A)} ${y} L${cx(B)} ${y} L${cx(B)} ${A.y + H + 3}"/>` +
+        `<text class="elabel loop" x="${(cx(A) + cx(B)) / 2}" y="${y - 4}" text-anchor="middle">${e.label}</text>`;
+    }
+    if (e.back) return `<path class="${cls}" d="M${A.x} ${A.y + H / 2} L${B.x + B.w / 2 - 6} ${A.y + H / 2} L${B.x + B.w / 2 - 6} ${B.y + H + 3}"/>` +
+      `<text class="elabel" x="${B.x + B.w / 2 - 14}" y="${A.y + H / 2 + 4}" text-anchor="end">then check again</text>`;
+    // loop into fix (below): straight down, or down to a level, across, then down
+    const sx = cx(A), tx = cx(B) + (e.dx || 0), ty = B.y;
+    const path = e.level
+      ? `M${sx} ${A.y + H} L${sx} ${e.level} L${tx} ${e.level} L${tx} ${ty - 3}`
+      : `M${sx} ${A.y + H} L${tx} ${ty - 3}`;
+    const lx = e.side === "left" ? sx - 12 : sx + 6, ly = A.y + H + 15;
+    return `<path class="${cls}" d="${path}"/><text class="elabel loop" x="${lx}" y="${ly}" text-anchor="${e.side === "left" ? "end" : "start"}">${e.label}</text>`;
+  };
+  const node = n => {
+    const m = marks[n.id] || {};
+    const cls = `node ${n.kind} ${m.state || ""} ${m.dim ? "dim" : ""}`;
+    const mk = m.state === "pass" ? "✓" : m.state === "fail" ? "✕" : m.state === "now" ? "●" : m.state === "wait" ? "?" : "";
+    const visits = m.visits ? `<g transform="translate(${n.x + n.w - 10} ${n.y - 8})"><rect class="badge" x="-11" y="-8" width="22" height="16" rx="8"/><text class="badge-t" text-anchor="middle" y="4">×${m.visits}</text></g>` : "";
+    return `<g class="${cls}"><rect x="${n.x}" y="${n.y}" width="${n.w}" height="${H}"/>` +
+      `<text x="${n.x + 9}" y="${n.y + 14}">${n.id}</text>` +
+      `<text class="k" x="${n.x + 9}" y="${n.y + 27}">${esc(n.who)}</text>` +
+      (mk ? `<text class="mk" x="${n.x + n.w - 8}" y="${n.y + 14}" text-anchor="end" style="font:600 11px var(--sans);fill:${m.state === "pass" ? "var(--ok)" : m.state === "fail" ? "var(--bad)" : m.state === "wait" ? "var(--warn)" : "var(--accent)"}">${mk}</text>` : "") +
+      visits + `</g>`;
+  };
+  return `<svg viewBox="0 0 880 205"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="context-stroke"/></marker></defs>` +
+    EDGES.map(seg).join("") + NODES.map(node).join("") + `</svg>`;
+}
+const LEGEND = `<div class="legend"><span><i></i>agent session</span><span><i class="cmd"></i>command</span><span><i class="ok"></i>passed</span><span><i class="bad"></i>failed</span><span><i class="now"></i>running</span><span><i class="wait"></i>waiting on you</span><span>×N visits</span></div>`;
+
+// ---------- scene: definition ----------
+function defineHTML() {
+  const lines = SRC.split("\n");
+  return `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>feature.kojo</b> · .kanna/pipelines · kanna-v4</span></div>
+    <div class="content">
+      <div class="code"><div class="head">.kanna/pipelines/feature.kojo<span class="spacer"></span>saved · <b>valid</b>: worst case 17 sessions of 40</div>
+        <div class="src">${lines.map((l, i) => `<div class="ln"><i>${i + 1}</i><span class="t">${hl(l)}</span></div>`).join("")}</div></div>
+      <div class="docs"><div class="dtabs"><div class="dtab on">Pipeline</div><div class="dtab">prompts/spec.md</div><div class="dtab">prompts/review.md</div><span class="add">+</span></div>
+        <div class="doc">
+          <div class="runhead"><h2>feature</h2><span class="sub">7 stages · 3 loops · fan-out at <span class="mono">build</span> · <span class="mono">e2e</span> on mini</span></div>
+          <div class="graph">${graphSVG({})}</div>${LEGEND}
+          <div class="sec">What each kind does</div>
+          <table class="t wrap">
+            <tr><th>Stage</th><th>Runs</th><th>Verdict</th><th>Feeds the next stage</th></tr>
+            <tr><td class="mono">plan, build, fix</td><td>a fresh agent session in a worker of the run: its worktree and a background terminal</td><td>—</td><td>its final answer; <span class="mono">plan.parts</span>, a named JSON block</td></tr>
+            <tr><td class="mono">review</td><td>a fresh agent, <span class="mono">verdict</span></td><td>the one it reports: <span class="mono">kanna run done pass|fail</span></td><td>the review text, under a heading</td></tr>
+            <tr><td class="mono">check, e2e</td><td>a command in the worktree</td><td>exit 0 passes</td><td>the output's tail, failures first</td></tr>
+            <tr><td class="mono">join</td><td>git</td><td>clean merge passes</td><td>the conflicts</td></tr>
+            <tr><td class="mono">done</td><td>the run hands its branch back to the task's worktree, where you review it and merge it</td><td>—</td><td>—</td></tr>
+            <tr><td class="mono">… on mini</td><td>any stage on another of your machines: a worker there, the branch sent over, its result and commits brought back</td><td>as its kind</td><td>as its kind</td></tr>
+          </table>
+          <div class="sec">Rules the file is checked against</div>
+          <p class="rev">From a stage, the first arrow in file order whose condition holds and whose <span class="mono">max</span> isn't spent is taken. Every loop needs a <span class="mono">max</span>; every stage must be reachable; <span class="mono">pass</span>/<span class="mono">fail</span> need a stage with a verdict; the worst case must fit the budget. Errors name the file and line.</p>
+        </div></div>
+    </div>
+  </div>`;
+}
+
+// ---------- scene: a run on the Desk ----------
+const RUN = {
+  task: "Dark mode for the diff viewer", branch: "diff-dark-mode", pipeline: "feature", rev: 2, started: "10:36",
+  visits: [
+    { stage: "plan", visit: 1, who: "claude", took: "5m", verdict: "—", turns: 3, tok: "71k", note: "3 parts: tokens, split view, e2e scenario · revision 2: added e2e-dark" },
+    { stage: "build", visit: 1, who: "claude ×3", took: "31m", verdict: "—", turns: 51, tok: "1.9M", note: "3 workers in parallel, in hidden terminals; watch one from the Run tab" },
+    { stage: "join", visit: 1, who: "git", took: "2s", verdict: "pass", turns: "", tok: "", note: "" },
+    { stage: "check", visit: 1, who: "check.sh", took: "4m", verdict: "fail", turns: "", tok: "", note: "2 tests failed: diff_theme, gutter_colors" },
+    { stage: "fix", visit: 1, who: "claude", took: "9m", verdict: "—", turns: 7, tok: "180k", note: "guard check: 0.98 → 1.00, kept" },
+    { stage: "check", visit: 2, who: "check.sh", took: "4m", verdict: "pass", turns: "", tok: "", note: "" },
+    { stage: "review", visit: 1, who: "codex:high", took: "11m", verdict: "fail", turns: 9, tok: "240k", note: "3 findings: 1 bug, 2 nits" },
+    { stage: "fix", visit: 2, who: "claude", took: "6m", verdict: "—", turns: 5, tok: "120k", note: "guard check: 1.00 → 1.00, kept" },
+    { stage: "check", visit: 3, who: "check.sh", took: "4m", verdict: "pass", turns: "", tok: "", note: "" },
+    { stage: "review", visit: 2, who: "codex:high", took: "", verdict: "now", turns: 3, tok: "58k", note: "running 4m" },
+  ],
+  later: [
+    { stage: "review", visit: 2, who: "codex:high", took: "9m", verdict: "pass", turns: 8, tok: "210k", note: "no findings" },
+    { stage: "e2e", visit: 1, who: "e2e-kanna on mini", took: "14m", verdict: "fail", turns: "", tok: "", note: "1 of 41 scenarios failed: diff_dark, in light mode" },
+    { stage: "fix", visit: 3, who: "claude", took: "", verdict: "wait", turns: 4, tok: "64k", note: "needs you 12m: which appearance the gutter follows" },
+  ],
+};
+const runMarks = () => ({
+  plan: { state: "pass" }, build: { state: "pass", visits: 3 }, join: { state: "pass" },
+  check: { state: "pass", visits: 3 }, fix: { state: "pass", visits: 2 }, review: { state: "now", visits: 2 }, e2e: { dim: true }, done: { dim: true },
+});
+const runTaken = ["plan>build", "build>join", "join>check", "check>fix", "fix>check", "check>review", "review>fix"];
+
+function agentPane(gate, watch) {
+  const log = gate ? [
+    `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> claude`, ``,
+    `<span class="p">&gt;</span> [message from run-7f3a] fix needs you: Should the gutter follow macOS's appearance or Kanna's own theme? (e2e failed diff_dark on mini, in light mode)`, ``,
+    `<span class="m">●</span> The run is paused at <b>fix</b>. Review passed; e2e on mini failed one scenario, diff_dark in light mode, and the spec doesn't say which appearance the gutter follows.`, ``,
+    `  Tell me which and I'll resume it with your answer.`, ``,
+    `<span class="p">❯</span> ▍`,
+  ] : [
+    `<span class="c">kanna-v4/.kanna-worktrees/task-7f3a</span> <span class="p">❯</span> claude`, ``,
+    `<span class="m">●</span> Spec and mockup updated: the gutter keeps the code's hue in both themes. Both are in the tabs.`, ``,
+    `<span class="p">&gt;</span> good. build it with the feature pipeline.`, ``,
+    `<span class="m">●</span> Started <b>run-7f3a</b> (feature): plan → build → check → review → e2e. The Run tab shows where it is; I'll tell you when it hands its branch back or needs you.`, ``,
+    `<span class="p">&gt;</span> [message from run-7f3a] check failed (2 tests), fix running`, ``,
+    `<span class="m">●</span> Two unit tests failed after the three build parts were joined; the pipeline is fixing and will re-check. Nothing for you yet.`, ``,
+    `<span class="p">&gt;</span> what's it doing now?`, ``,
+    `<span class="m">●</span> Review, second visit (codex): the first found a gutter-hue bug and two nits, fixed since. I opened a watch tab on it.`, ``,
+    `<span class="p">❯</span> ▍`,
+  ];
+  return `<div class="agent"><div class="head"><span class="dot ${gate ? "needs" : "idle"}"></span>task-7f3a · ${RUN.branch} · claude<span class="spacer"></span><span class="g">${gate ? "needs you" : "idle"}</span></div><div class="term">${log.join("\n")}</div></div>`;
+}
+
+function watchHTML() {
+  const log = [
+    `<span class="c">.kanna-worktrees/task-7f3a-run-1</span> <span class="p">❯</span> <span class="g">worker review · 2nd visit · codex:high</span>`, ``,
+    `<span class="p">&gt;</span> Review the change on this branch against main: the spec and mockup it implements …`, `  <span class="g"># Feedback from fix</span>`, `  <span class="g">Fixed the gutter hue (DiffView.swift:214) and the two nits; check passes.</span>`, ``,
+    `<span class="m">●</span> Reading the diff against main (3 files, +212 −48)`, `<span class="m">●</span> Ran scripts/check.sh: <span class="ok">ok</span>`, `<span class="m">●</span> Comparing DiffView.swift:214 with the mockup's --gutter token`, `<span class="m">●</span> Opening references/mockups/diff-dark.html#light in a headless page`, ``,
+    `<span class="m">✻</span> <span class="g">Working… checking the split view in light mode</span>`,
+  ];
+  return `<div class="doc" style="padding:0;display:flex;flex-direction:column"><div class="head" style="border-bottom:1px solid var(--line)"><span class="dot working"></span>watch · <b>review</b> · codex · 2nd visit · 4m<span class="spacer"></span><span class="g">follows the run: the next stage's worker shows here</span></div><div class="term" style="flex:1">${log.join("\n")}</div></div>`;
+}
+
+function runTabHTML(gate) {
+  const marks = gate
+    ? { ...runMarks(), review: { state: "pass", visits: 2 }, e2e: { state: "fail" }, fix: { state: "wait", visits: 3 }, done: { dim: true } }
+    : runMarks();
+  const taken = gate ? runTaken.concat(["review>e2e", "e2e>fix"]) : runTaken;
+  const rows = gate ? RUN.visits.slice(0, -1).concat(RUN.later) : RUN.visits;
+  const vcls = v => v === "pass" || v === "yes" ? "v-pass" : v === "fail" || v === "no" ? "v-fail" : v === "now" ? "v-now" : v === "wait" ? "v-wait" : "";
+  const vtxt = v => v === "now" ? "running" : v === "wait" ? "waiting" : v;
+  return `<div class="doc">
+    <div class="runhead"><h2>${esc(RUN.task)}</h2><span class="sub">run-7f3a · pipeline <b>feature</b> rev 2 · started ${RUN.started} by the task's agent · ${gate ? "1h 58m" : "1h 22m"}</span>
+      <span class="acts"><button>Watch</button><button>Pause</button><button>Skip stage</button><button>Retry stage</button><button>Edit pipeline</button><button>Stop</button></span></div>
+    ${gate ? `<div class="gate"><span class="dot needs"></span><div class="q"><b>fix needs you: Should the gutter follow macOS's appearance or Kanna's own theme?</b><div class="rev">fix · 3rd visit, after e2e failed diff_dark on mini · your answer resumes it</div></div><input placeholder="your answer for fix"><button class="on">Resume</button></div>` : ""}
+    <div class="graph">${graphSVG(marks, taken)}</div>${LEGEND}
+    <div class="kpis">
+      <div class="kpi"><div class="v">${gate ? "12" : "10"}</div><div class="l">stage visits · ${gate ? "9" : "8"} of 40 sessions</div></div>
+      <div class="kpi"><div class="v">${gate ? "1h 58m" : "1h 22m"}</div><div class="l">wall · <span class="v-wait">${gate ? "12m" : "0"}</span> waiting on you</div></div>
+      <div class="kpi"><div class="v">${gate ? "86" : "78"}</div><div class="l">agent turns</div></div>
+      <div class="kpi"><div class="v">${gate ? "2.8M" : "2.6M"}</div><div class="l">tokens · $${gate ? "13.10" : "12.10"}</div></div>
+      <div class="kpi"><div class="v">${gate ? "3" : "2"}</div><div class="l">rework loops</div></div>
+      <div class="kpi"><div class="v">0</div><div class="l">your interventions</div></div>
+      <div class="kpi"><div class="v">+212 −48</div><div class="l">lines · 3 files</div></div>
+    </div>
+    ${`<p class="rev"><b>Revision 2</b> by stage <span class="mono">plan</span> at 10:41: added <span class="mono">e2e-dark = run scripts/e2e-kanna.sh diff_dark</span> after <span class="mono">e2e</span> · still 17 of 40 sessions worst case · <span style="color:var(--accent)">show diff</span></p>`}
+    <div class="sec">Stages, in order</div>
+    <table class="t">
+      <tr><th>#</th><th>Stage</th><th>Who</th><th class="r">Took</th><th>Verdict</th><th class="r">Turns</th><th class="r">Tokens</th><th>Notes</th></tr>
+      ${rows.map((r, i) => `<tr class="${r.verdict === "now" || r.verdict === "wait" ? "now" : ""}"><td class="mono">${i + 1}</td><td class="mono">${r.stage}${r.visit > 1 ? ` <span class="g" style="color:var(--muted)">·${r.visit}</span>` : ""}</td><td>${esc(r.who)}</td><td class="r">${r.took}</td><td class="${vcls(r.verdict)}">${vtxt(r.verdict)}</td><td class="r">${r.turns}</td><td class="r">${r.tok}</td><td style="white-space:normal;color:var(--muted)">${esc(r.note)}</td></tr>`).join("")}
+    </table>
+  </div>`;
+}
+
+function runHTML(gate, watch) {
+  const tabs = gate ? ["Run", "diff", "diff-dark.md", "diff-dark.html"] : ["Run", "review · codex", "diff", "diff-dark.md", "diff-dark.html"];
+  const on = watch ? 1 : 0;
+  return `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${esc(RUN.task)}</b> · claude · ${gate ? "needs you" : "idle"}</span></div>
+    <div class="content">${agentPane(gate)}
+      <div class="docs"><div class="dtabs">${tabs.map((f, i) => `<div class="dtab ${i === on ? "on" : ""}">${esc(f)}${i === 0 ? `<span class="n">${gate ? "6/7" : "5/7"}</span>` : ""}${i === 1 && !gate ? `<span class="dot working" style="width:6px;height:6px"></span>` : ""}</div>`).join("")}<span class="add">+</span></div>
+      ${watch ? watchHTML() : runTabHTML(gate)}</div>
+    </div>
+    <div class="strip"><span class="hint"><kbd>⌘.</kbd> Desk</span><span class="sep"></span><span class="item"><span class="dot idle"></span><span>Typing lag in terminals</span><span style="color:var(--muted)">· 40m ago</span></span><span class="item"><span class="dot idle"></span><span>Commit graph pane</span><span style="color:var(--muted)">· 2h ago</span></span><span class="count">7 on the Shelf</span></div>
+  </div>`;
+}
+
+// ---------- scene: runs compared ----------
+const PIPES = [
+  { name: "feature", rev: "rev 2", color: "var(--s1)", runs: 9, landed: 8, land: 3.4, sessions: 14, tok: 3.0, rework: 1.6, findings: 2.8, inter: 1.9, bugs: 0.4, cov: 91 },
+  { name: "feature, no review", rev: "rev 1", color: "var(--s2)", runs: 7, landed: 6, land: 2.1, sessions: 9, tok: 1.9, rework: 0.9, findings: 0, inter: 2.6, bugs: 1.2, cov: 74 },
+  { name: "bugfix", rev: "rev 3", color: "var(--s3)", runs: 12, landed: 12, land: 1.2, sessions: 6, tok: 0.8, rework: 0.7, findings: 1.1, inter: 0.6, bugs: 0.2, cov: 96 },
+];
+const DAYS = 30;
+// runs over the last 30 days: [day, pipeline index, time to land h, tokens M, rework]
+const RUNS = [[1,1,1.8,1.6,1],[2,2,1.0,0.7,0],[3,0,4.2,3.4,2],[4,1,2.6,2.2,1],[5,2,1.5,0.9,1],[6,0,3.1,2.8,1],[7,2,0.9,0.6,0],[8,1,1.9,1.7,1],[9,0,2.8,2.6,1],[10,2,1.4,1.0,1],[11,1,2.4,2.1,2],[12,2,1.1,0.8,0],[13,0,3.9,3.6,3],[14,2,1.3,0.9,1],[15,1,2.0,1.8,0],[16,0,3.3,3.1,2],[17,2,1.0,0.7,0],[18,2,1.6,1.1,2],[19,0,3.6,3.2,1],[20,1,2.2,2.0,1],[21,2,1.2,0.8,1],[22,0,2.9,2.7,1],[23,2,0.8,0.6,0],[24,0,3.5,3.0,2],[25,1,2.1,1.9,1],[26,2,1.1,0.8,0],[27,0,3.2,2.9,1],[28,2,1.4,0.9,1],[29,0,3.4,3.1,2]];
+
+function dots(title, unit, key, max, fmt) {
+  const W = 320, Hh = 120, L = 28, R = 8, T = 10, B = 20;
+  const x = d => L + (d - 1) / (DAYS - 1) * (W - L - R);
+  const y = v => T + (1 - v / max) * (Hh - T - B);
+  const ticks = [0, max / 2, max];
+  const meds = PIPES.map((p, i) => { const vs = RUNS.filter(r => r[1] === i).map(r => r[key]).sort((a, b) => a - b); return vs[Math.floor(vs.length / 2)]; });
+  return `<div class="chart"><h4>${title}</h4><div class="u">${unit} · one dot per run, dashed: each pipeline's median</div>
+    <svg viewBox="0 0 ${W} ${Hh}">
+      ${ticks.map(t => `<line class="ax" x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/><text class="tk" x="${L - 4}" y="${y(t) + 3}" text-anchor="end">${fmt(t)}</text>`).join("")}
+      ${meds.map((m, i) => `<line class="med" x1="${L}" x2="${W - R}" y1="${y(m)}" y2="${y(m)}" stroke="${PIPES[i].color}"/>`).join("")}
+      ${RUNS.map(r => `<circle cx="${x(r[0])}" cy="${y(r[key])}" r="4.5" fill="${PIPES[r[1]].color}" data-tip="${esc(PIPES[r[1]].name)} · day ${r[0]} · ${fmt(r[key])} ${unit}"/>`).join("")}
+      <text class="tk" x="${L}" y="${Hh - 6}">30 days ago</text><text class="tk" x="${W - R}" y="${Hh - 6}" text-anchor="end">today</text>
+    </svg></div>`;
+}
+
+function metricsHTML() {
+  const maxLand = 4, maxTok = 4;
+  const bar = (v, max, color) => `<span class="hbar" style="width:${Math.round(v / max * 70)}px;background:${color}"></span>`;
+  return `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>Desk</b> · kanna-v4</span></div>
+    <div class="fixed"><span class="ft">Desk</span><span class="ft">Machines</span><span class="ft on">Stats</span></div>
+    <div class="stats">
+      <h2>Pipelines</h2>
+      <p class="sub">Every run of the last 30 days, by the pipeline and revision it ran. Quality columns come from the code quality metrics: bugs later traced back to a run's merge, and coverage of the lines it changed.</p>
+      <div class="filters"><span>Show</span><span class="f on">30 days</span><span class="f">90 days</span><span class="f">all</span><span style="width:10px"></span><span>Pipelines</span><span class="f on">feature</span><span class="f on">bugfix</span><span class="f">research</span></div>
+      <table class="t">
+        <tr><th>Pipeline</th><th class="r">Runs</th><th class="r">Landed</th><th class="r">Time to land, median</th><th class="r">Sessions</th><th class="r">Tokens</th><th class="r">Rework loops</th><th class="r">Review findings</th><th class="r">Your interventions</th><th class="r">Bugs traced back</th><th class="r">Changed lines covered</th></tr>
+        ${PIPES.map(p => `<tr><td><span class="sw" style="background:${p.color}"></span>${esc(p.name)} <span style="color:var(--muted)">${p.rev}</span></td><td class="r">${p.runs}</td><td class="r">${p.landed} <span style="color:var(--muted)">(${Math.round(p.landed / p.runs * 100)}%)</span></td><td class="r">${bar(p.land, maxLand, p.color)}${p.land}h</td><td class="r">${p.sessions}</td><td class="r">${bar(p.tok, maxTok, p.color)}${p.tok}M</td><td class="r">${p.rework}</td><td class="r">${p.findings || "—"}</td><td class="r">${p.inter}</td><td class="r">${p.bugs}</td><td class="r">${p.cov}%</td></tr>`).join("")}
+      </table>
+      <p class="note">Per run unless said otherwise: medians. Bugs traced back: fix commits on main blamed to the run's merge (SZZ), per run. Changed lines covered: lines the run's merge changed that a test later executed. <span style="color:var(--accent)">Table view</span> · <span style="color:var(--accent)">kanna stats pipelines --json</span></p>
+      <div class="sec">Run by run</div>
+      <div class="lg">${PIPES.map(p => `<span><span class="sw" style="background:${p.color}"></span>${esc(p.name)} ${p.rev}</span>`).join("")}</div>
+      <div class="small">
+        ${dots("Time to land", "hours", 2, maxLand, v => v % 1 ? v.toFixed(1) : v)}
+        ${dots("Tokens", "millions", 3, maxTok, v => v % 1 ? v.toFixed(1) : v)}
+        ${dots("Rework loops", "fix visits", 4, 4, v => v)}
+      </div>
+      <div class="sec">Recent runs</div>
+      <table class="t">
+        <tr><th>Run</th><th>Task</th><th>Pipeline</th><th>Ended</th><th class="r">Time to land</th><th class="r">Sessions</th><th class="r">Tokens</th><th class="r">Rework</th><th class="r">Interventions</th><th>Outcome</th></tr>
+        <tr><td class="mono">run-7f3a</td><td>Dark mode for the diff viewer</td><td><span class="sw" style="background:var(--s1)"></span>feature rev 2</td><td style="color:var(--muted)">running</td><td class="r">—</td><td class="r">14</td><td class="r">3.1M</td><td class="r">2</td><td class="r">2</td><td class="v-now">review, 2nd visit</td></tr>
+        <tr><td class="mono">run-6b21</td><td>Shelf click to Desk is slow again</td><td><span class="sw" style="background:var(--s3)"></span>bugfix rev 3</td><td>today 09:40</td><td class="r">1.4h</td><td class="r">6</td><td class="r">0.9M</td><td class="r">1</td><td class="r">0</td><td class="v-pass">landed</td></tr>
+        <tr><td class="mono">run-5c90</td><td>Commit graph pane</td><td><span class="sw" style="background:var(--s1)"></span>feature rev 2</td><td>yesterday</td><td class="r">3.4h</td><td class="r">15</td><td class="r">3.1M</td><td class="r">2</td><td class="r">3</td><td class="v-pass">landed</td></tr>
+        <tr class="dim"><td class="mono">run-4a17</td><td>Reload replaces Restart</td><td><span class="sw" style="background:var(--s2)"></span>feature, no review rev 1</td><td>2 days ago</td><td class="r">—</td><td class="r">9</td><td class="r">2.0M</td><td class="r">3</td><td class="r">4</td><td class="v-fail">stopped: e2e failed 3 times</td></tr>
+      </table>
+    </div>
+  </div>`;
+}
+
+function render() {
+  document.querySelectorAll("[data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === scene));
+  document.getElementById("stage").innerHTML = scene === "define" ? defineHTML() : scene === "metrics" ? metricsHTML() : runHTML(scene === "gate", scene === "watch");
+}
+document.addEventListener("click", e => { const b = e.target.closest("[data-scene]"); if (b) { scene = b.dataset.scene; render(); } });
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
+const tip = document.getElementById("tip");
+document.addEventListener("mousemove", e => {
+  const t = e.target.closest && e.target.closest("[data-tip]");
+  if (!t) { tip.style.display = "none"; return; }
+  tip.textContent = t.dataset.tip; tip.style.display = "block"; tip.style.left = e.pageX + 12 + "px"; tip.style.top = e.pageY - 28 + "px";
+});
+if (location.hash.includes("picture")) document.body.classList.add("picture");
+if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
+for (const s of ["define", "gate", "metrics", "watch", "run"]) if (location.hash.includes(s)) { scene = s; break; }
+render();
+</script>
+</body>
+</html>

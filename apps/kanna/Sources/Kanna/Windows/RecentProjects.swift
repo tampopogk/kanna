@@ -56,6 +56,7 @@ extension AppController {
         guard var desk = physical.desk(id), desk.project.map(rootLocation) != root else { return }
         desk.project = root
         physical.setDesk(desk)
+        restate()
         touchProject(root)
     }
 

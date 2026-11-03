@@ -12,6 +12,7 @@ final class MarkdownLayoutManager: NSLayoutManager {
 
     func markRects(_ range: NSRange) -> [NSRect] {
         guard let storage = textStorage, NSMaxRange(range) <= storage.length, range.length > 0 else { return [] }
+        if let row = callRowRect(containing: range.location) { return [row] }
         let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         var rects: [NSRect] = []
         enumerateLineFragments(forGlyphRange: glyphs) { fragment, _, container, line, _ in
@@ -50,6 +51,7 @@ final class MarkdownLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
         defer { drawMarks(characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil), at: origin) }
+        drawCallGuides(characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil), at: origin)
         guard let storage = textStorage, let container = textContainers.first, storage.length > 0 else { return }
         let shown = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
         let whole = NSRange(location: 0, length: storage.length)
