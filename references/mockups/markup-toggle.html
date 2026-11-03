@@ -166,7 +166,7 @@ function bar(s) {
   const parts = [`<span class="path">${d.path}</span>`];
   if (d.diff) parts.push(`<span class="chip press">${d.diff}</span>`);
   parts.push(`<span class="${lit}" id="comments">Comments</span>`);
-  if (on) parts.push(`<span class="chip press ${list ? "on" : ""}" id="threadsBtn">Threads 1</span>`);
+  if (on) parts.push(`<span class="chip press ${list ? "on" : ""}" id="threadsBtn">Threads (1)</span>`);
   parts.push(`<span class="spacer"></span>`);
   if (on) parts.push(`<span class="chip">${to || s.agent}</span>`);
   let menu = "";
