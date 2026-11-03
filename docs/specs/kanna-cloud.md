@@ -54,10 +54,11 @@ It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the sam
 | Key | For | Where it lives | Who can read it |
 |---|---|---|---|
 | **Cloud account key** | authenticates their Kanna to the service: requests, billing | the Mac's Keychain; the service keeps a hash | the customer |
-| **Git access** | the VM clones and pushes their repo | a deploy key made **in the VM** and added by the customer's Kanna with their own GitHub sign-in; or a fine-grained token they paste | the VM, so the operator |
+| **Git access: none by default** | — | the VM gets the repo as a git bundle from the customer's Kanna and hands back branches the same way (§5); it never holds a credential for the customer's git host | — |
+| **Git access, opt-in** | a task that must reach the git host itself: private submodules or packages, or opening a pull request | a GitHub App installed on chosen repos, minting a short-lived token per task | the VM, so the operator, for that task's life |
 | **Agent account** | the agent runs on their own Claude or Codex usage | supplied as to any of their machines ([agent sign-in](agent-sign-in.md)); a Codex ChatGPT login stays on their Mac and the VM gets short-lived tokens | the VM, so the operator, for a setup token or API key (§9) |
 
-Kanna never holds the customer's GitHub sign-in: their own Kanna adds and removes the deploy keys.
+Kanna never holds the customer's GitHub sign-in, and by default no Cloud VM can push anywhere: the customer's own Kanna fetches a task's branch and pushes it, as for a task on any of their machines.
 
 ### Joining and billing
 
@@ -129,8 +130,8 @@ With the R720 backend:
 A task the customer sends to Cloud runs on a VM made for it alone, which they never see.
 
 - **The VM joins their machines,** enrolled by token (§6) and marked `hosted` and `task`, so the existing links, Shelf records and [task transfer](task-transfer.md) carry the task there and its work back. The app doesn't list it in the Machines tab, and `kanna machine list` leaves it out; the task shows where it is as `cloud`.
-- **The task's repo** reaches the VM through git access (§3), cloned there before the task moves; the task's branch comes with the transfer.
-- **Done, stopped for good or moved off:** the VM's work is transferred back (or pushed, by the task), the customer's Kanna revokes its key and removes its deploy keys, and Kanna destroys the VM.
+- **The task's repo** reaches the VM as a git bundle, the way [task transfer](task-transfer.md) already carries a task's branch (no clone on the VM's own credentials): the commits the task needs, less what the VM already has. The work comes back the same way, as local branches in a bundle, which the customer's Kanna fetches into its clone.
+- **Done, stopped for good or moved off:** the VM's work is transferred back as a bundle, the customer's Kanna revokes its key, and Kanna destroys the VM.
 - **The gesture:** a Cloud task asks once, when the customer first sends tasks to Cloud from a Mac, not per task: the app approves `task` VMs made for this account's requests, which the account key authenticates (§11).
 
 ### The Shelf in the cloud
@@ -140,8 +141,8 @@ The main use of Cloud: the customer's Shelf is worked through on the cloud, many
 - **Cloud holds a copy of the Shelf** for each account that turns it on: every waiting task with its first message, project, agent and `--after` dependencies, kept in step with the customer's machines. A task added or changed on a machine reaches it, and its state comes back. It's a replica like any other machine's ([tasks §1–2](machine-tasks.md)), held by the service, not by a peer in the customer's log.
 - **Cloud is a Shelf runner** with a limit the customer sets (`shelf.cloud`, tasks at once) instead of `shelf.runners`: it starts waiting tasks oldest first, unblocked ones only, each on its own VM.
 - **Which tasks:** those sent with `--cloud`, and, when the customer turns it on, every waiting task their own machines haven't started within a delay. A task can be kept off the cloud (`--local`).
-- **With the laptop closed** nothing needs it: Cloud has the task, the repo's git access and the agent account (below). A task that needs the customer stops and waits, as on the Desk; when it's done its branch is pushed, and its record shows it done on every machine when they next sync.
-- **What Cloud must hold for that,** which the open-laptop path didn't: a git credential it can use alone (a GitHub App installed on the customer's repos, which mints short-lived tokens per task, rather than deploy keys their Mac adds), and the agent account (a Claude setup token or API key; a Codex ChatGPT login needs its holder on the service instead of the Mac). The operator could read both, as it can read everything on the VMs (§1).
+- **With the laptop closed** nothing needs it: Cloud has the task, a copy of the repo and the agent account (below). A task that needs the customer stops and waits, as on the Desk. When it's done, its branch waits on the service as a bundle, and the customer's machines fetch it, and see the task done, when they next sync.
+- **What Cloud must hold for that,** which the open-laptop path didn't: a copy of each project's repo, which the customer's machines keep up to date with bundles as they sync (so Cloud never needs git access to fetch it), and the agent account (a Claude setup token or API key; a Codex ChatGPT login needs its holder on the service instead of the Mac). The operator could read both, as it can read everything on the VMs (§1).
 - **The planner goes with it** (proposed): a project whose Shelf runs on the cloud can have its planning agent run there too, on a VM of its own that stays up while the cloud Shelf is on. The customer's Desk shows that planner as it shows one on another machine today ([links §4](machine-links.md#4-projects-desks-and-claims)): the app attaches to it when open, and it keeps steering the Shelf (planning, answering tasks' messages, unblocking) when the laptop is closed. There is still one planner per project, on the laptop or on the cloud, never both.
 - **Messages across the cloud and the customer's machines:** today a message is a row in one daemon's `kanna.db`, delivered by that daemon to an agent it runs ([agent messaging](agent-messaging.md)). With tasks spread over machines and the cloud, a message becomes a record in the replicated Shelf, addressed to a task ID or the project's planner, not to a daemon. Whichever machine runs the recipient (a customer's machine, a task's VM, the planner's VM) delivers it at the end of the recipient's turn, as now, and marks it delivered for everyone. A message to a task or planner that no one is running waits in the Shelf, and it wakes a stopped task wherever the task runs.
 - **Scale:** hundreds of tasks at once is hundreds of VMs, so the backend matters (§4): a provider's capacity on demand, with the R720s as the cheap base.
@@ -187,7 +188,7 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 [Agent sign-in](agent-sign-in.md) belongs to the customer's own machines: accounts are added once on the Mac and supplied to each machine. On a VM Kanna runs:
 
 - **What sits on the VM, the operator can read:** a Claude setup token or an API key is there in its environment. Short-lived credentials are preferred: Codex's holder model gives the VM only access tokens, with the holder on one of the customer's own devices, never a hosted VM.
-- **Released or revoked, its credentials are rotated:** the app asks the customer to rotate a long-lived token or key a released VM held, and revokes its deploy key.
+- **Released or revoked, its credentials are rotated:** the app asks the customer to rotate a long-lived token or key a released VM held.
 
 ## 10. Threat model
 
@@ -208,8 +209,9 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 
 - **What a hosted VM may run on the customer's other machines.** It can't change their machines (§10), but as one of them it can run commands and tasks on their Mac (`kanna --host mbp …`), as their Mac can on it, so its operator could too. **Proposed:** hosted peers reach only their own tasks' records and streams, never other machines' terminals or commands. It comes before Cloud tasks and before a second tenant.
 - **Cloud tasks without a gesture each.** **Proposed:** the customer approves once per Mac that `task` VMs made for their account's requests join without a sheet, since their own Kanna asked for each (it made the token).
-- **Where a Cloud task's work lands** when the customer's Macs are all closed. **Proposed:** the task pushes its branch with its git access; the customer's machines see it done at their next sync and fetch the branch.
-- **Agent secrets and git access held by Cloud,** so tasks start while the Mac is closed (§5, the Shelf in the cloud). **Proposed:** yes, for accounts that turn the cloud Shelf on: the GitHub App for git, and the agent account kept by the service, encrypted at rest; a Codex ChatGPT login's holder moves to the service.
+- **Where a Cloud task's work lands** when the customer's Macs are all closed. **Proposed:** the branch waits on the service as a bundle; the customer's machines fetch it at their next sync, and their own Kanna pushes it, if anyone does.
+- **Agent secrets and git access held by Cloud,** so tasks start while the Mac is closed (§5, the Shelf in the cloud). **Proposed:** the agent account, yes, for accounts that turn the cloud Shelf on, kept by the service, encrypted at rest; a Codex ChatGPT login's holder moves to the service.
+- **No git access by default** (review c12). **Proposed:** yes. The repo goes to the VM as a bundle and branches come back as bundles, so the operator never gets push access to a customer's repos. The cost: Cloud keeps a copy of each project's repo; a task can't fetch from the git host mid-task (a merge of a newer main needs the customer's machines to have synced it first); private submodules and packages need the opt-in GitHub App.
 - **Where the planner runs** when the Shelf is on the cloud. **Proposed:** on the cloud, as above, so the Shelf is steered with the laptop closed; the alternative, a laptop-only planner, leaves cloud tasks' messages waiting until the laptop opens.
 - **Can Cloud's Shelf copy be encrypted from the operator?** **Proposed:** no: Cloud has to read a task to run it, and the VM sees its code anyway; it is encrypted at rest and in transit.
 - **The first tenant:** **Decided:** Cloud's VMs go on the host-enforced tenant network (§4) from the first; the network check runs on each host before a second tenant.
