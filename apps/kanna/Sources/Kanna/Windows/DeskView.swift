@@ -67,6 +67,7 @@ struct ShelfTask: Equatable {
     var pane: String? = nil
     var branch: String? = nil
     var stack: String? = nil
+    var status: String? = nil
 
     static func stack(_ entry: JSON) -> String? {
         func names(_ key: String) -> String {
@@ -87,7 +88,19 @@ struct ShelfTask: Equatable {
         return first.split(separator: "/").last.map(String.init)
     }
 
+    static func last(stopped: String?) -> String? {
+        switch stopped {
+        case "needs-you": return "needs-you"
+        case "finished": return "idle"
+        default: return nil
+        }
+    }
+
     var blocked: Bool { !waits.isEmpty }
+
+    var dashed: Bool { blocked || stack?.hasPrefix("its blockers") == true }
+
+    var dot: String? { !dashed && ["working", "needs-you", "idle"].contains(status) ? status : nil }
 
     @MainActor var after: String {
         let made = "made " + DeskTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
@@ -473,6 +486,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     var blockedShelf: [JSON] {
         rowViews.compactMap { $0 as? ShelfRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
+    }
+
+    var shelfDots: [JSON] {
+        rowViews.compactMap { $0 as? ShelfRow }.map { ["task": .string($0.task.id), "dot": $0.task.dot.map { .string($0) } ?? .string($0.task.dashed ? "dashed" : "circle")] }
     }
 
     var stackedShelf: [JSON] {
@@ -880,10 +897,14 @@ private final class ShelfRow: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let dot = task.dot {
+            DeskTask.color(dot).setFill()
+            return NSBezierPath(ovalIn: NSRect(x: 10, y: bounds.midY - 4, width: 8, height: 8)).fill()
+        }
         NSColor.tertiaryLabelColor.setStroke()
         let ring = NSBezierPath(ovalIn: NSRect(x: 10.5, y: bounds.midY - 4, width: 8, height: 8))
         ring.lineWidth = 1.4
-        if task.blocked || task.stack?.hasPrefix("its blockers") == true { ring.setLineDash([2, 2], count: 2, phase: 0) }
+        if task.dashed { ring.setLineDash([2, 2], count: 2, phase: 0) }
         ring.stroke()
     }
 
