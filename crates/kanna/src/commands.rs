@@ -23,8 +23,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "open",
         group: "Panes",
-        summary: "Open a terminal, web, iOS, markdown, code or diff pane and wait until it is running.",
-        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]",
+        summary: "Open a terminal, web, iOS, markdown, code, diff or log pane and wait until it is running.",
+        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open log [REV...] [-- PATH...] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]",
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
@@ -50,6 +50,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna open md docs/specs/presenting.md --diff main --tab", "Show a spec with what this branch changed in it marked."),
             ("kanna open code src/main.rs:42", "Show a source file, highlighted, at line 42; it follows the file on disk."),
             ("kanna open diff --merge-base main", "Show everything this branch changed since it left main, committed or not, with untracked files; it follows the worktree."),
+            ("kanna open log", "Show the history as a graph: from a task, its branch and main; from the main checkout, main and the open tasks' branches, each labelled with its task. It follows the repo."),
         ],
         parse: parse_open,
         show: output::opened,
@@ -489,8 +490,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "navigate",
         group: "Panes",
-        summary: "Point a web pane at a new URL (or go back or forward), a markdown pane at another file, a code pane at another file or line, or a diff pane at another diff.",
-        usage: "kanna navigate PANE URL\n       kanna navigate PANE --back|--forward\n       kanna navigate PANE FILE.md\n       kanna navigate PANE FILE[:LINE]\n       kanna navigate PANE diff [GIT-DIFF-ARGS]",
+        summary: "Point a web pane at a new URL (or go back or forward), a markdown pane at another file, a code pane at another file or line, a diff pane at another diff, or a log pane at another range.",
+        usage: "kanna navigate PANE URL\n       kanna navigate PANE --back|--forward\n       kanna navigate PANE FILE.md\n       kanna navigate PANE FILE[:LINE]\n       kanna navigate PANE diff [GIT-DIFF-ARGS]\n       kanna navigate PANE log [REV...]",
         options: &[
             ("--back", "Go back a page: in a markdown pane, or a web pane opened with `open web URL --history`."),
             ("--forward", "Go forward a page (after --back)."),
@@ -503,7 +504,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: |args| {
             let pane = pane(args, "navigate")?;
-            if args.first() == Some("diff") {
+            if matches!(args.first(), Some("diff" | "log")) {
                 args.positional();
                 return Ok(json!({ "pane": pane, "args": args.remaining() }));
             }
@@ -1441,12 +1442,12 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     let diff = args.optional("--diff", |word| !word.starts_with('-') && !is_markdown(word));
     let kind = match args.positional() {
         None => "term".to_string(),
-        Some(kind) if ["term", "web", "ios", "md", "code", "diff"].contains(&kind.as_str()) => kind,
+        Some(kind) if ["term", "web", "ios", "md", "code", "diff", "log"].contains(&kind.as_str()) => kind,
         Some(other) if is_markdown(&other) => {
             return Err(usage("open", &format!("to show a markdown file use: kanna open md {other}")));
         }
         Some(other) => {
-            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code or diff). To run a command use --cmd \"{other}\"")));
+            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code, diff or log). To run a command use --cmd \"{other}\"")));
         }
     };
     if kind == "web" {
@@ -1465,7 +1466,7 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
             out.insert("line".into(), json!(line));
         }
     }
-    if kind == "diff" {
+    if kind == "diff" || kind == "log" {
         let folder = out.remove("cwd").and_then(|cwd| cwd.as_str().map(String::from)).unwrap_or_else(|| absolute("."));
         out.insert("path".into(), json!(folder));
         out.insert("args".into(), json!(args.remaining()));

@@ -1094,6 +1094,16 @@ impl Tasks {
         }
     }
 
+    pub fn refs(&self) -> Vec<kanna_log::TaskRef> {
+        let worktree = |e: &Entry| e.folder.clone().unwrap_or_else(|| Path::new(&e.repo).join(WORKTREES).join(&e.id).to_string_lossy().into_owned());
+        let open = |e: &Entry, place: Place| kanna_log::TaskRef { id: e.id.clone(), name: e.name.clone(), place: place.as_str().into(), repo: e.repo.clone(), worktree: Some(worktree(e)), branch: None, tip: None };
+        let mut refs: Vec<kanna_log::TaskRef> = self.running.borrow().iter().map(|r| open(&r.entry, r.place)).collect();
+        refs.extend(self.entries.borrow().iter().map(|e| open(e, Place::Shelf)));
+        let ended = self.db.ended_tips().unwrap_or_default();
+        refs.extend(ended.into_iter().map(|(id, repo, name, branch, tip)| kanna_log::TaskRef { id, name, place: Place::Done.as_str().into(), repo, worktree: None, branch: Some(branch), tip: Some(tip) }));
+        refs
+    }
+
     pub fn task_of(&self, pane: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.id.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
@@ -2559,6 +2569,11 @@ impl Tasks {
         std::thread::spawn(move || {
             let id = task.id.clone();
             let mut changes = vec![];
+            let ended = task_scripts::ended_at(&folder);
+            let ended_at = |change: Change| match &ended {
+                Some((branch, tip)) => change.with("branch", json!(branch)).with("tip", json!(tip)),
+                None => change,
+            };
             if let Some(teardown) = &teardown {
                 log!("kanna-daemon: {id} is done with no pane to tear down in, so its teardown runs in {}: {teardown}", folder.display());
                 let code = task_scripts::run(teardown, &folder, &task.vars(&task.branch()), Duration::from_secs(scripts.timeout)).unwrap_or_else(|error| {
@@ -2570,7 +2585,7 @@ impl Tasks {
                 if code != 0 {
                     let why = task_scripts::said("teardown", code, scripts.timeout);
                     log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
-                    changes.push(Change::new("kept").by(Some("daemon")).with("why", json!(why)));
+                    changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
                     let _ = events.send(Event::Finished { task: id, changes });
                     return;
                 }
@@ -2578,11 +2593,11 @@ impl Tasks {
             match task_scripts::clean_up(&task.repo, &folder) {
                 Cleanup::Removed { branch } => {
                     log!("kanna-daemon: {id} is merged, so its worktree {} and branch {branch} are removed", folder.display());
-                    changes.push(Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy())).with("branch", json!(branch)));
+                    changes.push(ended_at(Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy()))).with("branch", json!(branch)));
                 }
                 Cleanup::Kept(why) => {
                     log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
-                    changes.push(Change::new("kept").by(Some("daemon")).with("why", json!(why)));
+                    changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
                 }
             }
             let _ = events.send(Event::Finished { task: id, changes });

@@ -2729,6 +2729,95 @@ diff_pane_worktree_gone() {
   raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane_worktree_gone.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane_worktree_gone.png" "$out/" 2>/dev/null
 }
 
+scenario log_pane M4
+log_pane() {
+  start_daemon && start_app || return 1
+  local repo; repo="$(e2e_repo logs)" || return 1
+  lgit() { git -C "$repo" -c user.name=Ann -c user.email=ann@example.invalid -c commit.gpgsign=false "$@" >/dev/null; }
+  lc() { echo "$2" >>"$repo/$1" && lgit add "$1" && lgit commit -qm "$2"; }
+  lc a.txt "main 0"
+  lgit checkout -qb long; for i in 1 2 3 4 5; do lc long.txt "long $i"; done
+  lgit checkout -q main; lc a.txt "main 1"; lgit merge -q --no-ff long -m "Merge long"
+  for b in x y z; do lgit checkout -qb "$b" main~1; lc "$b.txt" "$b 1"; done
+  lgit checkout -q main; lgit merge -q --no-ff x y z -m Octopus
+  lgit checkout -qb lived; lc l.txt "lived 1"
+  lgit checkout -q main; lc a.txt "main 2"
+  lgit checkout -q lived; lgit merge -q --no-ff main -m "Merge branch 'main' into lived"; lc l.txt "lived 2"
+  lgit checkout -q main
+  for i in 3 4 5 6 7 8 9; do lc a.txt "main $i"; done
+  lgit checkout -q lived; lgit merge -q --no-ff main -m "Merge main into lived again"; lgit checkout -q main
+  desk_task "Labelled task" 'exec sleep 600' logs || return 1
+  local tree; tree="$(ls -d "$repo"/.kanna-worktrees/task-* | head -1)"
+  check wait_for 10 test -d "$tree" || { echo "no worktree for the task"; return 1; }
+  git -C "$tree" branch -m labelled >/dev/null 2>&1
+  git -C "$tree" -c user.name=Bo -c user.email=bo@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m "task work" || return 1
+  logpane() { raw "{\"id\":1,\"cmd\":\"debug.log\",\"args\":{\"pane\":\"history\"${2:-}}}" | field "$1"; }
+  rowsof() { logpane rows | python3 -c "import json, sys; rows = json.load(sys.stdin); $1"; }
+  hash_of() { git -C "$repo" log --all --format='%H %s' | awk -v s="$1" '{h=$1; $1=""; if (substr($0, 2) == s) { print h; exit }}'; }
+  (cd "$repo" && kanna open --window new log --name history >/dev/null) || return 1
+  check wait_for 10 eval '[[ "$(logpane total)" == 22 ]]' || { echo "total $(logpane total), error $(logpane error), range $(logpane range)"; return 1; }
+  check test "$(logpane range)" == '["labelled", "main"]' || { echo "range $(logpane range)"; return 1; }
+  check rowsof '
+by = {r["subject"]: r for r in rows}
+assert "long 1" not in by, "the long branch should fold"
+m = by["Merge long"]; assert m["folded"] and m["fold"] == 5 and m["lane"] == 0, m
+assert all(r["lane"] == 0 for r in rows if r["spine"]), [r for r in rows if r["spine"] and r["lane"]]
+o = by["Octopus"]; assert len(o["parents"]) == 4 and len(set(o["parents"])) == 4, o
+t = by["task work"]; assert t["lane"] > 0 and t["labels"][0]["name"] == "Labelled task" and t["labels"][0]["place"] == "desk" and t["labels"][0]["ahead"] == 1, t
+assert "lived 1" not in by, "lived is not in the default range"' || return 1
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane.png" "$out/" 2>/dev/null
+  kanna navigate history log main lived >/dev/null || return 1
+  check wait_for 10 eval '[[ "$(logpane command)" == "git log main lived" && "$(logpane total)" == 25 ]]' || { echo "navigate: $(logpane command) $(logpane total)"; return 1; }
+  check rowsof '
+by = {r["subject"]: r for r in rows}
+assert by["lived 1"]["lane"] > 0 and len(by["Merge branch '"'"'main'"'"' into lived"]["parents"]) == 2, by["lived 1"]' || return 1
+  local merge; merge="$(hash_of "Merge long")"
+  logpane open ",\"fold\":\"$merge\"" >/dev/null
+  check rowsof '
+by = {r["subject"]: r for r in rows}
+assert len(rows) == 25 and by["Merge long"]["open"] and by["long 3"]["lane"] > 0, len(rows)' || return 1
+  logpane open ",\"select\":\"$(hash_of "long 3")\",\"keys\":\"h\"" >/dev/null
+  check test "$(logpane selected)" == "$merge" || { echo "← from inside the side selected $(logpane selected)"; return 1; }
+  check rowsof 'assert len(rows) == 20, len(rows)' || return 1
+  logpane selected ',"keys":"g"' >/dev/null
+  local top; top="$(logpane selected)"
+  check wait_for 5 eval '[[ "$(logpane detail)" == "$top" ]]' || { echo "detail $(logpane detail) for $top"; return 1; }
+  logpane selected ',"keys":"jj"' >/dev/null
+  local reading; reading="$(logpane selected)"
+  local before; before="$(logpane rows)"
+  lgit checkout -q lived; lc l.txt "lived 3"; lgit checkout -q main
+  check wait_for 5 eval '[[ "$(logpane stale)" == True ]]' || { echo "the commit didn't hold: stale $(logpane stale)"; return 1; }
+  check test "$(logpane held)" == "1 new commit" || { echo "held $(logpane held)"; return 1; }
+  check test "$(logpane rows)" == "$before" || { echo "the rows moved while reading"; return 1; }
+  check test "$(logpane selected)" == "$reading" || { echo "the selection moved while reading"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane-held.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane-held.png" "$out/" 2>/dev/null
+  kanna focus history >/dev/null
+  raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+r"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(logpane stale)" == False && "$(logpane rows)" == *"lived 3"* ]]' || { echo "⌘R didn't bring the commit in"; return 1; }
+  check test "$(logpane selected)" == "$reading" || { echo "the refresh lost the selection"; return 1; }
+  check eval '[[ "$(logpane fresh)" == *"$(hash_of "lived 3")"* ]]' || { echo "fresh $(logpane fresh)"; return 1; }
+  logpane hits ',"find":"lived"' >/dev/null
+  check eval '[[ "$(logpane hits | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")" == 5 ]]' || { echo "hits $(logpane hits)"; return 1; }
+  logpane hits ',"find":"long 2"' >/dev/null
+  logpane hits ',"next":true' >/dev/null
+  check test "$(logpane selected)" == "$(hash_of "long 2")" || { echo "find didn't go to long 2: $(logpane selected)"; return 1; }
+  check eval '[[ "$(logpane open)" == *"$merge"* ]]' || { echo "find didn't unfold its merge: $(logpane open)"; return 1; }
+  logpane hits ',"find":""' >/dev/null
+  logpane selected ",\"select\":\"$(hash_of "lived 2")\",\"keys\":\"~\"" >/dev/null
+  check wait_for 5 eval 'kanna workspace list --all --json | grep -q "$(hash_of "lived 2")^!"' || { echo "↩ opened no diff of lived 2"; kanna workspace list --all; return 1; }
+  kanna focus history >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane-dark.png" "$out/" 2>/dev/null
+  logs() { raw '{"id":1,"cmd":"logs"}' | python3 -c 'import json, sys; print(" ".join(json.dumps(d["args"]) + ":" + str(len(d["views"])) for d in json.load(sys.stdin)["logs"]))'; }
+  check wait_for 5 eval '[[ "$(logs)" == "[\"main\", \"lived\"]:1" ]]' || { echo "logs: $(logs)"; return 1; }
+  stop_app; start_app || return 1
+  check wait_for 10 eval '[[ "$(logpane total)" == 26 && "$(logpane command)" == "git log main lived" ]]' || { echo "after relaunch: $(logpane total) $(logpane command) $(logpane error)"; return 1; }
+  kanna navigate history log no-such-branch >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(logpane error)" == *no-such-branch* ]]' || { echo "a bad range shows no error: $(logpane error)"; return 1; }
+}
+
 scenario code_tour M4
 code_tour() {
   start_daemon && start_app || return 1

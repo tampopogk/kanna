@@ -82,7 +82,7 @@ So that main reads as a line of merges, a branch merged into main's first-parent
 
 - **A merge's side** is the commits it brought in: reachable from its other parents and not from main's line, and not already brought in by an older merge. A side with a commit that a commit outside it builds on (a task branched from an unmerged branch) doesn't fold.
 - **Folded:** the merge row shows `▸ N` and the side's commits aren't drawn; the merge has no line to them.
-- **→** (or a click on `▸ N`) unfolds it: its commits appear under it in their own lane, the merge's line curves out to them. **←** folds it again, from the merge or any commit in its side. Unfolded merges are kept with the pane.
+- **→** (or a click on `▸ N`) unfolds it: its commits appear under it in their own lane, the merge's line curves out to them. **←** folds it again, from the merge or any commit in its side. What you unfolded stays unfolded through new rows, until the app quits.
 - Branches of 3 commits or fewer are drawn as they are, a small loop off main.
 - **Find unfolds:** a match inside a folded side unfolds it.
 

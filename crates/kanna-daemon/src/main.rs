@@ -26,6 +26,7 @@ mod shell;
 mod status;
 mod status_command;
 mod diffs;
+mod logs;
 mod machines;
 mod files;
 mod store;
@@ -97,6 +98,7 @@ pub enum Event {
     Finished { task: String, changes: Vec<db::Change> },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
+    Log { id: String, log: Value },
     File { id: String, read: files::Read },
     KeeperReadable,
     KeeperExits,
@@ -324,6 +326,10 @@ fn run() -> Result<Option<PathBuf>, String> {
     diffs.install(&core);
     let files = Rc::new(files::Files::new(events.clone()));
     files.install(&core);
+    let logs = Rc::new(logs::Logs::new(events.clone()));
+    logs.install(&core);
+    let refs = Rc::downgrade(&tasks);
+    *logs.task_refs.borrow_mut() = Some(Box::new(move || refs.upgrade().map(|tasks| tasks.refs()).unwrap_or_default()));
     let host = Rc::new(Host::new(terminals.clone()));
     core.set_host(Some(host.clone()));
     let noted = core.weak();
@@ -382,7 +388,18 @@ fn run() -> Result<Option<PathBuf>, String> {
             app.layout(view);
         }
     }));
+    *app.logs.borrow_mut() = Some(logs.clone());
     app.connect_tasks(&tasks);
+    let shown = tasks.on_change.borrow_mut().take();
+    let logs_told = Rc::downgrade(&logs);
+    *tasks.on_change.borrow_mut() = Some(Box::new(move |view| {
+        if let Some(logs) = logs_told.upgrade() {
+            logs.tasks_changed();
+        }
+        if let Some(shown) = &shown {
+            shown(view);
+        }
+    }));
     let (folder_link, folder_core) = (Rc::downgrade(&app), core.weak());
     core.on_renamed(Rc::new(move |_, to| {
         let cwd = folder_core.upgrade().and_then(|core| core.pane(to)).and_then(|pane| pane.cwd);
@@ -404,6 +421,12 @@ fn run() -> Result<Option<PathBuf>, String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    let log_link = Rc::downgrade(&app);
+    *logs.on_log.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = log_link.upgrade() {
+            app.log(views, payload);
         }
     }));
     let file_link = Rc::downgrade(&app);
@@ -612,6 +635,7 @@ fn run() -> Result<Option<PathBuf>, String> {
             Event::Finished { task, changes } => tasks.finished(&task, changes),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
+            Event::Log { id, log } => logs.loaded(&id, log),
             Event::File { id, read } => files.loaded(&id, read),
             Event::KeeperReadable | Event::KeeperExits => {
                 let exits = keeper.take_exits();

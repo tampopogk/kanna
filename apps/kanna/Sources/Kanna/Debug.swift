@@ -313,6 +313,27 @@ extension AppController {
                     "columns": .array(diff.debugColumns.map { .object($0.mapValues { .number($0) }) }), "overview": overview,
                     "colors": .array((args["colors"]?.number).map { diff.colors(atRow: Int($0)).map { .string($0) } } ?? [])]
         }
+        commands["debug.log"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let log = contents.log(id) else { throw KannaError("wrong_type", "not a running log pane") }
+            if let keys = args["keys"]?.string { for key in keys { _ = log.press(key == "~" ? "\r" : String(key)) } }
+            if let step = args["zoom"]?.number { log.zoom(by: Int(step)) }
+            if let hash = args["select"]?.string { log.reveal(hash); log.select(hash) }
+            if let hash = args["fold"]?.string { log.toggle(hash) }
+            if let query = args["find"]?.string { query.isEmpty ? log.closeFind() : log.find(query) }
+            if args["next"]?.bool == true { log.findStep(forward: true) }
+            if args["refresh"]?.bool == true { log.refresh() }
+            if args["copy"]?.bool == true { log.copyHash() }
+            if args["diff"]?.bool == true { log.openDiff() }
+            log.layoutSubtreeIfNeeded()
+            return ["command": .string(log.result?.command ?? ""), "range": .array((log.result?.range ?? []).map { .string($0) }), "main": .string(log.result?.main ?? ""),
+                    "error": log.result?.error.map { .string($0) } ?? .null, "rows": .array(log.debugRows.map(JSON.from)), "lanes": .number(Double(log.graph.lanes)),
+                    "total": .number(Double(log.result?.rows.count ?? 0)), "selected": log.selected.map { .string($0) } ?? .null,
+                    "serial": .number(Double(log.serial)), "stale": .bool(log.stale), "latest": log.pending.map { .number(Double($0.serial)) } ?? .null,
+                    "held": log.heldText.map { .string($0) } ?? .null, "notice": log.notice.map { .string($0) } ?? .null,
+                    "fresh": .array(log.fresh.sorted().map { .string($0) }), "open": .array(log.open.sorted().map { .string($0) }),
+                    "find": log.finding ? .string(log.query) : .null, "hits": .array(log.hits.map { .string($0) }),
+                    "detail": log.detail.map { .string($0.hash) } ?? .null, "detailShown": .bool(log.detailShown), "zoom": .number(Double(log.zoom)), "width": .number(log.bounds.width)]
+        }
         commands["debug.ios"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
             if let x = args["x"]?.number, let y = args["y"]?.number {

@@ -1,0 +1,10 @@
+[package]
+name = "kanna-log"
+version.workspace = true
+edition.workspace = true
+license = "FSL-1.1-MIT"
+description = "Kanna's log panes: works out a log's range, runs git log, finds main's first-parent line and the merged branches that fold into it, and labels task branches."
+
+[dependencies]
+kanna-diff = { path = "../kanna-diff" }
+serde_json = { version = "1", features = ["preserve_order"] }
