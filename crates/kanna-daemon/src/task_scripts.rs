@@ -1,3 +1,4 @@
+use crate::desk_news::Merge;
 use crate::tasks::git;
 use std::fs;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -73,6 +74,12 @@ pub fn record_base(worktree: &Path) {
     let _ = fs::write(dir.join(BASE), format!("{base}\n"));
 }
 
+pub fn set_base(worktree: &Path, base: &str) {
+    if let Some(dir) = git_dir(worktree) {
+        let _ = fs::write(dir.join(BASE), format!("{base}\n"));
+    }
+}
+
 pub fn base(worktree: &Path) -> Option<String> {
     fs::read_to_string(git_dir(worktree)?.join(BASE)).ok().map(|b| b.trim().to_string())
 }
@@ -87,6 +94,12 @@ pub fn merged(repo: &Path, worktree: &Path) -> bool {
         None => git(worktree, &["reflog", "show", "--format=%gs", "HEAD"]).is_ok_and(|log| log.lines().any(|line| line.starts_with("commit"))),
     };
     moved && git(repo, &["merge-base", "--is-ancestor", &tip, "HEAD"]).is_ok()
+}
+
+pub fn ended_at(worktree: &Path) -> Option<(String, String)> {
+    let branch = git(worktree, &["branch", "--show-current"]).ok().filter(|b| !b.is_empty())?;
+    let tip = git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok()?;
+    (base(worktree).as_deref() != Some(tip.as_str())).then_some((branch, tip))
 }
 
 pub fn setup_record(worktree: &Path) -> Option<PathBuf> {
@@ -229,6 +242,14 @@ pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration
     }
 }
 
+pub fn merge(repo: &Path, worktree: &Path) -> Merge {
+    if !worktree.is_dir() || !is_linked(worktree) {
+        return Merge::Unknown;
+    }
+    let into = git(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "HEAD".into());
+    if merged(repo, worktree) { Merge::Into(into) } else { Merge::Not(into) }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cleanup {
     Removed { branch: String },
@@ -314,6 +335,20 @@ mod tests {
         assert!(!worktree.exists(), "the worktree is removed");
         assert_eq!(fs::read_to_string(elsewhere.join("kanna")).unwrap(), "built", "what its target links to is the repo's teardown's to remove");
         assert!(git(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err(), "the branch is deleted");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_task_s_merge_names_the_checked_out_branch() {
+        let (dir, worktree) = repo("merge");
+        let repo = dir.join("repo");
+        assert_eq!(merge(&repo, &worktree), Merge::Not("main".into()), "a branch with no commits of its own isn't merged");
+        sh(&worktree, "git -c user.email=e@e -c user.name=e commit -q --allow-empty -m work");
+        assert_eq!(merge(&repo, &worktree), Merge::Not("main".into()));
+        let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
+        sh(&repo, &format!("git merge -q --ff-only {branch}"));
+        assert_eq!(merge(&repo, &worktree), Merge::Into("main".into()));
+        assert_eq!(merge(&repo, &repo), Merge::Unknown, "the main checkout is no task's");
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>dev.kanna.isolation.relay</string>
+    <key>LimitLoadToSessionType</key><string>Aqua</string>
+    <key>ProgramArguments</key>
+    <array><string>/bin/sh</string><string>-c</string><string>[ "$(id -un)" = kanna-build ] || exec sleep 86400; exec /usr/local/kanna/vsockrelay serve 7000 "$HOME/.kanna/agent.sock"</string></array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardErrorPath</key><string>/tmp/dev.kanna.isolation.relay.log</string>
+    <key>StandardOutPath</key><string>/tmp/dev.kanna.isolation.relay.log</string>
+</dict>
+</plist>

@@ -51,7 +51,14 @@ public final class OverviewView: NSView {
         return ["offset": Double(g.offset), "box_y": Double(g.boxY), "box_height": Double(g.boxHeight), "scale": Double(g.scale),
                 "height": Double(bounds.height), "width": Double(bounds.width), "marks": Double(marks.count), "tiles": Double(tiles.count),
                 "rendered_tiles": Double(renderedTiles), "box_shown": hovering || dragging ? 1 : 0, "document_height": Double(viewport.documentHeight),
-                "top": Double(viewport.top)]
+                "top": Double(viewport.top), "content_height": Double(viewport.contentHeight), "picture_height": Double(pictureHeight)]
+    }
+
+    public var pictureHeight: CGFloat {
+        switch content {
+        case .image(let image, let scale): return image.width > 0 && scale > 0 ? CGFloat(image.height) * OverviewMetrics.thumbWidth / CGFloat(image.width) / scale : 0
+        case .text, .empty: return viewport.contentHeight
+        }
     }
 
     public var debugMarks: [String: Int] {

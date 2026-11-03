@@ -13,8 +13,10 @@ pub const SCHEDULE: &str = "schedule ";
 
 pub const RUN: &str = "run-";
 
+pub const DESK: &str = "desk";
+
 pub fn yours(sender: &str) -> bool {
-    sender == USER || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
+    sender == USER || sender == DESK || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
 }
 
 pub const PICKUP: Duration = Duration::from_secs(5);
@@ -53,29 +55,30 @@ impl Channel {
 pub struct Ready {
     status: Option<Status>,
     since: Instant,
-    reported: bool,
 }
 
 impl Ready {
     pub fn new(now: Instant) -> Ready {
-        Ready { status: None, since: now, reported: false }
+        Ready { status: None, since: now }
     }
 
-    pub fn see(&mut self, status: Option<Status>, ended: bool, now: Instant) {
+    pub fn see(&mut self, status: Option<Status>, now: Instant) {
         if status != self.status {
             self.status = status;
             self.since = now;
         }
-        self.reported = ended && status == Some(Status::Idle);
     }
 
     pub fn sent(&mut self, now: Instant) {
-        self.since = now;
-        self.reported = false;
+        self.since = now + AGAIN;
     }
 
-    pub fn at(&self, settle: Duration) -> Option<Instant> {
-        (self.status == Some(Status::Idle)).then(|| if self.reported { self.since } else { self.since + settle })
+    pub fn status(&self) -> Option<Status> {
+        self.status
+    }
+
+    pub fn at(&self) -> Option<Instant> {
+        (self.status == Some(Status::Idle)).then_some(self.since)
     }
 }
 
@@ -84,6 +87,8 @@ pub fn prompt(messages: &[(String, String)]) -> String {
 }
 
 pub const RETRY: Duration = Duration::from_secs(5);
+
+pub const AGAIN: Duration = Duration::from_secs(3);
 
 pub fn permissions(argv: &[Vec<String>]) -> Option<&'static str> {
     let unprompted = |args: &Vec<String>| args.iter().enumerate().any(|(at, arg)| UNPROMPTED.contains(&arg.as_str()) || (arg == "--permission-mode" && args.get(at + 1).is_some_and(|mode| mode == "bypassPermissions")));
@@ -143,23 +148,7 @@ pub fn deliver(channel: &Channel, text: &str, mode: Option<&str>) -> Result<(), 
 }
 
 pub fn codex_turn(socket: &Path, text: &str) -> Result<(), String> {
-    let failed = |error: std::io::Error| format!("{}: {error}", socket.display());
-    let mut stream = UnixStream::connect(socket).map_err(failed)?;
-    stream.set_read_timeout(Some(TURN_TIMEOUT)).map_err(failed)?;
-    stream.set_write_timeout(Some(TURN_TIMEOUT)).map_err(failed)?;
-    stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: a2FubmEta2FubmEta2FubmE=\r\nSec-WebSocket-Version: 13\r\n\r\n").map_err(failed)?;
-    let mut head = Vec::new();
-    while !head.ends_with(b"\r\n\r\n") {
-        let mut byte = [0u8; 1];
-        stream.read_exact(&mut byte).map_err(failed)?;
-        head.push(byte[0]);
-    }
-    if !head.starts_with(b"HTTP/1.1 101") {
-        return Err(format!("codex's app-server refused the connection: {}", String::from_utf8_lossy(&head).lines().next().unwrap_or("")));
-    }
-    let mut rpc = Rpc { stream, next: 0 };
-    rpc.call("initialize", json!({ "clientInfo": { "name": "kanna", "version": env!("CARGO_PKG_VERSION") } }))?;
-    rpc.send(&json!({ "jsonrpc": "2.0", "method": "initialized" })).map_err(failed)?;
+    let mut rpc = Rpc::open(socket, Some(TURN_TIMEOUT), None)?;
     let loaded = rpc.call("thread/loaded/list", json!({}))?;
     let mut thread = None;
     for id in loaded["data"].as_array().into_iter().flatten().filter_map(Value::as_str) {
@@ -173,13 +162,42 @@ pub fn codex_turn(socket: &Path, text: &str) -> Result<(), String> {
     rpc.call("turn/start", json!({ "threadId": thread, "input": [{ "type": "text", "text": text }] })).map(|_| ())
 }
 
-struct Rpc {
+pub struct Rpc {
     stream: UnixStream,
     next: u64,
 }
 
 impl Rpc {
-    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    pub fn open(socket: &Path, timeout: Option<Duration>, capabilities: Option<Value>) -> Result<Rpc, String> {
+        let failed = |error: std::io::Error| format!("{}: {error}", socket.display());
+        let mut stream = UnixStream::connect(socket).map_err(failed)?;
+        stream.set_read_timeout(timeout).map_err(failed)?;
+        stream.set_write_timeout(timeout).map_err(failed)?;
+        stream.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: a2FubmEta2FubmEta2FubmE=\r\nSec-WebSocket-Version: 13\r\n\r\n").map_err(failed)?;
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).map_err(failed)?;
+            head.push(byte[0]);
+        }
+        if !head.starts_with(b"HTTP/1.1 101") {
+            return Err(format!("codex's app-server refused the connection: {}", String::from_utf8_lossy(&head).lines().next().unwrap_or("")));
+        }
+        let mut rpc = Rpc { stream, next: 0 };
+        let mut hello = json!({ "clientInfo": { "name": "kanna", "version": env!("CARGO_PKG_VERSION") } });
+        if let Some(capabilities) = capabilities {
+            hello["capabilities"] = capabilities;
+        }
+        rpc.call("initialize", hello)?;
+        rpc.send(&json!({ "jsonrpc": "2.0", "method": "initialized" })).map_err(failed)?;
+        Ok(rpc)
+    }
+
+    pub fn wait_forever(&self) {
+        let _ = self.stream.set_read_timeout(None);
+    }
+
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         self.next += 1;
         let id = self.next;
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).map_err(|error| format!("codex's app-server: {error}"))?;
@@ -195,7 +213,7 @@ impl Rpc {
         }
     }
 
-    fn send(&mut self, message: &Value) -> std::io::Result<()> {
+    pub fn send(&mut self, message: &Value) -> std::io::Result<()> {
         self.frame(0x1, message.to_string().as_bytes())
     }
 
@@ -218,7 +236,7 @@ impl Rpc {
         self.stream.write_all(&frame)
     }
 
-    fn receive(&mut self) -> std::io::Result<String> {
+    pub fn receive(&mut self) -> std::io::Result<String> {
         let mut message = Vec::new();
         loop {
             let mut head = [0u8; 2];
@@ -272,25 +290,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_message_waits_for_the_agent_to_stay_idle_or_to_report_its_turn_over() {
+    fn a_message_waits_for_the_agent_to_report_idle() {
         let t0 = Instant::now();
         let at = |ms: u64| t0 + Duration::from_millis(ms);
-        let settle = Duration::from_millis(3000);
         let mut ready = Ready::new(t0);
-        assert_eq!(ready.at(settle), None, "no agent yet");
-        ready.see(Some(Status::Working), false, at(0));
-        assert_eq!(ready.at(settle), None, "busy");
-        ready.see(Some(Status::Idle), false, at(1000));
-        assert_eq!(ready.at(settle), Some(at(4000)), "idle, held 3s");
-        ready.see(Some(Status::Idle), false, at(2000));
-        assert_eq!(ready.at(settle), Some(at(4000)), "the same idle");
-        ready.see(Some(Status::NeedsYou), false, at(2500));
-        assert_eq!(ready.at(settle), None, "never while it asks");
-        ready.see(Some(Status::Working), false, at(2600));
-        ready.see(Some(Status::Idle), true, at(5000));
-        assert_eq!(ready.at(settle), Some(at(5000)), "the agent said its turn is over");
+        assert_eq!(ready.at(), None, "no agent yet");
+        ready.see(Some(Status::Working), at(0));
+        assert_eq!(ready.at(), None, "busy");
+        ready.see(Some(Status::Idle), at(1000));
+        assert_eq!(ready.at(), Some(at(1000)), "idle goes at once");
+        ready.see(Some(Status::Idle), at(2000));
+        assert_eq!(ready.at(), Some(at(1000)), "the same idle");
+        ready.see(Some(Status::NeedsYou), at(2500));
+        assert_eq!(ready.at(), None, "never while it asks");
+        ready.see(Some(Status::Idle), at(5000));
         ready.sent(at(5100));
-        assert_eq!(ready.at(settle), Some(at(8100)), "after a delivery, it settles again");
+        assert_eq!(ready.at(), Some(at(8100)), "after a try, again 3s later if still idle");
     }
 
     #[test]

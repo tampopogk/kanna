@@ -2,8 +2,8 @@ use crate::perf;
 use crate::settings::Settings;
 use crate::wire::Wire;
 use crate::Event;
-use kanna_detect::{Activity, Screen};
 use kanna_vt::{Key, Lines, Mode, ProgramStatus, Terminal};
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 const OUTBOX: usize = 4 << 20;
+
+pub const REPLAY: usize = 512 << 10;
 
 const QUIET: Duration = Duration::from_millis(50);
 
@@ -58,12 +60,14 @@ pub struct Feed {
     screen: Terminal,
     outbox: Vec<u8>,
     overflowed: bool,
+    written: u64,
+    replay: VecDeque<u8>,
+    grids: VecDeque<(u64, u16, u16)>,
     posted: bool,
     pub unsaved: bool,
     pub cols: u16,
     pub rows: u16,
     cwd: Option<String>,
-    activity: Activity,
     statuses_serial: u64,
     statuses_owner: Option<i32>,
     echo: Option<Instant>,
@@ -74,6 +78,24 @@ pub struct Feed {
 pub struct Noticed {
     pub overflowed: bool,
     pub cwd: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Replayed {
+    Output(Vec<u8>, u64),
+    Grid(u16, u16),
+}
+
+pub struct Snapshot {
+    pub data: Vec<u8>,
+    pub offset: u64,
+    pub more: bool,
+}
+
+pub struct Chunk {
+    pub bytes: Vec<u8>,
+    pub offset: u64,
+    pub typed: Option<Instant>,
 }
 
 impl Feed {
@@ -92,7 +114,7 @@ impl Feed {
 
     fn with(screen: Terminal, unsaved: bool) -> io::Result<Arc<Mutex<Feed>>> {
         let (cols, rows) = screen.size();
-        Ok(Arc::new(Mutex::new(Feed { screen, outbox: Vec::new(), overflowed: false, posted: false, unsaved, cols, rows, cwd: None, activity: Activity::default(), statuses_serial: 0, statuses_owner: None, echo: None, shown: false, inflight: false })))
+        Ok(Arc::new(Mutex::new(Feed { screen, outbox: Vec::new(), overflowed: false, written: 0, replay: VecDeque::new(), grids: VecDeque::new(), posted: false, unsaved, cols, rows, cwd: None, statuses_serial: 0, statuses_owner: None, echo: None, shown: false, inflight: false })))
     }
 
     pub fn apply(&mut self, settings: &Settings) -> Vec<u8> {
@@ -125,11 +147,20 @@ impl Feed {
     pub fn push(&mut self, bytes: &[u8]) -> (bool, Vec<u8>) {
         self.screen.write(bytes);
         self.unsaved = true;
-        self.changed();
         let replies = self.screen.take_replies();
         if self.screen.take_changed().pwd {
             if let Some(cwd) = cwd_from_url(&self.screen.pwd()) {
                 self.cwd = Some(cwd);
+            }
+        }
+        self.written += bytes.len() as u64;
+        self.replay.extend(bytes);
+        if self.replay.len() > REPLAY {
+            let excess = self.replay.len() - REPLAY;
+            self.replay.drain(..excess);
+            let start = self.written - REPLAY as u64;
+            while self.grids.front().is_some_and(|(at, _, _)| *at < start) {
+                self.grids.pop_front();
             }
         }
         if self.overflowed || self.outbox.len() + bytes.len() > OUTBOX {
@@ -156,7 +187,7 @@ impl Feed {
         self.overflowed
     }
 
-    pub fn chunk(&mut self, most: usize) -> Option<(Vec<u8>, Option<Instant>)> {
+    pub fn chunk(&mut self, most: usize) -> Option<Chunk> {
         if self.outbox.is_empty() {
             return None;
         }
@@ -169,7 +200,8 @@ impl Feed {
         if let Some(typed) = self.echo.filter(|_| self.outbox.is_empty()) {
             perf::since("echo.taken", typed);
         }
-        Some((bytes, if self.outbox.is_empty() { self.echo.take() } else { None }))
+        let offset = self.written - self.outbox.len() as u64;
+        Some(Chunk { bytes, offset, typed: if self.outbox.is_empty() { self.echo.take() } else { None } })
     }
 
     pub fn discard(&mut self) {
@@ -179,12 +211,39 @@ impl Feed {
         self.inflight = false;
     }
 
-    pub fn snapshot(&mut self) -> Result<Vec<u8>, kanna_vt::Error> {
-        let snapshot = self.screen.snapshot()?;
+    pub fn snapshot(&mut self, history: Option<usize>) -> Result<Snapshot, kanna_vt::Error> {
+        let (data, more) = match history {
+            Some(rows) => self.screen.snapshot_with_history(rows)?,
+            None => (self.screen.snapshot()?, false),
+        };
         self.outbox = Vec::new();
         self.overflowed = false;
         self.echo = None;
-        Ok(snapshot)
+        Ok(Snapshot { data, offset: self.written, more })
+    }
+
+    pub fn replay(&mut self, from: u64) -> Option<Vec<Replayed>> {
+        let start = self.written - self.replay.len() as u64;
+        if from < start || from > self.written {
+            return None;
+        }
+        let mut replayed = Vec::new();
+        let mut at = from;
+        let grids = self.grids.iter().filter(|(offset, _, _)| *offset >= from).map(|&(offset, cols, rows)| (offset, Some((cols, rows))));
+        for (offset, grid) in grids.chain([(self.written, None)]) {
+            if offset > at {
+                let bytes = self.replay.range((at - start) as usize..(offset - start) as usize).copied().collect();
+                replayed.push(Replayed::Output(bytes, offset));
+                at = offset;
+            }
+            if let Some((cols, rows)) = grid {
+                replayed.push(Replayed::Grid(cols, rows));
+            }
+        }
+        self.outbox = Vec::new();
+        self.overflowed = false;
+        self.echo = None;
+        Some(replayed)
     }
 
     pub fn save(&self) -> Result<Vec<u8>, kanna_vt::Error> {
@@ -195,20 +254,13 @@ impl Feed {
         self.screen.set_cell_pixels(u32::from(width / cols.max(1)), u32::from(height / rows.max(1)));
         if (cols, rows) != (self.cols, self.rows) {
             (self.cols, self.rows) = (cols, rows);
+            self.grids.push_back((self.written, cols, rows));
             self.unsaved = true;
-            self.changed();
-            if let Err(error) = self.screen.resize(cols, rows) {
+                if let Err(error) = self.screen.resize(cols, rows) {
                 log!("kanna-daemon: couldn't make {id}'s screen {cols}×{rows}: {error}");
             }
         }
         self.screen.take_replies()
-    }
-
-    fn changed(&mut self) {
-        let now = Instant::now();
-        self.activity.changed = Some(now);
-        self.activity.dirty_since.get_or_insert(now);
-        self.activity.held_since = if self.screen.mode(Mode::SYNC_OUTPUT) { Some(self.activity.held_since.unwrap_or(now)) } else { None };
     }
 
     pub fn claim_statuses(&mut self, group: impl FnOnce() -> Option<i32>) {
@@ -236,23 +288,6 @@ impl Feed {
 
     pub fn program_statuses(&self) -> Vec<ProgramStatus> {
         self.screen.program_statuses()
-    }
-
-    pub fn settle(&mut self) {
-        self.activity.dirty_since = None;
-    }
-
-    pub fn activity(&self) -> Activity {
-        self.activity
-    }
-
-    pub fn status_screen(&mut self) -> Screen {
-        self.activity.dirty_since = None;
-        self.status_screen_peek()
-    }
-
-    pub fn status_screen_peek(&self) -> Screen {
-        Screen { lines: self.screen.text(Lines::Screen).lines().map(str::to_owned).collect(), title: self.screen.title(), progress: self.screen.progress().as_str().into() }
     }
 
     pub fn text(&self, lines: Option<usize>) -> String {
@@ -530,12 +565,13 @@ pub(crate) mod tests {
         let f = feed(20, 5, "before");
         let mut f = Feed::lock(&f);
         f.push(&overlong_osc());
-        assert!(f.snapshot().is_err());
-        assert!(f.chunk(16).is_some_and(|(bytes, _)| bytes.len() == 16), "the outbox is kept, and taken a chunk at a time");
+        assert!(f.snapshot(None).is_err());
+        assert!(f.chunk(16).is_some_and(|chunk| chunk.bytes.len() == 16 && chunk.offset == 16), "the outbox is kept, and taken a chunk at a time");
         f.push(b"\x07after");
-        let snapshot = f.snapshot().unwrap();
+        let snapshot = f.snapshot(None).unwrap();
         assert!(f.chunk(usize::MAX).is_none());
-        assert_eq!(Terminal::from_snapshot(&snapshot).unwrap().text(Lines::Screen), "beforeafter");
+        assert_eq!(snapshot.offset, (6 + overlong_osc().len() + 6) as u64);
+        assert_eq!(Terminal::from_snapshot(&snapshot.data).unwrap().text(Lines::Screen), "beforeafter");
     }
 
     #[test]
@@ -547,7 +583,7 @@ pub(crate) mod tests {
         assert_eq!(posts, [false, false, false, false, true], "the main loop hears once, when it overflows");
         assert!(f.overflowed());
         assert!(f.noticed().overflowed);
-        f.snapshot().unwrap();
+        f.snapshot(None).unwrap();
         assert!(!f.overflowed() && f.chunk(usize::MAX).is_none());
     }
 
@@ -559,8 +595,54 @@ pub(crate) mod tests {
         for i in 0..3000 {
             f.push(format!("\x1b[38;5;{}m\x1b[48;2;{i};1;2m{line}\x1b[0m\r\n", i % 256).as_bytes());
         }
-        let snapshot = f.snapshot().unwrap();
-        assert!(snapshot.len() < crate::settings::MAX_SCROLLBACK_BYTES, "{} bytes", snapshot.len());
+        let snapshot = f.snapshot(None).unwrap();
+        assert!(snapshot.data.len() < crate::settings::MAX_SCROLLBACK_BYTES, "{} bytes", snapshot.data.len());
+        assert!(!snapshot.more);
+        let bounded = f.snapshot(Some(100)).unwrap();
+        assert!(bounded.data.len() * 4 < snapshot.data.len(), "{} of {} bytes", bounded.data.len(), snapshot.data.len());
+        assert!(bounded.more);
+    }
+
+    #[test]
+    fn a_bounded_snapshot_in_the_alternate_screen_still_says_the_shell_has_more() {
+        let f = feed(80, 24, "");
+        let mut f = Feed::lock(&f);
+        for i in 0..5000 {
+            f.push(format!("line {i}\r\n").as_bytes());
+        }
+        f.push(b"\x1b[?1049h full screen");
+        let bounded = f.snapshot(Some(100)).unwrap();
+        assert!(bounded.more);
+    }
+
+    #[test]
+    fn a_replay_gives_the_output_and_sizes_since_an_offset_in_order() {
+        let f = feed(20, 5, "one ");
+        let mut f = Feed::lock(&f);
+        f.push(b"two ");
+        f.resize("t", 30, 6, 0, 0);
+        f.push(b"three");
+        assert_eq!(f.replay(4), Some(vec![Replayed::Output(b"two ".to_vec(), 8), Replayed::Grid(30, 6), Replayed::Output(b"three".to_vec(), 13)]));
+        assert_eq!(f.replay(8), Some(vec![Replayed::Grid(30, 6), Replayed::Output(b"three".to_vec(), 13)]));
+        assert_eq!(f.replay(13), Some(vec![]));
+        assert_eq!(f.replay(14), None);
+        assert!(f.chunk(usize::MAX).is_none(), "the replay sent what the outbox held");
+    }
+
+    #[test]
+    fn a_replay_reaches_back_only_as_far_as_the_ring() {
+        let f = feed(20, 5, "");
+        let mut f = Feed::lock(&f);
+        f.resize("t", 30, 6, 0, 0);
+        let chunk = vec![b'x'; 1000];
+        for _ in 0..(REPLAY / 1000 + 10) {
+            f.push(&chunk);
+        }
+        let written = ((REPLAY / 1000 + 10) * 1000) as u64;
+        assert_eq!(f.replay(0), None);
+        assert_eq!(f.replay(written - REPLAY as u64 - 1), None);
+        let replayed = f.replay(written - REPLAY as u64).unwrap();
+        assert_eq!(replayed, vec![Replayed::Output(vec![b'x'; REPLAY], written)]);
     }
 
     fn reported(f: &Feed, group: i32) -> Option<&'static str> {

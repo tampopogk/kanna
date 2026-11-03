@@ -71,8 +71,12 @@ pub fn pane_record(pane: &Pane) -> Map {
         }
         PaneType::Diff => {
             out.insert("path".into(), opt(pane.path.as_deref()));
-            out.insert("args".into(), diff_args(pane.diff.as_deref()));
+            out.insert("args".into(), diff_args(pane.git_args.as_deref()));
             out.insert("view".into(), Value::String(pane.view.clone().unwrap_or_else(|| "unified".into())));
+        }
+        PaneType::Log => {
+            out.insert("path".into(), opt(pane.path.as_deref()));
+            out.insert("args".into(), diff_args(pane.git_args.as_deref()));
         }
         PaneType::Ios => {
             out.insert("app".into(), opt(pane.app.as_deref()));
@@ -130,8 +134,12 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
         }
         PaneType::Diff => {
             pane.path = field("path");
-            pane.diff = read_diff_args(item.get("args")).ok().flatten();
+            pane.git_args = read_diff_args(item.get("args")).ok().flatten();
             pane.view = read_view(item.get("view")).ok().flatten();
+        }
+        PaneType::Log => {
+            pane.path = field("path");
+            pane.git_args = read_diff_args(item.get("args")).ok().flatten();
         }
         PaneType::Ios => {
             pane.app = field("app");
@@ -194,7 +202,7 @@ pub(crate) fn upgrade(state: &Value) -> Value {
     let count = |key: &str| counters.and_then(|c| c.get(key)).cloned().unwrap_or(Value::Null);
     let pane = count("pane");
     out["version"] = num(STATE_VERSION as f64);
-    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "serial": pane, "runview": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
+    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "log": pane, "serial": pane, "runview": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
     out
 }
 
@@ -260,7 +268,7 @@ pub(crate) fn import_versions(state: &Value, versions: &[u32], reader: &str) -> 
         }
         let needed = match kind {
             PaneType::Web => Some("url"),
-            PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Serial => Some("path"),
+            PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial => Some("path"),
             PaneType::Ios => Some("app"),
             PaneType::Run => Some("run"),
             PaneType::Term => None,

@@ -14,7 +14,7 @@ use std::fmt;
 use std::time::Duration;
 
 pub const DONE: &str = "done";
-pub const AGENTS: &[&str] = &["claude", "codex", "copilot", "opencode", "agy"];
+pub const AGENTS: &[&str] = &["claude", "codex", "opencode", "agy"];
 pub const ASSUMED_PARTS: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq)]

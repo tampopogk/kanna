@@ -55,9 +55,9 @@ flowchart LR
 
 ## 4. Older peers
 
-The protocol range was then `[2, 2]` (`kanna_build::PROTOCOLS`, `Protocols.mine`; now `[2, 3]`, [input latency](input-latency.md#4-the-app-link-protocol-3)). Locally the app, daemon and CLI are one build, so nothing changes for them. A Kanna of protocol 1 on another machine is refused with `other_protocol` and shows as Offline with "runs an older Kanna"; `kanna machine update` reaches it across protocols ([updates §6](machine-update.md#6-protocols)). Speaking 1 and 2 would have meant translating every renamed command, notice and field at the link, in Rust and Swift, for the few days until each machine updates; decided with the user not to.
+The protocol range was then `[2, 2]` (`kanna_build::PROTOCOLS`, `Protocols.mine`; a build now speaks one protocol, `kanna_build::PROTOCOL`, [versions §2](machine-versions.md#2-protocols)). Locally the app, daemon and CLI are one build, so nothing changes for them. A Kanna of protocol 1 on another machine is refused with `other_protocol` and shows as Offline with "runs an older Kanna" ([versions §2](machine-versions.md#2-protocols)). Speaking 1 and 2 would have meant translating every renamed command, notice and field at the link, in Rust and Swift, for the few days until each machine updates; decided with the user not to.
 
 ## 5. Tests
 
-- **Unit:** `db.rs` `a_db_from_before_the_desk_and_shelf_names_moves_each_task_and_event_to_the_place_it_was_in` (and the version 2 renumber test, ending on the new names); `owner.rs` `a_version_3_layout_s_old_place_names_read_as_the_desk_and_the_shelf`; the protocol tests in `app_link.rs` and `machine.rs` with `PROTOCOLS`.
+- **Unit:** `db.rs` `a_db_from_before_the_desk_and_shelf_names_moves_each_task_and_event_to_the_place_it_was_in` (and the version 2 renumber test, ending on the new names); `owner.rs` `a_version_3_layout_s_old_place_names_read_as_the_desk_and_the_shelf`; the protocol tests in `app_link.rs` and `machine.rs`.
 - **e2e:** the scenarios touching the Desk, the Shelf, tasks and `--json` (`desk_tasks`, `desk_shelf`, `task_shelf`, `move_to_shelf`, `shelf_and_back`, `task_history`, `shelf_runners`, `perf_intervals`, `codex_task`, `pick_at_once`, `toasts`) read the new keys.

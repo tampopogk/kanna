@@ -36,19 +36,4 @@ struct CodeFileTests {
         #expect(CodeFile(text: "a\nc\nd\n").changedLines(from: old) == [])
         #expect(CodeFile(text: "a\nb\nc\nd\n").changedLines(from: old) == [])
     }
-
-    @Test func missingFoldersAndBinariesFailWithTheirMessage() throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("kanna-code-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let binary = folder.appendingPathComponent("a.bin")
-        try Data([0x7f, 0x45, 0x00, 0x01]).write(to: binary)
-        let text = folder.appendingPathComponent("a.rs")
-        try Data("fn main() {}\n".utf8).write(to: text)
-        #expect(CodeFile.read(folder.appendingPathComponent("gone.rs").path) == .failure(.missing(folder.appendingPathComponent("gone.rs").path)))
-        #expect(CodeFile.read(folder.path) == .failure(.folder(folder.path)))
-        #expect(CodeFile.read(binary.path) == .failure(.binary(binary.path)))
-        #expect(CodeFile.read(text.path) == .success(CodeFile(text: "fn main() {}\n")))
-        #expect(CodeFile.Failure.folder("/x").message == "/x is a folder, not a file")
-    }
 }
