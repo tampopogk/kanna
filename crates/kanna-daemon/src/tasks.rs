@@ -3592,12 +3592,12 @@ impl Tasks {
     fn activated(&self, args: &Value) -> Result<Map, KmuxError> {
         let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
         let id = self.task_of(reference).unwrap_or_else(|| reference.to_string());
-        let entry = self.running.borrow().iter().find(|r| r.entry.id == id).map(|r| r.entry.clone()).ok_or_else(|| not_found(reference))?;
-        let by = who(args);
-        if let Err(error) = self.db.log(&id, &Change::new("activated").by(by)) {
+        if !self.running.borrow().iter().any(|r| r.entry.id == id) {
+            return Err(not_found(reference));
+        }
+        if let Err(error) = self.db.log(&id, &Change::new("activated").by(who(args))) {
             log!("kanna-daemon: couldn't save {id}'s activated in {}: {error}", db::FILE);
         }
-        self.tell_planner(&entry, What::Activated, by);
         Ok(Map::from_iter([("task".to_string(), json!(id))]))
     }
 
