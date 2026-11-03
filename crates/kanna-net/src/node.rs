@@ -272,7 +272,6 @@ impl Node {
                         "me": *key == me,
                         "trusted": view.trusted().contains(key),
                         "revoked": view.revoked.contains(key),
-                        "hosted": view.hosted.contains(key),
                         "conflict": keys.len() > 1,
                         "path": path,
                         "addrs": addrs,
@@ -283,7 +282,7 @@ impl Node {
             }
         }
         let nearby: Vec<Value> = state.nearby.iter().map(|(key, n)| json!({ "key": key, "addrs": n.addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>(), "pairing": n.pairing })).collect();
-        let offer = state.offer.as_ref().filter(|o| !o.used && Instant::now() < o.expires).map(|o| json!({ "code": if o.is_token() { Value::Null } else { json!(o.code) }, "token": o.is_token(), "expires_in": o.expires.saturating_duration_since(Instant::now()).as_secs() }));
+        let offer = state.offer.as_ref().filter(|o| !o.used && Instant::now() < o.expires).map(|o| json!({ "code": o.code, "expires_in": o.expires.saturating_duration_since(Instant::now()).as_secs() }));
         let addrs: Vec<String> = self.0.endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
         json!({
             "name": state.name,
@@ -336,26 +335,15 @@ impl Node {
         Ok(json!({ "relay": relay.as_ref().map(|r| r.url.to_string()), "token": relay.is_some_and(|r| r.token.is_some()) }))
     }
 
-    pub fn offer(&self, token: Option<&str>) -> Result<Value, Failure> {
+    pub fn offer(&self) -> Result<Value, Failure> {
         self.usable()?;
-        if token.is_some_and(|t| !crate::pair::valid_token(t)) {
-            return Err(Failure::new("bad_request", "an enrollment token is 22 to 128 letters, digits, - and _"));
-        }
         let mut state = self.state();
         if state.log.is_some() {
             return Err(Refused::new("already_paired").into());
         }
-        let offer = match token {
-            Some(token) => Offer::with_token(token, Instant::now()),
-            None => Offer::new(Instant::now()),
-        };
+        let offer = Offer::new(Instant::now());
         let addrs: Vec<String> = self.0.endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
-        let home_relay = self.0.endpoint.addr().relay_urls().next().map(|r| r.to_string());
-        let mut reply = json!({ "code": offer.code, "key": self.key(), "port": state.port, "addrs": addrs, "home_relay": home_relay, "expires_in": offer.expires.saturating_duration_since(Instant::now()).as_secs(), "name": state.name });
-        if offer.is_token() {
-            reply["code"] = Value::Null;
-            reply["token"] = json!(true);
-        }
+        let reply = json!({ "code": offer.code, "key": self.key(), "port": state.port, "addrs": addrs, "expires_in": offer.expires.saturating_duration_since(Instant::now()).as_secs(), "name": state.name });
         state.offer = Some(offer);
         drop(state);
         self.0.outcome.send_replace(None);
@@ -661,13 +649,6 @@ impl Node {
                 Err(failure) => json!({ "id": id, "ok": false, "error": { "code": failure.code, "message": failure.message } }),
             };
         }
-        let hosted = self.state().log.as_ref().is_some_and(|l| {
-            let view = l.view();
-            view.hosted.contains(from) || view.key_of(from).is_some_and(|k| view.hosted.contains(&k))
-        });
-        if hosted && request["cmd"] == "machine" && !matches!(request["args"]["action"].as_str().unwrap_or("status"), "status" | "ping") {
-            return json!({ "id": id, "ok": false, "error": { "code": "hosted_signer", "message": "a machine Kanna Cloud runs can only list and ping your machines through another, never pair, revoke or change one" } });
-        }
         let (tx, rx) = oneshot::channel();
         self.0.host.request(from.to_string(), request, Box::new(move |reply| {
             let _ = tx.send(reply);
@@ -928,9 +909,6 @@ impl Node {
             };
             let id: EndpointId = key.parse().map_err(|_| Failure::new("bad_request", format!("{key} isn't a machine's key")))?;
             let mut addr = EndpointAddr::new(id);
-            if let Some(relay) = &self.state().relay {
-                addr = addr.with_relay_url(relay.url.clone());
-            }
             if let Some(at) = at {
                 let at = if at.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) { at.to_string() } else { format!("{at}:{DEFAULT_PORT}") };
                 let found = tokio::net::lookup_host(at.clone()).await.map_err(|e| Failure::new("not_found", format!("can't resolve {at}: {e}")))?;
@@ -963,12 +941,12 @@ impl Node {
         }
     }
 
-    pub async fn pair(&self, code: &str, peer: Option<&str>, hosted: bool) -> Result<Value, Failure> {
+    pub async fn pair(&self, code: &str, peer: Option<&str>) -> Result<Value, Failure> {
         self.usable()?;
         let targets = self.pairing_targets(peer).await?;
         let mut last = Failure::from(Refused::new("pake_confirmation_failed"));
         for target in targets {
-            match tokio::time::timeout(PAIRING_SESSION, self.pair_a(code, target, hosted)).await {
+            match tokio::time::timeout(PAIRING_SESSION, self.pair_a(code, target)).await {
                 Ok(Ok(paired)) => return Ok(paired),
                 Ok(Err(failure)) if BEFORE_THE_CODE.contains(&failure.code.as_str()) => last = failure,
                 Ok(Err(failure)) => return Err(failure),
@@ -978,7 +956,7 @@ impl Node {
         Err(last)
     }
 
-    async fn pair_a(&self, code: &str, target: EndpointAddr, hosted: bool) -> Result<Value, Failure> {
+    async fn pair_a(&self, code: &str, target: EndpointAddr) -> Result<Value, Failure> {
         let key = target.id.to_string();
         let mine = self.descriptor();
         let staged = self.state().log.clone().unwrap_or_else(|| PeerLog::new(mine.clone()));
@@ -1009,12 +987,7 @@ impl Node {
             return Err(Failure::from_reply(&reply));
         }
         party.confirm(&reply["proof"])?;
-        let mut device = hb["device"].clone();
-        if hosted {
-            device["hosted"] = json!(true);
-        } else if let Some(fields) = device.as_object_mut() {
-            fields.remove("hosted");
-        }
+        let device = hb["device"].clone();
         let name = device["name"].as_str().unwrap_or_default().to_string();
         if !valid_name(&name) {
             return refuse(&mut send, Failure::new("bad_name", "the machine waiting to pair sent a name that isn't one (up to 32 lowercase letters, digits and -)")).await;
@@ -1025,7 +998,7 @@ impl Node {
             return refuse(&mut send, refused.into()).await;
         }
         let (tx, rx) = oneshot::channel();
-        let question = json!({ "name": name, "key": key, "addrs": device["addrs"], "capabilities": device["capabilities"], "inviter": mine["name"], "hosted": hosted });
+        let question = json!({ "name": name, "key": key, "addrs": device["addrs"], "capabilities": device["capabilities"], "inviter": mine["name"] });
         self.0.host.confirm(question, Box::new(move |answer| {
             let _ = tx.send(answer);
         }));

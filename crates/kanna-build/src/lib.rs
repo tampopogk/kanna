@@ -13,7 +13,7 @@ pub const DAEMON: &str = "kanna-daemon";
 
 pub const VERSION: &str = env!("KANNA_BUILD_VERSION");
 
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 4;
 
 pub const COMMIT: &str = env!("KANNA_BUILD_COMMIT");
 

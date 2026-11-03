@@ -1,7 +1,6 @@
 pub mod accounts;
 pub mod agents;
 pub mod args;
-pub mod cloud;
 pub mod commands;
 pub mod complete;
 pub mod diagrams;
@@ -163,16 +162,13 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if command.name == "pipeline" {
         return pipeline::run(&request, json_output, &target);
     }
-    if command.name == "cloud" {
-        return cloud::run(&request, json_output, &target);
-    }
     let mut mux = Session::connect(&target, env)?;
     mux.host = host;
     if command.name == "serial" {
         return serial::run(&request, &mut mux, json_output);
     }
     if command.name == "machine" && request["action"] == "offer" {
-        return machine::offer(&mut mux, &request, json_output);
+        return machine::offer(&mut mux, json_output);
     }
     if command.name == "comment" && request["doc"] == true {
         return threads::comment(&request, &mut mux, json_output);

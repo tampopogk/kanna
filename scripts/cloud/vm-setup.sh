@@ -2,7 +2,7 @@
 set -euo pipefail
 exec </dev/null
 
-name="${1:?usage: vm-setup.sh NAME TARBALL|latest AGENTS RELAY-URL}"
+name="${1:?usage: vm-setup.sh NAME TARBALL|latest AGENTS RELAY-URL|none}"
 tarball="${2:?}"
 agents="${3:?}"
 relay="${4:?}"
@@ -26,17 +26,18 @@ bash "$dir/server-setup.sh" --tarball "$tarball" --agents "$agents"
 rm -f "$tarball"
 
 kanna() { KANNA_SOCKET="$HOME/.local/share/kanna-prod/kanna.sock" /opt/kanna/current/kanna "$@"; }
-step "This machine: $name, meeting your machines through $relay"
+step "This machine: $name"
 kanna machine name "$name" >/dev/null
-if [[ -s "$dir/relay-token" ]]; then
-  kanna machine relay "$relay" --token-file "$dir/relay-token" >/dev/null
-else
-  kanna machine relay "$relay" >/dev/null
+if [[ "$relay" != none ]]; then
+  step "Its relay: $relay"
+  if [[ -s "$dir/relay-token" ]]; then
+    kanna machine relay "$relay" --token-file "$dir/relay-token" >/dev/null
+  else
+    kanna machine relay "$relay" >/dev/null
+  fi
+  reached() { kanna machine list --json | python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("home_relay") else 1)'; }
+  for _ in $(seq 100); do reached && break; sleep 0.3; done
+  reached || fail "the daemon never reached the relay $relay"
 fi
 rm -f "$dir/relay-token"
-for _ in $(seq 100); do
-  kanna machine list --json | python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("home_relay") else 1)' && break
-  sleep 0.3
-done
-kanna machine list --json | python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("home_relay") else 1)' || fail "the daemon never reached the relay $relay"
-step "Ready to enroll"
+step "Ready"

@@ -79,9 +79,6 @@ impl Refused {
             "code_expired" => "that code expired",
             "rate_limited" => "too many wrong codes: start pairing again",
             "already_paired" => "this machine is paired already",
-            "hosted_signer" => "a machine Kanna Cloud runs can't add or revoke other machines",
-            "hosted_downgrade" => "a machine Kanna Cloud runs stays marked as one",
-            "hosted_upgrade" => "a machine you added yourself can't be marked as one Kanna Cloud runs",
             _ => "refused",
         }
     }

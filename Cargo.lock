@@ -1986,6 +1986,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanna-cloud"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "kanna-crash"
 version = "0.1.0"
 dependencies = [

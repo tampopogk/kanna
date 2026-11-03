@@ -1298,9 +1298,6 @@ pub fn toured(args: &Value, reply: &Value) -> String {
 }
 
 pub fn offer(offer: &Value) -> String {
-    if offer["token"] == true {
-        return format!("{} ({}) waits to be enrolled with its token, for {} minutes…", offer["name"].as_str().unwrap_or("?"), offer["key"].as_str().unwrap_or("?"), offer["expires_in"].as_u64().unwrap_or(1800).div_ceil(60));
-    }
     let code = offer["code"].as_str().unwrap_or("?");
     let minutes = offer["expires_in"].as_u64().unwrap_or(300).div_ceil(60);
     let peer = match crate::machine::reachable(&offer["addrs"]) {
@@ -1436,16 +1433,13 @@ pub fn machine(request: &Value, reply: &Value) -> String {
                 };
                 let runs = release(&peer["release"]);
                 let runs = if runs.is_empty() { String::new() } else { format!("  Kanna {runs}") };
-                let hosted = if peer["hosted"] == true { "  (Kanna Cloud)" } else { "" };
-                out.push(format!("  {:<14} {:<14} {}  {}{runs}{hosted}", peer["name"].as_str().unwrap_or("?"), state, short_key(&peer["key"]), join(&peer["addrs"])));
+                out.push(format!("  {:<14} {:<14} {}  {}{runs}", peer["name"].as_str().unwrap_or("?"), state, short_key(&peer["key"]), join(&peer["addrs"])));
             }
             for nearby in reply["nearby"].as_array().into_iter().flatten().filter(|n| n["pairing"] == true) {
                 out.push(format!("waiting to pair on this LAN: {}  {}", short_key(&nearby["key"]), join(&nearby["addrs"])));
             }
             if let Some(code) = reply["offer"]["code"].as_str() {
                 out.push(format!("this machine is waiting to pair, code {code}"));
-            } else if reply["offer"]["token"] == true {
-                out.push("this machine is waiting to be enrolled with its token".into());
             }
             out.join("\n")
         }

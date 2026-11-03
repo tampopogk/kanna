@@ -17,7 +17,7 @@ pub struct Command {
 
 pub const GROUPS: &[&str] = &["Panes", "Tabs and windows", "Information"];
 
-pub const LOCAL: &[&str] = &["diagrams", "pipeline", "cloud"];
+pub const LOCAL: &[&str] = &["diagrams", "pipeline"];
 
 pub static COMMANDS: &[Command] = &[
     Command {
@@ -805,10 +805,9 @@ pub static COMMANDS: &[Command] = &[
         name: "machine",
         group: "Information",
         summary: "Your machines: pair one, list them, check one's link, give an address or a relay, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
-        usage: "kanna machine [list]\n       kanna machine pair [--token-file FILE]\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
+        usage: "kanna machine [list]\n       kanna machine pair\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
         options: &[
             ("--peer KEY[@HOST[:PORT]]", "pair CODE: the machine to pair with, as `kanna machine pair` prints it there, when it isn't on this LAN."),
-            ("--token-file FILE", "relay URL: the relay's access token. pair: wait to be enrolled with the token in FILE instead of showing a code (what `kanna cloud provision` runs on a VM it makes)."),
             ("--host MACHINE", "Before any command: run it on that machine (its name or key) instead of this one. KANNA_HOST does the same."),
         ],
         notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna machine pair` on it: it shows a six-digit code and waits. On one of your machines (or the first one, which starts them), run `kanna machine pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna machine name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna machine addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.\n`kanna machine relay URL` names the iroh-relay this machine meets the others through when they aren't on its LAN; run it on each machine, and the app dials them through it too. A relay that admits only holders of a secret (iroh-relay's access.shared_token) takes it with --token-file FILE; the token stays in this machine's kanna.db and is never put in the peer log. iroh moves to a direct path by itself whenever one opens. `none` goes back to the LAN and given addresses only.",
@@ -823,30 +822,6 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_machine,
         show: output::machine,
-    },
-    Command {
-        name: "cloud",
-        group: "Information",
-        summary: "Kanna Cloud operator work: set up a host, make a user's VM that enrolls into your machines, list them, release one.",
-        usage: "kanna cloud [list]\n       kanna cloud setup-host HOST\n       kanna cloud provision HOST [--name NAME] [--tarball FILE] [--repo OWNER/REPO[,...]] [--agents LIST] [--cpus N] [--memory SIZE] [--disk SIZE]\n       kanna cloud release NAME [--yes]",
-        options: &[
-            ("--name NAME", "provision: the machine's name among your machines (default cloud-XXXX)."),
-            ("--tarball FILE", "provision: the Linux tarball to install (scripts/build-linux.sh); default the latest release's. It must speak this Mac's protocol."),
-            ("--repo OWNER/REPO[,...]", "provision: GitHub repos the VM clones and pushes to, each with a deploy key of its own made in the VM and added with gh."),
-            ("--agents LIST", "provision: agent CLIs to install, claude,codex (default) or none."),
-            ("--cpus N", "provision: CPUs (default 4)."),
-            ("--memory SIZE", "provision: memory, like 8GiB (default)."),
-            ("--disk SIZE", "provision: root disk, like 40GiB (default)."),
-            ("--yes", "release: don't ask to type the name."),
-        ],
-        notes: "HOST is the ssh destination of a Kanna Cloud host (an R720 installed by scripts/cloud/provision-idrac.sh), whose user has passwordless sudo. setup-host installs Incus and makes the tenant bridge kcloud0 with its ACL, the profile kcloud-tenant and the LVM thin pool kcloud; it's safe to run again.\nprovision makes an Incus VM (Ubuntu 26.04) on HOST, runs server setup in it, and enrolls it into this Mac's machines with a one-time token, marked hosted: Kanna.app asks you to confirm. The VM reaches your machines only through a relay, this Mac's (kanna machine relay). Your agent accounts reach it as they reach any machine that joins.\nrelease revokes the VM from your machines, removes its deploy keys, and destroys it with its disks, snapshots and logs on its host. Records of the VMs this Mac made are in the kanna-cloud folder of Application Support. docs/specs/cloud-vms.md says how.",
-        examples: &[
-            ("kanna cloud setup-host jeremyhale@172.16.0.11", "Get r720-1 ready to run VMs."),
-            ("kanna cloud provision jeremyhale@172.16.0.11 --repo tampopogk/kanna", "A VM on r720-1 that joins your machines, with a clone of tampopogk/kanna it can push to."),
-            ("kanna cloud release cloud-3f9a", "Revoke and destroy cloud-3f9a."),
-        ],
-        parse: parse_cloud,
-        show: |_, _| String::new(),
     },
     Command {
         name: "accounts",
@@ -1505,55 +1480,6 @@ fn parse_accounts(args: &mut Argv) -> Result<Value, Failure> {
     Ok(request)
 }
 
-fn parse_cloud(args: &mut Argv) -> Result<Value, Failure> {
-    let name = args.option("--name")?;
-    let tarball = args.option("--tarball")?;
-    let repo = args.option("--repo")?;
-    let agents = args.option("--agents")?;
-    let cpus = args.option("--cpus")?;
-    let memory = args.option("--memory")?;
-    let disk = args.option("--disk")?;
-    let yes = args.flag("--yes");
-    let given = [&name, &tarball, &repo, &agents, &cpus, &memory, &disk].iter().any(|o| o.is_some());
-    let action = args.positional();
-    let request = match action.as_deref() {
-        None | Some("list") => json!({ "action": "list" }),
-        Some("setup-host") => json!({ "action": "setup-host", "host": args.positional().ok_or_else(|| usage("cloud", "setup-host needs a HOST: its ssh destination"))? }),
-        Some("provision") => {
-            let host = args.positional().ok_or_else(|| usage("cloud", "provision needs a HOST: its ssh destination"))?;
-            if let Some(name) = &name {
-                if name.is_empty() || name.len() > 32 || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
-                    return Err(usage("cloud", "--name is up to 32 lowercase letters, digits and -"));
-                }
-            }
-            let repos: Vec<String> = repo.iter().flat_map(|r| r.split(',')).map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
-            if let Some(bad) = repos.iter().find(|r| !crate::cloud::valid_repo(r)) {
-                return Err(usage("cloud", &format!("{bad} isn't a GitHub repo: give OWNER/REPO")));
-            }
-            for (what, value) in [("--cpus", &cpus), ("--memory", &memory), ("--disk", &disk)] {
-                if value.as_ref().is_some_and(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_alphanumeric())) {
-                    return Err(usage("cloud", &format!("{what} is a number, or a size like 8GiB")));
-                }
-            }
-            if agents.as_ref().is_some_and(|a| !a.split(',').all(|a| matches!(a, "claude" | "codex" | "none"))) {
-                return Err(usage("cloud", "--agents is claude, codex, both (claude,codex) or none"));
-            }
-            let tarball = tarball.map(|t| absolute(&t));
-            json!({ "action": "provision", "host": host, "name": name, "tarball": tarball, "repos": repos, "agents": agents, "cpus": cpus, "memory": memory, "disk": disk })
-        }
-        Some("release") => json!({ "action": "release", "name": args.positional().ok_or_else(|| usage("cloud", "release needs the VM's NAME (kanna cloud list)"))?, "yes": yes }),
-        Some(other) => return Err(usage("cloud", &format!("unknown action \"{other}\" (list, setup-host, provision or release)"))),
-    };
-    let provisioning = request["action"] == "provision";
-    if !provisioning && given {
-        return Err(usage("cloud", "--name, --tarball, --repo, --agents, --cpus, --memory and --disk go with provision"));
-    }
-    if yes && request["action"] != "release" {
-        return Err(usage("cloud", "--yes goes with release"));
-    }
-    Ok(request)
-}
-
 fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
     let peer = args.option("--peer")?;
     let token_file = args.option("--token-file")?;
@@ -1562,10 +1488,7 @@ fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
     let request = match action.as_deref() {
         None | Some("list") => json!({ "action": "status" }),
         Some("pair") => match args.positional() {
-            None => match &token_file {
-                Some(path) => json!({ "action": "offer", "token": std::fs::read_to_string(path).map_err(|e| usage("machine", &format!("can't read the enrollment token from {path}: {e}")))?.trim() }),
-                None => json!({ "action": "offer" }),
-            },
+            None => json!({ "action": "offer" }),
             Some(code) => json!({ "action": "pair", "code": code, "peer": peer }),
         },
         Some("name") => json!({ "action": "name", "name": args.positional().ok_or_else(|| usage("machine", "machine name needs a NAME"))? }),
@@ -1586,8 +1509,8 @@ fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
         },
         Some(other) => return Err(usage("machine", &format!("unknown action \"{other}\" (list, pair, name, ping, addr, relay or revoke)"))),
     };
-    if token_file.is_some() && request["action"] != "offer" && (request["action"] != "relay" || request["url"].is_null()) {
-        return Err(usage("machine", "--token-file goes with relay URL, or with pair on a machine Kanna Cloud enrolls"));
+    if token_file.is_some() && (request["action"] != "relay" || request["url"].is_null()) {
+        return Err(usage("machine", "--token-file goes with relay URL"));
     }
     if peer.is_some() && request["action"] != "pair" {
         return Err(usage("machine", "--peer goes with pair CODE"));

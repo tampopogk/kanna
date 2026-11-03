@@ -1,30 +1,28 @@
 # Kanna Cloud: How Kanna Provisions
 
-**Status:** built in slice 9 inside `kanna` (`kanna cloud`, `scripts/cloud/`); **being split** (2026-11-03): host and VM work moves to Kanna's internal `kanna-cloud` CLI and the customer keeps `kanna cloud request`, `accept` and `release` ([Cloud §4](kanna-cloud.md#4-how-kanna-runs-it)); the commands below are the version before the split · **Part of:** [Kanna Cloud §4](kanna-cloud.md#4-how-kanna-runs-it) · **After:** [installing a host](cloud-provisioning.md) · **Model:** [cloud-tenant-vms](../../references/prototypes/cloud-tenant-vms/README.md)
+**Status:** built in slice 9 (`crates/kanna-cloud`, `scripts/cloud/`), the R720 backend · **Part of:** [Kanna Cloud §4](kanna-cloud.md#4-how-kanna-runs-it) · **After:** [installing a host](cloud-provisioning.md) · **Model:** [cloud-tenant-vms](../../references/prototypes/cloud-tenant-vms/README.md)
 
-How a host becomes Kanna machines: Incus on the host, then `kanna cloud provision`, which makes one user's VM, sets it up with [server setup](machine-setup.md), enrolls it into that user's machines by token, marked `hosted`, and gives it git credentials of its own. `kanna cloud release` takes it all back. Both run on the Mac, which is the operator's and, in this first stage, also the user's.
+`kanna-cloud` is Kanna's internal operator tool. It turns a host into somewhere Cloud tasks can run, makes the VM a Cloud task runs on with Kanna set up in it, and destroys it afterwards leaving nothing. It is a binary of its own, built from this repo and never shipped in Kanna.app or the Linux tarball: customers never run it, and nothing in their `kanna` reaches a host ([Cloud §1](kanna-cloud.md#1-rules)). Until the provisioning service exists (C1), Kanna runs it by hand; the service then drives the same steps.
 
 ```sh
-kanna cloud setup-host jeremyhale@172.16.0.11
-kanna cloud provision jeremyhale@172.16.0.11 --repo tampopogk/kanna
-kanna cloud list
-kanna cloud release cloud-3f9a
+kanna-cloud setup-host jeremyhale@172.16.0.11
+kanna-cloud provision jeremyhale@172.16.0.11 --for acme --tarball Kanna-4.1.0-linux-x86_64.tar.gz
+kanna-cloud list
+kanna-cloud release kc-3f9a1c2e
 ```
 
 ## Contents
 
 1. [The host](#1-the-host)
-2. [Provisioning](#2-provisioning)
-3. [Enrollment](#3-enrollment)
-4. [Git credentials and agent accounts](#4-git-credentials-and-agent-accounts)
-5. [Releasing](#5-releasing)
-6. [Choices and why](#6-choices-and-why)
-7. [Interfaces](#7-interfaces)
-8. [Tested](#8-tested)
+2. [A VM](#2-a-vm)
+3. [Releasing](#3-releasing)
+4. [Choices and why](#4-choices-and-why)
+5. [Interfaces](#5-interfaces)
+6. [Tested](#6-tested)
 
 ## 1. The host
 
-`kanna cloud setup-host HOST` runs [`scripts/cloud/host-setup.sh`](../../scripts/cloud/host-setup.sh) on HOST as root (HOST is an ssh destination whose user has passwordless sudo, as the [host install](cloud-provisioning.md) leaves it). It is safe to run again: each object is made only when missing, and nothing else on the host is touched, other VMs, bridges and pools included.
+`kanna-cloud setup-host HOST` runs [`scripts/cloud/host-setup.sh`](../../scripts/cloud/host-setup.sh) on HOST as root (HOST is an ssh destination whose user has passwordless sudo, as the [host install](cloud-provisioning.md) leaves it). It is safe to run again: each object is made only when missing, and nothing else on the host is touched, other VMs, bridges and pools included.
 
 | Object | Is |
 |---|---|
@@ -35,95 +33,69 @@ kanna cloud release cloud-3f9a
 | bridge `kcloud0` | 10.232.0.1/24 and fd5a:1c3e:7a10:2::1/64, NAT44 and NAT66, DHCPv4 and stateful DHCPv6, `dns.mode=none`; the ACL, with default egress `reject` and ingress `drop` |
 | profile `kcloud-tenant` | 4 CPUs, 8 GiB, a 40 GiB root disk on `kcloud`; `eth0` on `kcloud0` with MAC, IPv4 and IPv6 filtering and port isolation |
 
-So a tenant VM reaches the internet and relays over IPv4, and not another VM, the host, the iDRAC or the LAN: the network the [tenant VM model](../../references/prototypes/cloud-tenant-vms/README.md#design) showed, enforced on the host. Its `check_net.py` is the host's acceptance test before a second tenant ([build order C3](machines-build-order.md#kanna-cloud)).
+So a task's VM reaches the internet and relays over IPv4, and not another VM, the host, the iDRAC or the LAN: the network the [tenant VM model](../../references/prototypes/cloud-tenant-vms/README.md#design) showed, enforced on the host. Its `check_net.py` is the host's acceptance test before a second tenant ([build order C3](machines-build-order.md#kanna-cloud)).
 
-**IPv6:** isolation is enforced for IPv6 as for IPv4 (filtering, the ACL, NAT66), as the model showed. Internet over IPv6 is **untested**: the LAN has none (the ISP gives the router one address and no prefix), and it was decided to go on without it. When a host gets an IPv6 uplink, its own and the LAN's global prefixes must join the ACL's drop list (the IPv4 side is covered by the private ranges), and `check_net.py` must run again.
+**IPv6:** isolation is enforced for IPv6 as for IPv4 (filtering, the ACL, NAT66), as the model showed. Internet over IPv6 is **untested**: the LAN has none (the ISP gives the router one address and no prefix), and it was decided to go on without it. When a host gets an IPv6 uplink, its own and the LAN's global prefixes must join the ACL's drop list, and `check_net.py` must run again.
 
-## 2. Provisioning
+## 2. A VM
 
 ```mermaid
 sequenceDiagram
-    participant M as kanna cloud provision (Mac)
-    participant D as Mac's daemon + Kanna.app
+    participant K as kanna-cloud (Kanna's Mac)
     participant H as host (ssh, sudo incus)
     participant V as VM kc-XXXXXXXX
-    participant G as GitHub (gh)
-    M->>D: machine status, relay_config
-    M->>M: one-time token T, a fresh ID
-    M->>H: incus init images:ubuntu/26.04/cloud, profile kcloud-tenant, cloud-init with T
-    H->>V: boot · cloud-init makes kanna, writes T (0600), enables linger
-    M->>V: incus exec: server-setup.sh, vm-setup.sh, the tarball, the relay's token
-    V->>V: server setup · kanna machine name · kanna machine relay
-    M->>V: kanna machine pair --token-file T (waits)
-    M->>D: machine pair T --peer KEY, hosted
-    D->>V: SPAKE2 over T through the relay, proofs both ways
-    D->>D: Kanna.app: Add NAME (Kanna Cloud)?
-    D->>V: the peer log with the signed add {hosted: true}
-    M->>V: rm T · incus config unset cloud-init.user-data
-    M->>V: ssh-keygen a deploy key per repo
-    M->>G: add it to the repo (write)
-    M->>V: ssh config, git insteadOf, clone into ~/repos
+    K->>K: a fresh ID, the record saved first
+    K->>H: incus init images:ubuntu/26.04/cloud, profile kcloud-tenant, config on stdin
+    H->>V: boot · cloud-init makes kanna, /var/lib/kanna-cloud, linger
+    K->>H: unset cloud-init.user-data
+    K->>V: incus exec: server-setup.sh, vm-setup.sh, the tarball, a relay token
+    V->>V: server setup · kanna machine name kc-… · its relay
+    K->>V: kanna machine list: its key
+    K->>K: record: key, ready
 ```
 
-1. **Checks first:** the Mac's Kanna is running and has a relay (the VM reaches your machines only through one); `--tarball` speaks the Mac's protocol; `gh` is signed in when `--repo` is given; the host has been set up. A name already among your machines or in the records is refused.
-2. **The VM:** named `kc-` and eight random hex digits, never a user's name and never reused ([model §5](../../references/prototypes/cloud-tenant-vms/README.md#what-cloud-9-must-do)); the machine's name is `--name` or `cloud-` and four of them. Ubuntu 26.04's stock cloud image, made with `--no-profiles --profile kcloud-tenant` and its config on stdin (limits, the root disk's size, the cloud-init user data). Every `incus` call has stdin from `/dev/null` or the config, since the client otherwise waits on it.
-3. **cloud-init** makes the user `kanna` (passwordless sudo, no password), writes the token to `/var/lib/kanna-cloud/token` (`0600`, kanna's), and enables linger. Nothing else: setup runs over `incus exec`, so its output streams to the operator.
-4. **Server setup:** `server-setup.sh` and [`vm-setup.sh`](../../scripts/cloud/vm-setup.sh) are copied in from the Mac's own build, with the tarball (`--tarball`, or the latest release's, fetched in the VM) and the relay's token. `vm-setup.sh` runs server setup as `kanna`, names the machine and sets its relay to the Mac's, and waits until the daemon reaches it.
-5. **The record is saved before anything is made** and again after each step that leaves something to undo (the instance, the machine's key, each deploy key). A failure leaves the VM as it got with its record, and says `kanna cloud release NAME` removes it.
+1. **Checks first:** the host is set up; `--tarball` is a Kanna Linux tarball; options are well formed.
+2. **A fresh name:** `kc-` and eight random hex digits, never a customer's name and never reused ([model §5](../../references/prototypes/cloud-tenant-vms/README.md#what-cloud-9-must-do)). `--for LABEL` (a customer, a task) is kept in the record and in the instance's `user.kanna-cloud.for`, never in its name.
+3. **The record is saved before anything is made** (`~/Library/Application Support/kanna-cloud/vms/kc-….json`: host, label, times, the VM's key), so a run cut short is still listed and released.
+4. **The VM:** Ubuntu 26.04's stock cloud image, made with `--no-profiles --profile kcloud-tenant` and its config on stdin (limits, the root disk's size, the cloud-init user data). Every `incus` call has stdin from `/dev/null` or the config, since the client otherwise waits on it.
+5. **cloud-init** makes the user `kanna` (passwordless sudo, no password), the folder `/var/lib/kanna-cloud` (kanna's, `0700`), and enables linger. It holds no secret; the user data is unset once it has run.
+6. **Server setup:** `server-setup.sh` and [`vm-setup.sh`](../../scripts/cloud/vm-setup.sh) are copied in from this build, with the tarball (`--tarball`, or the latest release's, fetched in the VM) and, with `--relay`, the relay's token (`--relay-token-file`). `vm-setup.sh` runs server setup as `kanna`, names the machine after the instance, sets its relay and waits until the daemon reaches it, then deletes the token file. Setup's output goes to stderr, so `--json` prints only the record.
+7. **Ready:** the VM's daemon answers with its key, which goes in the record. What reaches the VM next, a customer's task through Kanna Cloud's link and voucher, is C1 and C5's ([Cloud §6](kanna-cloud.md#6-the-link-to-kanna-cloud)). A VM gets no git credential and no agent account from `kanna-cloud`.
 
-## 3. Enrollment
+A failure leaves the VM as it got, with its record, and says `kanna-cloud release kc-…` removes it.
 
-[Cloud §6](kanna-cloud.md#6-enrollment)'s token pairing, on the existing PAKE ([identity §2](machine-identity.md#2-pairing)) with three changes:
+## 3. Releasing
 
-- **An offer with a token:** `kanna machine pair --token-file FILE` offers the token instead of a six-digit code: 22 to 128 letters, digits, `-` and `_` (the provisioner's are 32 base-62 characters, about 190 bits), for 30 minutes, three tries, one use. Neither the offer's reply nor `machine list` ever shows it.
-- **Pairing through the relay:** `kanna machine pair T --peer KEY` with no address dials KEY through this machine's own relay, which the provisioner made the VM's too.
-- **`hosted: true`** goes in the add the Mac signs (the daemon's `machine pair {hosted}`; no CLI flag), and the confirmation sheet says it is a Kanna Cloud VM. The peer log's rule ([identity §3](machine-identity.md#3-the-peer-log)): an add signed by a hosted key never counts, a hosted key revokes only itself, and the mark is fixed when a key is first added (`hosted_downgrade`, `hosted_upgrade`).
-- **Not through another machine either:** a daemon refuses a `machine` request from a hosted peer other than `status` and `ping` (`hosted_signer`), so a VM can't have your Mac sign a revocation, pair, or change its relay for it with `kanna --host mbp machine …`.
+`kanna-cloud release kc-…` asks for the instance's name to be typed (`--yes` skips it), then runs [`scripts/cloud/release-vm.sh`](../../scripts/cloud/release-vm.sh) on its host: the release the model found `incus delete` alone isn't.
 
-The provisioner runs the offer in the VM over `ssh … incus exec`, reads its key from the first line and saves it in the record, asks the Mac's daemon to pair, then reads the VM's `paired` line; if the Mac's pairing fails it stops the offer at once instead of waiting out the token. It then deletes the token file and unsets `cloud-init.user-data`, which held the token.
+- **Running, stopped, or half gone:** it works on a VM in any state, and again after a release that stopped half-way.
+- **Its addresses** come from the instance's state, its static entry in dnsmasq's hosts (a stopped VM has already released its leases), and the leases.
+- **It removes** the instance with its snapshots, every custom volume named after it, `/var/log/incus/VM` (its console log) and `/run/incus/VM`, its addresses' conntrack and neighbour entries, and a DHCPv6 lease still there, released with `dhcp_release6`, never by editing dnsmasq's lease file.
+- **It checks** no instance, volume, folder, flow or neighbour is left. Any Incus call that fails fails the release, and the record is kept for another try; the record goes only once the host says the VM is gone.
 
-## 4. Git credentials and agent accounts
+## 4. Choices and why
 
-- **A deploy key per repo, per VM** (`--repo OWNER/REPO`, several separated by commas): made in the VM (`ssh-keygen -t ed25519`, `~/.ssh/kanna-owner--repo`, lowercased: owners never hold `--`, so two repos never share a name), so its private half never leaves it, and added with write access by the Mac's `gh` (`POST repos/OWNER/REPO/keys`, titled `Kanna Cloud NAME (kc-…)`). GitHub lets a deploy key serve one repo, so each gets an ssh `Host` alias and git `url.….insteadOf` rules for both `git@github.com:OWNER/REPO` and `https://github.com/OWNER/REPO`: any clone or remote of that repo uses its key. github.com's host key is pinned from GitHub's published one, not learned on first use. Each key's ID goes in the record as soon as GitHub returns it. The repo is cloned into `~/repos/OWNER/REPO`.
-- **Git identity:** the Mac's global `user.name` and `user.email` are set in the VM, so agents' commits are the user's.
-- **Agent accounts:** nothing more. The VM joined, so the Mac supplies it the Claude setup token and API keys, and Codex's ChatGPT login stays on the Mac as its holder ([agent sign-in §2](agent-sign-in.md#2-how-a-machine-gets-them)). Signing in on the VM itself (`kanna accounts sign-in`) works as on any machine, and leaves a login there the operator can read ([Cloud §9](kanna-cloud.md#9-agent-sign-in-on-kanna-run-machines)).
-
-## 5. Releasing
-
-`kanna cloud release NAME` asks you to type the name (`--yes` skips it), then:
-
-1. **Revokes** the VM from your machines through the Mac's daemon, which also withdraws the accounts it was given.
-2. **Removes its deploy keys** from GitHub (one already gone counts as removed).
-3. **Destroys it on the host**, running or stopped, and again after a run that stopped half-way, with [`scripts/cloud/release-vm.sh`](../../scripts/cloud/release-vm.sh), the release the model found `incus delete` alone isn't: the instance with its snapshots, every custom volume named after it, `/var/log/incus/VM` (its console log) and `/run/incus/VM`, its addresses' conntrack and neighbour entries, and a DHCPv6 lease still there released with `dhcp_release6`, never by editing dnsmasq's lease file. The addresses come from the instance's state, its static entry in dnsmasq's hosts (a stopped VM has released its leases) and the leases. It then checks no instance, volume, folder, flow or neighbour is left; any Incus call that fails fails the release, and the record is kept for another try.
-4. **Asks you to rotate** the long-lived secrets it held: your Claude setup token and API keys (`kanna accounts add` again replaces them on every machine).
-
-## 6. Choices and why
-
-- **The CLI on the Mac, not a service:** in this first stage the operator is the user, and the Mac holds what enrollment needs: the app for the gesture, the daemon that signs the add, `gh` for deploy keys. With accounts and the directory (C1), the provisioner becomes Kanna's service and the token reaches the app through the directory; the VM's side doesn't change.
-- **ssh and `incus exec`, not the Incus API:** the host's Incus listens only on its unix socket, and the operator already has ssh; `incus exec` reaches a VM whose network admits nothing from the host.
-- **Only the relay, for now:** the tenant network drops traffic to the LAN, so the Mac and the VM meet through a relay, and iroh moves them to a direct path when one opens. Before C1 brings Kanna's relays, the VM uses the Mac's, token included; that token is then on a machine the operator can read, like everything else there.
-- **The protocol went to 5:** a daemon without the hosted rule would count a hosted key's adds, and daemons of different protocols refuse each other ([versions §2](machine-versions.md#2-protocols)), so no older peer ever syncs a log with a hosted VM in it. A protocol-4 machine can still be *paired* (pair streams aren't checked) and is handed the log, but every entry in it was checked by the inviter, it can sync with no protocol-5 daemon, the VM included, until it is updated, and once updated it has the rule. A better rule than the model's: hosted keys are those marked by an add that counts, so a forged add by a hosted key can't mark your Mac hosted.
+- **A separate binary, not a `kanna` command:** customers ask; Kanna provisions ([Cloud §1](kanna-cloud.md#1-rules)). The first version lived in `kanna` and ran on the customer's Mac with their `gh` and relay; the review of 2026-11-03 moved it here.
+- **Nothing in the customer's peer log:** a Cloud task's VM is Kanna's and is reached through Kanna Cloud with a voucher per task ([Cloud §6](kanna-cloud.md#6-the-link-to-kanna-cloud)). The first version enrolled it by token and marked it `hosted`; that was dropped with the move, and the protocol stayed at 4.
+- **ssh and `incus exec`, not the Incus API:** the host's Incus listens only on its unix socket, Kanna already has ssh to it, and `incus exec` reaches a VM whose network admits nothing from the host. The R720s dial out and take no inbound traffic but ssh on Kanna's LAN ([Cloud §4](kanna-cloud.md#4-how-kanna-runs-it)).
+- **One backend so far:** Incus on R720s. A provider backend (AWS, GCP) makes and destroys a VM with the provider's API instead, behind the same three commands.
 - **LVM thin on a loop file:** the R720s' one RAID volume is the root filesystem; a dedicated disk or volume group is better when a host has one. The model's release findings hold for LVM thin, so the pool keeps that driver.
-- **A record per VM on the Mac** (`~/Library/Application Support/kanna-cloud/vms/NAME.json`, beside the host install's files): host, instance, the machine's key, deploy keys. It's what release needs; the peer log has no place for operator facts.
 
-## 7. Interfaces
+## 5. Interfaces
 
-| CLI | Does |
+| Command | Does |
 |---|---|
-| `kanna cloud [list]` | the VMs this Mac made: name, instance, host, repos |
-| `kanna cloud setup-host HOST` | §1 |
-| `kanna cloud provision HOST [--name NAME] [--tarball FILE] [--repo OWNER/REPO[,...]] [--agents LIST] [--cpus N] [--memory SIZE] [--disk SIZE]` | §2–4 |
-| `kanna cloud release NAME [--yes]` | §5 |
-| `kanna machine pair --token-file FILE` | on a VM: wait to be enrolled with that token |
+| `kanna-cloud [list] [--json]` | the VMs made from here: instance, host, ready or not, label |
+| `kanna-cloud setup-host HOST` | §1 |
+| `kanna-cloud provision HOST [--for LABEL] [--tarball FILE] [--relay URL [--relay-token-file FILE]] [--agents LIST] [--cpus N] [--memory SIZE] [--disk SIZE] [--json]` | §2; prints the instance and its key |
+| `kanna-cloud release kc-… [--yes] [--json]` | §3 |
 
-The daemon's `machine` command gains `offer {token}`, `pair {hosted}` and `relay_config` (this machine's relay URL and token, refused to a remote caller as `local_only`). `machine status` marks each peer `hosted`. Refusals: `hosted_signer`, `hosted_downgrade`, `hosted_upgrade`.
+`KANNA_CLOUD_RECORDS` puts the records elsewhere (tests). The scripts are compiled into the binary, so it runs from anywhere.
 
-## 8. Tested
+## 6. Tested
 
-`cargo test -p kanna-net` (the hosted rule's scenarios from the model, all 120 delivery orders of two valid and three forged entries, a key added plain on one branch and hosted on another in every order, a hosted peer's `machine revoke` through another daemon refused, and a VM enrolled by token through a relay, hosted, refused when it tries to pair or revoke), `cargo test -p kanna --lib cloud`.
+`cargo test -p kanna-cloud`: arguments refused before anything runs, instance names, a cloud-init without secrets, quoting for the remote shell.
 
-On r720-1 (2026-11-03; Ubuntu 26.04.1, Incus 6.0.5, now wired at 172.16.0.11): `setup-host` made the pool, ACL, bridge and profile beside the host's three earlier VMs, which kept running. `provision` from this Mac, against a private daemon on a test socket whose relay was iroh's public `use1-1.relay.n0.iroh.link` and a stand-in app saying yes, with a tarball from `scripts/build-linux.sh`: about 5 minutes, most of it apt and npm. The VM was enrolled, listed as `(Kanna Cloud)` and asked about with `hosted: true`; `kanna --host cloud-try1 task list` answered and `machine ping` opened all six stream kinds, relayed (390 ms through that relay, which is in Virginia); the token file and the cloud-init user data were gone. An API key added on the Mac reached the VM (`kanna accounts` there: `from mbp-test`). `release` revoked it, destroyed the instance with its LVs and logs, said which key to rotate, and the host's other VMs were untouched.
+On r720-1 (2026-11-03; Ubuntu 26.04.1, Incus 6.0.5, wired at 172.16.0.11), `kanna-cloud provision --for test --agents none --json` with this branch's tarball: under 3 minutes; stdout only the record; the VM's daemon active with its key recorded; `cloud-init.user-data` unset; nothing but the two setup scripts in `/var/lib/kanna-cloud`; the LAN's router unreachable from the VM. `release --yes` then destroyed it with its addresses' state, and `list` was empty. Earlier, with the first version inside `kanna`: `setup-host` made the pool, ACL, bridge and profile beside the host's three earlier VMs, which kept running. A VM provisioned with a tarball from `scripts/build-linux.sh` took about 5 minutes, most of it apt and npm; its daemon ran and reached a relay. Release destroyed running and stopped VMs with their LVs, logs and network state; a release of an instance already gone succeeded.
 
-After Codex's review (below), on r720-1 again: `provision --json` printed only the record on stdout; from inside the VM, `kanna --host mbp-test machine revoke cloud-try1` was refused (`hosted_signer`) while `machine list` worked; a stopped VM and a bare `kc-` VM were released with their addresses found and nothing left; releasing an instance already gone succeeded.
-
-**Review.** Codex (gpt-6-astra, high) reviewed the branch. Fixed: a hosted VM revoking through the Mac's daemon; the hosted view depending on event order (and a plain key can no longer be marked hosted later); the release reporting success after a failed Incus call; the record lagging behind the machine's key, deploy keys and the instance; a stopped VM's addresses missed; repos colliding in key names and clone paths; a failed pairing waiting out the token; setup output on stdout under `--json`. Rejected: that pairing a protocol-4 machine defeats the protocol bump (§6).
+**Review.** Codex (gpt-6-astra, high) reviewed that version. Kept from its fixes: the release fails on any failed Incus call and finds a stopped VM's addresses; the record is saved before the VM is made; setup output stays off stdout. Its findings on the peer log, enrollment and deploy keys went with those features.

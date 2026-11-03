@@ -1,5 +1,5 @@
 public enum Protocols {
-    public static let mine = 5
+    public static let mine = 4
 
     public static func otherProtocol(machine: String, protocol theirs: Int?, version: String?, commit: String?, mine: Int = mine) -> (title: String, detail: String) {
         var runs = "an older Kanna"
