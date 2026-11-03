@@ -4,7 +4,7 @@
 
 **Kanna Cloud is Kanna's product:** a paid service that runs work for its customers on Kanna's servers. A customer uses it from Kanna itself (the app and the `kanna` CLI), signed in to a Cloud account. **They see only tasks:** any task can run on the cloud instead of on one of their machines, and Kanna provisions whatever it runs on. Hosts, VMs and their records are Kanna's internal business, run with Kanna's own tool, `kanna-cloud`, which no customer installs.
 
-It is built on [your machines](machines.md): under the hood, what a Cloud task runs on is a VM enrolled into the customer's signed peer log, marked `hosted`, and the line between the two is enrollment. The customer never sees, names or manages that VM. Your machines work without Cloud and don't depend on it: you can have several, pair them and move tasks between them for free.
+**It runs on Kanna's infrastructure, not on [your machines](machines.md).** Your machines are the ones you decided to trust and that belong to you, in your signed peer log; nothing Kanna runs ever joins them. A Cloud task runs on a VM of Kanna's, which the customer never sees, names or manages, and their Kanna reaches it through Kanna Cloud, signed in with their account. Your machines work without Cloud and don't depend on it: you can have several, pair them and move tasks between them for free.
 
 It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the same software run by someone else**: whoever runs it is the operator, and everything below about Kanna as operator applies to them.
 
@@ -101,6 +101,8 @@ flowchart LR
 - **Before the service exists** the customer's request and Kanna's answer are passed by hand: sending a task to the cloud prints a request (its token), Kanna runs `kanna-cloud provision --request …`, and gives back the VM's key, which the customer's Kanna enrolls and moves the task to. The service carries the same two messages later.
 
 ## 5. Cloud tasks
+
+**Being reconsidered** (review c2): this section and §6 still enroll the task's VM into the customer's peer log; they are rewritten once the link to Kanna Cloud below is agreed.
 
 A task the customer sends to Cloud runs on a VM made for it alone, which they never see.
 
