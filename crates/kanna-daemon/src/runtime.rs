@@ -2,6 +2,7 @@ use crate::Event;
 use std::fmt::Display;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -14,8 +15,22 @@ pub fn channel() -> (Events, Inbox) {
     tokio::sync::mpsc::unbounded_channel()
 }
 
+static HELD: AtomicU64 = AtomicU64::new(0);
+static OVER: AtomicU64 = AtomicU64::new(0);
+
+pub fn holds() -> (u64, u64) {
+    (HELD.load(Ordering::Relaxed), OVER.load(Ordering::Relaxed))
+}
+
+pub fn reset_holds() {
+    HELD.store(0, Ordering::Relaxed);
+    OVER.store(0, Ordering::Relaxed);
+}
+
 pub fn check(what: impl Display, took: Duration) {
+    HELD.fetch_add(1, Ordering::Relaxed);
     if took > SLOW {
+        OVER.fetch_add(1, Ordering::Relaxed);
         log!("kanna-daemon: slow: {what} held the loop {}ms", took.as_millis());
     }
 }
