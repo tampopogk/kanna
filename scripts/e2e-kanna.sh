@@ -5138,7 +5138,7 @@ desk_news() {
   start_daemon && start_app || { echo "desk_news line $LINENO"; return 1; }
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents" agent="$KANNA_STATE_DIR/agent"
   mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_news line $LINENO"; return 1; }
-  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude"
   printf '#!/bin/sh\nexec sleep 600\n' >"$agent" && chmod +x "$agent"
   printf '{"version": 1, "shelf": {"runners": 0}}\n' >"$repo/.kanna/config.json"
   repo="$(cd "$repo" && pwd -P)"
@@ -5150,7 +5150,7 @@ desk_news() {
   planner="$(desk lead)"
   wait_for 10 shows "$planner" "Install Kanna's skills? \[Y/n\]" && kanna send "$planner" "n" >/dev/null
   check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
-  kanna send "$planner" "$bin/kanna-daemon --codex-remote $KANNA_STATE_DIR $fake/codex" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
+  kanna send "$planner" "KANNA_AGENTS_HOME=$KANNA_AGENTS_HOME $fake/claude --dangerously-skip-permissions" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
   check wait_for 10 shows "$planner" "mock-agent:" || { kanna read "$planner"; return 1; }
   as_planner() { (cd "$repo" && KANNA_TERMINAL="$planner" kanna "$@"); }
   news() { raw '{"id":1,"cmd":"tasks","args":{"action":"messages"}}' | python3 -c 'import json, sys
@@ -5167,22 +5167,23 @@ print("\n--\n".join(m["text"] for m in json.load(sys.stdin)["messages"] if m["fr
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"shelf\":\"$(tid 3)\",\"window\":\"$d\"}}" | grep -q '"ok":true' || { echo "desk_news: couldn't click Docs pass on the Shelf"; return 1; }
   check wait_for 10 eval '[[ "$(pane "Docs pass" id)" == term-* ]]' || { echo "desk_news: the Shelf click didn't pick Docs pass"; return 1; }
   local docs; docs="$(pane "Docs pass" id)"
+  local said_docs="$(sid 3) \"Docs pass\"" said_inked="$(sid 1) \"Inked\"" said_unmerged="$(sid 4) \"Unmerged\""
   check wait_for 10 eval 'raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"task\":\"$docs\",\"window\":\"$d\"}}" | grep -q "\"ok\":true"' || { echo "desk_news: couldn't click Docs pass on the Desk"; return 1; }
   check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$docs" ]]' || { echo "desk_news: the click didn't make Docs pass active"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Move to Shelf"}}' | grep -q '"ok":true' || { echo "desk_news: Move to Shelf didn't run"; return 1; }
-  check wait_for 10 eval '[[ "$(news)" == *"Docs pass moved to the Shelf"* ]]' || { echo "desk_news: the user's Desk changes weren't told: $(news)"; return 1; }
-  [[ "$(news)" == *"Docs pass is the active task"$'\n'"Docs pass moved to the Shelf"* ]] || { echo "desk_news: activating and shelving at once weren't one message: $(news)"; return 1; }
-  [[ "$(news)" == "Docs pass moved to the Desk"* ]] || { echo "desk_news: the Shelf click's pick wasn't told first: $(news)"; return 1; }
-  check wait_for 15 unwrapped "$planner" "peer: [message from desk] Docs pass moved to the Desk" || { echo "desk_news: the planner didn't get its Desk news"; kanna read "$planner"; return 1; }
+  check wait_for 10 eval '[[ "$(news)" == *"$said_docs moved to the Shelf"* ]]' || { echo "desk_news: the user's Desk changes weren't told: $(news)"; return 1; }
+  [[ "$(news)" == *"$said_docs is the active task"$'\n'"$said_docs moved to the Shelf"* ]] || { echo "desk_news: activating and shelving at once weren't one message: $(news)"; return 1; }
+  [[ "$(news)" == "$said_docs moved to the Desk"* ]] || { echo "desk_news: the Shelf click's pick wasn't told first: $(news)"; return 1; }
+  check wait_for 15 unwrapped "$planner" "peer: [message from desk] $said_docs moved to the Desk" || { shows "$planner" "held peer message" && echo "desk_news: the planner held its Desk news for approval: it came without the envelope"; echo "desk_news: the planner didn't get its Desk news"; kanna read "$planner"; return 1; }
   git -C "$wt" -c user.email=e@e -c user.name=e commit -q --allow-empty -m inked && git -C "$repo" merge -q --ff-only "$(git -C "$wt" branch --show-current)" || { echo "desk_news line $LINENO"; return 1; }
   (cd "$wt" && KANNA_TERMINAL="$(pane Inked id)" kanna task done) >/dev/null || { echo "desk_news: the task's own done failed"; return 1; }
-  check wait_for 15 eval '[[ "$(news)" == *"Inked merged into main and left the Desk" ]]' || { echo "desk_news: the task's own done wasn't told as merged: $(news)"; return 1; }
-  check wait_for 15 unwrapped "$planner" "peer: [message from desk] Inked merged into main and left the Desk" || { echo "desk_news: the planner didn't get the merge"; kanna read "$planner"; return 1; }
+  check wait_for 15 eval '[[ "$(news)" == *"$said_inked merged into main and left the Desk" ]]' || { echo "desk_news: the task's own done wasn't told as merged: $(news)"; return 1; }
+  check wait_for 15 unwrapped "$planner" "peer: [message from desk] $said_inked merged into main and left the Desk" || { echo "desk_news: the planner didn't get the merge"; kanna read "$planner"; return 1; }
   [[ "$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"events\",\"task\":\"$(tid 1)\"}}")" == *'"by":"term-'* ]] || { echo "desk_news: the done event lost its caller"; return 1; }
   as_planner task pick "$(tid 4)" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(pane Unmerged id)" == term-* ]]' || { echo "desk_news line $LINENO"; return 1; }
   raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"done\",\"task\":\"$(pane Unmerged id)\"}}" | grep -q '"ok":true' || { echo "desk_news: the app's done failed"; return 1; }
-  check wait_for 15 eval '[[ "$(news)" == *"Unmerged ended and left the Desk, not merged into main" ]]' || { echo "desk_news: the app's done wasn't told: $(news)"; return 1; }
+  check wait_for 15 eval '[[ "$(news)" == *"$said_unmerged ended and left the Desk, not merged into main" ]]' || { echo "desk_news: the app's done wasn't told: $(news)"; return 1; }
   local before; before="$(news)"
   as_planner task done "$(tid 2)" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
   check wait_for 10 eval '! kanna workspace list --all --json | grep -q "Planner'"'"'s own"' || { echo "desk_news line $LINENO"; return 1; }
