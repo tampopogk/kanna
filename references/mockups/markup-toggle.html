@@ -89,7 +89,7 @@ body.picture .hint { display: none; }
 <main>
   <div class="intro">
     <h1>Turning markup on in a doc that's already open</h1>
-    <p>Every markdown pane, and every web pane showing a local page, has the bar at the top. Beside the file path (and <i>vs main</i> when its changes are marked) is <b>Comments</b>: unlit when off, lit when on. Turning it on brings a <b>Threads</b> button beside it, which shows and hides the thread list, plus the agent chip and the marks, in place: same scroll, zoom and selection. Off takes them away and leaves the threads in the file.</p>
+    <p>Every markdown pane, and every web pane showing a local page, has the bar at the top: the file path (and <i>vs main</i> when its changes are marked) on the left, <b>Comments</b> on the right. Clicking Comments turns them on in place (same scroll, zoom and selection), and the button gives way to the agent chip and <b>Threads (N)</b>, which shows and hides the thread list and the marks. Turning comments off is the Pane menu's Comments item (or <code>kanna markup PANE --off</code>); the threads stay in the file.</p>
     <p>Where the comments go depends on where the doc is: a Desk task's docked agent, the planner in the Desk view, or, in a free window, an agent you pick. <code>kanna markup FILE</code> from an agent reuses a pane in its own workspace that already shows FILE.</p>
     <div class="controls">
       <span class="seg" id="scene">
@@ -162,16 +162,19 @@ let scene = "task", on = false, list = true, asking = false, cliRan = false, tab
 
 function bar(s) {
   const d = s.doc;
-  const lit = on ? "chip press lit" : "chip press";
+  const lit = "chip press";
   const parts = [`<span class="path">${d.path}</span>`];
   if (d.diff) parts.push(`<span class="chip press">${d.diff}</span>`);
-  parts.push(`<span class="${lit}" id="comments">Comments</span>`);
-  if (on) parts.push(`<span class="chip press ${list ? "on" : ""}" id="threadsBtn">Threads (1)</span>`);
   parts.push(`<span class="spacer"></span>`);
-  if (on) parts.push(`<span class="chip">${to || s.agent}</span>`);
+  if (on) {
+    parts.push(`<span class="chip">${to || s.agent}</span>`);
+    parts.push(`<span class="chip press ${list ? "on" : ""}" id="threadsBtn">Threads (1)</span>`);
+  } else {
+    parts.push(`<span class="${lit}" id="comments">Comments</span>`);
+  }
   let menu = "";
   if (asking) {
-    menu = `<div class="menu" id="menu" style="left:${180}px">
+    menu = `<div class="menu" id="menu" style="right:10px">
       <div class="h">Send comments to</div>
       <div class="i" data-to="Fix login redirect">Fix login redirect <span>Desk · claude</span></div>
       <div class="i" data-to="Ink on mockups">Ink on mockups <span>Desk · codex</span></div>
@@ -202,14 +205,14 @@ function webBody() {
 
 function render() {
   const s = scenes[scene];
-  document.body.classList.toggle("off", !on);
+  document.body.classList.toggle("off", !on || !list);
   document.querySelectorAll("#scene button").forEach(b => b.classList.toggle("on", b.dataset.s === scene));
   document.getElementById("title").textContent = s.title;
   document.getElementById("wtabs").innerHTML = s.tabs.map((t, i) => `<div class="wtab ${i === tab ? "on" : ""}" data-t="${i}">${t}</div>`).join("");
   const dock = s.dock ? `<div class="term"><div class="dockhead">${s.dock.head}</div>${s.dock.lines.join("\n")}</div><div class="divider"></div>` : "";
   let doc;
   if (scene === "cli" && tab === 0) {
-    doc = `<div class="doc"><div class="toolbar"><span class="path">docs/specs/login.md</span><span class="chip press">Comments</span></div>${mdBody(scenes.task)}</div>`;
+    doc = `<div class="doc"><div class="toolbar"><span class="path">docs/specs/login.md</span><span class="spacer"></span><span class="chip press">Comments</span></div>${mdBody(scenes.task)}</div>`;
   } else {
     const inner = s.doc.kind === "md" ? mdBody(s) : webBody();
     doc = `<div class="doc ${scene === "cli" && cliRan ? "focused" : ""}">${bar(s)}${inner}</div>`;
@@ -225,8 +228,7 @@ function render() {
   const c = document.getElementById("comments");
   if (c) c.onclick = (e) => {
     e.stopPropagation();
-    if (on) { on = false; to = null; }
-    else if (s.ask) { asking = !asking; }
+    if (s.ask) { asking = !asking; }
     else { on = true; }
     render();
   };
