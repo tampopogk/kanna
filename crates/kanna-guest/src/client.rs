@@ -359,6 +359,7 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
     let header = json!({
         "op": "run", "job": request.job, "mirror": { "machine": "local", "repo": worktree.repo, "task": worktree.task },
         "commit": worktree.commit, "root": request.root, "cwd": request.cwd, "argv": request.argv, "env": request.env, "fetch": request.fetch, "ui": request.ui,
+        "developer_dir": request.env.get("DEVELOPER_DIR"),
     });
     let mut receiver = Receiver { request, out, err, at: [0, 0], map: vec![], lines: [vec![], vec![]], diagnostics: vec![], expected_to, status: Value::Null, exited: false, notes: vec![] };
     let submitted = (|| -> io::Result<Option<(Box<dyn Pipe>, bool)>> {

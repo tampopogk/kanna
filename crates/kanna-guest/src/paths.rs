@@ -35,12 +35,28 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+fn tool_of(argv: &[String]) -> (&str, usize) {
+    let name = |a: &str| a.rsplit('/').next().unwrap_or(a).to_string();
+    if argv.first().map(|a| name(a)).as_deref() != Some("xcrun") {
+        return (argv.first().map(|a| a.rsplit('/').next().unwrap_or(a)).unwrap_or_default(), 0);
+    }
+    let mut index = 1;
+    while let Some(arg) = argv.get(index) {
+        match arg.as_str() {
+            "-sdk" | "--sdk" | "-toolchain" | "--toolchain" => index += 2,
+            a if a.starts_with('-') => index += 1,
+            a => return (a.rsplit('/').next().unwrap_or(a), index),
+        }
+    }
+    ("xcrun", 0)
+}
+
 pub fn translate(argv: &[String], roots: &Roots) -> Result<Translated, String> {
     let linux = Path::new(roots.linux);
     let mut mapped = argv.to_vec();
     let mut results = Vec::new();
     let mut map = vec![(roots.src.to_string_lossy().into_owned(), roots.linux.to_string())];
-    let tool = argv.first().map(|a| a.rsplit('/').next().unwrap_or(a)).unwrap_or_default();
+    let (tool, at) = tool_of(argv);
     let mut index = 0;
     while index + 1 < argv.len() {
         let flag = argv[index].as_str();
@@ -79,7 +95,7 @@ pub fn translate(argv: &[String], roots: &Roots) -> Result<Translated, String> {
             mapped.extend(["-resultBundlePath".to_string(), target.to_string_lossy().into_owned()]);
         }
     }
-    if tool == "swift" && argv.get(1).is_some_and(|a| matches!(a.as_str(), "build" | "test" | "run")) && !has("--scratch-path") {
+    if tool == "swift" && argv.get(at + 1).is_some_and(|a| matches!(a.as_str(), "build" | "test" | "run")) && !has("--scratch-path") {
         mapped.extend(["--scratch-path".to_string(), roots.cache.join("swiftpm").to_string_lossy().into_owned()]);
     }
     for (mac, linux) in map.clone() {
@@ -158,6 +174,17 @@ mod tests {
         assert_eq!(&t.argv[2..], ["--scratch-path", "/private/tmp/m/derived/x26/swiftpm"]);
         let t = translate(&strings(&["xcrun", "simctl", "list"]), &roots).unwrap();
         assert_eq!(t.argv, strings(&["xcrun", "simctl", "list"]));
+    }
+
+    #[test]
+    fn xcodebuild_and_swift_through_xcrun_get_the_same_defaults() {
+        let (src, results, cache) = roots();
+        let roots = Roots { linux: "/w", cwd: "", src: &src, results: &results, cache: &cache };
+        let direct = translate(&strings(&["xcodebuild", "-scheme", "App", "test"]), &roots).unwrap();
+        let wrapped = translate(&strings(&["xcrun", "-sdk", "macosx", "xcodebuild", "-scheme", "App", "test"]), &roots).unwrap();
+        assert_eq!(&wrapped.argv[3..], &direct.argv[..]);
+        let t = translate(&strings(&["xcrun", "--toolchain", "swift", "swift", "test"]), &roots).unwrap();
+        assert!(t.argv.ends_with(&strings(&["--scratch-path", "/private/tmp/m/derived/x26/swiftpm"])));
     }
 
     #[test]

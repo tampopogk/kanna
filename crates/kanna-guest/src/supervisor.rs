@@ -36,7 +36,7 @@ pub struct Config {
 impl Config {
     pub fn new(state: PathBuf) -> Config {
         let home = std::env::var("HOME").unwrap_or_default();
-        let path = format!("{home}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+        let path = format!("{home}/.cargo/bin:{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
         Config { state, path, egress: None, require_console: false }
     }
 }
@@ -394,7 +394,11 @@ impl Supervisor {
         }
         git(&src, &["reset", "-q", commit])?;
         lay(&src, &self.config.state.join("store"), mirror, entries)?;
-        let developer_dir = request["developer_dir"].as_str().map(String::from).unwrap_or_else(|| output_of("/usr/bin/xcode-select", &["-p"], &[]));
+        let developer_dir = match request["developer_dir"].as_str() {
+            Some(dir) if Path::new(dir).is_absolute() && Path::new(dir).is_dir() => dir.to_string(),
+            Some(dir) => return Err(io::Error::new(io::ErrorKind::NotFound, format!("DEVELOPER_DIR {dir} isn't a folder on the build Mac"))),
+            None => output_of("/usr/bin/xcode-select", &["-p"], &[]),
+        };
         let mut env = self.base_env((!developer_dir.is_empty()).then_some(developer_dir.as_str()));
         if let Some(extra) = request["env"].as_object() {
             for (name, value) in extra {

@@ -93,7 +93,7 @@ pub fn run(socket: PathBuf, options: Options) -> Result<i32, Failure> {
     let here = std::env::current_dir().map_err(|e| fail(exit::FAILED, format!("build: no current folder: {e}")))?;
     let worktree = client::worktree(&here).map_err(|e| fail(exit::FAILED, format!("build: {e}")))?;
     let mut env = BTreeMap::new();
-    for name in ["KANNA_CHANNEL", "CI", "RUST_BACKTRACE", "CARGO_TERM_COLOR", "NSUnbufferedIO"] {
+    for name in ["KANNA_CHANNEL", "CI", "RUST_BACKTRACE", "CARGO_TERM_COLOR", "NSUnbufferedIO", "DEVELOPER_DIR"] {
         if let Ok(value) = std::env::var(name) {
             env.insert(name.to_string(), value);
         }

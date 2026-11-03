@@ -159,6 +159,21 @@ fn the_commit_captured_is_the_one_sent_even_if_head_moves() {
     assert!(refs.stdout.is_empty(), "the ref made for the bundle is gone");
 }
 
+#[test]
+fn the_developer_dir_asked_for_is_the_one_the_job_gets() {
+    let rig = rig("xcode");
+    let xcode = temp("xcode-dir");
+    let (mut req, worktree) = request(&rig, &["sh", "-c", "echo $DEVELOPER_DIR"]);
+    req.env.insert("DEVELOPER_DIR".into(), xcode.to_string_lossy().into_owned());
+    let (outcome, out, err) = run(&rig, &req, &worktree);
+    assert_eq!(outcome, Outcome::Exited(0), "{err}");
+    assert_eq!(out.trim(), xcode.to_string_lossy());
+    let (mut req, worktree) = request(&rig, &["true"]);
+    req.env.insert("DEVELOPER_DIR".into(), "/Applications/Xcode-0.app/Contents/Developer".into());
+    let (outcome, _, _) = run(&rig, &req, &worktree);
+    assert!(matches!(&outcome, Outcome::Failed(why) if why.contains("isn't a folder on the build Mac")), "{outcome:?}");
+}
+
 struct Dropping {
     inner: UnixStream,
     drops: bool,
