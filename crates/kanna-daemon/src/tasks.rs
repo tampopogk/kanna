@@ -3569,8 +3569,7 @@ impl Tasks {
         if by.is_some_and(|by| planners.iter().any(|p| p == by) && self.planner_of(&entry.repo, &[by.to_string()]).is_some()) {
             return;
         }
-        let name = entry.name.clone().unwrap_or_else(|| self.short(&entry.id));
-        self.news.borrow_mut().add(desk_news::Item::new(&entry.repo, &entry.id, &name, what, Instant::now()));
+        self.news.borrow_mut().add(desk_news::Item::new(&entry.repo, &entry.id, &self.short(&entry.id), entry.name.as_deref(), what, Instant::now()));
     }
 
     fn tell_planners(&self, now: Instant) -> Option<Instant> {
