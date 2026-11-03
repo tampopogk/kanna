@@ -972,6 +972,34 @@ mod tests {
         assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": true })), "opened p9 in win-4");
         assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": false })), "brought forward p9 in win-4");
     }
+
+    #[test]
+    fn stats_print_a_line_a_tile_with_its_sparkline() {
+        let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
+        assert_eq!(parse("kanna stats").unwrap().1, json!({ "repo": repo }));
+        let reply = json!({ "project": "/r", "days": [], "sections": [
+            { "id": "quiz", "title": "Quiz", "tiles": [
+                { "id": "right", "label": "Answers right", "value": 79.0, "unit": "%", "note": "of 95 answers", "chart": { "kind": "line", "max": 100, "values": [null, 50.0, 100.0] } },
+                { "id": "kinds", "label": "By kind", "value": null, "note": "", "chart": { "kind": "ranked", "rows": [{ "label": "why", "value": 91.7, "note": "11/12" }] } },
+            ] },
+            { "id": "tasks", "title": "Tasks", "tiles": [
+                { "id": "lead", "label": "Made to done", "value": 12780.0, "unit": "s", "note": "median of 3", "chart": { "kind": "dots", "points": [], "line": [null, 3600.0, 7200.0] } },
+            ] },
+            { "id": "code", "title": "Code quality", "placeholder": true, "empty": "Not measured yet.", "tiles": [] },
+        ] });
+        let text = output::stats(&json!({}), &reply);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "/r · main · last 30 days");
+        assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers   ▅█");
+        assert_eq!(lines[2], "              By kind");
+        assert_eq!(lines[3], "                why             92%  11/12");
+        assert_eq!(lines[4], "Tasks         Made to done   3h 33m  median of 3     ▅█");
+        assert_eq!(lines[5], "Code quality  Not measured yet.");
+        assert_eq!(output::duration(59.0 * 60.0), "59m");
+        assert_eq!(output::duration(3.0 * 3600.0), "3h");
+        assert_eq!(output::duration(50.0 * 3600.0), "2d");
+    }
+
     #[test]
     fn a_schedule_takes_a_two_word_rule_quoted_or_not_a_target_and_the_rest_as_its_prompt() {
         let git = |args: &[&str]| String::from_utf8(std::process::Command::new("git").args(args).output().unwrap().stdout).unwrap().trim().to_string();

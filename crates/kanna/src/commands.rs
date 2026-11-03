@@ -734,7 +734,7 @@ pub static COMMANDS: &[Command] = &[
             ("--json DOC", "start, answer: a JSON object kept with the round (commits covered, agent) or the answer (question, choices, the pick, the right choice, explanation)."),
             ("--misses", "history: only the misses not asked again since."),
         ],
-        notes: "For the kanna-quiz skill's agents, run in the repo. open, for the planning agent, brings the repo's Quiz window forward, or opens one: a window with the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it; it isn't a task. start begins a round on this repo at main's commit and prints its ID (r12); answer records one answer to it and prints the answer's ID (a7); history lists this repo's rounds, newest first, each with its commit and answers. Nothing here is a score: history is for picking the next round's questions.",
+        notes: "For the kanna-quiz skill's agents, run in the repo. open, for the planning agent, brings the repo's Quiz window forward, or opens one: a window with the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it; it isn't a task. start begins a round on this repo at main's commit and prints its ID (r12); answer records one answer to it and prints the answer's ID (a7); history lists this repo's rounds, newest first, each with its commit and answers. history is for picking the next round's questions; your totals over time are on the Desk view's Stats tab (kanna stats).",
         examples: &[
             ("kanna quiz open --agent codex", "Open the Quiz window with Codex as the quiz agent, or bring it forward."),
             ("kanna quiz start --json '{\"commits\": [\"67b287c\"]}'", "Start a round on main's commit; prints its ID, e.g. r12."),
@@ -744,6 +744,17 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_quiz,
         show: output::quiz,
+    },
+    Command {
+        name: "stats",
+        group: "Information",
+        summary: "Print this project's numbers over the last 30 days, as the Desk view's Stats tab shows them.",
+        usage: "kanna stats",
+        options: &[],
+        notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality isn't measured yet. Each line is a number, its note and a sparkline of its 30 days, oldest first.",
+        examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them.")],
+        parse: parse_stats,
+        show: output::stats,
     },
     Command {
         name: "projects",
@@ -1067,6 +1078,11 @@ fn parse_quiz(args: &mut Argv) -> Result<Value, Failure> {
         out["doc"] = doc;
     }
     Ok(out)
+}
+
+fn parse_stats(_: &mut Argv) -> Result<Value, Failure> {
+    let repo = repo_here().map_err(|_| usage("stats", "stats are a git repo's: run this in one"))?;
+    Ok(json!({ "repo": repo }))
 }
 
 fn parse_run(args: &mut Argv) -> Result<Value, Failure> {

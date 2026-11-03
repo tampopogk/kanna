@@ -60,6 +60,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var starting: Set<String> = []
     let toasts = ToastStack()
     var toastShowing: (pane: String, desk: String?)?
+    var statsTimer: Timer?
 
     static var daemonSocketPath: String {
         if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return path }
@@ -684,6 +685,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, let controller else { return }
             controller.page = page
             if page == WindowController.pages[1] { links?.refresh() }
+            if page == WindowController.pages[2] { loadStats(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
