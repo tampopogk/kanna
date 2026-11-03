@@ -1,8 +1,8 @@
 # Stats
 
-**Status:** built · **Tests:** `stats.rs`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** code quality metrics
+**Status:** built · **Tests:** `stats.rs`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** [code quality metrics](code-quality-metrics.md)
 
-**Stats** is a third fixed tab in the Desk view, after Desk and Machines: the project's numbers over the last 30 days. Each number is today's value over a small chart of the 30 days. Four sections: what you know of the code (from your quiz answers), what landed on main, how tasks moved, and a placeholder for code quality, which the next task fills. `kanna stats [--json]` prints the same numbers.
+**Stats** is a third fixed tab in the Desk view, after Desk and Machines: the project's numbers over the last 30 days. Each number is today's value over a small chart of the 30 days. Four sections: what you know of the code (from your quiz answers), what landed on main, how tasks moved, and how good the code is ([code quality metrics](code-quality-metrics.md)). `kanna stats [--json]` prints the same numbers.
 
 Agents write most of the code, so the numbers that matter are whether you keep up with it and how work flows through the Desk. Test counts and pass rates aren't here: every test has to pass, so they say nothing.
 
@@ -43,7 +43,7 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 | | Tasks landed | merges into main today | per day (columns) | how much work lands, counted the way it's delivered |
 | Tasks | Made, Started, Ended | tasks made, first started and done today | per day (columns) | the flow through the Shelf and the Desk: made faster than ended means the Shelf grows |
 | | Made to done | median time, last 30 days | a dot per task on the day it was done, the 7-day median as a line | how long a task takes from asking to finished |
-| Code quality | (placeholder) | "Not measured yet" | | where the next task's metrics go |
+| Code quality | see [code quality metrics](code-quality-metrics.md) | | | how good the code on main is, and its trend |
 
 - **A kind** is a quiz answer's `kind`. **An area** is the answer's file's first two folders (`crates/kanna-daemon`, `docs/specs`), or its one folder, or the file at the root. The five areas with the most answers show, the rest as Other, last.
 - **A commit reached main** on the day of the first-parent commit on main that brought it: a plain commit brings itself, a merge the commits of its branch (not the merge itself).
@@ -80,15 +80,15 @@ flowchart LR
 
 - **The sampler catches up** on a worker thread, off the daemon's main thread, when a `stats` request comes: for each metric, the first-parent commits on main (else `master`, else `HEAD`) in the last 30 days with no row for it, oldest first. The thread sends what it found back through the daemon's event loop (`Event::Sampled`), which writes the rows and answers. One catch-up per repo at a time: a request during one waits for it and gets the same answer.
 - **Every sampled commit gets a row for every metric,** 0 when nothing applies, so a missing row always means "not sampled yet", and a new metric fills in its 30 days by itself.
-- **It reads main without touching any checkout:** `git log --first-parent` and `git rev-list --count` on the main checkout's refs. A metric that needs the files will need its commit checked out in a worktree of the sampler's own in the build target ([build targets](build-targets.md)), never the user's checkout; that's the code quality task's to build.
+- **It reads main without touching any checkout:** `git log --first-parent`, `git rev-list --count`, and for metrics that need the files, the commit's blobs from git's object store ([code quality §3](code-quality-metrics.md#3-sampling)). Only coverage checks a commit out, in a worktree of its own.
 
 ## 4. Adding a metric
 
 A metric is the daemon's: the app and the CLI draw whatever sections and tiles the reply has.
 
-- **The metric:** an entry in `stats.rs`'s `METRICS`, `Metric { name, sample }`, with `sample(repo, commit) → (value, doc)`; `commit` has its ID, time and parents. Today's are `commits` (what the commit brought to main) and `merged` (1 for a merge). A metric that needs the commit's files adds that need to `Metric`.
-- **The tile:** `{id, label, value, unit, note, span, chart}` in a section of the reply. `unit` is `%`, `s` (a duration, shown as 3h 33m) or none; `span` is the tile's width in sixths of a row (2, 3, 4 or 6). Charts are `line` (`values`, `max`), `columns` (`values`), `dots` (`points` of `{day, value, label}` and a median `line`) and `ranked` (`rows` of `{label, value, note}`), each with `what`, the hover readout's words; a new kind of chart is a new kind in the app's `StatsPage` and the CLI's printer.
-- **The section:** `{id, title, note, tiles}`, with `empty` (the words to show with no tiles) and `placeholder` (drawn as a placeholder). `code` is in the reply now with `placeholder: true` and no tiles; the code quality task adds tiles to it and drops the flag.
+- **The metric:** an entry in `stats.rs`'s `METRICS`, `Metric { name, sample }`, where `sample` is `Sampler::Commit(fn(context, commit) → (value, doc))` (the context has the repo and its tasks' words by branch; `commit` has its ID, time, parents and subject) or `Sampler::Tree(fn(tree) → (value, doc))` for one that needs the commit's files. Main's are `commits` (what the commit brought to main) and `merged` (1 for a merge); code quality's are in [its spec](code-quality-metrics.md#3-sampling).
+- **The tile:** `{id, label, value, unit, note, span, chart}` in a section of the reply. `unit` is `%`, `s` (a duration, shown as 3h 33m) or none; `span` is the tile's width in sixths of a row (2, 3, 4 or 6). Charts are `line` (`values`, `max`), `columns` (`values`), `dots` (`points` of `{day, value, label}` and a median `line`), `ranked` (`rows` of `{label, value, note}`) and `list` ([code quality §6](code-quality-metrics.md#6-interfaces)), each with `what`, the hover readout's words; a new kind of chart is a new kind in the app's `StatsPage` and the CLI's printer.
+- **The section:** `{id, title, note, tiles}`, with `empty` (the words to show with no tiles) and `placeholder` (drawn as a dashed box).
 
 The reply, the same as `kanna stats --json`:
 
@@ -100,7 +100,7 @@ The reply, the same as `kanna stats --json`:
      "chart": {"kind": "line", "values": [null, "…", 79.3], "max": 100}}]},
   {"id": "main", "title": "Main", "tiles": [{"id": "commits", "label": "Commits", "value": 28, "note": "today · 616 in 30 days",
      "chart": {"kind": "columns", "values": [12, "…", 28]}}]},
-  {"id": "code", "title": "Code quality", "placeholder": true, "tiles": []}]}
+  {"id": "code", "title": "Code quality", "tiles": [{"id": "erosion", "label": "Erosion", "value": 48.5, "unit": "%", "…": "…"}]}]}
 ```
 
 ## 5. `kanna stats`
@@ -115,15 +115,14 @@ Main          Commits                        28  today · 616 in 30 days  ▃▂
 
 ## 6. Tests
 
-- `stats.rs`: the grade as of each day (a miss 40 days back still in day 0's window, a day with no answers in its 30 is empty), a miss counted until it's asked again and a miss asked again and missed standing for the old one, areas by two folders with Other last, first starts only and made to done with its 7-day median, an empty project and the code placeholder; the sampler on a fixture repo (a plain commit, a merge bringing two) writes a row per metric per commit and fills only what's missing; the command answers two requests with one catch-up and reads back from `kanna.db`.
+- `stats.rs`: the grade as of each day (a miss 40 days back still in day 0's window, a day with no answers in its 30 is empty), a miss counted until it's asked again and a miss asked again and missed standing for the old one, areas by two folders with Other last, first starts only and made to done with its 7-day median, an empty project and no code; the sampler on a fixture repo (a plain commit, a merge bringing two) writes a row per metric per commit and fills only what's missing; the command answers two requests with one catch-up and reads back from `kanna.db`.
 - `StatsFormatTests` (KannaWindows): figures, days, scales and tile places in rows of sixths, stacked when narrow.
 - The CLI: `kanna stats` sends the repo and prints a line a tile, ranked rows under it and a section's words; `stats` is in `capabilities` and `commands`.
-- e2e `stats_tab` on a private instance: a fixture repo with commits three and two days back and a merge today, four quiz answers, three tasks (two started, one done); `kanna stats --json` and the text against the expected numbers, the samples in `kanna.db`; then the app: Desk, Machines and Stats as the Desk view's fixed tabs, Next Tab from Machines to Stats, every tile's label and note as the reply has them and its figure, the code placeholder, snapshots in dark and light (`target/e2e-kanna/stats_tab-*.png`), and Desk leaving the page. `machine_remote_task` steps Next and Previous Tab through all three fixed tabs.
+- e2e `stats_tab` on a private instance: a fixture repo with commits three and two days back and a merge today, four quiz answers, three tasks (two started, one done); `kanna stats --json` and the text against the expected numbers, the samples in `kanna.db`; then the app: Desk, Machines and Stats as the Desk view's fixed tabs, Next Tab from Machines to Stats, every tile's label and note as the reply has them and its figure, the code section ([code quality §7](code-quality-metrics.md#7-tests)), snapshots in dark and light (`target/e2e-kanna/stats_tab-*.png`), and Desk leaving the page. `machine_remote_task` steps Next and Previous Tab through all three fixed tabs.
 
 ## 7. Rejected
 
 - **Test count and pass rate:** every test has to pass, so both say nothing.
-- **Code quality in this task:** it needs research of its own (what predicts trouble in code agents write); this task leaves its section and the `Tree` sampling for it.
 - **Sampling quiz and task numbers:** they're rows already; a sample could only drift from them.
 - **Commits and merges read from `git log` at each request,** without samples: right today, but the code quality metrics need per-commit rows anyway, and this keeps one store and one sampler for both.
 - **A score in the quiz itself:** the round still says only what you knew of its five questions ([quiz §2](quiz.md#2-rules)); the totals live here, where you go to look.

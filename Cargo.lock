@@ -2020,6 +2020,7 @@ dependencies = [
  "kanna-mux",
  "kanna-net",
  "kanna-pipe",
+ "kanna-quality",
  "kanna-threads",
  "kanna-vt",
  "libc",
@@ -2142,6 +2143,16 @@ dependencies = [
 [[package]]
 name = "kanna-pipe"
 version = "0.1.0"
+
+[[package]]
+name = "kanna-quality"
+version = "0.1.0"
+dependencies = [
+ "tree-sitter",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-swift",
+]
 
 [[package]]
 name = "kanna-syntax"
