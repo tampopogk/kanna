@@ -96,12 +96,34 @@ Found by reading every handler and chore (October 2026). Each line is converted 
 | `project_import` | `project import` | `git`, `cp -R`, rewriting session files: unbounded |
 | `crashes` scan | the crash tick while the app is gone | reading DiagnosticReports |
 | the keeper's requests | `close`, exit acks (spawns no longer wait: [async spawns](async-spawns.md)) | a round trip on `keeper.sock` (ms) |
-| `Db` | almost every handler | sqlite in-process (ms; up to its 5s busy timeout) |
+| `Db` | almost every handler | sqlite in-process (under 1ms typically; a write can wait up to its 5s busy timeout) |
 
 ## 6. Decisions
 
-- **sqlite: a writer thread.** `Db` is one `rusqlite` connection, called from about 60 places, often inside a handler's synchronous logic and some in transactions; a call can wait up to its 5s busy timeout when another process holds the lock. Making each call `async` would reach into nearly every handler, so instead the loop keeps what it reads in memory, and writes go to a writer thread in order, unawaited. Reads from disk happen only at the start; the few reads left need a read-after-write path.
+- **sqlite: a writer thread, not built yet.** Agreed in principle, and on hold for the reasons in [§6.1](#61-what-holds-up-the-loop-november-2026): `put_with` isn't what spikes, and writes can't all go unawaited.
 - **One executor: tokio.** Core's futures run on the `LocalSet`, timed by the guard through `set_timing`, so there's no `Event::Wake`, `core.poll` or `set_wakeup`. Only the daemon runs a `Core` (the CLI and `kanna-layout` use kanna-mux's other parts). `handle_blocking` and `turn` drive Core's own runtime, for tests and after the loop has ended.
+
+### 6.1 What holds up the loop (November 2026)
+
+Temporary timers on a private instance, 40 stopped tasks, `loop_latency` run six times at load 5–11. A per-call figure's p99 and max cover its last 200 samples.
+
+| What | p50 | Worst |
+|---|---|---|
+| `tasks list` (no sqlite writes) | 3.3–4.7ms | 108ms |
+| `tasks.view()`, on each task change | 3.1–3.7ms | 29ms |
+| `db.put_with`, the task write | 0.34–0.43ms | 8.4ms |
+| `db.put_layout` | 0.3–0.9ms | 23ms, once |
+| `terminals.save_if_changed` | 0 | 14ms |
+
+A list or view costs about 80µs per task, nearly all of it file reads in `described` (`branch_of`, `identity`, `script_said`); those parts stayed at or under about 1ms each in what was kept. Polls over 20ms were `tasks list`, `task list`, `task hold` and `task claim`, the last two carrying the shelve or pick continuation (store, then a view) in one poll. So the biggest target is the cost per task of a view, not sqlite.
+
+A writer thread would have to deal with:
+
+- **Read-then-write transactions.** `replica.rs` runs 14 `atomically` blocks and `transfer.rs` more; they read a task's authority or a transfer inside the transaction and use the result.
+- **Durability before peers.** `store` commits replicated ops, then applies them and lets them sync. Unawaited, peers could hold ops this machine loses, and a failed write can't be undone in memory.
+- **Answers.** `put_message`, `start_round`, `answer`, `add_schedule`, `add_revision` and `put_stage` return row IDs, and `store` returns its failure to the client.
+- **Order.** The layout saved with a done task could be overwritten by an older queued `put_layout`.
+- **History.** Events, messages, runs, stages, samples and quiz rounds are read from disk on demand; keeping them in memory has no bound.
 
 ## 7. Glossary
 
