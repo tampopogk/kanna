@@ -81,10 +81,17 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .row.waiting .go { visibility: visible; color: var(--muted); }
 .row.waiting:hover .go:not(.off), .row.waiting.sel .go:not(.off) { color: var(--accent); }
 .row .go.off { color: var(--muted); }
-.row .shelve { visibility: hidden; font: 12px var(--sans); color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; white-space: nowrap; }
-.row:hover .shelve, .row.hover .shelve { visibility: visible; }
-.row .shelve:hover, .row .shelve.hover { color: var(--accent); border-color: var(--accent); background: var(--bg); }
-.row:has(.shelve:hover) .go, .row.hover-shelve .go { opacity: .45; }
+.row[data-activate] { user-select: none; }
+.row.lifted { opacity: .35; }
+.ghost { position: fixed; z-index: 10; pointer-events: none; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line); box-shadow: var(--shadow); transform: rotate(-1deg); }
+.ghost .n { font-weight: 600; } .ghost .s { color: var(--muted); font-size: 12px; }
+.group.shelfzone { border-radius: 10px; outline: 1.5px dashed transparent; outline-offset: 6px; }
+.dragging .group.shelfzone { outline-color: var(--line); }
+.dragging .group.shelfzone.over { outline: 1.5px solid var(--accent); background: var(--tint); }
+.dropnote { display: none; color: var(--muted); }
+.dragging .dropnote { display: inline; }
+.dragging .shelfzone.over .dropnote { color: var(--accent); }
+.dragging .shelfzone .find, .dragging .shelfzone .count { display: none; }
 .row mark { background: var(--tint); color: inherit; border-radius: 2px; }
 .empty .note { color: var(--warn); font-size: 12px; margin: 6px 0 0; min-height: 16px; }
 .find { flex: 1; max-width: 320px; margin-left: auto; display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); }
@@ -125,7 +132,7 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
 <main>
   <div class="intro">
     <h1>Desk view: move a Desk task to the Shelf from its row</h1>
-    <p><b>New here:</b> hover a Desk task's row and a <b>↓ Move to Shelf</b> button shows at its right edge, after the row's "⌘N · Make active →" hint. It works on any Desk task, the active one or not, and moves it to the Shelf as it is, running or stopped (<code>kanna task shelve</code>). Clicking the rest of the row still makes the task active. Shelving the active task leaves no task active and the Desk view showing. There's no right-click menu, no drag, and no swap from a full Desk: shelve one, then Move to Desk.</p>
+    <p><b>New here:</b> drag a Desk task's row down onto the Shelf to move it there as it is, running or stopped (<code>kanna task shelve</code>). It works on any Desk task, the active one or not. While you drag, the row lifts and follows the pointer, and the Shelf shows where to drop it; over the Shelf it lights up with "Drop to move to the Shelf". Let go anywhere else, or press esc, and nothing moves. A click without a drag still makes the task active. Shelving the active task leaves no task active and the Desk view showing. No right-click menu, no button, no drag from the Shelf to the Desk, and no swap from a full Desk.</p>
     <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1, ⌘2, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
@@ -172,7 +179,7 @@ const initial = () => {
   };
 };
 let s = initial();
-let hovered = null, hoveredShelve = null;
+let hovered = null, drag = null;
 const cheers = ["Clear desk, clear mind. Pick what's next.", "Nice work. What's next?", "Fresh start. Pick a task when you're ready.", "Breathe. Then pick the next one."];
 let cheerAt = location.hash.includes("picture") ? 0 : Math.floor(Math.random() * cheers.length);
 const statusText = { working: "working", needs: "needs you", idle: "idle" };
@@ -180,7 +187,7 @@ const task = id => s.tasks.find(t => t.id === id);
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const ago = at => { const m = Math.max(0, Math.round((Date.now() - at) / MIN)); return m < 1 ? "now" : m < 60 ? m + "m" : Math.round(m / 60) + "h"; };
 const onDesk = () => s.tasks.filter(t => t.place === "desk");
-const shelf = () => s.tasks.filter(t => t.place === "shelf");
+const shelf = () => byAge(s.tasks.filter(t => t.place === "shelf"));
 const active = () => task(s.active);
 const byAge = list => list.slice().sort((a, b) => a.madeAt - b.madeAt);
 const others = () => {
@@ -201,7 +208,7 @@ function marked(text, q) {
 
 function render() {
   const t = s.view === "task" ? active() : null;
-  document.getElementById("stage").innerHTML = `<div class="window">
+  document.getElementById("stage").innerHTML = `<div class="window ${drag && drag.moved ? "dragging" : ""}">
     <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${t ? esc(t.title) : "Desk"}</b></span></div>
     <div style="flex:1;display:flex;flex-direction:column;min-height:0">${t ? taskHTML(t) : deskViewHTML()}</div>
     ${t ? `<div class="strip">${stripHTML()}</div>` : ""}
@@ -209,7 +216,42 @@ function render() {
   const find = s.finding && document.querySelector("[data-find]");
   if (find) { find.focus(); find.setSelectionRange(find.value.length, find.value.length); }
   menubar();
+  ghost();
 }
+
+function ghost() {
+  let g = document.querySelector(".ghost");
+  if (!drag || !drag.moved) { if (g) g.remove(); return; }
+  const t = task(drag.id);
+  if (!g) { g = document.createElement("div"); g.className = "ghost"; document.body.appendChild(g); }
+  g.innerHTML = `<span class="dot ${t.status}"></span><div><div class="n">${esc(t.title)}</div><div class="s">${t.agent} · ${statusText[t.status]} · ${esc(t.branch)}</div></div>`;
+  g.style.left = (drag.x - drag.dx) + "px"; g.style.top = (drag.y - drag.dy) + "px"; g.style.width = drag.w + "px";
+}
+
+const overShelf = (x, y) => { const z = document.querySelector(".shelfzone"); if (!z) return false; const r = z.getBoundingClientRect(); return x >= r.left - 6 && x <= r.right + 6 && y >= r.top - 6 && y <= r.bottom + 6; };
+document.addEventListener("pointerdown", e => {
+  const row = e.button === 0 && e.target.closest(".row[data-activate]");
+  if (!row) return;
+  const r = row.getBoundingClientRect();
+  drag = { id: row.dataset.activate, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, moved: false, over: false };
+});
+document.addEventListener("pointermove", e => {
+  if (!drag) return;
+  drag.x = e.clientX; drag.y = e.clientY;
+  const was = drag.moved, wasOver = drag.over;
+  if (!drag.moved && Math.hypot(drag.x - drag.x0, drag.y - drag.y0) > 4) drag.moved = true;
+  drag.over = drag.moved && overShelf(drag.x, drag.y);
+  if (drag.moved !== was || drag.over !== wasOver) render(); else ghost();
+});
+document.addEventListener("pointerup", e => {
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (!d.moved) return;
+  e.stopPropagation(); suppressClick = true;
+  if (d.over) moveToShelf(d.id); else render();
+}, true);
+let suppressClick = false;
+document.addEventListener("click", e => { if (suppressClick) { suppressClick = false; e.stopPropagation(); } }, true);
 
 const deskIcon = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5.5 5.5 8 8l2.5-2.5"/><path d="M5 11h6" stroke-width="2"/></svg>`;
 
@@ -248,13 +290,13 @@ function plannerLog() {
 
 function deskViewHTML() {
   const full = onDesk().length >= LIMIT, found = hits(), sel = Math.min(s.sel, Math.max(0, found.length - 1)), q = s.query;
-  const deskRow = (t, key, isActive) => `<div class="row ${isActive ? "active" : ""} ${t.id === hovered ? "hover" : ""} ${t.id === hoveredShelve ? "hover-shelve" : ""}" data-activate="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.title)}</div><div class="s">${t.agent} · ${statusText[t.status]}${isActive ? "" : ` · ${ago(t.leftAt)} ago`} · ${esc(t.branch)}</div></div><span class="go">${isActive ? "⌘. · Back to it" : `${key ? key + " · " : ""}Make active →`}</span><button class="shelve ${t.id === hoveredShelve ? "hover" : ""}" data-shelve="${t.id}" title="Move this task to the Shelf, as it is">↓ Move to Shelf</button></div>`;
+  const deskRow = (t, key, isActive) => `<div class="row ${isActive ? "active" : ""} ${t.id === hovered ? "hover" : ""} ${drag && drag.moved && drag.id === t.id ? "lifted" : ""}" data-activate="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.title)}</div><div class="s">${t.agent} · ${statusText[t.status]}${isActive ? "" : ` · ${ago(t.leftAt)} ago`} · ${esc(t.branch)}</div></div><span class="go">${isActive ? "⌘. · Back to it" : `${key ? key + " · " : ""}Make active →`}</span></div>`;
   return `<div class="content">
     <div class="agent"><div class="head">Planning · ${esc(s.repo)} · main</div><div class="term">${plannerLog()}</div></div>
     <div class="docs"><div class="empty"><p class="sub">${cheers[cheerAt]}</p>
       <div class="group"><div class="gh"><span><b>Desk</b> · ${esc(s.repo)}</span><span>${onDesk().length} of ${LIMIT} tasks</span></div>
         ${byAge(onDesk()).map(t => deskRow(t, keyOf(t), t.id === s.active)).join("") || `<div class="s" style="color:var(--muted)">Nothing on the Desk. Move a task here from the Shelf.</div>`}</div>
-      <div class="group"><div class="gh"><span><b>Shelf</b></span>${shelf().length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find value="${esc(q)}" placeholder="Search the Shelf" spellcheck="false" autocomplete="off"><kbd>⌘F</kbd></label>` : ""}<span>${q ? `${found.length} of ${shelf().length}` : `${shelf().length} waiting`}</span></div>
+      <div class="group shelfzone ${drag && drag.over ? "over" : ""}"><div class="gh"><span><b>Shelf</b> <span class="dropnote">· Drop to move to the Shelf</span></span>${shelf().length ? `<label class="find"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg><input data-find value="${esc(q)}" placeholder="Search the Shelf" spellcheck="false" autocomplete="off"><kbd>⌘F</kbd></label>` : ""}<span class="count">${q ? `${found.length} of ${shelf().length}` : `${shelf().length} waiting`}</span></div>
         ${found.map((t, i) => `<div class="row waiting ${q && i === sel ? "sel" : ""}" data-move="${t.id}"><span class="dot"></span><div class="t"><div class="n">${marked(t.title, q)}</div><div class="s">${t.waits ? `waits for ${esc(t.waits)} · ` : ""}${marked(t.prompt, q)} · from ${esc(t.by)}, ${ago(t.madeAt)} ago</div></div><span class="go ${full || t.waits ? "off" : ""}">${t.waits ? "Blocked" : full ? "Desk full" : q && i === sel ? "↩ Move to Desk" : "Move to Desk →"}</span></div>`).join("") || (q ? `<div class="nohit">No Shelf task matches “${esc(q)}”.</div>` : `<div class="s" style="color:var(--muted)">Empty. Ask the planning agent for tasks.</div>`)}
         <p class="note">${esc(s.note)}</p></div>
     </div></div>
@@ -334,7 +376,6 @@ document.addEventListener("click", e => {
   }
   if (top && top.dataset.top === "Task" && !el(".drop")) { s.menu = !s.menu; return menubar(); }
   if (s.menu && !el(".drop")) { s.menu = false; menubar(); }
-  if (el("[data-shelve]")) { e.stopPropagation(); return moveToShelf(el("[data-shelve]").dataset.shelve); }
   if (el("[data-toggle]")) return toggle();
   if (el("[data-move]")) return moveToDesk(el("[data-move]").dataset.move);
   if (el("[data-activate]")) return activate(el("[data-activate]").dataset.activate);
@@ -345,6 +386,7 @@ document.addEventListener("input", e => {
   render();
 });
 document.addEventListener("keydown", e => {
+  if (drag && e.key === "Escape") { e.preventDefault(); drag = null; return render(); }
   const find = e.target.closest && e.target.closest("[data-find]");
   if (find && !e.metaKey) {
     const found = hits();
@@ -369,8 +411,8 @@ if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").n
 if (location.hash.includes("desk")) s.view = "desk";
 const pointed = location.hash.match(/hover=([^&]*)/);
 if (pointed) hovered = pointed[1];
-const pointedShelve = location.hash.match(/shelve=([^&]*)/);
-if (pointedShelve) { hovered = hoveredShelve = pointedShelve[1]; }
+const dragged = location.hash.match(/drag=([^&]*)/);
+if (dragged) { const [id, over] = dragged[1].split(","); drag = { id, x: 700, y: over ? 470 : 235, dx: 120, dy: 20, w: 760, moved: true, over: !!over }; }
 const asked = location.hash.match(/q=([^&]*)/);
 if (asked) { s.query = decodeURIComponent(asked[1]); s.finding = true; }
 if (location.hash.includes("menu")) { document.body.classList.add("menu"); s.menu = true; }
