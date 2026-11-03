@@ -1,12 +1,12 @@
 # Desk view keys
 
-**Status:** built · **Mockup:** [`references/mockups/desk-keys.html`](../../references/mockups/desk-keys.html) · **Builds on:** [Desk view](desk-view.md), [Shelf search](shelf-search.md), [tasks](tasks.md)
+**Status:** built · **Mockup:** [`references/mockups/desk-keys.html`](../../references/mockups/desk-keys.html) · **Builds on:** [Desk view](desk-view.md), [Shelf search](shelf-search.md), [Shelf row status](shelf-row-status.md), [Drag a Desk task to the Shelf](desk-row-shelve.md), [tasks](tasks.md)
 
 Picking, shelving and starting tasks in the Desk view work from the keyboard alone. **⌘F** hands the keyboard from the planning terminal to one **selection** that runs over the Desk's rows and then the Shelf's; ↑ ↓ move it, ↩ does what clicking the row does, ⇧⌘⌫ moves a Desk task to the Shelf and ⌘↩ starts or stops a Shelf task where it is. **esc** goes back to the terminal.
 
 | The selection on a Shelf row | On a Desk row (light) |
 |---|---|
-| ![⌘F from the planning terminal: the search field has the cursor and the first Shelf row is selected, its hint "⌘↩ Start  ↩ Move to Desk"; a running Shelf task shows its status dot and "working on the Shelf"](desk-keys.png) | ![The selection moved up to a Desk row: "⇧⌘⌫ Move to Shelf  ↩ Make active"](desk-keys-light.png) |
+| ![⌘F from the planning terminal: the search field has the cursor and the first Shelf row is selected, its hint "⌘↩ Start  ↩ Move to Desk"; a running Shelf task shows its status dot](desk-keys.png) | ![The selection moved up to a Desk row: "⇧⌘⌫ Move to Shelf  ↩ Make active"](desk-keys-light.png) |
 
 | ↩ on a full Desk | ↩ on a blocked row | The Task menu |
 |---|---|---|
@@ -23,8 +23,8 @@ Picking, shelving and starting tasks in the Desk view work from the keyboard alo
 | ⌘↑ ⌘↓, Home End | the selection | The first row, the last row |
 | ↩ | a Shelf row | Move to Desk, as a click: refused when the Desk is full or the task is blocked, saying why in the note |
 | ↩ | a Desk row | Make it active (the active task's row: show it again, as ⌘.) |
-| ⇧⌘⌫ | a Desk row; the active task | Move to Shelf, as it is, running or stopped |
-| ⌘↩ | a Shelf row | Start it where it is, or Stop it if it's running; a blocked one is refused |
+| ⇧⌘⌫ | a Desk row | Move to Shelf, as it is, running or stopped, the same as [the drag](desk-row-shelve.md) |
+| ⌘↩ | a Shelf row | Start it where it is, or Stop it if it's running; a blocked one is refused. A stopped task with a paused dot ([Shelf row status](shelf-row-status.md)) starts |
 | esc | the selection | Clear the search; with nothing typed, back to the planning terminal |
 
 - **Typing still searches.** The search field keeps the cursor, so letters filter the Shelf ([Shelf search](shelf-search.md)) and the selection jumps to the first match. ↑ from the first Shelf row goes on to the Desk's last row, with or without a search.
@@ -36,11 +36,10 @@ Picking, shelving and starting tasks in the Desk view work from the keyboard alo
 
 ## 2. Hints and the menu
 
-- **Rows show their keys** on hover and when selected. A Desk row: "⇧⌘⌫ Move to Shelf" and "⌘1 · Make active →" (selected: "↩ Make active"; the active task: "⌘. · Back to it", selected "↩ Back to it"). A Shelf row: "⌘↩ Start" (or "Stop") and "Move to Desk →" (selected: "↩ Move to Desk"; a full Desk: "Desk full"). A blocked row: "Blocked", and on hover or selected "Blocked: waits for OTHER".
-- **The muted part is a button too:** clicking "Move to Shelf", "Start" or "Stop" does it, so the mouse can do what the keys do.
-- **A Shelf task running shows it:** its dot is its agent's status (working, idle, needs you), as a Desk row's, and its line starts "working on the Shelf"; a stopped one keeps the hollow ring, a blocked one the dashed ring.
-- **Task menu:** Show Desk / Show Active Task ⌘.; **Move to Shelf ⇧⌘⌫** (the active task, or the selected Desk row); then **Move to Desk / Make Active / Show Active Task ↩** and **Start / Stop ⌘↩**, named for the selected row and enabled only while the selection has the keyboard; then Task Waiting Longest and Desk Task 1, 2 as before.
-- **↩ and ⌘↩ are on those items only while the selection has the keyboard.** AppKit's menu takes a key equivalent even for a disabled item, so an item that always had ↩ would take Return from every terminal. The items get their keys when the selection takes the keyboard and lose them when it leaves.
+- **Rows show their keys** on hover and when selected, as text: only the row itself clicks, since leaving the Desk is [a deliberate gesture](desk-row-shelve.md#why-a-drag-and-only-this-way). A Desk row: "⇧⌘⌫ Move to Shelf" and "⌘1 · Make active →" (selected: "↩ Make active"; the active task: "⌘. · Back to it", selected "↩ Back to it"). A Shelf row: "⌘↩ Start" (or "Stop") and "Move to Desk →" (selected: "↩ Move to Desk"; a full Desk: "Desk full"). A blocked row: "Blocked", and on hover or selected "Blocked: waits for OTHER".
+- **Stop or Start follows whether it runs,** not its dot: a paused task keeps its dot ([Shelf row status](shelf-row-status.md)) and its row says Start.
+- **Task menu:** Show Desk / Show Active Task ⌘.; **Move to Shelf** (the active task, as before, or the selected Desk row); then **Move to Desk / Make Active / Show Active Task** and **Start / Stop**, named for the selected row and enabled only while the selection has the keyboard; then Desk Task 1, 2 as before.
+- **⇧⌘⌫, ↩ and ⌘↩ are on those items only while the selection has the keyboard.** AppKit's menu takes a key equivalent even for a disabled item, so an item that always had ↩ would take Return from every terminal; and from the active task, ⇧⌘⌫ would move it off the Desk with no deliberate step. The items get their keys when the selection takes the keyboard and lose them when it leaves.
 
 ## 3. How it's built
 
@@ -58,13 +57,14 @@ flowchart LR
 - **`DeskView` owns the selection:** a task ID and whether the list has the keyboard (the search field is editing, or, with no field over an empty Shelf, `DeskView` is first responder). Rows are built from it; `selected` on a row is what the search's selection was.
 - **One handler for the keys,** `DeskView.perform(_:)`, reached from the search field's `control(_:textView:doCommandBy:)`, from `DeskView`'s own `keyDown` (`interpretKeyEvents`) and from the Task menu items. ⌘↩ is taken in `DeskView.performKeyEquivalent`, which sees the key before the field editor and the menu.
 - **Actions go where clicks go:** `onStart` (pick), `onActivate`, and new `onShelve` and `onRun` sending the daemon's `tasks` `shelve`, `start` and `stop`. The app turns the daemon's `task_limit` and `blocked` errors into the notes above, for clicks and keys alike.
-- **The Shelf's running state** comes from the `tasks` notice's `running` and `held` (its agent's pane, whose status the app already has).
+- **Start or Stop** goes by the `tasks` notice's `running`, unless the held pane's status says it has exited; the dot is [Shelf row status](shelf-row-status.md)'s.
 - **`debug.desk`** reports `search.selection` (the task ID), `search.keyed`, each row's hint and the menu items' titles and keys.
 
 ## Rejected
 
 - **A Done key, even with a confirm:** Done is the one move that can't be undone, and it's rare; the agent or `kanna task done` does it.
-- **⌘⌫ or ⌫ for Move to Shelf:** ⌫ edits the search, and ⌘⌫ deletes a line in the terminal; ⇧⌘⌫ is free in both, so the same key works from the active task too.
+- **⌘⌫ or ⌫ for Move to Shelf:** both edit the search; ⇧⌘⌫ doesn't.
+- **⇧⌘⌫ from the active task, and clickable hints:** each would make leaving the Desk one casual step, which [the drag's reasoning](desk-row-shelve.md#why-a-drag-and-only-this-way) rules out.
 - **Keys on the Desk view without ⌘F:** the planning terminal has the keyboard there, and plain keys are its.
 - **Wrapping from the last row to the first:** the ends stop, as the search's did, so holding ↓ can't lose the place.
 

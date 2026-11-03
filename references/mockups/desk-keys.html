@@ -71,7 +71,6 @@ body.picture.menu .window { height: calc(100vh - 26px); }
 .row:hover .hints, .row.sel .hints, .row.hover .hints { visibility: visible; }
 .row .go { color: var(--accent); }
 .row .alt { color: var(--muted); }
-.row .alt:hover { color: var(--text); }
 .row .why { color: var(--muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .row.hover { background: var(--panel); }
 .row.active { background: color-mix(in srgb, var(--panel) 55%, transparent); }
@@ -113,7 +112,7 @@ body.picture.menu .menubar { margin: 0; border-radius: 0; border-width: 0 0 1px;
 <main>
   <div class="intro">
     <h1>Desk view keys: one selection over the Desk's rows and the Shelf's</h1>
-    <p>The planning terminal has the keyboard in the Desk view. ⌘F hands it to the Desk view's list: the Shelf's search field gets the cursor and a row is selected, the first Shelf row (the first match while you search). ↑ ↓ move through the Desk's rows and then the Shelf's; ↩ does the row's click (Move to Desk, Make active); ⇧⌘⌫ moves a Desk task to the Shelf; ⌘↩ starts or stops a Shelf task where it is. Esc clears the search, then goes back to the terminal. Click the planning terminal to give it the keyboard, as esc does.</p>
+    <p>The planning terminal has the keyboard in the Desk view. ⌘F hands it to the Desk view's list: the Shelf's search field gets the cursor and a row is selected, the first Shelf row (the first match while you search). ↑ ↓ move through the Desk's rows and then the Shelf's; ↩ does the row's click (Move to Desk, Make active); ⇧⌘⌫ moves a Desk task to the Shelf; ⌘↩ starts or stops a Shelf task where it is. Esc clears the search, then goes back to the terminal. Click the planning terminal to give it the keyboard, as esc does. The hints are text, not buttons: leaving the Desk takes a drag or this selection.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="fill">Fill the Desk</button>
@@ -124,7 +123,7 @@ body.picture.menu .menubar { margin: 0; border-radius: 0; border-width: 0 0 1px;
       <span><kbd>↑</kbd> <kbd>↓</kbd> the Desk's rows, then the Shelf's</span>
       <span><kbd>⌘↑</kbd> <kbd>⌘↓</kbd> or <kbd>Home</kbd> <kbd>End</kbd> the first, the last</span>
       <span><kbd>↩</kbd> Move to Desk · Make active</span>
-      <span><kbd>⇧⌘⌫</kbd> Move to Shelf</span>
+      <span><kbd>⇧⌘⌫</kbd> Move to Shelf (a selected Desk row)</span>
       <span><kbd>⌘↩</kbd> Start / Stop a Shelf task</span>
       <span><kbd>esc</kbd> clear the search, then back to the terminal</span>
     </div>
@@ -147,7 +146,7 @@ const initial = () => {
         prompt: "agent_status waits 5s for 'working' after answering the mock agent; make the wait follow the status" },
       { id: "p9", place: "shelf", title: "kanna open infers the pane type", by: "Tab bar follows light mode", madeAt: now - 25 * MIN, status: "working", agent: "claude", branch: "task-p9",
         prompt: "kanna open FILE should pick md or web from the file's extension, so TYPE is optional" },
-      { id: "p11", place: "shelf", title: "Rename a task from the strip", by: "the planning agent", madeAt: now - 5 * MIN,
+      { id: "p11", place: "shelf", title: "Rename a task from the strip", by: "the planning agent", madeAt: now - 5 * MIN, paused: "needs",
         prompt: "Double-click a strip item to rename its task, as tabs rename" },
       { id: "p12", place: "shelf", title: "Release notes", by: "the planning agent", madeAt: now - 3 * MIN, waits: "agent_status e2e is flaky",
         prompt: "Write the 0.9 notes once the flaky test is fixed" },
@@ -208,12 +207,12 @@ function taskHTML(t) {
 function deskHints(t, isActive, sel) {
   const key = keyOf(t);
   const go = isActive ? (sel ? "↩ Back to it" : "⌘. · Back to it") : sel ? "↩ Make active" : `${key ? key + " · " : ""}Make active →`;
-  return `<span class="hints"><span class="alt" data-shelve="${t.id}">⇧⌘⌫ Move to Shelf</span><span class="go">${go}</span></span>`;
+  return `<span class="hints"><span class="alt">⇧⌘⌫ Move to Shelf</span><span class="go">${go}</span></span>`;
 }
 
 function shelfHints(t, sel) {
   if (t.waits) return `<span class="hints"><span class="go off why">${sel || t.id === hovered ? `Blocked: waits for ${esc(t.waits)}` : "Blocked"}</span></span>`;
-  const run = `<span class="alt" data-run="${t.id}">⌘↩ ${t.status ? "Stop" : "Start"}</span>`;
+  const run = `<span class="alt">⌘↩ ${t.status ? "Stop" : "Start"}</span>`;
   const go = full() ? `<span class="go off">Desk full</span>` : `<span class="go">${sel ? "↩ Move to Desk" : "Move to Desk →"}</span>`;
   return `<span class="hints">${run}${go}</span>`;
 }
@@ -223,9 +222,9 @@ function deskViewHTML() {
   const deskRow = t => { const isActive = t.id === s.active, on = sel === t;
     return `<div class="row ${isActive ? "active" : ""} ${on ? "sel" : ""} ${t.id === hovered ? "hover" : ""}" data-activate="${t.id}"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.title)}</div><div class="s">${t.agent} · ${statusText[t.status]}${isActive ? "" : ` · ${ago(t.leftAt)}`} · ${esc(t.branch)}</div></div>${deskHints(t, isActive, on)}</div>`; };
   const shelfRow = t => { const on = sel === t;
-    const dot = t.status ? `<span class="dot ${t.status}"></span>` : `<span class="dot ring ${t.waits ? "dash" : ""}"></span>`;
-    const state = t.status ? `${statusText[t.status]} on the Shelf · ` : "";
-    return `<div class="row waiting ${on ? "sel" : ""} ${t.id === hovered ? "hover" : ""}" data-move="${t.id}">${dot}<div class="t"><div class="n">${marked(t.title, q)}</div><div class="s">${state}${t.waits ? `<span class="wait">waits for ${esc(t.waits)}</span> · ` : ""}${marked(t.prompt, q)} · from ${esc(t.by)}, ${ago(t.madeAt)}</div></div>${shelfHints(t, on)}</div>`; };
+    const lit = t.waits ? null : t.status || t.paused;
+    const dot = lit ? `<span class="dot ${lit}"></span>` : `<span class="dot ring ${t.waits ? "dash" : ""}"></span>`;
+    return `<div class="row waiting ${on ? "sel" : ""} ${t.id === hovered ? "hover" : ""}" data-move="${t.id}">${dot}<div class="t"><div class="n">${marked(t.title, q)}</div><div class="s">${t.waits ? `<span class="wait">waits for ${esc(t.waits)}</span> · ` : ""}${marked(t.prompt, q)} · from ${esc(t.by)}, ${ago(t.madeAt)}</div></div>${shelfHints(t, on)}</div>`; };
   const log = [
     `<span class="p">&gt;</span> You are the Kanna planning agent.`, ``,
     `<span class="m">●</span> In kanna-v4: ${onDesk().length} on the Desk, ${shelf().length} on the Shelf. What are we working on?`, ``,
@@ -251,10 +250,9 @@ function menubar() {
   const runLabel = sel?.place === "shelf" && sel.status ? "Stop" : "Start";
   const drop = `<div class="drop">
     ${item(inTask ? "Show Desk" : "Show Active Task", "⌘.", true, "toggle")}
-    ${item("Move to Shelf", "⇧⌘⌫", shelveOn, "shelve")}
-    <hr>${item(pickLabel, "↩", !!sel && !(sel.place === "shelf" && (sel.waits || full())), "enter")}
-    ${item(runLabel, "⌘↩", sel?.place === "shelf" && !sel.waits, "run")}
-    <hr>${item("Task Waiting Longest", "⇧⌘A", false, "")}
+    ${item("Move to Shelf", s.keys ? "⇧⌘⌫" : "", shelveOn, "shelve")}
+    <hr>${item(pickLabel, s.keys ? "↩" : "", !!sel, "enter")}
+    ${item(runLabel, s.keys ? "⌘↩" : "", sel?.place === "shelf", "run")}
     <hr>${[1, 2].map(n => item(`Desk Task ${n}`, `⌘${n}`, !!others()[n - 1], "slot" + n)).join("")}
   </div>`;
   document.getElementById("menubar").innerHTML = ["Kanna", "File", "Edit", "Pane", "View", "Task", "Window"].map(m =>
@@ -304,7 +302,7 @@ function startStop(id) {
   const t = task(id);
   if (!t || t.place !== "shelf") return;
   if (t.waits) { s.note = `“${t.title}” waits for “${t.waits}”: it can start once that's done.`; return render(); }
-  if (t.status) delete t.status; else { t.status = "working"; t.agent = t.agent || "claude"; t.branch = t.branch || "task-" + t.id; }
+  if (t.status) { delete t.status; t.paused = null; } else { t.status = "working"; t.agent = t.agent || "claude"; t.branch = t.branch || "task-" + t.id; }
   s.note = "";
   render();
 }
@@ -343,8 +341,6 @@ document.addEventListener("click", e => {
   if (s.menu && !el(".drop")) { s.menu = false; menubar(); }
   if (el("[data-terminal]")) return leaveKeys();
   if (el("[data-find]")) return enterKeys();
-  if (el("[data-shelve]")) return moveToShelf(el("[data-shelve]").dataset.shelve);
-  if (el("[data-run]")) return startStop(el("[data-run]").dataset.run);
   if (el("[data-move]")) return moveToDesk(el("[data-move]").dataset.move);
   if (el("[data-activate]")) { const id = el("[data-activate]").dataset.activate; return id === s.active ? (s.view = "task", s.keys = false, render()) : activate(id); }
 });
@@ -356,7 +352,7 @@ document.addEventListener("input", e => {
 document.addEventListener("keydown", e => {
   if (e.metaKey && !e.shiftKey && e.key === ".") { e.preventDefault(); if (s.view === "task") { s.view = "desk"; render(); } else if (task(s.active)) { s.view = "task"; s.keys = false; s.query = ""; render(); } return; }
   if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === "f") { e.preventDefault(); return enterKeys(); }
-  if (e.metaKey && e.shiftKey && e.key === "Backspace") { e.preventDefault(); return moveToShelf(s.view === "task" ? s.active : selected()?.place === "desk" ? s.sel : null); }
+  if (e.metaKey && e.shiftKey && e.key === "Backspace") { e.preventDefault(); return moveToShelf(selected()?.place === "desk" ? s.sel : null); }
   if (!s.keys || s.view !== "desk") return;
   const key = e.key;
   if (key === "ArrowDown" || key === "ArrowUp") { e.preventDefault(); return step(e.metaKey ? (key === "ArrowDown" ? Infinity : -Infinity) : key === "ArrowDown" ? 1 : -1); }

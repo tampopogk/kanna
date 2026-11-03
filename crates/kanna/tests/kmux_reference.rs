@@ -15,7 +15,7 @@ mod commands {
 use kanna::args::Argv;
 use serde_json::{json, Value};
 
-const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "project", "toast", "diagrams", "machine", "crashes"];
+const KANNA_ONLY: &[&str] = &["read", "screenshot", "send-key", "status", "agents", "markup", "comment", "tour", "rename-pane", "task", "quiz", "projects", "project", "toast", "diagrams", "machine", "crashes", "schedule", "serial", "pipeline", "run", "accounts", "stats"];
 
 const KMUX_ONLY: &[&str] = &[];
 
@@ -30,9 +30,12 @@ const EXTENDED: &[(&str, &str)] = &[
     ("navigate", "usage"),
     ("send", "notes"),
     ("move", "notes"),
+    ("move", "usage"),
 ];
 
 const KMUX_ONLY_OPTIONS: &[(&str, &str)] = &[("open", "--dock [left|right]"), ("open", "--frozen")];
+
+const KANNA_ONLY_OPTIONS: &[(&str, &str)] = &[("move", "--background")];
 
 const KMUX_ONLY_EXAMPLES: &[&str] = &["kmux open --name agent --cmd claude --dock"];
 
@@ -54,6 +57,7 @@ fn without_code_panes(text: &str) -> String {
     text.replace("\n       kanna open code FILE[:LINE] [same placement options]", "")
         .replace("\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]", "")
         .replace("\n       kanna open md FILE --diff [REF|A..B] [same placement options]", "")
+        .replace("\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]", "")
         .replace("\n       kanna navigate PANE FILE[:LINE]", "")
         .replace("\n       kanna navigate PANE diff [GIT-DIFF-ARGS]", "")
 }
@@ -123,7 +127,7 @@ fn kanna_has_every_kmux_command_in_kmux_order() {
 }
 
 fn same_options<'a>(command: &str, options: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
-    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option)) && !KMUX_ONLY_OPTIONS.contains(&(command, *option))).copied().collect()
+    options.iter().filter(|(option, _)| !OPTIONS_DIFFER.contains(&(command, *option)) && !KMUX_ONLY_OPTIONS.contains(&(command, *option)) && !KANNA_ONLY_OPTIONS.contains(&(command, *option))).copied().collect()
 }
 
 fn usage_lines(usage: &str) -> Vec<String> {
@@ -168,6 +172,14 @@ fn kanna_has_none_of_kmuxs_own_options_and_refuses_them() {
 }
 
 #[test]
+fn kannas_own_options_are_kannas_alone() {
+    for (name, option) in KANNA_ONLY_OPTIONS {
+        assert!(!commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kmux's {name} has {option} now: compare it with kanna's");
+        assert!(kanna::commands::find(name).unwrap().options.iter().any(|(o, _)| o == option), "kanna's {name} has no {option} any more");
+    }
+}
+
+#[test]
 fn kanna_has_none_of_kmuxs_own_commands() {
     for name in KMUX_ONLY {
         assert!(commands::find(name).is_some(), "kmux has no {name} any more");
@@ -199,7 +211,7 @@ fn every_command_is_documented_as_kmux_documents_it() {
         for (field, kmux, kanna) in fields {
             let (kmux, kanna) = (from_kmux(&kmux), from_kanna(&kanna));
             if CODE_PANES.contains(&(theirs.name, field)) {
-                assert!(kanna.contains("code") && kanna.contains("diff pane"), "{} {field}: kanna's names code and diff panes\nkanna: {kanna}", theirs.name);
+                assert!(kanna.contains("code") && kanna.contains("diff"), "{} {field}: kanna's names code and diff panes\nkanna: {kanna}", theirs.name);
             } else if EXTENDED.contains(&(theirs.name, field)) {
                 let added = if field == "examples" { ours.examples.len() > kmux_examples(theirs).len() } else { kanna.len() > kmux.len() };
                 assert!(kanna.starts_with(&kmux) && added, "{} {field}: kanna should add to kmux's\nkmux:  {kmux}\nkanna: {kanna}", theirs.name);
@@ -296,7 +308,7 @@ fn usage_errors_are_kmux_errors() {
         let kmux = kmux_parse(line).expect_err(line);
         let kanna = kanna_parse(line).expect_err(line);
         assert_eq!(kanna.0, kmux.0, "{line}");
-        assert_eq!(without_code_panes(&from_kanna(&kanna.1)), from_kmux(&kmux.1), "{line}");
+        assert_eq!(without_code_panes(&from_kanna(&kanna.1)).replace("\n       kanna move PANE --background", ""), from_kmux(&kmux.1), "{line}");
     }
 }
 
@@ -305,7 +317,7 @@ fn an_unknown_pane_type_lists_code_and_diff_panes_too() {
     let kmux = kmux_parse("kmux open top").expect_err("kmux");
     let kanna = kanna_parse("kmux open top").expect_err("kanna");
     assert_eq!(kanna.0, kmux.0);
-    assert_eq!(without_code_panes(&from_kanna(&kanna.1)), from_kmux(&kmux.1).replace("ios or md", "ios, md, code or diff"));
+    assert_eq!(without_code_panes(&from_kanna(&kanna.1)), from_kmux(&kmux.1).replace("ios or md", "ios, md, code, diff or serial"));
 }
 
 #[test]

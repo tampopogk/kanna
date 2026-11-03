@@ -30,6 +30,13 @@ extension AppController {
             app.addItem(withTitle: "Instance: \(Self.instanceName)", action: nil, keyEquivalent: "")
             app.addItem(.separator())
         }
+        let accounts = app.addItem(withTitle: "Agent Accounts", action: nil, keyEquivalent: "")
+        accounts.submenu = NSMenu(title: accounts.title)
+        for (label, action) in [("Show Accounts", #selector(showAccounts)), ("Add Claude Subscription…", #selector(addClaudeSubscription)), ("Add Anthropic API Key…", #selector(addAnthropicKey)), ("Add Codex (ChatGPT) Account…", #selector(addCodexAccount)), ("Add OpenAI API Key…", #selector(addOpenAIKey)), ("Remove Claude Account", #selector(removeClaudeAccount)), ("Remove Codex Account", #selector(removeCodexAccount))] {
+            if label.hasPrefix("Add Claude") || label.hasPrefix("Remove Claude") { accounts.submenu?.addItem(.separator()) }
+            accounts.submenu?.addItem(withTitle: label, action: action, keyEquivalent: "").target = self
+        }
+        app.addItem(.separator())
         app.addItem(withTitle: "Quit \(KannaBuild.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let file = menu("File", [("New Desk", #selector(newDeskWindow), nil, .cmd("n"))])
         file.addItem(recentMenuItem())
@@ -93,12 +100,10 @@ extension AppController {
         ])
         _ = menu("Task", [
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
-            ("Move to Shelf", #selector(deferTask), nil, .shiftCmd("\u{7f}")),
+            ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
             ("Move to Desk", #selector(deskEnter), nil, nil),
             ("Start", #selector(deskRun), nil, nil),
-            nil,
-            ("Task Waiting Longest", #selector(activateWaitingTask), nil, .shiftCmd("A")),
             nil,
             ("Desk Task 1", #selector(activateDeskTask1), "goto_tab:1", .cmd("1")),
             ("Desk Task 2", #selector(activateDeskTask2), "goto_tab:2", .cmd("2")),
@@ -110,7 +115,7 @@ extension AppController {
             ("Free Window", #selector(freeWindow), nil, nil),
             nil,
             ("Next Window", #selector(nextWindow), nil, .cmd("`")),
-            ("Previous Window", #selector(previousWindow), nil, .shiftCmd("`")),
+            ("Previous Window", #selector(previousWindow), nil, .cmd("~")),
             nil,
         ])
         if let at = windowMenu.items.firstIndex(where: { $0.title == "Free Window" }) {
@@ -258,6 +263,8 @@ extension AppController {
             code.zoom(by: step)
         } else if let diff = contents.diff(pane) {
             diff.zoom(by: step)
+        } else if let log = contents.log(pane) {
+            log.zoom(by: step)
         } else if let web = contents.web(pane) {
             web.zoom(by: step)
         } else if let surface = panes.terminal(pane)?.surface {
@@ -274,7 +281,7 @@ extension AppController {
             item.state = OverviewSetting.enabled ? .on : .off
             return true
         case #selector(openURL): return contents.web(pane) != nil
-        case #selector(reloadPane): return contents.web(pane) != nil || contents.diff(pane) != nil
+        case #selector(reloadPane): return contents.web(pane) != nil || contents.diff(pane) != nil || contents.log(pane) != nil
         case #selector(toggleComments):
             item.state = commentsOn(pane) ? .on : .off
             return contents.web(pane) != nil || contents.markdown(pane) != nil
@@ -300,7 +307,6 @@ extension AppController {
             let task = deskSelection
             item.title = task?.running == true ? "Stop" : "Start"
             return task.map { !$0.onDesk } ?? false
-        case #selector(activateWaitingTask): return waitingTask != nil
         case #selector(activateDeskTask1): return keyedDeskTask(1) != nil
         case #selector(activateDeskTask2): return keyedDeskTask(2) != nil
         default: return true
@@ -341,8 +347,14 @@ extension AppController {
     }
 
     @objc func toggleComments() {
-        guard let pane = focusedPane, contents.web(pane) != nil || contents.markdown(pane) != nil else { return }
-        request("markup", commentsOn(pane) ? ["pane": .string(pane), "off": true] : ["pane": .string(pane)])
+        guard let pane = focusedPane else { return }
+        switchComments(pane)
+    }
+
+    func switchComments(_ pane: String) {
+        guard contents.web(pane) != nil || contents.markdown(pane) != nil else { return }
+        if commentsOn(pane) { return request("markup", ["pane": .string(pane), "off": true]) }
+        turnOnComments(pane, under: nil)
     }
 
     private func commentsOn(_ pane: String) -> Bool {
@@ -363,6 +375,7 @@ extension AppController {
         guard let pane = focusedPane else { return }
         contents.web(pane)?.webView.reload()
         contents.diff(pane)?.refresh()
+        contents.log(pane)?.refresh()
     }
 
     @objc func closeFocusedPane() {
@@ -418,6 +431,18 @@ extension AppController {
         layoutCommand("focus", ["tab": .string(next), "keep": "dock"])
     }
 
+    @objc func showAccounts() { accountsTerminal("kanna accounts; exec \"${SHELL:-/bin/sh}\" -l") }
+    @objc func addClaudeSubscription() { accountsTerminal("kanna accounts add claude") }
+    @objc func addAnthropicKey() { accountsTerminal("kanna accounts add claude --api-key") }
+    @objc func addCodexAccount() { accountsTerminal("kanna accounts add codex") }
+    @objc func addOpenAIKey() { accountsTerminal("kanna accounts add codex --api-key") }
+    @objc func removeClaudeAccount() { accountsTerminal("kanna accounts remove claude") }
+    @objc func removeCodexAccount() { accountsTerminal("kanna accounts remove codex") }
+
+    private func accountsTerminal(_ command: String) {
+        request("open", ["type": "term", "window": "new", "cmd": .string(command)], on: .some(nil))
+    }
+
     @objc func newWindow() {
         var args: [String: JSON] = ["type": "term", "window": "new"]
         let root = keyWindow?["id"]?.string.flatMap { controllers[$0]?.projectRoot }.map(MachineIDs.split(location:))
@@ -467,6 +492,9 @@ extension AppController {
         let keyed = deskView?.keyed == true
         for item in NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? [] {
             switch item.action {
+            case #selector(deferTask)?:
+                item.keyEquivalent = keyed ? "\u{7f}" : ""
+                item.keyEquivalentModifierMask = keyed ? [.command, .shift] : []
             case #selector(deskEnter)?:
                 item.keyEquivalent = keyed ? "\r" : ""
                 item.keyEquivalentModifierMask = []
@@ -490,17 +518,6 @@ extension AppController {
 
     @objc func activateDeskTask1() { activateDeskTask(1) }
     @objc func activateDeskTask2() { activateDeskTask(2) }
-
-    private var waitingTask: (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.deskTasks,
-              let task = agentStatuses.waitingLongest(among: tasks.map(\.id)) else { return nil }
-        return (task, window)
-    }
-
-    @objc func activateWaitingTask() {
-        guard let (task, window) = waitingTask else { return }
-        activateTask(task, into: window)
-    }
 
     private func keyedDeskTask(_ place: Int) -> (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }
