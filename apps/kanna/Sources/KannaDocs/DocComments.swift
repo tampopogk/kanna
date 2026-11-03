@@ -244,9 +244,12 @@ package enum DocWait: Equatable {
 
     package static let grace: TimeInterval = 5
 
+    package static let waitingNote = "Waiting · it goes to the agent when its turn is over"
+
     package static func of(_ thread: DocThread, agent: String?, status: String?, now: Date = Date()) -> DocWait? {
         guard thread.isOpen, let last = thread.messages.last, last.who == "you" else { return nil }
         if thread.status == "unsent" { return .note("Not sent · \(thread.error ?? "no agent")", warn: false) }
+        if thread.status == "waiting" { return .note(waitingNote, warn: false) }
         guard agent != nil else { return .note("Not answered · no agent", warn: false) }
         switch status {
         case "working": return .typing
