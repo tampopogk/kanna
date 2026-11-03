@@ -99,6 +99,13 @@ pub fn commented(args: &Value, reply: &Value) -> String {
 }
 
 pub fn marked(args: &Value, reply: &Value) -> String {
+    if args.get("type").is_some() && reply["reused"] == true {
+        let full = args["path"].as_str().map(String::from).or_else(|| args["url"].as_str().map(|u| u.trim_start_matches("file://").to_string())).unwrap_or_default();
+        let here = std::env::current_dir().map(|d| format!("{}/", d.display())).unwrap_or_default();
+        let shown = full.strip_prefix(&here).unwrap_or(&full);
+        let tab = reply["tab"].as_str().map(|t| format!(" ({t})")).unwrap_or_default();
+        return format!("comments on in {}, which already shows {shown}{tab}; focused", label(&reply["pane"]));
+    }
     if args.get("type").is_some() {
         return opened(args, reply);
     }

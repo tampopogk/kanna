@@ -7,6 +7,8 @@ macro_rules! log {
 mod accounts;
 mod agents;
 mod app_link;
+mod builds;
+mod guests;
 mod tasks;
 mod db;
 mod desk_news;
@@ -276,6 +278,8 @@ fn run() -> Result<(), String> {
     );
     let wire = Arc::new(wire::Wire::new(events.clone()));
     server.take_over(HELLO, app_link::takeover(events.clone(), wire.clone()));
+    let build_callers: builds::Callers = Default::default();
+    server.take_over(builds::OPEN, builds::takeover(build_callers.clone()));
     let server = std::mem::ManuallyDrop::new(server);
     match inherited_listener()? {
         Some(listener) => server.start_with(listener),
@@ -302,6 +306,12 @@ fn run() -> Result<(), String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone()), ("AGY_CLI_OSC7501".to_string(), "on".to_string())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
+    let kanna_cli = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("kanna"))).unwrap_or_default();
+    if let Some(shim) = builds::install_shim(&state_dir, &kanna_cli, builds::shim_wanted()) {
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        env.push(("PATH".to_string(), format!("{}:{path}", shim.display())));
+        env.push(("KANNA_BUILD_SHIM_DIR".to_string(), shim.to_string_lossy().into_owned()));
+    }
     let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
     let renaming = Rc::downgrade(&terminals);
@@ -367,11 +377,20 @@ fn run() -> Result<(), String> {
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
+    let guests = guests::Guests::new(&state_dir);
+    guests.install(&core);
+    if cfg!(target_os = "macos") {
+        guests.start();
+    }
+    let _ = guests::GUESTS.set(guests);
     let machines = match machines::Machines::start(&state_dir, &db, events.clone(), wire.clone()) {
         Ok(machines) => {
             log!("kanna-daemon: {}", machines.describe());
             let machines = Rc::new(machines);
             machines.install(&core);
+            if let Some(caller) = machines.caller() {
+                let _ = build_callers.set(caller);
+            }
             Some(machines)
         }
         Err(reason) => {

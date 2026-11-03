@@ -240,6 +240,11 @@ pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     configured(std::slice::from_ref(mine), "pipelines", "agents", read, "an object of agent names to commands").flatten().unwrap_or_else(|| agent.into())
 }
 
+pub fn build_mac(mine: &Path) -> Option<String> {
+    let read = |value: &Value| value.as_str().map(str::trim).filter(|m| !m.is_empty()).map(String::from);
+    configured(std::slice::from_ref(&mine.to_path_buf()), "build", "mac", read, "the name of one of your machines")
+}
+
 pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;
@@ -3590,8 +3595,7 @@ impl Tasks {
         if by.is_some_and(|by| planners.iter().any(|p| p == by) && self.planner_of(&entry.repo, &[by.to_string()]).is_some()) {
             return;
         }
-        let name = entry.name.clone().unwrap_or_else(|| self.short(&entry.id));
-        self.news.borrow_mut().add(desk_news::Item::new(&entry.repo, &entry.id, &name, what, Instant::now()));
+        self.news.borrow_mut().add(desk_news::Item::new(&entry.repo, &entry.id, &self.short(&entry.id), entry.name.as_deref(), what, Instant::now()));
     }
 
     fn tell_planners(&self, now: Instant) -> Option<Instant> {
@@ -3614,12 +3618,12 @@ impl Tasks {
     fn activated(&self, args: &Value) -> Result<Map, KmuxError> {
         let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
         let id = self.task_of(reference).unwrap_or_else(|| reference.to_string());
-        let entry = self.running.borrow().iter().find(|r| r.entry.id == id).map(|r| r.entry.clone()).ok_or_else(|| not_found(reference))?;
-        let by = who(args);
-        if let Err(error) = self.db.log(&id, &Change::new("activated").by(by)) {
+        if !self.running.borrow().iter().any(|r| r.entry.id == id) {
+            return Err(not_found(reference));
+        }
+        if let Err(error) = self.db.log(&id, &Change::new("activated").by(who(args))) {
             log!("kanna-daemon: couldn't save {id}'s activated in {}: {error}", db::FILE);
         }
-        self.tell_planner(&entry, What::Activated, by);
         Ok(Map::from_iter([("task".to_string(), json!(id))]))
     }
 

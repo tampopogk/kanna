@@ -231,6 +231,27 @@ extension AppController {
             reply["hash"] = .string(markup.pageHash)
             return reply
         }
+        commands["debug.comments"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string else { throw KannaError("bad_request", "debug.comments needs a pane") }
+            let markdown = contents.markdown(id), web = contents.web(id)
+            guard markdown != nil || web != nil else { throw KannaError("wrong_type", "not a running md or web pane") }
+            switch args["press"]?.string {
+            case "comments": markdown?.pressComments() ?? web?.pressComments()
+            case "threads": markdown?.pressThreads() ?? web?.markup?.pressThreads()
+            case "menu": switchComments(id)
+            default: break
+            }
+            if let agent = args["pick"]?.string {
+                guard let menu = agentMenu, menu.pane == id, menu.choices.contains(where: { $0.pane == agent }) else { throw KannaError("not_found", "no agent menu offering \(agent)") }
+                agentMenu = nil
+                request("markup", ["pane": .string(id), "agent": .string(agent)])
+            }
+            let menu: JSON = agentMenu.flatMap { $0.pane == id ? .array($0.choices.map { ["pane": .string($0.pane), "name": .string($0.name), "detail": .string($0.detail)] }) : nil } ?? .null
+            return ["bar": .array((markdown?.barText ?? web?.barText ?? []).map { .string($0) }),
+                    "comments_button": .bool(markdown?.commentsButtonShown ?? web?.commentsButtonShown ?? false),
+                    "marks": .bool(markdown?.marksShown ?? web?.markup?.marksShown ?? false),
+                    "markup": .bool(markdown?.markup ?? web?.markable ?? false), "menu": menu]
+        }
         commands["debug.md"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let markdown = contents.markdown(id) else { throw KannaError("wrong_type", "not a running md pane") }
             if let step = args["zoom"]?.number { markdown.zoom(by: Int(step)) }
@@ -473,6 +494,7 @@ extension AppController {
 
     private func click(_ args: JSON) throws -> [String: JSON] {
         let window: NSWindow, point: NSPoint
+        var drop: NSPoint?
         if let reference = args["pane"]?.string {
             let id = try resolve(reference)
             guard let view = panes[id], let paneWindow = view.window else { throw KannaError("not_found", "pane \"\(id)\" is not on screen") }
@@ -488,6 +510,14 @@ extension AppController {
             guard let spot = spots.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) is not on \(id)'s Desk") }
             window = controller.window
             point = spot.center
+            if let target = args["drop"]?.string {
+                guard !controller.deskView.isHidden else { throw KannaError("bad_request", "drop needs \(id)'s Desk view showing") }
+                switch target {
+                case "shelf": drop = controller.deskView.shelfDrop
+                case "desk": drop = controller.deskView.deskDrop
+                default: throw KannaError("bad_request", "drop is shelf or desk")
+                }
+            }
         } else if let task = args["shelf"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.deskView.shelfRows.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) isn't on \(id)'s Shelf") }
@@ -544,7 +574,7 @@ extension AppController {
             return [:]
         }
         PageMarkupView.scriptedCommand = args["command"]?.bool == true
-        var drag: NSPoint?
+        var drag = drop
         if case .array(let list)? = args["to"], let reference = args["pane"]?.string, let view = panes[try resolve(reference)] {
             let to = list.compactMap(\.number).map { CGFloat($0) }
             guard to.count == 2 else { throw KannaError("bad_request", "to is [x, y]") }
