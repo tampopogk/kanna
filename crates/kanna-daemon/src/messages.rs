@@ -13,8 +13,10 @@ pub const SCHEDULE: &str = "schedule ";
 
 pub const RUN: &str = "run-";
 
+pub const DESK: &str = "desk";
+
 pub fn yours(sender: &str) -> bool {
-    sender == USER || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
+    sender == USER || sender == DESK || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
 }
 
 pub const PICKUP: Duration = Duration::from_secs(5);
