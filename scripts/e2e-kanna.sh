@@ -3687,8 +3687,8 @@ task_list_speed() {
   done
   echo "task_list_speed: $n stopped tasks with worktrees; kanna task list took at most ${worst}ms; daemon $(raw '{"id":1,"cmd":"debug.daemon.perf"}' | python3 -c 'import json, sys
 r = json.load(sys.stdin); r = r.get("result", r)
-i = {i["name"]: i for i in r["intervals"]}.get("loop.request", {})
-print("loop.request max %sms" % i.get("max"))')"
+i = {i["name"]: i for i in r["intervals"]}.get("loop.async", {})
+print("loop.async max %sms" % i.get("max"))')"
   (( worst < 300 )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
 }
 
@@ -3751,7 +3751,7 @@ PY
   local readings
   readings="$( { raw '{"id":1,"cmd":"debug.perf"}'; raw '{"id":1,"cmd":"debug.daemon.perf"}'; } | python3 -c 'import json, sys
 want = ["key.wait", "key.sent", "key.echo", "key.drawn", "key.lost", "input.handled", "input.written", "echo.read", "echo.parsed", "echo.taken", "echo.sent",
-        "loop.chores", "loop.output", "loop.app.message", "loop.status", "loop.request", "message.output", "message.status", "render"]
+        "loop.chores", "loop.output", "loop.app.message", "loop.status", "loop.request", "loop.async", "message.output", "message.status", "render"]
 rows = {}
 for line in sys.stdin:
     r = json.loads(line); r = r.get("result", r)

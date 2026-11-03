@@ -5353,8 +5353,7 @@ mod tests {
         tasks.record(&pane, oldest, Place::Desk);
         let (responder, answer) = kanna_mux::responder();
         tasks.shelve(&json!({ "task": pane }), responder);
-        let std::task::Poll::Ready(shelved) = std::future::Future::poll(std::pin::pin!(answer), &mut std::task::Context::from_waker(std::task::Waker::noop())) else { panic!("shelve didn't answer") };
-        let shelved = shelved.unwrap();
+        let shelved = core.block_on(answer).unwrap();
         assert_eq!(shelved["pane"], pane, "{shelved:?}");
         assert_eq!(listed(&tasks), made, "the oldest task is listed first again");
         let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
@@ -5672,7 +5671,7 @@ mod tests {
         }
 
         fn pump(&self) {
-            self.core.poll();
+            self.core.turn();
             self.tasks.tick();
             while let Ok(event) = self.events.borrow_mut().try_recv() {
                 match event {

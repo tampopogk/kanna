@@ -14,14 +14,20 @@ pub fn channel() -> (Events, Inbox) {
     tokio::sync::mpsc::unbounded_channel()
 }
 
-pub fn build() -> Result<tokio::runtime::Runtime, String> {
-    tokio::runtime::Builder::new_current_thread().enable_all().thread_name("kanna.loop").build().map_err(|e| format!("can't start the daemon's runtime: {e}"))
-}
-
 pub fn check(what: impl Display, took: Duration) {
     if took > SLOW {
         log!("kanna-daemon: slow: {what} held the loop {}ms", took.as_millis());
     }
+}
+
+#[cfg(test)]
+pub fn build() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+}
+
+pub fn timed(name: &str, took: Duration) {
+    crate::perf::record("loop.async", took);
+    check(name, took);
 }
 
 #[cfg(not(test))]
@@ -36,7 +42,7 @@ pub fn spawn(name: &'static str, future: impl Future<Output = ()> + 'static) {
         tokio::task::spawn_local(timed);
         return;
     }
-    let runtime = build().unwrap();
+    let runtime = build();
     let local = tokio::task::LocalSet::new();
     local.spawn_local(timed);
     runtime.block_on(local);
@@ -58,8 +64,7 @@ impl<F: Future<Output = ()>> Future for Timed<F> {
         let started = Instant::now();
         let polled = self.future.as_mut().poll(cx);
         let took = started.elapsed();
-        crate::perf::record("loop.async", took);
-        check(self.name, took);
+        timed(self.name, took);
         polled
     }
 }

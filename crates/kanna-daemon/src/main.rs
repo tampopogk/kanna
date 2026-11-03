@@ -101,7 +101,6 @@ enum Shutdown {
 
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
-    Wake,
     Output { terminal: String, serial: u64 },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
@@ -141,7 +140,6 @@ impl Event {
     fn kind(&self) -> &'static str {
         match self {
             Event::Request(..) => "loop.request",
-            Event::Wake => "loop.wake",
             Event::Output { .. } => "loop.output",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
@@ -248,8 +246,6 @@ fn run() -> Result<(), String> {
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
     }
 
-    let local = tokio::task::LocalSet::new();
-    let _on_the_loop = local.enter();
     let (events, mut inbox) = runtime::channel();
     let db = Rc::new(db::Db::open(&state_dir));
     content_ids::migrate(&state_dir, &db);
@@ -259,10 +255,8 @@ fn run() -> Result<(), String> {
     core.use_content_ids();
     let instance = instance_name(&socket);
     core.set_instance(Instance::with_socket(&instance, Some(socket_path.clone())));
-    let wake = events.clone();
-    core.set_wakeup(Some(Arc::new(move || {
-        let _ = wake.send(Event::Wake);
-    })));
+    let _on_the_loop = core.enter();
+    core.set_timing(Some(Rc::new(runtime::timed)));
 
     let mut server = SocketServer::new(
         &socket_path,
@@ -677,8 +671,8 @@ fn run() -> Result<(), String> {
         crashes.stopping();
         app.quit();
     };
-    let runtime = runtime::build()?;
-    local.block_on(&runtime, async { loop {
+    core.block_on(async { loop {
+        tokio::task::yield_now().await;
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
@@ -722,7 +716,7 @@ fn run() -> Result<(), String> {
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
-        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
+        let deadline = [app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
         perf::since("loop.chores", chores);
         runtime::check("the loop's chores", chores.elapsed());
         let event = match deadline {
@@ -761,7 +755,6 @@ fn run() -> Result<(), String> {
                 }
                 _ => core.handle(request, reply),
             },
-            Event::Wake => {}
             Event::Output { terminal, serial } => {
                 let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
                 if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
@@ -915,7 +908,7 @@ fn run() -> Result<(), String> {
         perf::since(kind, handling);
         runtime::check(asked.as_deref().unwrap_or(kind), handling.elapsed());
     } });
-    drop(runtime);
+    core.turn();
 
     let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();

@@ -385,7 +385,7 @@ mod tests {
         let found = Rc::new(std::cell::Cell::new(false));
         let told = found.clone();
         on_found(Rc::new(move || told.set(true)));
-        let runtime = crate::runtime::build().unwrap();
+        let runtime = crate::runtime::build();
         tokio::task::LocalSet::new().block_on(&runtime, async {
             assert_eq!(identity(&repo), None, "the lookup runs beside the loop");
             for _ in 0..500 {

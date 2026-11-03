@@ -2118,6 +2118,7 @@ dependencies = [
  "libc",
  "serde_json",
  "shlex",
+ "tokio",
 ]
 
 [[package]]

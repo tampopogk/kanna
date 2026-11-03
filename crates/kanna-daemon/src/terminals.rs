@@ -911,6 +911,7 @@ mod tests {
         let opened = Rc::new(RefCell::new(None));
         let answer = opened.clone();
         core.handle(json!({"cmd": "open", "args": {"type": "term", "cmd": "sleep 30"}}), move |reply| *answer.borrow_mut() = Some(reply));
+        core.turn();
         spawned.recv_timeout(Duration::from_secs(5)).expect("the keeper was asked to spawn");
         let listed = core.handle_blocking(json!({"cmd": "list"}));
         assert_eq!(listed["ok"], true, "{listed}");
@@ -922,7 +923,7 @@ mod tests {
         while opened.borrow().is_none() {
             assert!(Instant::now() < by, "the spawn's reply never finished the start");
             assert!(terminals.heard(keeper.take().unwrap()).is_empty());
-            core.poll();
+            core.turn();
             std::thread::sleep(Duration::from_millis(5));
         }
         let reply = opened.borrow_mut().take().unwrap();
