@@ -49,8 +49,28 @@ pub fn verbosity(tree: &Tree) -> (f64, Value) {
         .take(WORST)
         .map(|g| json!({ "lines": g.lines, "count": g.places.len(), "places": g.places.iter().take(6).map(|p| json!({ "file": p.file, "line": p.line, "end": p.end })).collect::<Vec<_>>() }))
         .collect();
-    let wrapper_lines: usize = tree.wrappers().iter().map(|r| r.function.end - r.function.line + 1).sum();
-    (share(tree.verbosity()), json!({ "clones": clones.duplicated_lines(), "wrappers": wrapper_lines, "lines": tree.lines(), "groups": groups }))
+    let wrapper_lines: usize = tree.files.iter().map(|f| f.facts.wrapped.len()).sum();
+    let flagged_lines: usize = tree.files.iter().map(|f| f.facts.flagged.len()).sum();
+    let mut by_rule: BTreeMap<&str, (usize, usize, Vec<(&str, usize, usize)>)> = BTreeMap::new();
+    for file in &tree.files {
+        for hit in &file.facts.hits {
+            let entry = by_rule.entry(hit.rule).or_default();
+            entry.0 += 1;
+            entry.1 += hit.end - hit.line + 1;
+            entry.2.push((file.path.as_str(), hit.line, hit.end));
+        }
+    }
+    let mut rules: Vec<_> = by_rule.into_iter().collect();
+    rules.sort_by(|a, b| b.1 .1.cmp(&a.1 .1).then_with(|| a.0.cmp(b.0)));
+    let rules: Vec<Value> = rules
+        .into_iter()
+        .take(WORST)
+        .map(|(rule, (hits, lines, mut places))| {
+            places.sort_by(|a, b| (b.2 - b.1).cmp(&(a.2 - a.1)).then_with(|| a.0.cmp(b.0)).then_with(|| a.1.cmp(&b.1)));
+            json!({ "rule": rule, "hits": hits, "lines": lines, "places": places.iter().take(6).map(|(file, line, end)| json!({ "file": file, "line": line, "end": end })).collect::<Vec<_>>() })
+        })
+        .collect();
+    (share(tree.verbosity()), json!({ "clones": clones.duplicated_lines(), "wrappers": wrapper_lines, "flagged": flagged_lines, "lines": tree.lines(), "groups": groups, "rules": rules }))
 }
 
 pub fn high(tree: &Tree) -> (f64, Value) {
@@ -199,6 +219,24 @@ fn duplicated(latest: Option<&Sample>) -> Vec<Value> {
             let others: Vec<String> = places.iter().skip(1).take(2).map(|p| format!("{}:{}", p["file"].as_str().unwrap_or("").rsplit('/').next().unwrap_or(""), p["line"])).collect();
             let more = if count as usize > others.len() + 1 { format!(" and {} more", count as usize - others.len() - 1) } else { String::new() };
             Some(row(&format!("{lines} lines × {count}"), format!("{file}:{line}"), (lines * (count - 1)) as f64, format!("{} lines", lines * (count - 1)), format!("also {}{more}", others.join(", ")), at_line(file, line)))
+        })
+        .collect()
+}
+
+fn flagged(latest: Option<&Sample>) -> Vec<Value> {
+    let Some(sample) = latest else { return vec![] };
+    sample.doc["rules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(LISTED)
+        .filter_map(|r| {
+            let rule = r["rule"].as_str()?;
+            let first = r["places"].as_array()?.first()?;
+            let (file, line) = (first["file"].as_str().unwrap_or(""), first["line"].as_u64().unwrap_or(1));
+            let (hits, lines) = (r["hits"].as_u64().unwrap_or(0), r["lines"].as_u64().unwrap_or(0));
+            let ports = kanna_quality::rules::RULES.iter().find(|(id, _)| *id == rule).map_or("", |(_, scb)| *scb);
+            Some(row(rule, format!("{file}:{line}"), lines as f64, format!("{lines} lines"), format!("{hits} place{} · SlopCodeBench's {ports}", if hits == 1 { "" } else { "s" }), at_line(file, line)))
         })
         .collect()
 }
@@ -398,16 +436,17 @@ pub fn code_section(facts: &Facts) -> Value {
     }
     let mut tiles = vec![
         trend_tile("erosion", "Erosion", &erosion, first, Some("%"), "of complexity in functions over CC 10"),
-        trend_tile("verbosity", "Verbosity", &verbosity, first, Some("%"), "of lines cloned or pass-through"),
+        trend_tile("verbosity", "Verbosity", &verbosity, first, Some("%"), "of lines flagged, cloned or in trivial wrappers"),
         trend_tile("high", "Functions over CC 10", &of(facts, "high"), first, None, "functions over CC 10"),
         trend_tile("dead", "Dead functions", &of(facts, "dead"), first, None, "functions nothing outside tests calls"),
-        trend_tile("wrappers", "Pass-through wrappers", &of(facts, "wrappers"), first, None, "functions that only pass their arguments on"),
+        trend_tile("wrappers", "Trivial wrappers", &of(facts, "wrappers"), first, None, "functions whose body only returns one expression"),
         trend_tile("lines", "Code lines", &of(facts, "lines"), first, None, "lines of Rust and Swift outside tests"),
     ];
     tiles.extend(coverage_tiles(facts, first));
     tiles.extend(fixes_tiles(facts, first));
     tiles.push(list("worst", "Worst functions", worst_functions(erosion.last().copied()), "complexity mass: CC × √lines", "No functions yet."));
     tiles.push(list("duplicated", "Most duplicated code", duplicated(verbosity.last().copied()), "lines in copies beyond the first", "No copies of 3 lines or more."));
+    tiles.push(list("flagged", "Most flagged patterns", flagged(verbosity.last().copied()), "lines in code a rule would rewrite", "No rule matched."));
     tiles.push(list("hotspots", "Hotspots", hotspots(erosion.last().copied(), &churn), "landings that changed it × its cognitive complexity", "Nothing changed in 30 days."));
     tiles.push(list("uncovered", "Least covered changed files", least_covered(facts), "changed lines tests didn't run", "No coverage run yet."));
     tiles.push(list("causes", "Landings that needed the most fixes", causes(facts), "later fixes traced back to it", "No fix traced back to a landing in 30 days."));
@@ -502,13 +541,16 @@ mod tests {
         assert!(tile_of(&report, "verbosity")["value"].as_f64().unwrap() > 0.0);
         assert_eq!(tile_of(&report, "high")["value"], json!(1.0));
         assert_eq!(tile_of(&report, "dead")["value"], json!(2.0), "unused, and start, which nothing calls");
-        assert_eq!(tile_of(&report, "wrappers")["value"], json!(1.0));
+        assert_eq!(tile_of(&report, "wrappers")["value"], json!(3.0), "pass, unused and start each return one expression");
+        let flagged = &tile_of(&report, "flagged")["chart"]["rows"][0];
+        assert_eq!(flagged["label"], json!("loop-accumulate"));
+        assert_eq!(flagged["note"], json!("2 places · SlopCodeBench's manual-sum-loop, manual-count-loop, manual-str-join"));
         let worst = &tile_of(&report, "worst")["chart"];
         assert_eq!(worst["kind"], json!("list"));
         assert_eq!(worst["rows"][0]["label"], json!("busy"));
         assert_eq!(worst["rows"][0]["open"], json!({ "path": "src/lib.rs", "line": 1 }));
         let duplicated = &tile_of(&report, "duplicated")["chart"]["rows"][0];
-        assert_eq!(duplicated["label"], json!("7 lines × 2"));
+        assert_eq!(duplicated["label"], json!("5 lines × 2"));
         let fixed = tile_of(&report, "fixed");
         assert_eq!(fixed["note"], json!("1 of 3 landings"));
         let causes = &tile_of(&report, "causes")["chart"]["rows"];

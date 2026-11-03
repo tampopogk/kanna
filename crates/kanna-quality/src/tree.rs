@@ -100,9 +100,8 @@ impl Tree {
         let mut lines: HashMap<&str, BTreeSet<usize>> = HashMap::new();
         for file in &self.files {
             let mut flagged: BTreeSet<usize> = clones.lines.get(&file.path).cloned().unwrap_or_default();
-            for wrapper in file.facts.functions.iter().filter(|f| f.wrapper) {
-                flagged.extend(wrapper.line..=wrapper.end);
-            }
+            flagged.extend(file.facts.wrapped.iter().copied());
+            flagged.extend(file.facts.flagged.iter().copied());
             if !flagged.is_empty() {
                 lines.insert(file.path.as_str(), flagged);
             }
@@ -195,7 +194,7 @@ mod tests {
         assert_eq!(tree.erosion(), Some(0.0), "no function above 10");
         assert!(tree.gini().unwrap() > 0.7);
         assert_eq!(tree.dead().iter().map(|r| r.function.name.as_str()).collect::<Vec<_>>(), ["unused", "user"]);
-        assert_eq!(tree.wrappers().iter().map(|r| r.function.name.as_str()).collect::<Vec<_>>(), ["pass"]);
+        assert_eq!(tree.wrappers().iter().map(|r| r.function.name.as_str()).collect::<Vec<_>>(), ["calm", "pass", "unused", "user"], "each body is one returned expression");
         assert_eq!(tree.files_by_complexity()[0].0, "a/src/lib.rs");
     }
 }

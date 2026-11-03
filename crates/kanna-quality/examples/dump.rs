@@ -5,12 +5,13 @@ fn main() {
     let mut p = tree_sitter::Parser::new();
     p.set_language(&lang).unwrap();
     let t = p.parse(&text, None).unwrap();
-    fn walk(n: tree_sitter::Node, d: usize, src: &str) {
+    fn walk(n: tree_sitter::Node, field: Option<&str>, d: usize, src: &str) {
         let s = &src[n.byte_range()];
         let s: String = s.chars().take(40).collect::<String>().replace('\n', " ");
-        println!("{}{} [{}] {:?}", "  ".repeat(d), n.kind(), n.start_position().row + 1, if n.child_count() == 0 { s } else { String::new() });
-        let mut c = n.walk();
-        for ch in n.children(&mut c) { walk(ch, d + 1, src); }
+        println!("{}{}{} [{}] {:?}", "  ".repeat(d), field.map(|f| format!("{f}: ")).unwrap_or_default(), n.kind(), n.start_position().row + 1, if n.child_count() == 0 { s } else { String::new() });
+        for i in 0..n.child_count() {
+            walk(n.child(i as u32).unwrap(), n.field_name_for_child(i as u32), d + 1, src);
+        }
     }
-    walk(t.root_node(), 0, &text);
+    walk(t.root_node(), None, 0, &text);
 }

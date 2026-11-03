@@ -5,6 +5,7 @@ use tree_sitter::{Node, Parser};
 pub enum Lang {
     Rust,
     Swift,
+    Python,
 }
 
 impl Lang {
@@ -12,6 +13,7 @@ impl Lang {
         match path.rsplit_once('.')?.1 {
             "rs" => Some(Lang::Rust),
             "swift" => Some(Lang::Swift),
+            "py" => Some(Lang::Python),
             _ => None,
         }
     }
@@ -20,6 +22,7 @@ impl Lang {
         match self {
             Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
             Lang::Swift => tree_sitter_swift::LANGUAGE.into(),
+            Lang::Python => tree_sitter_python::LANGUAGE.into(),
         }
     }
 }
@@ -59,6 +62,9 @@ pub struct Facts {
     pub functions: Vec<Function>,
     pub blocks: Vec<Block>,
     pub names: HashMap<String, usize>,
+    pub wrapped: BTreeSet<usize>,
+    pub flagged: BTreeSet<usize>,
+    pub hits: Vec<crate::rules::Hit>,
 }
 
 pub fn analyze(lang: Lang, text: &str) -> Facts {
@@ -67,18 +73,59 @@ pub fn analyze(lang: Lang, text: &str) -> Facts {
         return Facts::default();
     }
     let Some(tree) = parser.parse(text, None) else { return Facts::default() };
-    let mut walk = Walk { lang, text, facts: Facts::default(), code: BTreeSet::new(), test: BTreeSet::new() };
+    let mut sloc = BTreeSet::new();
+    source_lines(lang, tree.root_node(), text, &mut sloc);
+    let mut walk = Walk { lang, text, facts: Facts::default(), sloc, test: BTreeSet::new() };
     walk.visit(tree.root_node(), false, false);
-    walk.facts.lines = walk.code.len();
-    walk.facts.test_lines = walk.test.len();
+    walk.facts.test_lines = walk.sloc.intersection(&walk.test).count();
+    walk.facts.lines = walk.sloc.len() - walk.facts.test_lines;
+    let wrapped: BTreeSet<usize> = walk.facts.functions.iter().filter(|f| f.wrapper).flat_map(|f| walk.sloc.range(f.line..=f.end).copied()).collect();
+    walk.facts.wrapped = wrapped;
+    let hits: Vec<crate::rules::Hit> = crate::rules::check(lang, tree.root_node(), text).into_iter().filter(|h| !walk.test.contains(&h.line)).collect();
+    walk.facts.flagged = hits.iter().flat_map(|h| walk.sloc.range(h.line..=h.end).copied()).filter(|l| !walk.test.contains(l)).collect();
+    walk.facts.hits = hits;
     walk.facts
+}
+
+fn source_lines(lang: Lang, node: Node, text: &str, lines: &mut BTreeSet<usize>) {
+    if is_comment(node.kind()) || (lang == Lang::Python && docstring(node, text)) {
+        return;
+    }
+    if node.child_count() == 0 || literal(node.kind()).is_some() {
+        if lang == Lang::Python || !matches!(&text[node.byte_range()], "}" | ";" | ",") {
+            lines.insert(node.start_position().row + 1);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        source_lines(lang, child, text, lines);
+    }
+}
+
+fn plain_string(statement: Node, text: &str) -> bool {
+    if statement.kind() != "expression_statement" || statement.named_child_count() != 1 {
+        return false;
+    }
+    let Some(expression) = statement.named_child(0).filter(|e| e.kind() == "string") else { return false };
+    let prefix: String = text[expression.byte_range()].chars().take_while(|c| *c != '"' && *c != '\'').collect::<String>().to_lowercase();
+    !prefix.contains('b') && !prefix.contains('f')
+}
+
+fn docstring(statement: Node, text: &str) -> bool {
+    if !plain_string(statement, text) {
+        return false;
+    }
+    let line_start = text[..statement.start_byte()].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[statement.end_byte()..].find('\n').map_or(text.len(), |i| statement.end_byte() + i);
+    text[line_start..statement.start_byte()].trim().is_empty() && text[statement.end_byte()..line_end].trim().is_empty()
 }
 
 struct Walk<'a> {
     lang: Lang,
     text: &'a str,
     facts: Facts,
-    code: BTreeSet<usize>,
+    sloc: BTreeSet<usize>,
     test: BTreeSet<usize>,
 }
 
@@ -92,6 +139,7 @@ fn is_block(lang: Lang, kind: &str) -> bool {
     match lang {
         Lang::Rust => matches!(kind, "function_item" | "if_expression" | "for_expression" | "while_expression" | "loop_expression" | "match_expression"),
         Lang::Swift => matches!(kind, "function_declaration" | "init_declaration" | "if_statement" | "guard_statement" | "for_statement" | "while_statement" | "repeat_while_statement" | "switch_statement" | "do_statement"),
+        Lang::Python => matches!(kind, "function_definition" | "if_statement" | "for_statement" | "while_statement" | "with_statement" | "try_statement" | "match_statement"),
     }
 }
 
@@ -104,8 +152,11 @@ fn literal(kind: &str) -> Option<&'static str> {
         "string_literal" | "raw_string_literal" | "char_literal" | "line_string_literal" | "multi_line_string_literal" | "raw_string_literal_swift" => Some("$STR"),
         "integer_literal" | "hex_literal" | "oct_literal" | "bin_literal" => Some("$INT"),
         "float_literal" | "real_literal" => Some("$FLOAT"),
-        "boolean_literal" => Some("$BOOL"),
-        "nil" => Some("$NONE"),
+        "string" | "string_content" | "bytes" => Some("$STR"),
+        "integer" => Some("$INT"),
+        "float" | "imaginary" => Some("$FLOAT"),
+        "boolean_literal" | "true" | "false" => Some("$BOOL"),
+        "nil" | "nil_literal" | "none" => Some("$NONE"),
         _ => None,
     }
 }
@@ -118,13 +169,26 @@ fn is_function(lang: Lang, node: Node) -> bool {
     match lang {
         Lang::Rust => node.kind() == "function_item",
         Lang::Swift => matches!(node.kind(), "function_declaration" | "init_declaration" | "deinit_declaration" | "computed_property" | "subscript_declaration"),
+        Lang::Python => node.kind() == "function_definition",
     }
+}
+
+fn python_reachable(node: Node) -> bool {
+    let mut up = node.parent();
+    while let Some(parent) = up {
+        if !matches!(parent.kind(), "module" | "class_definition" | "decorated_definition" | "block" | "function_definition") {
+            return false;
+        }
+        up = parent.parent();
+    }
+    true
 }
 
 fn is_closure(lang: Lang, kind: &str) -> bool {
     match lang {
         Lang::Rust => kind == "closure_expression",
         Lang::Swift => kind == "lambda_literal",
+        Lang::Python => kind == "lambda",
     }
 }
 
@@ -146,7 +210,7 @@ impl<'a> Walk<'a> {
                 }
                 false
             }
-            Lang::Swift => false,
+            Lang::Swift | Lang::Python => false,
         }
     }
 
@@ -158,7 +222,6 @@ impl<'a> Walk<'a> {
                 if in_test {
                     self.test.extend(lines);
                 } else {
-                    self.code.extend(lines);
                     if is_identifier(node.kind()) {
                         *self.facts.names.entry(self.text_of(node).to_string()).or_default() += 1;
                     }
@@ -169,14 +232,14 @@ impl<'a> Walk<'a> {
         if is_comment(node.kind()) {
             return;
         }
-        if !in_test && is_function(self.lang, node) {
+        if !in_test && is_function(self.lang, node) && (self.lang != Lang::Python || python_reachable(node)) {
             let function = self.function(node);
             self.facts.functions.push(function);
         }
-        if !in_test && is_block(self.lang, node.kind()) {
+        if !in_test && is_block(self.lang, node.kind()) && !self.type_checking(node) {
             let mut names = HashMap::new();
-            let mut lines = BTreeSet::new();
-            let hash = self.normalize(node, &mut names, 0xcbf29ce484222325, &mut lines);
+            let hash = self.normalize(node, &mut names, 0xcbf29ce484222325);
+            let lines = self.span(node);
             if lines.len() >= BLOCK_LINES {
                 self.facts.blocks.push(Block { hash: feed(hash, node.kind()), line: node.start_position().row + 1, end: node.end_position().row + 1, lines: lines.into_iter().collect() });
             }
@@ -187,13 +250,20 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn normalize(&self, node: Node<'a>, names: &mut HashMap<&'a str, usize>, hash: u64, lines: &mut BTreeSet<usize>) -> u64 {
+    fn type_checking(&self, node: Node) -> bool {
+        self.lang == Lang::Python && node.child_by_field_name("condition").is_some_and(|c| matches!(self.text_of(c), "TYPE_CHECKING" | "typing.TYPE_CHECKING"))
+    }
+
+    fn span(&self, node: Node) -> Vec<usize> {
+        self.sloc.range(node.start_position().row + 1..=node.end_position().row + 1).copied().collect()
+    }
+
+    fn normalize(&self, node: Node<'a>, names: &mut HashMap<&'a str, usize>, hash: u64) -> u64 {
         let kind = node.kind();
-        if is_comment(kind) {
+        if is_comment(kind) || (self.lang == Lang::Python && plain_string(node, self.text)) {
             return hash;
         }
         if node.child_count() == 0 || literal(kind).is_some() {
-            lines.extend(node.start_position().row + 1..=node.end_position().row + 1);
             let text = self.text_of(node);
             if let Some(placeholder) = literal(kind) {
                 return feed(hash, placeholder);
@@ -203,12 +273,12 @@ impl<'a> Walk<'a> {
                 let index = *names.entry(text).or_insert(next);
                 return feed(hash, &format!("$VAR{index}"));
             }
-            return feed(hash, text);
+            return feed(hash, kind);
         }
-        let mut hash = hash;
+        let mut hash = feed(hash, kind);
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            hash = self.normalize(child, names, hash, lines);
+            hash = self.normalize(child, names, hash);
         }
         hash
     }
@@ -235,6 +305,7 @@ impl<'a> Walk<'a> {
         while let Some(parent) = up {
             match (self.lang, parent.kind()) {
                 (Lang::Rust, "impl_item") => return parent.child_by_field_name("type").map(|t| self.text_of(t).to_string()),
+                (Lang::Python, "class_definition") => return parent.child_by_field_name("name").map(|t| self.text_of(t).to_string()),
                 (Lang::Swift, "class_declaration" | "protocol_declaration") => {
                     return (0..parent.child_count()).filter_map(|i| parent.child(i as u32)).find(|c| c.kind() == "type_identifier" || c.kind() == "user_type").map(|t| self.text_of(t).to_string())
                 }
@@ -266,19 +337,25 @@ impl<'a> Walk<'a> {
                 let private = head.contains("private ") || head.contains("fileprivate ");
                 !private || head.contains("override ") || head.contains("@objc") || head.contains("@IBAction") || node.kind() != "function_declaration"
             }
+            Lang::Python => {
+                let name = self.name(node);
+                name.starts_with("__") || node.parent().is_some_and(|p| p.kind() == "decorated_definition")
+            }
         }
     }
 
     fn function(&self, node: Node) -> Function {
+        if self.lang == Lang::Python {
+            return self.python_function(node);
+        }
         let mut measure = Measure { lang: self.lang, text: self.text, cyclomatic: 1, cognitive: 0, deepest: 0, calls: BTreeSet::new(), name: self.name(node) };
-        let body = node.child_by_field_name("body").or_else(|| (0..node.child_count()).filter_map(|i| node.child(i as u32)).find(|c| c.kind() == "function_body" || c.kind() == "block"));
+        let body = if node.kind() == "computed_property" { Some(node) } else { node.child_by_field_name("body").or_else(|| (0..node.child_count()).filter_map(|i| node.child(i as u32)).find(|c| c.kind() == "function_body" || c.kind() == "block")) };
         let scope = body.unwrap_or(node);
         let mut cursor = scope.walk();
         for child in scope.children(&mut cursor) {
             measure.walk(child, 0);
         }
-        let mut lines = BTreeSet::new();
-        collect_lines(node, &mut lines);
+        let lines = self.span(node);
         let owner = self.owner(node);
         let name = match owner {
             Some(owner) => format!("{owner}::{}", measure.name),
@@ -298,100 +375,71 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn wrapper(&self, function: Node, body: Node) -> bool {
-        let named: Vec<Node> = (0..body.named_child_count()).filter_map(|i| body.named_child(i as u32)).filter(|c| !is_comment(c.kind())).collect();
-        let statements: Vec<Node> = match (self.lang, named.as_slice()) {
-            (Lang::Swift, [only]) if only.kind() == "statements" => (0..only.named_child_count()).filter_map(|i| only.named_child(i as u32)).filter(|c| !is_comment(c.kind())).collect(),
-            _ => named,
-        };
-        let [only] = statements.as_slice() else { return false };
-        let mut call = *only;
-        loop {
-            match call.kind() {
-                "expression_statement" | "return_expression" | "control_transfer_statement" | "try_expression" | "await_expression" => {
-                    let Some(inner) = (0..call.named_child_count()).filter_map(|i| call.named_child(i as u32)).find(|c| !is_comment(c.kind())) else { return false };
-                    call = inner;
-                }
-                _ => break,
+    fn python_function(&self, node: Node) -> Function {
+        let mut cyclomatic = 1;
+        let mut calls = BTreeSet::new();
+        let mut stack = vec![node];
+        while let Some(current) = stack.pop() {
+            if matches!(current.kind(), "if_statement" | "elif_clause" | "for_statement" | "while_statement" | "except_clause" | "assert_statement" | "list_comprehension" | "set_comprehension" | "dictionary_comprehension" | "generator_expression" | "boolean_operator" | "conditional_expression" | "if_clause") {
+                cyclomatic += 1;
             }
+            if current.kind() == "call" {
+                if let Some(function) = current.child_by_field_name("function") {
+                    let callee = if function.kind() == "attribute" { function.child_by_field_name("attribute") } else { Some(function) };
+                    if let Some(callee) = callee.filter(|c| c.kind() == "identifier") {
+                        calls.insert(self.text_of(callee).to_string());
+                    }
+                }
+            }
+            let mut cursor = current.walk();
+            stack.extend(current.children(&mut cursor));
         }
-        if call.kind() != "call_expression" {
-            return false;
+        let mut deepest = 0;
+        let mut cursor = node.walk();
+        let cognitive = node.children(&mut cursor).map(|child| python_cognitive(child, 0, &mut deepest)).sum();
+        let body = node.child_by_field_name("body");
+        let statements: Vec<Node> = body.map(|b| (0..b.named_child_count()).filter_map(|i| b.named_child(i as u32)).filter(|c| (c.kind().ends_with("_statement") || matches!(c.kind(), "function_definition" | "class_definition" | "decorated_definition")) && !plain_string(*c, self.text)).collect()).unwrap_or_default();
+        let name = self.name(node);
+        Function {
+            name: self.owner(node).map_or_else(|| name.clone(), |owner| format!("{owner}::{name}")),
+            line: node.start_position().row + 1,
+            end: node.end_position().row + 1,
+            lines: self.span(node).len(),
+            cyclomatic,
+            cognitive,
+            nesting: deepest,
+            calls,
+            wrapper: matches!(statements.as_slice(), [only] if only.kind() == "return_statement"),
+            exempt: self.exempt(node),
         }
-        let parameters = parameter_names(self.lang, self.text, function);
-        let arguments = argument_texts(self.lang, self.text, call);
-        if arguments.is_empty() || parameters.is_empty() {
-            return false;
-        }
-        arguments.iter().all(|a| parameters.contains(a) || a == "self") && parameters.iter().all(|p| arguments.contains(p))
     }
-}
 
-fn parameter_names(lang: Lang, text: &str, function: Node) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut stack = vec![function];
-    while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "block" | "function_body" | "computed_property") && node != function {
-            continue;
-        }
-        match (lang, node.kind()) {
-            (Lang::Rust, "parameter") => {
-                if let Some(pattern) = node.child_by_field_name("pattern") {
-                    names.push(text[pattern.byte_range()].trim_start_matches("mut ").to_string());
+    fn wrapper<'t>(&self, function: Node<'t>, body: Node<'t>) -> bool {
+        let named = |node: Node<'t>| -> Vec<Node<'t>> { (0..node.named_child_count()).filter_map(|i| node.named_child(i as u32)).filter(|c| !is_comment(c.kind())).collect() };
+        let returns = (0..function.child_count()).filter_map(|i| function.child(i as u32)).any(|c| c.kind() == "->");
+        match self.lang {
+            Lang::Rust => match named(body).as_slice() {
+                [only] if only.kind() == "return_expression" => true,
+                [only] if only.kind() == "expression_statement" => named(*only).first().is_some_and(|e| e.kind() == "return_expression"),
+                [only] => function.child_by_field_name("return_type").is_some() && !matches!(only.kind(), "let_declaration" | "item" | "empty_statement") && !only.kind().ends_with("_item"),
+                _ => false,
+            },
+            Lang::Python => false,
+            Lang::Swift => {
+                let mut statements = named(body);
+                while let [only] = statements.as_slice() {
+                    if !matches!(only.kind(), "statements" | "computed_getter") {
+                        break;
+                    }
+                    statements = named(*only);
                 }
-                continue;
-            }
-            (Lang::Swift, "parameter") => {
-                let identifiers: Vec<Node> = (0..node.named_child_count()).filter_map(|i| node.named_child(i as u32)).filter(|c| c.kind() == "simple_identifier").collect();
-                if let Some(last) = identifiers.last() {
-                    names.push(text[last.byte_range()].to_string());
-                }
-                continue;
-            }
-            _ => {}
-        }
-        for i in (0..node.named_child_count()).rev() {
-            if let Some(child) = node.named_child(i as u32) {
-                stack.push(child);
-            }
-        }
-    }
-    names
-}
-
-fn argument_texts(lang: Lang, text: &str, call: Node) -> Vec<String> {
-    let arguments = match lang {
-        Lang::Rust => call.child_by_field_name("arguments"),
-        Lang::Swift => (0..call.named_child_count()).filter_map(|i| call.named_child(i as u32)).find(|c| c.kind() == "call_suffix").and_then(|s| (0..s.named_child_count()).filter_map(|i| s.named_child(i as u32)).find(|c| c.kind() == "value_arguments")),
-    };
-    let Some(arguments) = arguments else { return vec![] };
-    (0..arguments.named_child_count())
-        .filter_map(|i| arguments.named_child(i as u32))
-        .filter(|c| !is_comment(c.kind()))
-        .map(|argument| {
-            let value = if lang == Lang::Swift { argument.child_by_field_name("value").unwrap_or(argument) } else { argument };
-            let mut shown = text[value.byte_range()].to_string();
-            if lang == Lang::Swift {
-                if let Some((_, after)) = shown.split_once(':') {
-                    shown = after.trim().to_string();
+                match statements.as_slice() {
+                    [only] if only.kind() == "control_transfer_statement" => self.text_of(*only).trim_start().starts_with("return"),
+                    [only] => (function.kind() == "computed_property" || returns) && !matches!(only.kind(), "property_declaration" | "assignment" | "if_statement" | "guard_statement" | "for_statement" | "while_statement" | "switch_statement" | "do_statement"),
+                    _ => false,
                 }
             }
-            shown.trim_start_matches('&').trim_start_matches("mut ").to_string()
-        })
-        .collect()
-}
-
-fn collect_lines(node: Node, lines: &mut BTreeSet<usize>) {
-    if is_comment(node.kind()) {
-        return;
-    }
-    if node.child_count() == 0 {
-        lines.extend(node.start_position().row + 1..=node.end_position().row + 1);
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_lines(child, lines);
+        }
     }
 }
 
@@ -492,7 +540,12 @@ impl<'a> Measure<'a> {
                     self.call(function);
                 }
             }
-            _ if is_closure(self.lang, kind) => inner = nesting + 1,
+            _ if is_closure(self.lang, kind) => {
+                inner = nesting + 1;
+                if node.parent().is_some_and(|p| matches!(p.kind(), "arguments" | "value_argument" | "call_suffix" | "lambda_function_type" ) || p.kind() == "value_arguments") {
+                    self.cyclomatic += 1;
+                }
+            }
             _ => {}
         }
         let mut cursor = node.walk();
@@ -529,6 +582,7 @@ impl<'a> Measure<'a> {
                     }
                 }
             }
+            Lang::Python => {}
         }
     }
 
@@ -536,6 +590,7 @@ impl<'a> Measure<'a> {
         match self.lang {
             Lang::Rust => node.kind() == "binary_expression" && node.child_by_field_name("operator").is_some_and(|o| matches!(&self.text[o.byte_range()], "&&" | "||")),
             Lang::Swift => matches!(node.kind(), "conjunction_expression" | "disjunction_expression"),
+            Lang::Python => node.kind() == "boolean_operator",
         }
     }
 
@@ -572,6 +627,23 @@ impl<'a> Measure<'a> {
             }
         }
     }
+}
+
+fn python_cognitive(node: Node, nesting: usize, deepest: &mut usize) -> usize {
+    let kind = node.kind();
+    if kind == "boolean_operator" {
+        let mut cursor = node.walk();
+        return 1 + node.children(&mut cursor).map(|c| python_cognitive(c, nesting, deepest)).sum::<usize>();
+    }
+    if matches!(kind, "break_statement" | "continue_statement") {
+        return 1;
+    }
+    let mut cursor = node.walk();
+    if matches!(kind, "if_statement" | "elif_clause" | "else_clause" | "for_statement" | "while_statement" | "except_clause" | "conditional_expression") {
+        *deepest = (*deepest).max(nesting + 1);
+        return 1 + nesting + node.children(&mut cursor).map(|c| python_cognitive(c, nesting + 1, deepest)).sum::<usize>();
+    }
+    node.children(&mut cursor).map(|c| python_cognitive(c, nesting, deepest)).sum()
 }
 
 fn is_else_if_swift(node: Node) -> bool {
@@ -676,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn wrappers_pass_their_parameters_straight_on() {
+    fn wrappers_are_functions_whose_body_is_a_single_return() {
         let swift = analyze(
             Lang::Swift,
             "class C {
@@ -686,22 +758,26 @@ mod tests {
     func other(_ a: Int) { request(a + 1) }
 }",
         );
-        assert!(swift.functions[0].wrapper);
+        assert!(!swift.functions[0].wrapper, "no return type: the call is a statement, not a returned value");
         assert!(!swift.functions[1].wrapper);
-        let rust = analyze(Lang::Rust, "fn a(x: u8, y: u8) -> u8 { b(x, y) }\nfn c(x: u8) -> u8 { b(x, 1) }\nfn d(&self, x: u8) -> u8 { self.e(x) }");
-        assert_eq!(rust.functions.iter().map(|f| f.wrapper).collect::<Vec<_>>(), [true, false, true]);
+        let returning = analyze(Lang::Swift, "func a(_ x: Int) -> Int { b(x) }\nfunc c(_ x: Int) -> Int { return x + 1 }\nfunc d(_ x: Int) -> Int { let y = x; return y }");
+        assert_eq!(returning.functions.iter().map(|f| f.wrapper).collect::<Vec<_>>(), [true, true, false]);
+        let rust = analyze(Lang::Rust, "fn a(x: u8, y: u8) -> u8 { b(x, y) }\nfn c(x: u8) -> u8 { b(x, 1) }\nfn d(&self, x: u8) { self.e(x); }\nfn e(x: u8) -> u8 { let y = x; y }");
+        assert_eq!(rust.functions.iter().map(|f| f.wrapper).collect::<Vec<_>>(), [true, true, false, false]);
+        let python = analyze(Lang::Python, "def a(x):\n    \"Doc.\"\n    return b(x)\n\ndef c(x):\n    y = x\n    return y\n");
+        assert_eq!(python.functions.iter().map(|f| f.wrapper).collect::<Vec<_>>(), [true, false]);
     }
 
     #[test]
     fn test_code_is_counted_apart_and_blocks_hash_alike_when_renamed() {
         let facts = analyze(Lang::Rust, "fn a(x: u8) -> u8 {\n    let y = x + 1;\n    y * 2\n}\n\n// note\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { assert!(true); }\n}\n");
-        assert_eq!(facts.lines, 5);
-        assert_eq!(facts.test_lines, 4);
+        assert_eq!(facts.lines, 4, "lines 1-3 and the attribute; a line holding only a closing brace is not a source line");
+        assert_eq!(facts.test_lines, 3);
         assert_eq!(facts.functions.len(), 1);
         let renamed = analyze(Lang::Rust, "fn b(v: u8) -> u8 {\n    let w = v + 7;\n    w * 3\n}\n");
         let swapped = analyze(Lang::Rust, "fn b(v: u8) -> u8 {\n    let w = v + 7;\n    v * 3\n}\n");
         assert_eq!(facts.blocks.len(), 1);
-        assert_eq!(facts.blocks[0].lines, vec![1, 2, 3, 4]);
+        assert_eq!(facts.blocks[0].lines, vec![1, 2, 3]);
         assert_eq!(facts.blocks[0].hash, renamed.blocks[0].hash, "identifiers renamed in order, literals by type");
         assert_ne!(facts.blocks[0].hash, swapped.blocks[0].hash, "a different variable is a different block");
         assert_eq!(facts.names.get("x"), Some(&2));

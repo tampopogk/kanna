@@ -63,7 +63,7 @@ mod tests {
         let found = find(&[("a.rs", &a.blocks), ("b.rs", &b.blocks), ("c.rs", &c.blocks)]);
         assert_eq!(found.groups.len(), 1, "the for and if inside the copies are part of the copied function");
         assert_eq!(found.groups[0].places, vec![Place { file: "a.rs".into(), line: 1, end: 9 }, Place { file: "b.rs".into(), line: 2, end: 10 }]);
-        assert_eq!(found.duplicated_lines(), 18);
+        assert_eq!(found.duplicated_lines(), 12, "six source lines in each copy: closing braces don't count");
         assert!(!found.lines.contains_key("c.rs"));
     }
 }

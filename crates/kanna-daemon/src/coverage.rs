@@ -191,5 +191,6 @@ pub fn sample(repo: &Path, commit: &str, files: &std::collections::BTreeMap<Stri
         at,
         value,
         doc: json!({ "lines": { "hit": lines.hit, "found": lines.found }, "branches": { "hit": branches.hit, "found": branches.found }, "files": file_rows, "landings": landings, "ran": { "at": started, "seconds": (now() - started).round() } }),
+        revision: 0,
     }
 }

@@ -7,7 +7,7 @@ use kanna_quality::tree::{Cache, Tree};
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{project, CoreHandle, KmuxError, Responder};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
@@ -39,20 +39,23 @@ pub enum Sampler {
 
 pub struct Metric {
     pub name: &'static str,
+    pub revision: i64,
     pub sample: Sampler,
 }
 
+pub type Revisions = HashMap<(String, String), i64>;
+
 pub const METRICS: &[Metric] = &[
-    Metric { name: "commits", sample: Sampler::Commit(brought) },
-    Metric { name: "merged", sample: Sampler::Commit(merge) },
-    Metric { name: "churn", sample: Sampler::Commit(quality::churn) },
-    Metric { name: "fixes", sample: Sampler::Commit(quality::fixes) },
-    Metric { name: "erosion", sample: Sampler::Tree(quality::erosion) },
-    Metric { name: "verbosity", sample: Sampler::Tree(quality::verbosity) },
-    Metric { name: "high", sample: Sampler::Tree(quality::high) },
-    Metric { name: "dead", sample: Sampler::Tree(quality::dead) },
-    Metric { name: "wrappers", sample: Sampler::Tree(quality::wrappers) },
-    Metric { name: "lines", sample: Sampler::Tree(quality::lines) },
+    Metric { name: "commits", revision: 0, sample: Sampler::Commit(brought) },
+    Metric { name: "merged", revision: 0, sample: Sampler::Commit(merge) },
+    Metric { name: "churn", revision: 0, sample: Sampler::Commit(quality::churn) },
+    Metric { name: "fixes", revision: 0, sample: Sampler::Commit(quality::fixes) },
+    Metric { name: "erosion", revision: 1, sample: Sampler::Tree(quality::erosion) },
+    Metric { name: "verbosity", revision: 1, sample: Sampler::Tree(quality::verbosity) },
+    Metric { name: "high", revision: 1, sample: Sampler::Tree(quality::high) },
+    Metric { name: "dead", revision: 1, sample: Sampler::Tree(quality::dead) },
+    Metric { name: "wrappers", revision: 1, sample: Sampler::Tree(quality::wrappers) },
+    Metric { name: "lines", revision: 1, sample: Sampler::Tree(quality::lines) },
 ];
 
 fn brought(cx: &Context, commit: &Commit) -> Result<(f64, Value), String> {
@@ -79,7 +82,7 @@ pub fn main_ref(repo: &Path) -> String {
 
 pub fn first_parents(repo: &Path, since: f64) -> Result<Vec<Commit>, String> {
     let log = git(repo, &["log", "--first-parent", &format!("--since=@{}", since as i64), "--format=%H%x09%ct%x09%P%x09%s", &main_ref(repo)])?;
-    Ok(log
+    let mut commits: Vec<Commit> = log
         .lines()
         .filter_map(|line| {
             let mut fields = line.splitn(4, '\t');
@@ -88,8 +91,14 @@ pub fn first_parents(repo: &Path, since: f64) -> Result<Vec<Commit>, String> {
             let parents = fields.next()?.split_whitespace().map(String::from).collect();
             Some(Commit { id, at, parents, subject: fields.next().unwrap_or("").to_string() })
         })
-        .filter(|commit| commit.at >= since)
-        .collect())
+        .collect();
+    let mut previous = f64::NEG_INFINITY;
+    for commit in commits.iter_mut().rev() {
+        commit.at = commit.at.max(previous + 0.001);
+        previous = commit.at;
+    }
+    commits.retain(|commit| commit.at >= since);
+    Ok(commits)
 }
 
 pub struct Progress {
@@ -97,17 +106,17 @@ pub struct Progress {
     pub of: usize,
 }
 
-pub fn catch_up(repo: &Path, since: f64, sampled: &HashSet<(String, String)>, tasks: &HashMap<String, String>, deliver: &mut dyn FnMut(Vec<Sample>, Option<Progress>)) -> Result<(), String> {
+pub fn catch_up(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>, deliver: &mut dyn FnMut(Vec<Sample>, Option<Progress>)) -> Result<(), String> {
     let cx = Context { repo, tasks };
     let commits = first_parents(repo, since)?;
-    let missing = |commit: &Commit, metric: &Metric| !sampled.contains(&(commit.id.clone(), metric.name.to_string()));
+    let missing = |commit: &Commit, metric: &Metric| sampled.get(&(commit.id.clone(), metric.name.to_string())) != Some(&metric.revision);
     let mut samples = Vec::new();
     for commit in commits.iter().rev() {
         for metric in METRICS {
             let Sampler::Commit(sample) = &metric.sample else { continue };
             if missing(commit, metric) {
                 let (value, doc) = sample(&cx, commit)?;
-                samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc });
+                samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc, revision: metric.revision });
             }
         }
     }
@@ -126,7 +135,7 @@ pub fn catch_up(repo: &Path, since: f64, sampled: &HashSet<(String, String)>, ta
             let Sampler::Tree(sample) = &metric.sample else { continue };
             if missing(commit, metric) {
                 let (value, doc) = sample(&tree);
-                samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc });
+                samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc, revision: metric.revision });
             }
         }
         if now() - batch > BATCH_SECONDS && done + 1 < trees.len() {
@@ -502,7 +511,7 @@ pub mod tests {
         Facts { today, answers, samples, lives, sampling: None, coverage: None }
     }
 
-    pub fn collect(repo: &Path, since: f64, sampled: &HashSet<(String, String)>, tasks: &HashMap<String, String>) -> Vec<Sample> {
+    pub fn collect(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>) -> Vec<Sample> {
         let mut all = Vec::new();
         catch_up(repo, since, sampled, tasks, &mut |samples, _| all.extend(samples)).unwrap();
         all
@@ -640,19 +649,43 @@ pub mod tests {
     }
 
     #[test]
+    fn main_s_order_is_its_time_order_even_when_commit_times_tie_or_go_back() {
+        let repo = std::env::temp_dir().join(format!("kanna-stats-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        let today = local_day(now());
+        let noon = noon(today) as i64;
+        git_in(&repo, &["init", "-q", "-b", "main"], noon);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "root"], noon);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "same second"], noon);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "clock behind"], noon - 3600);
+        let commits = first_parents(&repo, day_start(today - DAYS + 1)).unwrap();
+        let order: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(order, ["clock behind", "same second", "root"]);
+        assert!(commits[0].at > commits[1].at && commits[1].at > commits[2].at, "{:?}", commits.iter().map(|c| c.at).collect::<Vec<_>>());
+        assert_eq!(commits[2].at, noon as f64);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
     fn the_sampler_counts_what_each_of_main_s_commits_brought_and_fills_only_what_is_missing() {
         let repo = fixture("sampler");
         let today = local_day(now());
         let since = day_start(today - DAYS + 1);
-        let samples = collect(&repo, since, &HashSet::new(), &HashMap::new());
+        let samples = collect(&repo, since, &Revisions::new(), &HashMap::new());
         assert_eq!(samples.len(), 3 * METRICS.len(), "three commits on main in 30 days, a row per metric each");
         let of = |metric: &str| samples.iter().filter(|s| s.metric == metric).map(|s| s.value).collect::<Vec<_>>();
         assert_eq!(of("commits"), [1.0, 1.0, 2.0]);
         assert_eq!(of("merged"), [0.0, 0.0, 1.0]);
-        let sampled: HashSet<(String, String)> = samples.iter().filter(|s| s.metric == "commits").map(|s| (s.commit.clone(), s.metric.clone())).collect();
+        let mut sampled: Revisions = samples.iter().filter(|s| s.metric == "commits").map(|s| ((s.commit.clone(), s.metric.clone()), s.revision)).collect();
         let rest = collect(&repo, since, &sampled, &HashMap::new());
         assert_eq!(rest.len(), 3 * (METRICS.len() - 1));
         assert!(rest.iter().all(|s| s.metric != "commits"));
+        sampled.extend(rest.iter().map(|s| ((s.commit.clone(), s.metric.clone()), s.revision)));
+        let older = samples.iter().find(|s| s.metric == "erosion").unwrap();
+        sampled.insert((older.commit.clone(), older.metric.clone()), older.revision - 1);
+        let again = collect(&repo, since, &sampled, &HashMap::new());
+        assert_eq!(again.iter().map(|s| (s.commit.as_str(), s.metric.as_str())).collect::<Vec<_>>(), [(older.commit.as_str(), "erosion")], "a sample from an older definition is taken again");
         let report = report("/r", &facts(today, vec![], samples, vec![]));
         assert_eq!(tile_of(&report, "main", "commits")["note"], json!("today · 4 in 30 days"));
         assert_eq!(tile_of(&report, "main", "commits")["value"], json!(2.0));

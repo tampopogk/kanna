@@ -424,6 +424,10 @@ final class StatsList: NSView {
         return convert(NSPoint(x: spot.midX, y: spot.midY), to: nil)
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        frame.contains(point) ? self : nil
+    }
+
     private func index(_ event: NSEvent) -> Int? {
         let point = convert(event.locationInWindow, from: nil)
         let i = Int(point.y / Self.height)
@@ -452,9 +456,13 @@ final class StatsList: NSView {
         (index(event).flatMap { rows[$0].open } == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
     }
 
-    override func mouseUp(with event: NSEvent) {
-        guard let i = index(event), let open = rows[i].open else { return }
-        onOpen?(open)
+    override func mouseDown(with event: NSEvent) {
+        guard let i = index(event), rows[i].open != nil else { return }
+        while let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            guard next.type == .leftMouseUp else { continue }
+            if index(next) == i, let open = rows[i].open { onOpen?(open) }
+            return
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
