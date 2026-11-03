@@ -90,8 +90,13 @@ impl Caller {
 }
 
 pub fn refuse_remote(request: &Value) -> Option<Value> {
-    let certify = request.get("cmd").and_then(Value::as_str) == Some("machine") && request.pointer("/args/action").and_then(Value::as_str) == Some("certify");
-    certify.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "only this machine's own Kanna.app can have its endpoint certified" } }))
+    let action = (request.get("cmd").and_then(Value::as_str) == Some("machine")).then(|| request.pointer("/args/action").and_then(Value::as_str)).flatten();
+    let message = match action {
+        Some("certify") => "only this machine's own Kanna.app can have its endpoint certified",
+        Some("relay_config") => "only this machine can read its relay's token",
+        _ => return None,
+    };
+    Some(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": message } }))
 }
 
 fn hostname() -> String {
@@ -167,7 +172,7 @@ impl Machines {
             "status" => responder.reply(object(node.status())),
             "certify" => responder.reply(string(&args, "key").ok_or_else(|| KmuxError::new("bad_request", "machine certify needs the app's endpoint KEY")).and_then(|key| node.certify(key).map_err(error)).and_then(|cert| object(json!({ "cert": cert })))),
             "name" => responder.reply(string(&args, "name").ok_or_else(|| KmuxError::new("bad_request", "machine name needs a NAME")).and_then(|name| node.rename(name).map_err(error)).and_then(object)),
-            "offer" => responder.reply(node.offer().map_err(error).and_then(object)),
+            "offer" => responder.reply(node.offer(string(&args, "token")).map_err(error).and_then(object)),
             "addr" => {
                 let result = needs_host(host).and_then(|host| {
                     let addr = string(&args, "addr").ok_or_else(|| KmuxError::new("bad_request", "machine addr needs a HOST or HOST:PORT"))?;
@@ -176,6 +181,7 @@ impl Machines {
                 responder.reply(result.and_then(object))
             }
             "wait" => self.spawn(responder, async move { node.wait_offer().await }),
+            "relay_config" => responder.reply(object(json!({ "relay": node.status()["relay"], "token": node.relay_token() }))),
             "relay" => {
                 let url = string(&args, "url").map(String::from);
                 let token = string(&args, "token").map(String::from);
@@ -184,7 +190,8 @@ impl Machines {
             "pair" => {
                 let Some(code) = string(&args, "code").map(String::from) else { return responder.reply(Err(KmuxError::new("bad_request", "machine pair CODE: the code the other machine shows"))) };
                 let peer = string(&args, "peer").map(String::from);
-                self.spawn(responder, async move { node.pair(&code, peer.as_deref()).await })
+                let hosted = args.get("hosted").and_then(Value::as_bool).unwrap_or(false);
+                self.spawn(responder, async move { node.pair(&code, peer.as_deref(), hosted).await })
             }
             "revoke" => match needs_host(host) {
                 Ok(host) => {

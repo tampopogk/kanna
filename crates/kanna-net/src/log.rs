@@ -10,6 +10,7 @@ pub struct View {
     pub names: BTreeMap<String, BTreeSet<String>>,
     pub revoked: BTreeSet<String>,
     pub descriptors: BTreeMap<String, Value>,
+    pub hosted: BTreeSet<String>,
 }
 
 impl View {
@@ -87,16 +88,32 @@ impl PeerLog {
     }
 
     fn view_of<'a>(&'a self, ids: impl Iterator<Item = &'a String>) -> View {
-        let mut view = View { names: BTreeMap::new(), revoked: BTreeSet::new(), descriptors: BTreeMap::new() };
+        let ids: Vec<&String> = ids.collect();
+        let mut hosted = BTreeSet::new();
+        for _ in 0..8 {
+            let view = self.view_with(&ids, &hosted);
+            if view.hosted == hosted {
+                return view;
+            }
+            hosted = view.hosted;
+        }
+        self.view_with(&ids, &hosted)
+    }
+
+    fn view_with(&self, ids: &[&String], hosted: &BTreeSet<String>) -> View {
+        let mut view = View { names: BTreeMap::new(), revoked: BTreeSet::new(), descriptors: BTreeMap::new(), hosted: BTreeSet::new() };
         let anchor_key = self.anchor["key"].as_str().unwrap_or_default().to_string();
         view.names.entry(self.anchor["name"].as_str().unwrap_or_default().to_string()).or_default().insert(anchor_key.clone());
         view.descriptors.insert(anchor_key.clone(), self.anchor.clone());
-        let ids: Vec<&String> = ids.collect();
         let mut seen: BTreeMap<String, HashSet<String>> = BTreeMap::new();
-        for id in &ids {
+        for id in ids {
             let body = &self.events[*id]["body"];
             if body["kind"] == "revoke" {
                 let key = body["payload"]["key"].as_str().unwrap_or_default().to_string();
+                let signer = body["signer"].as_str().unwrap_or_default();
+                if hosted.contains(signer) && signer != key {
+                    continue;
+                }
                 view.revoked.insert(key.clone());
                 seen.entry(key).or_default().extend(self.ancestors(&body["parents"]));
             }
@@ -108,18 +125,27 @@ impl PeerLog {
             adds.retain(|id| {
                 let body = &self.events[*id]["body"];
                 let signer = body["signer"].as_str().unwrap_or_default();
+                if view.hosted.contains(signer) {
+                    return false;
+                }
                 let unseen = view.revoked.contains(signer) && !seen.get(signer).is_some_and(|s| s.contains(*id));
                 if !signers.contains(signer) || unseen {
                     return true;
                 }
                 let payload = &body["payload"];
                 let key = payload["key"].as_str().unwrap_or_default().to_string();
+                if payload["hosted"] == true {
+                    view.hosted.insert(key.clone());
+                }
                 signers.insert(key.clone());
                 view.names.entry(payload["name"].as_str().unwrap_or_default().to_string()).or_default().insert(key.clone());
-                let merged = match view.descriptors.get(&key) {
+                let mut merged = match view.descriptors.get(&key) {
                     Some(known) => merge_descriptor(known, payload),
                     None => payload.clone(),
                 };
+                if view.hosted.contains(&key) {
+                    merged["hosted"] = json!(true);
+                }
                 view.descriptors.insert(key, merged);
                 false
             });
@@ -150,8 +176,12 @@ impl PeerLog {
         }
         let payload = &body["payload"];
         let key = payload["key"].as_str().unwrap_or_default();
+        let signer = body["signer"].as_str().unwrap_or_default();
         match body["kind"].as_str() {
             Some("add") => {
+                if past.hosted.contains(signer) {
+                    return Err(Refused::new("hosted_signer"));
+                }
                 if past.revoked.contains(key) {
                     return Err(Refused::new("revoked"));
                 }
@@ -162,8 +192,12 @@ impl PeerLog {
                 if past.names.get(name).is_some_and(|keys| keys.len() != 1 || !keys.contains(key)) {
                     return Err(Refused::new("identity_mismatch"));
                 }
+                if past.hosted.contains(key) && payload["hosted"] != true {
+                    return Err(Refused::new("hosted_downgrade"));
+                }
                 Ok(())
             }
+            Some("revoke") if past.hosted.contains(signer) && key != signer => Err(Refused::new("hosted_signer")),
             Some("revoke") => Ok(()),
             _ => Err(Refused::new("unknown_entry")),
         }
@@ -577,5 +611,105 @@ pub mod tests {
         let mut forged = saved.clone();
         forged["entries"][0]["signature"] = json!("00".repeat(64));
         assert_eq!(code(PeerLog::new(saved["anchor"].clone()).sync(&forged)), "bad_signature");
+    }
+
+    fn hosted_vm() -> (Device, Device, Device) {
+        let (mut mbp, mut box_, _) = machines();
+        let mut vm = Device::new("cloud-1");
+        let entry = mbp.entry("add", json!({ "name": "cloud-1", "key": vm.key(), "capabilities": {}, "relay": null, "addrs": [], "hosted": true }));
+        mbp.log().merge(&[entry]).unwrap();
+        for d in [&mut vm, &mut box_] {
+            let mut log = PeerLog::new(mbp.log.as_ref().unwrap().anchor().clone());
+            log.sync(&mbp.log.as_ref().unwrap().export()).unwrap();
+            d.log = Some(log);
+        }
+        (mbp, box_, vm)
+    }
+
+    fn store(log: &mut PeerLog, entry: &Value) {
+        log.events.insert(digest(entry), entry.clone());
+    }
+
+    #[test]
+    fn a_hosted_machine_is_trusted_and_marked() {
+        let (mbp, box_, vm) = hosted_vm();
+        let view = mbp.log.as_ref().unwrap().view();
+        assert!(view.trusted().contains(&vm.key()));
+        assert_eq!(view.hosted, [vm.key()].into());
+        assert_eq!(view.descriptors[&vm.key()]["hosted"], true);
+        assert!(!view.descriptors[&box_.key()].get("hosted").is_some_and(|h| h == true));
+    }
+
+    #[test]
+    fn a_hosted_key_can_add_no_one_and_revoke_only_itself() {
+        let (mut mbp, box_, vm) = hosted_vm();
+        let stranger = Device::new("stranger");
+        assert_eq!(code(mbp.log().merge(&[vm.entry("add", stranger.descriptor())])), "hosted_signer");
+        let entry = vm.entry("revoke", json!({ "key": mbp.key() }));
+        assert_eq!(code(mbp.log().merge(&[entry])), "hosted_signer");
+        assert_eq!(code(mbp.log().merge(&[vm.entry("revoke", json!({ "key": box_.key() }))])), "hosted_signer");
+        assert_eq!(code(mbp.log().merge(&[vm.entry("revoke", json!({ "key": vm.key() }))])), "ok");
+        let view = mbp.log().view();
+        assert!(view.revoked.contains(&vm.key()));
+        assert!(view.trusted().contains(&mbp.key()) && view.trusted().contains(&box_.key()));
+    }
+
+    #[test]
+    fn the_hosted_mark_sticks_to_its_key() {
+        let (mut mbp, _, vm) = hosted_vm();
+        let plain = json!({ "name": "cloud-1", "key": vm.key(), "capabilities": {}, "relay": null, "addrs": [] });
+        let entry = mbp.entry("add", plain.clone());
+        assert_eq!(code(mbp.log().merge(&[entry])), "hosted_downgrade");
+        let mut renamed = plain.clone();
+        renamed["name"] = json!("my-box");
+        let entry = mbp.entry("add", renamed);
+        assert_eq!(code(mbp.log().merge(&[entry])), "hosted_downgrade");
+        assert_eq!(code(mbp.log().merge(&[vm.entry("add", plain)])), "hosted_signer");
+    }
+
+    #[test]
+    fn forgeries_an_older_peer_stored_count_for_nothing() {
+        let (mbp, box_, vm) = hosted_vm();
+        let before = mbp.log.as_ref().unwrap().view().trusted();
+        let mut stranger = Device::new("stranger");
+        let mut mbp_hosted = mbp.descriptor();
+        mbp_hosted["hosted"] = json!(true);
+        let mut log = mbp.log.clone().unwrap();
+        for entry in [vm.entry("add", stranger.descriptor()), vm.entry("revoke", json!({ "key": mbp.key() })), vm.entry("revoke", json!({ "key": box_.key() })), vm.entry("add", mbp_hosted)] {
+            store(&mut log, &entry);
+        }
+        stranger.log = Some(log.clone());
+        store(&mut log, &stranger.entry("add", Device::new("friend").descriptor()));
+        let view = log.view();
+        assert_eq!(view.resolve("stranger", &stranger.key()).unwrap_err().code, "unpaired");
+        assert_eq!(view.resolve("friend", &Device::new("friend").key()).unwrap_err().code, "unpaired");
+        assert_eq!(view.trusted(), before);
+        assert_eq!(view.hosted, [vm.key()].into());
+    }
+
+    #[test]
+    fn hosted_rules_hold_in_every_delivery_order() {
+        let (mut mbp, box_, vm) = hosted_vm();
+        let laptop = Device::new("laptop");
+        let valid = [mbp.entry("add", laptop.descriptor()), vm.entry("revoke", json!({ "key": vm.key() }))];
+        let stranger = Device::new("stranger");
+        let forged = [vm.entry("add", stranger.descriptor()), vm.entry("revoke", json!({ "key": mbp.key() })), vm.entry("revoke", json!({ "key": box_.key() }))];
+        let all: Vec<Value> = valid.iter().chain(forged.iter()).cloned().collect();
+        let orders = permutations(&all);
+        assert_eq!(orders.len(), 120);
+        let mut expected = mbp.log().view().trusted();
+        expected.remove(&vm.key());
+        expected.insert(laptop.key());
+        for order in orders {
+            let mut log = mbp.log.clone().unwrap();
+            for entry in &order {
+                if forged.contains(entry) {
+                    store(&mut log, entry);
+                } else {
+                    log.merge(std::slice::from_ref(entry)).unwrap();
+                }
+            }
+            assert_eq!(log.view().trusted(), expected);
+        }
     }
 }

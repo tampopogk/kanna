@@ -10,7 +10,13 @@ use std::time::{Duration, Instant};
 
 pub const OFFER_LIFETIME: Duration = Duration::from_secs(300);
 
+pub const TOKEN_LIFETIME: Duration = Duration::from_secs(1800);
+
 pub const ATTEMPTS: u32 = 3;
+
+pub fn valid_token(token: &str) -> bool {
+    (22..=128).contains(&token.len()) && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
 
 pub struct Offer {
     pub code: String,
@@ -26,6 +32,17 @@ impl Offer {
         getrandom::getrandom(&mut bytes).expect("the OS has no random numbers");
         let number = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) % 1_000_000;
         Offer { code: format!("{number:06}"), session: hex(&bytes[4..]), expires: now + OFFER_LIFETIME, attempts: 0, used: false }
+    }
+
+    pub fn with_token(token: &str, now: Instant) -> Offer {
+        let mut offer = Offer::new(now);
+        offer.code = token.to_string();
+        offer.expires = now + TOKEN_LIFETIME;
+        offer
+    }
+
+    pub fn is_token(&self) -> bool {
+        self.code.len() > 6
     }
 
     pub fn begin(&mut self, now: Instant) -> Result<(), Refused> {

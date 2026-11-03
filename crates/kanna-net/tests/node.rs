@@ -63,13 +63,13 @@ fn peer(node: &Node) -> String {
 }
 
 async fn pair(inviter: &Node, newcomer: &Node) -> Result<Value, kanna_net::Failure> {
-    let offer = newcomer.offer()?;
+    let offer = newcomer.offer(None)?;
     let code = offer["code"].as_str().unwrap().to_string();
     let waiting = {
         let newcomer = newcomer.clone();
         tokio::spawn(async move { newcomer.wait_offer().await })
     };
-    let paired = inviter.pair(&code, Some(&peer(newcomer))).await;
+    let paired = inviter.pair(&code, Some(&peer(newcomer)), false).await;
     let waited = waiting.await.unwrap();
     if let Ok(paired) = &paired {
         assert_eq!(waited.unwrap()["name"], inviter.status()["name"]);
@@ -128,8 +128,8 @@ async fn pairing_needs_the_code_and_a_yes_and_a_reload_keeps_the_log() {
     let (mbp, mbp_host) = machine("mbp", json!({})).await;
     let (vm, vm_host) = machine("linux-vm", json!({})).await;
 
-    vm.offer().unwrap();
-    let wrong = mbp.pair("12345", Some(&peer(&vm))).await.unwrap_err();
+    vm.offer(None).unwrap();
+    let wrong = mbp.pair("12345", Some(&peer(&vm)), false).await.unwrap_err();
     assert_eq!(wrong.code, "pake_confirmation_failed");
     assert_eq!(mbp.status()["paired"], false);
 
@@ -141,7 +141,7 @@ async fn pairing_needs_the_code_and_a_yes_and_a_reload_keeps_the_log() {
 
     *mbp_host.yes.lock().unwrap() = true;
     pair(&mbp, &vm).await.unwrap();
-    let again = vm.offer().unwrap_err();
+    let again = vm.offer(None).unwrap_err();
     assert_eq!(again.code, "already_paired");
 
     let saved = vm_host.saved.lock().unwrap().clone();
@@ -466,4 +466,46 @@ async fn an_app_given_only_a_key_reaches_a_machine_through_its_relay() {
     let (again, _) = machine("mbp", saved).await;
     assert_eq!((again.status()["relay"].clone(), again.relay_token()), (json!(moved), Some("s3cret".to_string())), "the relay and its token are kept across a restart");
     assert_eq!(again.set_relay(None, None).await.unwrap()["relay"], Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vm_enrolled_by_token_through_a_relay_is_hosted_and_admits_no_one() {
+    let (_server, url) = relay(None).await;
+    let (mbp, mbp_host) = machine("mbp", json!({})).await;
+    let (vm, _) = machine("cloud-1", json!({})).await;
+    let (other, _) = machine("other", json!({})).await;
+    mbp.set_relay(Some(&url), None).await.unwrap();
+    vm.set_relay(Some(&url), None).await.unwrap();
+    assert!(reaches_relay(&vm, &url, std::time::Duration::from_secs(10)).await, "the VM never connected to its relay");
+    assert_eq!(vm.offer(Some("short")).unwrap_err().code, "bad_request");
+    let token = "Tk7q2mZp9xL4vR8sW1nB3c";
+    let offer = vm.offer(Some(token)).unwrap();
+    assert_eq!((offer["code"].clone(), offer["token"].clone(), offer["home_relay"].clone()), (Value::Null, json!(true), json!(url)));
+    assert_eq!(vm.status()["offer"]["code"], Value::Null, "the status never shows a token");
+    let waiting = {
+        let vm = vm.clone();
+        tokio::spawn(async move { vm.wait_offer().await })
+    };
+    assert_eq!(mbp.pair("Tk7q2mZp9xL4vR8sW1nB3d", Some(&vm.key()), true).await.unwrap_err().code, "pake_confirmation_failed");
+    let paired = mbp.pair(token, Some(&vm.key()), true).await.unwrap();
+    assert_eq!(paired["name"], "cloud-1");
+    assert_eq!(waiting.await.unwrap().unwrap()["name"], "mbp");
+    let asked = mbp_host.asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((asked["name"].clone(), asked["hosted"].clone()), (json!("cloud-1"), json!(true)));
+    for node in [&mbp, &vm] {
+        let status = node.status();
+        let peer = status["peers"].as_array().unwrap().iter().find(|p| p["name"] == "cloud-1").unwrap().clone();
+        assert_eq!((peer["trusted"].clone(), peer["hosted"].clone()), (json!(true), json!(true)), "{peer}");
+        let me = status["peers"].as_array().unwrap().iter().find(|p| p["name"] == "mbp").unwrap().clone();
+        assert_eq!(me["hosted"], false);
+    }
+    mbp.call("cloud-1", json!({ "id": 1, "cmd": "list" })).await.unwrap();
+
+    other.offer(None).unwrap();
+    let code = other.status()["offer"]["code"].as_str().unwrap().to_string();
+    let refused = vm.pair(&code, Some(&peer(&other)), false).await.unwrap_err();
+    assert_eq!(refused.code, "hosted_signer", "{refused:?}");
+    assert_eq!(other.status()["paired"], false);
+    assert_eq!(vm.revoke("mbp").await.unwrap_err().code, "hosted_signer");
+    mbp.call("cloud-1", json!({ "id": 2, "cmd": "list" })).await.unwrap();
 }

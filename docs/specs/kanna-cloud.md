@@ -1,6 +1,6 @@
 # Kanna Cloud
 
-**Status:** planned · **Builds on:** [your machines](machines.md) · **Parts:** [provisioning a host](cloud-provisioning.md), [build Macs](build-macs.md), [build Mac isolation](build-mac-isolation.md) · **Order:** [build order](machines-build-order.md#kanna-cloud)
+**Status:** provisioning built (slice 9, the operator as the only tenant); the rest planned · **Builds on:** [your machines](machines.md) · **Parts:** [provisioning a host](cloud-provisioning.md), [a user's VM](cloud-vms.md), [build Macs](build-macs.md), [build Mac isolation](build-mac-isolation.md) · **Order:** [build order](machines-build-order.md#kanna-cloud)
 
 Kanna Cloud is a service that hands you machines, built on [your machines](machines.md): what it makes joins them, and the line between the two is enrollment. It runs **Linux VMs for you** on Kanna's servers (Dell R720s), gives your own machines **Kanna's directory and relays** so they find each other anywhere, and runs **build Macs** that build and test Apple code for Linux tasks. It has accounts, many tenants and an operator.
 
@@ -70,11 +70,11 @@ flowchart LR
 
 Operator work, in two steps:
 
-1. **The host:** `scripts/cloud/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([provisioning a host](cloud-provisioning.md)); then Incus.
-2. **A user's VM:** `kanna cloud provision` makes an Incus VM (Ubuntu 26.04, stock cloud image) for one user, runs [server setup](machine-setup.md) in it with the user's enrollment token, and enrolls it (§4). Git credentials for its repos are made per VM: a deploy key or a fine-grained token ([tasks §4](machine-tasks.md#4-repos-and-credentials)).
+1. **The host:** `scripts/cloud/provision-idrac.sh` installs Ubuntu Server on an R720 through its iDRAC ([provisioning a host](cloud-provisioning.md)); then `kanna cloud setup-host` adds Incus, the tenant bridge, its ACL and profile, and the pool ([a user's VM §1](cloud-vms.md#1-the-host)).
+2. **A user's VM:** `kanna cloud provision` makes an Incus VM (Ubuntu 26.04, stock cloud image) for one user, runs [server setup](machine-setup.md) in it with the user's enrollment token, and enrolls it (§4). Git credentials for its repos are made per VM: a deploy key per repo, made in the VM ([a user's VM §2–4](cloud-vms.md#2-provisioning)).
 
 - **Networking:** a tenant VM reaches the internet and Kanna's relays, never another tenant's VM, the host's management or the operator's LAN; enforced on the host, IPv4 and IPv6. Users reach their VMs through iroh: direct over the internet when it can punch through, else relayed.
-- **Releasing a VM** destroys it with its disks and snapshots (§8). Nothing of it is reused.
+- **Releasing a VM** (`kanna cloud release`) revokes it, removes its deploy keys, and destroys it with its disks, snapshots and logs (§8). Nothing of it is reused ([a user's VM §5](cloud-vms.md#5-releasing)).
 
 ## 4. Enrollment by token
 
@@ -135,9 +135,8 @@ A Linux task's `xcodebuild`, `xcrun`, `simctl` and chosen `swift` calls run on a
 
 ## 9. Open questions
 
-- **Hosted peers can't admit or revoke others.** **Proposed:** yes. An add signed by a `hosted` key never counts, and it may revoke only itself. This changes the peer log ([identity §3](machine-identity.md#3-the-peer-log)) and needs a slice.
 - **A copy of agent secrets in the directory**, so a machine enrolls while the Mac is closed (the earlier plan). **Proposed:** none: enrollment needs the gesture, so the app is open anyway, and a copy only adds what the operator could take.
-- **The first tenant:** r720-1 already hosts VMs bridged onto the user's LAN. **Proposed:** that's acceptable while the operator is the only tenant; the host-enforced tenant network (§3) and a Linux tenant isolation model come before a second tenant.
+- **The first tenant:** r720-1's earlier VMs sit behind NAT on a bridge that reaches the LAN. **Decided:** Cloud's VMs go on the host-enforced tenant network (§3) from the first one; the network check runs on each host before a second tenant ([a user's VM §1](cloud-vms.md#1-the-host)).
 - **A Cloud user's own Mac as their private build Mac.** **Proposed:** not in the first Cloud milestone; the pool is Kanna's Macs.
 
 ## 10. Glossary

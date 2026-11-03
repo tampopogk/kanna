@@ -3,8 +3,8 @@ use crate::target::Session;
 use kanna_client::Failure;
 use serde_json::{json, Value};
 
-pub fn offer(mux: &mut Session, json_output: bool) -> Result<(), Failure> {
-    let offer = mux.call("machine", json!({ "action": "offer" }))?;
+pub fn offer(mux: &mut Session, request: &Value, json_output: bool) -> Result<(), Failure> {
+    let offer = mux.call("machine", request.clone())?;
     if json_output {
         println!("{offer}");
     } else {
