@@ -325,8 +325,13 @@ impl Supervisor {
             return Err(bad(format!("{} files of the snapshot never arrived", missing.len())));
         }
         if let Some(bundle) = &bundle {
-            git(&repo, &["fetch", "-q", &bundle.to_string_lossy(), &format!("+HEAD:refs/kanna/{}", &commit[..12])])?;
+            let local = format!("refs/kanna/{}", &commit[..12]);
+            let fetched = git(&repo, &["fetch", "-q", &bundle.to_string_lossy(), &format!("+{}:{local}", crate::client::sent_ref(&commit))]);
             let _ = std::fs::remove_file(bundle);
+            fetched?;
+            if git(&repo, &["rev-parse", &local])?.trim() != commit {
+                return Err(bad(format!("the bundle didn't carry commit {commit}")));
+            }
         } else if !known {
             return Err(bad(format!("the build Mac lacks commit {commit} and no bundle came with it")));
         }

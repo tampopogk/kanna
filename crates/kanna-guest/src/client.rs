@@ -298,15 +298,23 @@ fn outcome(status: &Value) -> Outcome {
     }
 }
 
-fn send_snapshot(conn: &mut dyn Pipe, root: &Path, staging: &Path, entries: &[Entry], need: &Frame, lists: &[u8]) -> io::Result<()> {
+pub fn sent_ref(commit: &str) -> String {
+    format!("refs/kanna/send/{commit}")
+}
+
+fn send_snapshot(conn: &mut dyn Pipe, root: &Path, commit: &str, staging: &Path, entries: &[Entry], need: &Frame, lists: &[u8]) -> io::Result<()> {
     let lists: Value = serde_json::from_slice(lists).map_err(|e| frame::bad(format!("the build Mac's list of files isn't JSON: {e}")))?;
     if need.header["commit"] != true {
         let haves: Vec<String> = lists["heads"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|h| git(root, &["cat-file", "-e", &format!("{h}^{{commit}}")]).is_ok()).map(|h| format!("^{h}")).collect();
         let bundle = staging.join(".bundle");
-        let mut args = vec!["bundle".to_string(), "create".into(), "-q".into(), bundle.to_string_lossy().into_owned(), "HEAD".into()];
+        let name = sent_ref(commit);
+        git(root, &["update-ref", &name, commit])?;
+        let mut args = vec!["bundle".to_string(), "create".into(), "-q".into(), bundle.to_string_lossy().into_owned(), name.clone()];
         args.extend(haves);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        git(root, &args)?;
+        let created = git(root, &args);
+        let _ = git(root, &["update-ref", "-d", &name]);
+        created?;
         let size = std::fs::metadata(&bundle)?.len();
         frame::send_reader(conn, &json!({ "op": "bundle" }), size, &mut std::fs::File::open(&bundle)?)?;
     }
@@ -356,7 +364,7 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
         let (reply, payload) = frame::read(&mut conn, 64 << 20)?;
         match reply.op() {
             "need" => {
-                send_snapshot(&mut *conn, &request.root, staging, &entries, &reply, &payload)?;
+                send_snapshot(&mut *conn, &request.root, &worktree.commit, staging, &entries, &reply, &payload)?;
                 Ok(Some((conn, true)))
             }
             "exists" => Ok(Some((conn, true))),

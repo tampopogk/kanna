@@ -145,6 +145,20 @@ fn a_fetch_under_a_linked_folder_is_refused() {
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
 }
 
+#[test]
+fn the_commit_captured_is_the_one_sent_even_if_head_moves() {
+    let rig = rig("moved");
+    let (req, worktree) = request(&rig, &["git", "rev-parse", "HEAD"]);
+    std::fs::write(rig.repo.join("later.txt"), "later\n").unwrap();
+    git(&rig.repo, &["add", "-A"]);
+    git(&rig.repo, &["commit", "-q", "-m", "later"]);
+    let (outcome, out, err) = run(&rig, &req, &worktree);
+    assert_eq!(outcome, Outcome::Exited(0), "{err}");
+    assert_eq!(out.trim(), worktree.commit);
+    let refs = Command::new("git").arg("-C").arg(&rig.repo).args(["for-each-ref", "refs/kanna"]).output().unwrap();
+    assert!(refs.stdout.is_empty(), "the ref made for the bundle is gone");
+}
+
 struct Dropping {
     inner: UnixStream,
     drops: bool,
