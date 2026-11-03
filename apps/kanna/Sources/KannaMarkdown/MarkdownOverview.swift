@@ -124,11 +124,11 @@ extension MarkdownPaneView {
 
     func sides(height: CGFloat? = nil, comments: Bool? = nil, forced: Bool? = nil) -> (overview: Bool, comments: Bool) {
         var viewport = overviewViewport
-        if let height { viewport.height = height / max(zoom, 0.01) }
+        viewport.height = (height ?? scrollView.frame.height) / textSize
         let wanted = (textView.textStorage?.length ?? 0) > 0 && OverviewLayout.wanted(enabled: OverviewSetting.enabled, viewport: viewport)
         overviewWanted = wanted
         return MarkdownOverviewLayout.shown(overview: wanted, comments: markup && (comments ?? showThreads), forced: forced ?? forcedThreads,
-                                            width: bounds.width, zoom: zoom, digit: MarkdownOverviewLayout.digit)
+                                            width: bounds.width, zoom: textSize, digit: MarkdownOverviewLayout.digit)
     }
 
     func setUpOverview() {
