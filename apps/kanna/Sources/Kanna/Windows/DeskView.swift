@@ -196,7 +196,8 @@ final class DeskStrip: NSView {
 
     var geometry: JSON {
         ["width": .number(Double(bounds.width)),
-         "hint": .string(hint.text), "hintRight": .number(Double(hint.frame.maxX)),
+         "hint": .string(hint.text), "hintLeft": .number(Double(hint.frame.minX)), "hintRight": .number(Double(hint.frame.maxX)),
+         "countLeft": count.isHidden ? .null : .number(Double(count.frame.minX)),
          "items": .array(stripItems.map { ["task": .string($0.task.id), "meta": .string($0.metaText), "right": .number(Double($0.frame.maxX)), "key": $0.keyText.map { .string($0) } ?? .null] })]
     }
 
@@ -230,25 +231,26 @@ final class DeskStrip: NSView {
         let chrome = items.reduce(0) { $0 + $1.chrome }
         let metas = items.map(\.metaWidth)
         let titles = items.map(\.titleWidth)
-        hint.frame.origin = NSPoint(x: 8, y: (Self.height - hint.frame.height) / 2)
-        let start = hint.frame.maxX + (items.isEmpty ? 0 : 9)
-        var room = bounds.width - start - gaps - chrome - metas.reduce(0, +)
+        let hintLeft = bounds.width - hint.frame.width - 8
+        var room = hintLeft - 10 - 8 - gaps - chrome - metas.reduce(0, +)
         let titleFloors = titles.map { min($0, Self.titleFloor) }.reduce(0, +)
         count.isHidden = waiting == 0
-        if !count.isHidden, room - count.frame.width - 20 < titleFloors {
+        if !count.isHidden, room - count.frame.width - 8 < titleFloors {
             count.isHidden = true
         }
-        if !count.isHidden { room -= count.frame.width + 20 }
+        if !count.isHidden { room -= count.frame.width + 8 }
         let fitted = Self.shrink(titles, to: room, floor: Self.titleFloor)
         let leftover = room - fitted.reduce(0, +)
         let fittedMetas = leftover < 0 ? Self.shrink(metas, to: metas.reduce(0, +) + leftover, floor: 0) : metas
-        var x: CGFloat = start
+        var x: CGFloat = 8
         for (index, item) in items.enumerated() {
             item.fit(title: fitted[index], meta: fittedMetas[index])
             item.frame.origin = NSPoint(x: x, y: (Self.height - item.frame.height) / 2)
             x += item.frame.width + 4
         }
         count.frame.origin = NSPoint(x: bounds.width - count.frame.width - 12, y: (Self.height - count.frame.height) / 2)
+        hint.frame.origin = NSPoint(x: hintLeft - (count.isHidden ? 0 : count.frame.width + 8), y: (Self.height - hint.frame.height) / 2)
+        needsDisplay = true
     }
 
     static func shrink(_ widths: [CGFloat], to total: CGFloat, floor: CGFloat) -> [CGFloat] {
@@ -263,7 +265,7 @@ final class DeskStrip: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
-        if !stripItems.isEmpty { NSRect(x: hint.frame.maxX + 4, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
+        if !stripItems.isEmpty { NSRect(x: hint.frame.minX - 5, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
     }
 }
 
@@ -333,6 +335,7 @@ private final class DeskStripItem: NSView {
         self.key?.font = .systemFont(ofSize: 11)
         self.key?.sizeToFit()
         self.key?.textColor = .tertiaryLabelColor
+        self.key?.isHidden = true
         meta.textColor = .tertiaryLabelColor
         titleWidth = min(title.frame.width, 260)
         paintTitle()
@@ -349,7 +352,7 @@ private final class DeskStripItem: NSView {
 
     var keyText: String? { key?.stringValue }
 
-    var chrome: CGFloat { 23 + 6 + 8 + (key.map { $0.frame.width + 5 } ?? 0) }
+    var chrome: CGFloat { 23 + 6 + 8 + (hover ? (key.map { $0.frame.width + 6 } ?? 0) : 0) }
 
     func refresh() {
         meta.stringValue = "· \(task.meta)"
@@ -358,12 +361,12 @@ private final class DeskStripItem: NSView {
     }
 
     func fit(title width: CGFloat, meta room: CGFloat) {
-        key?.frame.origin = NSPoint(x: 23, y: (22 - (key?.frame.height ?? 0)) / 2)
-        let start = key.map { $0.frame.maxX + 5 } ?? 23
-        title.frame = NSRect(x: start, y: (22 - title.frame.height) / 2, width: width, height: title.frame.height)
+        title.frame = NSRect(x: 23, y: (22 - title.frame.height) / 2, width: width, height: title.frame.height)
         meta.isHidden = room < 12
         meta.frame = NSRect(x: title.frame.maxX + 6, y: title.frame.minY, width: meta.isHidden ? 0 : room, height: meta.frame.height)
-        frame.size.width = meta.frame.maxX + 8
+        key?.isHidden = !hover
+        key?.frame.origin = NSPoint(x: meta.frame.maxX + 6, y: (22 - (key?.frame.height ?? 0)) / 2)
+        frame.size.width = (hover ? key?.frame.maxX ?? meta.frame.maxX : meta.frame.maxX) + 8
     }
 
     override func draw(_ dirtyRect: NSRect) {
