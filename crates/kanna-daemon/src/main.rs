@@ -9,6 +9,7 @@ mod agents;
 mod app_link;
 mod tasks;
 mod db;
+mod desk_news;
 mod host;
 mod keeper;
 mod content_ids;
@@ -31,6 +32,7 @@ mod shell;
 mod status;
 mod status_command;
 mod diffs;
+mod logs;
 mod machines;
 mod files;
 mod reads;
@@ -109,8 +111,10 @@ pub enum Event {
     Turn { token: u64 },
     Posted { token: u64, result: Result<(), String> },
     Finished { task: String, changes: Vec<db::Change> },
+    Merged { task: String, merge: desk_news::Merge },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
+    Log { id: String, log: Value },
     File { id: String, read: files::Read },
     Serial(serial::SerialEvent),
     KeeperReadable,
@@ -139,8 +143,9 @@ impl Event {
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
-            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } | Event::Merged { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
+            Event::Log { .. } => "loop.log",
             Event::File { .. } => "loop.file",
             Event::Serial(_) => "loop.serial",
             Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
@@ -419,6 +424,10 @@ fn run() -> Result<(), String> {
     reads::install(&core);
     let serial = Rc::new(serial::Serial::new(events.clone(), &state_dir));
     serial.install(&core);
+    let logs = Rc::new(logs::Logs::new(events.clone()));
+    logs.install(&core);
+    let refs = Rc::downgrade(&tasks);
+    *logs.task_refs.borrow_mut() = Some(Box::new(move || refs.upgrade().map(|tasks| tasks.refs()).unwrap_or_default()));
     let host = Rc::new(Host::new(terminals.clone(), serial.clone()));
     core.set_host(Some(host.clone()));
     let noted = core.weak();
@@ -478,7 +487,18 @@ fn run() -> Result<(), String> {
             app.layout(view);
         }
     }));
+    *app.logs.borrow_mut() = Some(logs.clone());
     app.connect_tasks(&tasks);
+    let shown = tasks.on_change.borrow_mut().take();
+    let logs_told = Rc::downgrade(&logs);
+    *tasks.on_change.borrow_mut() = Some(Box::new(move |view| {
+        if let Some(logs) = logs_told.upgrade() {
+            logs.tasks_changed();
+        }
+        if let Some(shown) = &shown {
+            shown(view);
+        }
+    }));
     let (folder_link, folder_core) = (Rc::downgrade(&app), core.weak());
     core.on_renamed(Rc::new(move |_, to| {
         let cwd = folder_core.upgrade().and_then(|core| core.pane(to)).and_then(|pane| pane.cwd);
@@ -500,6 +520,12 @@ fn run() -> Result<(), String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    let log_link = Rc::downgrade(&app);
+    *logs.on_log.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = log_link.upgrade() {
+            app.log(views, payload);
         }
     }));
     let serial_link = Rc::downgrade(&app);
@@ -731,8 +757,10 @@ fn run() -> Result<(), String> {
             Event::Turn { token } => tasks.next_turn(token),
             Event::Posted { token, result } => tasks.posted(token, result),
             Event::Finished { task, changes } => tasks.finished(&task, changes),
+            Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
+            Event::Log { id, log } => logs.loaded(&id, log),
             Event::File { id, read } => {
                 files.loaded(&id, read.clone());
                 threads.loaded(&id, read);

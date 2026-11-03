@@ -257,7 +257,7 @@ impl App {
                     }
                     continue;
                 }
-                if message["cmd"] == "diff" || message["cmd"] == "file" || message["cmd"] == "markup" {
+                if message["cmd"] == "diff" || message["cmd"] == "log" || message["cmd"] == "file" || message["cmd"] == "markup" {
                     heard.lock().unwrap().push(message["args"].clone());
                 } else if message.get("content").is_some() || (message.get("ok").is_some() && message["id"] != 0) {
                     heard.lock().unwrap().push(message.clone());

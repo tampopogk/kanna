@@ -2792,6 +2792,95 @@ diff_pane_worktree_gone() {
   raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane_worktree_gone.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane_worktree_gone.png" "$out/" 2>/dev/null
 }
 
+scenario log_pane M4
+log_pane() {
+  start_daemon && start_app || return 1
+  local repo; repo="$(e2e_repo logs)" || return 1
+  lgit() { git -C "$repo" -c user.name=Ann -c user.email=ann@example.invalid -c commit.gpgsign=false "$@" >/dev/null; }
+  lc() { echo "$2" >>"$repo/$1" && lgit add "$1" && lgit commit -qm "$2"; }
+  lc a.txt "main 0"
+  lgit checkout -qb long; for i in 1 2 3 4 5; do lc long.txt "long $i"; done
+  lgit checkout -q main; lc a.txt "main 1"; lgit merge -q --no-ff long -m "Merge long"
+  for b in x y z; do lgit checkout -qb "$b" main~1; lc "$b.txt" "$b 1"; done
+  lgit checkout -q main; lgit merge -q --no-ff x y z -m Octopus
+  lgit checkout -qb lived; lc l.txt "lived 1"
+  lgit checkout -q main; lc a.txt "main 2"
+  lgit checkout -q lived; lgit merge -q --no-ff main -m "Merge branch 'main' into lived"; lc l.txt "lived 2"
+  lgit checkout -q main
+  for i in 3 4 5 6 7 8 9; do lc a.txt "main $i"; done
+  lgit checkout -q lived; lgit merge -q --no-ff main -m "Merge main into lived again"; lgit checkout -q main
+  desk_task "Labelled task" 'exec sleep 600' logs || return 1
+  local tree; tree="$(ls -d "$repo"/.kanna-worktrees/task-* | head -1)"
+  check wait_for 10 test -d "$tree" || { echo "no worktree for the task"; return 1; }
+  git -C "$tree" branch -m labelled >/dev/null 2>&1
+  git -C "$tree" -c user.name=Bo -c user.email=bo@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m "task work" || return 1
+  logpane() { raw "{\"id\":1,\"cmd\":\"debug.log\",\"args\":{\"pane\":\"history\"${2:-}}}" | field "$1"; }
+  rowsof() { logpane rows | python3 -c "import json, sys; rows = json.load(sys.stdin); $1"; }
+  hash_of() { git -C "$repo" log --all --format='%H %s' | awk -v s="$1" '{h=$1; $1=""; if (substr($0, 2) == s) { print h; exit }}'; }
+  (cd "$repo" && kanna open --window new log --name history >/dev/null) || return 1
+  check wait_for 10 eval '[[ "$(logpane total)" == 22 ]]' || { echo "total $(logpane total), error $(logpane error), range $(logpane range)"; return 1; }
+  check test "$(logpane range)" == '["labelled", "main"]' || { echo "range $(logpane range)"; return 1; }
+  check rowsof '
+by = {r["subject"]: r for r in rows}
+assert "long 1" not in by, "the long branch should fold"
+m = by["Merge long"]; assert m["folded"] and m["fold"] == 5 and m["lane"] == 0, m
+assert all(r["lane"] == 0 for r in rows if r["spine"]), [r for r in rows if r["spine"] and r["lane"]]
+o = by["Octopus"]; assert len(o["parents"]) == 4 and len(set(o["parents"])) == 4, o
+t = by["task work"]; assert t["lane"] > 0 and t["labels"][0]["name"] == "Labelled task" and t["labels"][0]["place"] == "desk" and t["labels"][0]["ahead"] == 1, t
+assert "lived 1" not in by, "lived is not in the default range"' || return 1
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane.png" "$out/" 2>/dev/null
+  kanna navigate history log main lived >/dev/null || return 1
+  check wait_for 10 eval '[[ "$(logpane command)" == "git log main lived" && "$(logpane total)" == 25 ]]' || { echo "navigate: $(logpane command) $(logpane total)"; return 1; }
+  check rowsof '
+by = {r["subject"]: r for r in rows}
+assert by["lived 1"]["lane"] > 0 and len(by["Merge branch '"'"'main'"'"' into lived"]["parents"]) == 2, by["lived 1"]' || return 1
+  local merge; merge="$(hash_of "Merge long")"
+  logpane open ",\"fold\":\"$merge\"" >/dev/null
+  check rowsof '
+by = {r["subject"]: r for r in rows}
+assert len(rows) == 25 and by["Merge long"]["open"] and by["long 3"]["lane"] > 0, len(rows)' || return 1
+  logpane open ",\"select\":\"$(hash_of "long 3")\",\"keys\":\"h\"" >/dev/null
+  check test "$(logpane selected)" == "$merge" || { echo "← from inside the side selected $(logpane selected)"; return 1; }
+  check rowsof 'assert len(rows) == 20, len(rows)' || return 1
+  logpane selected ',"keys":"g"' >/dev/null
+  local top; top="$(logpane selected)"
+  check wait_for 5 eval '[[ "$(logpane detail)" == "$top" ]]' || { echo "detail $(logpane detail) for $top"; return 1; }
+  logpane selected ',"keys":"jj"' >/dev/null
+  local reading; reading="$(logpane selected)"
+  local before; before="$(logpane rows)"
+  lgit checkout -q lived; lc l.txt "lived 3"; lgit checkout -q main
+  check wait_for 5 eval '[[ "$(logpane stale)" == True ]]' || { echo "the commit didn't hold: stale $(logpane stale)"; return 1; }
+  check test "$(logpane held)" == "1 new commit" || { echo "held $(logpane held)"; return 1; }
+  check test "$(logpane rows)" == "$before" || { echo "the rows moved while reading"; return 1; }
+  check test "$(logpane selected)" == "$reading" || { echo "the selection moved while reading"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane-held.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane-held.png" "$out/" 2>/dev/null
+  kanna focus history >/dev/null
+  raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+r"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(logpane stale)" == False && "$(logpane rows)" == *"lived 3"* ]]' || { echo "⌘R didn't bring the commit in"; return 1; }
+  check test "$(logpane selected)" == "$reading" || { echo "the refresh lost the selection"; return 1; }
+  check eval '[[ "$(logpane fresh)" == *"$(hash_of "lived 3")"* ]]' || { echo "fresh $(logpane fresh)"; return 1; }
+  logpane hits ',"find":"lived"' >/dev/null
+  check eval '[[ "$(logpane hits | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")" == 5 ]]' || { echo "hits $(logpane hits)"; return 1; }
+  logpane hits ',"find":"long 2"' >/dev/null
+  logpane hits ',"next":true' >/dev/null
+  check test "$(logpane selected)" == "$(hash_of "long 2")" || { echo "find didn't go to long 2: $(logpane selected)"; return 1; }
+  check eval '[[ "$(logpane open)" == *"$merge"* ]]' || { echo "find didn't unfold its merge: $(logpane open)"; return 1; }
+  logpane hits ',"find":""' >/dev/null
+  logpane selected ",\"select\":\"$(hash_of "lived 2")\",\"keys\":\"~\"" >/dev/null
+  check wait_for 5 eval 'kanna workspace list --all --json | grep -q "$(hash_of "lived 2" | cut -c1-12)^!"' || { echo "↩ opened no diff of lived 2"; kanna workspace list --all; return 1; }
+  kanna focus history >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane-light.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane-light.png" "$out/" 2>/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null; sleep 0.4
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"log_pane-dark.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/log_pane-dark.png" "$out/" 2>/dev/null
+  logs() { raw '{"id":1,"cmd":"logs"}' | python3 -c 'import json, sys; print(" ".join(json.dumps(d["args"]) + ":" + str(len(d["views"])) for d in json.load(sys.stdin)["logs"]))'; }
+  check wait_for 5 eval '[[ "$(logs)" == "[\"main\", \"lived\"]:1" ]]' || { echo "logs: $(logs)"; return 1; }
+  stop_app; start_app || return 1
+  check wait_for 10 eval '[[ "$(logpane total)" == 26 && "$(logpane command)" == "git log main lived" ]]' || { echo "after relaunch: $(logpane total) $(logpane command) $(logpane error)"; return 1; }
+  kanna navigate history log no-such-branch >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(logpane error)" == *no-such-branch* ]]' || { echo "a bad range shows no error: $(logpane error)"; return 1; }
+}
+
 scenario code_tour M4
 code_tour() {
   start_daemon && start_app || return 1
@@ -3817,7 +3906,7 @@ task_history() {
   kanna task name $(tid 2) "Fresher" >/dev/null || { echo "task_history line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(events $(tid 2))" == *renamed ]]' || { echo "task_history: the rename wasn't recorded: $(events $(tid 2))"; return 1; }
   kanna task shelve $(tid 2) >/dev/null && kanna task done $(tid 2) >/dev/null || { echo "task_history line $LINENO"; return 1; }
-  local want="made@user picked@user stopped@user started@user renamed shelved@user done@user"
+  local want="made@user picked@user activated@$task stopped@user started@user renamed shelved@user done@user"
   [[ "$(events $(tid 2))" == "$want" ]] || { echo "task_history: the task's events are \"$(events $(tid 2))\", not \"$want\""; return 1; }
   [[ "$(sqlite3 -readonly "$state/kanna.db" "select place from tasks where id = '$(tid 2)'")" == done ]] || { echo "task_history: a done task's row is gone or not done"; return 1; }
   stop_app; stop_daemon
@@ -4866,6 +4955,63 @@ assert v[0]["doc"]["replies"] == 1 and "paused" not in v[0]["doc"], v[0]["doc"]'
   check wait_for 10 test ! -d "$slow_worker" || { echo "pipeline_run: the closed task's run kept its worktree"; return 1; }
   check test ! -d "$repo/.kanna-worktrees/$task-run-5" || { echo "pipeline_run: the closed task's second run kept its worktree"; return 1; }
   check test -n "$(git -C "$repo" branch --list "run/$task-4")" -a -n "$(git -C "$repo" branch --list "run/$task-5")" || { echo "pipeline_run: the closed task's run branches are gone"; return 1; }
+}
+
+scenario desk_news M4
+desk_news() {
+  start_daemon && start_app || { echo "desk_news line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents" agent="$KANNA_STATE_DIR/agent"
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_news line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  printf '#!/bin/sh\nexec sleep 600\n' >"$agent" && chmod +x "$agent"
+  printf '{"version": 1, "shelf": {"runners": 0}}\n' >"$repo/.kanna/config.json"
+  repo="$(cd "$repo" && pwd -P)"
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  local opened d planner; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "desk_news line $LINENO: $opened"; return 1; }
+  d="${BASH_REMATCH[1]}"
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { desk lead; return 1; }
+  planner="$(desk lead)"
+  wait_for 10 shows "$planner" "Install Kanna's skills? \[Y/n\]" && kanna send "$planner" "n" >/dev/null
+  check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
+  kanna send "$planner" "$bin/kanna-daemon --codex-remote $KANNA_STATE_DIR $fake/codex" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
+  check wait_for 10 shows "$planner" "mock-agent:" || { kanna read "$planner"; return 1; }
+  as_planner() { (cd "$repo" && KANNA_TERMINAL="$planner" kanna "$@"); }
+  news() { raw '{"id":1,"cmd":"tasks","args":{"action":"messages"}}' | python3 -c 'import json, sys
+print("\n--\n".join(m["text"] for m in json.load(sys.stdin)["messages"] if m["from"] == "desk"))'; }
+  for name in "Inked" "Planner's own" "Docs pass" "Unmerged"; do
+    in_repo task new "$name" "go" --agent "$agent" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
+  done
+  local picked wt; picked="$(as_planner task pick "$(tid 1)")" && [[ "$picked" =~ " in "([^ ]+)" (" ]] || { echo "desk_news line $LINENO: $picked"; return 1; }
+  wt="${BASH_REMATCH[1]}"
+  as_planner task pick "$(tid 2)" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(pane Inked id)" == term-* && "$(pane "Planner'"'"'s own" id)" == term-* ]]' || { echo "desk_news line $LINENO"; return 1; }
+  sleep 3
+  check test -z "$(news)" || { echo "desk_news: the planner's own picks were told back: $(news)"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"shelf\":\"$(tid 3)\",\"window\":\"$d\"}}" | grep -q '"ok":true' || { echo "desk_news: couldn't click Docs pass on the Shelf"; return 1; }
+  check wait_for 10 eval '[[ "$(pane "Docs pass" id)" == term-* ]]' || { echo "desk_news: the Shelf click didn't pick Docs pass"; return 1; }
+  local docs; docs="$(pane "Docs pass" id)"
+  check wait_for 10 eval 'raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"task\":\"$docs\",\"window\":\"$d\"}}" | grep -q "\"ok\":true"' || { echo "desk_news: couldn't click Docs pass on the Desk"; return 1; }
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$docs" ]]' || { echo "desk_news: the click didn't make Docs pass active"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Move to Shelf"}}' | grep -q '"ok":true' || { echo "desk_news: Move to Shelf didn't run"; return 1; }
+  check wait_for 10 eval '[[ "$(news)" == *"Docs pass moved to the Shelf"* ]]' || { echo "desk_news: the user's Desk changes weren't told: $(news)"; return 1; }
+  [[ "$(news)" == *"Docs pass is the active task"$'\n'"Docs pass moved to the Shelf"* ]] || { echo "desk_news: activating and shelving at once weren't one message: $(news)"; return 1; }
+  [[ "$(news)" == "Docs pass moved to the Desk"* ]] || { echo "desk_news: the Shelf click's pick wasn't told first: $(news)"; return 1; }
+  check wait_for 15 unwrapped "$planner" "peer: [message from desk] Docs pass moved to the Desk" || { echo "desk_news: the planner didn't get its Desk news"; kanna read "$planner"; return 1; }
+  git -C "$wt" -c user.email=e@e -c user.name=e commit -q --allow-empty -m inked && git -C "$repo" merge -q --ff-only "$(git -C "$wt" branch --show-current)" || { echo "desk_news line $LINENO"; return 1; }
+  (cd "$wt" && KANNA_TERMINAL="$(pane Inked id)" kanna task done) >/dev/null || { echo "desk_news: the task's own done failed"; return 1; }
+  check wait_for 15 eval '[[ "$(news)" == *"Inked merged into main and left the Desk" ]]' || { echo "desk_news: the task's own done wasn't told as merged: $(news)"; return 1; }
+  check wait_for 15 unwrapped "$planner" "peer: [message from desk] Inked merged into main and left the Desk" || { echo "desk_news: the planner didn't get the merge"; kanna read "$planner"; return 1; }
+  [[ "$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"events\",\"task\":\"$(tid 1)\"}}")" == *'"by":"term-'* ]] || { echo "desk_news: the done event lost its caller"; return 1; }
+  as_planner task pick "$(tid 4)" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(pane Unmerged id)" == term-* ]]' || { echo "desk_news line $LINENO"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"done\",\"task\":\"$(pane Unmerged id)\"}}" | grep -q '"ok":true' || { echo "desk_news: the app's done failed"; return 1; }
+  check wait_for 15 eval '[[ "$(news)" == *"Unmerged ended and left the Desk, not merged into main" ]]' || { echo "desk_news: the app's done wasn't told: $(news)"; return 1; }
+  local before; before="$(news)"
+  as_planner task done "$(tid 2)" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
+  check wait_for 10 eval '! kanna workspace list --all --json | grep -q "Planner'"'"'s own"' || { echo "desk_news line $LINENO"; return 1; }
+  sleep 4
+  check test "$(news)" == "$before" || { echo "desk_news: the planner's own done was told back: $(news)"; return 1; }
 }
 
 scenario task_scripts M4

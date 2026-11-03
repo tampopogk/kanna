@@ -13,6 +13,7 @@ kanna-keeper = { path = "../kanna-keeper" }
 kanna-vt = { path = "../kanna-vt" }
 kanna-detect = { path = "../kanna-detect" }
 kanna-diff = { path = "../kanna-diff" }
+kanna-log = { path = "../kanna-log" }
 kanna-threads = { path = "../kanna-threads" }
 kanna-net = { path = "../kanna-net" }
 kanna-pipe = { path = "../kanna-pipe" }

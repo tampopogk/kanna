@@ -259,6 +259,8 @@ extension AppController {
             code.zoom(by: step)
         } else if let diff = contents.diff(pane) {
             diff.zoom(by: step)
+        } else if let log = contents.log(pane) {
+            log.zoom(by: step)
         } else if let web = contents.web(pane) {
             web.zoom(by: step)
         } else if let surface = panes.terminal(pane)?.surface {
@@ -275,7 +277,7 @@ extension AppController {
             item.state = OverviewSetting.enabled ? .on : .off
             return true
         case #selector(openURL): return contents.web(pane) != nil
-        case #selector(reloadPane): return contents.web(pane) != nil || contents.diff(pane) != nil
+        case #selector(reloadPane): return contents.web(pane) != nil || contents.diff(pane) != nil || contents.log(pane) != nil
         case #selector(toggleComments):
             item.state = commentsOn(pane) ? .on : .off
             return contents.web(pane) != nil || contents.markdown(pane) != nil
@@ -355,6 +357,7 @@ extension AppController {
         guard let pane = focusedPane else { return }
         contents.web(pane)?.webView.reload()
         contents.diff(pane)?.refresh()
+        contents.log(pane)?.refresh()
     }
 
     @objc func closeFocusedPane() {

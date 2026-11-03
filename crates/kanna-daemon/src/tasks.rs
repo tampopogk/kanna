@@ -1,4 +1,5 @@
 use crate::db::{self, Change, Db, Message, Place, Row};
+use crate::desk_news::{self, Merge, News, What};
 use crate::messages::{self, Channel, Ready, PLANNER, USER};
 use crate::replica::{self, Grant, Hlc, Permit, Replica, Roster};
 use crate::project_import;
@@ -835,6 +836,8 @@ pub struct Tasks {
     again: Cell<bool>,
     heads: RefCell<Option<Sender<stacks::Heads>>>,
     following: RefCell<HashSet<PathBuf>>,
+    news: RefCell<News>,
+    ending: RefCell<HashMap<String, Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -1002,6 +1005,8 @@ impl Tasks {
             again: Cell::new(false),
             heads: RefCell::default(),
             following: RefCell::default(),
+            news: RefCell::default(),
+            ending: RefCell::default(),
         }
     }
 
@@ -1756,6 +1761,16 @@ impl Tasks {
         }
     }
 
+    pub fn refs(&self) -> Vec<kanna_log::TaskRef> {
+        let worktree = |e: &Entry| e.folder.clone().unwrap_or_else(|| Path::new(&e.repo).join(WORKTREES).join(&e.id).to_string_lossy().into_owned());
+        let open = |e: &Entry, place: Place| kanna_log::TaskRef { id: e.id.clone(), name: e.name.clone(), place: place.as_str().into(), repo: e.repo.clone(), worktree: Some(worktree(e)), branch: None, tip: None };
+        let mut refs: Vec<kanna_log::TaskRef> = self.running.borrow().iter().map(|r| open(&r.entry, r.place)).collect();
+        refs.extend(self.entries.borrow().iter().map(|e| open(e, Place::Shelf)));
+        let ended = self.db.ended_tips().unwrap_or_default();
+        refs.extend(ended.into_iter().map(|(id, repo, name, branch, tip)| kanna_log::TaskRef { id, name, place: Place::Done.as_str().into(), repo, worktree: None, branch: Some(branch), tip: Some(tip) }));
+        refs
+    }
+
     pub fn entry(&self, id: &str) -> Option<Entry> {
         self.known(id)
     }
@@ -1913,7 +1928,8 @@ impl Tasks {
         let turns = self.turns.borrow().values().filter_map(Turn::due).min();
         let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
-        [turns, quits, setups, self.fill_at.get(), mail, Some(self.sync_at.get())].into_iter().flatten().min()
+        let news = self.tell_planners(now);
+        [turns, quits, setups, self.fill_at.get(), mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
     }
 
     pub fn too_old(self: &Rc<Self>, pane: &str, why: &str) -> Option<String> {
@@ -2206,7 +2222,9 @@ impl Tasks {
             log!("kanna-daemon: {}'s agent {} is closed, so {} is done", r.entry.id, r.pane, r.entry.id);
             self.closing(&r.entry.id);
             self.running.borrow_mut().retain(|x| x.pane != r.pane);
-            let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some("daemon")).with("pane", json!(r.pane)).with("branch", opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()))));
+            let by = self.ending.borrow_mut().remove(&r.pane).flatten().unwrap_or_else(|| "daemon".into());
+            let _ = self.store(&r.entry, Place::Done, None, Some(Change::new("done").moved(r.place, Place::Done).by(Some(&by)).with("pane", json!(r.pane)).with("branch", opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()))));
+            self.tell_planner(&r.entry, What::Ended { on_desk: true }, Some(&by));
             self.setting_up.borrow_mut().remove(&r.pane);
             self.tearing_down.borrow_mut().remove(&r.pane);
             self.finish(&r.entry);
@@ -2332,10 +2350,11 @@ impl Tasks {
                     Some("plan") => this.plan(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
+                    Some("activated") => responder.reply(this.activated(&args)),
                     Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, send or messages"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, send or messages"))),
                 }
             }),
         );
@@ -2652,8 +2671,7 @@ impl Tasks {
         if message.recipient != PLANNER {
             return self.pane_of(&message.recipient).filter(|pane| alive(&core, pane));
         }
-        let repo = Path::new(&message.repo);
-        planners.iter().cloned().find(|pane| alive(&core, pane) && core.pane(pane).and_then(|p| project(p.cwd.as_deref())).is_some_and(|r| same_folder(&r, repo)))
+        self.planner_of(&message.repo, planners)
     }
 
     fn planners(&self) -> Vec<String> {
@@ -3015,13 +3033,23 @@ impl Tasks {
         }
         match (waiting, pane) {
             (Some(entry), _) => self.take_off(entry, by, Answer::To(responder)),
-            (None, Some(pane)) => core.handle(json!({ "cmd": "close", "args": { "task": pane } }), move |reply| match failed(&reply) {
-                Some(error) => responder.reply(Err(error)),
-                None => responder.reply(Ok(reply.as_object().cloned().map(|mut r| {
-                    r.remove("ok");
-                    r
-                }).unwrap_or_default())),
-            }),
+            (None, Some(pane)) => {
+                self.ending.borrow_mut().insert(pane.clone(), by);
+                let this = Rc::downgrade(self);
+                let closing = pane.clone();
+                core.handle(json!({ "cmd": "close", "args": { "task": pane } }), move |reply| match failed(&reply) {
+                    Some(error) => {
+                        if let Some(this) = this.upgrade() {
+                            this.ending.borrow_mut().remove(&closing);
+                        }
+                        responder.reply(Err(error))
+                    }
+                    None => responder.reply(Ok(reply.as_object().cloned().map(|mut r| {
+                        r.remove("ok");
+                        r
+                    }).unwrap_or_default())),
+                })
+            }
             (None, None) => responder.reply(Err(not_found(reference))),
         }
     }
@@ -3031,6 +3059,7 @@ impl Tasks {
         if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()).with("branch", opt(entry.folder.as_deref().and_then(branch_of).as_deref())))) {
             return responder.reply(Err(error));
         }
+        self.tell_planner(&entry, What::Ended { on_desk: false }, by.as_deref());
         let short = self.short(&entry.id);
         self.take(&entry.id);
         if let Some(pane) = &entry.held {
@@ -3127,6 +3156,7 @@ impl Tasks {
             return;
         }
         if !tearing.on_shelf {
+            self.ending.borrow_mut().insert(pane.to_string(), tearing.by);
             return core.handle(json!({ "cmd": "close", "args": { "task": pane } }), |_| {});
         }
         let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return };
@@ -3446,29 +3476,46 @@ impl Tasks {
 
     fn finish(&self, entry: &Entry) {
         let keep = self.keeping.borrow_mut().remove(&entry.id);
-        let Some(folder) = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir()) else { return };
+        let Some(folder) = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir()) else { return self.merged(&entry.id, Merge::Unknown) };
         if !task_scripts::is_linked(&folder) {
-            return;
+            return self.merged(&entry.id, Merge::Unknown);
         }
+        let judge = {
+            let (events, id, repo, folder) = (self.events.clone(), entry.id.clone(), PathBuf::from(&entry.repo), folder.clone());
+            move || {
+                let merge = task_scripts::merge(&repo, &folder);
+                let _ = events.send(Event::Merged { task: id, merge });
+            }
+        };
         let id = entry.id.clone();
         let kept = |why: String| {
             log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
             Change::new("kept").by(Some("daemon")).with("why", json!(why))
         };
         if keep {
+            std::thread::spawn(judge);
             return self.finished(&id, vec![kept("kanna task done --keep".into())]);
         }
         let scripts = scripts(&config_files(Path::new(&entry.repo)));
         let teardown = match task_scripts::torn_down(&folder) {
             Some(0) => None,
-            Some(code) => return self.finished(&id, vec![kept(task_scripts::said("teardown", code, scripts.timeout))]),
+            Some(code) => {
+                std::thread::spawn(judge);
+                return self.finished(&id, vec![kept(task_scripts::said("teardown", code, scripts.timeout))]);
+            }
             None => scripts.teardown.clone(),
         };
         let task = Self::script_task(entry, &folder);
         let events = self.events.clone();
         std::thread::spawn(move || {
+            judge();
             let id = task.id.clone();
             let mut changes = vec![];
+            let ended = task_scripts::ended_at(&folder);
+            let ended_at = |change: Change| match &ended {
+                Some((branch, tip)) => change.with("branch", json!(branch)).with("tip", json!(tip)),
+                None => change,
+            };
             if let Some(teardown) = &teardown {
                 log!("kanna-daemon: {id} is done with no pane to tear down in, so its teardown runs in {}: {teardown}", folder.display());
                 let code = task_scripts::run(teardown, &folder, &task.vars(&task.branch()), Duration::from_secs(scripts.timeout)).unwrap_or_else(|error| {
@@ -3480,7 +3527,7 @@ impl Tasks {
                 if code != 0 {
                     let why = task_scripts::said("teardown", code, scripts.timeout);
                     log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
-                    changes.push(Change::new("kept").by(Some("daemon")).with("why", json!(why)));
+                    changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
                     let _ = events.send(Event::Finished { task: id, changes });
                     return;
                 }
@@ -3488,15 +3535,66 @@ impl Tasks {
             match task_scripts::clean_up(&task.repo, &folder) {
                 Cleanup::Removed { branch } => {
                     log!("kanna-daemon: {id} is merged, so its worktree {} and branch {branch} are removed", folder.display());
-                    changes.push(Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy())).with("branch", json!(branch)));
+                    changes.push(ended_at(Change::new("cleaned up").by(Some("daemon")).with("worktree", json!(folder.to_string_lossy()))).with("branch", json!(branch)));
                 }
                 Cleanup::Kept(why) => {
                     log!("kanna-daemon: kept {id}'s worktree {} and its branch: {why}", folder.display());
-                    changes.push(Change::new("kept").by(Some("daemon")).with("why", json!(why)));
+                    changes.push(ended_at(Change::new("kept").by(Some("daemon")).with("why", json!(why))));
                 }
             }
             let _ = events.send(Event::Finished { task: id, changes });
         });
+    }
+
+    pub fn merged(&self, task: &str, merge: Merge) {
+        self.news.borrow_mut().merged(task, merge);
+    }
+
+    fn planner_of(&self, repo: &str, planners: &[String]) -> Option<String> {
+        let core = self.core.upgrade()?;
+        let repo = Path::new(repo);
+        planners.iter().cloned().find(|pane| alive(&core, pane) && core.pane(pane).and_then(|p| project(p.cwd.as_deref())).is_some_and(|r| same_folder(&r, repo)))
+    }
+
+    fn tell_planner(&self, entry: &Entry, what: What, by: Option<&str>) {
+        let planners = self.planners();
+        if self.planner_of(&entry.repo, &planners).is_none() {
+            return;
+        }
+        if by.is_some_and(|by| planners.iter().any(|p| p == by) && self.planner_of(&entry.repo, &[by.to_string()]).is_some()) {
+            return;
+        }
+        let name = entry.name.clone().unwrap_or_else(|| self.short(&entry.id));
+        self.news.borrow_mut().add(desk_news::Item::new(&entry.repo, &entry.id, &name, what, Instant::now()));
+    }
+
+    fn tell_planners(&self, now: Instant) -> Option<Instant> {
+        let due = self.news.borrow_mut().due(now);
+        if !due.is_empty() {
+            let planners = self.planners();
+            for (repo, text) in due {
+                if self.planner_of(&repo, &planners).is_none() {
+                    log!("kanna-daemon: no planner runs for {repo}, so its Desk news is dropped");
+                    continue;
+                }
+                if let Err(error) = self.post(PLANNER, Some(&repo), desk_news::SENDER, &text) {
+                    log!("kanna-daemon: couldn't tell {repo}'s planner about its Desk: {}", error.message);
+                }
+            }
+        }
+        self.news.borrow().next()
+    }
+
+    fn activated(&self, args: &Value) -> Result<Map, KmuxError> {
+        let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
+        let id = self.task_of(reference).unwrap_or_else(|| reference.to_string());
+        let entry = self.running.borrow().iter().find(|r| r.entry.id == id).map(|r| r.entry.clone()).ok_or_else(|| not_found(reference))?;
+        let by = who(args);
+        if let Err(error) = self.db.log(&id, &Change::new("activated").by(by)) {
+            log!("kanna-daemon: couldn't save {id}'s activated in {}: {error}", db::FILE);
+        }
+        self.tell_planner(&entry, What::Activated, by);
+        Ok(Map::from_iter([("task".to_string(), json!(id))]))
     }
 
     pub fn finished(&self, task: &str, changes: Vec<Change>) {
@@ -3700,6 +3798,7 @@ impl Tasks {
             let entry = Entry { held: Some(id.clone()), ..entry };
             let change = Change { from: Some(from), to: Some(Place::Shelf), ..Change::new("shelved") }.by(by.as_deref());
             let saved = this.store(&entry, Place::Shelf, Some(&id), Some(change));
+            this.tell_planner(&entry, What::Shelved, by.as_deref());
             let value = entry.to_value();
             insert_in_order(&mut this.entries.borrow_mut(), entry);
             this.changed();
@@ -3877,6 +3976,7 @@ impl Tasks {
         self.quitting.borrow_mut().remove(pane);
         let ran = Entry { stopped: None, ..ran };
         let saved = self.store(&ran, Place::Desk, Some(pane), Some(Change::new("picked").moved(Place::Shelf, Place::Desk).by(by).with("app", json!(app))));
+        self.tell_planner(&ran, What::Picked, by);
         self.record(pane, ran, Place::Desk);
         self.changed();
         saved

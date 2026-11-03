@@ -2013,6 +2013,7 @@ dependencies = [
  "kanna-detect",
  "kanna-diff",
  "kanna-keeper",
+ "kanna-log",
  "kanna-mux",
  "kanna-net",
  "kanna-pipe",
@@ -2075,6 +2076,14 @@ name = "kanna-layout"
 version = "0.1.0"
 dependencies = [
  "kanna-mux",
+]
+
+[[package]]
+name = "kanna-log"
+version = "0.1.0"
+dependencies = [
+ "kanna-diff",
+ "serde_json",
 ]
 
 [[package]]
