@@ -93,13 +93,21 @@ struct State {
 }
 
 struct Driver {
-    runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
     local: tokio::task::LocalSet,
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl Driver {
     fn new() -> Driver {
-        Driver { runtime: tokio::runtime::Builder::new_current_thread().enable_all().build().expect("start kanna-mux's runtime"), local: tokio::task::LocalSet::new() }
+        Driver { runtime: Some(tokio::runtime::Builder::new_current_thread().enable_all().build().expect("start kanna-mux's runtime")), local: tokio::task::LocalSet::new() }
     }
 }
 
@@ -270,7 +278,7 @@ impl CoreHandle {
 
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         let driver = self.driver().expect("the core is stopped");
-        driver.local.block_on(&driver.runtime, future)
+        driver.local.block_on(driver.runtime.as_ref().expect("the runtime lives as long as its driver"), future)
     }
 
     pub fn enter(&self) -> tokio::task::LocalEnterGuard {
