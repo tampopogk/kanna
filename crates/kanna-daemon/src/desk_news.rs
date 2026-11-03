@@ -17,7 +17,6 @@ pub enum Merge {
 pub enum What {
     Picked,
     Shelved,
-    Activated,
     Ended { on_desk: bool },
 }
 
@@ -42,7 +41,6 @@ impl Item {
         match (self.what, &self.merge) {
             (What::Picked, _) => format!("{name} moved to the Desk"),
             (What::Shelved, _) => format!("{name} moved to the Shelf"),
-            (What::Activated, _) => format!("{name} is the active task"),
             (What::Ended { on_desk: true }, Merge::Into(into)) => format!("{name} merged into {into} and left the Desk"),
             (What::Ended { on_desk: true }, Merge::Not(into)) => format!("{name} ended and left the Desk, not merged into {into}"),
             (What::Ended { on_desk: true }, _) => format!("{name} ended and left the Desk"),
@@ -119,7 +117,6 @@ mod tests {
         let ended = |on_desk, merge| Item { merge, ..item("r", "a", What::Ended { on_desk }, now) };
         assert_eq!(item("r", "a", What::Picked, now).line(), "Task a moved to the Desk");
         assert_eq!(item("r", "a", What::Shelved, now).line(), "Task a moved to the Shelf");
-        assert_eq!(item("r", "a", What::Activated, now).line(), "Task a is the active task");
         assert_eq!(ended(true, Merge::Into("main".into())).line(), "Task a merged into main and left the Desk");
         assert_eq!(ended(true, Merge::Not("main".into())).line(), "Task a ended and left the Desk, not merged into main");
         assert_eq!(ended(true, Merge::Unknown).line(), "Task a ended and left the Desk");
@@ -132,13 +129,13 @@ mod tests {
         let t0 = Instant::now();
         let mut news = News::default();
         news.add(item("r", "a", What::Shelved, t0));
-        news.add(item("r", "b", What::Activated, t0 + Duration::from_secs(1)));
+        news.add(item("r", "b", What::Picked, t0 + Duration::from_secs(1)));
         news.add(item("s", "c", What::Picked, t0 + Duration::from_secs(1)));
         assert_eq!(news.next(), Some(t0 + Duration::from_secs(3)));
         assert!(news.due(t0 + Duration::from_secs(2)).is_empty(), "the last change was a second ago");
         assert_eq!(
             news.due(t0 + Duration::from_secs(3)),
-            [("r".to_string(), "Task a moved to the Shelf\nTask b is the active task".to_string()), ("s".to_string(), "Task c moved to the Desk".to_string())]
+            [("r".to_string(), "Task a moved to the Shelf\nTask b moved to the Desk".to_string()), ("s".to_string(), "Task c moved to the Desk".to_string())]
         );
         assert_eq!(news.next(), None);
     }

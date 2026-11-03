@@ -5166,13 +5166,14 @@ print("\n--\n".join(m["text"] for m in json.load(sys.stdin)["messages"] if m["fr
   check test -z "$(news)" || { echo "desk_news: the planner's own picks were told back: $(news)"; return 1; }
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"shelf\":\"$(tid 3)\",\"window\":\"$d\"}}" | grep -q '"ok":true' || { echo "desk_news: couldn't click Docs pass on the Shelf"; return 1; }
   check wait_for 10 eval '[[ "$(pane "Docs pass" id)" == term-* ]]' || { echo "desk_news: the Shelf click didn't pick Docs pass"; return 1; }
-  local docs; docs="$(pane "Docs pass" id)"
+  check wait_for 10 eval '[[ "$(news)" == "Docs pass moved to the Desk" ]]' || { echo "desk_news: the Shelf click's pick wasn't told: $(news)"; return 1; }
+  local docs picked_news; docs="$(pane "Docs pass" id)"; picked_news="$(news)"
   check wait_for 10 eval 'raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"task\":\"$docs\",\"window\":\"$d\"}}" | grep -q "\"ok\":true"' || { echo "desk_news: couldn't click Docs pass on the Desk"; return 1; }
   check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$docs" ]]' || { echo "desk_news: the click didn't make Docs pass active"; return 1; }
+  sleep 3
+  check test "$(news)" == "$picked_news" || { echo "desk_news: making a task active was told: $(news)"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Move to Shelf"}}' | grep -q '"ok":true' || { echo "desk_news: Move to Shelf didn't run"; return 1; }
-  check wait_for 10 eval '[[ "$(news)" == *"Docs pass moved to the Shelf"* ]]' || { echo "desk_news: the user's Desk changes weren't told: $(news)"; return 1; }
-  [[ "$(news)" == *"Docs pass is the active task"$'\n'"Docs pass moved to the Shelf"* ]] || { echo "desk_news: activating and shelving at once weren't one message: $(news)"; return 1; }
-  [[ "$(news)" == "Docs pass moved to the Desk"* ]] || { echo "desk_news: the Shelf click's pick wasn't told first: $(news)"; return 1; }
+  check wait_for 10 eval '[[ "$(news)" == "$picked_news"$'"'"'\n--\n'"'"'"Docs pass moved to the Shelf" ]]' || { echo "desk_news: the user's shelve wasn't told on its own: $(news)"; return 1; }
   check wait_for 15 unwrapped "$planner" "peer: [message from desk] Docs pass moved to the Desk" || { echo "desk_news: the planner didn't get its Desk news"; kanna read "$planner"; return 1; }
   git -C "$wt" -c user.email=e@e -c user.name=e commit -q --allow-empty -m inked && git -C "$repo" merge -q --ff-only "$(git -C "$wt" branch --show-current)" || { echo "desk_news line $LINENO"; return 1; }
   (cd "$wt" && KANNA_TERMINAL="$(pane Inked id)" kanna task done) >/dev/null || { echo "desk_news: the task's own done failed"; return 1; }
