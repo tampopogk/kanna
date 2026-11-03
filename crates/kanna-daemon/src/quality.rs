@@ -98,7 +98,7 @@ pub fn dead(tree: &Tree) -> (f64, Value) {
 
 pub fn wrappers(tree: &Tree) -> (f64, Value) {
     let wrappers = tree.wrappers();
-    (wrappers.len() as f64, json!({ "functions": wrappers.iter().take(WORST).map(function_row).collect::<Vec<_>>() }))
+    (of_functions(wrappers.len(), tree), json!({ "count": wrappers.len(), "of": tree.functions().len(), "functions": wrappers.iter().take(WORST).map(function_row).collect::<Vec<_>>() }))
 }
 
 pub fn lines(tree: &Tree) -> (f64, Value) {
@@ -362,7 +362,7 @@ pub fn code_section(facts: &Facts) -> Value {
         trend_tile("verbosity", "Verbosity", &verbosity, first, Some("%"), "of lines flagged, cloned or in trivial wrappers", from),
         tipped(share_tile("high", "Functions over CC 10", &of(facts, "high"), first, "of functions over CC 10", from), CC_TIP),
         share_tile("dead", "Dead functions", &of(facts, "dead"), first, "of functions nothing outside tests calls", from),
-        trend_tile("wrappers", "Trivial wrappers", &of(facts, "wrappers"), first, None, "functions whose body only returns one expression", 0),
+        share_tile("wrappers", "Trivial wrappers", &of(facts, "wrappers"), first, "of functions whose body only returns one expression", from),
         trend_tile("lines", "Code lines", &of(facts, "lines"), first, None, "lines of Rust and Swift outside tests", 0),
     ];
     tiles.extend(coverage_tiles(facts, first));
@@ -482,7 +482,9 @@ mod tests {
         assert_eq!(tile_of(&report, "worst")["tip"], tile_of(&report, "erosion")["tip"]);
         assert_eq!(tile_of(&report, "verbosity")["tip"], Value::Null);
         assert_eq!(tile_of(&report, "dead")["value"], json!(33.3), "unused, and start, which nothing calls, of six functions");
-        assert_eq!(tile_of(&report, "wrappers")["value"], json!(3.0), "pass, unused and start each return one expression");
+        let wrappers = tile_of(&report, "wrappers");
+        assert_eq!(wrappers["value"], json!(50.0), "pass, unused and start each return one expression, of six functions");
+        assert!(wrappers["note"].as_str().unwrap().starts_with("3 of 6 · "), "{wrappers}");
         let flagged = &tile_of(&report, "flagged")["chart"]["rows"][0];
         assert_eq!(flagged["label"], json!("loop-accumulate"));
         assert_eq!(flagged["note"], json!("2 places · SlopCodeBench's manual-sum-loop, manual-count-loop, manual-str-join"));

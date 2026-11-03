@@ -25,7 +25,7 @@ The Stats tab's Code quality section shows how good the code on main is and whic
 
 ## 1. The measures
 
-Each measure shows its value at main's last commit over a line of its value at each day's last commit. Each line ends on today, and its note says how much it moved in 30 days. Shares are the measures to read: a count grows with the code, so it says little while the code grows this fast. A share of a whole, like erosion, runs on a 0–100 axis; Functions over CC 10 and Dead functions are small shares, and get an axis that fits them.
+Each measure shows its value at main's last commit over a line of its value at each day's last commit. Each line ends on today, and its note says how much it moved in 30 days. Shares are the measures to read: a count grows with the code, so it says little while the code grows this fast. A share of a whole, like erosion, runs on a 0–100 axis; Functions over CC 10, Dead functions and Trivial wrappers are small shares, and get an axis that fits them.
 
 A share of almost no code means nothing: on main's first day here, 2 of 5 functions were over CC 10. So a share's line and note start on the first day main had a tenth of today's code lines, and the note says how many days that is, as in `up 1.9 points in 27 days`.
 
@@ -37,7 +37,7 @@ A share of almost no code means nothing: on main's first day here, 2 of 5 functi
 | Verbosity | code a reviewer would rewrite shorter | SlopCodeBench's: lines [a rule flags](#the-rules) ∪ clone lines ∪ trivial-wrapper lines, ÷ code lines | rising: agents copy and spell out instead of reusing |
 | Functions over CC 10 | how common god-function candidates are | the share of functions with cyclomatic complexity > 10; the note gives the count | rising: more of the code is over the line, whatever its size |
 | Dead functions | code only tests reach, or nothing reaches | the share of functions whose name appears nowhere else outside tests; the note gives the count | rising: replaced code left behind |
-| Trivial wrappers | layers that add nothing | SlopCodeBench's: functions whose body is a single returned expression (in Rust and Swift, also a lone expression in a function with a return type) | rising |
+| Trivial wrappers | layers that add nothing | the share of functions whose body is a single returned expression (SlopCodeBench's; in Rust and Swift, also a lone expression in a function with a return type); the note gives the count | rising |
 | Code lines | context, the denominator of the shares | Rust and Swift lines with code, outside tests | not judged alone |
 | Lines covered, Branches covered | what the tests run | from the last [coverage run](#4-coverage-runs) | falling |
 | Changed lines covered | how well each landing was tested | lines landed in the 30 days, still there, run by a test ÷ all of them (Google's delta coverage); a column per landing day | low columns on recent days |
@@ -117,7 +117,7 @@ flowchart LR
 ```
 
 - **Rows in `samples`:** each measure is a metric in [`METRICS`](stats.md#4-adding-a-metric). Commit metrics are `churn` and `fixes`. Tree metrics are `erosion`, `verbosity`, `high`, `dead`, `wrappers` and `lines`.
-- **Revisions:** each metric has a definition revision, kept in its rows. A row from an older revision counts as missing, so changing how a measure is computed resamples the 30 days instead of joining two definitions in one line. Tree metrics are at revision 1, the definitions above with the rules; `high` and `dead` at 2, once they became shares of all functions.
+- **Revisions:** each metric has a definition revision, kept in its rows. A row from an older revision counts as missing, so changing how a measure is computed resamples the 30 days instead of joining two definitions in one line. Tree metrics are at revision 1, the definitions above with the rules; `high`, `dead` and `wrappers` at 2, once they became shares of all functions.
 - **Main's order is time's order:** a commit's time on main is never earlier than the commit before it on main, plus a millisecond. A commit dated in the same second as its parent, or before it, can't then stand in for main's head as the day's last commit.
 - **Order:** the catch-up samples the commit metrics first, then the tree metrics newest first, so today's numbers arrive within seconds.
 - **No checkout:** a tree metric reads the commit's files from git's object store (`ls-tree`, then `cat-file --batch`). Each blob is parsed once and kept while later commits still use it.

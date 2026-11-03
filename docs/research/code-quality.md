@@ -143,7 +143,7 @@ On main at 3966e489: 277 Rust and Swift files outside tests, 54,900 code lines a
 | Erosion | 48.5% | 61.1% |
 | Verbosity | 9.6% | 11.3% |
 | Functions over CC 10 | 25 (5.5%) | 469 (8.9%) |
-| Trivial wrappers | 107 | 1,275 |
+| Trivial wrappers | 107 (23%) | 1,275 (24%) |
 | Gini of cognitive complexity | 0.71 | 0.73 |
 
 - **Against the benchmark:** erosion (0.61) is near the paper's agent mean (0.68 ± 0.20) and well above its human mean (0.34 ± 0.22), though level with the mature Python packages above (0.47–0.62). Verbosity (0.11) is below both the agent mean (0.44 ± 0.18) and those packages (0.20–0.31), partly because the rule set is a partial port.
