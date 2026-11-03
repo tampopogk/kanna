@@ -133,7 +133,7 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
   <div class="intro">
     <h1>Desk view: move a Desk task to the Shelf from its row</h1>
     <p><b>New here:</b> drag a Desk task's row down onto the Shelf to move it there as it is, running or stopped (<code>kanna task shelve</code>). It works on any Desk task, the active one or not. While you drag, the row lifts and follows the pointer, and the Shelf shows where to drop it; over the Shelf it lights up with "Drop to move to the Shelf". Let go anywhere else, or press esc, and nothing moves. A click without a drag still makes the task active. Shelving the active task leaves no task active and the Desk view showing. No right-click menu, no button, no drag from the Shelf to the Desk, and no swap from a full Desk.</p>
-    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1, ⌘2, ⇧⌘A) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
+    <p>The Desk holds up to three of a project's tasks, one of them active. The Desk view shows the planning agent on the left and, on the right, the Desk's tasks and, below them, the Shelf: the tasks Kanna has brought in, waiting and run a few at a time in the background. The Desk's tasks are listed oldest first, by when each was made, the active one in its place; hover a row for its key. Make a Desk task active (click it, ⌘1, ⌘2) to see it as it was: its agent docked, its tabs, and the strip of the Desk's other tasks below. ⌘. toggles between the Desk view and the active task, which stays active (and running) while the Desk view shows. Move a Shelf task to the Desk from its row; Task › Move to Shelf moves the active task back.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="ring" title="A Desk task that isn't active stops to ask you something">Simulate: a Desk task needs you</button>
@@ -142,7 +142,6 @@ body.menu .menubar { display: flex; margin: 0; border-radius: 0; border-width: 0
     <div class="keys">
       <span><kbd>⌘.</kbd> the Desk view ⇄ the active task</span>
       <span><kbd>⌘1</kbd> <kbd>⌘2</kbd> the Desk's other tasks: <kbd>⌘1</kbd> the one left last, again flips back; <kbd>⌘2</kbd> the one left longest ago, again cycles through them all</span>
-      <span><kbd>⇧⌘A</kbd> the Desk task waiting longest for you</span>
       <span><kbd>⌘F</kbd> search the Shelf (Desk view): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Desk, <kbd>esc</kbd> clear</span>
     </div>
   </div>
@@ -310,7 +309,6 @@ function menubar() {
   const drop = `<div class="drop">
     ${item(inTask ? "Show Desk" : "Show Active Task", "⌘.", toggleOn, "toggle")}
     ${item("Move to Shelf", "", inTask, "shelve")}
-    <hr>${item("Task Waiting Longest", "⇧⌘A", !!waitingLongest(), "waiting")}
     <hr>${[1, 2].map(n => item(`Desk Task ${n}`, `⌘${n}`, !!slot(n), "slot" + n)).join("")}
   </div>`;
   document.getElementById("menubar").innerHTML = ["Kanna", "File", "Edit", "Pane", "View", "Task", "Window"].map(m =>
@@ -360,8 +358,6 @@ function moveToShelf(id) {
   render();
 }
 
-function waitingLongest() { return others().filter(t => t.status === "needs").sort((a, b) => (a.needsAt || 0) - (b.needsAt || 0))[0]; }
-
 document.addEventListener("click", e => {
   const el = sel => e.target.closest(sel);
   const top = el("[data-top]"), mi = el("[data-menu]");
@@ -370,7 +366,6 @@ document.addEventListener("click", e => {
     const m = mi.dataset.menu;
     if (m === "toggle") return toggle();
     if (m === "shelve") return moveToShelf();
-    if (m === "waiting") return activate(waitingLongest().id);
     if (m.startsWith("slot")) return activate(others()[Number(m.slice(4)) - 1].id);
     return render();
   }
@@ -398,16 +393,15 @@ document.addEventListener("keydown", e => {
   if (!e.metaKey) return;
   if (!e.shiftKey && e.key === ".") { e.preventDefault(); return toggle(); }
   if (!e.shiftKey && /^[12]$/.test(e.key)) { const t = others()[Number(e.key) - 1]; if (t) { e.preventDefault(); activate(t.id); } return; }
-  if (e.shiftKey && e.key.toLowerCase() === "a") { e.preventDefault(); const t = waitingLongest(); if (t) activate(t.id); return; }
   if (!e.shiftKey && e.key.toLowerCase() === "f" && s.view === "desk") { const f = document.querySelector("[data-find]"); if (f) { e.preventDefault(); s.finding = true; f.focus(); f.select(); } }
 });
 document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
 document.getElementById("reset").onclick = () => { s = initial(); render(); };
-document.getElementById("ring").onclick = () => { const t = others().find(t => t.status !== "needs"); if (t) { t.status = "needs"; t.needsAt = Date.now(); render(); } };
+document.getElementById("ring").onclick = () => { const t = others().find(t => t.status !== "needs"); if (t) { t.status = "needs"; render(); } };
 if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
 if (location.hash.includes("full")) { task("p3").place = "shelf"; task("p3").by = "the planning agent"; task("p3").prompt = "Fold the repeated desk() helpers into one"; moveToDesk("p9"); }
-if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").needsAt = Date.now(); }
+if (location.hash.includes("needs")) { task("p4").status = "needs"; }
 if (location.hash.includes("desk")) s.view = "desk";
 const pointed = location.hash.match(/hover=([^&]*)/);
 if (pointed) hovered = pointed[1];

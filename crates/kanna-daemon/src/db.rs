@@ -236,6 +236,10 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         primary key (repo, commit_id, metric)
     );
     create index samples_by_time on samples (repo, at);
+"), Step::Sql("
+    alter table samples add column revision integer not null default 0;
+"), Step::Sql("
+    alter table messages add column comment text check (comment is null or json_valid(comment));
 ")];
 
 pub const RECENT: usize = 10;
@@ -327,6 +331,24 @@ pub struct Message {
     pub delivered: Option<f64>,
     pub text: String,
     pub mode: Option<String>,
+    pub comment: Option<Comment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub file: String,
+    pub thread: String,
+}
+
+impl Comment {
+    fn json(&self) -> String {
+        serde_json::json!({ "file": self.file, "thread": self.thread }).to_string()
+    }
+
+    fn parse(text: Option<String>) -> Option<Comment> {
+        let doc: Value = serde_json::from_str(&text?).ok()?;
+        Some(Comment { file: doc["file"].as_str()?.into(), thread: doc["thread"].as_str()?.into() })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -371,6 +393,7 @@ pub struct Sample {
     pub at: f64,
     pub value: f64,
     pub doc: Value,
+    pub revision: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -757,10 +780,13 @@ impl Db {
         rows.collect()
     }
 
-    pub fn put_message(&self, recipient: &str, repo: &str, sender: &str, text: &str, mode: Option<&str>) -> rusqlite::Result<Message> {
+    pub fn put_message(&self, recipient: &str, repo: &str, sender: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> rusqlite::Result<Message> {
         let at = now();
-        self.conn.execute("insert into messages (recipient, repo, sender, at, text, mode) values (?1, ?2, ?3, ?4, ?5, ?6)", params![recipient, repo, sender, at, text, mode])?;
-        Ok(Message { id: self.conn.last_insert_rowid(), recipient: recipient.into(), repo: repo.into(), sender: sender.into(), at, delivered: None, text: text.into(), mode: mode.map(String::from) })
+        self.conn.execute(
+            "insert into messages (recipient, repo, sender, at, text, mode, comment) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![recipient, repo, sender, at, text, mode, comment.map(Comment::json)],
+        )?;
+        Ok(Message { id: self.conn.last_insert_rowid(), recipient: recipient.into(), repo: repo.into(), sender: sender.into(), at, delivered: None, text: text.into(), mode: mode.map(String::from), comment: comment.cloned() })
     }
 
     pub fn waiting_messages(&self) -> rusqlite::Result<Vec<Message>> {
@@ -785,7 +811,7 @@ impl Db {
 
     fn select_messages<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<Vec<Message>> {
         let mut statement = self.conn.prepare(sql)?;
-        let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)?, mode: r.get(7)? }))?;
+        let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)?, mode: r.get(7)?, comment: Comment::parse(r.get(8)?) }))?;
         rows.collect()
     }
 
@@ -825,15 +851,15 @@ impl Db {
         rows.collect()
     }
 
-    pub fn sampled(&self, repo: &str, since: f64) -> rusqlite::Result<HashSet<(String, String)>> {
-        let mut statement = self.conn.prepare("select commit_id, metric from samples where repo = ?1 and at >= ?2")?;
-        let rows = statement.query_map(params![repo, since], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    pub fn sampled(&self, repo: &str, since: f64) -> rusqlite::Result<HashMap<(String, String), i64>> {
+        let mut statement = self.conn.prepare("select commit_id, metric, revision from samples where repo = ?1 and at >= ?2")?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(((r.get(0)?, r.get(1)?), r.get(2)?)))?;
         rows.collect()
     }
 
     pub fn samples(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Sample>> {
-        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc from samples where repo = ?1 and at >= ?2 order by at, commit_id, metric")?;
-        let rows = statement.query_map(params![repo, since], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?) }))?;
+        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and at >= ?2 order by at, commit_id, metric")?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))?;
         rows.collect()
     }
 
@@ -841,11 +867,27 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         for sample in samples {
             tx.execute(
-                "insert or replace into samples (repo, commit_id, metric, at, value, doc) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6))",
-                params![repo, sample.commit, sample.metric, sample.at, sample.value, sample.doc.to_string()],
+                "insert or replace into samples (repo, commit_id, metric, at, value, doc, revision) values (?1, ?2, ?3, ?4, ?5, json_patch('{}', ?6), ?7)",
+                params![repo, sample.commit, sample.metric, sample.at, sample.value, sample.doc.to_string(), sample.revision],
             )?;
         }
         tx.commit()
+    }
+
+    pub fn latest_sample(&self, repo: &str, metric: &str) -> rusqlite::Result<Option<Sample>> {
+        self.conn
+            .query_row("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and metric = ?2 order by at desc, rowid desc limit 1", params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))
+            .optional()
+    }
+
+    pub fn branches(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare(
+            "select json_extract(e.doc, '$.branch'), coalesce(json_extract(t.doc, '$.name'), ''), coalesce(json_extract(t.doc, '$.message'), '')
+             from task_events e join tasks t on t.id = e.task
+             where t.repo = ?1 and e.what = 'done' and json_extract(e.doc, '$.branch') is not null",
+        )?;
+        let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+        rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
     }
 
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
@@ -929,7 +971,7 @@ impl Db {
     }
 }
 
-const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text, mode";
+const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text, mode, comment";
 
 impl Db {
     pub fn add_schedule(&self, schedule: &Schedule) -> rusqlite::Result<i64> {
@@ -1744,8 +1786,8 @@ mod tests {
     fn a_message_waits_until_it_is_delivered_and_stays_in_both_tasks_history() {
         let dir = folder("messages");
         let db = Db::open(&dir);
-        let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?", Some("bypass")).unwrap();
-        let second = db.put_message("planner", "/r", "task-71af0000", "I'm done", None).unwrap();
+        let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?", Some("bypass"), None).unwrap();
+        let second = db.put_message("planner", "/r", "task-71af0000", "I'm done", None, None).unwrap();
         assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [first.id, second.id]);
         db.delivered(&[first.id]).unwrap();
         assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [second.id]);
@@ -1755,6 +1797,12 @@ mod tests {
         assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].mode.as_deref(), Some("bypass"), "the sender's permissions");
         drop(db);
         assert_eq!(Db::open(&dir).waiting_messages().unwrap().len(), 1, "a waiting message outlives the daemon");
+        let db = Db::open(&dir);
+        let comment = Comment { file: "/r/docs/a.md".into(), thread: "c2".into() };
+        let third = db.put_message("task-71af0000", "/r", "user", "[kanna comment c2 · docs/a.md:3]\nFix it.", None, Some(&comment)).unwrap();
+        assert_eq!(third.comment.as_ref(), Some(&comment));
+        assert_eq!(Db::open(&dir).waiting_messages().unwrap().iter().find(|m| m.id == third.id).and_then(|m| m.comment.clone()), Some(comment), "a comment's thread outlives the daemon");
+        assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].comment.clone(), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
