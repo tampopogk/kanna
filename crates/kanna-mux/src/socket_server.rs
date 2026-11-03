@@ -18,7 +18,7 @@ pub type Takeover = Arc<dyn Fn(Value, BufReader<UnixStream>, UnixStream) + Send 
 pub struct SocketServer {
     pub path: String,
     handler: Handler,
-    takeover: Option<(String, Takeover)>,
+    takeover: Vec<(String, Takeover)>,
     limits: Limits,
     running: Mutex<Option<Running>>,
 }
@@ -41,11 +41,12 @@ struct Running {
 
 impl SocketServer {
     pub fn new(path: &str, handler: Handler) -> SocketServer {
-        SocketServer { path: path.into(), handler, takeover: None, limits: LIMITS, running: Mutex::new(None) }
+        SocketServer { path: path.into(), handler, takeover: Vec::new(), limits: LIMITS, running: Mutex::new(None) }
     }
 
     pub fn take_over(&mut self, cmd: &str, takeover: Takeover) {
-        self.takeover = Some((cmd.into(), takeover));
+        self.takeover.retain(|(c, _)| c != cmd);
+        self.takeover.push((cmd.into(), takeover));
     }
 
     pub fn start(&self) -> Result<(), KmuxError> {
@@ -142,7 +143,7 @@ impl Drop for SocketServer {
     }
 }
 
-fn accept_loop(listener: UnixListener, woken: UnixStream, handler: Handler, takeover: Option<(String, Takeover)>, limits: Limits) {
+fn accept_loop(listener: UnixListener, woken: UnixStream, handler: Handler, takeover: Vec<(String, Takeover)>, limits: Limits) {
     let active = Arc::new(AtomicUsize::new(0));
     loop {
         let full = active.load(Ordering::SeqCst) >= limits.connections;
@@ -231,7 +232,7 @@ fn read_line(reader: &mut BufReader<UnixStream>, line: &mut Vec<u8>, limit: usiz
     }
 }
 
-fn serve(client: UnixStream, handler: Handler, takeover: Option<(String, Takeover)>, limit: usize) {
+fn serve(client: UnixStream, handler: Handler, takeover: Vec<(String, Takeover)>, limit: usize) {
     let Ok(writer) = client.try_clone() else { return };
     let mut reader = BufReader::with_capacity(65536, client);
     let mut line = Vec::new();
@@ -251,13 +252,14 @@ fn serve(client: UnixStream, handler: Handler, takeover: Option<(String, Takeove
         if line.iter().all(|b| *b == b' ' || *b == b'\r') {
             continue;
         }
-        if let Some((cmd, takeover)) = takeover.as_ref().filter(|_| std::mem::take(&mut first)) {
+        if std::mem::take(&mut first) {
             let request = serde_json::from_slice::<Value>(&line).ok();
-            if let Some(request) = request.filter(|r| r.get("cmd").and_then(Value::as_str) == Some(cmd)) {
+            let cmd = request.as_ref().and_then(|r| r.get("cmd").and_then(Value::as_str));
+            if let Some((_, takeover)) = takeover.iter().find(|(c, _)| Some(c.as_str()) == cmd) {
                 if reader.get_ref().set_read_timeout(None).is_err() {
                     return;
                 }
-                return takeover(request, reader, writer);
+                return takeover(request.unwrap_or(Value::Null), reader, writer);
             }
         }
         let Some(reply) = respond(&line, &handler) else { return };

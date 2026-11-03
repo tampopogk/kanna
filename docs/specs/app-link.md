@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [architecture](architecture.md) · **Related:** [the daemon follows the app's build](daemon-build.md), [layout](layout.md), [app panes](app-panes.md)
 
-The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, draws the layout the daemon publishes, and answers the requests only the app can (its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`). A link to a daemon on another machine carries the same lines over iroh, checked by a protocol range instead of build ([your machines](machines.md#5-the-app-link-over-the-network)).
+The app is a client of the daemon, like the CLI, but it stays connected: it shows the daemon's terminals, types into them, draws the layout the daemon publishes, and answers the requests only the app can (its web, markdown and iOS panes, `debug.*`). The **app link** is that one connection, on the daemon's own socket (`$KANNA_SOCKET`). A link to a daemon on another machine carries the same lines over iroh, checked by protocol instead of build ([your machines](machines.md#5-the-app-link-over-the-network)).
 
 ## Contents
 
@@ -49,17 +49,17 @@ sequenceDiagram
 
 | Message | From | What it says |
 |---|---|---|
-| `app.hello {pid, build, protocols, commit, client, relaunch, keepsSocket}` | app | I'm the app, of this build (and, on this Mac, I keep the socket); the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout, and the listener when this Mac's app keeps the socket and is accepted or refused for another build ([daemon socket](daemon-socket.md)); over the network `build` and `relaunch` are left out ([links §2](machine-links.md#2-the-hello)); `relaunch {path, args, env}` is how to start this app again after a crash ([crashes](crashes.md#3-detect-and-relaunch)) |
+| `app.hello {pid, build, protocol, commit, client, relaunch, keepsSocket}` | app | I'm the app, of this build (and, on this Mac, I keep the socket); the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout, and the listener when this Mac's app keeps the socket and is accepted or refused for another build ([daemon socket](daemon-socket.md)); over the network `build` and `relaunch` are left out ([links §2](machine-links.md#2-the-hello)); `relaunch {path, args, env}` is how to start this app again after a crash ([crashes](crashes.md#3-detect-and-relaunch)) |
 | `app.goodbye` | app | I'm quitting on purpose; sent and written before the link closes, so an app gone without it crashed or was killed ([crashes](crashes.md#3-detect-and-relaunch)) |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
 | `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
 | `grid {terminal, cols, rows}` | daemon | the terminal's size, after a snapshot or a resize |
-| `output {terminal, data}` | daemon | bytes the program wrote since the snapshot; in protocol 3 at most 64 KiB, and the terminal's next waits for the app's `taken` ([input latency](input-latency.md)) |
+| `output {terminal, data}` | daemon | bytes the program wrote since the snapshot, at most 64 KiB, and the terminal's next waits for the app's `taken` ([input latency](input-latency.md)) |
 | `exited {terminal, code}` | daemon | the program ended |
 | `status {pane, status}` | daemon | an agent pane's status changed (`working`, `needs-you`, `idle`), a terminal ended (`exited`), or `null` when it's no longer an agent; for every terminal, shown or not, and once per pane after `app.hello` ([agent status](agent-status.md)) |
 | `input {terminal, data}` | app | bytes the view wrote: keys, paste, mouse and focus reports; written to the pty by the link's reader thread, not the daemon's main loop |
-| `taken {terminal}` | app | protocol 3: the view's surface took the last `output` for this terminal, so the daemon may send the next |
+| `taken {terminal}` | app | the view's surface took the last `output` for this terminal, so the daemon may send the next |
 | `resize {terminal, cols, rows, width, height}` | app | the view now fits this many cells (and pixels) |
 | `settings {foreground, background, cursor, palette, scheme, cursorStyle, cursorBlink, graphemes}` | app | the terminal settings from the app's Ghostty config, sent before any attach and again when the config or appearance changes ([terminal](terminal.md#2-the-config)) |
 | `app.front {window, workspace, pane?, tab?}` (with an `id`) | daemon | bring this focused pane's window forward, after a `focus`: the Desk showing the workspace, else the window; the reply's `front` is the window brought forward, or null ([physical layout §2](physical-layout.md#2-bringing-a-window-forward)) |

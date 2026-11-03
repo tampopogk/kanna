@@ -13,10 +13,16 @@ kanna-keeper = { path = "../kanna-keeper" }
 kanna-vt = { path = "../kanna-vt" }
 kanna-detect = { path = "../kanna-detect" }
 kanna-diff = { path = "../kanna-diff" }
+kanna-log = { path = "../kanna-log" }
+kanna-threads = { path = "../kanna-threads" }
 kanna-net = { path = "../kanna-net" }
+kanna-guest = { path = "../kanna-guest" }
+kanna-pipe = { path = "../kanna-pipe" }
+kanna-quality = { path = "../kanna-quality" }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 notify = "8"
 base64 = "0.22"
+getrandom = "0.2"
 libc = "0.2"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -25,3 +31,4 @@ regex = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8"
+security-framework = "3"

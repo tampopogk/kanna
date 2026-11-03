@@ -16,20 +16,19 @@ fn context() -> Context {
 }
 
 fn example(name: &str) -> String {
-    std::fs::read_to_string(repo().join(format!(".kanna/pipelines/{name}.pipe"))).unwrap()
+    std::fs::read_to_string(repo().join(format!(".kanna/pipelines/{name}.kojo"))).unwrap()
 }
 
 #[test]
 fn feature_is_valid_with_the_mockups_worst_case() {
     let pipeline = load(&example("feature"), &context()).unwrap();
     assert_eq!(pipeline.start, "plan");
-    assert_eq!(pipeline.stages.len(), 9);
-    assert_eq!(pipeline.arrows.len(), 13);
+    assert_eq!(pipeline.stages.len(), 7);
+    assert_eq!(pipeline.arrows.len(), 10);
     assert_eq!(pipeline.budget.as_ref().unwrap().sessions, Some(40));
     assert_eq!(pipeline.budget.as_ref().unwrap().time, Some(std::time::Duration::from_secs(8 * 3600)));
-    assert_eq!(pipeline.max_sessions(&Sizes::new()), 21);
+    assert_eq!(pipeline.max_sessions(&Sizes::new()), 17);
     assert_eq!(pipeline.stage("e2e").unwrap().on.as_deref(), Some("mini"));
-    assert_eq!(pipeline.stage("ship").unwrap().kind, Kind::Ask { question: "Land it on main?".into() });
     assert_eq!(pipeline.stage("e2e").unwrap().kind, Kind::Run { command: "scripts/e2e-kanna.sh".into() });
 }
 
@@ -37,10 +36,10 @@ fn feature_is_valid_with_the_mockups_worst_case() {
 fn feature_counts_the_fan_out_by_its_real_length_once_known() {
     let pipeline = parse(&example("feature")).unwrap();
     let sizes = Sizes::from([("plan.parts".to_string(), 3)]);
-    assert_eq!(pipeline.max_sessions(&sizes), 22);
+    assert_eq!(pipeline.max_sessions(&sizes), 18);
     let too_many = Context { sizes: Sizes::from([("plan.parts".to_string(), 30)]), ..context() };
     let errors = pipeline.check(&too_many).unwrap_err();
-    assert_eq!(errors[0].at("feature.pipe"), "feature.pipe:3: the worst case is 49 sessions, over the budget of 40");
+    assert_eq!(errors[0].at("feature.kojo"), "feature.kojo:4: the worst case is 45 sessions, over the budget of 40");
 }
 
 #[test]
@@ -56,5 +55,5 @@ fn an_unpaired_machine_is_a_placement_error() {
     let errors = load(&example("feature"), &context).unwrap_err();
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].rule, Rule::Placement);
-    assert_eq!(errors[0].at("feature.pipe"), "feature.pipe:11: no such machine 'mini': use here, any, or one of your machines or roles");
+    assert_eq!(errors[0].at("feature.kojo"), "feature.kojo:12: no such machine 'mini': use here, any, or one of your machines or roles");
 }

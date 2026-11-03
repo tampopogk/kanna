@@ -1,63 +1,5 @@
 use std::cmp::Ordering;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Range {
-    terms: Vec<(Op, Vec<u64>)>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Op {
-    Ge,
-    Gt,
-    Le,
-    Lt,
-    Eq,
-}
-
-impl Range {
-    pub fn parse(text: &str) -> Result<Range, String> {
-        let text = text.trim();
-        if text == "*" || text.is_empty() {
-            return Ok(Range { terms: vec![] });
-        }
-        let mut terms = vec![];
-        for bit in text.split(',') {
-            let bit = bit.trim();
-            let (op, rest) = [(">=", Op::Ge), ("<=", Op::Le), ("==", Op::Eq), (">", Op::Gt), ("<", Op::Lt)]
-                .into_iter()
-                .find_map(|(prefix, op)| bit.strip_prefix(prefix).map(|rest| (op, rest.trim())))
-                .ok_or_else(|| format!("invalid version range \"{text}\""))?;
-            let numbers = rest.split('.').map(str::parse::<u64>).collect::<Result<Vec<_>, _>>().map_err(|_| format!("invalid version bound \"{rest}\""))?;
-            if numbers.len() < 2 {
-                return Err(format!("invalid version bound \"{rest}\": needs at least major.minor"));
-            }
-            terms.push((op, numbers));
-        }
-        Ok(Range { terms })
-    }
-
-    pub fn any(&self) -> bool {
-        self.terms.is_empty()
-    }
-
-    pub fn admits(&self, version: Option<&str>) -> bool {
-        if self.any() {
-            return true;
-        }
-        let Some(version) = version.and_then(numbers) else { return false };
-        self.terms.iter().all(|(op, bound)| {
-            let order = compare(&version, bound);
-            match op {
-                Op::Ge => order.is_ge(),
-                Op::Gt => order.is_gt(),
-                Op::Le => order.is_le(),
-                Op::Lt => order.is_lt(),
-                Op::Eq => order.is_eq(),
-            }
-        })
-    }
-}
-
 pub fn numbers(text: &str) -> Option<Vec<u64>> {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -91,19 +33,6 @@ pub fn compare_text(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ranges_gate_known_and_unknown_versions() {
-        let r = |s: &str| Range::parse(s).unwrap();
-        assert!(r("*").admits(None));
-        assert!(!r(">=2.1.263").admits(None));
-        assert!(r(">=2.1.263").admits(Some("2.1.286 (Claude Code)")));
-        assert!(!r("<2.1.263").admits(Some("2.1.286")));
-        assert!(r(">=0.150, <0.200").admits(Some("codex-cli 0.162.0")));
-        assert!(r("==1.0").admits(Some("v1.0.0")));
-        assert!(Range::parse("~1.2").is_err());
-        assert!(Range::parse(">=2").is_err());
-    }
 
     #[test]
     fn versions_are_found_in_probe_output() {

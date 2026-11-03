@@ -1,0 +1,5 @@
+{"ok": true, "result": {"created": 1793652754.336936, "golde
+{"ok": false, "error": "ValueError: admission: 2 VMs already running"}
+direct vmrun exit=71
+2026-11-02T20:52:34Z start failed: Error Domain=VZErrorDomain Code=6 "The maximum supported number of active virtual machines has been reached." UserInfo={NSLocalizedFailure=The number of virtual machines exceeds the limit., NSLocalizedFailureReason=The maximum supported number of active virtual machines has been reached.}
+{"ok": true, "result": {"vm": "vm-d", "retired": true, "exists": false}}
