@@ -6,7 +6,7 @@ Kanna's task words say where a task is from the user's side. The **Desk** holds 
 
 | Desk view | The active task |
 |---|---|
-| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, the strip below starting with a muted ⌘. Desk, then the Desk's other tasks in key order, ⌘1 then ⌘2, each key before its name](desk-view-task.png) |
+| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, the strip below starting with a muted ⌘. Desk, then the Desk's other tasks in key order, each key before its name: ⌘1 on the one that needs you, though it was left longest ago, then ⌘2](desk-view-task.png) |
 
 *(From the mockup: `#picture-desk&hover=p3` and `#picture`.)*
 

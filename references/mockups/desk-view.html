@@ -358,7 +358,7 @@ document.getElementById("ring").onclick = () => { const t = others().find(t => t
 if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
 if (location.hash.includes("full")) { task("p3").place = "shelf"; task("p3").by = "the planning agent"; task("p3").prompt = "Fold the repeated desk() helpers into one"; moveToDesk("p9"); }
-if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").needsAt = Date.now(); }
+if (location.hash.includes("needs")) { task("p3").status = "needs"; task("p3").needsAt = Date.now(); }
 if (location.hash.includes("desk")) s.view = "desk";
 const pointed = location.hash.match(/hover=([^&]*)/);
 if (pointed) hovered = pointed[1];
