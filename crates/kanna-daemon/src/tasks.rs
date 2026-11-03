@@ -660,6 +660,41 @@ pub fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+#[derive(Clone)]
+struct Marking {
+    id: String,
+    folder: PathBuf,
+    repo: PathBuf,
+    bases: Vec<(Base, Where)>,
+}
+
+struct MarkRead {
+    dirty: Result<bool, String>,
+    head: Result<String, String>,
+    branch: String,
+    bases: Vec<(Base, String, bool, bool)>,
+}
+
+impl Marking {
+    fn read(self) -> MarkRead {
+        let dirty = stacks::dirty(&self.folder);
+        let head = git(&self.folder, &["rev-parse", "HEAD"]);
+        let branch = git(&self.folder, &["branch", "--show-current"]).unwrap_or_default();
+        let tip = head.clone().unwrap_or_default();
+        let bases = self.bases.into_iter().map(|(base, at)| {
+            let now = stacks::head(&self.repo, &at).unwrap_or_else(|| base.head.clone());
+            let merged = stacks::in_main(&self.repo, &now);
+            let contained = merged || stacks::contains(&self.repo, &now, &tip);
+            (base, now, merged, contained)
+        }).collect();
+        MarkRead { dirty, head, branch, bases }
+    }
+}
+
+fn seen_head(seen: &[stacks::Seen], id: &str, base: &str) -> Option<String> {
+    seen.iter().find(|s| s.id == id)?.bases.iter().find(|b| b.id == base).map(|b| b.head.clone())
+}
+
 /// A random (v4) UUID, in hex.
 fn uuid() -> Result<String, String> {
     let mut uuid = [0u8; 16];
@@ -2390,7 +2425,7 @@ impl Tasks {
                     Some("new") => this.adding(args, responder),
                     Some("resolve") => responder.reply(this.find(&args)),
                     Some("edit") => responder.reply(this.edit(&args)),
-                    Some("ready") => responder.reply(this.mark(&args)),
+                    Some("ready") => this.mark_ready(args, responder),
                     Some("unready") => responder.reply(this.unmark(&args)),
                     Some("name") => this.name(&args, responder),
                     Some("list") => this.listed(&args, responder),
@@ -4182,18 +4217,15 @@ impl Tasks {
         }
     }
 
-    fn merge_target(&self, id: &str) -> String {
-        let known = self.known(id);
-        let ready = known.as_ref().and_then(|e| e.ready.clone()).unwrap_or_default();
-        let now = known.as_ref().and_then(|e| stacks::head(Path::new(&e.repo), &self.where_of(&Base { id: id.to_string(), branch: ready.branch.clone(), head: String::new() })));
-        let head = now.or(Some(ready.head));
-        head.filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_else(|| self.branch_name(id))
+    fn merge_target(&self, id: &str, seen: Option<String>) -> String {
+        let ready = self.known(id).and_then(|e| e.ready).unwrap_or_default();
+        seen.or(Some(ready.head)).filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_else(|| self.branch_name(id))
     }
 
     fn branch_name(&self, id: &str) -> String {
         let known = self.known(id);
         let ready = known.as_ref().and_then(|e| e.ready.as_ref()).map(|m| m.branch.clone()).filter(|b| !b.is_empty());
-        ready.or_else(|| known.and_then(|e| e.folder).and_then(|f| git(Path::new(&f), &["branch", "--show-current"]).ok())).filter(|b| b.bytes().all(|c| c.is_ascii_alphanumeric() || b"._/-".contains(&c))).unwrap_or_else(|| id.to_string())
+        ready.or_else(|| known.and_then(|e| e.folder).and_then(|f| branch_of(&f))).filter(|b| b.bytes().all(|c| c.is_ascii_alphanumeric() || b"._/-".contains(&c))).unwrap_or_else(|| id.to_string())
     }
 
     fn stack_fields(&self, entry: &Entry, value: &mut Value) {
@@ -4209,33 +4241,62 @@ impl Tasks {
         value["conflict"] = opt(self.conflicted(entry).as_deref());
     }
 
+    #[cfg(test)]
     fn mark(&self, args: &Value) -> Result<Map, KmuxError> {
+        let marking = self.marking(args)?;
+        let read = marking.clone().read();
+        self.marked(args, marking, read)
+    }
+
+    fn mark_ready(self: &Rc<Self>, args: Value, responder: Responder) {
+        let marking = match self.marking(&args) {
+            Ok(marking) => marking,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let this = Rc::downgrade(self);
+        crate::runtime::spawn("a task marked ready", async move {
+            let reading = marking.clone();
+            let read = crate::runtime::off_loop(move || reading.read()).await;
+            let Some(this) = this.upgrade() else { return };
+            responder.reply(read.ok_or_else(|| KmuxError::new("failed", "reading its worktree stopped before it was done")).and_then(|read| this.marked(&args, marking, read)));
+        });
+    }
+
+    fn marking(&self, args: &Value) -> Result<Marking, KmuxError> {
         let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
         let id = self.resolve(reference)?.ok_or_else(|| not_found(reference))?;
         let entry = self.open_tasks().into_iter().find(|e| e.id == id).ok_or_else(|| KmuxError::new("done", format!("{} is done", self.short(&id))))?;
         let folder = entry.folder.clone().map(PathBuf::from).filter(|f| f.is_dir()).ok_or_else(|| KmuxError::new("not_started", format!("{} hasn't started, so it has no work to be ready", self.short(&id))))?;
+        let bases = entry.bases.iter().map(|base| (base.clone(), self.where_of(base))).collect();
+        Ok(Marking { id, folder, repo: PathBuf::from(&entry.repo), bases })
+    }
+
+    fn marked(&self, args: &Value, marking: Marking, read: MarkRead) -> Result<Map, KmuxError> {
+        let Marking { id, .. } = marking;
+        let reference = id.as_str();
         let unread = |error: String| KmuxError::new("failed", format!("couldn't read {}'s worktree: {error}", self.short(&id)));
-        if stacks::dirty(&folder).map_err(unread)? {
+        if read.dirty.map_err(unread)? {
             return Err(KmuxError::new("dirty", format!("{} has uncommitted changes: commit them first, so the tasks built on it get them", self.short(&id))));
         }
-        let head = git(&folder, &["rev-parse", "HEAD"]).map_err(unread)?;
-        let branch = git(&folder, &["branch", "--show-current"]).unwrap_or_default();
-        let repo = PathBuf::from(&entry.repo);
+        let head = read.head.map_err(unread)?;
+        let branch = read.branch;
         let open = self.open_tasks();
+        if !open.iter().any(|e| e.id == id) {
+            return Err(KmuxError::new("done", format!("{} is done", self.short(&id))));
+        }
         let mut bases = vec![];
-        for base in &entry.bases {
-            let now = stacks::head(&repo, &self.where_of(base)).unwrap_or_else(|| base.head.clone());
-            if stacks::in_main(&repo, &now) {
-                bases.push(base.clone());
+        for (base, now, merged, contained) in read.bases {
+            if merged {
+                bases.push(base);
                 continue;
             }
             if open.iter().any(|e| e.id == base.id && !e.stale.is_empty()) {
                 return Err(KmuxError::new("stale", format!("{} is stale itself: it catches up first, and you get a message when it's ready again", self.label(&base.id))));
             }
-            if !stacks::contains(&repo, &now, &head) {
+            if !contained {
                 return Err(KmuxError::new("behind", format!("{} isn't in this branch yet: merge it first (git merge {now}), rerun the tests, then mark it ready", self.label(&base.id))));
             }
-            bases.push(Base { head: now, branch: self.branch_name(&base.id), ..base.clone() });
+            bases.push(Base { head: now, branch: self.branch_name(&base.id), ..base });
         }
         let blocked: Vec<Entry> = open.iter().filter(|e| e.folder.is_none() && self.waits(e).contains(&id)).cloned().collect();
         let mark = Mark { head: head.clone(), branch: branch.clone(), at: now() };
@@ -4350,7 +4411,7 @@ impl Tasks {
                     let mut said = vec![];
                     if !behind.is_empty() {
                         let names: Vec<String> = behind.iter().map(|b| self.label(b)).collect();
-                        let merges: Vec<String> = behind.iter().map(|b| format!("git merge {}", self.merge_target(b))).collect();
+                        let merges: Vec<String> = behind.iter().map(|b| format!("git merge {}", self.merge_target(b, seen_head(&seen, &id, b)))).collect();
                         said.push(format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready set`.", names.join(", "), merges.join("; ")));
                     }
                     if !waiting.is_empty() {
