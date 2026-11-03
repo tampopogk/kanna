@@ -390,17 +390,29 @@ fn data_disk(path: &Path, gib: u64) -> Result<(), KmuxError> {
             return Err(failed(format!("hdiutil couldn't attach {}: {}", path.display(), String::from_utf8_lossy(&attached.stderr).trim())));
         };
         let erased = Command::new("/usr/sbin/diskutil").args(["eraseDisk", "APFS", DATA_VOLUME, "GPT", &device]).output();
-        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
-        match erased {
-            Ok(out) if out.status.success() => Ok(()),
+        let opened = match erased {
+            Ok(out) if out.status.success() => open_to_the_guest(&device),
             Ok(out) => Err(failed(format!("diskutil couldn't format {device}: {}", String::from_utf8_lossy(&out.stderr).trim()))),
             Err(e) => Err(failed(format!("diskutil: {e}"))),
-        }
+        };
+        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
+        opened
     })();
     if made.is_err() {
         let _ = std::fs::remove_file(path);
     }
     made
+}
+
+fn open_to_the_guest(device: &str) -> Result<(), KmuxError> {
+    let store = format!("{}s2", device.trim_start_matches("/dev/"));
+    let mount = std::fs::read_dir("/Volumes").into_iter().flatten().flatten().map(|e| e.path()).find(|path| {
+        Command::new("/usr/sbin/diskutil").arg("info").arg(path).output().is_ok_and(|out| {
+            String::from_utf8_lossy(&out.stdout).lines().any(|line| line.trim_start().starts_with("APFS Physical Store:") && line.trim_end().ends_with(&store))
+        })
+    });
+    let Some(mount) = mount else { return Err(KmuxError::new("failed", format!("the new data volume on {device} didn't mount"))) };
+    std::fs::set_permissions(&mount, std::os::unix::fs::PermissionsExt::from_mode(0o1777)).map_err(|e| KmuxError::new("failed", format!("can't open {} to the guest's user: {e}", mount.display())))
 }
 
 #[cfg(test)]
@@ -424,6 +436,11 @@ mod tests {
         let listed = String::from_utf8_lossy(&listed.stdout).split("\n\n").filter(|block| block.contains(&store)).collect::<Vec<_>>().join("\n");
         let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
         assert!(listed.contains(DATA_VOLUME), "{listed}");
+        let _ = Command::new("/usr/bin/hdiutil").args(["attach", "-readonly", "-imagekey", "diskimage-class=CRawDiskImage", "-mountroot"]).arg(&dir).arg(&image).output().unwrap();
+        let mode = std::fs::metadata(dir.join(DATA_VOLUME)).map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o7777);
+        let _ = Command::new("/usr/sbin/diskutil").args(["unmountDisk", "force", &device]).output();
+        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
+        assert_eq!(mode.ok(), Some(0o1777), "the guest's user, whatever its uid, can make its state folder");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
