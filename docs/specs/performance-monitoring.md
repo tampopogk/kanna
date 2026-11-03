@@ -31,7 +31,7 @@ Each interval is an `OSSignposter` interval (subsystem `dev.kanna.app`, a catego
 | `command.NAME` | commands | one app command (`Commands.handle`), from the CLI or the daemon, e.g. `command.debug.click` |
 | `refresh`, `render` | render | `AppController.refresh` and its `render` of every window |
 | `WindowController.render` | render | one window's render |
-| `DeskView.lay` | desk | rebuilding the Desk view's tasks and Shelf; its detail is the row count (`42 rows`) |
+| `DeskView.lay` | desk | laying out the Desk view's tasks and Shelf; its detail is the row count and how many were rebuilt (`42 rows, 1 new`) |
 | `markdown.check`, `markdown.load` | markdown | a markdown pane's comments check (every 0.5s) and drawing the text the daemon sent ([file panes](file-panes.md)) |
 | `hang` (event) | hang | a main-thread hang, with what was open |
 
@@ -48,7 +48,7 @@ sequenceDiagram
     M->>W: tasks pick
     W->>D: written (click.pick.sent)
     D-->>M: layout, tasks messages (message.layout, message.tasks)
-    M->>M: refresh → render → DeskView.lay
+    M->>M: before sleeping, one refresh → render → DeskView.lay
     Note over M: next beforeWaiting: click.pick.shown
 ```
 
@@ -97,7 +97,8 @@ log show --last 10m --signpost --predicate 'subsystem == "dev.kanna.app" AND cat
 
 - `KannaPerfTests`: percentiles and the ring, a hang naming what was open and what ran, a hang the watchdog missed.
 - First reading (2026-10-21, dev build, 40 Shelf tasks with 82k characters of first messages, one `debug.click` on a Shelf task): `click.pick.sent` 0.2ms, `click.pick.shown` 141ms; in between `message.layout` 14ms, `message.tasks` 14ms and `message.status` 40ms, each a full `refresh` that ran `DeskView.lay` (40 rows, 12–33ms) again; no hang over 100ms.
-- e2e `perf_intervals`: a Shelf click records `click.pick.wait`, `.sent` and `.shown` with the messages, renders and `DeskView.lay`; a Desk card click records `click.activate.shown`; `debug.hang` 300ms shows in `debug.perf` and in the app's log with `command.debug.hang` open.
+- Second reading (2026-10-31, 50 Shelf tasks with the repo's real first messages): `click.pick.shown` 163ms before, 18–31ms after; see [moving to the Desk at once](move-to-desk-latency.md#readings-with-fifty-shelf-tasks) for what was slow.
+- e2e `perf_intervals`: with 50 Shelf tasks, a click on a stopped one shows within 100ms; a Shelf click records `click.pick.wait`, `.sent` and `.shown` with the messages, renders and `DeskView.lay`; a Desk card click records `click.activate.shown`; `debug.hang` 300ms shows in `debug.perf` and in the app's log with `command.debug.hang` open.
 
 ## 6. Glossary
 

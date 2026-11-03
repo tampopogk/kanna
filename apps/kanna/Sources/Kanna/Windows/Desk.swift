@@ -243,8 +243,13 @@ extension AppController {
         deskMade[MachineIDs.machine(of: pane) ?? ""]?[pane] ?? .max
     }
 
+    func stack(_ pane: String) -> String? {
+        deskStacks[MachineIDs.machine(of: pane) ?? ""]?[pane]
+    }
+
     func shelfChanged(_ tasks: [JSON], desk: [JSON], on machine: String?) {
         deskMade[machine ?? ""] = Dictionary(desk.enumerated().compactMap { at, entry in entry["pane"]?.string.map { ($0, at) } }, uniquingKeysWith: { first, _ in first })
+        deskStacks[machine ?? ""] = Dictionary(desk.compactMap { entry in entry["pane"]?.string.flatMap { pane in ShelfTask.stack(entry).map { (pane, $0) } } }, uniquingKeysWith: { first, _ in first })
         let tag: JSON = machine.map { .string($0) } ?? .null
         shelves[machine ?? ""] = tasks.map { entry in
             guard case .object(var fields) = entry else { return entry }
@@ -255,7 +260,7 @@ extension AppController {
             if let location = location(ofEntry: entry), let project = entry["project"]?.string { identities[location] = project }
         }
         shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
-        refresh()
+        refreshSoon()
     }
 
     func location(ofEntry entry: JSON) -> String? {
@@ -279,7 +284,7 @@ extension AppController {
             guard let id = entry["id"]?.string, let name = entry["name"]?.string else { return nil }
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string))
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry))
         }
     }
 
@@ -297,10 +302,17 @@ extension AppController {
         return docked.filter { root == nil || sameProject(projectRoot($0), root) }.count
     }
 
-    private func noted(_ window: String, _ reply: JSON) {
+    private func noted(_ window: String, _ reply: JSON, otherwise: String = "it didn't start") {
         guard reply["ok"]?.bool != true, let controller = controllers[window] else { return }
-        controller.note = reply["error"]?["message"]?.string ?? "it didn't start"
+        controller.note = reply["error"]?["message"]?.string ?? otherwise
         refresh()
+    }
+
+    func shelveTask(_ task: String, from window: String) {
+        controllers[window]?.note = ""
+        request("tasks", ["action": "shelve", "task": .string(task)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it didn't move")
+        }
     }
 
     func startTask(_ task: String, from window: String) {

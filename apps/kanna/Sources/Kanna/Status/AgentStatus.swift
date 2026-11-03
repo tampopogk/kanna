@@ -32,7 +32,7 @@ extension AppController {
     func statusChanged(_ pane: String, _ status: String?) {
         agentStatuses.set(pane, status, looking: lookingAt.contains(pane))
         contents.agentStatusChanged(pane, status)
-        if isTask(pane) { refresh() }
+        if isTask(pane) { refreshSoon() }
     }
 
     func folderChanged(_ pane: String, _ cwd: String, _ place: JSON?) {
@@ -43,7 +43,7 @@ extension AppController {
         places[pane] = place
         guard folders[pane] != cwd || placeChanged else { return }
         folders[pane] = cwd
-        if isTask(pane) || windows.contains(where: { $0["lead"]?["pane"]?.string == pane }) { refresh() }
+        if isTask(pane) || windows.contains(where: { $0["lead"]?["pane"]?.string == pane }) { refreshSoon() }
     }
 
     func statusSeen() {

@@ -1,6 +1,6 @@
-use crate::pty::{Adopted, Spawned, Spawner, Spec};
+use crate::pty::{Adopted, Heard, Spawned, Spawner, Spec};
 use crate::Event;
-use kanna_keeper::client::{Client, Exited, Hello, SpawnRequest};
+use kanna_keeper::client::{self, Client, Hello, SpawnRequest};
 use std::cell::RefCell;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -13,7 +13,7 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Keeper {
     client: RefCell<Client>,
     pid: i32,
-    received: RefCell<Vec<Exited>>,
+    received: RefCell<Vec<Heard>>,
     events: crate::runtime::Events,
     lost: RefCell<Option<String>>,
     resume_watch: Sender<()>,
@@ -120,16 +120,16 @@ impl Keeper {
         let _ = self.resume_watch.send(());
     }
 
-    pub fn take_exits(&self) -> Result<Vec<Exited>, String> {
+    pub fn take(&self) -> Result<Vec<Heard>, String> {
         if let Some(reason) = self.lost.borrow().clone() {
             return Err(reason);
         }
-        let polled = self.client.borrow_mut().poll_events();
-        let mut exits = std::mem::take(&mut *self.received.borrow_mut());
+        let polled = self.client.borrow_mut().poll();
+        let mut heard = std::mem::take(&mut *self.received.borrow_mut());
         match polled {
             Ok(more) => {
-                exits.extend(more);
-                Ok(exits)
+                heard.extend(more.into_iter().map(heard_of));
+                Ok(heard)
             }
             Err(error) => Err(self.lose(&error)),
         }
@@ -144,11 +144,11 @@ impl Keeper {
     }
 
     fn collect_received(&self) {
-        let polled = self.client.borrow_mut().poll_events();
+        let polled = self.client.borrow_mut().poll();
         match polled {
-            Ok(exits) if !exits.is_empty() => {
-                self.received.borrow_mut().extend(exits);
-                let _ = self.events.send(Event::KeeperExits);
+            Ok(heard) if !heard.is_empty() => {
+                self.received.borrow_mut().extend(heard.into_iter().map(heard_of));
+                let _ = self.events.send(Event::KeeperHeard);
             }
             Ok(_) => {}
             Err(error) => self.report_lost(&error),
@@ -176,13 +176,20 @@ impl Keeper {
     }
 }
 
+fn heard_of(heard: client::Heard) -> Heard {
+    match heard {
+        client::Heard::Exited(exit) => Heard::Exited { keeper: exit.id, pid: exit.pid, code: exit.status.shell_status() },
+        client::Heard::Spawned(tag, pty) => Heard::Spawned(tag, pty.map(|pty| Spawned { pid: pty.pid, master: pty.master })),
+    }
+}
+
 fn is_connection_error(error: &io::Error) -> bool {
     use io::ErrorKind::*;
     matches!(error.kind(), UnexpectedEof | BrokenPipe | ConnectionReset | ConnectionAborted | NotConnected | TimedOut | WouldBlock)
 }
 
 impl Spawner for Keeper {
-    fn spawn(&self, spec: &Spec) -> io::Result<Spawned> {
+    fn spawn(&self, spec: &Spec) -> io::Result<u64> {
         let mut request = match &spec.command {
             Some(command) => SpawnRequest::command(&spec.id, command),
             None => SpawnRequest::shell(&spec.id),
@@ -190,8 +197,7 @@ impl Spawner for Keeper {
         request.cwd = spec.cwd.as_ref().map(PathBuf::from);
         request.env = spec.env.iter().cloned().collect();
         (request.cols, request.rows) = (spec.cols, spec.rows);
-        let pty = self.request(|client| client.spawn(&request))?;
-        Ok(Spawned { pid: pty.pid, master: pty.master })
+        self.request(|client| client.send_spawn(&request))
     }
 
     fn close(&self, id: &str) {

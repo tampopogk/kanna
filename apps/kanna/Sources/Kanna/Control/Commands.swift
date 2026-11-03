@@ -17,6 +17,8 @@ final class Commands {
 
     private var commands: [String: Command] = [:]
 
+    var prepare: (@MainActor () -> Void)?
+
     subscript(name: String) -> Command? {
         get { commands[name] }
         set { commands[name] = newValue }
@@ -24,6 +26,7 @@ final class Commands {
 
     func handle(_ request: JSON) async -> JSON {
         let id = request["id"] ?? .null
+        prepare?()
         do {
             guard let cmd = request["cmd"]?.string else { throw KannaError("bad_request", "missing cmd") }
             guard let command = commands[cmd] else { throw KannaError("bad_request", "unknown command \"\(cmd)\"") }

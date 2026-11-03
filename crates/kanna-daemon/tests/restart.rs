@@ -219,14 +219,14 @@ fn an_app_from_another_build_stops_the_daemon_and_the_next_keeps_its_terminals()
     assert_eq!(build.len(), 64, "{build}");
 
     let mut same = App::raw(&instance.socket());
-    same.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "protocols": kanna_build::PROTOCOLS, "panes": []}}));
+    same.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "protocol": kanna_build::PROTOCOL, "panes": []}}));
     let hello = same.next().unwrap();
     assert_eq!((hello["ok"].as_bool(), hello["daemon"]["build"].as_str()), (Some(true), Some(build.as_str())), "{hello}");
     drop(same);
 
     let mut other = App::raw(&instance.socket());
     wait_for("the first app to go", || {
-        other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "build": "0000", "protocols": kanna_build::PROTOCOLS, "panes": []}}));
+        other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "build": "0000", "protocol": kanna_build::PROTOCOL, "panes": []}}));
         let reply = other.next().unwrap();
         if reply["error"]["code"] == "app_attached" {
             other = App::raw(&instance.socket());
@@ -271,7 +271,7 @@ fn hello_keeping_the_socket(instance: &Instance, build: &str) -> (Value, Option<
     use std::os::fd::AsRawFd;
     let stream = UnixStream::connect(instance.socket()).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let hello = json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocols": kanna_build::PROTOCOLS, "keepsSocket": true}});
+    let hello = json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocol": kanna_build::PROTOCOL, "keepsSocket": true}});
     (&stream).write_all(format!("{hello}\n").as_bytes()).unwrap();
     let (mut line, mut listener) = (Vec::new(), None);
     while !line.contains(&b'\n') {
@@ -330,7 +330,7 @@ fn an_app_that_does_not_keep_the_socket_gets_none_and_the_daemon_unlinks_it() {
     let mut instance = Instance::start();
     let build = instance.call("capabilities", json!({}))["build"].as_str().unwrap().to_string();
     let mut app = App::raw(&instance.socket());
-    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocols": kanna_build::PROTOCOLS}}));
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "build": build, "panes": [], "protocol": kanna_build::PROTOCOL}}));
     let hello = app.next().unwrap();
     assert_eq!((hello["ok"].as_bool(), hello["listener"].as_bool()), (Some(true), Some(false)), "{hello}");
     instance.stop(libc::SIGTERM);
