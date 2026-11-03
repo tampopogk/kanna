@@ -37,9 +37,8 @@ fn an_agent_goes_working_needs_you_idle_and_exited_in_list_and_on_the_app_link()
     becomes(&instance, "agent", "needs-you");
     let explained = instance.call("status", json!({"action": "explain", "pane": "agent"}));
     assert_eq!(explained["agent"], "mock", "{explained}");
-    assert_eq!(explained["rule"], "mock/needs-you/proceed");
-    assert_eq!(explained["matched"], "Do you want to proceed?");
-    assert_eq!(explained["rules"]["source"], "bundled");
+    assert_eq!(explained["reported"]["state"], "blocked", "{explained}");
+    assert_eq!(explained["reported"]["kind"], "permission", "{explained}");
     instance.call("send", json!({"pane": "agent", "text": "1"}));
     becomes(&instance, "agent", "working");
     becomes(&instance, "agent", "idle");
@@ -57,18 +56,14 @@ fn an_agent_goes_working_needs_you_idle_and_exited_in_list_and_on_the_app_link()
 }
 
 #[test]
-fn an_agent_s_own_report_wins_over_the_rules_until_it_clears() {
+fn an_agent_s_report_is_its_status_until_it_clears() {
     let instance = Instance::start();
     instance.open("agent", Some(&mock_agent()));
     becomes(&instance, "agent", "idle");
-    let explained = instance.call("status", json!({"action": "explain", "pane": "agent"}));
-    assert_eq!(explained["source"], "rules", "{explained}");
     instance.call("send", json!({"pane": "agent", "text": "report state=working:app=mock:msg=VGhpbmtpbmc="}));
     becomes(&instance, "agent", "working");
     let explained = instance.call("status", json!({"action": "explain", "pane": "agent"}));
-    assert_eq!(explained["source"], "osc7501", "{explained}");
-    assert_eq!(explained["judged"], "idle", "the screen alone says idle: {explained}");
-    assert_eq!(explained["reported"]["state"], "working");
+    assert_eq!(explained["reported"]["state"], "working", "{explained}");
     assert_eq!(explained["reported"]["app"], "mock");
     assert_eq!(explained["reported"]["message"], "Thinking");
     instance.call("send", json!({"pane": "agent", "text": "report state=blocked:kind=permission"}));
@@ -78,13 +73,21 @@ fn an_agent_s_own_report_wins_over_the_rules_until_it_clears() {
     becomes(&instance, "agent", "idle");
     let explained = instance.call("status", json!({"action": "explain", "pane": "agent"}));
     assert_eq!(explained["records"].as_array().map(Vec::len), Some(2), "{explained}");
-    instance.call("send", json!({"pane": "agent", "text": "report state=working"}));
-    becomes(&instance, "agent", "working");
     instance.call("send", json!({"pane": "agent", "text": "report state=clear"}));
-    becomes(&instance, "agent", "idle");
+    wait_for("the status to clear", || status(&instance, "agent") == Value::Null);
     let explained = instance.call("status", json!({"action": "explain", "pane": "agent"}));
-    assert_eq!(explained["source"], "rules", "{explained}");
+    assert_eq!(explained["reported"], Value::Null, "{explained}");
     assert_eq!(explained["records"], json!([]));
+}
+
+#[test]
+fn an_agent_that_doesn_t_report_has_no_status() {
+    let instance = Instance::start();
+    instance.open("agent", Some(&format!("KANNA_MOCK_REPORTS=0 {}", mock_agent())));
+    wait_for("the mock to start", || instance.call("read", json!({"pane": "agent"}))["text"].as_str().is_some_and(|t| t.contains("mock-agent:")));
+    instance.call("send", json!({"pane": "agent", "text": "turn"}));
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(status(&instance, "agent"), Value::Null, "the screen isn't read");
 }
 
 #[test]
@@ -98,43 +101,4 @@ fn other_terminals_show_only_exited() {
     assert_eq!(status(&instance, "done"), "exited");
     let explained = instance.call("status", json!({"action": "explain", "pane": "shell"}));
     assert_eq!(explained["agent"], Value::Null, "{explained}");
-}
-
-#[test]
-fn a_local_override_wins_and_reloads_when_it_changes() {
-    let dir = std::env::temp_dir().join(format!("kanna-status-override-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let instance = Instance::start_with(&[("KANNA_AGENT_RULES_DIR", dir.to_str().unwrap())]);
-    instance.open("agent", Some(&mock_agent()));
-    becomes(&instance, "agent", "idle");
-    instance.call("send", json!({"pane": "agent", "text": "hello"}));
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    assert_eq!(status(&instance, "agent"), "idle");
-    let rules = r#"{"schema":1,"agent":"mock","version":"0.1","engine":1,"rules":[{"id":"mine","status":"needs-you","priority":1,"when":{"anyLine":{"contains":"echo: hello"}}}]}"#;
-    std::fs::write(dir.join("mock.json"), rules).unwrap();
-    becomes(&instance, "agent", "needs-you");
-    let explained = instance.call("status", json!({"action": "explain", "pane": "agent"}));
-    assert!(explained["rules"]["source"].as_str().unwrap().starts_with("override "), "{explained}");
-    std::fs::remove_file(dir.join("mock.json")).unwrap();
-    becomes(&instance, "agent", "idle");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_saved_screen_is_explained_with_an_agent_s_rules() {
-    let instance = Instance::start();
-    let file = instance.dir.join("screen.txt");
-    std::fs::write(&file, "some output\nDo you want to proceed?\n❯ 1. Yes\n  2. No\n").unwrap();
-    let explained = instance.call("status", json!({"action": "explain", "agent": "mock", "file": file}));
-    assert_eq!(explained["judged"], "needs-you", "{explained}");
-    let case = instance.dir.join("case.json");
-    std::fs::write(&case, json!({"rows": ["⠋ Working (3s • esc to interrupt)", ""], "title": "x", "expected": "working", "source": "t"}).to_string()).unwrap();
-    let explained = instance.call("status", json!({"action": "explain", "agent": "mock", "file": case}));
-    assert_eq!(explained["judged"], "working", "{explained}");
-    let unknown = instance.call("status", json!({"action": "explain", "agent": "nobody", "screen": {"text": "x"}}));
-    assert_eq!(unknown["ok"], false);
-    let update = instance.call("status", json!({"action": "update"}));
-    assert_eq!(update["problems"][0], "no rules site is set", "{update}");
-    assert!(update["rules"].as_array().unwrap().iter().any(|r| r["agent"] == "claude"));
 }

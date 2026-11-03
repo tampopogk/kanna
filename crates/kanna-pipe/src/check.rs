@@ -1,4 +1,4 @@
-use crate::{Error, Kind, Merge, Pipeline, Rule, Sizes, Stage, DONE};
+use crate::{Error, Kind, Pipeline, Rule, Sizes, Stage, DONE};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, Default)]
@@ -125,7 +125,7 @@ fn loops(pipeline: &Pipeline, errors: &mut Vec<Error>) {
 
 fn references(pipeline: &Pipeline, stages: &HashMap<&str, &Stage>, stage: &Stage, context: &Context, errors: &mut Vec<Error>) {
     let mut fail = |rule, message: String| errors.push(Error::new(stage.line, rule, message));
-    if let Kind::Merge(Merge::Stage(from)) = &stage.kind {
+    if let Kind::Merge(from) = &stage.kind {
         if !stages.get(from.as_str()).and_then(|s| s.agent()).is_some_and(|a| a.each.is_some()) {
             fail(Rule::Merge, format!("merge {from} needs '{from}' to be a stage with each"));
         }

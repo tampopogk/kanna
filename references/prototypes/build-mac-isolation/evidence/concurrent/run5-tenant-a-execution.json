@@ -1,0 +1,133 @@
+{
+  "argv": [
+    "xcodebuild",
+    "-project",
+    "/Users/kanna-build/.kanna/mirrors/5dd32e30c562c689b40b3017/src/ShimProbe.xcodeproj",
+    "-scheme",
+    "ShimProbe",
+    "-destination",
+    "platform=macOS",
+    "-parallel-testing-enabled",
+    "NO",
+    "test",
+    "-derivedDataPath",
+    "/Users/kanna-build/.kanna/mirrors/5dd32e30c562c689b40b3017/derived/c1dd7c9300cb/DerivedData",
+    "-resultBundlePath",
+    "/Users/kanna-build/.kanna/jobs/4fcdb5e9-1427-468e-9059-146eabd6feed/results/Tests.xcresult"
+  ],
+  "paths": {
+    "/Users/kanna-build/.kanna/mirrors/5dd32e30c562c689b40b3017/src": "/private/tmp/claude-502/-Users-jeremyhale--kanna-v4-repos-tampopogk-kanna--kanna-worktrees-task-cc0b19e8/34a5eca0-79d6-4099-95f9-f5c5e3fc9c4c/scratchpad/work/tenant-a",
+    "/Users/kanna-build/.kanna/mirrors/5dd32e30c562c689b40b3017/src/ShimProbe.xcodeproj": "/private/tmp/claude-502/-Users-jeremyhale--kanna-v4-repos-tampopogk-kanna--kanna-worktrees-task-cc0b19e8/34a5eca0-79d6-4099-95f9-f5c5e3fc9c4c/scratchpad/work/tenant-a/ShimProbe.xcodeproj"
+  },
+  "snapshot": {
+    "commit": "def8834e4cb0c273f7e305fae8b3b3c8acbad0cd",
+    "dirty": "M App/App.swift\n M Tests/ProbeTests.swift\n D deleted.txt\n?? App/DirtyValue.swift\n?? untracked.txt\n?? value-link",
+    "files": [
+      [
+        ".gitignore",
+        420,
+        "95c68e4822f364ea8b95c12eddbd88f53534bac570d1cc2384e7b2a65c68aca5"
+      ],
+      [
+        "App/App.swift",
+        420,
+        "8d3d63035141efd3b257001c8bdb61469c238bb0add258af33e641793c70f7e9"
+      ],
+      [
+        "App/DirtyValue.swift",
+        420,
+        "5fbe344931f9e9bcf59abe119b430404c4f218721bd1fa5c5e74808932f3a4b4"
+      ],
+      [
+        "ShimProbe.xcodeproj/project.pbxproj",
+        420,
+        "27cb51019f4a10831fb60b803343134e2123374c316db31feb6ee2169f9b2493"
+      ],
+      [
+        "ShimProbe.xcodeproj/project.xcworkspace/contents.xcworkspacedata",
+        420,
+        "7f3b00b5c3fdb45242d7b87e1e5c4e25d1fa8129a16c94295ecc4e8ea2235c5f"
+      ],
+      [
+        "ShimProbe.xcodeproj/xcshareddata/xcschemes/ShimProbe.xcscheme",
+        420,
+        "5b80b2b4c6cff399067ff2d40850bbd88712c57d8c3b93f2a789c80940b75192"
+      ],
+      [
+        "Tests/ProbeTests.swift",
+        420,
+        "55646a756d6a106c78070973ac9476fcf0cac28ff1b5ccd6f5e1d0349fbf7029"
+      ],
+      [
+        "UnitTests/UnitTests.swift",
+        420,
+        "e7e6f043a091dcf7b44f7c0379c219d018532a2840d1965fc7ba324d16447989"
+      ],
+      [
+        "probe.sh",
+        493,
+        "9827bf5d2f02cebf231f0ffe4a30ae3b9c7fa2d7b6e53578fd609b5f3f45b525"
+      ],
+      [
+        "project.yml",
+        420,
+        "81eeac0e88928f8eab6d3189ba9652218ac8984e0d5a1112e7d8812d89d55034"
+      ],
+      [
+        "untracked.txt",
+        420,
+        "528eee7ba2c0adea12842fd3eab1088d4d8402d115182154b0baef559f2164f2"
+      ],
+      [
+        "value-link",
+        493,
+        "link:untracked.txt"
+      ]
+    ],
+    "hash": "d26edea49eb252c6f6ac7150fa6776940b5acc7ad61e5debd196166bd14c5400"
+  },
+  "identity": {
+    "user": "kanna-build",
+    "uid": 502,
+    "groups": "staff everyone localaccounts _developer com.apple.sharepoint.group.1 _lpoperator",
+    "console_uid": 502,
+    "console_user": "kanna-build",
+    "launchd_domain": "Aqua",
+    "hostname": "Manageds-Virtual-Machine.local",
+    "serial": "Z94RTG0KNJ",
+    "platform_uuid": "3DA71512-A28D-57BF-8717-1C8A7A721A66",
+    "vsock_cid": "3",
+    "macos": "26.6.2",
+    "build": "25G83",
+    "xcode": "Xcode 27.0\nBuild version 27A266a",
+    "arch": "arm64",
+    "interfaces": "lo0 gif0 stf0 anpi0 en0 en4 utun0 utun1 utun2 utun3",
+    "admin": false
+  },
+  "xcode": "Xcode 27.0\nBuild version 27A266a",
+  "request": {
+    "identity": [
+      "Gus-MacBook-Pro.local",
+      "cb54267c57fa05878f5e8c63ae30f9ff25a4897944fbcc8a899a3926dffb7ee3",
+      "concurrent-tenant-a"
+    ],
+    "root": "/private/tmp/claude-502/-Users-jeremyhale--kanna-v4-repos-tampopogk-kanna--kanna-worktrees-task-cc0b19e8/34a5eca0-79d6-4099-95f9-f5c5e3fc9c4c/scratchpad/work/tenant-a",
+    "cwd": ".",
+    "argv": [
+      "xcodebuild",
+      "-project",
+      "/private/tmp/claude-502/-Users-jeremyhale--kanna-v4-repos-tampopogk-kanna--kanna-worktrees-task-cc0b19e8/34a5eca0-79d6-4099-95f9-f5c5e3fc9c4c/scratchpad/work/tenant-a/ShimProbe.xcodeproj",
+      "-scheme",
+      "ShimProbe",
+      "-destination",
+      "platform=macOS",
+      "-parallel-testing-enabled",
+      "NO",
+      "test"
+    ],
+    "developer_dir": "/Applications/Xcode.app/Contents/Developer",
+    "ui": true,
+    "app": null,
+    "snapshot_hash": "d26edea49eb252c6f6ac7150fa6776940b5acc7ad61e5debd196166bd14c5400"
+  }
+}

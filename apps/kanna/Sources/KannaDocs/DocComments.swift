@@ -107,6 +107,7 @@ package final class DocBar: FlippedView {
     package let agent = Chip("")
     package let threads = Chip("Threads")
     package let diff = Chip("")
+    package let comments = Chip("Comments")
 
     package init() {
         super.init(frame: .zero)
@@ -114,8 +115,10 @@ package final class DocBar: FlippedView {
         path.font = DocTheme.mono
         path.textColor = DocTheme.soft
         path.lineBreakMode = .byTruncatingTail
-        for view in [path, agent, threads, diff] { addSubview(view) }
+        for view in [path, agent, threads, diff, comments] { addSubview(view) }
         threads.on = true
+        comments.isHidden = true
+        diff.isHidden = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -123,7 +126,7 @@ package final class DocBar: FlippedView {
     package override func layout() {
         super.layout()
         var x = bounds.width - 10
-        for chip in [threads, agent] where !chip.isHidden {
+        for chip in [comments, threads, agent] where !chip.isHidden {
             x -= chip.frame.width
             chip.frame.origin = NSPoint(x: x, y: 6)
             x -= 10
@@ -241,15 +244,18 @@ package enum DocWait: Equatable {
 
     package static let grace: TimeInterval = 5
 
+    package static let waitingNote = "Waiting · it goes to the agent when its turn is over"
+
     package static func of(_ thread: DocThread, agent: String?, status: String?, now: Date = Date()) -> DocWait? {
         guard thread.isOpen, let last = thread.messages.last, last.who == "you" else { return nil }
         if thread.status == "unsent" { return .note("Not sent · \(thread.error ?? "no agent")", warn: false) }
+        if thread.status == "waiting" { return .note(waitingNote, warn: false) }
         guard agent != nil else { return .note("Not answered · no agent", warn: false) }
         switch status {
         case "working": return .typing
         case "needs-you": return .note("Not answered · the agent is waiting on you", warn: true)
         default:
-            if let at = DocStore.date(last.at), now.timeIntervalSince(at) < grace { return .typing }
+            if let at = Doc.date(last.at), now.timeIntervalSince(at) < grace { return .typing }
             return .note("Not answered · the agent stopped", warn: false)
         }
     }

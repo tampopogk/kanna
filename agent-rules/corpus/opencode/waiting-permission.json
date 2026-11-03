@@ -1,9 +1,0 @@
-{
-  "rows": [
-    "Allow once  Allow always"
-  ],
-  "title": "OpenCode",
-  "cliVersion": "1.18.32",
-  "expected": "needs-you",
-  "source": "Kanna fixture behavior: permission action row"
-}

@@ -599,7 +599,7 @@ mod tests {
         }
         fn post(&self, recipient: &str, repo: Option<&str>, from: &str, text: &str) -> Result<i64, KmuxError> {
             let db = self.db.borrow().clone().expect("the fake's db");
-            let id = db.put_message(recipient, repo.unwrap_or("/r"), from, text, None).unwrap().id;
+            let id = db.put_message(recipient, repo.unwrap_or("/r"), from, text, None, None).unwrap().id;
             self.posted.borrow_mut().push((id, recipient.into(), repo.map(String::from), from.into(), text.into()));
             Ok(id)
         }
