@@ -49,15 +49,15 @@ sequenceDiagram
     M->>D: machine status, relay_config
     M->>M: one-time token T, a fresh ID
     M->>H: incus init images:ubuntu/26.04/cloud, profile kcloud-tenant, cloud-init with T
-    H->>V: boot; cloud-init makes kanna, writes T (0600), enables linger
+    H->>V: boot · cloud-init makes kanna, writes T (0600), enables linger
     M->>V: incus exec: server-setup.sh, vm-setup.sh, the tarball, the relay's token
-    V->>V: server setup; kanna machine name, kanna machine relay
+    V->>V: server setup · kanna machine name · kanna machine relay
     M->>V: kanna machine pair --token-file T (waits)
     M->>D: machine pair T --peer KEY, hosted
     D->>V: SPAKE2 over T through the relay, proofs both ways
     D->>D: Kanna.app: Add NAME (Kanna Cloud)?
     D->>V: the peer log with the signed add {hosted: true}
-    M->>V: rm T; incus config unset cloud-init.user-data
+    M->>V: rm T · incus config unset cloud-init.user-data
     M->>V: ssh-keygen a deploy key per repo
     M->>G: add it to the repo (write)
     M->>V: ssh config, git insteadOf, clone into ~/repos
@@ -118,3 +118,5 @@ The daemon's `machine` command gains `offer {token}`, `pair {hosted}` and `relay
 ## 8. Tested
 
 `cargo test -p kanna-net` (the hosted rule's scenarios from the model, all 120 delivery orders of two valid and three forged entries, and a VM enrolled by token through a relay, hosted, refused when it tries to pair or revoke), `cargo test -p kanna --lib cloud`.
+
+On r720-1 (2026-11-03; Ubuntu 26.04.1, Incus 6.0.5, now wired at 172.16.0.11): `setup-host` made the pool, ACL, bridge and profile beside the host's three earlier VMs, which kept running. `provision` from this Mac, against a private daemon on a test socket whose relay was iroh's public `use1-1.relay.n0.iroh.link` and a stand-in app saying yes, with a tarball from `scripts/build-linux.sh`: about 5 minutes, most of it apt and npm. The VM was enrolled, listed as `(Kanna Cloud)` and asked about with `hosted: true`; `kanna --host cloud-try1 task list` answered and `machine ping` opened all six stream kinds, relayed (390 ms through that relay, which is in Virginia); the token file and the cloud-init user data were gone. An API key added on the Mac reached the VM (`kanna accounts` there: `from mbp-test`). `release` revoked it, destroyed the instance with its LVs and logs, said which key to rotate, and the host's other VMs were untouched.
