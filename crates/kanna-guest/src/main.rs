@@ -31,6 +31,10 @@ fn main() {
             }
         }
     }
+    if let Err(e) = wait_for_volume(&config.state) {
+        eprintln!("kanna-guest: {e}");
+        std::process::exit(1);
+    }
     if let Some(port) = egress {
         config.egress = Some(port);
         if let Err(e) = kanna_guest::vsock::relay_egress(port, kanna_guest::vsock::EGRESS_PORT) {
@@ -86,5 +90,29 @@ fn main() {
                 eprintln!("kanna-guest: {e}");
             }
         });
+    }
+}
+
+fn wait_for_volume(state: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut parts = state.components();
+    let (Some(std::path::Component::RootDir), Some(first), Some(name)) = (parts.next(), parts.next(), parts.next()) else { return Ok(()) };
+    if first.as_os_str() != "Volumes" {
+        return Ok(());
+    }
+    let volume = std::path::Path::new("/Volumes").join(name);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let mounted = match (std::fs::metadata("/Volumes"), std::fs::metadata(&volume)) {
+            (Ok(parent), Ok(child)) => parent.dev() != child.dev(),
+            _ => false,
+        };
+        if mounted {
+            return Ok(());
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(format!("{} isn't mounted; the state folder {} lives on it", volume.display(), state.display()));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 }

@@ -272,7 +272,20 @@ impl Guests {
                 needs_name()?;
                 let master = args["from"].as_str().ok_or_else(|| KmuxError::new("bad_request", "build guest create NAME --from MASTER_VM_DIR"))?;
                 self.create(&name, Path::new(master), args["cpus"].as_u64(), args["memory"].as_u64())?;
+                if let Err(e) = data_disk(&self.dir().join(&name).join("vm/data.img"), args["data"].as_u64().unwrap_or(DATA_GIB)) {
+                    let _ = std::fs::remove_dir_all(self.dir().join(&name));
+                    return Err(e);
+                }
                 Ok(json!({ "guest": name }))
+            }
+            "data" => {
+                needs_name()?;
+                let vm = self.dir().join(&name).join("vm");
+                if !vm.is_dir() {
+                    return Err(KmuxError::new("not_found", format!("no guest {name}")));
+                }
+                data_disk(&vm.join("data.img"), args["data"].as_u64().unwrap_or(DATA_GIB))?;
+                Ok(json!({ "guest": name, "done": "data disk added; it's attached when the guest next starts" }))
             }
             "stop" | "retire" => {
                 needs_name()?;
@@ -356,9 +369,63 @@ impl Guests {
     }
 }
 
+const DATA_GIB: u64 = 64;
+
+pub const DATA_VOLUME: &str = "KannaData";
+
+fn data_disk(path: &Path, gib: u64) -> Result<(), KmuxError> {
+    let failed = |what: String| KmuxError::new("failed", what);
+    if path.exists() {
+        return Err(KmuxError::new("exists", format!("{} already exists", path.display())));
+    }
+    if !(8..=4096).contains(&gib) {
+        return Err(KmuxError::new("bad_request", "a data disk is 8 to 4096 GiB"));
+    }
+    let file = std::fs::File::create_new(path).map_err(|e| failed(format!("can't make {}: {e}", path.display())))?;
+    let made = (|| {
+        file.set_len(gib << 30).map_err(|e| failed(format!("can't size {}: {e}", path.display())))?;
+        let attached = Command::new("/usr/bin/hdiutil").args(["attach", "-nomount", "-imagekey", "diskimage-class=CRawDiskImage"]).arg(path).output().map_err(|e| failed(format!("hdiutil: {e}")))?;
+        let device = String::from_utf8_lossy(&attached.stdout).split_whitespace().next().filter(|d| d.starts_with("/dev/disk")).map(String::from);
+        let Some(device) = device.filter(|_| attached.status.success()) else {
+            return Err(failed(format!("hdiutil couldn't attach {}: {}", path.display(), String::from_utf8_lossy(&attached.stderr).trim())));
+        };
+        let erased = Command::new("/usr/sbin/diskutil").args(["eraseDisk", "APFS", DATA_VOLUME, "GPT", &device]).output();
+        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
+        match erased {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) => Err(failed(format!("diskutil couldn't format {device}: {}", String::from_utf8_lossy(&out.stderr).trim()))),
+            Err(e) => Err(failed(format!("diskutil: {e}"))),
+        }
+    })();
+    if made.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    made
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_data_disk_is_an_apfs_volume_named_for_the_guest_to_find() {
+        let dir = std::env::temp_dir().join(format!("kanna-data-disk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("data.img");
+        data_disk(&image, 8).unwrap();
+        assert!(data_disk(&image, 8).is_err(), "an existing data disk isn't replaced");
+        let attached = Command::new("/usr/bin/hdiutil").args(["attach", "-readonly", "-nomount", "-imagekey", "diskimage-class=CRawDiskImage"]).arg(&image).output().unwrap();
+        let text = String::from_utf8_lossy(&attached.stdout).to_string();
+        let device = text.split_whitespace().next().unwrap().to_string();
+        let store = format!("Physical Store {}", device.trim_start_matches("/dev/"));
+        let listed = Command::new("/usr/sbin/diskutil").arg("list").output().unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout).split("\n\n").filter(|block| block.contains(&store)).collect::<Vec<_>>().join("\n");
+        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
+        assert!(listed.contains(DATA_VOLUME), "{listed}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn only_global_addresses_are_reachable() {

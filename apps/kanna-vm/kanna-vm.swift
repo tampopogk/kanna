@@ -112,7 +112,13 @@ config.bootLoader = VZMacOSBootLoader()
 config.cpuCount = cpus
 config.memorySize = memoryGiB * 1024 * 1024 * 1024
 config.graphicsDevices = [graphics]
-config.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: disk)]
+var storage = [VZVirtioBlockDeviceConfiguration(attachment: disk)]
+let dataURL = vmDir.appendingPathComponent("data.img")
+if FileManager.default.fileExists(atPath: dataURL.path) {
+    let data = try VZDiskImageStorageDeviceAttachment(url: dataURL, readOnly: false, cachingMode: .automatic, synchronizationMode: .full)
+    storage.append(VZVirtioBlockDeviceConfiguration(attachment: data))
+}
+config.storageDevices = storage
 config.keyboards = [VZUSBKeyboardConfiguration()]
 config.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
 config.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]

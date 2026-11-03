@@ -91,11 +91,14 @@ fn shim(tool: &str, argv0: &str, args: Vec<String>) -> Result<i32, Failure> {
 }
 
 const GUESTS_HELP: &str = "kanna guests [list]
-kanna guests create NAME --from MASTER_VM_DIR [--cpus N] [--memory GIB]
+kanna guests create NAME --from MASTER_VM_DIR [--cpus N] [--memory GIB] [--data GIB]
+kanna guests data NAME [--data GIB]
 kanna guests start|stop|retire NAME
 
 A build Mac's guests: macOS VMs that run builds for one tenant, each an APFS clone of a master VM folder with its own
-machine identity. The daemon keeps every guest that isn't stopped running; retire destroys its disk.";
+machine identity and a data disk (default 64 GiB, the volume KannaData) for its builds. `data` adds one to a guest made
+without it, attached when the guest next starts. The daemon keeps every guest that isn't stopped running; retire destroys
+its disks.";
 
 fn guests(args: &[String], env: Env) -> Result<(), Failure> {
     let mut args = Argv::new(args.to_vec());
@@ -113,7 +116,7 @@ fn guests(args: &[String], env: Env) -> Result<(), Failure> {
         let from = std::fs::canonicalize(&from).map_err(|e| fail(exit::USAGE, format!("guests: {from}: {e}")))?;
         request["from"] = json!(from);
     }
-    for (flag, key) in [("--cpus", "cpus"), ("--memory", "memory")] {
+    for (flag, key) in [("--cpus", "cpus"), ("--memory", "memory"), ("--data", "data")] {
         if let Some(value) = args.option(flag)? {
             request[key] = json!(value.parse::<u64>().map_err(|_| fail(exit::USAGE, format!("guests: {flag} takes a number")))?);
         }
