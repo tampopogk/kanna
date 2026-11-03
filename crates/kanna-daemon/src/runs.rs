@@ -150,11 +150,6 @@ pub fn unbuilt(pipeline: &Pipeline) -> Vec<String> {
     let mut out = vec![];
     for stage in &pipeline.stages {
         let line = stage.line;
-        if let Kind::Agent(agent) = &stage.kind {
-            if !tasks::reports_status(&agent.agent) {
-                out.push(format!("{line}: {} uses {}, which doesn't report its status (OSC 7501), so a run can't tell when its turn ends: runs take claude or codex", stage.name, agent.agent));
-            }
-        }
         let mut say = |what: &str| out.push(format!("{line}: {} uses {what}, which runs can't do yet", stage.name));
         match &stage.kind {
             Kind::Agent(agent) => {
@@ -920,6 +915,13 @@ impl Runs {
             }
             Work::Ask { .. } => {}
         }
+    }
+
+    pub fn too_old(self: &Rc<Self>, pane: &str, why: &str) -> bool {
+        let found = self.live.borrow().iter().find(|l| l.visit.as_ref().is_some_and(|v| v.row.terminal.as_deref() == Some(pane) && matches!(v.work, Work::Agent { .. }))).map(|l| l.row.id.clone());
+        let Some(id) = found else { return false };
+        self.stop(&id, "stopped", why, Some("daemon"), true);
+        true
     }
 
     pub fn status(self: &Rc<Self>, pane: &str, ended: bool) {
@@ -1809,12 +1811,6 @@ mod tests {
         assert_eq!(failure_lines(output), vec!["FAILED test_two", "test result: 1 failed"]);
         let long: String = (0..200).map(|i| format!("line {i}\n")).collect();
         assert!(command_feedback(&long).starts_with("line 120\n"), "the last 80 lines");
-    }
-
-    #[test]
-    fn a_stage_whose_agent_doesn_t_report_its_status_is_refused() {
-        let p = pipeline("a = claude\nb = codex\nc = copilot\na -> b -> c -> done\n");
-        assert_eq!(unbuilt(&p), vec!["3: c uses copilot, which doesn't report its status (OSC 7501), so a run can't tell when its turn ends: runs take claude or codex"]);
     }
 
     #[test]

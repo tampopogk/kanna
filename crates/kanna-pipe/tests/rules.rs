@@ -41,7 +41,7 @@ fn comments_end_at_hash_but_not_inside_a_question() {
 #[test]
 fn syntax_errors_name_their_line() {
     only("b = claude\n\nb -> done\nwhat is this\n", Rule::Syntax, "t.kojo:4: expected a stage (`name = …`), a flow (`a -> b`) or the budget (`budget = N sessions, 8h`)");
-    only("b = gemini\nb -> done", Rule::Syntax, "t.kojo:1: unknown agent 'gemini'; use claude, codex, copilot, opencode, agy, or run, ask or merge");
+    only("b = gemini\nb -> done", Rule::Syntax, "t.kojo:1: unknown agent 'gemini'; use claude, codex, opencode, agy, or run, ask or merge");
     only("b = claude:max\nb -> done", Rule::Syntax, "t.kojo:1: claude takes the efforts low, medium, high, not 'max'");
     only("b = claude\nb -[fail, sometimes]-> done", Rule::Syntax, "t.kojo:2: unknown or repeated arrow option 'sometimes'; use pass or fail, max N, reset and progress, each once");
     only("b = claude\nb -[max 0]-> done", Rule::Syntax, "t.kojo:2: `max 0`: max takes a whole number above 0");

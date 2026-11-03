@@ -30,6 +30,7 @@ git branch -m fix-login-redirect
 - **Short kebab-case,** what the work is; follow the repo's branch prefixes if it has any.
 - **Only the branch:** leave the worktree's folder where it is, since you and your terminals are in it.
 - **Before you push,** so the remote branch has the real name.
+- **Other worktrees you make** (to check main, say) go in `.worktrees/` with your task's ID in the name (`.worktrees/3f9a1c2e-main-check`): builds are kept by the worktree folder's name, so a name another task also picks shares its builds.
 
 ## Add tasks to the Shelf
 
@@ -42,7 +43,7 @@ kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ...
 - **Search first.** Before you make a task, look for one that already covers the work: `kanna task list WORDS` with two or three words for the work, then again in other words ("send enter", then "submit codex"), and `kanna task list WORDS --include-done` to see whether it was done already. If a task covers it, tell the user and add to that one instead of making another: tell a running one with `kanna task send TASK "..."`; a Shelf task that hasn't started can't have its first message edited, so make a new one with both and end the old one (`kanna task done TASK`). If one overlaps, say so in both, or make the new one wait for it (`--after`).
 - **The first message stands alone.** The agent that gets it starts fresh in its own worktree and hasn't seen this conversation: say what to do, why, where (files, functions), and how to know it's done.
 - **Its first message can't change.** Only a Shelf task's name can (`kanna task name TASK NAME`). To change what it says, make a new task and take the old one off with `kanna task done TASK`.
-- **The agent is the user's default** (`tasks.agent`, `claude` unless set). When the user asks for another one for a task ("give that to codex"), add `--agent codex` (or `claude`, `copilot`, `opencode`, `agy`).
+- **The agent is the user's default** (`tasks.agent`, `claude` unless set). When the user asks for another one for a task ("give that to codex"), add `--agent codex` (or `claude`, `opencode`, `agy`).
 - **It starts by itself.** Shelf tasks run by themselves, unattended, a few at a time (`shelf.runners`, 3 by default), oldest first, so write a first message an agent can do in one go: settle the open decisions with the user before you make it, name the files and how to test it, and say what to do when stuck. When it needs the user, it asks and ends its turn: Kanna stops it there, and the user resumes it on the Desk.
 - **Say what it waits for.** If it builds on other tasks' work, add `--after TASK,...` (IDs from `kanna task list`, like `task-3f9a`; yours too: your pane works). It's **blocked** until each of them is ready or done, and its Shelf row shows it. Once they're ready, it starts on their branches (stacked); see [Ready and stale](#ready-and-stale).
 - **Call a task by its name, never its ID:** Kanna shows no task or pane IDs (`task-1dfb`, `term-5`), so tell the user "Add rate limiting" waits for "Fix login redirect", not for task-1dfb. IDs are only for commands (`--after task-3f9a`), and a command you show may keep them. When two tasks' names are alike, say where each one is (the Desk, the Shelf).
@@ -70,6 +71,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 - **Run it from your own terminal, without `--window`:** the tab opens in your task's workspace, even while it's hidden on the Shelf or on the Desk but not active, and the reply names your task and where it is (`opened term-5 in ws-3 (task-1dfb, on the Desk), tab-9: running`). `--window new` opens a window of your task's, shown and hidden with it.
 - **Don't put a mermaid diagram in the chat when the chat is a terminal:** it shows there as source. A diagram, or an explanation longer than a few lines, goes in a markdown doc in `.kanna/tmp/` that you open in a tab, as the `kanna-explain` skill says.
 - **A tab, not a split or a new window,** so your pane keeps its size.
+- **Reuse a tab that already shows it:** `kanna workspace list` lists your workspace's tabs and panes. If the file is open there, bring that pane forward (`kanna focus PANE`), or point it elsewhere (`kanna navigate`), or turn comments on in it (`kanna markup PANE`), instead of opening a second copy.
 - **Refer to it by the ID the reply prints** (`term-5`, `diff-2`). Pane names are unique across Kanna, so a `--name` another task already uses fails with `name_taken`.
 - In the chat, a line saying what the tab shows.
 

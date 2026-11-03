@@ -52,7 +52,7 @@ e2e    -> done
 
 | Form | Runs | Verdict | Feedback it leaves |
 |---|---|---|---|
-| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `copilot`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, the one it reports: `kanna run done pass` or `kanna run done fail` | the answer it reports with `kanna run done` |
+| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, the one it reports: `kanna run done pass` or `kanna run done fail` | the answer it reports with `kanna run done` |
 | `NAME = run COMMAND…` | the command in the run's worker with your login shell, as [task scripts](task-scripts.md) run, with the same variables plus `KANNA_RUN`, `KANNA_STAGE` and `KANNA_FEEDBACK` (a file holding the previous feedback) | exit 0 passes | its output's tail, lines matching the repo's failure pattern first |
 | `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers (`ok = ask "Is the plan right?"` after `plan`) | yes passes, no fails | your note, after either answer |
 | `NAME = merge STAGE` | joins every instance of a fanned-out STAGE into the run's branch | a clean merge passes | the conflicts |

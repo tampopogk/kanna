@@ -71,8 +71,8 @@ In [agent messaging](agent-messaging.md), a message waits when its recipient can
 | Field | Value |
 |---|---|
 | title | `Messages wait for NAME`: the recipient task's name, else the pane |
-| detail | WHY, e.g. `copilot can't take messages: only claude and codex can` |
+| detail | WHY, e.g. `agy can't take messages: only claude and codex can` |
 | pane | the recipient's pane, so the toast also names its task, and a click shows it |
 | key | `messages:PANE:WHY`: one toast per pane and reason for the daemon's life, though the log line comes again after a delivery clears the warning |
 
-Tested in e2e `agent_messaging` (a message to a copilot task raises one toast, and only one).
+Tested in e2e `agent_messaging` (a message to an agy task raises one toast, and only one).

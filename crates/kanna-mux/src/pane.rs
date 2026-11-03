@@ -10,11 +10,12 @@ pub enum PaneType {
     Md,
     Code,
     Diff,
+    Log,
     Serial,
 }
 
 impl PaneType {
-    pub const ALL: [PaneType; 7] = [PaneType::Term, PaneType::Web, PaneType::Ios, PaneType::Md, PaneType::Code, PaneType::Diff, PaneType::Serial];
+    pub const ALL: [PaneType; 8] = [PaneType::Term, PaneType::Web, PaneType::Ios, PaneType::Md, PaneType::Code, PaneType::Diff, PaneType::Log, PaneType::Serial];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -24,6 +25,7 @@ impl PaneType {
             PaneType::Md => "md",
             PaneType::Code => "code",
             PaneType::Diff => "diff",
+            PaneType::Log => "log",
             PaneType::Serial => "serial",
         }
     }
@@ -208,7 +210,7 @@ pub struct Pane {
     pub comment: Option<Comment>,
     pub tour: Option<Tour>,
     pub stop: Option<StopMark>,
-    pub diff: Option<Vec<String>>,
+    pub git_args: Option<Vec<String>>,
     pub view: Option<String>,
     pub agent: Option<String>,
     pub markup: bool,
@@ -245,7 +247,7 @@ impl Pane {
             comment: None,
             tour: None,
             stop: None,
-            diff: None,
+            git_args: None,
             view: None,
             agent: None,
             markup: false,
@@ -293,7 +295,7 @@ impl Pane {
             (Some(name), _) => Some(name.clone()),
             (None, PaneType::Md | PaneType::Code) => self.path.as_deref().and_then(file_name),
             (None, PaneType::Web) => self.title.clone().filter(|t| !t.trim().is_empty()).or_else(|| self.url.as_deref().and_then(host)),
-            (None, PaneType::Diff) => Some(std::iter::once("diff").chain(self.diff.iter().flatten().map(String::as_str)).collect::<Vec<_>>().join(" ")),
+            (None, PaneType::Diff | PaneType::Log) => Some(std::iter::once(self.kind.as_str()).chain(self.git_args.iter().flatten().map(String::as_str)).collect::<Vec<_>>().join(" ")),
             (None, PaneType::Serial) => self.title.clone().filter(|t| !t.trim().is_empty()).or_else(|| self.path.as_deref().and_then(file_name).map(|n| n.trim_start_matches("cu.").to_string())),
             (None, PaneType::Term | PaneType::Ios) => None,
         };
@@ -350,8 +352,12 @@ impl Pane {
             }
             PaneType::Diff => {
                 out.insert("path".into(), opt(self.path.as_deref()));
-                out.insert("args".into(), diff_args(self.diff.as_deref()));
+                out.insert("args".into(), diff_args(self.git_args.as_deref()));
                 out.insert("view".into(), Value::String(self.view.clone().unwrap_or_else(|| "unified".into())));
+            }
+            PaneType::Log => {
+                out.insert("path".into(), opt(self.path.as_deref()));
+                out.insert("args".into(), diff_args(self.git_args.as_deref()));
             }
             PaneType::Serial => serial_fields(self, &mut out),
         }
@@ -399,7 +405,7 @@ pub struct Panes {
     numbers: HashMap<&'static str, usize>,
 }
 
-pub const CONTENT_PREFIXES: [&str; 6] = ["term", "file", "page", "ios", "diff", "serial"];
+pub const CONTENT_PREFIXES: [&str; 7] = ["term", "file", "page", "ios", "diff", "log", "serial"];
 
 pub fn content_prefix(kind: PaneType) -> &'static str {
     match kind {
@@ -408,6 +414,7 @@ pub fn content_prefix(kind: PaneType) -> &'static str {
         PaneType::Web => "page",
         PaneType::Ios => "ios",
         PaneType::Diff => "diff",
+        PaneType::Log => "log",
         PaneType::Serial => "serial",
     }
 }
@@ -545,7 +552,7 @@ impl Panes {
 
     pub fn note_numbers(&mut self, numbers: &HashMap<String, usize>) {
         for (prefix, n) in numbers {
-            if let Some(prefix) = ["file", "page", "ios", "diff", "serial"].into_iter().find(|p| p == prefix) {
+            if let Some(prefix) = ["file", "page", "ios", "diff", "log", "serial"].into_iter().find(|p| p == prefix) {
                 let at = self.numbers.entry(prefix).or_insert(0);
                 *at = (*at).max(*n);
             }
@@ -658,7 +665,7 @@ mod tab_name_tests {
         assert_eq!(pane(PaneType::Ios, None).tab_name(), None);
         let mut diff = pane(PaneType::Diff, None);
         assert_eq!(diff.tab_name().as_deref(), Some("diff"));
-        diff.diff = Some(vec!["--merge-base".into(), "main".into()]);
+        diff.git_args = Some(vec!["--merge-base".into(), "main".into()]);
         assert_eq!(diff.tab_name().as_deref(), Some("diff --merge-base main"));
     }
 
