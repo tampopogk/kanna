@@ -50,6 +50,8 @@ final class Contents {
     var portOpen: ((Int, String) -> Result<Int, KannaError>)?
     var contextMenu: (() -> NSMenu?)?
     var agentStatus: ((String) -> String?)?
+    var agentName: ((String) -> String)?
+    var onComments: ((String, NSView) -> Void)?
     private var markdownSpots: [String: [String: (y: CGFloat, zoom: CGFloat)]] = [:]
     var textSize: ((String) -> CGFloat?)?
     var onTextSize: ((String, CGFloat) -> Void)?
@@ -185,6 +187,8 @@ final class Contents {
             markdown.agent = pane["agent"]?.string
             markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
             markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            markdown.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
+            markdown.onComments = { [weak self] button in self?.onComments?(id, button) }
             if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
                 markdown.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
                 markdown.tour = DocTourStep(thread: thread, at: Int(at), of: Int(mark["of"]?.number ?? at))
@@ -296,6 +300,8 @@ final class Contents {
             web.agent = pane["agent"]?.string
             web.agentStatus = web.agent.flatMap { self.agentStatus?($0) }
             web.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            web.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
+            web.onComments = { [weak self] button in self?.onComments?(id, button) }
             web.onMarkup = { [weak self] markup in self?.marked(markup, in: id) }
             content = web
         case "ios":

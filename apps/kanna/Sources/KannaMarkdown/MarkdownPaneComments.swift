@@ -28,7 +28,7 @@ extension MarkdownPaneView {
 
     func agentChanged() {
         guard markup else { return }
-        bar.agent.set(agent.map { "Agent: \($0)" } ?? "No agent: comments are saved, not sent")
+        bar.agent.set(agent.map { "Agent: \(agentName?($0) ?? $0)" } ?? "No agent: comments are saved, not sent")
         bar.agent.warn = agent == nil
         bar.needsLayout = true
         if threadsLoaded, let agent, record.agent != agent { change(.agent(agent)) }
@@ -61,6 +61,11 @@ extension MarkdownPaneView {
     public var commentBoxThread: String? { box.map { $0.threadID ?? "new" } }
     public var activeThread: String? { active }
     public var threadsShown: Bool { threadsVisible }
+    public var marksShown: Bool { markup && showThreads }
+    public var commentsButtonShown: Bool { bar.superview != nil && !bar.comments.isHidden }
+    public var barText: [String] { [bar.path, bar.diff.label, bar.comments.label, bar.agent.label, bar.threads.label].compactMap { $0.superview?.isHidden == false && !$0.isHidden ? $0.stringValue : nil } }
+    public func pressComments() { bar.comments.onPress?() }
+    public func pressThreads() { bar.threads.onPress?() }
     public var cards: [String: CardState] { panel.cardStates }
 
     public var tourFooter: (thread: String, at: Int, of: Int, back: Bool, next: String)? {
@@ -106,6 +111,8 @@ extension MarkdownPaneView {
         }
         bar.threads.on = threadsVisible
         needsLayout = true
+        if !showThreads { closeBox() }
+        refreshMarks()
     }
 
     public func show(threads: DocRecord) {
@@ -130,13 +137,13 @@ extension MarkdownPaneView {
         for thread in record.threads {
             if let range = Doc.locate(thread, in: text) { anchors[thread.id] = range }
         }
-        var marks = record.threads.compactMap { thread in anchors[thread.id].map { DocMark(range: $0, kind: thread.isOpen ? .open : .resolved) } }
-        if let pending { marks.append(DocMark(range: pending.range, kind: .active)) } else if let active, let range = anchors[active] { marks.append(DocMark(range: range, kind: .active)) }
+        var marks = showThreads ? record.threads.compactMap { thread in anchors[thread.id].map { DocMark(range: $0, kind: thread.isOpen ? .open : .resolved) } } : []
+        if let pending { marks.append(DocMark(range: pending.range, kind: .active)) } else if showThreads, let active, let range = anchors[active] { marks.append(DocMark(range: range, kind: .active)) }
         layoutManager.marks = marks
         textView.needsDisplay = true
         overviewChanged()
         refreshPanel()
-        bar.threads.set("Threads \(record.threads.filter(\.isOpen).count)")
+        bar.threads.set("Threads (\(record.threads.filter(\.isOpen).count))")
         bar.needsLayout = true
         revealTourStop()
     }
@@ -210,6 +217,7 @@ extension MarkdownPaneView {
 
     func openComposer(_ selection: NSRange) {
         guard let storage = textView.textStorage else { return }
+        if !showThreads { toggleThreads() }
         let whole = storage.string as NSString
         let raw = whole.substring(with: selection)
         let quote = raw.trimmingCharacters(in: .whitespacesAndNewlines)

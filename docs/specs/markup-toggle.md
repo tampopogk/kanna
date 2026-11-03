@@ -81,9 +81,9 @@ sequenceDiagram
     D-->>C: reused md-4
 ```
 
-- **Finding the pane** is the layout's: `showing` takes the caller pane and candidate panes and answers with the one in the caller's workspace, focused first, then by focus history. It replaces `showing_in`'s window match, which the code pane's reuse (`kanna comment`, `kanna open code`) and tours keep using, now scoped the same way.
+- **Finding the pane** is the layout's: `showing {from, among}` answers with the pane of `among` in the caller's workspace (or free window), the focused one first, then by focus history. A code pane's reuse (`kanna comment`, `kanna open code`) and tours still match by window.
 - **Focus history:** each workspace keeps its panes in the order they were last focused (`Tabs.recent`), updated wherever focus moves, saved with the layout, and dropped as panes close.
-- **Routing:** `markup {pane}` with no `agent` and no `off` from the app (`"route": true`) takes the pane's workspace's docked pane if it has one (a task's agent or a planner's terminal), else the pane's own `agent` if that pane is running, else answers `no_agent`. The app then shows the menu, built from the published workspaces (dock panes that are running, with their task and its place), and asks again with the agent picked.
+- **Routing:** `markup {pane, route: true}` with no `agent` (the app's) takes the docked pane of the pane's workspace (`dock-of`, a task's agent or a planner's terminal), else the pane's own `agent` if that pane is running, else answers `no_agent`. The app then shows the menu, built from the published workspaces (dock panes that are running, with their task and its place), and asks again with the agent picked.
 - **The bar** (`DocBar`) gets **Comments**, shown when comments are off, and Threads reads *Threads (N)*. A markdown pane always adds the bar. A web pane adds a bar of its own above the page when it shows a local page with comments off; with comments on, `PageMarkupView` has it, as now. The page's view isn't moved or reloaded when the bar comes or goes; only its frame changes.
 - **Threads hides the marks:** the markdown pane's layout manager and the page's dots and outlines draw nothing while the comments are hidden; the threads and their anchors are kept, so showing them again doesn't read anything.
 

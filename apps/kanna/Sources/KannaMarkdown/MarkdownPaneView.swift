@@ -13,6 +13,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var onOpenCode: ((String, Int) -> Void)?
     public var onHistory: ((Bool) -> Void)?
     public var onZoom: (() -> Void)?
+    public var onComments: ((NSView) -> Void)?
+    public var agentName: ((String) -> String)? { didSet { agentChanged() } }
     public var startScrollY: CGFloat?
     public var contextMenu: (() -> NSMenu?)? { didSet { textView.contextMenu = contextMenu } }
     public let path: String
@@ -109,6 +111,10 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         bar.path.stringValue = docName
         bar.diff.isHidden = diff == nil
         bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
+        bar.comments.onPress = { [weak self] in
+            guard let self else { return }
+            onComments?(bar.comments)
+        }
         textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
         showComments()
         textView.delegate = self
@@ -154,11 +160,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     private func showComments() {
-        if markup || diffBase != nil {
-            if bar.superview == nil { addSubview(bar) }
-        } else {
-            bar.removeFromSuperview()
-        }
+        if bar.superview == nil { addSubview(bar) }
+        bar.comments.isHidden = markup || diffRange != nil
         bar.agent.isHidden = !markup
         bar.threads.isHidden = !markup
         if markup {
@@ -186,7 +189,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     public override func layout() {
         super.layout()
-        let barHeight: CGFloat = markup || diffBase != nil ? 34 : 0
+        let barHeight: CGFloat = 34
         let height = max(0, bounds.height - barHeight)
         let shown = sides(height: height)
         let side = shown.comments ? ThreadPanel.width : 0

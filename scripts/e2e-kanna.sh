@@ -1721,6 +1721,114 @@ assert lone["dock"]["edge"] == "left" and lone["tabs"] == [], lone' "$KANNA_STAT
   check drawn "$(snap d1 docked_pane-restored)" 2
 }
 
+scenario markup_reuse M4
+markup_reuse() {
+  start_daemon && start_app || { echo "markup_reuse line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/reuse" mine other said kept count
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_reuse line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent" && kanna task new "Other" "say hi" --agent "$agent") >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  kanna task pick "$(tid 1)" >/dev/null && kanna task pick "$(tid 2)" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(pane Mine id)" == term-* && "$(pane Other id)" == term-* ]]' || { kanna workspace list --all; return 1; }
+  mine="$(pane Mine id)" other="$(pane Other id)"
+  mkdir -p "$dir/.git"
+  { printf '# Spec\n'; for i in $(seq 1 60); do printf '\nParagraph %s of the spec.\n' "$i"; done; } >"$dir/spec.md"
+  printf '<!doctype html><html><body><p>A page.</p></body></html>\n' >"$dir/page.html"
+  KANNA_TERMINAL="$mine" kanna open md --name first --tab "$dir/spec.md" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  KANNA_TERMINAL="$mine" kanna open md --name second --tab "$dir/spec.md" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  KANNA_TERMINAL="$other" kanna open md --name theirs --tab "$dir/spec.md" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  markup_reuse_md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"$1\"${2:-}}}"; }
+  markup_reuse_kept() { markup_reuse_md "$1" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(d["view"], d["loads"], round(d["scroll"]))'; }
+  markup_reuse_count() { kanna workspace list --all --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["panes"]))'; }
+  check wait_for 5 eval '[[ "$(markup_reuse_md first | field loads)" -ge 1 && "$(markup_reuse_md second | field loads)" -ge 1 ]]' || { markup_reuse_md first; return 1; }
+  markup_reuse_md first ',"scroll":120' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_reuse_kept first | cut -d " " -f 3)" == 120 ]]' || { markup_reuse_md first; return 1; }
+  kanna focus first >/dev/null && kanna focus "$mine" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  kept="$(markup_reuse_kept first)" count="$(markup_reuse_count)"
+  said="$(cd "$dir" && KANNA_TERMINAL="$mine" kanna markup spec.md)" || { echo "markup_reuse line $LINENO: $said"; return 1; }
+  [[ "$said" == "comments on in $(pane first id)"*"which already shows "*"spec.md"*"; focused" ]] || { echo "markup_reuse: kanna markup FILE should reuse first, focused last: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(markup_reuse_md first | field markup)" == True && "$(markup_reuse_md first | field agent)" == "$mine" ]]' || { markup_reuse_md first; return 1; }
+  check test "$(markup_reuse_kept first)" == "$kept" || { echo "markup_reuse: reusing the pane should keep its view, its load and its scroll ($kept)"; markup_reuse_kept first; return 1; }
+  check test "$(markup_reuse_count)" == "$count" || { echo "markup_reuse: kanna markup FILE opened a pane though one showed FILE"; kanna workspace list --all; return 1; }
+  check test "$(ws "$(tid 1)" focused)" == first || { echo "markup_reuse: the reused pane isn't focused"; kanna workspace list --all; return 1; }
+  check test "$(markup_reuse_md second | field markup)" == False || return 1
+  check test "$(markup_reuse_md theirs | field markup)" == False || { echo "markup_reuse: a pane in another task's workspace was used"; return 1; }
+  kanna markup first --off >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  kanna focus second >/dev/null && kanna focus "$mine" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  said="$(KANNA_TERMINAL="$mine" kanna markup "$dir/spec.md")" || { echo "markup_reuse line $LINENO: $said"; return 1; }
+  [[ "$said" == "comments on in $(pane second id)"* ]] || { echo "markup_reuse: second was focused last: $said"; return 1; }
+  kanna focus second >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  kanna markup second --off >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  said="$(KANNA_TERMINAL="$mine" kanna markup "$dir/spec.md")" || { echo "markup_reuse line $LINENO: $said"; return 1; }
+  [[ "$said" == "comments on in $(pane second id)"* ]] || { echo "markup_reuse: second is focused: $said"; return 1; }
+  said="$(KANNA_TERMINAL="$mine" kanna markup "$dir/spec.md" --tab)" || { echo "markup_reuse line $LINENO: $said"; return 1; }
+  [[ "$said" == opened* ]] || { echo "markup_reuse: --tab should open a new pane: $said"; return 1; }
+  KANNA_TERMINAL="$mine" kanna open web --name pg --tab "$dir/page.html" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"pg\"}}" | grep -q "A page"' || return 1
+  kanna focus "$mine" >/dev/null
+  count="$(markup_reuse_count)"
+  said="$(KANNA_TERMINAL="$mine" kanna markup "$dir/page.html")" || { echo "markup_reuse line $LINENO: $said"; return 1; }
+  [[ "$said" == "comments on in $(pane pg id)"*"already shows"*"page.html"* ]] || { echo "markup_reuse: kanna markup PAGE should reuse pg: $said"; return 1; }
+  check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"pg\"}}" | field markup)" == True ]]' || return 1
+  check test "$(markup_reuse_count)" == "$count" || return 1
+  check test "$(ws "$(tid 1)" focused)" == pg
+}
+
+scenario markup_button M4
+markup_button() {
+  start_daemon && start_app || { echo "markup_button line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/button" mine planner opened w
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_button line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent") >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  kanna task pick "$(tid 1)" >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(pane Mine id)" == term-* ]]' || { kanna workspace list --all; return 1; }
+  mine="$(pane Mine id)"
+  check wait_for 10 is Mine status idle || { echo "markup_button: the task's agent has no status"; return 1; }
+  mkdir -p "$dir/.git"
+  { printf '# Spec\n\nThe redirect keeps the query string.\n'; for i in $(seq 1 30); do printf '\nParagraph %s.\n' "$i"; done; } >"$dir/spec.md"
+  mkdir -p "$dir/.kanna/docs"
+  printf '{"file":"%s","agent":null,"socket":null,"next":2,"threads":[{"id":"c1","quote":"keeps the query string","prefix":"The redirect ","suffix":".","line":3,"state":"open","status":"sent","messages":[{"who":"you","text":"And the fragment?","at":"2026-01-01T00:00:00Z"}]}]}\n' "$dir/spec.md" >"$dir/.kanna/docs/spec.md.json"
+  printf '<!doctype html><html><body><p>A page.</p></body></html>\n' >"$dir/page.html"
+  markup_button_c() { raw "{\"id\":1,\"cmd\":\"debug.comments\",\"args\":{\"pane\":\"$1\"${2:-}}}"; }
+  KANNA_TERMINAL="$mine" kanna open md --name spec --tab "$dir/spec.md" >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(markup_button_c spec | field comments_button)" == True ]]' || { echo "markup_button: a doc pane with comments off should offer Comments"; markup_button_c spec; return 1; }
+  markup_button_c spec ',"press":"comments"' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c spec | field markup)" == True && "$(pane spec agent)" == "$mine" ]]' || { echo "markup_button: Comments in a task's doc should send comments to its agent"; markup_button_c spec; pane spec agent; return 1; }
+  check wait_for 5 eval '[[ "$(markup_button_c spec | field comments_button)" == False && "$(markup_button_c spec | field bar)" == *"Threads (1)"* && "$(markup_button_c spec | field bar)" == *"Agent: Mine"* ]]' || { markup_button_c spec; return 1; }
+  check test "$(markup_button_c spec | field marks)" == True || return 1
+  markup_button_c spec ',"press":"threads"' >/dev/null
+  sleep 0.3
+  [[ "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"spec"}}' | field threads_shown)" == True ]] && markup_button_c spec ',"press":"threads"' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c spec | field marks)" == False ]]' || { echo "markup_button: Threads should hide the marks"; markup_button_c spec; return 1; }
+  check test "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"spec"}}' | field threads_shown)" == False || return 1
+  markup_button_c spec ',"press":"threads"' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c spec | field marks)" == True ]]' || return 1
+  markup_button_c spec ',"press":"menu"' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c spec | field markup)" == False && "$(markup_button_c spec | field comments_button)" == True ]]' || { echo "markup_button: Pane ▸ Comments should turn comments off"; markup_button_c spec; return 1; }
+  check grep -q '"c1"' "$dir/.kanna/docs/spec.md.json" || { echo "markup_button: turning comments off lost the threads"; return 1; }
+  markup_button_c spec ',"press":"menu"' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c spec | field markup)" == True && "$(pane spec agent)" == "$mine" ]]' || { echo "markup_button: Pane ▸ Comments should route as the button does"; return 1; }
+  opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^(opened|brought\ forward)\ (d[0-9]+) ]] || { echo "markup_button line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[2]}"
+  check wait_for 10 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field lead)" == term-* ]]' || { echo "markup_button: no planner"; return 1; }
+  planner="$(raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field lead)"
+  KANNA_TERMINAL="$planner" kanna open md --name plan --tab "$dir/spec.md" >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(markup_button_c plan | field comments_button)" == True ]]' || { markup_button_c plan; return 1; }
+  markup_button_c plan ',"press":"comments"' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c plan | field markup)" == True && "$(pane plan agent)" == "$planner" ]]' || { echo "markup_button: Comments in the Desk view should send comments to the planner"; pane plan agent; return 1; }
+  kanna open web --window new --name loose "$dir/page.html" >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(markup_button_c loose | field comments_button)" == True ]]' || { echo "markup_button: a local page should have the bar"; markup_button_c loose; return 1; }
+  markup_button_c loose ',"press":"comments"' >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c loose | field menu)" == *"\"$mine\""* ]]' || { echo "markup_button: a free window's Comments should offer the running agents"; markup_button_c loose; return 1; }
+  check test "$(markup_button_c loose | field markup)" == False || return 1
+  markup_button_c loose ",\"pick\":\"$mine\"" >/dev/null
+  check wait_for 5 eval '[[ "$(markup_button_c loose | field markup)" == True && "$(pane loose agent)" == "$mine" ]]' || { echo "markup_button: picking an agent should turn comments on, sent there"; markup_button_c loose; return 1; }
+  check wait_for 5 eval '[[ "$(markup_button_c loose | field bar)" == *"Threads (0)"* ]]' || { markup_button_c loose; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"markup_button.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/markup_button.png" "$out/markup_button.png" 2>/dev/null
+  return 0
+}
+
 scenario page_comments M4
 page_comments() {
   start_daemon && start_app || return 1

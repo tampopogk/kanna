@@ -1041,9 +1041,16 @@ impl CoreHandle {
 
     async fn markup_again(&self, kind: PaneType, args: &Value, agent: Option<&str>) -> Result<Option<Map>, KmuxError> {
         let Some(from) = string(args, "from").and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone())) else { return Ok(None) };
-        let page = |url: &str| url.split('#').next().unwrap_or_default().to_string();
+        let real = |path: &str| std::fs::canonicalize(path).map_or_else(|_| path.to_string(), |p| p.to_string_lossy().into_owned());
+        let page = |url: &str| {
+            let url = url.split('#').next().unwrap_or_default();
+            match url.strip_prefix("file://") {
+                Some(path) => format!("file://{}", real(&percent_decode(path))),
+                None => url.to_string(),
+            }
+        };
         let wanted = match kind {
-            PaneType::Md => string(args, "path").map(String::from),
+            PaneType::Md => string(args, "path").map(real),
             _ => string(args, "url").map(|url| page(&normalize_url(url))),
         };
         let Some(wanted) = wanted else { return Ok(None) };
@@ -1057,7 +1064,7 @@ impl CoreHandle {
                         p.kind == kind
                             && !p.diff_base.as_deref().is_some_and(is_range)
                             && match kind {
-                                PaneType::Md => p.path.as_deref() == Some(wanted.as_str()),
+                                PaneType::Md => p.path.as_deref().map(real).as_deref() == Some(wanted.as_str()),
                                 _ => p.url.as_deref().map(page).as_deref() == Some(wanted.as_str()),
                             }
                     })
@@ -1561,6 +1568,24 @@ impl CoreHandle {
         }
         Ok(())
     }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(byte) = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn opened(summary: Value, location: &Value, placed: &Value) -> Map {

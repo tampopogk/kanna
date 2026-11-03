@@ -57,6 +57,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var terminalIDs: [String: String] = [:]
     private(set) var names: [String: String] = [:]
     var shelf: [JSON] = []
+    var agentMenu: (pane: String, choices: [AgentChoice])?
     var starting: Set<String> = []
     let toasts = ToastStack()
     var toastShowing: (pane: String, desk: String?)?
@@ -168,6 +169,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
         OverviewSetting.enabled = physical.overview
         contents.agentStatus = { [weak self] pane in self?.agentStatuses.statuses[pane] }
+        contents.agentName = { [weak self] pane in self?.agentName(pane) ?? pane }
+        contents.onComments = { [weak self] pane, button in self?.turnOnComments(pane, under: button) }
         contents.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         runtime.onAction = { [weak self] view, action in
             guard let self, let id = panes.id(of: view) else { return false }
