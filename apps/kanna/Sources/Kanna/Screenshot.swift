@@ -1,6 +1,8 @@
 import AppKit
 
 extension AppController {
+    static let largestShot = 11 << 20
+
     func installScreenshot() {
         commands["screenshot"] = { [weak self] args in try await self?.screenshot(args) ?? [:] }
     }
@@ -23,9 +25,9 @@ extension AppController {
             guard let cropped = Snapshot.crop(image, to: view, in: controller.window) else { throw KannaError("unavailable", "pane \(shot) has no area to capture") }
             image = cropped
         }
-        let url = try screenshotURL(args, name: shot ?? id)
-        try Snapshot.write(Snapshot.png(image), to: url, replacing: args["force"]?.bool == true)
-        var reply: [String: JSON] = ["path": .string(url.path), "window": .string(id), "width": .number(Double(image.width)), "height": .number(Double(image.height))]
+        let png = try Snapshot.png(image)
+        guard png.count <= Self.largestShot else { throw KannaError("too_big", "the picture is over \(Self.largestShot >> 20) MiB") }
+        var reply: [String: JSON] = ["png": .string(png.base64EncodedString()), "window": .string(id), "width": .number(Double(image.width)), "height": .number(Double(image.height))]
         if let shot { reply["pane"] = .string(shot) }
         return reply
     }
@@ -48,18 +50,5 @@ extension AppController {
             throw KannaError("not_shown", "\(from) isn't in a window that's showing: say PANE or --window WINDOW")
         }
         return (id, nil)
-    }
-
-    private func screenshotURL(_ args: JSON, name: String) throws -> URL {
-        if let path = args["path"]?.string {
-            guard path.hasPrefix("/") else { throw KannaError("bad_request", "path must be absolute") }
-            return URL(fileURLWithPath: path, isDirectory: false)
-        }
-        let dir = URL(fileURLWithPath: args["dir"]?.string ?? NSTemporaryDirectory(), isDirectory: true)
-        let stamp = Date().formatted(.verbatim("\(year: .defaultDigits)\(month: .twoDigits)\(day: .twoDigits)-\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased))\(minute: .twoDigits)\(second: .twoDigits)", timeZone: .current, calendar: .current))
-        let base = "kanna-\(name)-\(stamp)"
-        let taken = { FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }
-        let file = (["\(base).png"] + (2...99).map { "\(base)-\($0).png" }).first { !taken($0) } ?? "\(base)-\(UUID().uuidString.prefix(8)).png"
-        return dir.appendingPathComponent(file, isDirectory: false)
     }
 }

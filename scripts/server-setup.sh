@@ -10,8 +10,8 @@ CLIs, the daemon, keeper and CLI installed in /opt/kanna/<commit> with /opt/kann
 linked to it (from a release tarball, or built from this checkout with Rust), and a
 systemd user unit that runs the daemon at boot (linger). docs/specs/machine-setup.md says
 what it sets up and why. Safe to run again: each step is skipped when already done, and
-an update restarts the daemon, whose terminals the keeper keeps. Later updates come with
-kanna machine update from another machine (docs/specs/machine-update.md).
+an update restarts the daemon, whose terminals the keeper keeps. Run it again with a
+newer --tarball to update (docs/specs/machine-versions.md).
 
   --agents LIST    agent CLIs to install with npm, comma-separated: claude, codex
                    (default: claude,codex; none installs none)
@@ -99,8 +99,8 @@ else
   cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$staged/"
   for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$staged/kanna-skills/"; done
   version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo_root/Cargo.toml" | head -1)"
-  protocols="$(sed -n 's/^pub const PROTOCOLS: \[u32; 2\] = \[\([0-9]*\), \([0-9]*\)\];/[\1, \2]/p' "$repo_root/crates/kanna-build/src/lib.rs")"
-  echo "{\"commit\": \"$commit\", \"version\": \"$version\", \"channel\": \"production\", \"os\": \"linux\", \"arch\": \"$(uname -m)\", \"protocols\": $protocols}" > "$staged/release.json"
+  protocol="$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")"
+  echo "{\"commit\": \"$commit\", \"version\": \"$version\", \"channel\": \"production\", \"os\": \"linux\", \"arch\": \"$(uname -m)\", \"protocol\": $protocol}" > "$staged/release.json"
 fi
 
 step "Install $prefix/$commit"

@@ -1,0 +1,17 @@
+40383  41152 490297760   0.0 /opt/homebrew/bin/limactl hostagent --pidfile /Users/jeremyhale/.lima/kanna-spike-01/ha.pid --socket /Users/jer
+40389 362240 493205504   0.0 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMach
+43285  21312 488827648   0.0 /Users/jeremyhale/kanna-isolation/bin/vmrun /Users/jeremyhale/kanna-isolation/state/vms/vm-b /Users/jeremyhale/
+43292 11855280 497522032   1.9 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMa
+46308  20032 488831936   0.0 /Users/jeremyhale/kanna-isolation/bin/vmrun /Users/jeremyhale/kanna-isolation/state/vms/vm-c /Users/jeremyhale/
+46311 10778336 497501120   7.2 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMa
+93752  41552 490301856   0.0 /opt/homebrew/bin/limactl hostagent --pidfile /Users/jeremyhale/.lima/kanna-spike-02/ha.pid --socket /Users/jer
+93765 493440 497404784   0.0 /System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMach
+68719476736
+20
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   228331.
+Pages active:                                1151372.
+Pages inactive:                              1139232.
+2026-11-02T20:49:50Z null nic dropped 122 frames, 33283 bytes
+2026-11-02T20:50:50Z null nic dropped 127 frames, 34993 bytes
+2026-11-02T20:51:50Z null nic dropped 132 frames, 36703 bytes

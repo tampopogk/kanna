@@ -1,8 +1,7 @@
-use kanna_net::{Client, Config, Host, Install, Node, SecretKey, Tarball, KINDS};
+use kanna_net::{Relay, Client, Config, Host, Node, SecretKey, KINDS};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
@@ -12,7 +11,6 @@ struct Machine {
     saved: Arc<Mutex<Value>>,
     served: Arc<Mutex<Vec<(String, Value)>>>,
     apps: Arc<Mutex<Vec<(String, Value, UnixStream)>>>,
-    restarts: Arc<tokio::sync::Notify>,
 }
 
 impl Host for Machine {
@@ -33,10 +31,6 @@ impl Host for Machine {
     fn app(&self, from: String, hello: Value, stream: UnixStream) {
         self.apps.lock().unwrap().push((from, hello, stream));
     }
-
-    fn restart(&self) {
-        self.restarts.notify_one();
-    }
 }
 
 async fn machine(name: &str, saved: Value) -> (Node, Machine) {
@@ -48,56 +42,20 @@ async fn machine_on(name: &str, saved: Value, port: u16) -> (Node, Machine) {
 }
 
 async fn machine_with(name: &str, saved: Value, port: u16, secret: SecretKey) -> (Node, Machine) {
-    let release = json!({ "os": std::env::consts::OS, "protocols": [1, 1] });
-    server(name, saved, port, secret, release, None).await
+    let release = json!({ "os": std::env::consts::OS, "protocol": 4 });
+    server(name, saved, port, secret, release).await
 }
 
-async fn server(name: &str, saved: Value, port: u16, secret: SecretKey, release: Value, install: Option<Install>) -> (Node, Machine) {
+async fn server(name: &str, saved: Value, port: u16, secret: SecretKey, release: Value) -> (Node, Machine) {
     let host = Machine::default();
     *host.yes.lock().unwrap() = true;
     let capabilities = json!({ "os": release["os"], "arch": release["arch"] });
-    let config = Config { secret, saved, name: name.into(), capabilities, port: Some(port), mdns: false, release, install };
+    let config = Config { secret, saved, name: name.into(), capabilities, port: Some(port), mdns: false, release };
     (Node::start(config, Box::new(host.clone())).await.unwrap(), host)
 }
 
-fn linux(commit: &str, protocols: [u32; 2]) -> Value {
-    json!({ "commit": commit, "version": "4.0.0", "channel": "production", "os": "linux", "arch": "x86_64", "protocols": protocols })
-}
-
-fn folder(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("kanna-net-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn files(dir: &Path, release: &Value, daemon_exit: i32) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::create_dir_all(dir.join("kanna-skills")).unwrap();
-    for file in ["kanna", "kanna-keeper", "kanna-daemon"] {
-        std::fs::write(dir.join(file), format!("#!/bin/sh\nexit {daemon_exit}\n")).unwrap();
-        std::fs::set_permissions(dir.join(file), std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    std::fs::write(dir.join("release.json"), release.to_string()).unwrap();
-}
-
-fn installed(prefix: &Path, commit: &str) -> Install {
-    files(&prefix.join(commit), &linux(commit, [1, 1]), 0);
-    std::os::unix::fs::symlink(commit, prefix.join("current")).unwrap();
-    Install::detect(&prefix.join("current/kanna-daemon")).unwrap()
-}
-
-async fn tarball(dir: &Path, release: &Value, daemon_exit: i32) -> Tarball {
-    let stage = dir.join("stage");
-    let _ = std::fs::remove_dir_all(&stage);
-    files(&stage.join("kanna"), release, daemon_exit);
-    let path = dir.join(format!("Kanna-{}.tar.gz", &release["commit"].as_str().unwrap()[..8]));
-    assert!(std::process::Command::new("tar").arg("-czf").arg(&path).arg("-C").arg(&stage).arg("kanna").status().unwrap().success());
-    Tarball::open(&path).await.unwrap()
-}
-
-fn link(prefix: &Path, name: &str) -> String {
-    std::fs::read_link(prefix.join(name)).unwrap().to_string_lossy().into_owned()
+fn linux(commit: &str, protocol: u32) -> Value {
+    json!({ "commit": commit, "version": "4.0.0", "channel": "production", "os": "linux", "arch": "x86_64", "protocol": protocol })
 }
 
 fn peer(node: &Node) -> String {
@@ -263,7 +221,7 @@ fn line(stream: &UnixStream) -> Option<Value> {
 }
 
 async fn hello(client: &Client, node: &Node, cert: &Value) -> Result<UnixStream, kanna_net::Failure> {
-    let link = client.link(&node.key(), &[format!("127.0.0.1:{}", node.port())], cert).await?;
+    let link = client.link(&node.key(), &[format!("127.0.0.1:{}", node.port())], None, cert).await?;
     (&link).write_all(b"{\"id\":0,\"cmd\":\"app.hello\",\"args\":{\"client\":\"mbp\"}}\n").unwrap();
     Ok(link)
 }
@@ -337,9 +295,9 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
         }
     });
 
-    let local = client.port_open(&vm.key(), &addrs, &cert, port).await.unwrap();
+    let local = client.port_open(&vm.key(), &addrs, None, &cert, port).await.unwrap();
     assert_ne!(local, port);
-    assert_eq!(client.port_open(&vm.key(), &addrs, &cert, port).await.unwrap(), local, "one listener per machine and port");
+    assert_eq!(client.port_open(&vm.key(), &addrs, None, &cert, port).await.unwrap(), local, "one listener per machine and port");
     assert_eq!(client.ports_of(&vm.key()), [(port, local)]);
     let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", local)).await.unwrap();
     tcp.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await.unwrap();
@@ -381,7 +339,7 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
         tcp.read_to_end(&mut got).await.unwrap();
         tcp.write_all(format!("read {} bytes", got.len()).as_bytes()).await.unwrap();
     });
-    let half = client.port_open(&vm.key(), &addrs, &cert, half_port).await.unwrap();
+    let half = client.port_open(&vm.key(), &addrs, None, &cert, half_port).await.unwrap();
     let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", half)).await.unwrap();
     tcp.write_all(b"request body").await.unwrap();
     tcp.shutdown().await.unwrap();
@@ -389,7 +347,7 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
     tokio::time::timeout(std::time::Duration::from_secs(10), tcp.read_to_string(&mut answer)).await.unwrap().unwrap();
     assert_eq!(answer, "read 12 bytes", "a half-closed connection still gets its answer");
 
-    let local = client.port_open(&vm.key(), &addrs, &cert, port).await.unwrap();
+    let local = client.port_open(&vm.key(), &addrs, None, &cert, port).await.unwrap();
     let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", local)).await.unwrap();
     tcp.write_all(b"ping").await.unwrap();
     let mut got = [0u8; 9];
@@ -397,12 +355,12 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
     assert_eq!(&got, b"echo:ping");
 
     let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
-    let nothing = client.port_open(&vm.key(), &addrs, &cert, closed).await.unwrap();
+    let nothing = client.port_open(&vm.key(), &addrs, None, &cert, closed).await.unwrap();
     let mut refused = tokio::net::TcpStream::connect(("127.0.0.1", nothing)).await.unwrap();
     assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), refused.read(&mut buf)).await.unwrap().unwrap_or(0), 0, "nothing listening there closes the connection");
 
     let stranger = Client::start(SecretKey::generate()).await.unwrap();
-    let theirs = stranger.port_open(&vm.key(), &addrs, &json!(null), port).await.unwrap();
+    let theirs = stranger.port_open(&vm.key(), &addrs, None, &json!(null), port).await.unwrap();
     let mut rejected = tokio::net::TcpStream::connect(("127.0.0.1", theirs)).await.unwrap();
     let _ = rejected.write_all(b"hello").await;
     assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(10), rejected.read(&mut buf)).await.unwrap().unwrap_or(0), 0, "an unpaired app gets nothing");
@@ -413,98 +371,99 @@ async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_i
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_update_moves_a_machine_to_the_tarballs_commit_and_it_comes_back_there() {
-    let (a, b) = ("a".repeat(40), "b".repeat(40));
-    let dir = folder("update");
-    let prefix = dir.join("opt");
-    std::fs::create_dir_all(&prefix).unwrap();
-    std::fs::create_dir_all(prefix.join("c".repeat(40))).unwrap();
-    let install = installed(&prefix, &a);
+async fn another_protocol_is_refused_with_its_fix() {
     let (mbp, _) = machine("mbp", json!({})).await;
-    let secret = SecretKey::generate();
-    let (vm, vm_host) = server("linux-vm", json!({}), 0, secret.clone(), linux(&a, [1, 1]), Some(install.clone())).await;
-    pair(&mbp, &vm).await.unwrap();
-    let restarted = {
-        let (vm_host, prefix, b) = (vm_host.clone(), prefix.clone(), b.clone());
-        tokio::spawn(async move {
-            vm_host.restarts.notified().await;
-            let (port, saved) = (vm.port(), vm_host.saved.lock().unwrap().clone());
-            vm.close().await;
-            drop(vm);
-            server("ignored", saved, port, secret, linux(&b, [1, 1]), Install::detect(&prefix.join("current/kanna-daemon"))).await.0
-        })
-    };
-    let update = tarball(&dir, &linux(&b, [1, 1]), 0).await;
-    let done = mbp.update(vec![], update).await.unwrap();
-    let machine = &done["machines"][0];
-    assert_eq!(machine["ok"], true, "{done}");
-    assert_eq!((machine["from"].as_str(), machine["to"].as_str()), (Some(a.as_str()), Some(b.as_str())));
-    assert_eq!((link(&prefix, "current"), link(&prefix, "previous")), (b.clone(), a.clone()));
-    assert!(prefix.join(&b).join("kanna-skills").is_dir());
-    assert!(!prefix.join("c".repeat(40)).exists(), "an install that is neither current nor previous is removed");
-    let vm = restarted.await.unwrap();
-    assert_eq!(mbp.status()["peers"].as_array().unwrap().iter().find(|p| p["name"] == "linux-vm").unwrap()["release"]["commit"], b);
-
-    let again = mbp.update(vec!["linux-vm".into()], tarball(&dir, &linux(&b, [1, 1]), 0).await).await.unwrap();
-    assert_eq!(again["machines"][0]["already"], true, "{again}");
-    drop(vm);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn another_protocol_is_refused_with_its_fix_but_still_takes_an_update() {
-    let (a, b) = ("a".repeat(40), "b".repeat(40));
-    let dir = folder("protocol");
-    let prefix = dir.join("opt");
-    std::fs::create_dir_all(&prefix).unwrap();
-    let install = installed(&prefix, &a);
-    let (mbp, _) = machine("mbp", json!({})).await;
-    let (vm, vm_host) = server("linux-vm", json!({}), 0, SecretKey::generate(), linux(&a, [2, 3]), Some(install)).await;
+    let (vm, vm_host) = server("linux-vm", json!({}), 0, SecretKey::generate(), linux(&"a".repeat(40), 5)).await;
     pair(&mbp, &vm).await.unwrap();
     let refused = mbp.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap_err();
     assert_eq!(refused.code, "other_protocol");
-    assert_eq!(refused.message, "linux-vm runs Kanna 4.0.0 (aaaaaaaa), protocol 2–3, and this machine speaks 1; this machine is older: update it, or run kanna machine update on linux-vm");
+    assert_eq!(refused.message, "linux-vm runs Kanna 4.0.0 (aaaaaaaa), protocol 5, and this machine speaks 4; this machine is older: update it");
     assert!(vm_host.served.lock().unwrap().is_empty());
+    let back = vm.call("mbp", json!({ "id": 1, "cmd": "list" })).await.unwrap_err();
+    assert_eq!(back.code, "other_protocol");
+    assert!(back.message.ends_with("protocol 4, and this machine speaks 5; it's older: update Kanna on mbp"), "{}", back.message);
+}
 
-    let broken = mbp.update(vec![], tarball(&dir, &linux(&b, [1, 1]), 1).await).await.unwrap();
-    assert_eq!(broken["machines"][0]["error"]["code"], "install_failed", "{broken}");
-    assert_eq!(link(&prefix, "current"), a, "a build that doesn't run here is never switched to");
-    assert!(!prefix.join(&b).exists());
+#[derive(Debug)]
+struct Token(&'static str);
 
-    let mut other = linux(&b, [1, 1]);
-    other["arch"] = json!("aarch64");
-    let skipped = mbp.update(vec![], tarball(&dir, &other, 0).await).await.unwrap();
-    assert_eq!(skipped["machines"][0]["skipped"], "linux x86_64: this tarball is for linux aarch64", "{skipped}");
+impl iroh_relay::server::AccessControl for Token {
+    async fn on_connect(&self, request: &iroh_relay::server::ClientRequest) -> iroh_relay::server::Access {
+        match request.auth_token() {
+            Some(token) if token == self.0 => iroh_relay::server::Access::Allow,
+            _ => iroh_relay::server::Access::Deny { reason: None },
+        }
+    }
+}
 
-    let (mac, _) = machine("mac", json!({})).await;
-    pair(&mbp, &mac).await.unwrap();
-    let named = mbp.update(vec!["mac".into()], tarball(&dir, &linux(&b, [1, 1]), 0).await).await.unwrap();
-    assert_eq!(named["machines"][0]["ok"], false);
-    assert!(named["machines"][0]["skipped"].as_str().unwrap().contains("Kanna.app updates it"), "{named}");
+async fn relay(token: Option<&'static str>) -> (iroh_relay::server::Server, String) {
+    let mut relay = iroh_relay::server::RelayConfig::new(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
+    if let Some(token) = token {
+        relay.access = std::sync::Arc::new(Token(token));
+    }
+    let mut config = iroh_relay::server::ServerConfig::default();
+    config.relay = Some(relay);
+    let server = iroh_relay::server::Server::spawn(config).await.unwrap();
+    let url = format!("http://{}/", server.http_addr().unwrap());
+    (server, url)
+}
+
+async fn reaches_relay(node: &Node, url: &str, within: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    while node.status()["home_relay"] != json!(url) {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    true
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_update_to_a_build_of_another_protocol_still_sees_it_come_back() {
-    let (a, b) = ("a".repeat(40), "b".repeat(40));
-    let dir = folder("across");
-    let prefix = dir.join("opt");
-    std::fs::create_dir_all(&prefix).unwrap();
-    let install = installed(&prefix, &a);
-    let (mbp, _) = machine("mbp", json!({})).await;
-    let secret = SecretKey::generate();
-    let (vm, vm_host) = server("linux-vm", json!({}), 0, secret.clone(), linux(&a, [1, 1]), Some(install)).await;
+async fn an_app_given_only_a_key_reaches_a_machine_through_its_relay() {
+    let (_server, url) = relay(None).await;
+    let (mbp, mbp_host) = machine("mbp", json!({})).await;
+    let (vm, vm_host) = machine("linux-vm", json!({})).await;
     pair(&mbp, &vm).await.unwrap();
-    let restarted = {
-        let (vm_host, prefix, b) = (vm_host.clone(), prefix.clone(), b.clone());
-        tokio::spawn(async move {
-            vm_host.restarts.notified().await;
-            let (port, saved) = (vm.port(), vm_host.saved.lock().unwrap().clone());
-            vm.close().await;
-            drop(vm);
-            server("ignored", saved, port, secret, linux(&b, [2, 2]), Install::detect(&prefix.join("current/kanna-daemon"))).await.0
-        })
-    };
-    let done = mbp.update(vec![], tarball(&dir, &linux(&b, [2, 2]), 0).await).await.unwrap();
-    assert_eq!(done["machines"][0]["ok"], true, "{done}");
-    let _vm = restarted.await.unwrap();
-    assert_eq!(mbp.call("linux-vm", json!({ "id": 1, "cmd": "list" })).await.unwrap_err().code, "other_protocol");
+    assert_eq!(vm.set_relay(Some("ftp://nowhere"), None).await.unwrap_err().code, "bad_request");
+    assert_eq!(vm.set_relay(Some(&url), None).await.unwrap()["relay"], json!(url));
+    mbp.set_relay(Some(&url), None).await.unwrap();
+    assert_eq!(vm_host.saved.lock().unwrap()["relay"], json!(url));
+    assert!(reaches_relay(&vm, &url, std::time::Duration::from_secs(10)).await, "the machine never connected to its relay");
+    let peers = mbp.status()["peers"].clone();
+    let them = peers.as_array().unwrap().iter().find(|p| p["name"] == "linux-vm").unwrap();
+    assert_eq!(them["relay"], json!(url), "{them}");
+
+    let client = Client::start(SecretKey::generate()).await.unwrap();
+    let cert = mbp.certify(&client.key()).unwrap();
+    let open = Relay::new(&url, None).unwrap();
+    let link = client.link(&vm.key(), &[], Some(&open), &cert).await.unwrap();
+    (&link).write_all(b"{\"id\":0,\"cmd\":\"app.hello\",\"args\":{}}\n").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while vm_host.apps.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the hello never came through the relay");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (_guarded, moved) = relay(Some("s3cret")).await;
+    vm.set_relay(Some(&moved), Some("wrong")).await.unwrap();
+    assert!(!reaches_relay(&vm, &moved, std::time::Duration::from_secs(2)).await, "a relay that wants a token turns away the wrong one");
+    assert_eq!(vm.set_relay(Some(&moved), Some("s3cret\n")).await.unwrap()["token"], true);
+    mbp.set_relay(Some(&moved), Some("s3cret")).await.unwrap();
+    assert!(reaches_relay(&vm, &moved, std::time::Duration::from_secs(10)).await, "the machine never moved to its new relay");
+    let status = mbp.status();
+    let them = status["peers"].as_array().unwrap().iter().find(|p| p["name"] == "linux-vm").unwrap();
+    assert_eq!(them["relay"], json!(moved), "the relay set now, not the one in the peer log: {them}");
+    assert_eq!((status["relay_token"].clone(), mbp.relay_token()), (json!(true), Some("s3cret".to_string())), "the status says only that there is a token");
+    assert!(!json!(vm_host.saved.lock().unwrap()["entries"]).to_string().contains("s3cret"), "the token never goes in the peer log");
+    let fresh = Client::start(SecretKey::generate()).await.unwrap();
+    let cert = mbp.certify(&fresh.key()).unwrap();
+    let guarded = Relay::new(&moved, Some("s3cret")).unwrap();
+    fresh.link(&vm.key(), &[], Some(&guarded), &cert).await.unwrap();
+
+    let saved = mbp_host.saved.lock().unwrap().clone();
+    mbp.close().await;
+    let (again, _) = machine("mbp", saved).await;
+    assert_eq!((again.status()["relay"].clone(), again.relay_token()), (json!(moved), Some("s3cret".to_string())), "the relay and its token are kept across a restart");
+    assert_eq!(again.set_relay(None, None).await.unwrap()["relay"], Value::Null);
 }

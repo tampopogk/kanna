@@ -1,9 +1,0 @@
-{
-  "rows": [
-    "⬝ esc to interrupt"
-  ],
-  "title": "OpenCode",
-  "cliVersion": "1.18.32",
-  "expected": "working",
-  "source": "Kanna fixture behavior: in-flight footer"
-}

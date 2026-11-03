@@ -76,9 +76,10 @@ pub fn skills() -> Option<PathBuf> {
 }
 
 pub fn keys(support: &Path, state: &Path) -> Vec<String> {
-    let mut keys = vec![support.join("kanna*").join(crate::machines::KEY)];
+    let mut keys = vec![support.join("kanna*").join(crate::machines::KEY), support.join("kanna*").join(crate::accounts::SECRETS)];
     if state.parent() != Some(support) {
         keys.push(state.join(crate::machines::KEY));
+        keys.push(state.join(crate::accounts::SECRETS));
     }
     keys.iter().map(|k| k.to_string_lossy().into_owned()).collect()
 }
@@ -368,7 +369,7 @@ impl Agents {
         let mut sockets = record.sockets.clone();
         let mut denied = record.denied.clone();
         let paths: Vec<String> = self.keys.iter().map(|k| format!("/{k}")).collect();
-        let rules: Vec<String> = paths.iter().map(|p| format!("Read({p})")).collect();
+        let rules: Vec<String> = paths.iter().map(|p| if p.ends_with(crate::accounts::SECRETS) { format!("Read({p}/**)") } else { format!("Read({p})") }).collect();
         let changed = edit(&claude, true, &mut record.made, |object, made| {
             if let Some(sandbox) = ensure(object, "sandbox", made, "sandbox") {
                 let network = ensure(sandbox, "network", made, "sandbox.network");
@@ -925,7 +926,7 @@ mod tests {
         let settings = f.agents.home.join(".claude/settings.json");
         f.agents.setup(false).unwrap();
         let made: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
-        assert_eq!(made, json!({"sandbox": {"network": {"allowUnixSockets": ["/S/kanna.sock"]}, "filesystem": {"denyRead": ["//S/kanna*/device.key"]}}, "permissions": {"deny": ["Read(//S/kanna*/device.key)"]}}), "no hooks");
+        assert_eq!(made, json!({"sandbox": {"network": {"allowUnixSockets": ["/S/kanna.sock"]}, "filesystem": {"denyRead": ["//S/kanna*/device.key", "//S/kanna*/agent-secrets"]}}, "permissions": {"deny": ["Read(//S/kanna*/device.key)", "Read(//S/kanna*/agent-secrets/**)"]}}), "no hooks");
         f.agents.remove().unwrap();
         assert!(!settings.exists(), "a settings file Kanna made goes when it's emptied");
 
@@ -939,8 +940,8 @@ mod tests {
         f.agents.refresh();
         let value: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         assert_eq!(value["sandbox"]["network"]["allowUnixSockets"], json!(["/u/mine.sock", "/S/kanna.sock"]));
-        assert_eq!(value["sandbox"]["filesystem"]["denyRead"], json!(["~/.ssh", "//S/kanna*/device.key"]));
-        assert_eq!(value["permissions"], json!({"allow": ["Bash(ls)"], "deny": ["Read(~/.ssh/**)", "Read(//S/kanna*/device.key)"]}));
+        assert_eq!(value["sandbox"]["filesystem"]["denyRead"], json!(["~/.ssh", "//S/kanna*/device.key", "//S/kanna*/agent-secrets"]));
+        assert_eq!(value["permissions"], json!({"allow": ["Bash(ls)"], "deny": ["Read(~/.ssh/**)", "Read(//S/kanna*/device.key)", "Read(//S/kanna*/agent-secrets/**)"]}));
         f.agents.remove().unwrap();
         let value: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         assert_eq!(value, json!({"model": "opus", "sandbox": {"enabled": true, "network": {"allowUnixSockets": ["/u/mine.sock"]}, "filesystem": {"denyRead": ["~/.ssh"]}}, "permissions": {"allow": ["Bash(ls)"], "deny": ["Read(~/.ssh/**)"]}, "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo mine"}]}]}, "env": {}}));
@@ -952,8 +953,8 @@ mod tests {
 
     #[test]
     fn every_instance_s_device_key_is_denied() {
-        assert_eq!(keys(Path::new("/u/Library/Application Support"), Path::new("/u/Library/Application Support/kanna-dev-work")), ["/u/Library/Application Support/kanna*/device.key"]);
-        assert_eq!(keys(Path::new("/u/.local/share"), Path::new("/tmp/kanna-e2e.x")), ["/u/.local/share/kanna*/device.key", "/tmp/kanna-e2e.x/device.key"], "a state folder outside the support folder is denied too");
+        assert_eq!(keys(Path::new("/u/Library/Application Support"), Path::new("/u/Library/Application Support/kanna-dev-work")), ["/u/Library/Application Support/kanna*/device.key", "/u/Library/Application Support/kanna*/agent-secrets"]);
+        assert_eq!(keys(Path::new("/u/.local/share"), Path::new("/tmp/kanna-e2e.x")), ["/u/.local/share/kanna*/device.key", "/u/.local/share/kanna*/agent-secrets", "/tmp/kanna-e2e.x/device.key", "/tmp/kanna-e2e.x/agent-secrets"], "a state folder outside the support folder is denied too");
     }
 
     const EARLIER_HOOK: &str = "if [ -n \"$KANNA_PLANNER\" ]; then echo \"You're running in Kanna, as a window's planning agent: use the kanna-planning skill now.\"; fi # kanna agents setup";
@@ -983,7 +984,7 @@ mod tests {
         earlier_kanna(&f, &[".claude/settings.json#sandbox", ".claude/settings.json#sandbox.network", ".claude/settings.json#sandbox.network.allowUnixSockets", ".codex/hooks.json#hooks.SessionStart"]);
 
         f.agents.setup(false).unwrap();
-        assert_eq!(hooks(&claude), json!({ "model": "opus", "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] }, "filesystem": { "denyRead": ["//S/kanna*/device.key"] } }, "permissions": { "deny": ["Read(//S/kanna*/device.key)"] }, "hooks": { "SessionStart": [{ "hooks": [mine] }], "Stop": [{ "hooks": [mine] }] } }));
+        assert_eq!(hooks(&claude), json!({ "model": "opus", "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] }, "filesystem": { "denyRead": ["//S/kanna*/device.key", "//S/kanna*/agent-secrets"] } }, "permissions": { "deny": ["Read(//S/kanna*/device.key)", "Read(//S/kanna*/agent-secrets/**)"] }, "hooks": { "SessionStart": [{ "hooks": [mine] }], "Stop": [{ "hooks": [mine] }] } }));
         assert_eq!(hooks(&codex), json!({ "hooks": {} }), "the SessionStart list Kanna made goes; the file and its hooks are yours");
     }
 
@@ -1000,7 +1001,7 @@ mod tests {
         let made = [".claude/settings.json#hooks", ".claude/settings.json#hooks.SessionStart", ".codex/hooks.json", ".codex/hooks.json#hooks", ".codex/hooks.json#hooks.SessionStart"];
         earlier_kanna(&f, &made);
         f.agents.update(false).unwrap();
-        assert_eq!(hooks(&claude), json!({ "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] }, "filesystem": { "denyRead": ["//S/kanna*/device.key"] } }, "permissions": { "deny": ["Read(//S/kanna*/device.key)"] } }), "an earlier Kanna's setup gets the key's deny entries");
+        assert_eq!(hooks(&claude), json!({ "sandbox": { "network": { "allowUnixSockets": ["/S/kanna.sock"] }, "filesystem": { "denyRead": ["//S/kanna*/device.key", "//S/kanna*/agent-secrets"] } }, "permissions": { "deny": ["Read(//S/kanna*/device.key)", "Read(//S/kanna*/agent-secrets/**)"] } }), "an earlier Kanna's setup gets the key's deny entries");
         assert!(!codex.exists(), "a hooks.json Kanna made goes when its hook does");
 
         fs::write(&claude, json!({ "hooks": { "SessionStart": [{ "hooks": [ours] }] } }).to_string()).unwrap();
