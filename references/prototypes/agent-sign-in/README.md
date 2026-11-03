@@ -146,6 +146,14 @@ natural expiry. It does not test a holder outage, refresh revocation, account
 removal, VM enrollment offline, cross-process holder locking, or the ordinary
 Codex TUI. Timing overlap measures client turn lifetimes, not backend scheduling.
 
+## The ordinary terminal command (tui.py)
+
+Kanna runs the Codex TUI attached to an app-server of its own ([Codex's app-server](../../../docs/specs/codex-app-server.md)), so the holder route reaches the TUI if the auth is supplied on another connection to that server. `python3 references/prototypes/agent-sign-in/tui.py` checks it on this Mac: an app-server in a fresh private home, a holder connection that signs it in with `chatgptAuthTokens` using an **injected invalid** token, then the real TUI (`codex --remote unix://…`, in a pty) asked for a marker. A second turn, typed into the same TUI, follows a holder refresh and a second invalid token.
+
+[Evidence](tui-results.json), 2026-10-26 on Codex 0.163.0: both turns answered, one renewal each (reason `unauthorized`, matching account), the same TUI process and thread, and no `auth.json` in the home. The renewal requests reach the connection that signed in, not the TUI's. Answers are counted in `thread/read`, not on the screen, which redraws.
+
+Two side checks, by hand: `account/login/start` with `type: apiKey` writes `auth.json` unless the server runs with `cli_auth_credentials_store="ephemeral"`; and neither login kind touches an `auth.json` already in the home.
+
 ## What the original CLI probe measures
 
 Each round starts both VMs against one credential at a shared future timestamp.
