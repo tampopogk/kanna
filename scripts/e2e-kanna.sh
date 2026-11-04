@@ -4140,7 +4140,7 @@ code_pinned_line() {
   key() { raw "{\"id\":1,\"cmd\":\"debug.key\",\"args\":{\"key\":\"$1\"}}" >/dev/null; }
   kanna open --window new code --name src "$file" >/dev/null || return 1
   check wait_for 5 eval '(( $(code src scopes) == 3 ))' || { echo "scopes $(code src scopes)"; return 1; }
-  nested ready_now >"$file"
+  nested ready_now >"$file.new" && mv "$file.new" "$file"
   check wait_for 5 eval '[[ "$(code src changed)" == 3 ]]' || { echo "changed $(code src changed)"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"src","at":[300,300]}}' >/dev/null; sleep 0.3
   key cmd+f
@@ -4158,8 +4158,11 @@ code_pinned_line() {
   done
   raw '{"id":1,"cmd":"debug.code","args":{"pane":"src","select":[2,4,4]}}' >/dev/null
   check wait_for 5 eval '[[ "$(code src pinned_rows.1.selection)" == "[[4, 4]]" && "$(code src pinned_rows.2.selection)" == "[]" ]]' || { echo "reselect $(code src pinned_rows)"; return 1; }
+  local scrolled; scrolled="$(code src scroll_y)"
   key escape
+  check wait_for 5 eval '[[ "$(code src find_bar)" == 0 ]]' || return 1
   check wait_for 5 eval '[[ "$(code src pinned_rows.2.matches)" == "[]" ]]' || { echo "after find $(code src pinned_rows)"; return 1; }
+  check test "$(code src scroll_y)" == "$scrolled" || { echo "closing find scrolled the view from $scrolled to $(code src scroll_y)"; return 1; }
 }
 
 scenario send_key M4

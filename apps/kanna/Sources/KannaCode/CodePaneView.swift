@@ -379,6 +379,7 @@ public final class CodePaneView: NSView {
         let visible = scrollView.contentSize
         let lineHeight = layoutManager.defaultLineHeight(for: CodeTheme.font(size: fontSize))
         let height = max(visible.height, used.height + textView.textContainerInset.height * 2 + max(0, visible.height - lineHeight * 3))
+        textView.height = height
         textView.setFrameSize(NSSize(width: max(visible.width, used.width + 24), height: height))
         let thickness = gutter.thickness(font: CodeTheme.font(size: fontSize))
         if gutter.ruleThickness != thickness {
@@ -571,12 +572,17 @@ final class CodeTextView: NSTextView {
     var comment: CodeComment? { didSet { needsDisplay = true; onMarks?() } }
     var changed: Set<Int> = [] { didSet { needsDisplay = true; onMarks?() } }
     var gap: CGFloat = 0
+    var height: CGFloat = 0
     let finder = NSTextFinder()
     private lazy var finderClient = TextFinderClient(textView: self)
     private var matchObserver: NSKeyValueObservation?
     private var keyObservers: [NSObjectProtocol] = []
     private var flashing: Int? { didSet { needsDisplay = true; onMarks?() } }
     private var flashTask: DispatchWorkItem?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(NSSize(width: newSize.width, height: max(newSize.height, height)))
+    }
 
     func startFinder(in container: NSScrollView) {
         finder.client = finderClient
