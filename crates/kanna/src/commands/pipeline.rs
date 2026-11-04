@@ -1,8 +1,7 @@
 use super::{usage, Command, Flow, Invocation};
-use kanna_client::Failure;
 use crate::commands::diagrams::shown;
 use crate::target::Target;
-use kanna_client::{exit, fail};
+use kanna_client::{exit, fail, Failure};
 use kanna_pipe::{Context, Error, Pipeline, Rule, Sizes, ASSUMED_PARTS};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

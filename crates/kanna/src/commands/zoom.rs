@@ -11,7 +11,7 @@ pub const COMMAND: Command = Command {
     notes: "The pane doesn't need to be focused first: zooming focuses it, switching tab or window if needed.",
     examples: &[("kanna zoom logs", "Zoom the logs pane (run again to unzoom).")],
     parse: |args| Ok(json!({ "pane": pane(args, "zoom")? })),
-    show: show,
+    show,
     flow: Flow::PLAIN,
 };
 

@@ -11,7 +11,7 @@ pub const COMMAND: Command = Command {
     notes: "Focusing a pane in another tab or window switches to it. Focusing another pane cancels zoom.",
     examples: &[("kanna focus server", "Focus the pane named server."), ("kanna focus --tab tab-1", "Switch to tab-1.")],
     parse: |args| target(args, "focus"),
-    show: show,
+    show,
     flow: Flow::PLAIN,
 };
 

@@ -1,5 +1,5 @@
 use super::{from_caller, usage, Command, Flow};
-use crate::output::self;
+use crate::output;
 use serde_json::{json, Map, Value};
 
 pub const COMMAND: Command = Command {

@@ -20,7 +20,7 @@ pub const COMMAND: Command = Command {
         ("kanna screenshot diff -o diff.png", "Save the pane named diff to diff.png."),
         ("kanna screenshot --window win-2 --out shots/win-2.png --force", "Save win-2, replacing shots/win-2.png."),
     ],
-    parse: parse,
+    parse,
     show: |_, reply| reply["path"].as_str().unwrap_or_default().to_string(),
     flow: Flow { unplaced: Some(unplaced), ..Flow::PLAIN },
 };

@@ -11,7 +11,7 @@ pub const COMMAND: Command = Command {
     notes: "Closing a tab's last pane closes the tab; closing a window's last tab closes the window, unless it has a docked pane. A docked pane closes only with its window (`kanna close --window`); undock it first with `kanna move PANE --tab` to close it alone.",
     examples: &[("kanna close logs", "Close the pane named logs."), ("kanna close --tab tab-2", "Close tab-2 and its panes.")],
     parse: |args| target(args, "close"),
-    show: show,
+    show,
     flow: Flow::PLAIN,
 };
 

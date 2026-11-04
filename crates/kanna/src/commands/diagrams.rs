@@ -1,6 +1,5 @@
 use super::{usage, Command, Flow, Invocation};
-use kanna_client::Failure;
-use kanna_client::{exit, fail};
+use kanna_client::{exit, fail, Failure};
 use serde_json::{json, Value};
 use std::path::Path;
 

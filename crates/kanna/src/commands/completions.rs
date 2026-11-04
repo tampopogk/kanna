@@ -1,5 +1,5 @@
-use crate::args::Argv;
 use crate::complete;
+use crate::args::Argv;
 use kanna_client::Failure;
 
 pub const HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the tab-completion script for your shell. Load it from your shell's startup file:\n  zsh:  source <(kanna completions zsh)     in ~/.zshrc\n  bash: eval \"$(kanna completions bash)\"  in ~/.bashrc\n\nTab then completes commands, options, pane names and IDs, tabs, windows, instances,\nand files of the kind a command takes (markdown for open md, HTML for markup).";

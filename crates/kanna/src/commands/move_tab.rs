@@ -22,7 +22,7 @@ pub const COMMAND: Command = Command {
         }
         Ok(out)
     },
-    show: show,
+    show,
     flow: Flow::PLAIN,
 };
 

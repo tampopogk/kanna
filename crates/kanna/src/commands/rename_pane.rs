@@ -14,7 +14,7 @@ pub const COMMAND: Command = Command {
         let name = args.positional().ok_or_else(|| usage("rename-pane", "missing NAME (\"\" to clear it)"))?;
         Ok(json!({ "pane": pane, "name": name }))
     },
-    show: show,
+    show,
     flow: Flow::PLAIN,
 };
 

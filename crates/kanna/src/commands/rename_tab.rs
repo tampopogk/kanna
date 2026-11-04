@@ -14,7 +14,7 @@ pub const COMMAND: Command = Command {
         let title = args.rest().ok_or_else(|| usage("rename-tab", "missing TITLE"))?;
         Ok(json!({ "tab": tab, "title": title }))
     },
-    show: show,
+    show,
     flow: Flow::PLAIN,
 };
 

@@ -12,8 +12,8 @@ pub const COMMAND: Command = Command {
     options: &[],
     notes: "A task's windows are on screen while a Desk shows the task; otherwise they close, their panes still running, and they open again at their frames when it's shown. A window opened from a task's pane (`kanna open --window new`) or torn off its tabs is the task's already; one made anywhere else is free. TASK is a task's ID (task-1dfb) or its agent's pane. A Desk, a window with a lead (the Quiz window) and a task that hasn't started are refused. In the app: Window → Assign Window to Task and Free Window.",
     examples: &[("kanna window assign win-4 task-1dfb", "Make win-4 one of task-1dfb's windows."), ("kanna window free win-4", "Take win-4 out of its task; it stays open.")],
-    parse: parse,
-    show: show,
+    parse,
+    show,
     flow: Flow::PLAIN,
 };
 
