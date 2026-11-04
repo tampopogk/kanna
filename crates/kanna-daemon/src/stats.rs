@@ -10,7 +10,6 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
 
 pub const DAYS: i64 = 30;
 
@@ -371,7 +370,7 @@ pub fn report(project: &str, facts: &Facts) -> Map {
 
 pub struct Stats {
     db: Rc<Db>,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     waiting: RefCell<HashMap<String, Vec<Responder>>>,
     running: RefCell<HashMap<String, Option<String>>>,
     coverage: Rc<crate::coverage::Coverage>,
@@ -390,7 +389,7 @@ pub struct Sampled {
 }
 
 impl Stats {
-    pub fn new(db: Rc<Db>, events: Sender<Event>, state: &Path) -> Stats {
+    pub fn new(db: Rc<Db>, events: crate::runtime::Events, state: &Path) -> Stats {
         let coverage = Rc::new(crate::coverage::Coverage::new(db.clone(), events.clone(), state.to_path_buf()));
         Stats { db, events, waiting: RefCell::default(), running: RefCell::default(), coverage }
     }
@@ -700,7 +699,7 @@ pub mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let db = Rc::new(Db::open(&state));
-        let (sender, events) = std::sync::mpsc::channel();
+        let (sender, mut events) = crate::runtime::channel();
         let stats = Stats::new(db.clone(), sender, &state);
         let path = repo.to_string_lossy().to_string();
         let (first, reply) = kanna_mux::responder();
@@ -710,7 +709,7 @@ pub mod tests {
         stats.ask(&json!({ "repo": path }), second);
         let mut repo_sampled;
         loop {
-            let Ok(Event::Sampled(sampled)) = events.recv_timeout(std::time::Duration::from_secs(10)) else { panic!("no samples") };
+            let Ok(Event::Sampled(sampled)) = crate::runtime::next(&mut events, std::time::Duration::from_secs(10)) else { panic!("no samples") };
             repo_sampled = sampled.repo.clone();
             let done = sampled.done;
             stats.sampled(sampled);

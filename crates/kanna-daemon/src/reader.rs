@@ -349,7 +349,7 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, typing: Typing, wire: Arc<Wire>, replies: Sender<Vec<u8>>, events: Sender<Event>) -> io::Result<Reader> {
+    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, typing: Typing, wire: Arc<Wire>, replies: Sender<Vec<u8>>, events: crate::runtime::Events) -> io::Result<Reader> {
         let (asleep, wake) = pipe()?;
         let pane = id.to_string();
         let thread = std::thread::Builder::new()
@@ -394,7 +394,7 @@ struct Pty {
     typing: Typing,
     wire: Arc<Wire>,
     replies: Sender<Vec<u8>>,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
 }
 
 impl Pty {
