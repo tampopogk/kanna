@@ -35,6 +35,14 @@
       "after_tool": [
         "BACKGROUND_DONE: the command runs on in a background terminal."
       ]
+    },
+    {
+      "match": "SHELL_IN_BACKGROUND",
+      "tool": "sleep 8 && touch background-done.txt",
+      "claude_args": {"run_in_background": true},
+      "after_tool": [
+        "SHELL_IN_BACKGROUND_DONE: the command runs on in the background."
+      ]
     }
   ]
 }

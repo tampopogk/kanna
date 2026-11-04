@@ -458,7 +458,7 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
 fn wire(command: &Command, request: &Value) -> &'static str {
     match command.name {
         "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "move", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
+        "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "move", "send", "messages", "subscribe", "unsubscribe", "hearing"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
         "task" if request["action"] == "done" => "tasks",
         "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",
         "task" if request["action"] == "name" => "rename-pane",
@@ -1099,6 +1099,7 @@ mod tests {
                 { "id": "kinds", "label": "By kind", "value": null, "note": "", "chart": { "kind": "ranked", "rows": [{ "label": "why", "value": 91.7, "note": "11/12" }] } },
             ] },
             { "id": "tasks", "title": "Tasks", "tiles": [
+                { "id": "open", "label": "Open", "value": 2.0, "note": "+2 in 30 days", "chart": { "kind": "flow", "values": [0.0, 1.0, 2.0], "made": [0.0, 1.0, 3.0], "done": [0.0, 0.0, 2.0] } },
                 { "id": "lead", "label": "Made to done", "value": 12780.0, "unit": "s", "note": "median of 3", "chart": { "kind": "dots", "points": [], "line": [null, 3600.0, 7200.0] } },
             ] },
             { "id": "code", "title": "Code quality", "tiles": [
@@ -1114,12 +1115,13 @@ mod tests {
         assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers              ▅█");
         assert_eq!(lines[2], "              By kind");
         assert_eq!(lines[3], "                why             92%  11/12");
-        assert_eq!(lines[4], "Tasks         Made to done   3h 33m  median of 3                ▅█");
-        assert_eq!(lines[5], "Code quality  Erosion           49%  up 1.2 points in 30 days  ▄▄");
-        assert_eq!(lines[6], "              Worst functions");
-        assert_eq!(lines[7], "                run          CC 154                            crates/kanna-daemon/src/main.rs:215 · 677 lines");
-        assert_eq!(lines[9], "                No fix traced back to a landing in 30 days.");
-        assert_eq!(lines[10], "Later         Not measured yet.");
+        assert_eq!(lines[4], "Tasks         Open                2  +2 in 30 days             ▁▅█");
+        assert_eq!(lines[5], "              Made to done   3h 33m  median of 3                ▅█");
+        assert_eq!(lines[6], "Code quality  Erosion           49%  up 1.2 points in 30 days  ▄▄");
+        assert_eq!(lines[7], "              Worst functions");
+        assert_eq!(lines[8], "                run          CC 154                            crates/kanna-daemon/src/main.rs:215 · 677 lines");
+        assert_eq!(lines[10], "                No fix traced back to a landing in 30 days.");
+        assert_eq!(lines[11], "Later         Not measured yet.");
         assert_eq!(output::duration(59.0 * 60.0), "59m");
         assert_eq!(output::duration(3.0 * 3600.0), "3h");
         assert_eq!(output::duration(50.0 * 3600.0), "2d");

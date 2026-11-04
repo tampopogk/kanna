@@ -347,6 +347,37 @@ pub fn task(request: &Value, reply: &Value) -> String {
             };
             said + &warning
         }
+        Some("subscribe") | Some("unsubscribe") => {
+            let (task, event) = (reply["task"].as_str().unwrap_or("?"), reply["event"].as_str().unwrap_or("?"));
+            match (reply["on"] == json!(true), reply["changed"] == json!(true)) {
+                (true, true) => format!("{task} hears {event}"),
+                (true, false) => format!("{task} already hears {event}"),
+                (false, true) => format!("{task} no longer hears {event}"),
+                (false, false) => format!("{task} doesn't hear {event}"),
+            }
+        }
+        Some("hearing") => {
+            let names = |v: &Value| v.as_array().map_or(String::new(), |l| l.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+            let sent = reply["sent"].as_array().cloned().unwrap_or_default();
+            let mut lines = vec![format!("hears: {}", names(&reply["hears"]))];
+            let rows: Vec<[String; 4]> = sent
+                .iter()
+                .map(|s| {
+                    let text: String = s["text"].as_str().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+                    let text = if text.chars().count() > 60 { format!("{}…", text.chars().take(59).collect::<String>()) } else { text };
+                    [ago(now - s["at"].as_f64().unwrap_or(now)), s["event"].as_str().unwrap_or("?").to_string(), if s["delivered"].is_null() { "waiting" } else { "delivered" }.to_string(), text]
+                })
+                .collect();
+            if !rows.is_empty() {
+                let head = ["SENT", "EVENT", "STATE", "TEXT"];
+                let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());
+                let line = |r: [&str; 4]| format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = width(0), w1 = width(1), w2 = width(2)).trim_end().to_string();
+                lines.push(line(head));
+                lines.extend(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3]])));
+            }
+            lines.join("\n")
+        }
         Some("messages") => {
             let list = reply["messages"].as_array().cloned().unwrap_or_default();
             if list.is_empty() {

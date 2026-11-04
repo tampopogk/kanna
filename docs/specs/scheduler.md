@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** `cargo test -p kanna-daemon` (schedule), e2e `scheduler` · **Builds on:** [database](database.md), [agent messaging](agent-messaging.md) · **First use:** the [quiz](quiz.md)'s morning offer
 
-**A schedule prompts an agent at set times.** At each time its rule gives, the daemon leaves a task or a repo's planning agent a message, as `kanna task send` does, from `schedule NAME`. [Agent messaging](agent-messaging.md) delivers it, as `[message from schedule NAME] PROMPT`. That's all a schedule does: no shell commands, no task starts of its own, no notifications.
+**A schedule prompts an agent at set times.** To prompt it when something happens instead, see [task events](task-events.md). At each time its rule gives, the daemon leaves a task or a repo's planning agent a message, as `kanna task send` does, from `schedule NAME`. [Agent messaging](agent-messaging.md) delivers it, as `[message from schedule NAME] PROMPT`. That's all a schedule does: no shell commands, no task starts of its own, no notifications.
 
 The daemon runs it, since it's always running, and keeps schedules in [its database](database.md), so they survive restarts. `kanna schedule` makes, lists, pauses, runs and removes them, and agents make them when you ask in words. The [Schedules tab](schedules-tab.md) shows them and what each last did.
 
