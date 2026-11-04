@@ -57,9 +57,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var terminalIDs: [String: String] = [:]
     private(set) var names: [String: String] = [:]
     var shelf: [JSON] = []
+    var agentMenu: (pane: String, choices: [AgentChoice])?
     var starting: Set<String> = []
     let toasts = ToastStack()
     var toastShowing: (pane: String, desk: String?)?
+    var statsTimer: Timer?
 
     static var daemonSocketPath: String {
         if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return path }
@@ -166,8 +168,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
+        contents.pageZoom = { [weak self] pane in self?.physical.pageZoom(pane) }
+        contents.onPageZoom = { [weak self] pane, zoom in self?.physical.setPageZoom(pane, zoom) }
         OverviewSetting.enabled = physical.overview
         contents.agentStatus = { [weak self] pane in self?.agentStatuses.statuses[pane] }
+        contents.agentName = { [weak self] pane in self?.agentName(pane) ?? pane }
+        contents.onComments = { [weak self] pane, button in self?.turnOnComments(pane, under: button) }
         contents.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         runtime.onAction = { [weak self] view, action in
             guard let self, let id = panes.id(of: view) else { return false }
@@ -250,6 +256,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onStart = { [weak self] pane in self?.startContent(pane) }
         link.onStop = { [weak self] pane in self?.contents.stop(pane) }
         link.onDiff = { [weak self] content, message in self?.contents.received(diff: message, content: content) }
+        link.onLog = { [weak self] content, message in self?.contents.received(log: message, content: content) }
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
@@ -316,6 +323,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         contents.subscribeDiffs(on: machine)
+        contents.subscribeLogs(on: machine)
         contents.subscribeFiles(on: machine)
         contents.subscribeSerials(on: machine)
         loadRecent()
@@ -413,12 +421,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     var deskTasks: [DeskTask] {
-        let tasks = deskEntries.compactMap { entry -> DeskTask? in
+        deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
             return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
                              place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id))
         }
-        return DeskOrder.byRecency(tasks) { $0.status == "needs-you" }
     }
 
     func taskTitle(_ id: String, name: String?) -> String {
@@ -683,6 +690,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, let controller else { return }
             controller.page = page
             if page == WindowController.pages[1] { links?.refresh() }
+            if page == WindowController.pages[2] { loadStats(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
@@ -708,6 +716,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.activateTask(task, into: id)
         }
         controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
+        controller.deskView.onShelve = { [weak self] task in self?.shelveTask(task, from: id) }
         controller.deskView.onLeaveSearch = { [weak self, weak controller] in
             guard let self, let controller, let lead = controller.leadShown, let view = panes.keyView(lead) else { return }
             controller.window.makeFirstResponder(view)

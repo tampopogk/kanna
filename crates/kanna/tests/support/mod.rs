@@ -89,6 +89,10 @@ impl Daemon {
         let _ = std::fs::remove_file(self.socket());
     }
 
+    pub fn unset(&mut self, key: &str) {
+        self.extra.retain(|(k, _)| k != key);
+    }
+
     pub fn restart(&mut self) {
         self.stop();
         self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
@@ -113,6 +117,7 @@ impl Daemon {
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_MACHINE_MDNS", "0")
             .env("KANNA_MACHINE_PORT", port.to_string())
+            .env("KANNA_KEYCHAIN", "0")
             .envs(extra.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -252,7 +257,7 @@ impl App {
                     }
                     continue;
                 }
-                if message["cmd"] == "diff" || message["cmd"] == "file" || message["cmd"] == "markup" {
+                if message["cmd"] == "diff" || message["cmd"] == "log" || message["cmd"] == "file" || message["cmd"] == "markup" {
                     heard.lock().unwrap().push(message["args"].clone());
                 } else if message.get("content").is_some() || (message.get("ok").is_some() && message["id"] != 0) {
                     heard.lock().unwrap().push(message.clone());

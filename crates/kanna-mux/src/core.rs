@@ -1,5 +1,5 @@
 use crate::error::KmuxError;
-use crate::exec::{sleep, Executor, Signal, Turns, Wakeup};
+use crate::exec::{Signal, Timed, Timing, Turns};
 use crate::instance::{Instance, DEFAULT_NAME};
 use crate::json::{is_true, json, num, string, Map, Value};
 use crate::layout::{place_request, scope_request, Edge, LayoutHost, LayoutLink, LocalLayout, Placement, Scope, SplitSide};
@@ -92,11 +92,31 @@ struct State {
     saved_state: Option<Value>,
 }
 
+struct Driver {
+    runtime: Option<tokio::runtime::Runtime>,
+    local: tokio::task::LocalSet,
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+impl Driver {
+    fn new() -> Driver {
+        Driver { runtime: Some(tokio::runtime::Builder::new_current_thread().enable_all().build().expect("start kanna-mux's runtime")), local: tokio::task::LocalSet::new() }
+    }
+}
+
 struct Inner {
     state: RefCell<State>,
     layout: Rc<dyn LayoutLink>,
     turns: Rc<Turns>,
-    exec: Rc<Executor>,
+    driver: RefCell<Option<Rc<Driver>>>,
+    timing: RefCell<Option<Timing>>,
     host: RefCell<Option<Rc<dyn PaneHost>>>,
     on_change: RefCell<Option<Rc<dyn Fn()>>>,
     extra: RefCell<HashMap<String, CommandHandler>>,
@@ -145,7 +165,8 @@ impl Core {
                 ios_start_timeout: Duration::from_secs(180),
                 saved_state: None,
             }),
-            exec: Rc::default(),
+            driver: RefCell::new(Some(Rc::new(Driver::new()))),
+            timing: RefCell::new(None),
             host: RefCell::new(None),
             on_change: RefCell::new(None),
             extra: RefCell::new(HashMap::new()),
@@ -169,13 +190,21 @@ impl Deref for Core {
 impl Drop for Core {
     fn drop(&mut self) {
         let inner = &self.0 .0;
-        inner.exec.clear();
+        inner.driver.borrow_mut().take();
         inner.waiters.borrow_mut().clear();
         inner.extra.borrow_mut().clear();
         inner.prefixes.borrow_mut().clear();
         inner.front.borrow_mut().take();
         inner.host.borrow_mut().take();
         inner.on_change.borrow_mut().take();
+    }
+}
+
+fn request_name(request: &Value) -> String {
+    let cmd = request.get("cmd").and_then(Value::as_str).unwrap_or("?");
+    match request.get("args").and_then(|args| args.get("action")).and_then(Value::as_str) {
+        Some(action) => format!("{cmd} {action}"),
+        None => cmd.to_string(),
     }
 }
 
@@ -239,8 +268,30 @@ impl CoreHandle {
         }
     }
 
-    pub fn set_wakeup(&self, wakeup: Option<Wakeup>) {
-        self.0.exec.set_wakeup(wakeup);
+    pub fn set_timing(&self, timing: Option<Timing>) {
+        *self.0.timing.borrow_mut() = timing;
+    }
+
+    fn driver(&self) -> Option<Rc<Driver>> {
+        self.0.driver.borrow().clone()
+    }
+
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+        let driver = self.driver().expect("the core is stopped");
+        driver.local.block_on(driver.runtime.as_ref().expect("the runtime lives as long as its driver"), future)
+    }
+
+    pub fn enter(&self) -> tokio::task::LocalEnterGuard {
+        self.driver().expect("the core is stopped").local.enter()
+    }
+
+    pub fn turn(&self) {
+        self.block_on(tokio::task::yield_now());
+    }
+
+    fn launch(&self, name: String, future: impl Future<Output = ()> + 'static) {
+        let Some(driver) = self.driver() else { return };
+        driver.local.spawn_local(Timed { name, future: Box::pin(future), timing: self.0.timing.borrow().clone() });
     }
 
     pub fn set_instance(&self, instance: Instance) {
@@ -409,44 +460,39 @@ impl CoreHandle {
 
     pub fn handle(&self, request: Value, reply: impl FnOnce(Value) + 'static) {
         let core = self.clone();
-        self.0.exec.spawn(Box::pin(async move { reply(core.respond(request).await) }));
-        self.0.exec.run();
+        let name = request_name(&request);
+        self.launch(name, async move { reply(core.respond(request).await) });
     }
 
     pub fn handle_blocking(&self, request: Value) -> Value {
         let answer = Rc::new(RefCell::new(None));
-        let slot = answer.clone();
-        self.handle(request, move |reply| *slot.borrow_mut() = Some(reply));
-        loop {
-            if let Some(reply) = answer.borrow_mut().take() {
-                return reply;
-            }
-            if !self.0.exec.has_ready() {
-                self.0.exec.wait(self.0.exec.next_deadline());
-            }
-            self.0.exec.run();
-        }
+        let answered = Rc::new(Signal::default());
+        let (slot, done) = (answer.clone(), answered.clone());
+        self.handle(request, move |reply| {
+            *slot.borrow_mut() = Some(reply);
+            done.set();
+        });
+        self.block_on(answered.wait());
+        let reply = answer.borrow_mut().take();
+        reply.expect("the request was answered")
     }
 
     pub fn end(&self, id: &str, done: impl FnOnce(Result<(), KmuxError>) + 'static) {
         let core = self.clone();
         let id = id.to_string();
-        self.0.exec.spawn(Box::pin(async move { done(core.ended(&id).await) }));
-        self.0.exec.run();
+        self.launch("end".to_string(), async move { done(core.ended(&id).await) });
     }
 
     pub fn hang_up(&self, task: &str, done: impl FnOnce(Result<Vec<String>, KmuxError>) + 'static) {
         let core = self.clone();
         let task = task.to_string();
-        self.0.exec.spawn(Box::pin(async move { done(core.hung_up(&task).await) }));
-        self.0.exec.run();
+        self.launch("hang up".to_string(), async move { done(core.hung_up(&task).await) });
     }
 
     pub fn wake(&self, task: &str, done: impl FnOnce(Result<Vec<String>, KmuxError>) + 'static) {
         let core = self.clone();
         let task = task.to_string();
-        self.0.exec.spawn(Box::pin(async move { done(core.woken(&task).await) }));
-        self.0.exec.run();
+        self.launch("wake".to_string(), async move { done(core.woken(&task).await) });
     }
 
     async fn terminals_of(&self, task: &str, keep: impl Fn(&Pane) -> bool) -> Result<Vec<String>, KmuxError> {
@@ -500,19 +546,14 @@ impl CoreHandle {
             let signal = Rc::new(Signal::default());
             self.0.waiters.borrow_mut().entry(id.into()).or_default().push(signal.clone());
             let mut wait = pin!(signal.wait());
-            let mut timer = pin!(sleep(self.0.exec.clone(), left));
+            let mut timer = pin!(tokio::time::sleep(left));
             poll_fn(|cx| if wait.as_mut().poll(cx).is_ready() || timer.as_mut().poll(cx).is_ready() { Poll::Ready(()) } else { Poll::Pending }).await;
         }
         Ok(())
     }
 
     pub fn later(&self, f: impl FnOnce() + 'static) {
-        self.0.exec.spawn(Box::pin(async move { f() }));
-    }
-
-    pub fn poll(&self) -> Option<Instant> {
-        self.0.exec.run();
-        self.0.exec.next_deadline()
+        self.launch("later".to_string(), async move { f() });
     }
 
     pub fn update(&self, id: &str, state: PaneState, exit_code: Option<i64>, error: Option<String>) {
@@ -530,7 +571,6 @@ impl CoreHandle {
             self.notify_ended(id);
         }
         self.changed();
-        self.0.exec.run();
     }
 
     pub fn note_numbers(&self, numbers: &HashMap<String, usize>) {
@@ -560,7 +600,6 @@ impl CoreHandle {
             self.resume(id);
         }
         self.changed();
-        self.0.exec.run();
     }
 
     pub fn set_pid(&self, id: &str, pid: Option<i64>) {
@@ -595,7 +634,7 @@ impl CoreHandle {
         let signal = Rc::new(Signal::default());
         self.0.waiters.borrow_mut().entry(id.into()).or_default().push(signal.clone());
         let mut wait = pin!(signal.wait());
-        let mut timer = pin!(sleep(self.0.exec.clone(), timeout));
+        let mut timer = pin!(tokio::time::sleep(timeout));
         let timed_out = poll_fn(|cx| {
             if wait.as_mut().poll(cx).is_ready() {
                 Poll::Ready(false)
@@ -799,22 +838,25 @@ impl CoreHandle {
         if kind == PaneType::Code && empty("path") {
             return Err(bad_request("code panes need a path"));
         }
-        if kind == PaneType::Diff && empty("path") {
-            return Err(bad_request("diff panes need a path: the folder git runs in"));
+        if matches!(kind, PaneType::Diff | PaneType::Log) && empty("path") {
+            return Err(bad_request(format!("{} panes need a path: the folder git runs in", kind.as_str())));
         }
         if kind == PaneType::Serial && empty("path") {
             return Err(bad_request("serial panes need a path: the port"));
         }
-        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Serial) {
-            return Err(bad_request("path is only for markdown, code, diff and serial panes"));
+        if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial) {
+            return Err(bad_request("path is only for markdown, code, diff, log and serial panes"));
         }
         if (args.get("baud").is_some() || args.get("lineEnding").is_some()) && kind != PaneType::Serial {
             return Err(bad_request("baud and lineEnding are only for serial panes"));
         }
         let baud = read_baud(args.get("baud"))?;
         let line_ending = read_line_ending(args.get("lineEnding"))?;
-        if (args.get("args").is_some() || args.get("view").is_some()) && kind != PaneType::Diff {
-            return Err(bad_request("args and view are only for diff panes"));
+        if args.get("args").is_some() && !matches!(kind, PaneType::Diff | PaneType::Log) {
+            return Err(bad_request("args are only for diff and log panes"));
+        }
+        if args.get("view").is_some() && kind != PaneType::Diff {
+            return Err(bad_request("view is only for diff panes"));
         }
         let diff = read_diff_args(args.get("args"))?;
         let view = read_view(args.get("view"))?;
@@ -911,6 +953,11 @@ impl CoreHandle {
                 return Ok(opened);
             }
         }
+        if is_true(args, "markup") && name.is_none() && !new_tab && dock.is_none() && split.is_none() && size.is_none() && !placed {
+            if let Some(opened) = self.markup_again(kind, args, agent.as_deref()).await? {
+                return Ok(opened);
+            }
+        }
         let turn = self.0.turns.take().await;
         taken(self)?;
         if let (Some(_), Some(app)) = (dock, app.as_deref()) {
@@ -964,8 +1011,8 @@ impl CoreHandle {
             if matches!(kind, PaneType::Code | PaneType::Md) {
                 pane.stop = args.get("tour").and_then(StopMark::from_json);
             }
-            if kind == PaneType::Diff {
-                pane.diff = Some(diff.unwrap_or_default());
+            if matches!(kind, PaneType::Diff | PaneType::Log) {
+                pane.git_args = Some(diff.unwrap_or_default());
                 pane.view = view;
             }
             if kind == PaneType::Serial {
@@ -1032,6 +1079,59 @@ impl CoreHandle {
         };
         let location = Value::Object(location);
         Ok(Some(opened(summary, &location, &location)))
+    }
+
+    async fn markup_again(&self, kind: PaneType, args: &Value, agent: Option<&str>) -> Result<Option<Map>, KmuxError> {
+        let Some(from) = string(args, "from").and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone())) else { return Ok(None) };
+        let real = |path: &str| std::fs::canonicalize(path).map_or_else(|_| path.to_string(), |p| p.to_string_lossy().into_owned());
+        let page = |url: &str| {
+            let url = url.split('#').next().unwrap_or_default();
+            match url.strip_prefix("file://") {
+                Some(path) => format!("file://{}", real(&percent_decode(path))),
+                None => url.to_string(),
+            }
+        };
+        let wanted = match kind {
+            PaneType::Md => string(args, "path").map(real),
+            _ => string(args, "url").map(|url| page(&normalize_url(url))),
+        };
+        let Some(wanted) = wanted else { return Ok(None) };
+        let among: Vec<String> = {
+            let s = self.state();
+            s.panes
+                .ids()
+                .into_iter()
+                .filter(|id| {
+                    s.panes.get(id).is_some_and(|p| {
+                        p.kind == kind
+                            && !p.diff_base.as_deref().is_some_and(is_range)
+                            && match kind {
+                                PaneType::Md => p.path.as_deref().map(real).as_deref() == Some(wanted.as_str()),
+                                _ => p.url.as_deref().map(page).as_deref() == Some(wanted.as_str()),
+                            }
+                    })
+                })
+                .collect()
+        };
+        if among.is_empty() {
+            return Ok(None);
+        }
+        let found = self.layout(json!({ "op": "showing", "from": from, "among": among })).await?;
+        let Some(id) = found.get("pane").and_then(Value::as_str).map(String::from) else { return Ok(None) };
+        let mut asked = json!({ "pane": id });
+        if let Some(agent) = agent {
+            asked["agent"] = json!(agent);
+        }
+        let marked = self.markup(&asked).await?;
+        {
+            let _turn = self.0.turns.take().await;
+            self.layout(json!({ "op": "command", "cmd": "focus", "args": { "pane": id } })).await?;
+        }
+        self.changed();
+        let location = Value::Object(self.layout(json!({ "op": "location", "pane": id })).await?);
+        let mut out = opened(marked.get("pane").cloned().unwrap_or_default(), &location, &location);
+        out.insert("reused".into(), Value::Bool(true));
+        Ok(Some(out))
     }
 
     async fn comment(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1325,11 +1425,11 @@ impl CoreHandle {
             None
         };
         let mut changed = pane.clone();
-        if pane.kind == PaneType::Diff {
+        if matches!(pane.kind, PaneType::Diff | PaneType::Log) {
             if step.is_some() {
-                return Err(bad_request("a diff pane keeps no history"));
+                return Err(bad_request(format!("a {} pane keeps no history", pane.kind.as_str())));
             }
-            changed.diff = Some(read_diff_args(args.get("args"))?.unwrap_or_default());
+            changed.git_args = Some(read_diff_args(args.get("args"))?.unwrap_or_default());
         } else if matches!(pane.kind, PaneType::Md | PaneType::Code) {
             let code = pane.kind == PaneType::Code;
             if !code && args.get("line").is_some() {
@@ -1359,7 +1459,7 @@ impl CoreHandle {
             if pane.kind != PaneType::Web {
                 return Err(KmuxError::new(
                     "wrong_type",
-                    format!("{} is a {} pane; navigate only works on web, markdown, code and diff panes", pane.label(), pane.kind.as_str()),
+                    format!("{} is a {} pane; navigate only works on web, markdown, code, diff and log panes", pane.label(), pane.kind.as_str()),
                 ));
             }
             if let Some(step) = step {
@@ -1385,7 +1485,7 @@ impl CoreHandle {
             pane.path = changed.path;
             pane.line = changed.line;
             pane.url = changed.url;
-            pane.diff = changed.diff;
+            pane.git_args = changed.git_args;
         }
         let snapshot = self.reload(&pane.id, false).await;
         Ok(reply([("pane", self.summary(&pane.id, &snapshot))]))
@@ -1405,6 +1505,7 @@ impl CoreHandle {
         }
         let agent = match string(args, "agent").filter(|_| on) {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
+            None if on && is_true(args, "route") => Some(self.route(&pane).await?),
             None => None,
         };
         if let Some(pane) = self.state().panes.get_mut(&pane.id) {
@@ -1423,6 +1524,15 @@ impl CoreHandle {
             host.update(&updated);
         }
         Ok(reply([("pane", self.summary(&updated.id, &updated))]))
+    }
+
+    async fn route(&self, pane: &Pane) -> Result<String, KmuxError> {
+        let dock = self.layout(json!({ "op": "dock-of", "pane": pane.id })).await?;
+        if let Some(dock) = dock.get("dock").and_then(Value::as_str) {
+            return Ok(dock.to_string());
+        }
+        let running = |id: &String| self.state().panes.get(id).is_some_and(|p| matches!(p.state, PaneState::Starting | PaneState::Running));
+        pane.agent.clone().filter(running).ok_or_else(|| KmuxError::new("no_agent", format!("{} isn't in a task's or a planner's workspace and has no agent: say which with --to", pane.label())))
     }
 
     async fn rename_pane(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -1500,6 +1610,24 @@ impl CoreHandle {
         }
         Ok(())
     }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(byte) = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn opened(summary: Value, location: &Value, placed: &Value) -> Map {

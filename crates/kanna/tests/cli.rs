@@ -75,7 +75,63 @@ fn a_diff_pane_runs_git_diff_with_the_arguments_it_was_given_in_the_folder_it_wa
     daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"diff"}}"#]).fails(2, "diff panes need a path: the folder git runs in");
     daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"diff","path":"/tmp","args":"--staged"}}"#]).fails(2, "args must be a list of strings");
     daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"diff","path":"/tmp","view":"sideways"}}"#]).fails(2, "view must be unified or split");
-    daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"md","path":"/a.md","view":"split"}}"#]).fails(2, "args and view are only for diff panes");
+    daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"md","path":"/a.md","view":"split"}}"#]).fails(2, "view is only for diff panes");
+}
+
+#[test]
+fn a_log_pane_runs_git_log_with_the_revisions_it_was_given_in_the_folder_it_was_opened_from() {
+    let daemon = Daemon::start();
+    let _app = daemon.app();
+    daemon.kanna(&["open", "--window", "new", "--name", "a", "--cmd", "exec /bin/sh"]).ok();
+    let opened = daemon.kanna(&["open", "--window", "win-1", "log", "main", "topic", "--name", "history", "--tab", "--", "src"]).ok();
+    assert_eq!(opened, "opened log-1 (history) in win-1, tab-2: running");
+    let listed = daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][1].clone();
+    assert_eq!((listed["type"].clone(), listed["path"].clone(), listed["args"].clone()), (json!("log"), json!(daemon.dir.to_string_lossy()), json!(["main", "topic", "--", "src"])));
+    assert!(listed.get("view").is_none(), "{listed}");
+    daemon.kanna(&["navigate", "history", "log"]).ok();
+    assert_eq!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][1]["args"], json!([]));
+    daemon.kanna(&["navigate", "history", "--back"]).fails(2, "a log pane keeps no history");
+    assert_eq!(daemon.kanna(&["open", "--window", "win-1", "log", "--tab"]).ok(), "opened log-2 in win-1, tab-3: running");
+    daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"log"}}"#]).fails(2, "log panes need a path: the folder git runs in");
+    daemon.kanna(&["raw", r#"{"cmd":"open","args":{"type":"log","path":"/tmp","view":"split"}}"#]).fails(2, "view is only for diff panes");
+}
+
+#[test]
+fn the_daemon_logs_a_subscribed_repo_again_when_a_ref_moves_and_shows_a_commit() {
+    let daemon = Daemon::start();
+    let app = daemon.app();
+    let repo = daemon.dir.join("logrepo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "first"]);
+    let folder = repo.to_string_lossy().to_string();
+    app.send(json!({"id": 1, "cmd": "log.subscribe", "args": {"view": "log-1", "path": folder, "args": []}}));
+    let read = || app.heard.lock().unwrap().iter().rev().find(|m| !m["log"].is_null()).cloned().unwrap_or(json!({}));
+    wait_for("the first log", || read()["serial"] == 1);
+    assert_eq!(read()["content"].as_str().map(|id| id.starts_with("log-")), Some(true));
+    assert_eq!((read()["log"]["range"].clone(), read()["log"]["rows"][0]["subject"].clone()), (json!(["main"]), json!("first")));
+    std::fs::write(repo.join("ignored.txt"), "not a ref\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(read()["serial"], 1, "a worktree file isn't a ref");
+    git(&["commit", "-q", "--allow-empty", "-m", "second"]);
+    wait_for("the commit", || read()["log"]["rows"][0]["subject"] == "second");
+    let views = || daemon.kanna(&["raw", r#"{"cmd":"logs"}"#]).json()["logs"].clone();
+    assert_eq!((views().as_array().map(Vec::len), views()[0]["views"].as_array().map(Vec::len)), (Some(1), Some(1)));
+    let hash = git(&["rev-parse", "HEAD"]);
+    let shown = daemon.kanna(&["raw", &json!({"cmd": "log.commit", "args": {"path": folder, "hash": hash}}).to_string()]).json();
+    assert_eq!((shown["commit"]["message"].clone(), shown["commit"]["parents"].as_array().map(Vec::len)), (json!("second"), Some(1)));
+    app.quit();
+    wait_for("the log worker stopped with its app", || views() == json!([]));
 }
 
 #[test]
@@ -288,8 +344,8 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff, serial
-commands: agents, arrange, capabilities, close, comment, crashes, desk, desks, diffs, file.read, files, focus, list, machine, markup, markup.agent, markup.edit, markup.post, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, replica, resize, restart, run, schedule, screenshot, send, send-key, serial, status, task, tasks, threads, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff, log, serial
+commands: accounts, agents, arrange, capabilities, close, comment, crashes, desk, desks, diffs, file.read, files, focus, list, log.commit, logs, machine, markup, markup.agent, markup.edit, markup.post, move, move-tab, navigate, open, project, projects, quiz, read, rename-pane, rename-tab, replica, resize, restart, run, schedule, screenshot, send, send-key, serial, stats, status, task, tasks, threads, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -574,11 +630,11 @@ fn help_never_starts_anything_and_marks_what_the_running_kanna_lacks() {
     assert!(kanna_at(&dir, Some(&nowhere), &["raw", "--help"]).ok().starts_with("usage: kanna raw REQUEST"));
     kanna_at(&dir, Some(&nowhere), &["help", "nope"]).fails(2, "unknown command \"nope\"");
     let commands = kanna_at(&dir, Some(&nowhere), &["commands"]).ok();
-    assert_eq!(commands.lines().count(), 36);
+    assert_eq!(commands.lines().count(), 38);
     assert!(commands.starts_with("open          Open a terminal"), "{commands}");
     let described = kanna_at(&dir, Some(&nowhere), &["commands", "--json"]).json();
     assert_eq!(described["running"], false);
-    assert_eq!(described["commands"].as_array().unwrap().len(), 36);
+    assert_eq!(described["commands"].as_array().unwrap().len(), 38);
     assert_eq!(described["exitCodes"]["6"], "needs Kanna.app, which isn't attached and wasn't started");
     assert!(described["globalOptions"].as_array().unwrap().iter().any(|o| o["flag"] == "--"));
 

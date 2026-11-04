@@ -309,7 +309,7 @@ impl LayoutOwner {
 
 fn content_counters(state: &Value) -> HashMap<String, usize> {
     let counters = state.get("counters");
-    ["file", "page", "ios", "diff", "serial"].into_iter().filter_map(|prefix| Some((prefix.to_string(), counters?.get(prefix)?.as_f64().filter(|n| *n >= 0.0)? as usize))).collect()
+    ["file", "page", "ios", "diff", "log", "serial"].into_iter().filter_map(|prefix| Some((prefix.to_string(), counters?.get(prefix)?.as_f64().filter(|n| *n >= 0.0)? as usize))).collect()
 }
 
 fn changed(changed: bool) -> Map {
@@ -479,6 +479,26 @@ mod tests {
         open(&mut owner, json!({ "id": "p2", "name": null, "type": "code", "path": "/r/store.rs" }), json!({ "tab": true, "from": "p1" }));
         open(&mut owner, json!({ "id": "p3", "name": null, "type": "term" }), json!({ "tab": true, "from": "p1" }));
         assert_eq!(owner.view()["workspaces"][0]["tabs"].as_array().unwrap().iter().map(|t| t["title"].clone()).collect::<Vec<_>>(), [json!("store.rs"), json!("Tab 2")]);
+    }
+
+    #[test]
+    fn showing_picks_the_focused_pane_else_the_latest_focused_in_the_caller_s_workspace() {
+        let mut owner = LayoutOwner::new();
+        owner.handle(&json!({ "call": "attach", "panes": [] }));
+        open(&mut owner, json!({ "id": "p1", "name": null, "type": "term" }), json!({ "dock": "left", "shelf": true }));
+        open(&mut owner, json!({ "id": "p2", "name": null, "type": "md" }), json!({ "tab": true, "from": "p1" }));
+        open(&mut owner, json!({ "id": "p3", "name": null, "type": "md" }), json!({ "tab": true, "from": "p1" }));
+        open(&mut owner, json!({ "id": "p4", "name": null, "type": "term" }), json!({ "dock": "left", "shelf": true }));
+        open(&mut owner, json!({ "id": "p5", "name": null, "type": "md" }), json!({ "tab": true, "from": "p4" }));
+        let showing = |owner: &mut LayoutOwner| owner.handle(&json!({ "call": "serve", "request": { "op": "showing", "from": "p1", "among": ["p5", "p2", "p3"] } }))["pane"].clone();
+        assert_eq!(showing(&mut owner), json!("p3"), "p3 is focused");
+        command(&mut owner, "focus", json!({ "pane": "p2" }));
+        command(&mut owner, "focus", json!({ "pane": "p1" }));
+        assert_eq!(showing(&mut owner), json!("p2"), "p2 was focused after p3");
+        let dock = owner.handle(&json!({ "call": "serve", "request": { "op": "dock-of", "pane": "p2" } }));
+        assert_eq!(dock["dock"], json!("p1"));
+        let none = owner.handle(&json!({ "call": "serve", "request": { "op": "showing", "from": "p1", "among": ["p5"] } }));
+        assert_eq!(none["pane"], Value::Null, "p5 is another task's");
     }
 
     #[test]

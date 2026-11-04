@@ -19,7 +19,6 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -130,7 +129,7 @@ pub const PROTOCOL: u64 = kanna_build::PROTOCOL as u64;
 
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
-pub fn takeover(events: Sender<Event>, wire: Arc<Wire>) -> Takeover {
+pub fn takeover(events: crate::runtime::Events, wire: Arc<Wire>) -> Takeover {
     Arc::new(move |hello: Value, reader: BufReader<UnixStream>, stream: UnixStream| serve(events.clone(), wire.clone(), hello, reader, stream, None))
 }
 
@@ -155,7 +154,7 @@ fn on_the_wire(wire: &Wire, conn: u64, message: &Value, at: Instant) -> bool {
     }
 }
 
-pub fn serve(events: Sender<Event>, wire: Arc<Wire>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
+pub fn serve(events: crate::runtime::Events, wire: Arc<Wire>, hello: Value, mut reader: BufReader<UnixStream>, stream: UnixStream, remote: Option<String>) {
     let conn = CONNECTIONS.fetch_add(1, Ordering::SeqCst) + 1;
     let out = Outbox::default();
     let (lines, caught_up) = (Outbox { queue: out.queue.clone() }, events.clone());
@@ -226,6 +225,7 @@ fn write_with(stream: &UnixStream, reply: &Value, listener: Option<&OwnedFd>) ->
 }
 
 pub struct AppLink {
+    unnamed_folders: RefCell<HashMap<String, String>>,
     core: WeakCore,
     terminals: Rc<Terminals>,
     diffs: Rc<Diffs>,
@@ -246,6 +246,7 @@ pub struct AppLink {
     listener: Option<OwnedFd>,
     handed: Cell<bool>,
     pub machine: RefCell<Option<Box<dyn Fn() -> Value>>>,
+    pub logs: RefCell<Option<Rc<crate::logs::Logs>>>,
 }
 
 impl AppLink {
@@ -253,6 +254,7 @@ impl AppLink {
         let (files, threads) = files;
         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         AppLink {
+            unnamed_folders: RefCell::default(),
             build,
             run: format!("{:x}-{:x}", std::process::id(), started.as_nanos()),
             listener,
@@ -273,6 +275,7 @@ impl AppLink {
             unsent: RefCell::default(),
             stopping: Cell::new(false),
             machine: RefCell::new(None),
+            logs: RefCell::new(None),
         }
     }
 
@@ -435,8 +438,19 @@ impl AppLink {
 
     pub fn folder(&self, pane: &str, cwd: &str) {
         if self.attached() {
-            self.notify("folder", json!({ "pane": pane, "cwd": cwd, "place": crate::projects::place(cwd) }));
+            let place = crate::projects::place(cwd);
+            let unnamed = !place["main"].is_null() && place["project"].is_null();
+            match unnamed {
+                true => self.unnamed_folders.borrow_mut().insert(pane.to_string(), cwd.to_string()),
+                false => self.unnamed_folders.borrow_mut().remove(pane),
+            };
+            self.notify("folder", json!({ "pane": pane, "cwd": cwd, "place": place }));
         }
+    }
+
+    pub fn project_found(&self) {
+        let waiting = std::mem::take(&mut *self.unnamed_folders.borrow_mut());
+        waiting.iter().for_each(|(pane, cwd)| self.folder(pane, cwd));
     }
 
     pub fn status(&self, pane: &str, status: Option<&str>) {
@@ -492,6 +506,9 @@ impl AppLink {
         let prefix = view_prefix(conn);
         self.diffs.leave(|view| view.starts_with(&prefix));
         self.files.leave(|view| view.starts_with(&prefix));
+        if let Some(logs) = self.logs.borrow().as_ref() {
+            logs.leave(|view| view.starts_with(&prefix));
+        }
         self.threads.leave(|view| view.starts_with(&prefix));
         self.serial.leave_views(|view| view.starts_with(&prefix));
         let pending: Vec<Responder> = self.pending.borrow_mut().drain().map(|(_, (_, r))| r).collect();
@@ -538,6 +555,20 @@ impl AppLink {
             }
             ("diff.unsubscribe", Some(view)) => {
                 self.diffs.unsubscribe(&view);
+                return None;
+            }
+            ("log.subscribe", Some(view)) => {
+                let reply = match self.logs.borrow().as_ref() {
+                    Some(logs) => logs.subscribe(&view, &args),
+                    None => Err(KmuxError::new("unsupported", "this daemon keeps no logs")),
+                };
+                self.answer_subscribe(&message, reply);
+                return None;
+            }
+            ("log.unsubscribe", Some(view)) => {
+                if let Some(logs) = self.logs.borrow().as_ref() {
+                    logs.unsubscribe(&view);
+                }
                 return None;
             }
             ("file.subscribe", Some(view)) => {
@@ -675,6 +706,14 @@ impl AppLink {
         let prefix = view_prefix(conn);
         if views.iter().any(|view| view.starts_with(&prefix)) {
             self.notify("diff", payload.clone());
+        }
+    }
+
+    pub fn log(&self, views: &[String], payload: &Value) {
+        let Some(conn) = self.app.borrow().as_ref().map(|a| a.id) else { return };
+        let prefix = view_prefix(conn);
+        if views.iter().any(|view| view.starts_with(&prefix)) {
+            self.notify("log", payload.clone());
         }
     }
 

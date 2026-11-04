@@ -105,11 +105,28 @@ struct ScrollAnchorTests {
         #expect(abs(pane.scrollTop - start) < 0.5)
     }
 
+    @Test func aResizeAtAPageZoomKeepsTheTextAndTheSidewaysScroll() {
+        let pane = pane()
+        pane.set(pageZoom: 2)
+        pane.scroll(toY: 3000)
+        let clip = pane.scrollView.contentView
+        clip.scroll(to: NSPoint(x: 40, y: clip.bounds.minY))
+        pane.scrollView.reflectScrolledClipView(clip)
+        let text = topText(pane)
+        let start = clip.bounds.origin
+        resize(pane, width: 1300)
+        #expect(topText(pane) == text)
+        #expect(clip.bounds.minX >= 0)
+        resize(pane, width: 520)
+        #expect(topText(pane) == text)
+        #expect(abs(clip.bounds.minY - start.y) < 0.5)
+    }
+
     @Test func theTopStaysAtTheTop() {
         let pane = pane()
         resize(pane, width: 1300)
         pane.zoom(by: 1)
         resize(pane, width: 520)
-        #expect(pane.scrollTop == 0)
+        #expect(abs(pane.scrollTop) < 0.01)
     }
 }

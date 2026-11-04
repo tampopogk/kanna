@@ -7,12 +7,15 @@ import Markdown
 @MainActor
 public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public static let zoomSteps: [CGFloat] = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+    public static let pageZooms: ClosedRange<CGFloat> = 0.5...4
 
     public var onFocus: (() -> Void)? { didSet { textView.onFocus = onFocus } }
     public var onOpenMarkdown: ((String) -> Void)?
     public var onOpenCode: ((String, Int) -> Void)?
     public var onHistory: ((Bool) -> Void)?
     public var onZoom: (() -> Void)?
+    public var onComments: ((NSView) -> Void)?
+    public var agentName: ((String) -> String)? { didSet { agentChanged() } }
     public var startScrollY: CGFloat?
     public var contextMenu: (() -> NSMenu?)? { didSet { textView.contextMenu = contextMenu } }
     public let path: String
@@ -24,6 +27,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var diffRange: (from: String, to: String)? { diffBase.flatMap(MarkdownDiff.range) }
     public var keyView: NSView { textView }
     public var zoom: CGFloat { scrollView.magnification }
+    public private(set) var textSize: CGFloat
+    public var pageZoom: CGFloat { scrollView.magnification / textSize }
     public private(set) var renderMs: Double = 0
     public private(set) var parseMs: Double = 0
 
@@ -45,10 +50,11 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     private var disk: (text: String, compared: MarkdownComparison?)?
     private var held: (text: String, compared: MarkdownComparison?)?
     private var poll: Timer?
-    private var magnifyObserver: NSObjectProtocol?
+    private var magnifyObservers: [NSObjectProtocol] = []
+    private var liveMagnify = false
+    private var reportedZoom: (text: CGFloat, page: CGFloat)?
     private var kept: (position: ReadingPosition, top: CGFloat)?
     private var anchor: ReadingPosition?
-    private var laidZoom: CGFloat = 0
     let bar = DocBar()
     let panel = ThreadPanel()
     public var changeThreads: DocChanger?
@@ -72,7 +78,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     var forcedThreads = false
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { refreshPanel() } } }
-    public var onSend: ((String, String, @escaping (String?) -> Void) -> Void)?
+    public var onSend: DocSend?
     public var onTourStep: ((String) -> Void)?
     var tourUnrevealed = false
     public var tour: DocTourStep? {
@@ -83,8 +89,9 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         }
     }
 
-    public init(path: String, zoom: CGFloat = 1, markup: Bool = false, diff: String? = nil) {
+    public init(path: String, textSize: CGFloat = 1, pageZoom: CGFloat = 1, markup: Bool = false, diff: String? = nil) {
         self.path = path
+        self.textSize = min(max(textSize, Self.zoomSteps.first!), Self.zoomSteps.last!)
         self.markup = markup && diff.flatMap(MarkdownDiff.range) == nil
         diffBase = diff
         docName = (path as NSString).lastPathComponent
@@ -100,28 +107,43 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         scrollView.contentView = CenteringClipView()
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
         scrollView.allowsMagnification = true
-        scrollView.minMagnification = Self.zoomSteps.first!
-        scrollView.maxMagnification = 4
-        scrollView.magnification = zoom
+        setMagnification(pageZoom: pageZoom)
+        reportedZoom = (self.textSize, self.pageZoom)
         scrollView.backgroundColor = MarkdownTheme.background
         addSubview(scrollView)
         setUpOverview()
         bar.path.stringValue = docName
         bar.diff.isHidden = diff == nil
         bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
+        bar.comments.onPress = { [weak self] in
+            guard let self else { return }
+            onComments?(bar.comments)
+        }
         textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
         showComments()
         textView.delegate = self
         scrollView.onSwipe = { [weak self] back in self?.onHistory?(back) }
-        magnifyObserver = NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.needsLayout = true
-                self?.onZoom?()
-            }
-        }
+        magnifyObservers = [
+            NotificationCenter.default.addObserver(forName: NSScrollView.willStartLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.liveMagnify = true }
+            },
+            NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.liveMagnify = false
+                    self?.reportZoom()
+                }
+            },
+            NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.liveMagnify else { return }
+                    self.reportZoom()
+                }
+            },
+        ]
         poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
         }
@@ -155,11 +177,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     private func showComments() {
-        if markup || diffBase != nil {
-            if bar.superview == nil { addSubview(bar) }
-        } else {
-            bar.removeFromSuperview()
-        }
+        if bar.superview == nil { addSubview(bar) }
+        bar.comments.isHidden = markup || diffRange != nil
         bar.agent.isHidden = !markup
         bar.threads.isHidden = !markup
         if markup {
@@ -180,32 +199,30 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public func stop() {
         poll?.invalidate()
         poll = nil
-        magnifyObserver.map(NotificationCenter.default.removeObserver)
-        magnifyObserver = nil
+        magnifyObservers.forEach(NotificationCenter.default.removeObserver)
+        magnifyObservers = []
         stopOverview()
     }
 
     public override func layout() {
         super.layout()
-        let barHeight: CGFloat = markup || diffBase != nil ? 34 : 0
+        let barHeight: CGFloat = 34
         let height = max(0, bounds.height - barHeight)
         let shown = sides(height: height)
         let side = shown.comments ? ThreadPanel.width : 0
         let rule = shown.overview ? OverviewMetrics.width : 0
         overviewShown = shown.overview
-        let frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side - rule), height: height)
-        let rewraps = anchor != nil || frame.width != scrollView.frame.width || zoom != laidZoom
-        let position = rewraps ? anchor ?? readingPosition() : nil
+        let frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - rule), height: height)
+        let position = anchor ?? (frame.width != scrollView.frame.width ? readingPosition() : nil)
         anchor = nil
-        laidZoom = zoom
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
         scrollView.frame = frame
         scrollView.hasVerticalScroller = !shown.overview
-        overview.frame = NSRect(x: bounds.width - side - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
+        overview.frame = NSRect(x: bounds.width - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
         overview.isHidden = !shown.overview
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
-        panel.frame = NSRect(x: bounds.width - side, y: 0, width: side, height: height)
+        panel.frame = NSRect(x: max(0, bounds.width - rule - side), y: 0, width: side, height: height)
         updateInset()
         if let y = startScrollY, bounds.height > 0 {
             startScrollY = nil
@@ -239,12 +256,12 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     private func updateInset() {
-        let width = scrollView.contentSize.width
+        let width = (scrollView.contentSize.width / textSize).rounded(.down)
         let inset = MarkdownOverviewLayout.inset(width)
         let size = NSSize(width: inset, height: 22)
         if textView.textContainerInset != size { textView.textContainerInset = size }
         textView.layoutWidth = width
-        textView.tail = (scrollView.contentSize.height * 0.4).rounded()
+        textView.tail = (scrollView.contentSize.height / textSize * 0.4).rounded()
         if textView.frame.width != width { textView.frame.size.width = width }
     }
 
@@ -409,13 +426,38 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     public func zoom(by step: Int) {
-        let steps = Self.zoomSteps, now = zoom
+        let steps = Self.zoomSteps, now = textSize
         let target = step == 0 ? 1 : step > 0 ? (steps.first { $0 > now + 0.001 } ?? steps.last!) : (steps.last { $0 < now - 0.001 } ?? steps.first!)
-        guard target != now else { return }
+        guard target != textSize else { return }
         anchor = readingPosition()
-        scrollView.magnification = target
+        let page = pageZoom
+        let clip = scrollView.contentView
+        let across = textView.frame.width > 0 ? clip.bounds.minX / textView.frame.width : 0
+        textSize = target
+        setMagnification(pageZoom: page)
         needsLayout = true
         layoutSubtreeIfNeeded()
+        clip.scroll(to: NSPoint(x: across * textView.frame.width, y: clip.bounds.minY))
+        scrollView.reflectScrolledClipView(clip)
+        reportZoom()
+    }
+
+    public func set(pageZoom: CGFloat) {
+        let visible = scrollView.contentView.bounds
+        scrollView.setMagnification(textSize * min(max(pageZoom, Self.pageZooms.lowerBound), Self.pageZooms.upperBound), centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+        reportZoom()
+    }
+
+    private func setMagnification(pageZoom: CGFloat) {
+        scrollView.minMagnification = textSize * Self.pageZooms.lowerBound
+        scrollView.maxMagnification = textSize * Self.pageZooms.upperBound
+        scrollView.magnification = textSize * min(max(pageZoom, Self.pageZooms.lowerBound), Self.pageZooms.upperBound)
+    }
+
+    private func reportZoom() {
+        let now = (text: textSize, page: pageZoom)
+        guard reportedZoom.map({ $0.text != now.text || abs($0.page - now.page) > 0.0001 }) ?? true else { return }
+        reportedZoom = now
         onZoom?()
     }
 
@@ -448,15 +490,17 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     func restoreReadingPosition(_ position: ReadingPosition) {
         guard let container = textView.textContainer else { return }
-        if position == .top {
-            kept = nil
-            return textView.scroll(.zero)
+        let clip = scrollView.contentView
+        var y: CGFloat = 0
+        if position != .top {
+            layoutManager.ensureLayout(for: container)
+            textView.sizeToFit()
+            let line = lineRect(at: position.index)
+            y = max(0, line.minY + position.fraction * line.height)
         }
-        layoutManager.ensureLayout(for: container)
-        textView.sizeToFit()
-        let line = lineRect(at: position.index)
-        textView.scroll(NSPoint(x: 0, y: max(0, line.minY + position.fraction * line.height)))
-        kept = (position, scrollView.contentView.bounds.minY)
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+        scrollView.reflectScrolledClipView(clip)
+        kept = position == .top ? nil : (position, clip.bounds.minY)
     }
 
     @discardableResult
@@ -564,6 +608,27 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let line = string.lineRange(for: NSRange(location: min(position.index, string.length), length: 0))
         let text = storage.attribute(.attachment, at: min(position.index, storage.length - 1), effectiveRange: nil) == nil ? string.substring(with: line) : "[picture at \(position.index)]"
         return (text.trimmingCharacters(in: .whitespacesAndNewlines), position.fraction)
+    }
+
+    public var scrollLeft: CGFloat { scrollView.contentView.bounds.minX }
+
+    public var topCharacter: Int? {
+        guard let container = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 else { return nil }
+        layoutManager.ensureLayout(for: container)
+        let point = NSPoint(x: 0, y: max(0, scrollView.contentView.bounds.minY - textView.textContainerOrigin.y))
+        var line = NSRange()
+        layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndex(for: point, in: container), effectiveRange: &line)
+        return layoutManager.characterIndexForGlyph(at: line.location)
+    }
+
+    public var lineStarts: [Int] {
+        guard let container = textView.textContainer, let storage = textView.textStorage, storage.length > 0 else { return [] }
+        layoutManager.ensureLayout(for: container)
+        var out: [Int] = []
+        layoutManager.enumerateLineFragments(forGlyphRange: layoutManager.glyphRange(for: container)) { [layoutManager] _, _, _, glyphs, _ in
+            out.append(layoutManager.characterIndexForGlyph(at: glyphs.location))
+        }
+        return out
     }
 
     public func scroll(toY y: CGFloat) { textView.scroll(NSPoint(x: 0, y: max(0, y))) }

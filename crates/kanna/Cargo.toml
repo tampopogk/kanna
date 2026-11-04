@@ -8,6 +8,7 @@ license = "FSL-1.1-MIT"
 kanna-build = { path = "../kanna-build" }
 kanna-crash = { path = "../kanna-crash" }
 kanna-client = { path = "../kanna-client" }
+kanna-guest = { path = "../kanna-guest" }
 kanna-calltree = { path = "../kanna-calltree" }
 kanna-merman = { path = "../kanna-merman" }
 kanna-pipe = { path = "../kanna-pipe" }
@@ -19,5 +20,6 @@ serde_json = "1"
 [dev-dependencies]
 kanna-mux = { path = "../kanna-mux" }
 kanna-net = { path = "../kanna-net" }
+kanna-guest = { path = "../kanna-guest" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 libc = "0.2"

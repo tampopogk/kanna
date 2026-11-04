@@ -164,14 +164,15 @@ body.picture .cmd input::placeholder { color: transparent; }
 .keys kbd { font: 11px var(--mono); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel2); }
 .nowin { color: var(--muted); padding: 40px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
 .shelf .item.needs { color: var(--warn); }
-.shelf .item.hint { opacity: .75; margin-right: 6px; }
+.shelf .item.hint { opacity: .75; flex: none; }
+.shelf .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; flex: none; }
 .row.waiting .t .n { font-weight: 500; }
 .row.waiting .dot { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
 .row .go.off { color: var(--muted); }
 .row.waiting .go { visibility: visible; color: var(--muted); }
 .row.waiting:hover .go:not(.off) { color: var(--accent); }
 .empty .note { color: var(--warn); font-size: 12px; margin: 6px 0 0; min-height: 16px; }
-.shelf .backlog { margin-left: auto; color: var(--muted); white-space: nowrap; padding: 3px 8px; }
+.shelf .backlog { color: var(--muted); white-space: nowrap; padding: 3px 8px; }
 .shelf .backlog.gone { display: none; }
 .where .unnamed { color: var(--muted); font-weight: 400; font-style: italic; }
 .group .gh { align-items: center; gap: 12px; }
@@ -231,7 +232,6 @@ body.picture.menu .menubar { display: flex; }
       <span><kbd>⌘.</kbd> the Desk view ⇄ the active task</span>
       <span><kbd>⇧⌘↩</kbd> zoom what's showing: the task's focused pane, or the planning agent; each keeps its own</span>
       <span><kbd>⌘]</kbd> <kbd>⌘[</kbd> next pane (or click one)</span>
-      <span><kbd>⇧⌘A</kbd> the Desk task waiting longest for you</span>
       <span><kbd>⌘F</kbd> search the Shelf (Desk view): <kbd>↑</kbd> <kbd>↓</kbd> pick, <kbd>↩</kbd> Move to Desk, <kbd>esc</kbd> clear</span>
     </div>
   </div>
@@ -381,10 +381,12 @@ function windowHTML(w) {
 
 function shelfHTML(w) {
   const waiting = backlog(repoOf(w)).length;
-  return `<span class="item hint" data-park="${w.desk}" title="The Desk view: the planning agent, the Desk's tasks and the Shelf"><span class="nm">⌘. Desk</span></span>` + shelf(w).map((t, i) => {
+  return shelf(w).map((t, i) => {
     const meta = t.status === "needs" ? "needs you" : ago(t);
     return `<span class="item ${t.status === "needs" ? "needs" : ""}" data-pull="${t.id}" title="${titleOf(t)}"><span class="dot ${t.status}"></span><span class="nm">${titleOf(t)}</span><span class="meta">· ${meta}</span><span class="kb">⌘${i + 1}</span></span>`;
-  }).join("") + (waiting ? `<span class="backlog" title="⌘. Desk to see the Shelf">${waiting} on the Shelf</span>` : "");
+  }).join("") + `<span class="spacer"></span>` + (shelf(w).length ? `<span class="sep"></span>` : "") +
+    `<span class="item hint" data-park="${w.desk}" title="The Desk view: the planning agent, the Desk's tasks and the Shelf"><span class="nm">⌘. Desk</span></span>` +
+    (waiting ? `<span class="backlog" title="⌘. Desk to see the Shelf">${waiting} on the Shelf</span>` : "");
 }
 
 function agentTerm(t) {
@@ -766,11 +768,6 @@ function closeWindow(id) {
   render();
 }
 
-function waitingLongest() {
-  const t = s.order.map(task).filter(t => t && !deskOf(t.id) && t.status === "needs").sort((a, b) => (a.needsAt || 0) - (b.needsAt || 0))[0];
-  if (t) pull(t.id);
-}
-
 function run(t, line) {
   const words = line.trim().split(/\s+/);
   const say = text => t.log.push(`<span class="p">❯</span> ${esc(line.trim())}`, ...text.split("\n").map(l => `<span class="out">${esc(l)}</span>`));
@@ -922,7 +919,6 @@ document.addEventListener("keydown", e => {
     const t = shelf()[Number(e.key) - 1];
     if (t) { e.preventDefault(); pull(t.id); }
   } else if (!e.shiftKey && e.key === ".") { e.preventDefault(); toggleShelf(); }
-  else if (e.shiftKey && e.key.toLowerCase() === "a") { e.preventDefault(); waitingLongest(); }
   else if (!e.shiftKey && (e.key === "]" || e.key === "[")) { e.preventDefault(); nextPane(); }
 });
 
@@ -957,7 +953,7 @@ document.addEventListener("click", e => {
 });
 document.getElementById("ring").onclick = () => {
   const t = shelf().filter(t => t.status !== "needs").pop();
-  if (t) { t.status = "needs"; t.needsAt = Date.now(); render(); }
+  if (t) { t.status = "needs"; render(); }
 };
 document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
 document.getElementById("reset").onclick = () => { s = initial(); render(); };
@@ -1010,7 +1006,7 @@ const asked = location.hash.match(/q=([^&]*)/);
 if (asked) { s.windows[0].query = decodeURIComponent(asked[1]); s.finding = "w1"; }
 if (location.hash.includes("new")) { fresh(); s.windows[0].repo = "~"; }
 if (location.hash.includes("finder")) { parkTask(task("p1")); s.windows[0].desk = null; s.windows[0].repo = "~"; planners(); if (location.hash.includes("pick")) plannerAnswer(s.windows[0].planner, "~/work/kanna-v4"); if (location.hash.includes("setup")) { const p = s.windows[0].planner; plannerAnswer(p, "~/work/kanna-v4"); plannerAnswer(p, "2"); } if (location.hash.includes("clone")) { plannerAnswer(s.windows[0].planner, "https://github.com/jemdiggity/kojo-data"); } if (location.hash.includes("name")) { plannerAnswer(s.windows[0].planner, "recipe-box"); plannerAnswer(s.windows[0].planner, "1"); } }
-if (location.hash.includes("needs")) { task("p4").status = "needs"; task("p4").needsAt = Date.now(); }
+if (location.hash.includes("needs")) { task("p4").status = "needs"; }
 setInterval(() => { if (!drag && !document.activeElement?.closest?.("[data-cmd]")) render(); }, 30000);
 render();
 </script>

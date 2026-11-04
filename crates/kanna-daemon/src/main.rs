@@ -4,10 +4,14 @@ macro_rules! log {
     };
 }
 
+mod accounts;
 mod agents;
 mod app_link;
+mod builds;
+mod guests;
 mod tasks;
 mod db;
+mod desk_news;
 mod host;
 mod keeper;
 mod content_ids;
@@ -22,7 +26,12 @@ mod project_import;
 mod projects;
 mod quiz;
 mod replica;
+mod stamped;
+mod stats;
+mod quality;
+mod coverage;
 mod reader;
+mod runtime;
 mod runs;
 mod schedule;
 mod settings;
@@ -30,6 +39,7 @@ mod shell;
 mod status;
 mod status_command;
 mod diffs;
+mod logs;
 mod machines;
 mod files;
 mod reads;
@@ -39,6 +49,7 @@ mod store;
 mod stacks;
 mod task_scripts;
 mod terminals;
+mod transfer;
 mod toasts;
 mod wire;
 
@@ -52,7 +63,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use pty::Spawner;
@@ -79,7 +89,6 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 const LISTEN_FD: &str = "KANNA_LISTEN_FD";
 
 const STOP_GRACE: libc::c_uint = 5;
-const SLOW_REQUEST: Duration = Duration::from_millis(50);
 
 const SHUTDOWN_MARKER: &str = "daemon.shutdown";
 
@@ -95,22 +104,21 @@ enum Shutdown {
 
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
-    Wake,
     Output { terminal: String, serial: u64 },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
-    Worktree { token: u64, result: Result<stacks::Made, String> },
     Stacks { seen: Vec<stacks::Seen> },
     Heads,
-    Branch { token: u64, branch: String },
     Turn { token: u64 },
-    Posted { token: u64, result: Result<(), String> },
-    Finished { task: String, changes: Vec<db::Change> },
+    Merged { task: String, merge: desk_news::Merge },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
+    Log { id: String, log: Value },
     File { id: String, read: files::Read },
     Serial(serial::SerialEvent),
+    Sampled(stats::Sampled),
+    Covered(coverage::Covered),
     KeeperReadable,
     KeeperHeard,
     KeeperLost(String),
@@ -121,6 +129,8 @@ pub enum Event {
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     MachinesSave(Value),
+    PeerRequest { from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send> },
+    AccountBroken(Value),
     Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
@@ -130,19 +140,22 @@ impl Event {
     fn kind(&self) -> &'static str {
         match self {
             Event::Request(..) => "loop.request",
-            Event::Wake => "loop.wake",
             Event::Output { .. } => "loop.output",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
-            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } => "loop.tasks",
+            Event::Stacks { .. } | Event::Heads | Event::Turn { .. } | Event::Merged { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
+            Event::Log { .. } => "loop.log",
             Event::File { .. } => "loop.file",
             Event::Serial(_) => "loop.serial",
+            Event::Sampled(_) => "loop.stats",
+            Event::Covered(_) => "loop.coverage",
             Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
+            Event::PeerRequest { .. } | Event::AccountBroken(_) => "loop.accounts",
             Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
         }
     }
@@ -154,6 +167,7 @@ fn main() {
         None => {}
         Some("--uses-keeper") => std::process::exit(0),
         Some(codex_remote::FLAG) if args.len() >= 3 => std::process::exit(codex_remote::run(Path::new(&args[1]), &args[2], &args[3..])),
+        Some(accounts::FLAG) if args.len() >= 3 => std::process::exit(accounts::run_with_account(Path::new(&args[1]), &args[2], &args[3..])),
         Some("-h" | "--help") => return println!("{USAGE}"),
         Some(other) => {
             eprintln!("kanna-daemon: unknown argument {other}\n{USAGE}");
@@ -233,7 +247,7 @@ fn run() -> Result<(), String> {
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
     }
 
-    let (events, inbox) = mpsc::channel::<Event>();
+    let (events, mut inbox) = runtime::channel();
     let db = Rc::new(db::Db::open(&state_dir));
     content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
@@ -242,10 +256,8 @@ fn run() -> Result<(), String> {
     core.use_content_ids();
     let instance = instance_name(&socket);
     core.set_instance(Instance::with_socket(&instance, Some(socket_path.clone())));
-    let wake = events.clone();
-    core.set_wakeup(Some(Arc::new(move || {
-        let _ = wake.send(Event::Wake);
-    })));
+    let _on_the_loop = core.enter();
+    core.set_timing(Some(Rc::new(runtime::timed)));
 
     let mut server = SocketServer::new(
         &socket_path,
@@ -258,6 +270,8 @@ fn run() -> Result<(), String> {
     );
     let wire = Arc::new(wire::Wire::new(events.clone()));
     server.take_over(HELLO, app_link::takeover(events.clone(), wire.clone()));
+    let build_callers: builds::Callers = Default::default();
+    server.take_over(builds::OPEN, builds::takeover(build_callers.clone()));
     let server = std::mem::ManuallyDrop::new(server);
     match inherited_listener()? {
         Some(listener) => server.start_with(listener),
@@ -284,6 +298,12 @@ fn run() -> Result<(), String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone()), ("AGY_CLI_OSC7501".to_string(), "on".to_string())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
+    let kanna_cli = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("kanna"))).unwrap_or_default();
+    if let Some(shim) = builds::install_shim(&state_dir, &kanna_cli, builds::shim_wanted()) {
+        let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
+        env.push(("PATH".to_string(), format!("{}:{path}", shim.display())));
+        env.push(("KANNA_BUILD_SHIM_DIR".to_string(), shim.to_string_lossy().into_owned()));
+    }
     let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
     let renaming = Rc::downgrade(&terminals);
@@ -349,11 +369,20 @@ fn run() -> Result<(), String> {
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
+    let guests = guests::Guests::new(&state_dir);
+    guests.install(&core);
+    if cfg!(target_os = "macos") {
+        guests.start();
+    }
+    let _ = guests::GUESTS.set(guests);
     let machines = match machines::Machines::start(&state_dir, &db, events.clone(), wire.clone()) {
         Ok(machines) => {
             log!("kanna-daemon: {}", machines.describe());
             let machines = Rc::new(machines);
             machines.install(&core);
+            if let Some(caller) = machines.caller() {
+                let _ = build_callers.set(caller);
+            }
             Some(machines)
         }
         Err(reason) => {
@@ -361,6 +390,16 @@ fn run() -> Result<(), String> {
             None
         }
     };
+    let accounts = accounts::Service::start(&state_dir, machines.as_ref().and_then(|m| m.caller()));
+    let broken = events.clone();
+    accounts.on_broken(Box::new(move |account| {
+        let _ = broken.send(Event::AccountBroken(account));
+    }));
+    accounts.install(&core);
+    if let Some(machines) = &machines {
+        let withdrawing = Arc::downgrade(&accounts);
+        machines.before_revoke(Arc::new(move |host| withdrawing.upgrade().and_then(|accounts| accounts.withdraw(host))));
+    }
     if let Some(machines) = &machines {
         let roster = Rc::downgrade(machines);
         *tasks.roster.borrow_mut() = Some(Box::new(move || roster.upgrade().map(|m| m.roster()).unwrap_or_default()));
@@ -372,6 +411,19 @@ fn run() -> Result<(), String> {
             });
             match exchanging.upgrade() {
                 Some(machines) => machines.exchange(peer, request, done),
+                None => done(Err("the daemon is stopping".into())),
+            }
+        }));
+    }
+    if let Some(machines) = &machines {
+        let (sending, replies) = (Rc::downgrade(machines), events.clone());
+        *tasks.payload.borrow_mut() = Some(Box::new(move |peer, id, args, path, token| {
+            let replies = replies.clone();
+            let done: Box<dyn FnOnce(Result<Value, String>) + Send> = Box::new(move |reply| {
+                let _ = replies.send(Event::Replica { token, reply });
+            });
+            match sending.upgrade() {
+                Some(machines) => machines.transfer(peer, id, args, path, done),
                 None => done(Err("the daemon is stopping".into())),
             }
         }));
@@ -390,6 +442,12 @@ fn run() -> Result<(), String> {
     reads::install(&core);
     let serial = Rc::new(serial::Serial::new(events.clone(), &state_dir));
     serial.install(&core);
+    let logs = Rc::new(logs::Logs::new(events.clone()));
+    logs.install(&core);
+    let refs = Rc::downgrade(&tasks);
+    *logs.task_refs.borrow_mut() = Some(Box::new(move || refs.upgrade().map(|tasks| tasks.refs()).unwrap_or_default()));
+    let stats = Rc::new(stats::Stats::new(db.clone(), events.clone(), &state_dir));
+    stats.install(&core);
     let host = Rc::new(Host::new(terminals.clone(), serial.clone()));
     core.set_host(Some(host.clone()));
     let noted = core.weak();
@@ -443,13 +501,34 @@ fn run() -> Result<(), String> {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
     }
+    let (found_tasks, found_app) = (Rc::downgrade(&tasks), Rc::downgrade(&app));
+    projects::on_found(Rc::new(move || {
+        if let Some(tasks) = found_tasks.upgrade() {
+            tasks.mark_changed();
+        }
+        if let Some(app) = found_app.upgrade() {
+            app.project_found();
+        }
+    }));
+    tasks.prime_projects();
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
             app.layout(view);
         }
     }));
+    *app.logs.borrow_mut() = Some(logs.clone());
     app.connect_tasks(&tasks);
+    let shown = tasks.on_change.borrow_mut().take();
+    let logs_told = Rc::downgrade(&logs);
+    *tasks.on_change.borrow_mut() = Some(Box::new(move |view| {
+        if let Some(logs) = logs_told.upgrade() {
+            logs.tasks_changed();
+        }
+        if let Some(shown) = &shown {
+            shown(view);
+        }
+    }));
     let (folder_link, folder_core) = (Rc::downgrade(&app), core.weak());
     core.on_renamed(Rc::new(move |_, to| {
         let cwd = folder_core.upgrade().and_then(|core| core.pane(to)).and_then(|pane| pane.cwd);
@@ -471,6 +550,12 @@ fn run() -> Result<(), String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    let log_link = Rc::downgrade(&app);
+    *logs.on_log.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = log_link.upgrade() {
+            app.log(views, payload);
         }
     }));
     let serial_link = Rc::downgrade(&app);
@@ -522,7 +607,11 @@ fn run() -> Result<(), String> {
                     if let Err(error) = projects::desk_here(folder) {
                         return responder.reply(Err(error));
                     }
-                    args["place"] = projects::place(folder);
+                    let folder = folder.to_string();
+                    return runtime::spawn("the Desk's place", async move {
+                        args["place"] = projects::place_now(&folder).await;
+                        app.forward("desk", args, responder);
+                    });
                 }
                 return app.forward("desk", args, responder);
             };
@@ -583,7 +672,8 @@ fn run() -> Result<(), String> {
         crashes.stopping();
         app.quit();
     };
-    loop {
+    core.block_on(async { loop {
+        tokio::task::yield_now().await;
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
@@ -627,20 +717,25 @@ fn run() -> Result<(), String> {
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
-        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
+        let deadline = [app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
         perf::since("loop.chores", chores);
+        runtime::check("the loop's chores", chores.elapsed());
         let event = match deadline {
-            Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => match tokio::time::timeout_at(at.into(), inbox.recv()).await {
+                Ok(event) => event,
+                Err(_) => continue,
+            },
+            None => inbox.recv().await,
         };
-        let event = match event {
-            Ok(event) => event,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
+        let Some(event) = event else { break };
         let (kind, handling) = (event.kind(), Instant::now());
+        let asked = match &event {
+            Event::Request(request, _) => Some(format!("{} from a client", request_name(request))),
+            Event::AppMessage { message, .. } => Some(format!("{} from the app", request_name(message))),
+            _ => None,
+        };
         match event {
-            Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
+            Event::Request(request, reply) => match request.get("cmd").and_then(Value::as_str) {
                 Some("shutdown") => {
                     begin("asked to", &mut shutdown);
                     reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": true, "stopping": true, "pid": std::process::id() }))
@@ -660,8 +755,7 @@ fn run() -> Result<(), String> {
                     })
                 }
                 _ => core.handle(request, reply),
-            }),
-            Event::Wake => {}
+            },
             Event::Output { terminal, serial } => {
                 let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
                 if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
@@ -695,20 +789,20 @@ fn run() -> Result<(), String> {
                     }
                 }
             }
-            Event::Worktree { token, result } => tasks.worktree_made(token, result),
             Event::Stacks { seen } => tasks.watched(seen),
             Event::Heads => tasks.heads_moved(),
-            Event::Branch { token, branch } => tasks.branch_found(token, branch),
             Event::Turn { token } => tasks.next_turn(token),
-            Event::Posted { token, result } => tasks.posted(token, result),
-            Event::Finished { task, changes } => tasks.finished(&task, changes),
+            Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
+            Event::Log { id, log } => logs.loaded(&id, log),
             Event::File { id, read } => {
                 files.loaded(&id, read.clone());
                 threads.loaded(&id, read);
             }
             Event::Serial(event) => serial.event_in(event),
+            Event::Sampled(sampled) => stats.sampled(sampled),
+            Event::Covered(covered) => stats.coverage().covered(covered),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {
@@ -764,12 +858,10 @@ fn run() -> Result<(), String> {
                         continue;
                     }
                     let link = Rc::downgrade(&app);
-                    timed(request_name(&request), "the app", || {
-                        core.handle(request, move |reply| {
-                            if let Some(link) = link.upgrade() {
-                                link.answer_app(conn, reply);
-                            }
-                        })
+                    core.handle(request, move |reply| {
+                        if let Some(link) = link.upgrade() {
+                            link.answer_app(conn, reply);
+                        }
                     });
                 }
             }
@@ -794,13 +886,27 @@ fn run() -> Result<(), String> {
                 if let Err(error) = db.put_machines(&doc) {
                     log!("kanna-daemon: can't save your machines in kanna.db: {error}");
                 }
+                accounts.changed();
+            }
+            Event::PeerRequest { from, request, reply } => accounts.peer(&from, request, reply),
+            Event::AccountBroken(account) => {
+                let agent = match account["agent"].as_str() {
+                    Some("claude") => "Claude",
+                    _ => "Codex",
+                };
+                let toast = toasts::Toast { title: format!("Sign in to {agent} again"), detail: Some(format!("{}: {}. Add it again with kanna accounts add {}.", account["label"].as_str().unwrap_or(agent), account["why"].as_str().unwrap_or("it stopped working"), account["agent"].as_str().unwrap_or("codex"))), key: Some(format!("account:{}", account["id"].as_str().unwrap_or_default())), ..Default::default() };
+                if let Err(error) = toasts.raise(toast) {
+                    log!("kanna-daemon: can't raise a toast for a broken account: {}", error.message);
+                }
             }
             Event::Replica { token, reply } => tasks.replied(token, reply),
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
         perf::since(kind, handling);
-    }
+        runtime::check(asked.as_deref().unwrap_or(kind), handling.elapsed());
+    } });
+    core.turn();
 
     let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();
@@ -822,15 +928,6 @@ fn run() -> Result<(), String> {
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(()),
-    }
-}
-
-fn timed(name: String, from: &str, handle: impl FnOnce()) {
-    let started = Instant::now();
-    handle();
-    let took = started.elapsed();
-    if took > SLOW_REQUEST {
-        log!("kanna-daemon: {name} from {from} took {}ms", took.as_millis());
     }
 }
 
