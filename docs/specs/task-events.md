@@ -51,7 +51,7 @@ sequenceDiagram
 - **A move** is main's branch at a new commit. The last one seen is kept per repo in the database, so a move made while Kanna wasn't running is caught when it comes back. The first look at a repo only records it. Switching the main checkout to another branch isn't a move.
 - **The check** is `git merge-tree --write-tree --name-only --no-messages -z MAIN TIP`, run in the repo: it needs no worktree and leaves the task's alone. It compares commits, so uncommitted work isn't in it.
 - **Skipped:** a task mid-rebase (no branch), a merged task, a task on another machine (no folder here).
-- **A task's own merge** isn't told to it: merged means its branch's tip is in main, whoever moved main. A squash or cherry-pick lands new commits, so that task hears them as main moving.
+- **A task's own merge** isn't told to it: merged means its branch's tip is in main, whoever moved main.
 - **Off the loop:** the git runs in `runtime::off_loop`, one task after another, and a move during a check runs another afterwards ([the 20ms rule](daemon-runtime.md#2-rules)).
 
 ## 3. One waiting
