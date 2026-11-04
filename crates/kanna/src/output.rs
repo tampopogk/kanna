@@ -728,49 +728,11 @@ pub fn schedule(request: &Value, reply: &Value) -> String {
     }
 }
 
-fn home_relative(path: &str) -> String {
+pub fn home_relative(path: &str) -> String {
     match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
         Some(rest) if rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
     }
-}
-
-pub fn crashes(args: &Value, reply: &Value) -> String {
-    if args["action"] == "dismiss" {
-        return match reply["dismissed"].as_u64().unwrap_or(0) {
-            1 => "dismissed 1 crash record".into(),
-            n => format!("dismissed {n} crash records"),
-        };
-    }
-    let list = reply["crashes"].as_array().cloned().unwrap_or_default();
-    if list.is_empty() {
-        return if args["all"] == true { "no crash records".into() } else { "no crashes (kanna crashes --all lists the dismissed ones)".into() };
-    }
-    let mut out = vec![];
-    for record in &list {
-        let text = |key: &str| record[key].as_str().unwrap_or("?").to_string();
-        let time = text("time").replace('T', " ");
-        let time = time.split('.').next().unwrap_or(&time).to_string();
-        let build = &record["build"];
-        let commit: String = build["commit"].as_str().unwrap_or("?").chars().take(8).collect();
-        let dismissed = if record["dismissed"] == true { "  (dismissed)" } else { "" };
-        out.push(format!("{time}  {} (pid {}, {} {commit})  {}{dismissed}", text("process"), record["pid"], build["channel"].as_str().unwrap_or("?"), text("reason")));
-        out.push(format!("  record  {}", home_relative(&text("file"))));
-        out.push(format!("  report  {}", record["ips"].as_str().map_or_else(|| "none".to_string(), home_relative)));
-        let stack = record["stack"].as_array().cloned().unwrap_or_default();
-        for (i, frame) in kanna_crash::site(&stack).iter().take(20).enumerate() {
-            let image = frame["image"].as_str().unwrap_or("?");
-            let symbol = frame["symbol"].as_str().unwrap_or("?");
-            out.push(match (frame["offset"].as_u64(), frame["at"].as_str()) {
-                (Some(offset), _) => format!("  {i:<2} {image}  {symbol} + {offset}"),
-                (None, Some(at)) => format!("  {i:<2} {image}  {symbol} ({at})"),
-                (None, None) => format!("  {i:<2} {image}  {symbol}"),
-            });
-        }
-        out.push(String::new());
-    }
-    out.pop();
-    out.join("\n")
 }
 
 #[cfg(test)]

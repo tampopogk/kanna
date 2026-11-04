@@ -1,6 +1,7 @@
 pub mod arrange;
 pub mod capabilities;
 pub mod close;
+pub mod crashes;
 pub mod focus;
 pub mod r#move;
 pub mod move_tab;
@@ -416,18 +417,7 @@ pub static COMMANDS: &[Command] = &[
         show: |_, _| String::new(),
         flow: Flow { online: Some(serial_online), ..Flow::PLAIN },
     },
-    Command {
-        name: "crashes",
-        group: "Information",
-        summary: "List Kanna's crash records, newest first, with their stacks and the macOS crash report that matches each.",
-        usage: "kanna crashes [--all]\n       kanna crashes dismiss [RECORD]",
-        options: &[("--all", "Also list the records already dismissed (from the crash banner, or with dismiss).")],
-        notes: "Kanna.app, the daemon and the keeper each write a record in the state folder's crashes/ before they die of a bug: the reason, the crashing thread's stack, the build and the panes open. A record's report is the .ips in ~/Library/Logs/DiagnosticReports of the same process and pid, when macOS wrote one. dismiss takes away the crash banner: for RECORD and every older record, or all of them.",
-        examples: &[("kanna crashes", "The crashes not yet dismissed."), ("kanna crashes --all --json", "Every record, as the daemon has it.")],
-        parse: parse_crashes,
-        show: output::crashes,
-        flow: Flow::PLAIN,
-    },
+    crashes::COMMAND,
     Command {
         name: "quiz",
         group: "Information",
@@ -1041,21 +1031,6 @@ fn parse_tour(args: &mut Argv) -> Result<Value, Failure> {
     }
     from_caller(&mut out);
     Ok(Value::Object(out))
-}
-
-fn parse_crashes(args: &mut Argv) -> Result<Value, Failure> {
-    let all = args.flag("--all");
-    match args.positional().as_deref() {
-        None | Some("list") => Ok(json!({ "action": "list", "all": all })),
-        Some("dismiss") => {
-            let mut out = json!({ "action": "dismiss" });
-            if let Some(file) = args.positional() {
-                out["file"] = json!(absolute(&file));
-            }
-            Ok(out)
-        }
-        Some(other) => Err(usage("crashes", &format!("unknown action \"{other}\" (list or dismiss)"))),
-    }
 }
 
 fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {
