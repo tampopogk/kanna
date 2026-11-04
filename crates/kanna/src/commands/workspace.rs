@@ -352,23 +352,23 @@ mod workspace_tests {
         assert!(text.contains("\nws-1 (task-1dfb, Fix login), on the Desk, shown in d1\n"), "{text}");
         assert!(text.contains("\nws-5, d1's planner\n"), "{text}");
         let planner = json!({ "pane": { "id": "file-1", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } });
-        assert_eq!(crate::output::opened(&json!({}), &planner), "opened file-1 in ws-5 (d2's planner), tab-9: running");
+        assert_eq!(crate::commands::open::show(&json!({}), &planner), "opened file-1 in ws-5 (d2's planner), tab-9: running");
         assert_eq!(crate::commands::focus::show(&json!({ "window": "d2" }), &json!({ "window": null, "front": "d2", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } })), "brought d2 forward");
     }
 
     #[test]
     fn replies_name_the_workspace_then_its_task_and_where_it_is() {
         let windowless = json!({ "pane": { "id": "p5", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "desk": "mac" } } });
-        assert_eq!(crate::output::opened(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Desk), tab-9: running");
+        assert_eq!(crate::commands::open::show(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Desk), tab-9: running");
         let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-31", "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "desk": "mac" } } });
-        assert_eq!(crate::output::opened(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Desk), tab-9: running");
+        assert_eq!(crate::commands::open::show(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Desk), tab-9: running");
         assert_eq!(crate::commands::focus::show(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Desk)");
         assert_eq!(crate::commands::focus::show(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "workspace": null })), "focused spec in win-31 (in front)");
         assert_eq!(crate::commands::focus::show(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "focused spec in win-31 (behind the app you're in)");
         assert_eq!(crate::commands::focus::show(&json!({ "window": "win-31" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "put win-31 behind the app you're in");
         assert_eq!(crate::commands::zoom::show(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Desk; run again to unzoom)");
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
-        assert_eq!(crate::output::opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");
+        assert_eq!(crate::commands::open::show(&json!({}), &free), "opened p5 in win-4, tab-9: running");
         assert_eq!(crate::commands::window::show(&json!({ "action": "assign", "window": "win-41" }), &json!({ "window": "win-41", "workspace": windowless["workspace"] })), "assigned win-41 to ws-3 (task-1dfb, on the Desk)");
     }
 }

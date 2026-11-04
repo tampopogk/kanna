@@ -3,18 +3,6 @@ use crate::args::Argv;
 use kanna_client::{exit, fail, Failure};
 use serde_json::{json, Map, Value};
 
-pub fn diff_base(path: &str, reference: Option<String>) -> Result<String, Failure> {
-    if let Some(reference) = reference {
-        return Ok(reference);
-    }
-    let folder = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
-    ["main", "master"]
-        .iter()
-        .find(|branch| git_line(&folder, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_some())
-        .map(|branch| branch.to_string())
-        .ok_or_else(|| usage("open", "--diff compares with main (or master), and there's none here: say what to compare with, e.g. --diff HEAD"))
-}
-
 pub fn git_line(at: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new("git").arg("-C").arg(at).args(args).output().ok().filter(|out| out.status.success())?;
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|line| !line.is_empty())
@@ -100,14 +88,6 @@ pub fn file_line(target: &str) -> (String, Option<u64>) {
         }
     }
     (target.into(), None)
-}
-
-pub fn local_page(target: &str) -> Option<String> {
-    if target.contains("://") {
-        return None;
-    }
-    let path = absolute(target);
-    std::path::Path::new(&path).is_file().then(|| file_url(&path))
 }
 
 pub fn file_url(path: &str) -> String {

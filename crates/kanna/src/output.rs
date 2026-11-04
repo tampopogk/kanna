@@ -61,18 +61,6 @@ pub fn whose_text(reply: &Value) -> Option<String> {
     whose(reply).map(|(name, tags)| tagged(&name, &tags))
 }
 
-pub fn opened(request: &Value, reply: &Value) -> String {
-    let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("?").to_string());
-    if reply["background"] == true {
-        return format!("opened {} in the background of {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
-    }
-    if let Some(edge) = reply["dock"].as_str() {
-        let frozen = if request["frozen"] == true { ", frozen," } else { "" };
-        return format!("opened {} docked {edge}{frozen} in {place}: {}", label(&reply["pane"]), state(&reply["pane"]));
-    }
-    format!("opened {} in {place}, {}: {}", label(&reply["pane"]), reply["tab"].as_str().unwrap_or("?"), state(&reply["pane"]))
-}
-
 pub fn moved(reply: &Value) -> String {
     if reply["background"] == true {
         return format!("{} is in the background of {}", reply["pane"].as_str().unwrap_or("?"), whose_text(reply).unwrap_or_else(|| "its workspace".into()));
