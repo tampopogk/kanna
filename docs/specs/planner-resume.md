@@ -50,7 +50,7 @@ flowchart TD
 | antigravity | `agy --dangerously-skip-permissions -i 'You are …'` | — | none: it starts a new conversation each time and says so (`agy didn't leave a conversation Kanna can find for NAME`) |
 
 - **The main checkout isn't a task's own folder:** you and other agents start sessions there too, so the newest session in the folder (as a task's resume takes) may not be the planner's. A planner's is the **first** one made there since it started, which anything started there later can't be, unless the agent says its own as it quits, which wins.
-- **Claude after `/clear`** goes on in a new session; Kanna learns it only from the `claude --resume` line claude prints as it quits. If the terminal is closed instead, the next planner resumes the conversation from before the `/clear`.
+- **Claude after `/clear`** goes on in a new session; Kanna learns it only from the `claude [FLAGS] --resume ID` line claude prints as it quits. If the terminal is closed instead, the next planner resumes the conversation from before the `/clear`.
 - **Best effort:** where no session is found (codex quit before it wrote one, opencode's records missing, antigravity always), the planner starts a new conversation and says so.
 
 ## 3. How it's built
