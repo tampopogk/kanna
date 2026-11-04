@@ -112,6 +112,7 @@ final class StatsPage: NSView {
     private(set) var report: StatsReport?
     private var location = ""
     private(set) var tileFrames: [String: NSRect] = [:]
+    private(set) var bandFrames: [String: NSRect] = [:]
     var onOpen: ((JSON) -> Void)?
     private(set) var lists: [String: StatsList] = [:]
 
@@ -167,6 +168,7 @@ final class StatsPage: NSView {
     private func lay() {
         document.subviews.forEach { $0.removeFromSuperview() }
         tileFrames = [:]
+        bandFrames = [:]
         lists = [:]
         let left: CGFloat = 32, gap: CGFloat = 22
         let width = max(280, min(980, scroller.contentSize.width - left * 2))
@@ -184,14 +186,18 @@ final class StatsPage: NSView {
             return
         }
         for section in report.sections {
-            y += 30
-            let head = label(section.title, size: 13, weight: .semibold)
-            head.frame.origin = NSPoint(x: left, y: y)
+            y += 40
+            let band = StatsBand(frame: NSRect(x: left, y: y, width: width, height: 0))
+            document.addSubview(band)
+            let inset: CGFloat = 12
+            let head = label(section.title, size: 15, weight: .bold)
+            head.frame.origin = NSPoint(x: left + inset, y: y + 7)
             let note = label(section.note, color: .secondaryLabelColor)
-            note.frame = NSRect(x: left + head.frame.width + 10, y: y + 1, width: max(0, width - head.frame.width - 10), height: note.frame.height)
-            y += head.frame.height + 8
-            document.addSubview(StatsRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
-            y += 14
+            let noteX = head.frame.maxX + 10
+            note.frame = NSRect(x: noteX, y: y + 7 + head.frame.height - note.frame.height - 1, width: max(0, left + width - inset - noteX), height: note.frame.height)
+            band.frame.size.height = head.frame.height + 14
+            bandFrames[section.id] = band.frame
+            y = band.frame.maxY + 14
             if section.tiles.isEmpty {
                 if section.placeholder {
                     let box = StatsPlaceholder(frame: NSRect(x: left, y: y, width: width, height: 0))
@@ -301,7 +307,7 @@ final class StatsPage: NSView {
     }
 
     var shownSections: [JSON] {
-        (report?.sections ?? []).map { ["id": .string($0.id), "title": .string($0.title), "empty": $0.empty.map { .string($0) } ?? .null, "placeholder": .bool($0.placeholder), "tiles": .number(Double($0.tiles.count))] }
+        (report?.sections ?? []).map { ["id": .string($0.id), "title": .string($0.title), "empty": $0.empty.map { .string($0) } ?? .null, "placeholder": .bool($0.placeholder), "tiles": .number(Double($0.tiles.count)), "band": bandFrames[$0.id].map { ["x": .number($0.minX), "y": .number($0.minY), "width": .number($0.width), "height": .number($0.height)] } ?? .null] }
     }
 }
 
@@ -309,10 +315,10 @@ private final class StatsDocument: NSView {
     override var isFlipped: Bool { true }
 }
 
-private final class StatsRule: NSView {
+private final class StatsBand: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
-        bounds.fill()
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
     }
 }
 
