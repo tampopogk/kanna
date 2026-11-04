@@ -70,11 +70,12 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .scroller::-webkit-scrollbar { display: none; }
 .body.no-ov .scroller { scrollbar-width: auto; }
 .body.no-ov .scroller::-webkit-scrollbar { display: initial; }
-.threads { flex: 0 0 280px; background: var(--bar); border-left: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; overflow: hidden; }
+.threads { position: absolute; top: 0; bottom: 0; right: 0; width: 280px; z-index: 2; background: var(--bar); border-left: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; overflow: hidden; }
 .threads .top { color: var(--dim); }
 .threads .card { background: var(--card); border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; }
 .threads .card .q { color: var(--dim); font-style: italic; margin-bottom: 4px; }
 .body.no-threads .threads { display: none; }
+.body:not(.no-ov) .threads { right: var(--ov-w, 0); }
 
 .doc { padding: calc(22px * var(--z)) 0 0; }
 .page { margin: 0 auto; font-size: calc(14px * var(--z)); line-height: 1.55; }
@@ -134,7 +135,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1 class="t">Markdown overview: the code pane's overview on the markdown pane and its diff mode</h1>
-    <p>The same <code>OverviewView</code> as code and diff panes, given a picture of the <b>rendered page</b>: the text column (from the change bars to its right edge) shrunk to the thumbnail's 84 pt width, so headings, code panels, tables, diagrams and images keep their shape. The picture is drawn when the doc reloads, re-lays out (its width changes) or changes look (appearance, a comment's tint), never on scroll: the readout counts the pictures drawn. Marks as in code and diff: the diff's added, removed and changed blocks in the colours of its change bars, open comments, find hits. Hidden when the doc fits or when the text column beside it would keep fewer than 80 columns of the body font at the pane's zoom; the comment list stays and the overview gives way first.</p>
+    <p>The same <code>OverviewView</code> as code and diff panes, given a picture of the <b>rendered page</b>: the text column (from the change bars to its right edge) shrunk to the thumbnail's 84 pt width, so headings, code panels, tables, diagrams and images keep their shape. The picture is drawn when the doc reloads, re-lays out (its width changes) or changes look (appearance, a comment's tint), never on scroll: the readout counts the pictures drawn. Marks as in code and diff: the diff's added, removed and changed blocks in the colours of its change bars, open comments, find hits. Hidden when the doc fits or when the text column beside it would keep fewer than 80 columns of the body font at the pane's zoom; the comment list floats over the page and changes neither the page nor the overview.</p>
     <div class="controls">
       <button data-scene="md" class="on">Markdown pane</button>
       <button data-scene="diff">Markdown diff (vs main)</button>
@@ -298,14 +299,9 @@ function decide() {
   const fits = contentH <= viewH;
   const want = state.enabled && !fits;
   const ovW = OV.thumb + OV.marks + 2;
-  const wanted = [...(want ? [{ name: "overview", width: ovW, columns: OV.minCols }] : []), ...(state.threads ? [{ name: "threads", width: OV.threads, columns: OV.threads / cw }] : [])];
-  const shown = wanted.slice();
-  const room = () => paneW - shown.reduce((t, a) => t + a.width, 0);
-  const lacks = a => a.name === "overview" ? columnWidth(room()) < a.columns * cw : room() < a.columns * cw;
-  while (shown.length && shown.some(lacks)) shown.shift();
-  const has = n => shown.some(a => a.name === n);
-  const col = columnWidth(room());
-  return { paneW, cw, col, cols: Math.floor(col / cw), colsWith: Math.floor(columnWidth(paneW - ovW - (has("threads") ? OV.threads : 0)) / cw), fits, want, shown: has("overview"), threads: has("threads") };
+  const shownOv = want && columnWidth(paneW - ovW) >= OV.minCols * cw;
+  const col = columnWidth(paneW - (shownOv ? ovW : 0));
+  return { paneW, cw, ovW, col, cols: Math.floor(col / cw), colsWith: Math.floor(columnWidth(paneW - ovW) / cw), fits, want, shown: shownOv, threads: state.threads && paneW >= OV.threads * 2 };
 }
 function layout() {
   agentEl.style.width = agentW.value + "px";
@@ -314,6 +310,7 @@ function layout() {
   const d = decide();
   bodyEl.classList.toggle("no-ov", !d.shown);
   bodyEl.classList.toggle("no-threads", !d.threads);
+  bodyEl.style.setProperty("--ov-w", d.ovW + "px");
   document.getElementById("tail").style.height = Math.round(bodyEl.clientHeight * 0.4) + "px";
   const room = scroller.clientWidth;
   const col = columnWidth(room);
