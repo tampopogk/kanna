@@ -36,13 +36,13 @@ pub fn emitted(current: &Pipeline, emitter: &str, block: &str, context: &Context
     for line in lines {
         match line {
             Line::Stage(found) if current.stage(&found.name).is_some() || names.contains(&found.name) => {
-                errors.push(Error::new(found.line, Rule::Redefined, format!("stage '{}' exists already; a pipe block can only add stages", found.name)));
+                errors.push(Error::new(found.line, Rule::Redefined, format!("stage '{}' exists already; a kojo block can only add stages", found.name)));
             }
             Line::Stage(found) => {
                 names.push(found.name.clone());
                 added.push((raw[found.line - 1].trim().to_string(), Origin::New));
             }
-            Line::Budget(found) => errors.push(Error::new(found.line, Rule::Emits, "a pipe block can't change the budget")),
+            Line::Budget(found) => errors.push(Error::new(found.line, Rule::Emits, "a kojo block can't change the budget")),
             Line::Flow(_, arrows) => {
                 for arrow in arrows {
                     let group = if arrow.from == emitter { &mut ahead } else { &mut after };

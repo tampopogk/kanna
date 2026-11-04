@@ -1,8 +1,0 @@
-{
-  "rows": [
-    "› 1. Continue",
-    "  2. Cancel"
-  ],
-  "expected": "needs-you",
-  "source": "Reconstructed public trust/approval wording; selected option must never count as a composer."
-}

@@ -31,10 +31,6 @@ struct TextDiff {
     let kept: Double
 }
 
-struct DiffFailure: Error, Equatable {
-    let message: String
-}
-
 enum MarkdownDiff {
     static let similar = 0.4
     static let limit = 4_000_000
@@ -372,47 +368,9 @@ enum MarkdownDiff {
         return out
     }
 
-    static func base(of path: String, against ref: String) -> Result<(commit: String, text: String?), DiffFailure> {
-        let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-        let folder = file.deletingLastPathComponent().path
-        guard git(folder, ["rev-parse", "--show-toplevel"]) != nil else { return .failure(DiffFailure(message: "\(file.lastPathComponent) isn't in a git repo, so it has nothing to be compared with")) }
-        guard git(folder, ["rev-parse", "--verify", "--quiet", "\(ref)^{commit}"]) != nil else { return .failure(DiffFailure(message: "no commit or branch \"\(ref)\" in its repo")) }
-        guard let commit = mergeBase(folder, ref) else { return .failure(DiffFailure(message: "\(ref) and HEAD share no history")) }
-        return .success((commit, git(folder, ["show", "\(commit):./\(file.lastPathComponent)"], trim: false)))
-    }
-
-    static func mergeBase(_ folder: String, _ ref: String) -> String? { git(folder, ["merge-base", ref, "HEAD"]) }
-
     static func range(_ ref: String) -> (from: String, to: String)? {
         guard let dots = ref.range(of: ".."), !ref.contains("...") else { return nil }
         let from = String(ref[..<dots.lowerBound]), to = String(ref[dots.upperBound...])
         return (from.isEmpty ? "HEAD" : from, to.isEmpty ? "HEAD" : to)
-    }
-
-    static func versions(of path: String, from: String, to: String) -> Result<(old: String?, new: String), DiffFailure> {
-        let file = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-        let folder = file.deletingLastPathComponent().path, name = file.lastPathComponent
-        guard git(folder, ["rev-parse", "--show-toplevel"]) != nil else { return .failure(DiffFailure(message: "\(name) isn't in a git repo, so it has nothing to be compared with")) }
-        for ref in [from, to] where git(folder, ["rev-parse", "--verify", "--quiet", "\(ref)^{commit}"]) == nil {
-            return .failure(DiffFailure(message: "no commit or branch \"\(ref)\" in its repo"))
-        }
-        guard let new = git(folder, ["show", "\(to):./\(name)"], trim: false) else { return .failure(DiffFailure(message: "\(name) isn't in \(to)")) }
-        return .success((git(folder, ["show", "\(from):./\(name)"], trim: false), new))
-    }
-
-    static func git(_ folder: String, _ args: [String], trim: Bool = true) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = ["-C", folder] + args
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        process.standardInput = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let text = String(decoding: data, as: UTF8.self)
-        return trim ? text.trimmingCharacters(in: .whitespacesAndNewlines) : text
     }
 }

@@ -7,8 +7,13 @@ extension AppController {
         return links?.remotes[machine]?.attached != true
     }
 
+    func incompatible(_ machine: String) -> Bool {
+        offline(machine) && links?.failure(of: machine)?["code"]?.string == "other_protocol"
+    }
+
     func pathLabel(_ machine: String?) -> String {
         guard let machine else { return "This Mac" }
+        if incompatible(machine) { return "Incompatible" }
         guard !offline(machine), let path = links?.path(of: machine) else { return "Offline" }
         switch (path["path"]?.string, path["lan"]?.bool) {
         case ("relay"?, _): return "Relayed"
@@ -65,16 +70,15 @@ extension AppController {
             case "Relayed":
                 note = "Via your relay · encrypted"
                 explanation = "\(name) can't be reached directly now, so its encrypted traffic goes through your relay. It moves to a direct path by itself as soon as one opens."
+            case "Incompatible":
+                let refusal = link?.refusal
+                let message = Protocols.otherProtocol(machine: name, protocol: refusal?["protocol"]?.number.map(Int.init), version: refusal?["version"]?.string, commit: refusal?["commit"]?.string)
+                note = message.title
+                explanation = "\(message.detail) Until then, \(name)'s tasks keep their places on the Desk."
             case "Offline":
                 let failure = links.failure(of: name)
-                if failure?["code"]?.string == "other_protocol", let refusal = link?.refusal {
-                    let message = Protocols.otherProtocol(machine: name, protocols: refusal["mine"]?.array?.compactMap { $0.number.map(Int.init) }, version: refusal["version"]?.string, commit: refusal["commit"]?.string)
-                    note = message.title
-                    explanation = "\(message.detail) Until then, \(name)'s tasks keep their places on the Desk."
-                } else {
-                    note = lastSeen[name].map { "Last seen \(DeskTask.ago($0.timeIntervalSince1970))" } ?? "Not reached since Kanna started"
-                    explanation = "Kanna can't reach \(name) now\(failure?["message"]?.string.map { ": \($0)" } ?? ""). It keeps trying, and \(name)'s tasks keep their places on the Desk."
-                }
+                note = lastSeen[name].map { "Last seen \(DeskTask.ago($0.timeIntervalSince1970))" } ?? "Not reached since Kanna started"
+                explanation = "Kanna can't reach \(name) now\(failure?["message"]?.string.map { ": \($0)" } ?? ""). It keeps trying, and \(name)'s tasks keep their places on the Desk."
             case "Direct · internet":
                 note = rtt ?? "No relay in use"
                 explanation = "Connected directly over the internet\(remote.map { " (\($0))" } ?? ""), with no relay carrying the traffic."

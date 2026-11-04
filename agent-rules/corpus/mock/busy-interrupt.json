@@ -1,9 +1,0 @@
-{
-  "rows": [
-    "⠋ Working (esc to interrupt)"
-  ],
-  "title": "mock",
-  "cliVersion": null,
-  "expected": "working",
-  "source": "mock-agent sample"
-}

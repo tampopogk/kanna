@@ -53,18 +53,4 @@ struct AgentStatusesTests {
         book.set("p2", nil, looking: false)
         #expect(book.statuses["p2"] == nil)
     }
-
-    @Test func theTaskWaitingLongestIsTheOneThatAskedFirst() {
-        var book = AgentStatuses()
-        book.set("p1", "needs-you", looking: false, at: 30)
-        book.set("p2", "needs-you", looking: false, at: 10)
-        book.set("p3", "working", looking: false, at: 5)
-        book.set("p2", "needs-you", looking: false, at: 40)
-        #expect(book.waitingLongest(among: ["p1", "p2", "p3"]) == "p2")
-        #expect(book.waitingLongest(among: ["p1", "p3"]) == "p1")
-        book.set("p2", "working", looking: false, at: 50)
-        book.set("p2", "needs-you", looking: false, at: 60)
-        #expect(book.waitingLongest(among: ["p1", "p2"]) == "p1")
-        #expect(book.waitingLongest(among: ["p3"]) == nil)
-    }
 }

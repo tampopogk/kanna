@@ -56,11 +56,12 @@ pub struct Workspace {
     pub tabs: Tabs,
     pub place: Where,
     pub left_at: Option<f64>,
+    pub background: Vec<String>,
 }
 
 impl Workspace {
     pub(crate) fn new(id: String, dock: Dock, place: Where) -> Workspace {
-        Workspace { id, dock, tabs: Tabs::default(), place, left_at: None }
+        Workspace { id, dock, tabs: Tabs::default(), place, left_at: None, background: vec![] }
     }
 
     pub fn is_task(&self) -> bool {

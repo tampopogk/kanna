@@ -18,7 +18,9 @@ final class WindowController: NSObject, NSWindowDelegate {
     let deskStrip = DeskStrip()
     let deskView = DeskView()
     let machinesPage = MachinesPage()
-    static let pages = ["Desk", "Machines"]
+    let statsPage = StatsPage()
+    static let pages = ["Desk", "Machines", "Stats"]
+    var stats: StatsReport?
     var page: String?
     var machines: [MachineRow] = []
     var stale: String?
@@ -80,11 +82,13 @@ final class WindowController: NSObject, NSWindowDelegate {
         content.addSubview(deskStrip)
         content.addSubview(deskView)
         content.addSubview(machinesPage)
+        content.addSubview(statsPage)
         content.addSubview(deskStage)
         deskStage.isHidden = true
         deskStrip.isHidden = true
         deskView.isHidden = true
         machinesPage.isHidden = true
+        statsPage.isHidden = true
         window.contentView = content
         if let previous {
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: previous.frame.minX, y: previous.frame.maxY)))
@@ -201,11 +205,12 @@ final class WindowController: NSObject, NSWindowDelegate {
             if !showsDeskView { deskView.clearSearch() }
         }
         machinesPage.isHidden = pageShown != Self.pages[1]
+        statsPage.isHidden = pageShown != Self.pages[2]
         if deskStrip.isHidden == (desk && !taskless) { deskStrip.isHidden = !desk || taskless }
         if taskless {
         } else if desk {
             deskStrip.frame = NSRect(x: 0, y: 0, width: bounds.width, height: DeskStrip.height)
-            deskStrip.show(DeskOrder.byAge(others, made: \.made), keys: keys, waiting: shelf.count)
+            deskStrip.show(DeskOrder.strip(others), keys: keys, waiting: shelf.count)
             bounds = NSRect(x: 0, y: DeskStrip.height, width: bounds.width, height: bounds.height - DeskStrip.height)
         }
         var side = bounds
@@ -236,9 +241,12 @@ final class WindowController: NSObject, NSWindowDelegate {
         if showsDeskView {
             deskView.frame = below
             deskView.show(DeskPage(active: active, tasks: DeskOrder.byAge(deskTasks, made: \.made), keys: keys, shelf: shelf, running: running, project: project, cheer: cheer, note: note))
-        } else if pageShown != nil {
+        } else if pageShown == Self.pages[1] {
             machinesPage.frame = below
             machinesPage.show(machines)
+        } else if pageShown == Self.pages[2] {
+            statsPage.frame = below
+            statsPage.show(stats, project: project)
         }
         stage.isHidden = side.isEmpty || pageShown != nil
         stage.frame = below

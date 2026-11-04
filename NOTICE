@@ -188,13 +188,8 @@ Kanna v3
 Derived from Kanna v3:
 
   crates/kanna-detect
-      A port of Kanna v3's crates/kanna3-detect (the rule engine, the rule
-      store with its remote index, hashes, HTTPS fetch and cache, the
-      version probe and the foreground-program check from crates/kanna3d's
-      terminal.rs), with v4's statuses, regions and progress tests.
-  agent-rules/*.json, agent-rules/corpus
-      From kanna3-detect's manifests/*.json and corpus/ (Kanna v3, by way of
-      Kanna v2's rules), with v4's status names.
+      The version probe and the foreground-program check, ported from Kanna
+      v3's crates/kanna3-detect and crates/kanna3d's terminal.rs.
   tools/agent-harness/mock_server.py
       From Kanna v3's tools/characterize/mock_server.py (the scripted
       Anthropic Messages, OpenAI Responses and Chat Completions server);
