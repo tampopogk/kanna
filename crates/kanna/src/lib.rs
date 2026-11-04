@@ -141,13 +141,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             }
             return Ok(());
         }
-        "config" => {
-            match args.positional().as_deref() {
-                Some("schema") => print!("{CONFIG_SCHEMA}"),
-                _ => println!("{CONFIG_HELP}"),
-            }
-            return Ok(());
-        }
+        "config" => return commands::config::run(&mut args),
         "completions" => {
             match args.positional().as_deref() {
                 Some("zsh") => print!("{}", complete::ZSH),
@@ -274,10 +268,6 @@ fn mark(command: &Command, supported: Option<&[String]>, target: &Target) -> Str
 }
 
 const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the tab-completion script for your shell. Load it from your shell's startup file:\n  zsh:  source <(kanna completions zsh)     in ~/.zshrc\n  bash: eval \"$(kanna completions bash)\"  in ~/.bashrc\n\nTab then completes commands, options, pane names and IDs, tabs, windows, instances,\nand files of the kind a command takes (markdown for open md, HTML for markup).";
-
-pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
-
-const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n(agents.prompts, whether agents skip permission prompts, is read only from ~/.kanna-v4/config.json.)\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
 
 fn overview(target: &Target) -> String {
     let supported = supported(target);

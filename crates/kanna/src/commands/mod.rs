@@ -4,6 +4,7 @@ pub mod arrange;
 pub mod capabilities;
 pub mod close;
 pub mod comment;
+pub mod config;
 pub mod crashes;
 pub mod diagrams;
 pub mod focus;
