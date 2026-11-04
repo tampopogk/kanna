@@ -113,6 +113,36 @@ def session(args):
     return str(uuid.uuid4()), False
 
 
+def transcript(id):
+    socket_path = os.environ.get("KANNA_SOCKET")
+    return socket_path and os.path.join(os.path.dirname(socket_path), "mock-conversations", id)
+
+
+def wizard():
+    socket_path = os.environ.get("KANNA_SOCKET")
+    return socket_path and os.path.exists(os.path.join(os.path.dirname(socket_path), "mock-wizard"))
+
+
+def refused(id, resumed):
+    if PROGRAM != "claude":
+        return None
+    path = transcript(id)
+    if path and resumed and not os.path.exists(path):
+        return f"No conversation found with session ID: {id}"
+    if path and not resumed and "--session-id" in sys.argv[1:] and os.path.exists(path):
+        return f"Error: Session ID {id} is already in use."
+    return None
+
+
+def saved(id):
+    if PROGRAM != "claude":
+        return
+    path = transcript(id)
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "a").close()
+
+
 def first(args):
     told = [a for a in args if "Your task: " in a]
     return told[-1].split("Your task: ", 1)[1] if told else None
@@ -251,7 +281,7 @@ def rpc(conn, turns):
 def bye(id):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     if PROGRAM == "claude":
-        out(f"\r\nResume this session with:\r\nclaude --resume {id}\r\n")
+        out(f"\r\nResume this session with:\r\nclaude --model mock-model --dangerously-skip-permissions --resume {id}\r\n")
     else:
         out(f"\r\nTo continue this session, run: {PROGRAM} resume {id}\r\n")
 
@@ -273,7 +303,11 @@ def main():
             return 1
         print(f"# Handoff\n\nmock handoff of session {id}: the next step is to finish the draft.")
         return 0
-    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, ask, report STATUS or exit\r\n")
+    refusal = refused(id, resumed)
+    if refusal:
+        print(refusal)
+        return 1
+    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
     out(f"{'resumed' if resumed else 'session'} {id}\r\n")
@@ -285,19 +319,26 @@ def main():
             prompt = None
         if prompt is not None:
             stage(id, prompt)
-        talk(None if resumed or prompt is not None else first(sys.argv[1:]))
+        talk(id, None if resumed or prompt is not None else first(sys.argv[1:]))
     except KeyboardInterrupt:
         pass
     bye(id)
     return 0
 
 
-def talk(task):
+def talk(id, task):
     reported("idle")
     composer()
+    if wizard():
+        for _ in typed():
+            pass
+        return
+    if task:
+        saved(id)
     if task and not answer(task):
         return
     for line in typed():
+        saved(id)
         if not answer(line):
             return
 
@@ -353,6 +394,18 @@ def answer(line):
         reported("idle")
 
 
+def woken(child, wake):
+    child.wait()
+    out("\r\nBACKGROUND_EXITED\r\n")
+    if wake is None:
+        return
+    time.sleep(0.05)
+    reported("working")
+    work(wake)
+    out("WOKE_DONE\r\n")
+    reported("idle")
+
+
 def answering(line):
     words = line.split()
     out("\x1b[J\r\n")
@@ -381,6 +434,11 @@ def answering(line):
             out("TURN_DONE\r\n")
         else:
             out("Declined.\r\n")
+    elif words[:1] == ["background"] and len(words) > 1:
+        child = subprocess.Popen(["sleep", words[1]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
+        wake = float(words[3]) if words[2:3] == ["wake"] and len(words) > 3 else None
+        threading.Thread(target=woken, args=(child, wake), daemon=True).start()
+        out(f"BACKGROUND_STARTED {child.pid}\r\n")
     elif words[:1] == ["report"]:
         out(f"\x1b]7501;{words[1] if len(words) > 1 else ''}\x1b\\")
         out(f"reported: {words[1] if len(words) > 1 else ''}\r\n")

@@ -21,7 +21,7 @@ A markdown pane has two zooms, each saved per pane:
 
 - **Pinch never lays out again.** The page keeps the width it was laid out at (the pane's width over the text size). Zoomed in, the page is wider and taller than the pane and scrolls both ways; zoomed out, it is narrower than the pane and centred. A pinch goes from 50 % to 400 %.
 - **Text size steps** through 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250 and 300 %. A step lays the page out again at the pane's width over the new text size, so the text and its margins grow or shrink and the wrap fits the pane; the page zoom stays as it was.
-- **The reading line stays put.** On a text-size step, the line at the top of the pane stays at the top, at the same offset; the page scrolls sideways in proportion. A pane at the very top stays at the top.
+- **The reading line stays put.** On a text-size step, the line at the top of the pane stays at the top ([scroll anchor](scroll-anchor.md)); the page scrolls sideways in proportion. A pane at the very top stays at the top.
 - **⌘0 resets the text size** to 100 %. The page zoom stays; pinch back to undo it.
 - **What the pane shows** is the page at the text size times the page zoom.
 - **Saved per pane, separately.** Text size and page zoom are kept by pane in the app's `app-state.json` (`textSizes`, `pageZooms`; 1 isn't kept), and a pane opens at both. A markdown pane that goes back to a doc in its history gets the doc's scroll, text size and page zoom back.
@@ -36,7 +36,7 @@ A markdown pane has two zooms, each saved per pane:
 | Saved by pane | `Contents` (`textSize`, `pageZoom`, and back in history), `Physical` (`textSizes`, `pageZooms`) |
 
 - **One magnification.** The scroll view's magnification is the text size times the page zoom. The text view is laid out at the scroll view's width over the text size, so a change in magnification alone (a pinch) leaves the layout alone. Its range is the text size times 50 % to 400 %.
-- **A step** keeps the page zoom, sets the new magnification, lays out at once, and scrolls the character at the old top back to the top at its old offset.
+- **A step** keeps the page zoom, sets the new magnification, lays out at once, and scrolls the [anchor](scroll-anchor.md) back to the top.
 - **Saving.** The pane reports a change when a pinch ends (`didEndLiveMagnify`), after a step, and when the clip view moves outside a live pinch with the zoom changed (a smart zoom); the app saves both values.
 - **Debug:** `debug.md` returns `zoom` (what the pane shows), `text_size`, `page_zoom`, `top_line` (the first character of the top line), `scroll_x`, and `lines` (each laid-out line's first character) with `lines: true`; it takes `zoom` (a text-size step: 1, −1, or 0 to reset) and `page_zoom`. `debug.pinch` returns `zooms`, `top_lines` and `layout_widths` after each step of the pinch.
 

@@ -344,6 +344,11 @@ fn run() -> Result<(), String> {
     }));
     let modes = Rc::downgrade(&detector);
     *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
+    let trees = Rc::downgrade(&detector);
+    *tasks.background.borrow_mut() = Some(Box::new(move |pane| {
+        let program = trees.upgrade()?.program(pane)?;
+        kanna_detect::agents::idle_with_background(&program.agent).then(|| kanna_detect::program::background(program.pid))
+    }));
     let argvs = Rc::downgrade(&detector);
     *tasks.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
     let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), Some(projects::repos())));

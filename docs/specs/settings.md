@@ -76,7 +76,7 @@ flowchart LR
 ## 5. How it's built
 
 - **The daemon reads them** when it needs a setting, for a folder: the repo of that folder's `.kanna/config.json`, then `~/.kanna-v4/config.json` (each at most 64 KB; `~` is `$KANNA_AGENTS_HOME` when it's set, as for agent setup, so tests keep their own).
-- **`planning.agent`** is read as the daemon builds a planning terminal's command, for the folder it opens in, and passed to `planner.sh`, which writes your choice to the repo's file as you make it.
+- **`planning.agent`** is read by `planner.sh` as a planning terminal starts, from the repo's file and then yours, whose path the daemon passes as `--config`; it writes your choice to the repo's file as you make it.
 - **`tasks.agent`** is read as `kanna task new` adds a task without `--agent`, for the task's repo, and stored with the task; a repo's file is read with a stricter check than yours (an agent's name only), and a value it may not have falls through to yours.
 - **`shelf.runners`** is read for each repo with Shelf tasks every 2s, and as a task's turn ends, so a change applies within seconds.
 - **`tasks.setup`, `tasks.teardown` and `tasks.timeout`** are read as a task's worktree is set up and as it's Done, for its repo.

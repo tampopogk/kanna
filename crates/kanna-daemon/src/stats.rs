@@ -324,6 +324,25 @@ fn main_section(facts: &Facts) -> Value {
     section("main", "Main", "what landed", vec![count_tile("commits", "Commits", of("commits"), "commits"), count_tile("landed", "Tasks landed", of("merged"), "merges into main")])
 }
 
+fn open_at(lives: &[Life], at: f64) -> f64 {
+    lives.iter().filter(|life| life.made < at && life.done.is_none_or(|done| done >= at)).count() as f64
+}
+
+fn open_tile(facts: &Facts, made: &[f64], done: &[f64]) -> Value {
+    let first = facts.today - DAYS + 1;
+    let open: Vec<f64> = (first..=facts.today).map(|day| open_at(&facts.lives, day_start(day + 1))).collect();
+    let today = open.last().copied().unwrap_or(0.0);
+    let change = today - open_at(&facts.lives, day_start(first));
+    let note = if change > 0.0 {
+        format!("+{change} in 30 days")
+    } else if change < 0.0 {
+        format!("\u{2212}{} in 30 days", -change)
+    } else {
+        "no change in 30 days".to_string()
+    };
+    tile("open", "Open", json!(today), None, note, 6, json!({ "kind": "flow", "values": open, "made": made, "done": done, "what": "open at the end of the day" }))
+}
+
 fn tasks_section(facts: &Facts) -> Value {
     let first = facts.today - DAYS + 1;
     let at = |pick: fn(&Life) -> Option<f64>| per_day(first, facts.lives.iter().filter_map(pick).map(|at| (at, 1.0)));
@@ -342,6 +361,8 @@ fn tasks_section(facts: &Facts) -> Value {
             median(&mut near).map_or(Value::Null, |m| json!(m.round()))
         })
         .collect();
+    let made = at(|l| Some(l.made));
+    let ended = at(|l| l.done);
     let mut all: Vec<f64> = points.iter().map(|(_, s, _)| *s).collect();
     let middle = median(&mut all);
     let lead = tile(
@@ -357,7 +378,7 @@ fn tasks_section(facts: &Facts) -> Value {
         "tasks",
         "Tasks",
         "from the Desk's and the Shelf's events",
-        vec![count_tile("made", "Made", at(|l| Some(l.made)), "tasks made"), count_tile("started", "Started", at(|l| l.started), "tasks started"), count_tile("ended", "Ended", at(|l| l.done), "tasks ended"), lead],
+        vec![open_tile(facts, &made, &ended), count_tile("made", "Made", made, "tasks made"), count_tile("started", "Started", at(|l| l.started), "tasks started"), count_tile("ended", "Ended", ended, "tasks ended"), lead],
     )
 }
 
@@ -700,6 +721,57 @@ pub mod tests {
         assert_eq!(lead["chart"]["points"].as_array().unwrap().len(), 3);
         assert_eq!(lead["chart"]["points"][1]["label"], json!("a name"));
         assert_eq!(lead["chart"]["line"][27], json!((48.0 * 24.0 * hour).round()));
+    }
+
+    #[test]
+    fn open_tasks_at_the_end_of_each_day_come_from_made_and_done() {
+        let state = std::env::temp_dir().join(format!("kanna-stats-open-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let db = Db::open(&state);
+        let today = local_day(now());
+        let at = |day: i64, hours: f64| noon(today - day) + hours * 3600.0;
+        let mut sql = String::new();
+        for (id, repo, place, made) in [("old", "/r", "done", 50), ("stuck", "/r", "shelf", 45), ("same", "/r", "done", 5), ("new", "/r", "desk", 1), ("newer", "/r", "shelf", 0), ("legacy", "/r", "done", 60), ("elsewhere", "/o", "shelf", 3)] {
+            sql += &format!("insert into tasks (id, repo, place, made_at, doc) values ('{id}', '{repo}', '{place}', {}, '{{\"name\": \"{id}\"}}');\n", at(made, 0.0));
+            sql += &format!("insert into task_events (task, at, what) values ('{id}', {}, 'made');\n", at(made, 0.0));
+        }
+        for (id, day, hours, what) in [("old", 40, 0.0, "picked"), ("old", 2, 0.0, "done"), ("stuck", 10, 0.0, "picked"), ("stuck", 9, 0.0, "shelved"), ("same", 5, 1.0, "picked"), ("same", 5, 2.0, "done"), ("new", 0, 0.0, "picked"), ("legacy", 55, 0.0, "picked")] {
+            sql += &format!("insert into task_events (task, at, what) values ('{id}', {}, '{what}');\n", at(day, hours));
+        }
+        db.run(&sql);
+        let since = day_start(today - DAYS + 1);
+        let report = report("/r", &facts(today, vec![], vec![], db.lives("/r", since).unwrap()));
+        let open = tile_of(&report, "tasks", "open");
+        let values: Vec<f64> = open["chart"]["values"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let mut expected = vec![2.0; 30];
+        expected[27] = 1.0;
+        expected[28] = 2.0;
+        expected[29] = 3.0;
+        assert_eq!(values, expected, "old and stuck open from before the 30 days, old done two days ago, new and newer made since; same made and done in one day; legacy done with no done event");
+        assert_eq!(open["value"], json!(3.0));
+        assert_eq!(open["note"], json!("+1 in 30 days"));
+        assert_eq!(open["span"], json!(6));
+        assert_eq!(open["chart"]["kind"], json!("flow"));
+        assert_eq!(open["chart"]["made"][24], json!(1.0));
+        assert_eq!(open["chart"]["done"][24], json!(1.0));
+        assert_eq!(open["chart"]["made"], tile_of(&report, "tasks", "made")["chart"]["values"]);
+        assert_eq!(open["chart"]["done"], tile_of(&report, "tasks", "ended")["chart"]["values"]);
+        assert_eq!(tiles(&report, "tasks").iter().map(|t| t["id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), ["open", "made", "started", "ended", "lead"]);
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn open_tasks_say_their_change_over_the_30_days() {
+        let today = 20393;
+        let lives = vec![life("a", noon(today - 40), None, Some(noon(today - 3))), life("b", noon(today - 40), None, Some(noon(today))), life("c", noon(today - 40), None, None)];
+        let report = report("/r", &facts(today, vec![], vec![], lives));
+        let open = tile_of(&report, "tasks", "open");
+        assert_eq!(open["value"], json!(1.0));
+        assert_eq!(open["note"], json!("\u{2212}2 in 30 days"));
+        let none = super::report("/r", &facts(today, vec![], vec![], vec![]));
+        assert_eq!(tile_of(&none, "tasks", "open")["value"], json!(0.0));
+        assert_eq!(tile_of(&none, "tasks", "open")["note"], json!("no change in 30 days"));
     }
 
     pub fn git_in(repo: &Path, args: &[&str], at: i64) {

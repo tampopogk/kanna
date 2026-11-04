@@ -79,7 +79,7 @@ The workspace's release profile keeps line tables (`debug = "line-tables-only"`,
 |---|---|
 | `dsymutil BINARY -o dSYMs/ARCH/<path in Contents>.dSYM` | file:line for that exact build, not in the DMG |
 | `strip -S BINARY` | drops the debug map; the symbol table stays, so crash reports name functions as before; a failure stops the release with strip's message |
-| `dsymutil -s` has no `N_OSO` | or the release stops |
+| `dsymutil -s` lists no entry of stab type `N_OSO` | or the release stops; the check reads the `n_type` column, since a C++ symbol name can contain the letters `N_OSO` |
 
 Each architecture's dSYMs are zipped as `Kanna-X.Y.Z-ARCH-dSYMs.zip` and attached to the GitHub Release beside its DMG, so a crash report can be symbolicated after `target/` is gone. They add line numbers only: the shipped binaries already carry the symbol names.
 
