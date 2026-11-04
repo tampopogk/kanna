@@ -586,34 +586,6 @@ pub fn project(_: &Value, reply: &Value) -> String {
     out.join("\n")
 }
 
-pub fn quiz(request: &Value, reply: &Value) -> String {
-    match request["action"].as_str() {
-        Some("open") => format!("{} {} in {}", if reply["opened"] == true { "opened" } else { "brought forward" }, reply["pane"].as_str().unwrap_or("?"), reply["window"].as_str().unwrap_or("?")),
-        Some("start") => reply["round"].as_str().unwrap_or("?").to_string(),
-        Some("answer") => format!("{} in {}", reply["answer"].as_str().unwrap_or("?"), reply["round"].as_str().unwrap_or("?")),
-        _ => {
-            let rounds = reply["rounds"].as_array().cloned().unwrap_or_default();
-            if rounds.is_empty() {
-                return if reply["misses"] == true { "no misses to bring back".into() } else { "no quiz rounds in this repo yet".into() };
-            }
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-            let mut out = vec![];
-            for round in &rounds {
-                let head: String = round["head"].as_str().unwrap_or("?").chars().take(7).collect();
-                out.push(format!("{}  {head}  {}", round["round"].as_str().unwrap_or("?"), round["at"].as_f64().map_or(String::new(), |at| ago(now - at))));
-                for answer in round["answers"].as_array().into_iter().flatten() {
-                    let mark = if answer["right"] == true { "✓" } else { "✗" };
-                    let line = answer["doc"]["line"].as_u64().map_or(String::new(), |l| format!(":{l}"));
-                    let again = answer["again"].as_str().map_or(String::new(), |a| format!("  (again: {a})"));
-                    let question = answer["doc"]["question"].as_str().map_or(String::new(), |q| format!("  {q}"));
-                    out.push(format!("  {:<4} {mark} {:<12} {}{line}{question}{again}", answer["answer"].as_str().unwrap_or("?"), answer["kind"].as_str().unwrap_or("?"), answer["file"].as_str().unwrap_or("?")));
-                }
-            }
-            out.join("\n")
-        }
-    }
-}
-
 pub fn duration(seconds: f64) -> String {
     let minutes = (seconds / 60.0).round() as i64;
     match minutes {

@@ -3,13 +3,6 @@ use crate::args::Argv;
 use kanna_client::{exit, fail, Failure};
 use serde_json::{json, Map, Value};
 
-pub fn main_commit(repo: &str) -> Result<String, Failure> {
-    ["main", "master"]
-        .iter()
-        .find_map(|branch| git_line(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}^{{commit}}")]))
-        .ok_or_else(|| usage("quiz", "a quiz asks about main, and this repo has no main (or master) branch"))
-}
-
 pub fn diff_base(path: &str, reference: Option<String>) -> Result<String, Failure> {
     if let Some(reference) = reference {
         return Ok(reference);
@@ -25,16 +18,6 @@ pub fn diff_base(path: &str, reference: Option<String>) -> Result<String, Failur
 pub fn git_line(at: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new("git").arg("-C").arg(at).args(args).output().ok().filter(|out| out.status.success())?;
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|line| !line.is_empty())
-}
-
-pub fn in_repo(file: &str) -> String {
-    let path = absolute(file);
-    let path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.into());
-    let top = git_line(".", &["rev-parse", "--show-toplevel"]);
-    match top.as_deref().and_then(|top| path.strip_prefix(top).ok()) {
-        Some(inside) => inside.to_string_lossy().into_owned(),
-        None => file.to_string(),
-    }
 }
 
 pub fn repo_here() -> Result<String, Failure> {
