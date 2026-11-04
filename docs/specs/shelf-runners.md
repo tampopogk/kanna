@@ -63,7 +63,7 @@ Claude reports idle at the end of its turn while a command it started in the bac
 
 | Agent | Quit with | Its session |
 |---|---|---|
-| claude | `ctrl+c ctrl+c` | `claude --resume ID`, printed as it exits |
+| claude | `ctrl+c ctrl+c` | `claude [FLAGS] --resume ID`, printed as it exits with the flags it started with |
 | codex | `ctrl+c ctrl+c` | `codex resume ID`, printed as it exits |
 | antigravity | `ctrl+c ctrl+c` | `agy --conversation=ID`, printed as it exits (read from its binary: a run needs a sign-in) |
 | opencode | `ctrl+c ctrl+c` (from its docs: it isn't installed here to try) | found in its database, as it [resumes](tasks.md#which-agents-resume) |

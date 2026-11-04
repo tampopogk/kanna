@@ -68,6 +68,26 @@ mod tests {
     }
 
     #[test]
+    fn claude_says_its_session_with_the_flags_it_started_with() {
+        let claude = Quit::of("claude").unwrap();
+        let id = "20d69fea-c186-462c-b7fd-c75acf7272d6";
+        let cases = [
+            (format!("Resume this session with:\nclaude --model mock-model --dangerously-skip-permissions --resume {id}\n"), "flags"),
+            (format!("claude --model claude-opus-5-5 --append-system-prompt 'two words' --resume {id}\n"), "a flag naming claude, and a quoted value"),
+            ("claude --model mock-model --dangerously-skip-permissions --resume 20d69fea-c186-\n462c-b7fd-c75acf7272d6\n".to_string(), "wrapped in the ID"),
+            (format!("claude --model mock-model --dangerously-skip-permissions\n--resume {id}\n"), "wrapped at the space before --resume"),
+            (format!("claude --model mock-model --resume\n{id}\n"), "wrapped at the space after --resume"),
+        ];
+        for (screen, case) in cases {
+            assert_eq!(claude.session_in(&screen).as_deref(), Some(id), "{case}");
+        }
+        let later = "22222222-2222-4333-8444-555555555555";
+        assert_eq!(claude.session_in(&format!("claude --resume {id}\nclaude --model m --resume {later}\n")).as_deref(), Some(later), "the last one it said");
+        assert_eq!(claude.session_in(&format!("use claude with --resume {id}\n")), None, "prose, not a command");
+        assert_eq!(claude.session_in(&format!("claude-code --resume {id}\n")), None, "another program");
+    }
+
+    #[test]
     fn every_agent_quits_with_its_keys_and_says_its_session() {
         let id = "11111111-2222-4333-8444-555555555555";
         let said = [
