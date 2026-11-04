@@ -14,6 +14,7 @@ pub mod screenshot;
 pub mod send;
 pub mod send_key;
 pub mod shared;
+pub mod status;
 pub mod window;
 pub mod workspace;
 pub mod zoom;
@@ -385,23 +386,7 @@ pub static COMMANDS: &[Command] = &[
         show: output::run,
         flow: Flow::PLAIN,
     },
-    Command {
-        name: "status",
-        group: "Information",
-        summary: "Explain an agent pane's status.",
-        usage: "kanna status explain PANE",
-        options: &[
-            ("--file SCREEN", "A saved screen: text (as `kanna read` prints it) or a corpus case (JSON with rows, title, progress and cliVersion)."),
-            ("--agent AGENT", "Whose rules judge the saved screen: claude, codex, …"),
-        ],
-        notes: "An agent pane's status (working, needs-you, idle, exited) is in `kanna task list`, and in `kanna workspace list --all --json`. It comes only from the agent's own report (OSC 7501). explain shows the agent, its version and the version Kanna needs, and the records it has reported, the root one first.",
-        examples: &[
-            ("kanna status explain term-3", "Why term-3's agent shows the status it does."),
-        ],
-        parse: parse_status,
-        show: output::status,
-        flow: Flow::PLAIN,
-    },
+    status::COMMAND,
     Command {
         name: "toast",
         group: "Information",
@@ -1073,14 +1058,6 @@ fn parse_tour(args: &mut Argv) -> Result<Value, Failure> {
     }
     from_caller(&mut out);
     Ok(Value::Object(out))
-}
-
-fn parse_status(args: &mut Argv) -> Result<Value, Failure> {
-    match args.positional().as_deref() {
-        Some("explain") => Ok(json!({ "action": "explain", "pane": pane(args, "status")? })),
-        Some(other) => Err(usage("status", &format!("unknown action \"{other}\" (explain)"))),
-        None => Err(usage("status", "say what: explain PANE")),
-    }
 }
 
 fn parse_crashes(args: &mut Argv) -> Result<Value, Failure> {
