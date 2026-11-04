@@ -4,7 +4,6 @@ pub mod args;
 pub mod build;
 pub mod commands;
 pub mod complete;
-pub mod machine;
 pub mod output;
 pub mod target;
 pub mod threads;
