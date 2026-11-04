@@ -70,7 +70,7 @@ pub fn hidden(reply: &Value) -> bool {
     reply["window"].is_null()
 }
 
-fn whose_text(reply: &Value) -> Option<String> {
+pub fn whose_text(reply: &Value) -> Option<String> {
     whose(reply).map(|(name, tags)| tagged(&name, &tags))
 }
 
@@ -485,10 +485,6 @@ fn ago(seconds: f64) -> String {
         m if m < 60 * 24 => format!("{}h ago", m / 60),
         m => format!("{}d ago", m / 60 / 24),
     }
-}
-
-pub fn tabs(_: &Value, reply: &Value) -> String {
-    format!("{}: {}", whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("?").to_string()), join(&reply["tabs"]))
 }
 
 pub fn capabilities(reply: &Value) -> String {
