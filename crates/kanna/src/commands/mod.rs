@@ -1,4 +1,5 @@
 pub mod close;
+pub mod focus;
 pub mod shared;
 pub mod zoom;
 
@@ -100,18 +101,7 @@ pub static COMMANDS: &[Command] = &[
         flow: Flow { unplaced: Some(open_unplaced), after: Some(open_after), ..Flow::PLAIN },
     },
     close::COMMAND,
-    Command {
-        name: "focus",
-        group: "Panes",
-        summary: "Bring a pane, tab or window to the front and give it the keyboard.",
-        usage: "kanna focus PANE\n       kanna focus --tab TAB\n       kanna focus --window WINDOW",
-        options: &[("--tab TAB", "Focus a tab."), ("--window WINDOW", "Focus a window.")],
-        notes: "Focusing a pane in another tab or window switches to it. Focusing another pane cancels zoom.",
-        examples: &[("kanna focus server", "Focus the pane named server."), ("kanna focus --tab tab-1", "Switch to tab-1.")],
-        parse: |args| target(args, "focus"),
-        show: output::focused,
-        flow: Flow::PLAIN,
-    },
+    focus::COMMAND,
     zoom::COMMAND,
     Command {
         name: "restart",

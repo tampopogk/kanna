@@ -134,30 +134,6 @@ pub fn moved(reply: &Value) -> String {
     layout(reply)
 }
 
-pub fn focused(args: &Value, reply: &Value) -> String {
-    let window = reply["window"].as_str().or(reply["front"].as_str()).or(args["window"].as_str()).unwrap_or("?");
-    let front = !reply["front"].is_null();
-    let shown = if reply["behind"] == true { "behind the app you're in" } else { "in front" };
-    let place = match (whose(reply), reply["window"].as_str()) {
-        (Some((name, mut tags)), _) => {
-            if front {
-                tags.push(shown.into());
-            }
-            format!(" in {}", tagged(&name, &tags))
-        }
-        (None, Some(window)) if front => format!(" in {window} ({shown})"),
-        (None, Some(window)) => format!(" in {window}"),
-        (None, None) => String::new(),
-    };
-    match (args["pane"].as_str(), args["tab"].as_str()) {
-        (Some(pane), _) => format!("focused {pane}{place}"),
-        (_, Some(tab)) => format!("switched to {tab}{place}"),
-        _ if front && reply["behind"] == true => format!("put {window} {shown}"),
-        _ if front => format!("brought {window} forward"),
-        _ => format!("{window} isn't on screen"),
-    }
-}
-
 pub fn window(args: &Value, reply: &Value) -> String {
     let window = reply["window"].as_str().or(args["window"].as_str()).unwrap_or("?");
     let named = |ws: &Value| tagged(ws["id"].as_str().unwrap_or("?"), &ws["task"].as_str().map(String::from).into_iter().collect::<Vec<_>>());
@@ -385,7 +361,7 @@ fn freed_lines(reply: &Value) -> String {
     freed.iter().map(|t| format!("\n{} \"{}\" can start now: nothing it waits for is left", t["id"].as_str().unwrap_or("?"), t["name"].as_str().unwrap_or(""))).collect()
 }
 
-fn place(reply: &Value) -> &'static str {
+pub fn place(reply: &Value) -> &'static str {
     if reply["place"] == "shelf" { " on the Shelf" } else { "" }
 }
 
@@ -1290,7 +1266,7 @@ mod workspace_tests {
         assert!(text.contains("\nws-5, d1's planner\n"), "{text}");
         let planner = json!({ "pane": { "id": "file-1", "state": "running" }, "window": null, "tab": "tab-9", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } });
         assert_eq!(crate::output::opened(&json!({}), &planner), "opened file-1 in ws-5 (d2's planner), tab-9: running");
-        assert_eq!(crate::output::focused(&json!({ "window": "d2" }), &json!({ "window": null, "front": "d2", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } })), "brought d2 forward");
+        assert_eq!(crate::commands::focus::show(&json!({ "window": "d2" }), &json!({ "window": null, "front": "d2", "workspace": { "id": "ws-5", "where": { "planner": "mac" }, "desk": "d2" } })), "brought d2 forward");
     }
 
     #[test]
@@ -1299,10 +1275,10 @@ mod workspace_tests {
         assert_eq!(crate::output::opened(&json!({}), &windowless), "opened p5 in ws-3 (task-1dfb, on the Desk), tab-9: running");
         let windowed = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-31", "tab": "tab-9", "workspace": { "id": "ws-3", "task": "task-1dfb", "where": { "desk": "mac" } } });
         assert_eq!(crate::output::opened(&json!({}), &windowed), "opened p5 in ws-3's win-31 (task-1dfb, on the Desk), tab-9: running");
-        assert_eq!(crate::output::focused(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Desk)");
-        assert_eq!(crate::output::focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "workspace": null })), "focused spec in win-31 (in front)");
-        assert_eq!(crate::output::focused(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "focused spec in win-31 (behind the app you're in)");
-        assert_eq!(crate::output::focused(&json!({ "window": "win-31" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "put win-31 behind the app you're in");
+        assert_eq!(crate::commands::focus::show(&json!({ "pane": "spec" }), &windowed), "focused spec in ws-3's win-31 (task-1dfb, on the Desk)");
+        assert_eq!(crate::commands::focus::show(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "workspace": null })), "focused spec in win-31 (in front)");
+        assert_eq!(crate::commands::focus::show(&json!({ "pane": "spec" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "focused spec in win-31 (behind the app you're in)");
+        assert_eq!(crate::commands::focus::show(&json!({ "window": "win-31" }), &json!({ "window": "win-31", "front": "win-31", "behind": true, "workspace": null })), "put win-31 behind the app you're in");
         assert_eq!(crate::commands::zoom::show(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Desk; run again to unzoom)");
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
         assert_eq!(crate::output::opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");
