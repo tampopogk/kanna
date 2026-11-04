@@ -367,7 +367,7 @@ pub fn planner_agents(context: Option<u64>) -> Vec<(String, String, String, Stri
 /// Without the script, it asks about agent setup and hands over to your shell.
 /// Kanna's zsh integration (`zsh`, its folder) hands ZDOTDIR back to yours while the command runs, so the shell it
 /// hands over to gets it again, as every Kanna terminal's does.
-pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&str>, cli: Option<&str>, repos: &Path, agents: &[(String, String, String, String)]) -> String {
+pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&str>, cli: Option<&str>, kept: &Path, agents: &[(String, String, String, String)]) -> String {
     let limit = context.map_or(String::new(), |tokens| format!("[ -n \"$CLAUDE_CODE_AUTO_COMPACT_WINDOW\" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW={tokens}; "));
     if let Some(script) = script {
         let mut command = format!("{limit}exec {}", quote(script));
@@ -377,7 +377,7 @@ pub fn planner_command(script: Option<&str>, context: Option<u64>, zsh: Option<&
         if let Some(zsh) = zsh {
             command += &format!(" --zsh {}", quote(zsh));
         }
-        command += &format!(" --repos {} --", quote(&repos.to_string_lossy()));
+        command += &format!(" --repos {} --config {} --", quote(&kept.join("repos").to_string_lossy()), quote(&kept.join("config.json").to_string_lossy()));
         for (name, program, ask, skip) in agents {
             command += &format!(" {} {} {} {}", quote(name), quote(program), quote(ask), quote(skip));
         }
@@ -3419,9 +3419,9 @@ impl Tasks {
         let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
         let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("planner.sh"))).filter(|s| s.is_file());
         let script = string(args, "script").filter(|s| Path::new(s).is_file()).or(beside.as_deref().and_then(Path::to_str));
-        let repos = crate::agents::home().join(".kanna-v4/repos");
+        let kept = crate::agents::home().join(".kanna-v4");
         let context = planning_context(&config_files(Path::new(folder)));
-        let cmd = planner_command(script, context, zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &repos, &planner_agents(context));
+        let cmd = planner_command(script, context, zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &kept, &planner_agents(context));
         let open = json!({ "type": "term", "planner": true, "claim": app, "cwd": folder, "cmd": cmd, "wait": false });
         core.handle(json!({ "cmd": "open", "args": open }), move |reply| match failed(&reply) {
             Some(error) => responder.reply(Err(error)),
@@ -4756,8 +4756,8 @@ mod tests {
     #[test]
     fn the_planning_terminal_keeps_claude_to_its_context_and_runs_the_planner_script() {
         let agents = [("claude".to_string(), "claude".to_string(), "claude 'You are the Kanna planning agent.'".to_string(), "claude --dangerously-skip-permissions 'You are the Kanna planning agent.'".to_string())];
-        let command = planner_command(Some("/K/planner.sh"), Some(300_000), Some("/S/shell/zsh"), Some("/A/kanna"), Path::new("/H/.kanna-v4/repos"), &agents);
-        assert_eq!(command, r#"[ -n "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000; exec '/K/planner.sh' --kanna '/A/kanna' --zsh '/S/shell/zsh' --repos '/H/.kanna-v4/repos' -- 'claude' 'claude' 'claude '\''You are the Kanna planning agent.'\''' 'claude --dangerously-skip-permissions '\''You are the Kanna planning agent.'\'''"#);
+        let command = planner_command(Some("/K/planner.sh"), Some(300_000), Some("/S/shell/zsh"), Some("/A/kanna"), Path::new("/H/.kanna-v4"), &agents);
+        assert_eq!(command, r#"[ -n "$CLAUDE_CODE_AUTO_COMPACT_WINDOW" ] || export CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000; exec '/K/planner.sh' --kanna '/A/kanna' --zsh '/S/shell/zsh' --repos '/H/.kanna-v4/repos' --config '/H/.kanna-v4/config.json' -- 'claude' 'claude' 'claude '\''You are the Kanna planning agent.'\''' 'claude --dangerously-skip-permissions '\''You are the Kanna planning agent.'\'''"#);
         assert!(!command.contains("KANNA_PLANNER"));
         assert_eq!(planner_command(None, None, None, None, Path::new("/r"), &agents), "exec \"${SHELL:-/bin/sh}\" -l");
         assert_eq!(planner_command(None, None, None, Some("/A/kanna"), Path::new("/r"), &agents), "'/A/kanna' agents setup --ask; '/A/kanna' agents update --ask; exec \"${SHELL:-/bin/sh}\" -l");
@@ -4773,6 +4773,7 @@ mod tests {
 
     struct Planner {
         root: PathBuf,
+        config: PathBuf,
         home: PathBuf,
         bin: PathBuf,
     }
@@ -4802,7 +4803,7 @@ mod tests {
         fs::create_dir_all(home.join(".kanna-v4")).unwrap();
         fs::write(home.join(".kanna-v4/config.json"), r#"{"agents": {"prompts": "skip"}}"#).unwrap();
         let root = root.canonicalize().unwrap();
-        Planner { home: root.join("home"), bin: root.join("bin"), root }
+        Planner { config: root.join("home/.kanna-v4/config.json"), home: root.join("home"), bin: root.join("bin"), root }
     }
 
     impl Planner {
@@ -4827,7 +4828,7 @@ mod tests {
 
         fn run_in(&self, folder: &Path, input: &str, kanna: Option<&Path>, terminal: Option<&str>) -> String {
             let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/kanna/Resources/planner.sh");
-            let mut args = vec!["--repos".to_string(), self.home.join(".kanna-v4/repos").to_string_lossy().into_owned()];
+            let mut args = vec!["--repos".to_string(), self.home.join(".kanna-v4/repos").to_string_lossy().into_owned(), "--config".to_string(), self.config.to_string_lossy().into_owned()];
             if let Some(kanna) = kanna {
                 args.extend(["--kanna".to_string(), kanna.to_string_lossy().into_owned()]);
             }
@@ -4855,6 +4856,22 @@ mod tests {
             let out = String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap();
             out.replace(self.root.to_str().unwrap(), "ROOT")
         }
+    }
+
+    #[test]
+    fn the_planner_script_reads_and_writes_the_settings_file_it_is_given_not_the_one_in_home() {
+        let mut p = planner("given", &["claude", "codex"]);
+        let yours = p.config.clone();
+        fs::write(&yours, r#"{"version": 1, "planning": {"agent": "claude"}, "agents": {"prompts": "skip"}}"#).unwrap();
+        p.config = p.root.join("private/config.json");
+        fs::create_dir_all(p.config.parent().unwrap()).unwrap();
+        fs::write(&p.config, r#"{"version": 1}"#).unwrap();
+        let repo = p.repo("app");
+        let out = p.run(&repo, "2\ny\n");
+        assert!(out.contains("Choose an agent for planning and task creation"), "{out}");
+        let private: Value = serde_json::from_str(&fs::read_to_string(&p.config).unwrap()).unwrap();
+        assert_eq!(private, json!({ "version": 1, "agents": { "prompts": "skip" } }));
+        assert_eq!(fs::read_to_string(&yours).unwrap(), r#"{"version": 1, "planning": {"agent": "claude"}, "agents": {"prompts": "skip"}}"#);
     }
 
     #[test]
