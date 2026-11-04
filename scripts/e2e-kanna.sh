@@ -4661,6 +4661,57 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   [[ "$(schedule remove hello)" == "removed s2 hello" ]] || { echo "scheduler line $LINENO"; return 1; }
 }
 
+scenario task_events M4
+task_events() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" config user.email e@e && git -C "$repo" config user.name e || { echo "task_events line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"
+  printf '/.kanna\n/.kanna-worktrees\n' >"$repo/.gitignore" && echo base >"$repo/shared" && echo base >"$repo/calm" && git -C "$repo" add . && git -C "$repo" commit -q -m first || { echo "task_events line $LINENO"; return 1; }
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  start_daemon && start_app || { echo "task_events line $LINENO"; return 1; }
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  task_of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-", t.get("folder") or "-")' "$1"; }
+  in_repo task new "Busy" "work 12" --agent "$fake/codex" >/dev/null || { echo "task_events line $LINENO"; return 1; }
+  local busy term folder said; busy="$(tid 1)"
+  check wait_for 10 eval '[[ "$(task_of $busy)" == running* ]]' || { echo "task_events: the task didn't run"; return 1; }
+  term="$(task_of $busy | cut -d' ' -f2)" folder="$(task_of $busy | cut -d' ' -f3)"
+  check wait_for 10 is "$term" status working || { echo "task_events: the task never showed as working"; return 1; }
+  [[ "$(in_repo task events "$busy")" == "hears: main-conflicts, base-merged, base-moved" ]] || { echo "task_events: its events start as $(in_repo task events "$busy")"; return 1; }
+  echo ours >"$folder/shared" && git -C "$folder" commit -q -am ours || { echo "task_events line $LINENO"; return 1; }
+  local main_saved='sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select value from meta where key like '"'"'main:%'"'"'"'
+  check wait_for 10 eval '[[ -n "$('"$main_saved"')" ]]' || { echo "task_events: the daemon never saw main"; return 1; }
+
+  echo theirs >"$repo/calm" && git -C "$repo" commit -q -am "no conflict" || { echo "task_events line $LINENO"; return 1; }
+  local first; first="$(git -C "$repo" rev-parse HEAD)"
+  check wait_for 10 eval '[[ "$('"$main_saved"')" == *"$first" ]]' || { echo "task_events: the daemon didn't see main move"; return 1; }
+  in_repo task messages "$busy" | grep -q conflicts && { echo "task_events: told of a conflict that isn't one"; in_repo task messages "$busy"; return 1; }
+
+  echo theirs >"$repo/shared" && git -C "$repo" commit -q -am conflict || { echo "task_events line $LINENO"; return 1; }
+  check wait_for 10 eval 'in_repo task messages "$busy" | grep -q "main conflicts with your branch in shared"' || { echo "task_events: main moving into a conflict left no message"; in_repo task messages "$busy"; return 1; }
+  check test "$(git -C "$folder" rev-parse --abbrev-ref HEAD)" != main || return 1
+  check test "$(cat "$folder/shared")" == ours || { echo "task_events: the worktree was touched"; return 1; }
+  git -C "$repo" commit -q --allow-empty -m again || { echo "task_events line $LINENO"; return 1; }
+  sleep 1
+  check test "$(in_repo task messages "$busy" | grep -c 'main conflicts')" -eq 1 || { echo "task_events: a second move left a second message"; in_repo task messages "$busy"; return 1; }
+  shows "$term" "main conflicts with" && { echo "task_events: the message went in mid-turn"; kanna read "$term"; return 1; }
+  check wait_for 30 unwrapped "$term" "peer: [message from kanna] main conflicts with your branch in shared: merge or rebase main, rerun your tests" || { echo "task_events: the message didn't arrive at the turn's end"; kanna read "$term"; in_repo task messages "$busy"; return 1; }
+  in_repo task events "$busy" | grep -qE 'main-conflicts +delivered +main conflicts with your branch in shared' || { echo "task_events: events doesn't list what was sent"; in_repo task events "$busy"; return 1; }
+
+  said="$(in_repo task subscribe main-moved "$busy")"
+  [[ "$said" == *"hears main-moved" ]] || { echo "task_events: subscribe said $said"; return 1; }
+  said="$(in_repo task unsubscribe main-conflicts "$busy")"
+  [[ "$said" == *"no longer hears main-conflicts" ]] || { echo "task_events: unsubscribe said $said"; return 1; }
+  git -C "$folder" merge -q main >/dev/null 2>&1; echo merged >"$folder/shared" && git -C "$folder" add shared && git -C "$folder" commit -q -m merged || { echo "task_events line $LINENO"; return 1; }
+  echo ours2 >"$folder/shared" && git -C "$folder" commit -q -am ours2 || { echo "task_events line $LINENO"; return 1; }
+  echo theirs2 >"$repo/shared" && git -C "$repo" commit -q -am "moved again" || { echo "task_events line $LINENO"; return 1; }
+  check wait_for 10 eval 'in_repo task messages "$busy" | grep -q "main moved: 1 commit"' || { echo "task_events: a subscribed task didn't hear main move"; in_repo task messages "$busy"; return 1; }
+  check test "$(in_repo task messages "$busy" | grep -c 'main conflicts')" -eq 1 || { echo "task_events: told of a conflict after unsubscribing"; in_repo task messages "$busy"; return 1; }
+  [[ "$(in_repo task subscribe main-wobbled "$busy" 2>&1)" == *"main-conflicts, main-moved, base-merged, base-moved"* ]] || { echo "task_events: an unknown event wasn't refused with the list"; return 1; }
+}
+
 scenario daemon_upgrade M4
 daemon_upgrade() {
   local old="$KANNA_STATE_DIR/old"

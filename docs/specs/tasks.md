@@ -137,6 +137,7 @@ Opencode starts again with its first message, its conversation lost, when no ses
 | `kanna task shelve [TASK]` | Move a task from the Desk to the Shelf as it is, running or stopped (default: the one you're in); refused on a Shelf task, pointing to `pick` |
 | `kanna task send TASK\|planner TEXT` | Leave a task's agent or the repo's planner a message, typed in when its turn is over ([agent messaging](agent-messaging.md)) |
 | `kanna task messages [TASK]` | A task's messages, or every message |
+| `kanna task subscribe\|unsubscribe EVENT [TASK]`, `kanna task events [TASK]` | What a task hears, such as main moving into conflict with its branch ([task events](task-events.md)) |
 | `kanna task done [TASK]` | End a task, or take it off the Shelf |
 | `kanna agents [status]` | Whether your agents are set up for Kanna, and whether this Kanna has newer skills ([agent setup](agent-setup.md)) |
 | `kanna agents setup [--ask]` | Install Kanna's skills and Claude's sandbox entry (`--ask`: say what and ask first) |
