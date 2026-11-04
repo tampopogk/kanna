@@ -19,7 +19,7 @@ kanna-net = { path = "../kanna-net" }
 kanna-guest = { path = "../kanna-guest" }
 kanna-pipe = { path = "../kanna-pipe" }
 kanna-quality = { path = "../kanna-quality" }
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "process", "fs"] }
 notify = "8"
 base64 = "0.22"
 getrandom = "0.2"

@@ -211,7 +211,8 @@ extension MarkdownPaneView {
         let rects = layoutManager.markRects(range).map { $0.offsetBy(dx: origin.x, dy: origin.y) }
         let union = rects.reduce(NSRect.null) { $0.union($1) }
         let visible = scrollView.contentView.bounds
-        let x = max(visible.minX + 8, min(union.minX, visible.maxX - boxWidth - 8))
+        let covered = threadsVisible ? ThreadPanel.width / zoom : 0
+        let x = max(visible.minX + 8, min(union.minX, visible.maxX - covered - boxWidth - 8))
         return NSPoint(x: x, y: union.maxY + 6)
     }
 
@@ -235,8 +236,8 @@ extension MarkdownPaneView {
         anchor(box, to: range)
         (box.button("post") as? Chip)?.onPress = { [weak self] in self?.post() }
         box.field.onKey = { [weak self] event in
-            if event.keyCode == 36, event.modifierFlags.contains(.command) { self?.post(); return true }
-            if event.keyCode == 53 { self?.closeBox(); return true }
+            if BoxField.sends(event) { self?.post(); return true }
+            if BoxField.cancels(event) { self?.closeBox(); return true }
             return false
         }
         show(box)
@@ -261,8 +262,8 @@ extension MarkdownPaneView {
         }
         (box.button("send") as? Chip)?.onPress = send
         box.field.onKey = { [weak self] event in
-            if event.keyCode == 53 { self?.closeBox(); return true }
-            guard event.keyCode == 36, !event.modifierFlags.contains(.shift) else { return false }
+            if BoxField.cancels(event) { self?.closeBox(); return true }
+            guard BoxField.sends(event) else { return false }
             send()
             return true
         }
