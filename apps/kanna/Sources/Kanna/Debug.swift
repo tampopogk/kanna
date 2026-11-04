@@ -179,6 +179,12 @@ extension AppController {
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
+                    "schedulesPage": .bool(!controller.schedulesPage.isHidden), "scheduleGroups": .array(controller.schedulesPage.groupOrder.map { $0.map { .string($0) } ?? .null }),
+                    "schedules": .array(controller.schedulesPage.rows.map { row in
+                        ["id": .string(row.id), "name": .string(row.name), "repo": row.repo.map { .string($0) } ?? .null, "rule": .string(row.rule), "target": .string(row.target), "next": .string(row.next), "waiting": .bool(row.waiting), "paused": .bool(row.paused),
+                         "open": .bool(controller.schedulesPage.isOpen(row.id)), "runs": .bool(controller.schedulesPage.enabled("\(row.id):run")),
+                         "firings": .array(row.firings.map { ["at": .string($0.at), "state": .string($0.state), "shown": .string($0.stateText), "note": .string($0.note)] })]
+                    }),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
                     "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.deskTasks.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
@@ -532,6 +538,11 @@ extension AppController {
         } else if let tile = args["stats"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let list = controller.statsPage.lists[tile], let spot = list.center(of: Int(args["row"]?.number ?? 0)) else { throw KannaError("not_found", "no row \(Int(args["row"]?.number ?? 0)) in \(id)'s Stats list \(tile)") }
+            window = controller.window
+            point = spot
+        } else if let control = args["schedule"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let spot = controller.schedulesPage.center(of: control) else { throw KannaError("not_found", "no \(control) on \(id)'s Schedules page") }
             window = controller.window
             point = spot
         } else if let page = args["page"]?.string {

@@ -104,6 +104,7 @@ flowchart TB
 | [Codex's app-server](specs/codex-app-server.md) | Every Codex runs attached to a server of its own, Kanna's door for messages |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |
 | [Stats](specs/stats.md) | The project's numbers over 30 days: quiz, main, tasks |
+| [Schedules tab](specs/schedules-tab.md) | Every repo's schedules, their firings, and pause, run and remove |
 | [The database](specs/database.md) | Tasks and their history in `kanna.db` |
 | [Settings](specs/settings.md) | Kanna's own settings |
 

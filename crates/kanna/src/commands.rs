@@ -787,7 +787,7 @@ pub static COMMANDS: &[Command] = &[
         name: "schedule",
         group: "Information",
         summary: "Prompt an agent at set times: a schedule leaves a task or the planning agent a message, which it gets when its turn is over.",
-        usage: "kanna schedule add RULE TARGET PROMPT... [--name NAME] [--repo DIR]\n       kanna schedule list [--repo DIR]\n       kanna schedule remove NAME|ID [--repo DIR]",
+        usage: "kanna schedule add RULE TARGET PROMPT... [--name NAME] [--repo DIR]\n       kanna schedule list [--repo DIR]\n       kanna schedule remove NAME|ID [--repo DIR]\n       kanna schedule pause NAME|ID [--repo DIR]\n       kanna schedule resume NAME|ID [--repo DIR]\n       kanna schedule run NAME|ID [--repo DIR]\n       kanna schedule reply NAME|ID TEXT... [--repo DIR]",
         options: &[
             ("--name NAME", "add: a name to remove it by, one word, unique in its repo. Default: none; it's known by its ID (s3)."),
             ("--repo DIR", "The repo the schedule belongs to, and whose planning agent planner means. Default: the repo you're in."),
@@ -798,6 +798,10 @@ pub static COMMANDS: &[Command] = &[
             ("kanna schedule add every 2h 71af \"Pull main and run the tests.\"", "Prompt task 71af every two hours."),
             ("kanna schedule list", "Every schedule, when it next fires, and whether its message is waiting."),
             ("kanna schedule remove evening", "Remove the schedule named evening."),
+            ("kanna schedule pause evening", "Stop it firing; a time missed while paused fires once on resume."),
+            ("kanna schedule resume evening", "Let it fire again."),
+            ("kanna schedule run evening", "Leave its message now, unless its last still waits."),
+            ("kanna schedule reply evening \"Three branches landed.\"", "From its target's agent: show this beside the firing it was last delivered, on the Schedules tab."),
         ],
         parse: parse_schedule,
         show: output::schedule,
@@ -1168,7 +1172,7 @@ fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
 fn parse_schedule(args: &mut Argv) -> Result<Value, Failure> {
     let name = args.option("--name")?;
     let repo = args.option("--repo")?;
-    let action = args.positional().ok_or_else(|| usage("schedule", "say what: add, list or remove"))?;
+    let action = args.positional().ok_or_else(|| usage("schedule", "say what: add, list, remove, pause, resume, run or reply"))?;
     let mut out = json!({ "action": action });
     if let Some(repo) = repo.map(|r| absolute(&r)).or_else(|| repo_here().ok()) {
         out["repo"] = json!(repo);
@@ -1191,8 +1195,16 @@ fn parse_schedule(args: &mut Argv) -> Result<Value, Failure> {
             }
         }
         "list" => {}
-        "remove" => out["schedule"] = json!(args.positional().ok_or_else(|| usage("schedule", "remove needs a schedule's NAME or ID (s3)"))?),
-        other => return Err(usage("schedule", &format!("unknown action \"{other}\" (add, list or remove)"))),
+        "remove" | "pause" | "resume" | "run" => out["schedule"] = json!(args.positional().ok_or_else(|| usage("schedule", &format!("{action} needs a schedule's NAME or ID (s3)")))?),
+        "reply" => {
+            let missing = || usage("schedule", "reply needs a schedule's NAME or ID and the TEXT: kanna schedule reply evening \"All done.\"");
+            out["schedule"] = json!(args.positional().ok_or_else(missing)?);
+            out["text"] = json!(args.rest().ok_or_else(missing)?);
+            if let Some(by) = caller() {
+                out["by"] = json!(by);
+            }
+        }
+        other => return Err(usage("schedule", &format!("unknown action \"{other}\" (add, list, remove, pause, resume, run or reply)"))),
     }
     Ok(out)
 }
