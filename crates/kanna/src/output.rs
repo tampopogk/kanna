@@ -34,7 +34,7 @@ pub fn whose(reply: &Value) -> Option<(String, Vec<String>)> {
     Some((name, tags))
 }
 
-fn place_of(place: &Value) -> &'static str {
+pub fn place_of(place: &Value) -> &'static str {
     match place {
         Value::String(place) if place == "shelf" => "on the Shelf",
         place if place.get("planner").is_some() => "a Desk's planner",
@@ -132,22 +132,6 @@ pub fn moved(reply: &Value) -> String {
         );
     }
     layout(reply)
-}
-
-pub fn window(args: &Value, reply: &Value) -> String {
-    let window = reply["window"].as_str().or(args["window"].as_str()).unwrap_or("?");
-    let named = |ws: &Value| tagged(ws["id"].as_str().unwrap_or("?"), &ws["task"].as_str().map(String::from).into_iter().collect::<Vec<_>>());
-    match (args["action"].as_str(), whose(reply)) {
-        (Some("assign"), Some(_)) => {
-            let ws = &reply["workspace"];
-            let tags: Vec<String> = ws["task"].as_str().map(String::from).into_iter().chain([place_of(&ws["where"]).to_string()]).collect();
-            format!("assigned {window} to {}", tagged(ws["id"].as_str().unwrap_or("?"), &tags))
-        }
-        _ => match reply["was"]["id"].as_str() {
-            Some(_) => format!("{window} is free (out of {})", named(&reply["was"])),
-            None => format!("{window} is free"),
-        },
-    }
 }
 
 pub fn task(request: &Value, reply: &Value) -> String {
@@ -1265,7 +1249,7 @@ mod workspace_tests {
         assert_eq!(crate::commands::zoom::show(&json!({ "pane": "spec" }), &json!({ "zoomed": true, "workspace": windowless["workspace"] })), "spec is zoomed in ws-3 (task-1dfb, on the Desk; run again to unzoom)");
         let free = json!({ "pane": { "id": "p5", "state": "running" }, "window": "win-4", "tab": "tab-9", "workspace": null });
         assert_eq!(crate::output::opened(&json!({}), &free), "opened p5 in win-4, tab-9: running");
-        assert_eq!(crate::output::window(&json!({ "action": "assign", "window": "win-41" }), &json!({ "window": "win-41", "workspace": windowless["workspace"] })), "assigned win-41 to ws-3 (task-1dfb, on the Desk)");
+        assert_eq!(crate::commands::window::show(&json!({ "action": "assign", "window": "win-41" }), &json!({ "window": "win-41", "workspace": windowless["workspace"] })), "assigned win-41 to ws-3 (task-1dfb, on the Desk)");
     }
 }
 

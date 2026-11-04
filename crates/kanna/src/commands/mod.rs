@@ -12,6 +12,7 @@ pub mod screenshot;
 pub mod send;
 pub mod send_key;
 pub mod shared;
+pub mod window;
 pub mod zoom;
 
 use crate::args::Argv;
@@ -140,18 +141,7 @@ pub static COMMANDS: &[Command] = &[
         show: output::workspace,
         flow: Flow { wire: Some(|_| "list"), offline: Some(workspace_offline), after: Some(workspace_after), ..Flow::PLAIN },
     },
-    Command {
-        name: "window",
-        group: "Tabs and windows",
-        summary: "Make a window one of a task's, so it shows and hides with the task, or free it.",
-        usage: "kanna window assign WINDOW TASK\n       kanna window free WINDOW",
-        options: &[],
-        notes: "A task's windows are on screen while a Desk shows the task; otherwise they close, their panes still running, and they open again at their frames when it's shown. A window opened from a task's pane (`kanna open --window new`) or torn off its tabs is the task's already; one made anywhere else is free. TASK is a task's ID (task-1dfb) or its agent's pane. A Desk, a window with a lead (the Quiz window) and a task that hasn't started are refused. In the app: Window → Assign Window to Task and Free Window.",
-        examples: &[("kanna window assign win-4 task-1dfb", "Make win-4 one of task-1dfb's windows."), ("kanna window free win-4", "Take win-4 out of its task; it stays open.")],
-        parse: parse_window,
-        show: output::window,
-        flow: Flow::PLAIN,
-    },
+    window::COMMAND,
     rename_pane::COMMAND,
     Command {
         name: "task",
@@ -1022,19 +1012,6 @@ fn parse_workspace(args: &mut Argv) -> Result<Value, Failure> {
         Some(pane) => json!({ "action": "list", "pane": pane }),
         None => json!({ "action": "list" }),
     })
-}
-
-fn parse_window(args: &mut Argv) -> Result<Value, Failure> {
-    let action = args.positional().ok_or_else(|| usage("window", "say assign or free"))?;
-    let window = args.positional().ok_or_else(|| usage("window", "missing WINDOW (an ID like win-4; see `kanna workspace list --all`)"))?;
-    match action.as_str() {
-        "assign" => {
-            let task = args.positional().ok_or_else(|| usage("window", "missing TASK (an ID like task-1dfb; see `kanna task list`)"))?;
-            Ok(json!({ "action": "assign", "window": window, "workspace": task }))
-        }
-        "free" => Ok(json!({ "action": "free", "window": window })),
-        other => Err(usage("window", &format!("unknown action \"{other}\": assign or free"))),
-    }
 }
 
 fn parse_thread_action(args: &mut Argv, action: &str) -> Result<Value, Failure> {
