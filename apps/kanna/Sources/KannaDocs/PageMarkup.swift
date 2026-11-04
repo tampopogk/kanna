@@ -100,7 +100,7 @@ public final class PageMarkupView: NSView {
         let barHeight: CGFloat = 34
         let side = threadsVisible ? ThreadPanel.width : 0
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
-        webView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side), height: max(0, bounds.height - barHeight))
+        webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - barHeight))
         overlay.frame = webView.frame
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
@@ -336,7 +336,8 @@ public final class PageMarkupView: NSView {
     }
 
     func boxOrigin(below rect: NSRect, height: CGFloat) -> NSPoint {
-        let x = max(8, min(rect.minX, overlay.bounds.width - CommentBox.width - 8))
+        let covered = threadsVisible ? ThreadPanel.width : 0
+        let x = max(8, min(rect.minX, overlay.bounds.width - covered - CommentBox.width - 8))
         let y = min(rect.maxY + 6, max(8, overlay.bounds.height - height - 8))
         return NSPoint(x: x, y: y)
     }

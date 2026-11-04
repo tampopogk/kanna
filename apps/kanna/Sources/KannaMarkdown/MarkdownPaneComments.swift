@@ -211,7 +211,8 @@ extension MarkdownPaneView {
         let rects = layoutManager.markRects(range).map { $0.offsetBy(dx: origin.x, dy: origin.y) }
         let union = rects.reduce(NSRect.null) { $0.union($1) }
         let visible = scrollView.contentView.bounds
-        let x = max(visible.minX + 8, min(union.minX, visible.maxX - boxWidth - 8))
+        let covered = threadsVisible ? ThreadPanel.width / zoom : 0
+        let x = max(visible.minX + 8, min(union.minX, visible.maxX - covered - boxWidth - 8))
         return NSPoint(x: x, y: union.maxY + 6)
     }
 

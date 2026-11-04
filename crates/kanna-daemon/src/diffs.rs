@@ -42,7 +42,7 @@ impl Watch {
 }
 
 pub struct Diffs {
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     watches: RefCell<HashMap<String, Watch>>,
     pub on_diff: RefCell<Option<Box<dyn Fn(&[String], &Value)>>>,
 }
@@ -59,7 +59,7 @@ pub fn diff_id(folder: &str, args: &[String]) -> String {
 }
 
 impl Diffs {
-    pub fn new(events: Sender<Event>) -> Diffs {
+    pub fn new(events: crate::runtime::Events) -> Diffs {
         Diffs { events, watches: RefCell::new(HashMap::new()), on_diff: RefCell::new(None) }
     }
 
@@ -187,7 +187,7 @@ impl Diffs {
     }
 }
 
-fn work(id: String, folder: String, args: Vec<String>, inbox: Receiver<Control>, changes: Sender<Control>, events: Sender<Event>) {
+fn work(id: String, folder: String, args: Vec<String>, inbox: Receiver<Control>, changes: Sender<Control>, events: crate::runtime::Events) {
     let mut show = HashSet::new();
     let diff = kanna_diff::load(&folder, &args, &show);
     let top = PathBuf::from(&diff.top);
@@ -268,8 +268,8 @@ fn matters(paths: &[PathBuf], top: &Path, dirs: &[PathBuf]) -> bool {
 mod tests {
     use super::*;
 
-    fn diffs() -> (Diffs, Receiver<Event>) {
-        let (events, inbox) = mpsc::channel();
+    fn diffs() -> (Diffs, crate::runtime::Inbox) {
+        let (events, inbox) = crate::runtime::channel();
         (Diffs::new(events), inbox)
     }
 

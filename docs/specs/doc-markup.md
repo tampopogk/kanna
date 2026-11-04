@@ -71,7 +71,7 @@ Every doc works the same way; only what you can point at differs.
 - **A page's view.** A thread on a page remembers which view of it it was on (the part of the URL after `#`), shows its mark only there, and takes you there when you open it from the list.
 - **Threads live beside the file, not in it.** A thread has an ID (`c1`, `c2`, … per doc), what it points at, its messages, and whether it's open or resolved.
 - **Resolved threads stay marked**, more faintly than open ones, and clicking the mark opens the thread to read or reopen it. The list beside the doc hides them until you ask; resolving can be undone.
-- **The thread list** sits on the pane's right; in a pane narrower than twice its width it hides until you press **Threads**.
+- **The thread list** floats over the right of the page without moving it ([comments overlay](comments-overlay.md)); in a pane narrower than twice its width it hides until you press **Threads**.
 - **Writing a comment or reply.** The new-comment box and every thread's reply box are many-line text: Return starts a new line, ⌘↵ posts (the reply's ⌘↵ button does too), Esc closes a box that floats over the doc. A box grows with its text up to 8 lines, then scrolls inside itself. A reply box takes the card's full width, with ⌘↵ and the resolve ✓ in a row below it, and the thread list scrolls to keep the box and its caret in view as it grows.
 
 ![The thread list: c1's reply box grown to five lines across the card, ⌘↵ and ✓ in a row below it; c2's empty reply box one line tall](doc-markup-reply.png)
