@@ -85,25 +85,6 @@ pub fn commented(args: &Value, reply: &Value) -> String {
     format!("{opened}{}{place} · {file}:{lines}", label(&reply["pane"]))
 }
 
-pub fn marked(args: &Value, reply: &Value) -> String {
-    if args.get("type").is_some() && reply["reused"] == true {
-        let full = args["path"].as_str().map(String::from).or_else(|| args["url"].as_str().map(|u| u.trim_start_matches("file://").to_string())).unwrap_or_default();
-        let here = std::env::current_dir().map(|d| format!("{}/", d.display())).unwrap_or_default();
-        let shown = full.strip_prefix(&here).unwrap_or(&full);
-        let tab = reply["tab"].as_str().map(|t| format!(" ({t})")).unwrap_or_default();
-        return format!("comments on in {}, which already shows {shown}{tab}; focused", label(&reply["pane"]));
-    }
-    if args.get("type").is_some() {
-        return crate::output::opened(args, reply);
-    }
-    let pane = &reply["pane"];
-    let to = pane["agent"].as_str().map(|agent| format!(", sent to {agent}")).unwrap_or_default();
-    match pane["markup"] == true {
-        true => format!("comments on in {}{to}", label(pane)),
-        false => format!("comments off in {}", label(pane)),
-    }
-}
-
 pub fn moved(reply: &Value) -> String {
     if reply["background"] == true {
         return format!("{} is in the background of {}", reply["pane"].as_str().unwrap_or("?"), whose_text(reply).unwrap_or_else(|| "its workspace".into()));
