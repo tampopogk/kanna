@@ -8,6 +8,7 @@ pub mod crashes;
 pub mod diagrams;
 pub mod focus;
 pub mod guests;
+pub mod instances;
 pub mod machine;
 pub mod markup;
 pub mod r#move;
