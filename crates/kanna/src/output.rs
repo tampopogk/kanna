@@ -73,18 +73,6 @@ pub fn opened(request: &Value, reply: &Value) -> String {
     format!("opened {} in {place}, {}: {}", label(&reply["pane"]), reply["tab"].as_str().unwrap_or("?"), state(&reply["pane"]))
 }
 
-pub fn commented(args: &Value, reply: &Value) -> String {
-    let file = args["path"].as_str().and_then(|p| p.rsplit('/').next()).unwrap_or("?");
-    let lines = match (reply["first"].as_u64(), reply["last"].as_u64()) {
-        (Some(first), Some(last)) if last > first => format!("{first}–{last}"),
-        (Some(first), _) => first.to_string(),
-        _ => "?".into(),
-    };
-    let opened = if reply["opened"] == true { "opened " } else { "" };
-    let place = whose_text(reply).map(|w| format!(" in {w}")).unwrap_or_default();
-    format!("{opened}{}{place} · {file}:{lines}", label(&reply["pane"]))
-}
-
 pub fn moved(reply: &Value) -> String {
     if reply["background"] == true {
         return format!("{} is in the background of {}", reply["pane"].as_str().unwrap_or("?"), whose_text(reply).unwrap_or_else(|| "its workspace".into()));
