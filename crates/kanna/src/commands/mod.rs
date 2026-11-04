@@ -2,7 +2,7 @@ pub mod shared;
 
 use crate::args::Argv;
 use crate::output;
-use kanna_client::Failure;
+use kanna_client::{exit, fail, Failure};
 use serde_json::{json, Map, Value};
 pub use shared::*;
 
@@ -1628,4 +1628,405 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     out.insert("type".into(), json!(kind));
     from_caller(&mut out);
     Ok(Value::Object(out))
+}
+
+pub fn lookup(name: &str) -> Result<&'static Command, Failure> {
+    find(name).ok_or_else(|| {
+        let similar = similar(name);
+        let hint = if similar.is_empty() { String::new() } else { format!(" Did you mean: {}?", similar.join(", ")) };
+        fail(exit::USAGE, format!("unknown command \"{name}\".{hint} Run `kanna --help` for all commands."))
+    })
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use crate::output;
+    use kanna_client::exit;
+    use serde_json::json;
+
+    pub fn shell_words(line: &str) -> Vec<String> {
+        let mut words = vec![];
+        let mut word = String::new();
+        let mut quote: Option<char> = None;
+        let mut started = false;
+        for c in line.chars() {
+            match (quote, c) {
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), c) => word.push(c),
+                (None, '"' | '\'') => {
+                    quote = Some(c);
+                    started = true;
+                }
+                (None, ' ') => {
+                    if started || !word.is_empty() {
+                        words.push(std::mem::take(&mut word));
+                    }
+                    started = false;
+                }
+                (None, c) => word.push(c),
+            }
+        }
+        if started || !word.is_empty() {
+            words.push(word);
+        }
+        words
+    }
+
+    pub fn parse(line: &str) -> Result<(String, Value), Failure> {
+        // Run from a Kanna terminal, a command would name its pane as the caller.
+        std::env::remove_var("KANNA_TERMINAL");
+        let words = shell_words(line);
+        assert_eq!(words[0], "kanna");
+        let mut args = Argv::new(words[1..].to_vec());
+        args.flag("--json");
+        let name = args.positional().unwrap();
+        let command = lookup(&name)?;
+        let request = (command.parse)(&mut args)?;
+        if let Some(extra) = args.first() {
+            return Err(usage(command.name, &format!("unexpected argument \"{extra}\"")));
+        }
+        Ok((command.name.to_string(), request))
+    }
+
+    #[test]
+    fn ready_set_and_clear_name_a_task_or_the_one_they_run_in() {
+        assert_eq!(parse("kanna task ready set 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
+        assert_eq!(parse("kanna task ready clear 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
+        assert!(parse("kanna task ready").is_err(), "outside a task's terminal it needs a TASK");
+        assert!(parse("kanna task ready 3f9a").is_err(), "it says set or clear");
+    }
+
+    #[test]
+    fn every_documented_example_parses() {
+        for command in COMMANDS {
+            assert!(!command.examples.is_empty(), "{} has no examples", command.name);
+            for (example, _) in command.examples {
+                let (name, _) = parse(example).unwrap_or_else(|f| panic!("{example}: {}", f.message));
+                assert_eq!(name, command.name, "{example}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_comment_takes_a_file_a_line_or_lines_and_the_rest_as_its_text() {
+        let (name, request) = parse("kanna comment /tmp/a.rs:50 Waits for a message.").unwrap();
+        assert_eq!(name, "comment");
+        assert_eq!(request, json!({ "path": "/tmp/a.rs", "line": 50, "text": "Waits for a message." }));
+        let (_, request) = parse("kanna comment /tmp/a.rs:20-48 'Sends it.' --tab").unwrap();
+        assert_eq!((request["line"].clone(), request["last"].clone(), request["tab"].clone()), (json!(20), json!(48), json!(true)));
+        assert!(parse("kanna comment /tmp/a.rs Sends it.").is_err());
+        assert!(parse("kanna comment /tmp/a.rs:5").is_err());
+        assert!(parse("kanna comment /tmp/a.rs:9-3 Backwards.").is_err());
+        assert!(parse("kanna comment /tmp/a.rs:0 Nothing.").is_err());
+    }
+
+    #[test]
+    fn a_tour_takes_pairs_of_a_spot_and_its_text() {
+        let (name, request) = parse("kanna tour /tmp/a.rs:50 'Waits for a message.' /tmp/b.md:3 'The big picture.' --tab").unwrap();
+        assert_eq!(name, "tour");
+        assert_eq!((request["action"].clone(), request["tab"].clone()), (json!("new"), json!(true)));
+        assert_eq!(request["stops"], json!([{ "path": "/tmp/a.rs", "line": 50, "text": "Waits for a message." }, { "path": "/tmp/b.md", "line": 3, "text": "The big picture." }]));
+        let (_, request) = parse("kanna tour add --next /tmp/a.rs:20-48 'Sends it.'").unwrap();
+        assert_eq!((request["action"].clone(), request["next"].clone(), request["stops"][0]["last"].clone()), (json!("add"), json!(true), json!(48)));
+        assert_eq!(parse("kanna tour").unwrap().1["action"], "show");
+        assert_eq!(parse("kanna tour go back").unwrap().1["to"], "back");
+        assert_eq!(parse("kanna tour go 3").unwrap().1["to"], 3);
+        assert_eq!(parse("kanna tour end").unwrap().1["action"], "end");
+        for bad in [
+            "kanna tour /tmp/a.rs:5 Waits for a message.",
+            "kanna tour /tmp/a.rs:5",
+            "kanna tour /tmp/a.rs 'No line.'",
+            "kanna tour /tmp/a.rs:9-3 'Backwards.'",
+            "kanna tour /tmp/a.md:3-5 'A doc block.'",
+            "kanna tour add",
+            "kanna tour go",
+            "kanna tour go sideways",
+            "kanna tour --next /tmp/a.rs:5 'Next of nothing.'",
+            "kanna tour end now",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_local_page_opens_as_a_file_url_and_markup_opens_or_switches_comments() {
+        let dir = std::env::temp_dir().join(format!("kanna-page-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let page = dir.join("a page.html");
+        std::fs::write(&page, "<p>hi</p>").unwrap();
+        let (_, request) = parse(&format!("kanna open web '{}'", page.display())).unwrap();
+        assert_eq!(request["url"], json!(format!("file://{}", page.display().to_string().replace(' ', "%20"))));
+        let (_, request) = parse("kanna open web a.test").unwrap();
+        assert_eq!(request["url"], json!("a.test"));
+        assert!(request.get("markup").is_none());
+        let (name, request) = parse(&format!("kanna markup '{}' --tab", page.display())).unwrap();
+        assert_eq!(name, "markup");
+        assert_eq!(request["type"], json!("web"));
+        assert_eq!(request["markup"], json!(true));
+        assert_eq!(request["tab"], json!(true));
+        let (_, request) = parse("kanna markup /tmp/notes.md --split right").unwrap();
+        assert_eq!((request["type"].clone(), request["path"].clone(), request["markup"].clone()), (json!("md"), json!("/tmp/notes.md"), json!(true)));
+        assert_eq!(parse("kanna markup spec --off").unwrap().1, json!({ "pane": "spec", "off": true }));
+        assert_eq!(parse("kanna markup spec").unwrap().1["pane"], json!("spec"));
+        assert!(parse("kanna markup spec --tab").is_err());
+        assert_eq!(parse("kanna markup spec --to agent").unwrap().1, json!({ "pane": "spec", "agent": "agent" }));
+        assert_eq!(parse("kanna markup /tmp/notes.md --to p4").unwrap().1["agent"], json!("p4"));
+        assert!(parse("kanna markup spec --to agent --off").is_err());
+        assert!(parse("kanna markup /tmp/notes.md --off").is_err());
+        let (_, request) = parse("kanna open md /tmp/notes.md").unwrap();
+        assert!(request.get("markup").is_none() && request.get("agent").is_none());
+        assert_eq!(parse("kanna markup /tmp/m.html").unwrap().1["url"], json!("file:///tmp/m.html"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_markdown_pane_marks_changes_since_a_ref_and_a_bare_diff_means_main() {
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff HEAD").unwrap().1["diff"], json!("HEAD"));
+        let (_, request) = parse("kanna open md --diff abc123 /tmp/notes.md --tab").unwrap();
+        assert_eq!((request["path"].clone(), request["diff"].clone()), (json!("/tmp/notes.md"), json!("abc123")));
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff=origin/main").unwrap().1["diff"], json!("origin/main"));
+        assert_eq!(parse("kanna open md /tmp/notes.md --diff v1..main").unwrap().1["diff"], json!("v1..main"));
+        let here = env!("CARGO_MANIFEST_DIR");
+        let main = ["main", "master"].into_iter().find(|b| std::process::Command::new("git").args(["-C", here, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).output().is_ok_and(|o| o.status.success()));
+        if let Some(main) = main {
+            assert_eq!(parse(&format!("kanna open md {here}/README.md --diff")).unwrap().1["diff"], json!(main));
+        }
+        assert!(parse("kanna open md /no-repo-here/notes.md --diff").is_err());
+        assert!(parse("kanna open web a.test --diff main").is_err());
+        assert!(parse("kanna open md /tmp/notes.md").unwrap().1.get("diff").is_none());
+    }
+
+    #[test]
+    fn requests() {
+        let cases = [
+            ("kanna open", json!({ "type": "term" })),
+            ("kanna open --name logs --split right --size 1/3 --cmd 'tail -f a.log'", json!({ "type": "term", "name": "logs", "split": "right", "size": "1/3", "cmd": "tail -f a.log" })),
+            ("kanna open web localhost:3000 --split down", json!({ "type": "web", "url": "localhost:3000", "split": "down" })),
+            ("kanna open --tab --no-wait", json!({ "type": "term", "tab": true, "wait": false })),
+            ("kanna close logs", json!({ "pane": "logs" })),
+            ("kanna close --window win-2", json!({ "window": "win-2" })),
+            ("kanna rename-tab tab-1 my servers", json!({ "tab": "tab-1", "title": "my servers" })),
+            ("kanna send server npm test", json!({ "pane": "server", "text": "npm test" })),
+            ("kanna move logs --to server --side bottom", json!({ "pane": "logs", "to": "server", "side": "bottom" })),
+            ("kanna move-tab tab-2 --index 0", json!({ "tab": "tab-2", "index": 0 })),
+            ("kanna open web a.test --history", json!({ "type": "web", "url": "a.test", "history": true })),
+            ("kanna navigate site --back", json!({ "pane": "site", "back": true })),
+            ("kanna open md /tmp/a.md", json!({ "type": "md", "path": "/tmp/a.md" })),
+            ("kanna navigate spec /tmp/b.md", json!({ "pane": "spec", "path": "/tmp/b.md" })),
+            ("kanna read s1", json!({ "pane": "s1" })),
+            ("kanna read s1 --lines 5", json!({ "pane": "s1", "lines": 5 })),
+            ("kanna send p1 -- --json", json!({ "pane": "p1", "text": "--json" })),
+            ("kanna send-key agent return", json!({ "pane": "agent", "keys": ["return"] })),
+            ("kanna send-key p3 up up shift+tab ctrl+c", json!({ "pane": "p3", "keys": ["up", "up", "shift+tab", "ctrl+c"] })),
+            ("kanna send p1 echo -- --mux -x", json!({ "pane": "p1", "text": "echo --mux -x" })),
+            ("kanna open --cwd /tmp", json!({ "type": "term", "cwd": "/tmp" })),
+            ("kanna move agent --dock", json!({ "pane": "agent", "dock": "left" })),
+            ("kanna move agent --dock right --window win-2", json!({ "pane": "agent", "dock": "right", "window": "win-2" })),
+            ("kanna move build --background", json!({ "pane": "build", "background": true })),
+            ("kanna move agent --tab", json!({ "pane": "agent", "tab": "new" })),
+            ("kanna move agent --tab tab-3", json!({ "pane": "agent", "tab": "tab-3" })),
+            ("kanna move agent --tab --window win-2", json!({ "pane": "agent", "tab": "new", "window": "win-2" })),
+            ("kanna open code /tmp/a.rs:42", json!({ "type": "code", "path": "/tmp/a.rs", "line": 42 })),
+            ("kanna open code /tmp/a.rs", json!({ "type": "code", "path": "/tmp/a.rs" })),
+            ("kanna open code /tmp/a.rs:x", json!({ "type": "code", "path": "/tmp/a.rs:x" })),
+            ("kanna navigate src /etc/hosts:3", json!({ "pane": "src", "path": "/etc/hosts", "line": 3 })),
+            ("kanna navigate src /etc/hosts", json!({ "pane": "src", "path": "/etc/hosts" })),
+            ("kanna navigate site localhost:5173", json!({ "pane": "site", "url": "localhost:5173" })),
+        ];
+        for (line, expected) in cases {
+            let (_, request) = parse(line).unwrap_or_else(|f| panic!("{line}: {}", f.message));
+            assert_eq!(request, expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn usage_errors_say_what_to_do() {
+        for (line, hint) in [
+            ("kanna close", "PANE, --tab TAB or --window WINDOW"),
+            ("kanna zoom", "missing PANE"),
+            ("kanna open top", "--cmd \"top\""),
+            ("kanna open web", "need a URL"),
+            ("kanna move logs", "say where"),
+            ("kanna zoom a b", "unexpected argument \"b\""),
+            ("kanna open --history", "only for web panes"),
+            ("kanna open md", "need a file"),
+            ("kanna open notes.md", "kanna open md notes.md"),
+            ("kanna navigate site --back x", "one of URL"),
+            ("kanna workspce list", "Did you mean: workspace"),
+            ("kanna rename tab-1 x", "Did you mean: rename-tab"),
+            ("kanna read", "missing PANE"),
+            ("kanna send-key", "missing PANE"),
+            ("kanna send-key p1", "missing KEY"),
+            ("kanna read p1 --lines 0", "--lines needs a whole number"),
+            ("kanna open ios", "need an app"),
+            ("kanna open --app x", "only for iOS panes"),
+            ("kanna open --name agent --dock", "make a task with `kanna task new`"),
+            ("kanna open --dock right --cmd claude", "a docked pane is a task's agent"),
+            ("kanna open web a.test --dock=right --window new", "a docked pane is a task's agent"),
+            ("kanna open --frozen", "a docked pane is a task's agent"),
+            ("kanna markup a.md --dock", "a docked pane is a task's agent"),
+            ("kanna move agent --dock --tab", "--dock goes on its own"),
+            ("kanna move agent --dock --to b", "--dock goes on its own"),
+            ("kanna move build --background --tab", "--background goes on its own"),
+        ] {
+            let failure = parse(line).expect_err(line);
+            assert_eq!(failure.code, exit::USAGE, "{line}");
+            assert!(failure.message.contains(hint), "{line}: {}", failure.message);
+        }
+    }
+
+    #[test]
+    fn relative_paths_are_made_absolute_here() {
+        let (_, request) = parse("kanna open md docs/a.md --cwd sub").unwrap();
+        assert!(request["path"].as_str().unwrap().starts_with('/'));
+        assert!(request["cwd"].as_str().unwrap().starts_with('/'));
+    }
+
+    #[test]
+    fn layouts_print_as_expressions() {
+        let layout = json!({ "split": "row", "children": [
+            { "pane": "a", "size": "2/3" },
+            { "split": "column", "size": "1/3", "children": [{ "pane": "b", "size": "1/2" }, { "pane": "c", "size": "1/2" }] }
+        ] });
+        assert_eq!(output::expression(&layout, true), "a:2/3 | (b:1/2 / c:1/2):1/3");
+    }
+
+    #[test]
+    fn docked_panes_print_on_their_own_line() {
+        let all = json!({ "action": "list", "all": true });
+        let reply = json!({
+            "windows": [],
+            "workspaces": [{ "id": "ws-1", "where": { "desk": "mac" }, "dock": { "pane": "agent", "id": "p1", "edge": "left", "width": "2/5", "frozen": true }, "focused": "agent",
+                             "tabs": [{ "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }], "windows": [], "panes": ["p2", "p1"] }],
+            "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
+        });
+        let text = output::workspace(&all, &reply);
+        assert!(text.contains("\nws-1, on the Desk\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
+        let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "desk": "mac" } } });
+        assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
+        assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
+        let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
+        assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
+    }
+
+    #[test]
+    fn workspace_list_lists_unplaced_panes_and_says_when_there_is_nothing() {
+        let all = json!({ "action": "list", "all": true });
+        let list = output::workspace(&all, &json!({ "windows": [], "panes": [{ "id": "p1", "type": "term", "state": "running" }] }));
+        assert_eq!(list, "Unplaced panes\np1");
+        assert_eq!(output::workspace(&all, &json!({ "windows": [], "panes": [] })), "no windows (open one with `kanna open`)");
+        let alone = output::scoped(&json!({ "windows": [], "panes": [{ "id": "p1", "name": "logs", "type": "term" }] }), "p1").unwrap();
+        assert_eq!(output::workspace(&json!({ "action": "list", "pane": "p1" }), &alone), "p1 (logs) isn't in a window or a workspace");
+    }
+
+    #[test]
+    fn a_quiz_answer_is_sent_with_its_repo_relative_file_and_a_round_on_main_s_commit() {
+        let git = |args: &[&str]| String::from_utf8(std::process::Command::new("git").args(args).output().unwrap().stdout).unwrap().trim().to_string();
+        let (top, repo) = (git(&["rev-parse", "--show-toplevel"]), git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+        let (_, answer) = parse("kanna quiz answer r12 --kind why --file src/lib.rs:40-42 --wrong --again a7 --json '{\"pick\": 2}'").unwrap();
+        let file = std::path::Path::new(&std::env::current_dir().unwrap().canonicalize().unwrap()).join("src/lib.rs").strip_prefix(&top).unwrap().to_string_lossy().into_owned();
+        assert_eq!(answer, json!({ "action": "answer", "repo": repo.trim_end_matches("/.git"), "round": "r12", "kind": "why", "file": file, "line": 40, "last": 42, "right": false, "again": "a7", "doc": { "pick": 2 } }));
+        let (_, start) = parse("kanna quiz start").unwrap();
+        assert_eq!(start["head"], json!(git(&["rev-parse", "main"])));
+        assert_eq!(parse("kanna quiz history --misses").unwrap().1["misses"], json!(true));
+        let refused = |line: &str| parse(line).err().unwrap_or_else(|| panic!("{line} parsed")).message;
+        assert!(refused("kanna quiz answer r1 --kind why --file a.rs:1 --right --wrong").contains("--right or --wrong"));
+        assert!(refused("kanna quiz answer r1 --kind why --file a.rs --right").contains("needs a line"));
+        assert!(refused("kanna quiz start --misses").contains("--misses is for quiz history"));
+        assert!(refused("kanna quiz start --right").contains("for quiz answer"));
+        assert!(refused("kanna quiz start --json '{oops'").contains("JSON object"));
+        assert!(refused("kanna quiz score").contains("unknown action"));
+        assert_eq!(parse("kanna quiz open --agent codex").unwrap().1, json!({ "action": "open", "repo": repo.trim_end_matches("/.git"), "agent": "codex" }));
+        assert_eq!(parse("kanna quiz open").unwrap().1, json!({ "action": "open", "repo": repo.trim_end_matches("/.git") }));
+        assert!(refused("kanna quiz start --agent codex").contains("--agent is for quiz open"));
+        assert!(refused("kanna capabilities --json '{}'").contains("--json DOC"));
+    }
+
+    #[test]
+    fn quiz_history_lists_rounds_with_their_answers_and_no_score() {
+        let reply = json!({ "misses": false, "rounds": [
+            { "round": "r2", "at": 0.0, "head": "67b287cabc", "answers": [] },
+            { "round": "r1", "at": 0.0, "head": "90d98b9def", "answers": [
+                { "answer": "a1", "kind": "where", "file": "src/a.rs", "right": false, "again": null, "doc": { "line": 4, "question": "Where?" } },
+                { "answer": "a2", "kind": "why", "file": "docs/b.md", "right": true, "again": "a0", "doc": {} },
+            ] },
+        ]});
+        let text = output::quiz(&json!({ "action": "history" }), &reply);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("r2  67b287c  "), "{text}");
+        assert_eq!(lines[2], "  a1   ✗ where        src/a.rs:4  Where?");
+        assert_eq!(lines[3], "  a2   ✓ why          docs/b.md  (again: a0)");
+        assert!(!text.contains("of"), "{text}");
+        assert_eq!(output::quiz(&json!({ "action": "history" }), &json!({ "misses": true, "rounds": [] })), "no misses to bring back");
+        assert_eq!(output::quiz(&json!({ "action": "start" }), &json!({ "round": "r3" })), "r3");
+        assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": true })), "opened p9 in win-4");
+        assert_eq!(output::quiz(&json!({ "action": "open" }), &json!({ "pane": "p9", "window": "win-4", "opened": false })), "brought forward p9 in win-4");
+    }
+
+    #[test]
+    fn stats_print_a_line_a_tile_with_its_sparkline() {
+        let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
+        assert_eq!(parse("kanna stats").unwrap().1, json!({ "repo": repo }));
+        let reply = json!({ "project": "/r", "days": [], "sections": [
+            { "id": "quiz", "title": "Quiz", "tiles": [
+                { "id": "right", "label": "Answers right", "value": 79.0, "unit": "%", "note": "of 95 answers", "chart": { "kind": "line", "max": 100, "values": [null, 50.0, 100.0] } },
+                { "id": "kinds", "label": "By kind", "value": null, "note": "", "chart": { "kind": "ranked", "rows": [{ "label": "why", "value": 91.7, "note": "11/12" }] } },
+            ] },
+            { "id": "tasks", "title": "Tasks", "tiles": [
+                { "id": "open", "label": "Open", "value": 2.0, "note": "+2 in 30 days", "chart": { "kind": "flow", "values": [0.0, 1.0, 2.0], "made": [0.0, 1.0, 3.0], "done": [0.0, 0.0, 2.0] } },
+                { "id": "lead", "label": "Made to done", "value": 12780.0, "unit": "s", "note": "median of 3", "chart": { "kind": "dots", "points": [], "line": [null, 3600.0, 7200.0] } },
+            ] },
+            { "id": "code", "title": "Code quality", "tiles": [
+                { "id": "erosion", "label": "Erosion", "value": 48.5, "unit": "%", "note": "up 1.2 points in 30 days", "chart": { "kind": "line", "max": 100, "values": [47.3, 48.5] } },
+                { "id": "worst", "label": "Worst functions", "value": null, "note": "", "chart": { "kind": "list", "rows": [{ "label": "run", "detail": "crates/kanna-daemon/src/main.rs:215", "figure": "CC 154", "note": "677 lines", "open": { "path": "crates/kanna-daemon/src/main.rs", "line": 215 } }] } },
+                { "id": "causes", "label": "Landings that needed the most fixes", "value": null, "note": "", "chart": { "kind": "list", "rows": [], "empty": "No fix traced back to a landing in 30 days." } },
+            ] },
+            { "id": "empty", "title": "Later", "empty": "Not measured yet.", "tiles": [] },
+        ] });
+        let text = output::stats(&json!({}), &reply);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "/r · main · last 30 days");
+        assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers              ▅█");
+        assert_eq!(lines[2], "              By kind");
+        assert_eq!(lines[3], "                why             92%  11/12");
+        assert_eq!(lines[4], "Tasks         Open                2  +2 in 30 days             ▁▅█");
+        assert_eq!(lines[5], "              Made to done   3h 33m  median of 3                ▅█");
+        assert_eq!(lines[6], "Code quality  Erosion           49%  up 1.2 points in 30 days  ▄▄");
+        assert_eq!(lines[7], "              Worst functions");
+        assert_eq!(lines[8], "                run          CC 154                            crates/kanna-daemon/src/main.rs:215 · 677 lines");
+        assert_eq!(lines[10], "                No fix traced back to a landing in 30 days.");
+        assert_eq!(lines[11], "Later         Not measured yet.");
+        assert_eq!(output::duration(59.0 * 60.0), "59m");
+        assert_eq!(output::duration(3.0 * 3600.0), "3h");
+        assert_eq!(output::duration(50.0 * 3600.0), "2d");
+    }
+
+    #[test]
+    fn a_schedule_takes_a_two_word_rule_quoted_or_not_a_target_and_the_rest_as_its_prompt() {
+        let git = |args: &[&str]| String::from_utf8(std::process::Command::new("git").args(args).output().unwrap().stdout).unwrap().trim().to_string();
+        let repo = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim_end_matches("/.git").to_string();
+        let want = json!({ "action": "add", "repo": repo, "rule": "weekdays 17:30", "target": "planner", "prompt": "Summarise what landed today.", "name": "evening" });
+        assert_eq!(parse("kanna schedule add 'weekdays 17:30' planner \"Summarise what landed today.\" --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule add weekdays 17:30 planner Summarise what landed today. --name evening").unwrap().1, want);
+        assert_eq!(parse("kanna schedule remove s3 --repo /tmp").unwrap().1, json!({ "action": "remove", "repo": "/tmp", "schedule": "s3" }));
+        assert_eq!(parse("kanna schedule list").unwrap().1, json!({ "action": "list", "repo": repo }));
+        let refused = |line: &str| parse(line).err().unwrap_or_else(|| panic!("{line} parsed")).message;
+        assert!(refused("kanna schedule add daily 09:00 planner").contains("needs a RULE, a TARGET and a PROMPT"));
+        assert!(refused("kanna schedule remove").contains("NAME or ID"));
+        assert!(refused("kanna schedule list --name x").contains("--name is for schedule add"));
+        assert!(refused("kanna schedule pause x").contains("unknown action"));
+    }
+
+    #[test]
+    fn schedules_list_as_columns_with_what_s_waiting() {
+        let reply = json!({ "schedules": [
+            { "schedule": "s1", "name": "quiz", "repo": "/Users/x/work/kanna-v4", "rule": "daily 09:00", "target": "planner", "nextText": "Sat 17 Oct 09:00", "waiting": true, "prompt": "Morning quiz check." },
+            { "schedule": "s12", "name": null, "repo": null, "rule": "every 2h", "target": "71af", "nextText": "Fri 16 Oct 14:00", "waiting": false, "prompt": "Run the tests." },
+        ]});
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &reply), "s1   quiz  kanna-v4  daily 09:00  planner  next Sat 17 Oct 09:00  waiting Morning quiz check.\ns12  -     -         every 2h     71af     next Fri 16 Oct 14:00          Run the tests.");
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &json!({ "schedules": [] })), "no schedules");
+        assert_eq!(output::schedule(&json!({ "action": "add" }), &reply["schedules"][0]), "s1 quiz: daily 09:00 → planner, next Sat 17 Oct 09:00");
+        assert_eq!(output::schedule(&json!({ "action": "remove" }), &json!({ "schedule": "s12", "name": null })), "removed s12");
+    }
 }
