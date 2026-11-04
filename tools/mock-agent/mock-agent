@@ -279,7 +279,7 @@ def rpc(conn, turns):
 def bye(id):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     if PROGRAM == "claude":
-        out(f"\r\nResume this session with:\r\nclaude --resume {id}\r\n")
+        out(f"\r\nResume this session with:\r\nclaude --model mock-model --dangerously-skip-permissions --resume {id}\r\n")
     else:
         out(f"\r\nTo continue this session, run: {PROGRAM} resume {id}\r\n")
 
