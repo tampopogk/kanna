@@ -622,6 +622,7 @@ JSON
   mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"${3:-longdoc}\"${2:-}}}" | field "$1"; }
   mdwin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
   mdshot() { raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$1.png\"}}" >/dev/null; cp "$KANNA_STATE_DIR/$1.png" "$out/" 2>/dev/null; }
+  mdattop() { python3 -c 'import sys; sys.exit(0 if abs(float(sys.argv[1])) < 1 else 1)' "$(mdo scroll)"; }
   mdwin 1200
   check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview: wanted $(mdo overview.wanted), width $(mdo width)"; return 1; }
   check eval '(( $(mdo overview.box_height | cut -d. -f1) > 10 ))' || { echo "box $(mdo overview.box_y) $(mdo overview.box_height)"; return 1; }
@@ -631,15 +632,21 @@ JSON
   check wait_for 5 eval '[[ "$(mdo overview.top | cut -d. -f1)" == 2000 ]]' || { echo "the box didn't follow the scroll: top $(mdo overview.top)"; return 1; }
   sleep 0.3
   check test "$(mdo pictures)" == "$pictures" || { echo "a scroll drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
-  mdo zoom ',"zoom":1' >/dev/null; sleep 0.3
-  check test "$(mdo pictures)" == "$pictures" || { echo "a zoom drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
-  mdo zoom ',"zoom":0' >/dev/null
+  local box; box="$(mdo overview.box_height)"
+  raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"longdoc"}}' >/dev/null; sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a pinch drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  check python3 -c 'import sys; assert float(sys.argv[2]) < float(sys.argv[1]) * 0.8, sys.argv[1:]' "$box" "$(mdo overview.box_height)" || { echo "the box didn't follow the pinch"; return 1; }
+  mdo zoom ',"page_zoom":1' >/dev/null
+  mdo zoom ',"zoom":1' >/dev/null
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "a text size step didn't draw the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":0' >/dev/null; sleep 0.3
+  pictures="$(mdo pictures)"
   mdo scroll ',"overview_click":3' >/dev/null
-  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
+  check wait_for 5 eval 'mdattop' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
   mdo scroll ',"overview_marks_click":690' >/dev/null
   check wait_for 5 eval '(( $(mdo scroll | cut -d. -f1) > 2000 ))' || { echo "a click at the foot of the marks left the scroll at $(mdo scroll)"; return 1; }
   mdo scroll ',"overview_drag":[10,-400]' >/dev/null
-  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "dragging the box up left the scroll at $(mdo scroll)"; return 1; }
+  check wait_for 5 eval 'mdattop' || { echo "dragging the box up left the scroll at $(mdo scroll)"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"longdoc","at":[300,300]}}' >/dev/null; sleep 0.3
   key cmd+f
   raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"redirect"}}' >/dev/null
@@ -668,9 +675,13 @@ JSON
   check test "$(mdo overview.wanted '' shortdoc)" == False || { echo "a doc that fits wants the overview"; return 1; }
   check test "$(mdo overview.shown '' shortdoc)" == False || return 1
   kanna close shortdoc >/dev/null
-  kanna markup longdoc >/dev/null || return 1
   mdwin 1500
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || return 1
+  local page_width page_lines; page_width="$(mdo layout_width)"; page_lines="$(mdo lines ',"lines":true')"
+  kanna markup longdoc >/dev/null || return 1
   check wait_for 5 eval '[[ "$(mdo markup)" == True && "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1500 pt with comments: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check test "$(mdo layout_width)" == "$page_width" || { echo "the comments list moved the page: width $page_width, then $(mdo layout_width)"; return 1; }
+  check test "$(mdo lines ',"lines":true')" == "$page_lines" || { echo "the comments list changed the line breaks"; return 1; }
   check wait_for 5 eval '[[ "$(mdo overview.marks_by_kind.comment)" == 1 ]]' || { echo "comment marks: $(mdo overview.marks_by_kind)"; return 1; }
   mdo overview.shown ',"overview_hover":true' >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
@@ -679,10 +690,63 @@ JSON
   mdshot markdown_overview-threads-dark
   mdo overview.shown ',"overview_hover":false' >/dev/null
   mdwin 1000
-  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt the overview should go first: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt both stay: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
   mdshot markdown_overview-narrow
   mdwin 500
   check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == False ]]' || { echo "at 500 pt: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+}
+
+scenario markdown_zoom M4
+markdown_zoom() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdzoom" before pinched after stepped
+  mkdir -p "$dir"
+  {
+    printf '# Zoom\n\n'
+    for i in $(seq 60); do printf '## Section %s\n\nParagraph %s about the session, the token and how the redirect is checked against the allow list before the app trusts it and opens the session.\n\n' "$i" "$i"; done
+  } >"$dir/zoom.md"
+  kanna open --window new md "$dir/zoom.md" --name zdoc >/dev/null || return 1
+  mdz() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"zdoc\",\"lines\":true${1:-}}}"; }
+  check wait_for 5 eval 'mdz | field text | grep -q "Section 60"' || return 1
+  mdz ',"scroll":1500' >/dev/null; sleep 0.5
+  before="$(mdz)"
+  pinched="$(raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"zdoc"}}')"
+  sleep 0.5
+  after="$(mdz)"
+  check python3 -c 'import json, sys
+before, pinch, after = (json.loads(a) for a in sys.argv[1:])
+z = pinch["zooms"]
+assert z and z[-1] > 1.2, ("the pinch did not zoom", z)
+assert abs(after["zoom"] - z[-1]) < 0.001, ("the zoom snapped on release", z[-1], after["zoom"])
+assert abs(after["page_zoom"] - z[-1]) < 0.001 and after["text_size"] == 1, ("a pinch is page zoom", after["text_size"], after["page_zoom"])
+assert after["top_line"] == pinch["top_lines"][-1], ("the top line moved on release", pinch["top_lines"][-1], after["top_line"])
+assert set(pinch["layout_widths"]) == {before["layout_width"]} and after["layout_width"] == before["layout_width"], ("a pinch laid the page out again", before["layout_width"], pinch["layout_widths"], after["layout_width"])
+assert after["lines"] == before["lines"], "a pinch changed the line breaks"' "$before" "$pinched" "$after" || return 1
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"zdoc","at":[40,200]}}' >/dev/null; sleep 0.3
+  key cmd+shift+=
+  stepped="$(mdz)"
+  check python3 -c 'import json, sys
+after, stepped = (json.loads(a) for a in sys.argv[1:])
+assert stepped["text_size"] == 1.1, ("⌘+ steps the text size", stepped["text_size"])
+assert abs(stepped["page_zoom"] - after["page_zoom"]) < 0.001, ("⌘+ kept the page zoom", after["page_zoom"], stepped["page_zoom"])
+assert stepped["layout_width"] < after["layout_width"] - 10, ("⌘+ re-wraps to the pane", after["layout_width"], stepped["layout_width"])
+assert stepped["lines"] != after["lines"], "⌘+ kept the line breaks"
+reading = after["top_line"]
+holding = max(l for l in stepped["lines"] if l <= reading)
+assert stepped["top_line"] == holding, ("⌘+ lost the reading line", reading, holding, stepped["top_line"])' "$after" "$stepped" || return 1
+  sleep 1
+  stop_app
+  start_app || return 1
+  check wait_for 10 eval 'mdz | field text | grep -q "Section 60"' || return 1
+  check python3 -c 'import json, sys
+stepped, back = (json.loads(a) for a in sys.argv[1:])
+assert back["text_size"] == stepped["text_size"], ("the text size came back", stepped["text_size"], back["text_size"])
+assert abs(back["page_zoom"] - stepped["page_zoom"]) < 0.001, ("the page zoom came back", stepped["page_zoom"], back["page_zoom"])' "$stepped" "$(mdz)" || return 1
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"zdoc","at":[40,200]}}' >/dev/null; sleep 0.3
+  key cmd+0
+  check python3 -c 'import json, sys
+back = json.loads(sys.argv[1])
+assert back["text_size"] == 1 and back["page_zoom"] > 1.2, ("⌘0 resets the text size only", back["text_size"], back["page_zoom"])' "$(mdz)" || return 1
 }
 
 scenario markdown_diff_overview M4
@@ -1031,7 +1095,7 @@ windows_tabs_ui() {
   mdzoom() { raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field zoom; }
   local width_before; width_before="$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)"
   key cmd+shift+=; check python3 -c 'import sys; assert float(sys.argv[1]) > 1' "$(mdzoom)" || return 1
-  check test "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)" == "$width_before" || { echo "width $width_before -> $(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)"; return 1; }
+  check python3 -c 'import sys; assert float(sys.argv[2]) < float(sys.argv[1]), sys.argv[1:]' "$width_before" "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)" || { echo "⌘+ didn't re-wrap"; return 1; }
   key cmd+0; check test "$(mdzoom)" == 1 || return 1
   local pinched
   pinched="$(raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"doc"}}')"
@@ -1599,6 +1663,8 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check eval 'md_comments_md | box_fits' || return 1
   sleep 0.3; md_comments_shot md_comments-long
   key escape; check test "$(md_comments_md | field box)" == None || return 1
+  xy="$(md_comments_md ',"mark":"c3"')"
+  md_comments_md ",\"scroll\":$(python3 -c 'import sys; print(max(0, float(sys.argv[1]) + float(sys.argv[2]) - 34 - 60))' "$(md_comments_md | field scroll)" "$(echo "$xy" | field y)")" >/dev/null
   for _ in 1 2 3 4 5; do md_comments_md ',"zoom":1' >/dev/null; done
   check test "$(md_comments_md | field zoom)" == 2 || return 1
   xy="$(md_comments_md ',"mark":"c3"')"
@@ -1972,9 +2038,11 @@ HTML
   page_comments_plain ',"js":"window.kept = 42; window.scrollTo(0, 300); window.scrollY"' >/dev/null
   check wait_for 5 eval '[[ "$(page_comments_plain ",\"js\":\"window.scrollY\"" | field value)" == 300 ]]' || { page_comments_plain ',"js":"window.scrollY"'; return 1; }
   kept="$(page_comments_kept)"
+  local page_width; page_width="$(page_comments_plain | field page_width)"
   KANNA_TERMINAL="$agent_id" kanna markup plain | grep -qF "comments on in" || return 1
   check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == True ]]' && check wait_for 5 eval 'page_comments_plain | grep -q threads' || { page_comments_plain; return 1; }
   check test "$(page_comments_kept)" == "$kept" || { echo "turning comments on should keep the web view, its page, its scroll and its JS state ($kept)"; return 1; }
+  check test "$(page_comments_plain | field page_width)" == "$page_width" || { echo "the comments list moved the page: width $page_width, then $(page_comments_plain | field page_width)"; return 1; }
   kanna markup plain --off | grep -qF "comments off in" || return 1
   check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == False ]]' || return 1
   [[ "$(page_comments_plain)" != *threads* ]] || { echo "turning comments off should take the comment UI away"; return 1; }
