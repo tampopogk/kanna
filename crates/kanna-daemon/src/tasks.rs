@@ -7,6 +7,7 @@ use crate::stacks::{self, Base, Conflict, Made, Mark, Step, Where, KANNA};
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
+use kanna_detect::program::Process;
 use kanna_detect::{Quit, Status, Turn};
 use kanna_mux::{project, CoreHandle, KmuxError, Pane, PaneState, Responder, TaskBook, WeakCore, MAC_APP, TASKS_PER_PROJECT};
 use std::cell::{Cell, RefCell};
@@ -852,11 +853,19 @@ const KEY_WAIT: Duration = Duration::from_millis(500);
 
 const FILL_EVERY: Duration = Duration::from_secs(2);
 
+const BACKGROUND_EVERY: Duration = Duration::from_millis(500);
+
 #[derive(Clone, Debug, PartialEq)]
 struct Running {
     pane: String,
     entry: Entry,
     place: Place,
+}
+
+fn command_of(process: &Process) -> String {
+    let command = process.argv.join(" ");
+    let command = if command.is_empty() { process.executable.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { command };
+    command.chars().take(200).collect()
 }
 
 fn alive(core: &CoreHandle, pane: &str) -> bool {
@@ -896,6 +905,7 @@ pub struct Tasks {
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
+    pub background: RefCell<Option<Box<dyn Fn(&str) -> Option<Vec<Process>>>>>,
     warned: RefCell<HashMap<String, String>>,
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
@@ -1064,6 +1074,7 @@ impl Tasks {
             channel: RefCell::default(),
             permissions: RefCell::default(),
             line_mode: RefCell::default(),
+            background: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
             warned: RefCell::default(),
@@ -2032,6 +2043,7 @@ impl Tasks {
             self.set_up(&pane, &setting);
         }
         let mail = self.deliver(&core, now);
+        self.look_for_background(now);
         let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !(self.has_mail(pane) && self.ready.borrow().get(*pane).is_some_and(|r| r.at().is_some()))).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now).map(|why| (pane.clone(), why))).collect();
         for (pane, why) in over {
             let Some((_, entry)) = running.iter().find(|(p, _)| *p == pane) else { continue };
@@ -2050,11 +2062,26 @@ impl Tasks {
             self.sync_at.set(now + SYNC_EVERY);
             self.sync_all();
         }
-        let turns = self.turns.borrow().values().filter_map(Turn::due).min();
+        let turns = self.turns.borrow().values().filter_map(|t| if t.waiting() { Some(now + BACKGROUND_EVERY) } else { t.due() }).min();
         let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         let news = self.tell_planners(now);
         [turns, quits, setups, self.fill_at.get(), mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
+    }
+
+    fn look_for_background(&self, now: Instant) {
+        let quiet: Vec<String> = self.turns.borrow().iter().filter(|(pane, turn)| turn.quiet(now) && !self.setting_up.borrow().contains_key(*pane)).map(|(pane, _)| pane.clone()).collect();
+        for pane in quiet {
+            let Some(found) = self.background.borrow().as_ref().and_then(|background| background(&pane)) else { continue };
+            let started = self.turns.borrow_mut().get_mut(&pane).is_some_and(|turn| turn.background(!found.is_empty(), now));
+            if !started {
+                continue;
+            }
+            let named: Vec<String> = found.iter().map(|p| format!("{} (pid {})", command_of(p), p.pid)).collect();
+            log!("kanna-daemon: {}'s agent {pane} ended its turn with background work running, so it waits: {}", self.task_of(&pane).unwrap_or_default(), named.join(", "));
+            let processes: Vec<Value> = found.iter().map(|p| json!({"pid": p.pid, "command": command_of(p)})).collect();
+            self.note(&pane, Change::new("waiting").by(Some("daemon")).with("why", json!("background")).with("processes", Value::Array(processes)));
+        }
     }
 
     pub fn too_old(self: &Rc<Self>, pane: &str, why: &str) -> Option<String> {
@@ -6012,6 +6039,65 @@ mod tests {
         assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
         assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
         assert_eq!(t.session(&pane).as_deref(), Some("given"), "the session Kanna gave claude stays its own");
+    }
+
+    fn idle_with_a_child(name: &str) -> (Stopping, String, Rc<RefCell<Vec<Process>>>) {
+        let t = Stopping::new(name);
+        fs::create_dir_all(t.state.join(".kanna")).unwrap();
+        fs::write(t.state.join(".kanna/config.json"), r#"{"shelf": {"runners": 3}}"#).unwrap();
+        let (pane, _) = t.agent("claude", Place::Shelf);
+        let entry = { let mut entries = t.tasks.entries.borrow_mut(); entries[0].repo = t.state.to_string_lossy().into_owned(); entries[0].clone() };
+        t.tasks.store(&entry, Place::Shelf, Some(&pane), None).unwrap();
+        let child = Rc::new(RefCell::new(vec![Process { pid: 4242, executable: None, argv: vec!["sleep".into(), "30".into()] }]));
+        let running = child.clone();
+        *t.tasks.background.borrow_mut() = Some(Box::new(move |_| Some(running.borrow().clone())));
+        t.tasks.turns.borrow_mut().insert(pane.clone(), Turn::underway());
+        t.tasks.status(&pane, Some("idle"), true);
+        for _ in 0..10 {
+            t.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        (t, pane, child)
+    }
+
+    #[test]
+    fn a_shelf_turn_ends_only_once_its_agents_background_work_exits_and_the_grace_passes() {
+        let (t, pane, child) = idle_with_a_child("background");
+        assert!(t.tasks.quitting.borrow().is_empty() && t.agents.typed.borrow().is_empty(), "idle with a child running isn't the turn's end");
+        assert!(t.tasks.turns.borrow()[&pane].waiting());
+        let waits: Vec<Value> = t.tasks.db.events("task-1dfb12c2").unwrap().into_iter().filter(|e| e.what == "waiting").map(|e| e.doc).collect();
+        assert_eq!(waits.len(), 1, "why it waits is in its events, once");
+        assert_eq!(waits[0]["why"], "background");
+        assert_eq!(waits[0]["processes"], json!([{ "pid": 4242, "command": "sleep 30" }]));
+        child.borrow_mut().clear();
+        let ended = Instant::now() - kanna_detect::turn::GRACE + Duration::from_millis(300);
+        t.tasks.turns.borrow_mut().get_mut(&pane).unwrap().background(false, ended);
+        t.pump();
+        assert!(t.tasks.quitting.borrow().is_empty(), "the grace");
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        assert!(ended.elapsed() >= kanna_detect::turn::GRACE);
+        assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("finished"));
+    }
+
+    #[test]
+    fn an_agent_that_works_again_in_the_grace_keeps_running_and_stop_is_immediate() {
+        let (t, pane, child) = idle_with_a_child("woken");
+        child.borrow_mut().clear();
+        t.tasks.turns.borrow_mut().get_mut(&pane).unwrap().background(false, Instant::now() - kanna_detect::turn::GRACE + Duration::from_millis(200));
+        t.pump();
+        t.tasks.status(&pane, Some("working"), false);
+        let by = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < by {
+            t.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(t.tasks.quitting.borrow().is_empty() && t.agents.typed.borrow().is_empty(), "the working report cancelled the stop");
+        child.borrow_mut().push(Process { pid: 4343, executable: None, argv: vec!["cargo".into(), "build".into()] });
+        t.tasks.status(&pane, Some("idle"), true);
+        t.pump();
+        assert!(t.tasks.turns.borrow()[&pane].waiting());
+        t.answer(|tasks, responder| tasks.stop(&json!({ "task": "task-1dfb12c2" }), responder)).unwrap();
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "kanna task stop doesn't wait for it");
     }
 
     #[test]

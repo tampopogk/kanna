@@ -4258,6 +4258,15 @@ real_agent_program_status() {
     check wait_for 30 eval '[[ "$(reported "$pane")" == "working working" ]]' || { echo "real_agent_program_status: $agent's turn wasn't working from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; tail -2 "$agents/mock.jsonl" | cut -c1-300; return 1; }
     check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: $agent's turn didn't end idle from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
     shows "$pane" "slow streamed answer" || { echo "real_agent_program_status: $agent didn't show the mock's answer"; kanna read "$pane"; return 1; }
+    if [[ $agent == claude ]]; then
+      rm -f "$repo/background-done.txt"
+      kanna send "$pane" "SHELL_IN_BACKGROUND" || { echo "real_agent_program_status line $LINENO"; return 1; }
+      check wait_for 60 eval 'shows "$pane" "SHELL_IN_BACKGROUND_DONE" && [[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: claude's turn didn't end idle with its background shell running but $(reported "$pane")"; kanna read "$pane"; return 1; }
+      [[ ! -e "$repo/background-done.txt" ]] || { echo "real_agent_program_status: claude's background shell ended before its turn did"; return 1; }
+      check wait_for 30 eval '[[ -e "$repo/background-done.txt" ]]' || { echo "real_agent_program_status: claude's background shell didn't finish"; return 1; }
+      check wait_for 10 eval '[[ "$(reported "$pane")" == working* ]]' || { echo "real_agent_program_status: claude wasn't working within Shelf runners' 10s grace once its background shell ended but $(reported "$pane")"; kanna read "$pane"; return 1; }
+      check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status line $LINENO"; return 1; }
+    fi
     [[ $agent == codex ]] || continue
     kanna send "$pane" "BACKGROUND_TURN" || { echo "real_agent_program_status line $LINENO"; return 1; }
     check wait_for 60 eval 'shows "$pane" "BACKGROUND_DONE" && shows "$pane" "Worked for" && shows "$pane" "background terminal running"' || { echo "real_agent_program_status: codex's turn didn't end with a background terminal running"; kanna read "$pane"; return 1; }
@@ -5326,6 +5335,29 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
   for t in $(tid 9) $(tid 11); do
     in_repo task messages $t | grep -q delivered || { echo "shelf_runners: $t didn't get its message"; in_repo task messages $t; return 1; }
   done
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude"
+  clock() { python3 -c 'import time; print(time.time())'; }
+  waited() { raw '{"id":1,"cmd":"tasks","args":{"action":"events","task":"'"$1"'"}}' | python3 -c 'import json, sys
+print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"] == "waiting" for p in (e.get("doc") or {}).get("processes", [])))'; }
+  in_repo task new "Background" "background 4" --agent "$fake/claude" >/dev/null && in_repo task new "Wakes" "background 2 wake 4" --agent "$fake/claude" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  runners 3
+  check wait_for 10 eval '[[ "$(of $(tid 13) 2)" == running && "$(of $(tid 13) 3)" == term-* ]]' || { echo "shelf_runners: the background task didn't start"; shelf; return 1; }
+  local bg; bg="$(of $(tid 13) 3)"
+  check wait_for 10 shows "$bg" BACKGROUND_STARTED || { kanna read "$bg"; return 1; }
+  check wait_for 5 is "$bg" status idle || { echo "shelf_runners: the background task didn't report idle"; kanna read "$bg"; return 1; }
+  sleep 1.5
+  check test "$(of $(tid 13) 2)" == running || { echo "shelf_runners: a task idle with its background command running was stopped"; shelf; kanna read "$bg"; return 1; }
+  check test "$(waited $(tid 13))" == "sleep 4" || { echo "shelf_runners: why it waits isn't in its events: $(waited $(tid 13))"; return 1; }
+  check wait_for 10 shows "$bg" BACKGROUND_EXITED || { kanna read "$bg"; return 1; }
+  local exited stopped; exited="$(clock)"
+  sleep 5
+  check test "$(of $(tid 13) 2)" == running || { echo "shelf_runners: the background task was stopped within the grace"; shelf; return 1; }
+  check wait_for 20 eval '[[ "$(of $(tid 13) 2)" == stopped:finished ]]' || { echo "shelf_runners: the background task didn't stop once its command was done"; shelf; return 1; }
+  stopped="$(clock)"
+  python3 -c 'import sys; sys.exit(not float(sys.argv[2]) - float(sys.argv[1]) >= 8)' "$exited" "$stopped" || { echo "shelf_runners: the background task stopped before the grace passed"; return 1; }
+  local wakes; wakes="$(of $(tid 14) 3)"
+  check wait_for 30 eval '[[ "$(of $(tid 14) 2)" == stopped:finished ]]' || { echo "shelf_runners: the task woken by its background command didn't stop"; shelf; kanna read "$wakes"; return 1; }
+  shows "$wakes" WOKE_DONE || { echo "shelf_runners: the task that worked again within the grace was stopped mid-turn"; kanna read "$wakes"; return 1; }
 }
 
 scenario agent_messaging M4
