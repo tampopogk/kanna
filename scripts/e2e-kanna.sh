@@ -5975,6 +5975,13 @@ PLIST
   check test "$(readlink "$KANNA_STATE_DIR"/ios-apps/*/Fake.app/Sub/Link)" == Fake || { echo "machine_ios_pane: the link didn't arrive"; return 1; }
   check test -x "$(echo "$KANNA_STATE_DIR"/ios-apps/*/Fake.app/Fake)" || { echo "machine_ios_pane: the executable bit didn't arrive"; return 1; }
   wait "$restarting"
+  vmk open --window new ios --name again --app "$fake" --no-wait >/dev/null || { echo "machine_ios_pane line $LINENO"; return 1; }
+  check wait_for 20 eval '[[ "$(state again error)" == *"needs iOS 99.0"* ]]' || { echo "machine_ios_pane: approval didn't hold for vm until the app quit"; state again error; return 1; }
+  stop_app; start_app || { echo "machine_ios_pane line $LINENO"; return 1; }
+  vmk restart yes >/dev/null 2>&1 &
+  restarting=$!
+  check wait_for 20 eval '[[ "$(ask false)" == True ]]' || { echo "machine_ios_pane: a relaunched app didn't ask again"; return 1; }
+  wait "$restarting"
   kill "$vm_pid"
 }
 

@@ -140,7 +140,7 @@ fn call(socket: &Path, cmd: &str, args: Value) -> Option<Value> {
 
 fn label(socket: &Path, root: &Path) -> String {
     let folder = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let name = call(socket, "task", json!({ "action": "list" })).and_then(|reply| {
+    let name = call(socket, "tasks", json!({ "action": "list", "all": true })).and_then(|reply| {
         reply["tasks"].as_array()?.iter().find(|t| t["task"] == folder.as_str())?["name"].as_str().map(String::from)
     });
     name.unwrap_or_else(|| {

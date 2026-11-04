@@ -78,6 +78,11 @@ enum Simulator {
         try await simctl("bootstatus", device.udid, "-b")
     }
 
+    static func tooOld(_ version: [Int], for wanted: [Int]) -> Bool {
+        let trimmed = { (list: [Int]) in Array(list.reversed().drop { $0 == 0 }.reversed()) }
+        return trimmed(version).lexicographicallyPrecedes(trimmed(wanted))
+    }
+
     static func checkFits(_ app: String, on device: Device) throws {
         guard let info = Bundle(path: app)?.infoDictionary else { throw Failure(message: "no app at \(app)") }
         let name = (app as NSString).lastPathComponent
@@ -85,8 +90,7 @@ enum Simulator {
             throw Failure(message: "\(name) was built for \(platform), not the simulator (build with -sdk iphonesimulator)")
         }
         guard let minimum = info["MinimumOSVersion"] as? String else { return }
-        let wanted = minimum.split(separator: ".").compactMap { Int($0) }
-        if device.version.lexicographicallyPrecedes(wanted) {
+        if tooOld(device.version, for: minimum.split(separator: ".").compactMap { Int($0) }) {
             let have = device.version.map(String.init).joined(separator: ".")
             throw Failure(message: "\(name) needs iOS \(minimum) and \(device.name) runs iOS \(have). Build it with IPHONEOS_DEPLOYMENT_TARGET=\(have), or add that runtime to this Mac.")
         }

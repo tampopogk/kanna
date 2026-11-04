@@ -381,7 +381,7 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
     });
     let mut receiver = Receiver { request, out, err, at: [0, 0], map: vec![], lines: [vec![], vec![]], diagnostics: vec![], expected_to, status: Value::Null, exited: false, notes: vec![] };
     let manifest = manifest::encode(&entries);
-    let wait_until = Instant::now() + RECONNECT_FOR;
+    let mut lost_at: Option<Instant> = None;
     let mut queued = false;
     let mut said = None;
     let mut conn = loop {
@@ -390,6 +390,7 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
             frame::send(&mut conn, &header, &manifest)?;
             loop {
                 let (reply, payload) = frame::read(&mut conn, 64 << 20)?;
+                lost_at = None;
                 match reply.op() {
                     "queued" => {
                         let ahead = reply.header["ahead"].as_u64().unwrap_or(0);
@@ -423,7 +424,7 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
                 finish(&mut receiver, &ended);
                 return ended;
             }
-            Err(e) if queued && transport(&e) && Instant::now() < wait_until => std::thread::sleep(Duration::from_secs(1)),
+            Err(e) if queued && transport(&e) && lost_at.get_or_insert_with(Instant::now).elapsed() < RECONNECT_FOR => std::thread::sleep(Duration::from_secs(1)),
             Err(e) => return Outcome::Failed(format!("couldn't send the job to the build Mac: {e}")),
         }
     };

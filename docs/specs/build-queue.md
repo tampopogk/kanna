@@ -21,7 +21,7 @@ stateDiagram-v2
 - **Slots:** one build and one UI job per guest, one job per mirror at a time, and at most `jobs` in `guests/pool.json` across the host (default 2, the macOS guest limit). The limit is a number you set, not measured pressure.
 - **A guest for a job:** the guest that holds its mirror if it matches, and then the job waits for that guest; otherwise the free matching guest with fewest mirrors.
 - **Durable:** `guests/queue.json` keeps jobs and the last 20 finished. After a restart the daemon goes back to watching running jobs; queued jobs wait for their clients to come back.
-- **A client that drops while queued** runs `run` again with the same job ID and keeps its place for 10 minutes. Nobody is there to send its snapshot meanwhile, so a detached job is passed over. Once granted, a drop follows [build Macs §2](build-macs.md#2-a-job).
+- **A client that drops while queued** runs `run` again with the same job ID and keeps its place for 10 minutes from the drop; a slot it had just been given but hadn't heard of goes back. Nobody is there to send its snapshot meanwhile, so a detached job is passed over. A job cancelled meanwhile stays cancelled. Once granted, a drop follows [build Macs §2](build-macs.md#2-a-job).
 - **A watcher per granted job** asks the guest for `status` each second, moves the job to running, and on the end frees its slot and records its result, whether or not a client is connected. A guest that doesn't answer for two minutes loses the job; a job the guest never heard of, with its relay gone, ends at once.
 
 ## 2. Matching and cancelling

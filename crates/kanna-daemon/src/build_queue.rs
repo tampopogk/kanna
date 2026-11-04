@@ -143,6 +143,7 @@ struct State {
     recent: VecDeque<Value>,
     relays: u64,
     limit: usize,
+    detached_for: Duration,
 }
 
 pub struct Queue {
@@ -157,7 +158,7 @@ impl Queue {
         let recent = saved["recent"].as_array().cloned().unwrap_or_default().into();
         let pool: Value = std::fs::read(guests_dir.join("pool.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
         let limit = pool["jobs"].as_u64().filter(|n| *n > 0).map_or(DEFAULT_JOBS, |n| n as usize);
-        Queue { file: guests_dir.join("queue.json"), state: Mutex::new(State { jobs, recent, relays: 0, limit }) }
+        Queue { file: guests_dir.join("queue.json"), state: Mutex::new(State { jobs, recent, relays: 0, limit, detached_for: DETACHED_FOR }) }
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -175,8 +176,12 @@ impl Queue {
 
     pub fn submit(&self, job: Job) -> u64 {
         let mut state = self.state();
+        Self::expire(&mut state);
         state.relays += 1;
         let relay = state.relays;
+        if state.recent.iter().any(|r| r["job"] == job.id.as_str()) {
+            return relay;
+        }
         match state.jobs.iter_mut().find(|j| j.id == job.id) {
             Some(known) => {
                 known.relay = relay;
@@ -214,7 +219,8 @@ impl Queue {
     }
 
     fn expire(state: &mut State) {
-        state.jobs.retain(|j| j.stage != Stage::Queued || j.detached.is_none_or(|at| at.elapsed() < DETACHED_FOR));
+        let life = state.detached_for;
+        state.jobs.retain(|j| j.stage != Stage::Queued || j.detached.is_none_or(|at| at.elapsed() < life));
     }
 
     fn assign(state: &mut State, guests: &[Guest], routes: &Value) -> bool {
@@ -252,9 +258,12 @@ impl Queue {
 
     pub fn detach(&self, id: &str, relay: u64) {
         let mut state = self.state();
-        if let Some(job) = state.jobs.iter_mut().find(|j| j.id == id && j.relay == relay && j.stage == Stage::Queued) {
+        if let Some(job) = state.jobs.iter_mut().find(|j| j.id == id && j.relay == relay && j.stage != Stage::Running) {
+            job.stage = Stage::Queued;
+            job.guest = None;
             job.relay = 0;
             job.detached = Some(Instant::now());
+            self.save(&state);
         }
     }
 
@@ -285,6 +294,7 @@ impl Queue {
 
     pub fn cancel(&self, id: &str) -> Cancelled {
         let mut state = self.state();
+        Self::expire(&mut state);
         let Some(at) = state.jobs.iter().position(|j| j.id == id) else {
             return if state.recent.iter().any(|r| r["job"] == id) { Cancelled::Finished } else { Cancelled::Unknown };
         };
@@ -309,7 +319,9 @@ impl Queue {
     }
 
     pub fn list(&self) -> Value {
-        let state = self.state();
+        let mut state = self.state();
+        Self::expire(&mut state);
+        let state = &*state;
         let mut jobs: Vec<&Job> = state.jobs.iter().filter(|j| j.stage != Stage::Queued).collect();
         jobs.extend(state.jobs.iter().filter(|j| j.stage == Stage::Queued));
         let mut ahead = 0;
@@ -447,6 +459,46 @@ mod tests {
         assert_eq!(queue.poll("c", c, &guests, &no_routes()), Poll::Waiting(0), "a kept its place in front");
         assert_eq!(queue.poll("a", again, &guests, &no_routes()), Poll::Granted("vm-a".into()));
         assert_eq!(queue.poll("a", a, &guests, &no_routes()), Poll::Gone(None), "the old relay has lost it");
+    }
+
+    #[test]
+    fn a_client_gone_after_another_waiter_granted_its_job_gives_the_slot_back() {
+        let queue = Queue::load(&temp("grant"));
+        let guests = [guest("vm-a")];
+        let (a, b) = (queue.submit(job("a", "one", false)), queue.submit(job("b", "two", false)));
+        assert_eq!(queue.poll("b", b, &guests, &no_routes()), Poll::Waiting(0), "b's poll granted a");
+        assert_eq!(queue.list()["jobs"][0]["stage"], "sending");
+        queue.detach("a", a);
+        assert_eq!(queue.poll("b", b, &guests, &no_routes()), Poll::Granted("vm-a".into()), "a's client never saw the grant");
+        let c = queue.submit(job("a", "one", false));
+        assert_eq!(queue.poll("a", c, &guests, &no_routes()), Poll::Waiting(0));
+    }
+
+    #[test]
+    fn a_job_cancelled_while_its_client_was_away_stays_cancelled() {
+        let queue = Queue::load(&temp("away"));
+        let relay = queue.submit(job("a", "one", false));
+        queue.detach("a", relay);
+        assert_eq!(queue.cancel("a"), Cancelled::Dequeued);
+        let again = queue.submit(job("a", "one", false));
+        match queue.poll("a", again, &[guest("vm-a")], &no_routes()) {
+            Poll::Gone(Some(ended)) => assert_eq!(ended["status"]["phase"], "cancelled"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(queue.list()["jobs"], json!([]));
+    }
+
+    #[test]
+    fn a_detached_job_expires_without_a_waiter_and_a_late_return_goes_to_the_back() {
+        let queue = Queue::load(&temp("expire"));
+        queue.state().detached_for = Duration::ZERO;
+        let (a, b) = (queue.submit(job("a", "one", false)), queue.submit(job("b", "two", false)));
+        queue.detach("a", a);
+        assert_eq!(queue.list()["jobs"].as_array().unwrap().len(), 1, "gone from the list with nobody polling");
+        let late = queue.submit(job("a", "one", false));
+        assert_eq!(queue.poll("b", b, &[guest("vm-a")], &no_routes()), Poll::Granted("vm-a".into()));
+        assert_eq!(queue.poll("a", late, &[guest("vm-a")], &no_routes()), Poll::Waiting(0));
+        assert_eq!(queue.list()["jobs"][1]["job"], "a");
     }
 
     #[test]
