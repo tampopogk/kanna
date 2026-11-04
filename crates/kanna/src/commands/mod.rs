@@ -1,4 +1,5 @@
 pub mod arrange;
+pub mod capabilities;
 pub mod close;
 pub mod focus;
 pub mod r#move;
@@ -310,18 +311,7 @@ pub static COMMANDS: &[Command] = &[
         flow: Flow { wire: Some(task_wire), before: Some(task_before), after: Some(task_after), ..Flow::PLAIN },
     },
     navigate::COMMAND,
-    Command {
-        name: "capabilities",
-        group: "Information",
-        summary: "Show what the running Kanna supports: pane types and commands.",
-        usage: "kanna capabilities",
-        options: &[],
-        notes: "",
-        examples: &[("kanna capabilities", "See which commands this Kanna supports.")],
-        parse: |_| Ok(json!({})),
-        show: |_, reply| output::capabilities(reply),
-        flow: Flow::PLAIN,
-    },
+    capabilities::COMMAND,
     Command {
         name: "diagrams",
         group: "Information",

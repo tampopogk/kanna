@@ -449,18 +449,6 @@ fn ago(seconds: f64) -> String {
     }
 }
 
-pub fn capabilities(reply: &Value) -> String {
-    let mut out = format!("pane types: {}\ncommands: {}", join(&reply["paneTypes"]), join(&reply["commands"]));
-    if let Some(app) = reply["app"].as_bool() {
-        out += if app {
-            "\nKanna.app: attached"
-        } else {
-            "\nKanna.app: not attached (terminals and the layout work without it; the CLI starts it for commands that need it)"
-        };
-    }
-    out
-}
-
 pub fn what(pane: &Value) -> Option<String> {
     if let Some(app) = pane["app"].as_str() {
         return Some(match pane["device"].as_str() {
