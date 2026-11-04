@@ -91,6 +91,7 @@ pub fn prompt(messages: &[(Option<String>, String)]) -> String {
 }
 
 pub const RETRY: Duration = Duration::from_secs(5);
+pub const THREAD_EVENT_QUIET: Duration = Duration::from_secs(2);
 
 pub const AGAIN: Duration = Duration::from_secs(3);
 

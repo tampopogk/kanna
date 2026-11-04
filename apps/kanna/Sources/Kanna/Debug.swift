@@ -192,6 +192,7 @@ extension AppController {
                 let data = value.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
                 return ["value": .string(data.map { String(decoding: $0, as: UTF8.self) } ?? "null"), "magnification": .number(Double(web.webView.magnification))]
             }
+            if let thread = args["act"]?.string { web.markup?.pressAct(thread) }
             if let edit = args["edit"]?.string {
                 web.editURL()
                 let shown = web.editing ?? ""
@@ -258,6 +259,7 @@ extension AppController {
             if let y = args["scroll"]?.number { markdown.scroll(toY: CGFloat(y)) }
             if let step = args["change"]?.number { markdown.jump(by: Int(step)) }
             if let target = args["follow"]?.string { markdown.follow(target) }
+            if let thread = args["act"]?.string { markdown.pressAct(thread) }
             if case .array(let pick)? = args["select"], pick.count == 2, let at = pick[0].number, let length = pick[1].number {
                 markdown.select(NSRange(location: Int(at), length: Int(length)))
             }

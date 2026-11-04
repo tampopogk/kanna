@@ -21,6 +21,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var agent: String? { didSet { markup?.agent = agent } }
     var agentStatus: String? { didSet { markup?.agentStatus = agentStatus } }
     var onSend: DocSend? { didSet { markup?.onSend = onSend } }
+    var onThreadEvent: DocThreadEvent? { didSet { markup?.onThreadEvent = onThreadEvent } }
     var onMarkup: ((PageMarkupView?) -> Void)?
     var onComments: ((NSView) -> Void)?
     var agentName: ((String) -> String)? { didSet { markup?.agentName = agentName } }
@@ -82,6 +83,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
             view.agent = agent
             view.agentStatus = agentStatus
             view.onSend = onSend
+            view.onThreadEvent = onThreadEvent
             view.agentName = agentName
             addSubview(view, positioned: .below, relativeTo: notice)
             markup = view
