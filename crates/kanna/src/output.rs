@@ -541,13 +541,6 @@ pub fn changed_skills(reply: &Value) -> Option<String> {
     }).collect::<Vec<_>>().join("\n"))
 }
 
-pub fn projects(request: &Value, reply: &Value) -> String {
-    if request["action"] == "clear" {
-        return "cleared the recent projects".into();
-    }
-    reply["projects"].as_array().map_or(vec![], |list| list.iter().filter_map(|p| p["path"].as_str()).collect::<Vec<_>>()).join("\n")
-}
-
 pub fn project(_: &Value, reply: &Value) -> String {
     let list = |key: &str| reply[key].as_array().map_or(vec![], |l| l.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>());
     let from = tilde(reply["from"].as_str().unwrap_or("?"));
