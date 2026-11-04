@@ -3111,6 +3111,22 @@ assert marks.get("changed", 0) >= 2 and marks.get("added", 0) >= 1, marks' "$(do
   dov shown ',"overview_hover":false' >/dev/null
   raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1000,320]}}' >/dev/null
   check wait_for 5 eval '[[ "$(dov shown)" == True && "$(diffpane list)" == False ]]' || { echo "at 1000 pt the list should go first: overview $(dov shown), list $(diffpane list)"; return 1; }
+  diffpane current ',"keys":"G"' >/dev/null
+  local scrolled tall
+  scrolled="$(diffpane columns.0.y)"; tall="$(diffpane columns.0.text_height)"
+  check python3 -c 'import sys; assert float(sys.argv[1]) > 100, sys.argv[1]' "$scrolled" || { echo "G left the short window at y $scrolled"; return 1; }
+  raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+f"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(diffpane columns.0.inset_top)" != 0 ]]' || { echo "⌘F showed no find bar"; return 1; }
+  check test "$(diffpane columns.0.y)" == "$scrolled" || { echo "opening find scrolled the diff from $scrolled to $(diffpane columns.0.y)"; return 1; }
+  check test "$(diffpane columns.0.text_height)" == "$tall" || { echo "opening find made the text $(diffpane columns.0.text_height) tall, not $tall"; return 1; }
+  diffpane current ',"keys":"gG"' >/dev/null
+  check python3 -c 'import sys; y, was, inset = map(float, sys.argv[1:]); assert y == was - inset, (y, was, inset)' "$(diffpane columns.0.y)" "$scrolled" "$(diffpane columns.0.inset_top)" || { echo "with find open the end of the diff is out of reach"; return 1; }
+  diffpane current ',"keys":"G"' >/dev/null
+  scrolled="$(diffpane columns.0.y)"
+  raw '{"id":1,"cmd":"debug.key","args":{"key":"escape"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(diffpane columns.0.inset_top)" == 0 ]]' || { echo "Esc left the find bar open"; return 1; }
+  check test "$(diffpane columns.0.y)" == "$scrolled" || { echo "closing find scrolled the diff from $scrolled to $(diffpane columns.0.y)"; return 1; }
+  check test "$(diffpane columns.0.text_height)" == "$tall" || { echo "closing find made the text $(diffpane columns.0.text_height) tall, not $tall"; return 1; }
   raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[640,320]}}' >/dev/null
   check wait_for 5 eval '[[ "$(dov shown)" == False && "$(diffpane list)" == False ]]' || { echo "at 640 pt: overview $(dov shown), list $(diffpane list)"; return 1; }
   diffwin 1400

@@ -94,7 +94,9 @@ final class DiffColumn {
         layoutManager.ensureLayout(for: container)
         let used = layoutManager.usedRect(for: container)
         let visible = scrollView.contentSize
-        textView.setFrameSize(NSSize(width: max(visible.width, used.width + 24), height: max(visible.height, used.height + minimumHeight)))
+        let height = max(visible.height, used.height + minimumHeight)
+        textView.height = height
+        textView.setFrameSize(NSSize(width: max(visible.width, used.width + 24), height: height))
         let thickness = gutter.thickness(font: font)
         if gutter.ruleThickness != thickness {
             gutter.ruleThickness = thickness
@@ -131,6 +133,11 @@ final class DiffTextView: NSTextView {
     private var matchObserver: NSKeyValueObservation?
 
     var starts: [Int] = []
+    var height: CGFloat = 0
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(NSSize(width: newSize.width, height: max(newSize.height, height)))
+    }
 
     func startFinder(in container: NSScrollView) {
         finder.client = finderClient
