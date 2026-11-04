@@ -6,7 +6,6 @@ pub mod commands;
 pub mod complete;
 pub mod machine;
 pub mod output;
-pub mod pipeline;
 pub mod serial;
 pub mod target;
 pub mod threads;

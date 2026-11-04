@@ -1,10 +1,41 @@
+use super::{usage, Command, Flow, Invocation};
+use kanna_client::Failure;
 use crate::commands::diagrams::shown;
 use crate::target::Target;
-use kanna_client::{exit, fail, Failure};
+use kanna_client::{exit, fail};
 use kanna_pipe::{Context, Error, Pipeline, Rule, Sizes, ASSUMED_PARTS};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+pub const COMMAND: Command = Command {
+    name: "pipeline",
+    group: "Information",
+    summary: "Check a pipeline of the software factory, or list the repo's, with each one's worst case.",
+    usage: "kanna pipeline list\n       kanna pipeline check NAME|FILE",
+    options: &[],
+    notes: "A pipeline is .kanna/pipelines/NAME.kojo in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/kojo.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it, and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
+    examples: &[
+        ("kanna pipeline check feature", "Check .kanna/pipelines/feature.kojo of this repo."),
+        ("kanna pipeline check ~/work/app/.kanna/pipelines/bugfix.kojo --json", "Check a file; its errors, warnings and worst case as JSON."),
+        ("kanna pipeline list", "The repo's pipelines, each valid with its worst case, or how many errors it has."),
+    ],
+    parse: |args| match args.positional().as_deref() {
+        Some("list") => Ok(json!({ "action": "list" })),
+        Some("check") => {
+            let pipeline = args.positional().ok_or_else(|| usage("pipeline", "check needs a NAME or a FILE"))?;
+            Ok(json!({ "action": "check", "pipeline": pipeline }))
+        }
+        Some(other) => Err(usage("pipeline", &format!("unknown action \"{other}\" (list or check)"))),
+        None => Err(usage("pipeline", "missing list or check")),
+    },
+    show: |_, _| String::new(),
+    flow: Flow { offline: Some(offline), ..Flow::PLAIN },
+};
+
+fn offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
+    Some(run(request, invocation.json_output, invocation.target))
+}
 
 pub struct Checked {
     pub file: String,
