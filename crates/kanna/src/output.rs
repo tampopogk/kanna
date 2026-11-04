@@ -541,44 +541,6 @@ pub fn changed_skills(reply: &Value) -> Option<String> {
     }).collect::<Vec<_>>().join("\n"))
 }
 
-pub fn project(_: &Value, reply: &Value) -> String {
-    let list = |key: &str| reply[key].as_array().map_or(vec![], |l| l.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>());
-    let from = tilde(reply["from"].as_str().unwrap_or("?"));
-    let mut out = vec![format!("imported {from} into {}", tilde(reply["to"].as_str().unwrap_or("?")))];
-    let sessions = &reply["sessions"];
-    let counted = |items: &[(&str, &Value)]| -> Vec<String> { items.iter().filter_map(|(what, n)| n.as_u64().filter(|n| *n > 0).map(|n| format!("{n} {what}{}", if n == 1 { "" } else { "s" }))).collect() };
-    let copied = counted(&[("worktree", &reply["worktrees"]), ("Claude folder", &sessions["claude"])]);
-    if !copied.is_empty() {
-        out.push(format!("  copied with it: {}", copied.join(", ")));
-    }
-    let resumed = counted(&[("codex session", &sessions["codex"]), ("opencode session", &sessions["opencode"])]);
-    if !resumed.is_empty() {
-        out.push(format!("  resuming in the copy: {}", resumed.join(", ")));
-    }
-    let (tasks, terminals) = (list("tasks"), list("terminals"));
-    if !tasks.is_empty() || !terminals.is_empty() {
-        out.push(format!("  started again there: {}", tasks.into_iter().chain(terminals).collect::<Vec<_>>().join(", ")));
-    }
-    for failed in list("failed") {
-        out.push(format!("  didn't start again: {failed}"));
-    }
-    for kept in sessions["kept"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        out.push(format!("  not copied: {kept}"));
-    }
-    let outside = list("outside");
-    if !outside.is_empty() {
-        out.push("  worktrees outside it stay with the original:".into());
-        out.extend(outside.iter().map(|w| format!("    {}", tilde(w))));
-    }
-    out.push(format!("{from} is as it was, and Kanna won't open it: delete it once you're happy with the copy."));
-    let mentions = list("mentions");
-    if !mentions.is_empty() {
-        out.push(format!("These still name {from}; change them yourself:"));
-        out.extend(mentions.into_iter().map(|m| format!("  {m}")));
-    }
-    out.join("\n")
-}
-
 pub fn home_relative(path: &str) -> String {
     match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
         Some(rest) if rest.starts_with('/') => format!("~{rest}"),
