@@ -119,10 +119,6 @@ pub fn file_line(target: &str) -> (String, Option<u64>) {
     (target.into(), None)
 }
 
-pub fn is_source(target: &str) -> bool {
-    !target.contains("://") && std::path::Path::new(&absolute(&file_line(target).0)).is_file()
-}
-
 pub fn local_page(target: &str) -> Option<String> {
     if target.contains("://") {
         return None;
