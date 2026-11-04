@@ -1140,7 +1140,13 @@ mod tests {
         assert!(refused("kanna schedule add daily 09:00 planner").contains("needs a RULE, a TARGET and a PROMPT"));
         assert!(refused("kanna schedule remove").contains("NAME or ID"));
         assert!(refused("kanna schedule list --name x").contains("--name is for schedule add"));
-        assert!(refused("kanna schedule pause x").contains("unknown action"));
+        assert_eq!(parse("kanna schedule pause evening --repo /tmp").unwrap().1, json!({ "action": "pause", "repo": "/tmp", "schedule": "evening" }));
+        assert_eq!(parse("kanna schedule resume s3 --repo /tmp").unwrap().1, json!({ "action": "resume", "repo": "/tmp", "schedule": "s3" }));
+        assert_eq!(parse("kanna schedule run s3 --repo /tmp").unwrap().1, json!({ "action": "run", "repo": "/tmp", "schedule": "s3" }));
+        assert_eq!(parse("kanna schedule reply s3 All green. --repo /tmp").unwrap().1["text"], "All green.");
+        assert!(refused("kanna schedule pause").contains("pause needs a schedule's NAME or ID"));
+        assert!(refused("kanna schedule reply s3").contains("reply needs"));
+        assert!(refused("kanna schedule nap x").contains("unknown action"));
     }
 
     #[test]
@@ -1149,7 +1155,12 @@ mod tests {
             { "schedule": "s1", "name": "quiz", "repo": "/Users/x/work/kanna-v4", "rule": "daily 09:00", "target": "planner", "nextText": "Sat 17 Oct 09:00", "waiting": true, "prompt": "Morning quiz check." },
             { "schedule": "s12", "name": null, "repo": null, "rule": "every 2h", "target": "71af", "nextText": "Fri 16 Oct 14:00", "waiting": false, "prompt": "Run the tests." },
         ]});
-        assert_eq!(output::schedule(&json!({ "action": "list" }), &reply), "s1   quiz  kanna-v4  daily 09:00  planner  next Sat 17 Oct 09:00  waiting Morning quiz check.\ns12  -     -         every 2h     71af     next Fri 16 Oct 14:00          Run the tests.");
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &reply), "s1   quiz  kanna-v4  daily 09:00  planner  next Sat 17 Oct 09:00  waiting  Morning quiz check.\ns12  -     -         every 2h     71af     next Fri 16 Oct 14:00           Run the tests.");
+        let fired = json!({ "schedules": [{ "schedule": "s3", "name": "pull", "repo": null, "rule": "every 2h", "target": "71af", "nextText": "Fri 16 Oct 14:00", "paused": true, "waiting": false, "prompt": "Pull.", "firings": [{ "atText": "Thu 15 Oct 12:00", "state": "delivered" }] }]});
+        assert_eq!(output::schedule(&json!({ "action": "list" }), &fired), "s3  pull  -  every 2h  71af  next Fri 16 Oct 14:00  paused  last Thu 15 Oct 12:00 delivered  Pull.");
+        assert_eq!(output::schedule(&json!({ "action": "pause" }), &json!({ "schedule": "s3", "name": "pull" })), "paused s3 pull");
+        assert_eq!(output::schedule(&json!({ "action": "resume" }), &json!({ "schedule": "s3", "name": "pull", "nextText": "Fri 16 Oct 14:00", "missed": true })), "resumed s3 pull: it missed Fri 16 Oct 14:00, so it fires once now");
+        assert_eq!(output::schedule(&json!({ "action": "run" }), &json!({ "schedule": "s3", "name": "pull", "left": false })), "s3 pull: its last message still waits, so this left none");
         assert_eq!(output::schedule(&json!({ "action": "list" }), &json!({ "schedules": [] })), "no schedules");
         assert_eq!(output::schedule(&json!({ "action": "add" }), &reply["schedules"][0]), "s1 quiz: daily 09:00 → planner, next Sat 17 Oct 09:00");
         assert_eq!(output::schedule(&json!({ "action": "remove" }), &json!({ "schedule": "s12", "name": null })), "removed s12");

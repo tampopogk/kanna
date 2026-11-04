@@ -918,6 +918,7 @@ pub struct Tasks {
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     pub background: RefCell<Option<Box<dyn Fn(&str) -> Option<Vec<Process>>>>>,
@@ -1094,6 +1095,7 @@ impl Tasks {
             background: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
+            on_delivered: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -2757,7 +2759,7 @@ impl Tasks {
         Ok(Map::from_iter([("task".to_string(), json!(id)), ("events".to_string(), Value::Array(events))]))
     }
 
-    fn sender(&self, args: &Value) -> (String, Option<String>) {
+    pub fn sender(&self, args: &Value) -> (String, Option<String>) {
         let Some(pane) = who(args) else { return (USER.into(), None) };
         if let Some(id) = self.task_of(pane) {
             let repo = self.known(&id).map(|e| e.repo);
@@ -2903,6 +2905,10 @@ impl Tasks {
 
     pub fn waiting(&self, message: i64) -> bool {
         self.waiting.borrow().iter().any(|m| m.id == message)
+    }
+
+    pub fn name_of(&self, recipient: &str) -> Option<String> {
+        self.known(recipient).and_then(|entry| entry.name)
     }
 
     pub fn label_of(&self, recipient: &str) -> String {
@@ -3051,6 +3057,9 @@ impl Tasks {
         }
         self.waiting.borrow_mut().retain(|m| !ids.contains(&m.id));
         self.mark_sent(&list);
+        if let Some(on_delivered) = self.on_delivered.borrow().as_ref() {
+            on_delivered(&list);
+        }
         if let Some(turn) = self.turns.borrow_mut().get_mut(&pane) {
             let status = self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status);
             *turn = Turn::underway();

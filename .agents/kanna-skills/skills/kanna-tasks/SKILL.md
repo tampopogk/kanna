@@ -116,7 +116,7 @@ If you stop to ask the user something before presenting the work, use that first
 
 ## Schedules
 
-When the user asks for an agent to be prompted at set times ("remind me every morning to…", "rerun the benchmark every 2h"), make a schedule rather than waiting yourself: `kanna schedule add RULE TARGET PROMPT --name NAME`. RULE is two words in local time (`daily 09:00`, `weekdays 18:00`, `mon,thu 10:30`, `every 2h`); TARGET is a task (your own ID for you, as `kanna task list` shows it) or `planner`, the repo's planning agent. At each time Kanna leaves that agent a message, as `kanna task send` does, which it gets when its turn is over as `[message from schedule NAME] PROMPT`. A message from `schedule NAME` is one of these: do what it says, as if the user had asked.
+When the user asks for an agent to be prompted at set times ("remind me every morning to…", "rerun the benchmark every 2h"), make a schedule rather than waiting yourself: `kanna schedule add RULE TARGET PROMPT --name NAME`. RULE is two words in local time (`daily 09:00`, `weekdays 18:00`, `mon,thu 10:30`, `every 2h`); TARGET is a task (your own ID for you, as `kanna task list` shows it) or `planner`, the repo's planning agent. At each time Kanna leaves that agent a message, as `kanna task send` does, which it gets when its turn is over as `[message from schedule NAME] PROMPT`. A message from `schedule NAME` is one of these: do what it says, as if the user had asked. When there's a result worth seeing, leave it once, briefly, with `kanna schedule reply NAME TEXT`: the user reads it beside that firing on the Desk's Schedules tab, and a schedule can't take a `kanna task send`.
 
 ## Commands
 
@@ -141,5 +141,7 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task done [TASK]` | End a task, or take it off the Shelf; says which blocked tasks can start now |
 | `kanna schedule add RULE TARGET PROMPT [--name NAME]` | Leave a task, or `planner`, a message at set times |
 | `kanna schedule list` / `remove NAME\|ID` | List the schedules, or remove one |
+| `kanna schedule pause NAME\|ID` / `resume` / `run` | Pause one, resume it (a time missed while paused fires once), or leave its message now |
+| `kanna schedule reply NAME\|ID TEXT` | Leave a result beside the firing you were last delivered |
 
 Run them from your own terminal, in the repo: a new task belongs to the repo you're in.

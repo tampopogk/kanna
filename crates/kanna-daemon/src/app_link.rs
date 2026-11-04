@@ -436,6 +436,15 @@ impl AppLink {
         }));
     }
 
+    pub fn connect_schedules(self: &Rc<Self>, scheduler: &crate::schedule::Scheduler) {
+        let link = Rc::downgrade(self);
+        *scheduler.schedules.on_change.borrow_mut() = Some(Box::new(move || {
+            if let Some(link) = link.upgrade() {
+                link.notify("schedules", json!({}));
+            }
+        }));
+    }
+
     pub fn folder(&self, pane: &str, cwd: &str) {
         if self.attached() {
             let place = crate::projects::place(cwd);
