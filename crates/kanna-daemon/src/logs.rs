@@ -40,7 +40,7 @@ impl Watch {
 }
 
 pub struct Logs {
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     watches: RefCell<HashMap<String, Watch>>,
     tasks: RefCell<Vec<TaskRef>>,
     pub task_refs: RefCell<Option<Box<dyn Fn() -> Vec<TaskRef>>>>,
@@ -60,7 +60,7 @@ pub fn log_id(folder: &str, args: &[String]) -> String {
 }
 
 impl Logs {
-    pub fn new(events: Sender<Event>) -> Logs {
+    pub fn new(events: crate::runtime::Events) -> Logs {
         Logs { events, watches: RefCell::new(HashMap::new()), tasks: RefCell::new(vec![]), task_refs: RefCell::new(None), on_log: RefCell::new(None) }
     }
 
@@ -191,7 +191,7 @@ impl Logs {
     }
 }
 
-fn work(id: String, folder: String, args: Vec<String>, mut tasks: Vec<TaskRef>, inbox: Receiver<Control>, changes: Sender<Control>, events: Sender<Event>) {
+fn work(id: String, folder: String, args: Vec<String>, mut tasks: Vec<TaskRef>, inbox: Receiver<Control>, changes: Sender<Control>, events: crate::runtime::Events) {
     let log = kanna_log::load(&folder, &args, &tasks);
     let common = PathBuf::from(&log.common_dir);
     let _ = events.send(Event::Log { id: id.clone(), log: log.to_json() });
@@ -253,8 +253,8 @@ pub fn matters(paths: &[PathBuf], common: &Path) -> bool {
 mod tests {
     use super::*;
 
-    fn logs() -> (Logs, Receiver<Event>) {
-        let (events, inbox) = mpsc::channel();
+    fn logs() -> (Logs, crate::runtime::Inbox) {
+        let (events, inbox) = crate::runtime::channel();
         (Logs::new(events), inbox)
     }
 

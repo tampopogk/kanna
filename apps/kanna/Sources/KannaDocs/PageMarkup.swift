@@ -34,7 +34,7 @@ public final class PageMarkupView: NSView {
     public let webView: WKWebView
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { drawMarks() } } }
-    public var onSend: ((String, String, @escaping (String?) -> Void) -> Void)?
+    public var onSend: DocSend?
     public var agentName: ((String) -> String)? { didSet { agentChanged() } }
 
     let bar = DocBar()
@@ -426,7 +426,7 @@ public final class PageMarkupView: NSView {
             let spot = pending.spot
             let line = spot.text.isEmpty ? 1 : Doc.line(of: spot.text, in: source ?? "", near: 1)
             let quote = Doc.clean(spot.text.isEmpty ? (spot.selector.isEmpty ? "a box" : spot.selector) : spot.text)
-            let thread = DocThread(id: "", quote: quote, prefix: "", suffix: "", line: line, state: "open", status: "sent",
+            let thread = DocThread(id: "", quote: quote, prefix: "", suffix: "", line: line, state: "open", status: "waiting",
                                    messages: [DocMessage(who: "you", text: text, at: Doc.now())], error: nil, page: spot)
             change(.post(thread, mark: png)) { [weak self] id in
                 guard let self, let id else { return }
@@ -461,7 +461,7 @@ public final class PageMarkupView: NSView {
 
     func reply(_ id: String, _ text: String) {
         let text = Doc.clean(text)
-        change(.edit(id, DocEdit(state: "open", message: DocMessage(who: "you", text: text, at: Doc.now())))) { [weak self] _ in self?.deliver(id, text) }
+        change(.edit(id, DocEdit(state: "open", status: "waiting", error: .some(nil), message: DocMessage(who: "you", text: text, at: Doc.now())))) { [weak self] _ in self?.deliver(id, text) }
     }
 
     func setState(_ id: String, open: Bool) {
@@ -484,11 +484,11 @@ public final class PageMarkupView: NSView {
         guard var thread = record.threads.first(where: { $0.id == id }), Doc.isThreadID(id) else { return }
         if let page = thread.page, !page.text.isEmpty { thread.line = Doc.line(of: page.text, in: source ?? "", near: thread.line) }
         let message = Doc.clean(Doc.message(thread, file: docName, text: text, mark: thread.mark))
-        let finish: (String?) -> Void = { [weak self] error in
-            self?.change(.edit(id, DocEdit(status: error == nil ? "sent" : "unsent", error: .some(error), line: thread.line)))
+        let finish: (DocDelivery) -> Void = { [weak self] delivery in
+            self?.change(.edit(id, DocEdit(delivered: delivery, line: thread.line)))
         }
-        guard let agent, let onSend else { return finish("no agent") }
-        onSend(agent, message, finish)
+        guard let agent, let onSend else { return finish(.failed("no agent")) }
+        onSend(agent, message, path, id, finish)
     }
 
     static let script = #"""

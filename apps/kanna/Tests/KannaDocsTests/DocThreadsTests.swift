@@ -21,6 +21,12 @@ struct DocThreadsTests {
         #expect(Doc.line(of: "missing", in: source, near: 4) == 4)
     }
 
+    @Test func aQueuedCommentKeepsTheStatusTheDaemonGaveIt() {
+        #expect(DocEdit(delivered: .waiting, line: 7) == DocEdit(error: .some(nil), line: 7))
+        #expect(DocEdit(delivered: .sent, line: 2) == DocEdit(status: "sent", error: .some(nil), line: 2))
+        #expect(DocEdit(delivered: .failed("not connected to the daemon"), line: 3) == DocEdit(status: "unsent", error: .some("not connected to the daemon"), line: 3))
+    }
+
     @Test func aThreadWaitsWhileItsLastMessageIsYours() {
         let posted = Doc.date("2026-10-16T10:00:00")!
         var t = thread("x")
@@ -32,6 +38,9 @@ struct DocThreadsTests {
         #expect(DocWait.of(t, agent: "p1", status: "needs-you", now: later) == .note("Not answered · the agent is waiting on you", warn: true))
         #expect(DocWait.of(t, agent: nil, status: nil, now: later) == .note("Not answered · no agent", warn: false))
         #expect(DocWait.of(t, agent: "p1", status: "idle", now: posted.addingTimeInterval(2)) == .typing)
+        t.status = "waiting"
+        #expect(DocWait.of(t, agent: "p1", status: "working", now: later) == .note("Waiting · it goes to the agent when its turn is over", warn: false))
+        #expect(DocWait.of(t, agent: "p1", status: nil, now: later) == .note("Waiting · it goes to the agent when its turn is over", warn: false))
         t.status = "unsent"
         t.error = "no agent"
         #expect(DocWait.of(t, agent: nil, status: nil, now: later) == .note("Not sent · no agent", warn: false))

@@ -238,6 +238,8 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     create index samples_by_time on samples (repo, at);
 "), Step::Sql("
     alter table samples add column revision integer not null default 0;
+"), Step::Sql("
+    alter table messages add column comment text check (comment is null or json_valid(comment));
 ")];
 
 pub const RECENT: usize = 10;
@@ -329,6 +331,24 @@ pub struct Message {
     pub delivered: Option<f64>,
     pub text: String,
     pub mode: Option<String>,
+    pub comment: Option<Comment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub file: String,
+    pub thread: String,
+}
+
+impl Comment {
+    fn json(&self) -> String {
+        serde_json::json!({ "file": self.file, "thread": self.thread }).to_string()
+    }
+
+    fn parse(text: Option<String>) -> Option<Comment> {
+        let doc: Value = serde_json::from_str(&text?).ok()?;
+        Some(Comment { file: doc["file"].as_str()?.into(), thread: doc["thread"].as_str()?.into() })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -388,6 +408,37 @@ pub struct Life {
 pub struct Db {
     conn: Connection,
     layout: RefCell<Option<Box<dyn Fn() -> Option<Value>>>>,
+    checkpoints: Option<Checkpoints>,
+}
+
+struct Checkpoints {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Checkpoints {
+    fn drop(&mut self) {
+        self.stop.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn checkpointing(path: PathBuf) -> Option<Checkpoints> {
+    let (stop, stopping) = std::sync::mpsc::channel::<()>();
+    let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
+        let Ok(conn) = Connection::open(&path) else { return };
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
+        while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopping.recv_timeout(CHECKPOINT_EVERY) {
+            let started = std::time::Instant::now();
+            let _ = conn.query_row("pragma wal_checkpoint(passive)", [], |_| Ok(()));
+            crate::perf::since("db.checkpoint", started);
+        }
+    });
+    started.ok().map(|thread| Checkpoints { stop: Some(stop), thread: Some(thread) })
 }
 
 fn now() -> f64 {
@@ -448,7 +499,7 @@ fn open_checked(path: &Path) -> Opened {
     if found > version() {
         return Opened::Newer(found);
     }
-    let mut db = Db { conn, layout: RefCell::default() };
+    let mut db = Db { conn, layout: RefCell::default(), checkpoints: None };
     match db.migrate(found) {
         Ok(()) => Opened::Good(db),
         Err(error) => Opened::Bad(format!("migrating from version {found}: {error}")),
@@ -492,7 +543,7 @@ impl Db {
                 }
             }
         }
-        let db = match db {
+        let mut db = match db {
             Some(db) => db,
             None => Db::fresh(&path, state_dir, lost),
         };
@@ -502,15 +553,18 @@ impl Db {
         } else {
             let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
         }
+        if db.conn.path().is_some_and(|file| !file.is_empty()) && db.conn.pragma_update(None, "wal_autocheckpoint", 0).is_ok() {
+            db.checkpoints = checkpointing(path);
+        }
         db
     }
 
     fn fresh(path: &Path, state_dir: &Path, lost: bool) -> Db {
         let mut db = match connect(path) {
-            Ok(conn) => Db { conn, layout: RefCell::default() },
+            Ok(conn) => Db { conn, layout: RefCell::default(), checkpoints: None },
             Err(error) => {
                 say(format!("can't make {} ({error}); keeping tasks in memory only until the daemon restarts", path.display()));
-                Db { conn: Connection::open_in_memory().expect("an in-memory database"), layout: RefCell::default() }
+                Db { conn: Connection::open_in_memory().expect("an in-memory database"), layout: RefCell::default(), checkpoints: None }
             }
         };
         db.migrate(0).expect("a new database takes the schema");
@@ -630,9 +684,8 @@ impl Db {
             .optional()
     }
 
-    pub fn new_id(&self, free: impl Fn(&str) -> bool) -> rusqlite::Result<String> {
-        for _ in 0..8 {
-            let id = random_id()?;
+    pub fn new_id(&self, candidates: Vec<String>, free: impl Fn(&str) -> bool) -> rusqlite::Result<String> {
+        for id in candidates {
             if self.conn.query_row("select 1 from tasks where id = ?1", [&id], |_| Ok(())).optional()?.is_none() && free(&id) {
                 return Ok(id);
             }
@@ -727,10 +780,13 @@ impl Db {
         rows.collect()
     }
 
-    pub fn put_message(&self, recipient: &str, repo: &str, sender: &str, text: &str, mode: Option<&str>) -> rusqlite::Result<Message> {
+    pub fn put_message(&self, recipient: &str, repo: &str, sender: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> rusqlite::Result<Message> {
         let at = now();
-        self.conn.execute("insert into messages (recipient, repo, sender, at, text, mode) values (?1, ?2, ?3, ?4, ?5, ?6)", params![recipient, repo, sender, at, text, mode])?;
-        Ok(Message { id: self.conn.last_insert_rowid(), recipient: recipient.into(), repo: repo.into(), sender: sender.into(), at, delivered: None, text: text.into(), mode: mode.map(String::from) })
+        self.conn.execute(
+            "insert into messages (recipient, repo, sender, at, text, mode, comment) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![recipient, repo, sender, at, text, mode, comment.map(Comment::json)],
+        )?;
+        Ok(Message { id: self.conn.last_insert_rowid(), recipient: recipient.into(), repo: repo.into(), sender: sender.into(), at, delivered: None, text: text.into(), mode: mode.map(String::from), comment: comment.cloned() })
     }
 
     pub fn waiting_messages(&self) -> rusqlite::Result<Vec<Message>> {
@@ -755,7 +811,7 @@ impl Db {
 
     fn select_messages<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<Vec<Message>> {
         let mut statement = self.conn.prepare(sql)?;
-        let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)?, mode: r.get(7)? }))?;
+        let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)?, mode: r.get(7)?, comment: Comment::parse(r.get(8)?) }))?;
         rows.collect()
     }
 
@@ -915,7 +971,7 @@ impl Db {
     }
 }
 
-const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text, mode";
+const MESSAGE: &str = "id, recipient, repo, sender, at, delivered, text, mode, comment";
 
 impl Db {
     pub fn add_schedule(&self, schedule: &Schedule) -> rusqlite::Result<i64> {
@@ -1187,7 +1243,7 @@ pub fn short_id<'a>(id: &str, open: impl Iterator<Item = &'a str>) -> String {
     format!("{TASK}{}", &hex[..len])
 }
 
-fn random_id() -> rusqlite::Result<String> {
+pub fn random_id() -> rusqlite::Result<String> {
     let mut bytes = [0u8; 4];
     fs::File::open("/dev/urandom").and_then(|mut random| std::io::Read::read_exact(&mut random, &mut bytes)).map_err(|e| rusqlite::Error::InvalidParameterName(format!("can't read /dev/urandom: {e}")))?;
     Ok(format!("{TASK}{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()))
@@ -1276,6 +1332,26 @@ fn row_from_saved(task: &Value, place: Place, pane: Option<&str>) -> Option<Row>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wal_is_checkpointed_beside_the_loop() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir);
+        let auto: i64 = db.conn.query_row("pragma wal_autocheckpoint", [], |row| row.get(0)).unwrap();
+        assert_eq!(auto, 0, "the loop's connection never checkpoints");
+        let size = || fs::metadata(dir.join(FILE)).unwrap().len();
+        let before = size();
+        db.put_layout(&json!({ "filler": "x".repeat(1 << 20) })).unwrap();
+        let by = std::time::Instant::now() + CHECKPOINT_EVERY * 4;
+        while size() == before {
+            assert!(std::time::Instant::now() < by, "nothing checkpointed the WAL");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        drop(db);
+        fs::remove_dir_all(&dir).unwrap();
+    }
     use kanna_mux::json::json;
 
     fn folder(name: &str) -> PathBuf {
@@ -1374,7 +1450,7 @@ mod tests {
     fn a_change_and_its_event_are_written_together_and_unknown_doc_keys_are_kept() {
         let dir = folder("put");
         let db = Db::open(&dir);
-        let id = db.new_id(|_| true).unwrap();
+        let id = db.new_id(vec![random_id().unwrap()], |_| true).unwrap();
         assert!(is_task_id(&id), "{id}");
         let mut row = Row { id: id.clone(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": "A", "later": "kept" }) };
         db.put(&row, Some(&Change::new("made").by(Some("p1")))).unwrap();
@@ -1399,7 +1475,7 @@ mod tests {
         let db = Db::open(&dir);
         assert_eq!(db.layout().unwrap(), None);
         db.saves_layout_with_done(|| Some(json!({ "workspaces": [] })));
-        let mut row = Row { id: db.new_id(|_| true).unwrap(), repo: "/r".into(), place: Place::Desk, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
+        let mut row = Row { id: db.new_id(vec![random_id().unwrap()], |_| true).unwrap(), repo: "/r".into(), place: Place::Desk, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
         db.put(&row, None).unwrap();
         assert_eq!(db.layout().unwrap(), None, "only a done task writes the layout");
         row.place = Place::Done;
@@ -1710,8 +1786,8 @@ mod tests {
     fn a_message_waits_until_it_is_delivered_and_stays_in_both_tasks_history() {
         let dir = folder("messages");
         let db = Db::open(&dir);
-        let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?", Some("bypass")).unwrap();
-        let second = db.put_message("planner", "/r", "task-71af0000", "I'm done", None).unwrap();
+        let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?", Some("bypass"), None).unwrap();
+        let second = db.put_message("planner", "/r", "task-71af0000", "I'm done", None, None).unwrap();
         assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [first.id, second.id]);
         db.delivered(&[first.id]).unwrap();
         assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [second.id]);
@@ -1721,6 +1797,12 @@ mod tests {
         assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].mode.as_deref(), Some("bypass"), "the sender's permissions");
         drop(db);
         assert_eq!(Db::open(&dir).waiting_messages().unwrap().len(), 1, "a waiting message outlives the daemon");
+        let db = Db::open(&dir);
+        let comment = Comment { file: "/r/docs/a.md".into(), thread: "c2".into() };
+        let third = db.put_message("task-71af0000", "/r", "user", "[kanna comment c2 · docs/a.md:3]\nFix it.", None, Some(&comment)).unwrap();
+        assert_eq!(third.comment.as_ref(), Some(&comment));
+        assert_eq!(Db::open(&dir).waiting_messages().unwrap().iter().find(|m| m.id == third.id).and_then(|m| m.comment.clone()), Some(comment), "a comment's thread outlives the daemon");
+        assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].comment.clone(), None);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -314,7 +314,7 @@ extension MarkdownPaneView {
         guard let pending, let text = box.map({ Doc.clean($0.field.trimmed) }), !text.isEmpty else { return }
         closeBox()
         let thread = DocThread(id: "", quote: Doc.clean(pending.quote), prefix: pending.prefix, suffix: pending.suffix,
-                               line: pending.line, state: "open", status: "sent",
+                               line: pending.line, state: "open", status: "waiting",
                                messages: [DocMessage(who: "you", text: text, at: Doc.now())], error: nil)
         change(.post(thread, mark: nil)) { [weak self] id in
             guard let self, let id else { return }
@@ -326,7 +326,7 @@ extension MarkdownPaneView {
 
     func reply(_ id: String, _ text: String) {
         let text = Doc.clean(text)
-        change(.edit(id, DocEdit(state: "open", message: DocMessage(who: "you", text: text, at: Doc.now())))) { [weak self] _ in self?.deliver(id, text) }
+        change(.edit(id, DocEdit(state: "open", status: "waiting", error: .some(nil), message: DocMessage(who: "you", text: text, at: Doc.now())))) { [weak self] _ in self?.deliver(id, text) }
     }
 
     func setState(_ id: String, open: Bool) {
@@ -347,10 +347,10 @@ extension MarkdownPaneView {
         thread.line = Doc.line(of: thread.quote, in: source, near: thread.line)
         let shown = anchors[id] != nil
         let message = Doc.clean(Doc.message(thread, file: docName, text: text, quoted: shown))
-        let finish: (String?) -> Void = { [weak self] error in
-            self?.change(.edit(id, DocEdit(status: error == nil ? "sent" : "unsent", error: .some(error), line: thread.line)))
+        let finish: (DocDelivery) -> Void = { [weak self] delivery in
+            self?.change(.edit(id, DocEdit(delivered: delivery, line: thread.line)))
         }
-        guard let agent, let onSend else { return finish("no agent") }
-        onSend(agent, message, finish)
+        guard let agent, let onSend else { return finish(.failed("no agent")) }
+        onSend(agent, message, path, id, finish)
     }
 }

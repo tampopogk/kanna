@@ -10,7 +10,6 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 pub const WORKTREE: &str = ".kanna-worktrees/kanna-coverage";
@@ -28,7 +27,7 @@ struct Running {
 
 pub struct Coverage {
     db: Rc<Db>,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     state: PathBuf,
     running: RefCell<HashMap<String, Running>>,
     tried: RefCell<HashMap<String, (f64, Option<String>)>>,
@@ -50,7 +49,7 @@ fn short(commit: &str) -> &str {
 }
 
 impl Coverage {
-    pub fn new(db: Rc<Db>, events: Sender<Event>, state: PathBuf) -> Coverage {
+    pub fn new(db: Rc<Db>, events: crate::runtime::Events, state: PathBuf) -> Coverage {
         Coverage { db, events, state, running: RefCell::default(), tried: RefCell::default() }
     }
 
