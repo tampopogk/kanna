@@ -105,6 +105,11 @@ pub fn refuse_remote(request: &Value) -> Option<Value> {
     certify.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "only this machine's own Kanna.app can have its endpoint certified" } }))
 }
 
+pub fn refuse_link(request: &Value) -> Option<Value> {
+    let accounts = request.get("cmd").and_then(Value::as_str) == Some(crate::accounts::COMMAND);
+    refuse_remote(request).or_else(|| accounts.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "agent accounts aren't open to an app on another machine" } })))
+}
+
 fn hostname() -> String {
     let mut buffer = [0u8; 256];
     let found = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } == 0;

@@ -853,7 +853,7 @@ fn run() -> Result<(), String> {
                             args.remove(kanna_net::PEER);
                         }
                     }
-                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                    if let Some(refused) = machines::refuse_link(&request).filter(|_| !app.attached_here()) {
                         app.answer_app(conn, refused);
                         continue;
                     }

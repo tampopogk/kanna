@@ -65,6 +65,7 @@ sequenceDiagram
 - **Secrets** are kept in the Mac's Keychain (service "Kanna agent accounts"), and in the state folder's `agent-secrets/` (0700, files 0600) on a machine without one. A holder is always one of your devices. Kanna Cloud keeps no copy (proposed: [Cloud §11](kanna-cloud.md#11-open-questions)).
 - **Login files are never copied** between machines (`~/.claude/.credentials.json`, `~/.codex/auth.json`): their refresh tokens rotate, so two machines sharing one sign each other out.
 - **Removing an account** removes it from every machine. **Revoking a machine** ([identity §3](machine-identity.md#3-the-peer-log)) first tells it to drop what it was given, then revokes it; a machine that learns it's revoked drops everything, and every machine drops what a revoked machine gave it. A setup token or key it held is worth rotating, and `kanna machine revoke` says so.
+- **A token goes only to a machine that was given the account.** The endpoint already drops anything but a trusted machine or its certified app before each request ([identity](machine-identity.md)). `accounts` then checks again, on the log as it stands when the request runs: a revoked holder answers nothing, the asker must be a trusted machine, and for `token` the book must show the account was sent to it. Each account keeps the book version it arrived in (`since`), and a machine qualifies once its delivery or a supply in flight reaches that version, so one behind on a later account for another agent keeps the one it has; an account from before `since` counts any delivery. A supply in flight counts because the peer can hold the account before the holder sees its reply. Only a machine's daemon speaks for it: its app gets `not_a_daemon` on the control stream and `local_only` over an app link. Every trusted machine is supplied, so this limits when a machine is served, not which: a trusted machine runs commands on the others ([links](machine-links.md)).
 - **An agent sees only its own credential,** in its environment or its Codex's private app-server connection. Access JWTs carry identity claims; withholding a separate email or ID token does not hide those claims. The secrets folder is on Claude's sandbox deny list with `device.key` ([agent setup](agent-setup.md)); Codex, run with `--yolo`, can read it, as it can read `device.key` ([identity §4](machine-identity.md#4-risks)).
 
 ## 4. How it's built
@@ -72,7 +73,7 @@ sequenceDiagram
 | Part | Where |
 |---|---|
 | Accounts, secrets, the holder | `crates/kanna-daemon/src/accounts.rs`: `Accounts` (the book in `agent-accounts.json`, secrets behind `Secrets`: `Keychain` or `Files`), `Service` (the `accounts` command, peers' requests, the supply thread), `CodexRefresher` (runs `codex app-server` over stdio on the login in a private folder, `account/read {refreshToken: true}`) |
-| Peers' requests | `machines.rs`: a peer's `accounts` request arrives as `Event::PeerRequest` with the peer's name; peers may only `supply` and ask for a `token`. `Caller` makes a call to a peer from a plain thread; revoking runs `Service::withdraw` first |
+| Peers' requests | `machines.rs`: a peer's `accounts` request arrives as `Event::PeerRequest` with the peer's name; peers may only `supply` and ask for a `token`, both behind `accounts::answer`; an app's `accounts` request is refused in `kanna-net`'s `serve` and by `refuse_link`. `Caller` makes a call to a peer from a plain thread; revoking runs `Service::withdraw` first |
 | Codex | `codex_remote.rs`: `supplied`, `sign_in`, `renew`; `messages::Rpc` is the WebSocket client both use |
 | CLI | `crates/kanna/src/accounts.rs`: the sign-ins in a pty, the token read from Claude's output, hidden prompts, the fallback |
 | App | the Kanna menu's Agent Accounts runs `kanna accounts …` in a new window; `app.open_sign_in` |
@@ -82,8 +83,8 @@ sequenceDiagram
 | `list` | this machine | accounts here, received ones, the machines they go to |
 | `add {kind, secret, label?, program?}` | this machine | keeps it, replaces the agent's old one, supplies every machine |
 | `remove {account}` | this machine | an ID, or `claude`/`codex` |
-| `token {account?, previous?}` | this machine or a peer | the Codex access token, from here if this is the holder, else from the holder |
-| `supply {version, accounts}` | a peer only | replaces what that peer gave this machine |
+| `token {account?, previous?}` | this machine or a trusted peer it was sent to | the Codex access token, from here if this is the holder, else from the holder |
+| `supply {version, accounts}` | a trusted peer only | replaces what that peer gave this machine |
 
 ## 5. Verification
 
