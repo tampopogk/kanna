@@ -6102,6 +6102,36 @@ mod tests {
     }
 
     #[test]
+    fn a_task_that_merged_its_branch_hears_nothing_of_it_and_a_cherry_pick_is_heard_as_main_moving() {
+        let (state, _core, tasks) = main_rig("own-merge", "f g");
+        let (merging, fm) = rig_task(&tasks, &state, "Merging");
+        let (peer, fp) = rig_task(&tasks, &state, "Peer");
+        let (picked, fs) = rig_task(&tasks, &state, "Picked");
+        for id in [&merging, &peer, &picked] {
+            tasks.subscribe(&json!({ "task": id, "event": "main-moved" }), true).unwrap();
+        }
+        rig_sh(&fm, "echo merging >f && git commit -q -am merging");
+        rig_sh(&fp, "echo peer >f && git commit -q -am peer");
+        rig_sh(&fs, "echo picked >g && git commit -q -am picked");
+        listen(&tasks);
+
+        rig_sh(&state, &format!("git merge -q --no-ff --no-edit {}", git(&fm, &["rev-parse", "HEAD"]).unwrap()));
+        listen(&tasks);
+        assert!(told(&tasks, &merging).is_empty(), "its own merge moved main");
+        assert_eq!(told(&tasks, &peer).len(), 2, "the others hear it: a conflict and a move");
+        assert_eq!(told(&tasks, &picked).len(), 1);
+
+        deliver_all(&tasks);
+        rig_sh(&state, &format!("git cherry-pick {} >/dev/null", git(&fs, &["rev-parse", "HEAD"]).unwrap()));
+        listen(&tasks);
+        assert!(told(&tasks, &merging).is_empty(), "a merged task stays out of it");
+        let text = told(&tasks, &picked);
+        assert_eq!(text.len(), 1);
+        assert!(text[0].contains(" picked"), "the same change under a new hash reads as main's: {text:?}");
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
     fn a_stacked_task_hears_its_ripple_and_no_main_conflicts_and_going_deaf_leaves_it_stale() {
         let (state, _core, tasks) = main_rig("stacked", "f h");
         let (a, fa) = rig_task(&tasks, &state, "A");
