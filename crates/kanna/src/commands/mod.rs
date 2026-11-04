@@ -2,6 +2,7 @@ pub mod shared;
 
 use crate::args::Argv;
 use crate::output;
+use crate::target::{Env, Session, Target};
 use kanna_client::{exit, fail, Failure};
 use serde_json::{json, Map, Value};
 pub use shared::*;
@@ -16,6 +17,42 @@ pub struct Command {
     pub examples: &'static [(&'static str, &'static str)],
     pub parse: fn(&mut Argv) -> Result<Value, Failure>,
     pub show: fn(&Value, &Value) -> String,
+    pub flow: Flow,
+}
+
+pub struct Flow {
+    pub wire: Option<fn(&Value) -> &'static str>,
+    pub unplaced: Option<fn(&Value) -> Option<&'static str>>,
+    pub offline: Option<fn(&Value, &Invocation) -> Option<Result<(), Failure>>>,
+    pub online: Option<fn(&Value, &mut Session, bool) -> Option<Result<(), Failure>>>,
+    pub before: Option<fn(&mut Value, &mut Session) -> Result<Call, Failure>>,
+    pub after: Option<fn(&Value, &mut Value, &mut Session, &mut Call) -> Result<(), Failure>>,
+}
+
+impl Flow {
+    pub const PLAIN: Flow = Flow { wire: None, unplaced: None, offline: None, online: None, before: None, after: None };
+}
+
+impl Command {
+    pub fn wire(&self, request: &Value) -> &'static str {
+        self.flow.wire.map_or(self.name, |wire| wire(request))
+    }
+}
+
+pub struct Invocation<'a> {
+    pub target: &'a Target,
+    pub env: Env<'a>,
+    pub host: Option<String>,
+    pub json_output: bool,
+}
+
+#[derive(Default)]
+pub struct Call {
+    pub task: Option<String>,
+    pub shorts: Vec<(String, String)>,
+    pub listed: bool,
+    pub waiting: Option<Value>,
+    pub warnings: Vec<String>,
 }
 
 pub const GROUPS: &[&str] = &["Panes", "Tabs and windows", "Information"];
@@ -58,6 +95,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_open,
         show: output::opened,
+        flow: Flow { unplaced: Some(open_unplaced), after: Some(open_after), ..Flow::PLAIN },
     },
     Command {
         name: "close",
@@ -69,6 +107,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna close logs", "Close the pane named logs."), ("kanna close --tab tab-2", "Close tab-2 and its panes.")],
         parse: |args| target(args, "close"),
         show: output::closed,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "focus",
@@ -80,6 +119,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna focus server", "Focus the pane named server."), ("kanna focus --tab tab-1", "Switch to tab-1.")],
         parse: |args| target(args, "focus"),
         show: output::focused,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "zoom",
@@ -91,6 +131,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna zoom logs", "Zoom the logs pane (run again to unzoom).")],
         parse: |args| Ok(json!({ "pane": pane(args, "zoom")? })),
         show: output::zoomed,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "restart",
@@ -102,6 +143,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna restart server", "Restart the server pane's command.")],
         parse: |args| Ok(json!({ "pane": pane(args, "restart")? })),
         show: |_, reply| output::pane_state(reply),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "send",
@@ -117,6 +159,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(json!({ "pane": pane, "text": text }))
         },
         show: |_, _| String::new(),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "send-key",
@@ -139,6 +182,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(json!({ "pane": pane, "keys": keys }))
         },
         show: |_, _| String::new(),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "read",
@@ -160,6 +204,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(out)
         },
         show: |_, reply| reply["text"].as_str().unwrap_or_default().to_string(),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "screenshot",
@@ -180,6 +225,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_screenshot,
         show: |_, reply| reply["path"].as_str().unwrap_or_default().to_string(),
+        flow: Flow { unplaced: Some(screenshot_unplaced), ..Flow::PLAIN },
     },
     Command {
         name: "resize",
@@ -195,6 +241,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(json!({ "pane": pane, "size": size }))
         },
         show: |_, reply| output::moved(reply),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "move",
@@ -246,6 +293,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(Value::Object(out))
         },
         show: |_, reply| output::moved(reply),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "arrange",
@@ -273,6 +321,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(Value::Object(out))
         },
         show: |_, reply| output::layout(reply),
+        flow: Flow { unplaced: Some(arrange_unplaced), ..Flow::PLAIN },
     },
     Command {
         name: "rename-tab",
@@ -288,6 +337,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(json!({ "tab": tab, "title": title }))
         },
         show: output::renamed,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "move-tab",
@@ -310,6 +360,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(out)
         },
         show: output::tabs,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "workspace",
@@ -325,6 +376,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_workspace,
         show: output::workspace,
+        flow: Flow { wire: Some(|_| "list"), offline: Some(workspace_offline), after: Some(workspace_after), ..Flow::PLAIN },
     },
     Command {
         name: "window",
@@ -336,6 +388,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna window assign win-4 task-1dfb", "Make win-4 one of task-1dfb's windows."), ("kanna window free win-4", "Take win-4 out of its task; it stays open.")],
         parse: parse_window,
         show: output::window,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "rename-pane",
@@ -351,6 +404,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(json!({ "pane": pane, "name": name }))
         },
         show: output::pane_renamed,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "task",
@@ -529,6 +583,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(out)
         },
         show: output::task,
+        flow: Flow { wire: Some(task_wire), before: Some(task_before), after: Some(task_after), ..Flow::PLAIN },
     },
     Command {
         name: "navigate",
@@ -570,6 +625,7 @@ pub static COMMANDS: &[Command] = &[
             }
         },
         show: |_, reply| output::pane_state(reply),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "capabilities",
@@ -581,6 +637,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna capabilities", "See which commands this Kanna supports.")],
         parse: |_| Ok(json!({})),
         show: |_, reply| output::capabilities(reply),
+        flow: Flow::PLAIN,
     },
     Command {
         name: "diagrams",
@@ -606,6 +663,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(json!({ "action": "check", "files": files }))
         },
         show: |_, _| String::new(),
+        flow: Flow { offline: Some(diagrams_offline), ..Flow::PLAIN },
     },
     Command {
         name: "pipeline",
@@ -629,6 +687,7 @@ pub static COMMANDS: &[Command] = &[
             None => Err(usage("pipeline", "missing list or check")),
         },
         show: |_, _| String::new(),
+        flow: Flow { offline: Some(pipeline_offline), ..Flow::PLAIN },
     },
     Command {
         name: "run",
@@ -651,6 +710,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_run,
         show: output::run,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "status",
@@ -667,6 +727,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_status,
         show: output::status,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "toast",
@@ -685,6 +746,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_toast,
         show: output::toast,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "serial",
@@ -711,6 +773,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: crate::serial::parse,
         show: |_, _| String::new(),
+        flow: Flow { online: Some(serial_online), ..Flow::PLAIN },
     },
     Command {
         name: "crashes",
@@ -722,6 +785,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna crashes", "The crashes not yet dismissed."), ("kanna crashes --all --json", "Every record, as the daemon has it.")],
         parse: parse_crashes,
         show: output::crashes,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "quiz",
@@ -747,6 +811,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_quiz,
         show: output::quiz,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "stats",
@@ -758,6 +823,7 @@ pub static COMMANDS: &[Command] = &[
         examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them.")],
         parse: parse_stats,
         show: output::stats,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "projects",
@@ -773,6 +839,7 @@ pub static COMMANDS: &[Command] = &[
             Some(other) => Err(usage("projects", &format!("unknown action \"{other}\" (clear, or none to list them)"))),
         },
         show: output::projects,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "schedule",
@@ -792,6 +859,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_schedule,
         show: output::schedule,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "project",
@@ -815,6 +883,7 @@ pub static COMMANDS: &[Command] = &[
             Ok(out)
         },
         show: output::project,
+        flow: Flow::PLAIN,
     },
     Command {
         name: "machine",
@@ -837,6 +906,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_machine,
         show: output::machine,
+        flow: Flow { online: Some(machine_online), ..Flow::PLAIN },
     },
     Command {
         name: "accounts",
@@ -858,6 +928,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_accounts,
         show: output::accounts,
+        flow: Flow { offline: Some(accounts_offline), ..Flow::PLAIN },
     },
     Command {
         name: "agents",
@@ -877,6 +948,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_agents,
         show: output::agents,
+        flow: Flow { online: Some(agents_online), ..Flow::PLAIN },
     },
     Command {
         name: "markup",
@@ -908,6 +980,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_markup,
         show: output::marked,
+        flow: Flow { wire: Some(markup_wire), unplaced: Some(markup_unplaced), offline: Some(crate::threads::offline), ..Flow::PLAIN },
     },
     Command {
         name: "comment",
@@ -928,6 +1001,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_comment,
         show: output::commented,
+        flow: Flow { unplaced: Some(comment_unplaced), online: Some(comment_online), ..Flow::PLAIN },
     },
     Command {
         name: "tour",
@@ -950,6 +1024,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_tour,
         show: output::toured,
+        flow: Flow::PLAIN,
     },
 ];
 
@@ -1628,6 +1703,174 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     out.insert("type".into(), json!(kind));
     from_caller(&mut out);
     Ok(Value::Object(out))
+}
+
+fn open_unplaced(request: &Value) -> Option<&'static str> {
+    (!["window", "workspace", "from"].iter().any(|key| !request[*key].is_null())).then_some("add --window WINDOW (or --window new)")
+}
+
+fn open_after(request: &Value, reply: &mut Value, _: &mut Session, call: &mut Call) -> Result<(), Failure> {
+    if let (Some(path), "md") = (request["path"].as_str(), request["type"].as_str().unwrap_or_default()) {
+        let undrawn = crate::diagrams::check(path).map(|r| r.failures).unwrap_or_default();
+        call.warnings = undrawn.iter().map(crate::diagrams::line).collect();
+        reply["diagrams"] = Value::Array(undrawn);
+    }
+    Ok(())
+}
+
+fn markup_unplaced(request: &Value) -> Option<&'static str> {
+    (!request["type"].is_null() && request["window"].is_null() && request["from"].is_null()).then_some("add --window WINDOW (or --window new)")
+}
+
+fn markup_wire(request: &Value) -> &'static str {
+    if request.get("type").is_some() { "open" } else { "markup" }
+}
+
+fn comment_unplaced(request: &Value) -> Option<&'static str> {
+    (request["window"].is_null() && request["from"].is_null()).then_some("add --window WINDOW (or --window new)")
+}
+
+fn comment_online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
+    (request["doc"] == true).then(|| crate::threads::comment(request, mux, json_output))
+}
+
+fn arrange_unplaced(request: &Value) -> Option<&'static str> {
+    (request["window"].is_null() && request["from"].is_null()).then_some("add --window WINDOW")
+}
+
+fn screenshot_unplaced(request: &Value) -> Option<&'static str> {
+    (request["pane"].is_null() && request["window"].is_null() && request["from"].is_null()).then_some("say PANE or --window WINDOW")
+}
+
+fn workspace_offline(request: &Value, _: &Invocation) -> Option<Result<(), Failure>> {
+    (request["all"] != true && request["pane"].is_null()).then(|| Err(usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all")))
+}
+
+fn workspace_after(request: &Value, reply: &mut Value, _: &mut Session, _: &mut Call) -> Result<(), Failure> {
+    if let Some(pane) = request["pane"].as_str() {
+        *reply = output::scoped(reply, pane).ok_or_else(|| fail(exit::NOT_FOUND, format!("no pane \"{pane}\": your terminal isn't one of this Kanna's")))?;
+    }
+    Ok(())
+}
+
+fn diagrams_offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
+    Some(crate::diagrams::run(request, invocation.json_output))
+}
+
+fn pipeline_offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
+    Some(crate::pipeline::run(request, invocation.json_output, invocation.target))
+}
+
+fn serial_online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
+    Some(crate::serial::run(request, mux, json_output))
+}
+
+fn machine_online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
+    (request["action"] == "offer").then(|| crate::machine::offer(mux, json_output))
+}
+
+fn accounts_offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
+    (request["local"] == "interactive").then(|| {
+        let mut mux = Session::connect(invocation.target, invocation.env)?;
+        mux.host = invocation.host.clone();
+        crate::accounts::run(request, &mut |cmd, args| mux.call(cmd, args), invocation.json_output)
+    })
+}
+
+fn agents_online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
+    if json_output || !matches!(request["action"].as_str(), Some("setup" | "update")) {
+        return None;
+    }
+    let tool = crate::agents::merge_tool();
+    let mut call = |args: Value| mux.call("agents", args);
+    let mut merge = |path: &std::path::Path, base: &std::path::Path, new: &std::path::Path| crate::agents::merge_in_editor(path, base, new, &tool);
+    let stdin = std::io::stdin();
+    let mut io = crate::agents::Io { call: &mut call, input: &mut stdin.lock(), out: &mut std::io::stdout(), merge: &mut merge, tool: tool.clone() };
+    Some(crate::agents::run(request, &mut io))
+}
+
+fn task_wire(request: &Value) -> &'static str {
+    let action = request["action"].as_str().unwrap_or("");
+    match action {
+        "new" | "edit" | "ready" | "unready" | "start" | "stop" | "setup" | "pick" | "shelve" | "move" | "send" | "messages" | "done" => "tasks",
+        "name" if request.get("task").is_some() => "tasks",
+        "name" => "rename-pane",
+        "park" | "activate" | "desk" => "desk",
+        _ => "task",
+    }
+}
+
+fn task_before(request: &mut Value, mux: &mut Session) -> Result<Call, Failure> {
+    let located = locate(request, mux)?;
+    let waiting = if request["action"] == "done" { mux.call("tasks", json!({ "action": "list" })).ok() } else { None };
+    let (task, shorts) = located.unzip();
+    Ok(Call { task, shorts: shorts.unwrap_or_default(), waiting, ..Call::default() })
+}
+
+fn task_after(request: &Value, reply: &mut Value, mux: &mut Session, call: &mut Call) -> Result<(), Failure> {
+    if let (Some(waiting), Some(done)) = (&call.waiting, request["task"].as_str()) {
+        reply["freed"] = Value::Array(output::freed(waiting, done));
+    }
+    if request["action"] == "list" {
+        let mut asked = json!({ "action": "list", "merged": true, "done": request["done"] == true });
+        if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
+            asked["repo"] = json!(repo);
+        }
+        if let Ok(found) = mux.call("tasks", asked.clone()) {
+            reply["shelf"] = found["shelf"].clone();
+            reply["elsewhere"] = found["elsewhere"].clone();
+            reply["twice"] = found["twice"].clone();
+            reply["agent"] = found["agent"].clone();
+            output::name_out(reply, &found["desk"]);
+            if asked["repo"].is_string() {
+                output::keep_named(reply);
+            }
+            call.shorts.extend(output::shorts(&found));
+            call.listed = true;
+            reply["script"] = found["script"].clone();
+            if request["done"] == true {
+                reply["done"] = found["done"].clone();
+            }
+        }
+        if let Some(query) = request["query"].as_str() {
+            output::keep_matching(reply, query);
+            if let Some(id) = output::lone_task(reply, query) {
+                if let Ok(shown) = mux.call("tasks", json!({ "action": "show", "task": id })) {
+                    reply["found"] = shown["task"].clone();
+                }
+            }
+        } else {
+            output::keep_recent_done(reply);
+        }
+    }
+    Ok(())
+}
+
+fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<(String, String)>)>, Failure> {
+    let action = request["action"].as_str().unwrap_or("").to_string();
+    let Some(reference) = request["task"].as_str().filter(|_| ["park", "activate", "shelve", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
+    let found = match mux.call("tasks", json!({ "action": "resolve", "task": reference })) {
+        Ok(found) => Some(found["task"].clone()),
+        Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
+        Err(_) => None,
+    };
+    let on_shelf = found.as_ref().is_some_and(|t| t["place"] == "shelf");
+    if action == "shelve" && on_shelf {
+        return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
+    }
+    let pane = found.as_ref().and_then(|t| t["pane"].as_str()).map(String::from);
+    let id = found.as_ref().and_then(|t| t["id"].as_str()).map(String::from);
+    match (action.as_str(), id.as_deref()) {
+        ("name", Some(id)) => request["task"] = json!(id),
+        ("name", None) => {
+            request.as_object_mut().map(|r| r.remove("task"));
+            request["pane"] = json!(reference);
+        }
+        ("done", Some(id)) if on_shelf => request["task"] = json!(id),
+        (_, Some(_)) => request["task"] = json!(pane.unwrap_or(reference)),
+        (_, None) => {}
+    }
+    Ok(id.map(|id| (id, found.as_ref().map(output::shorts).unwrap_or_default())))
 }
 
 pub fn lookup(name: &str) -> Result<&'static Command, Failure> {

@@ -13,7 +13,7 @@ pub mod target;
 pub mod threads;
 
 use args::Argv;
-use commands::{lookup, Command, COMMANDS, GROUPS};
+use commands::{lookup, Call, Command, Invocation, COMMANDS, GROUPS};
 use kanna_client::{exit, fail, Failure};
 use serde_json::{json, Value};
 use target::{process_env, Backend, Choice, Env, Session, Target};
@@ -253,58 +253,27 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if let Some(extra) = args.first() {
         return Err(commands::usage(command.name, &format!("unexpected argument \"{extra}\"")));
     }
-    if command.name == "accounts" && request["local"] == "interactive" {
-        let mut mux = Session::connect(&target, env)?;
-        mux.host = host;
-        return accounts::run(&request, &mut |cmd, args| mux.call(cmd, args), json_output);
+    let invocation = Invocation { target: &target, env, host: host.clone(), json_output };
+    if let Some(done) = command.flow.offline.and_then(|offline| offline(&request, &invocation)) {
+        return done;
     }
-    if request.get("local").is_some() {
-        let mut callers: Vec<String> = commands::caller().into_iter().collect();
-        let terminal = callers.first().cloned();
-        let listed = terminal.as_ref().and_then(|_| Session::connect(&target, env).ok()?.call("list", json!({})).ok());
-        let pane = listed.as_ref().and_then(|l| l["panes"].as_array()?.iter().find(|p| p["terminal"].as_str() == terminal.as_deref())?["id"].as_str().map(String::from));
-        callers.extend(pane);
-        return threads::run(&request, json_output, &callers);
-    }
-    if command.name == "workspace" && request["all"] != true && request["pane"].is_null() {
-        return Err(commands::usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all"));
-    }
-    if let Some(flags) = unplaced(command.name, &request).filter(|_| target.backend == Backend::Kanna) {
+    if let Some(flags) = command.flow.unplaced.and_then(|unplaced| unplaced(&request)).filter(|_| target.backend == Backend::Kanna) {
         return Err(commands::usage(command.name, &format!("outside a Kanna terminal there's no window of yours: {flags}")));
-    }
-    if command.name == "diagrams" {
-        return diagrams::run(&request, json_output);
-    }
-    if command.name == "pipeline" {
-        return pipeline::run(&request, json_output, &target);
     }
     let mut mux = Session::connect(&target, env)?;
     mux.host = host;
-    if command.name == "serial" {
-        return serial::run(&request, &mut mux, json_output);
-    }
-    if command.name == "machine" && request["action"] == "offer" {
-        return machine::offer(&mut mux, json_output);
-    }
-    if command.name == "comment" && request["doc"] == true {
-        return threads::comment(&request, &mut mux, json_output);
-    }
-    if command.name == "agents" && !json_output && matches!(request["action"].as_str(), Some("setup" | "update")) {
-        let tool = agents::merge_tool();
-        let mut call = |args: Value| mux.call("agents", args);
-        let mut merge = |path: &std::path::Path, base: &std::path::Path, new: &std::path::Path| agents::merge_in_editor(path, base, new, &tool);
-        let stdin = std::io::stdin();
-        let mut io = agents::Io { call: &mut call, input: &mut stdin.lock(), out: &mut std::io::stdout(), merge: &mut merge, tool: tool.clone() };
-        return agents::run(&request, &mut io);
+    if let Some(done) = command.flow.online.and_then(|online| online(&request, &mut mux, json_output)) {
+        return done;
     }
     let mut request = request;
-    if target.backend == Backend::Kanna && commands::caller().is_none() && matches!(wire(command, &request), "focus" | "open" | "move" | "move-tab" | "desk") {
+    if target.backend == Backend::Kanna && commands::caller().is_none() && matches!(command.wire(&request), "focus" | "open" | "move" | "move-tab" | "desk") {
         request["user"] = json!(true);
     }
-    let located = if command.name == "task" { locate(&mut request, &mut mux)? } else { None };
-    let waiting = if command.name == "task" && request["action"] == "done" { mux.call("tasks", serde_json::json!({ "action": "list" })).ok() } else { None };
-    let (mut shorts, mut listed) = (located.as_ref().map(|(_, known)| known.clone()).unwrap_or_default(), false);
-    let mut reply = match mux.call(wire(command, &request), request.clone()) {
+    let mut call = match command.flow.before {
+        Some(before) => before(&mut request, &mut mux)?,
+        None => Call::default(),
+    };
+    let mut reply = match mux.call(command.wire(&request), request.clone()) {
         Ok(reply) => reply,
         Err(mut failure) => {
             if failure.message.contains("task-") {
@@ -314,62 +283,21 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             return Err(explain(command, failure, &mut mux, &target));
         }
     };
-    if let (Some(waiting), Some(done)) = (waiting, request["task"].as_str()) {
-        reply["freed"] = serde_json::Value::Array(output::freed(&waiting, done));
-    }
-    if command.name == "task" && request["action"] == "list" {
-        let mut asked = json!({ "action": "list", "merged": true, "done": request["done"] == true });
-        if let Some(repo) = request["repo"].as_str().filter(|_| request["all"] != true) {
-            asked["repo"] = json!(repo);
-        }
-        if let Ok(found) = mux.call("tasks", asked.clone()) {
-            reply["shelf"] = found["shelf"].clone();
-            reply["elsewhere"] = found["elsewhere"].clone();
-            reply["twice"] = found["twice"].clone();
-            reply["agent"] = found["agent"].clone();
-            output::name_out(&mut reply, &found["desk"]);
-            if asked["repo"].is_string() {
-                output::keep_named(&mut reply);
-            }
-            shorts.extend(output::shorts(&found));
-            listed = true;
-            reply["script"] = found["script"].clone();
-            if request["done"] == true {
-                reply["done"] = found["done"].clone();
-            }
-        }
-        if let Some(query) = request["query"].as_str() {
-            output::keep_matching(&mut reply, query);
-            if let Some(id) = output::lone_task(&reply, query) {
-                if let Ok(shown) = mux.call("tasks", serde_json::json!({ "action": "show", "task": id })) {
-                    reply["found"] = shown["task"].clone();
-                }
-            }
-        } else {
-            output::keep_recent_done(&mut reply);
-        }
-    }
-    if let (true, Some(pane)) = (command.name == "workspace", request["pane"].as_str()) {
-        reply = output::scoped(&reply, pane).ok_or_else(|| fail(exit::NOT_FOUND, format!("no pane \"{pane}\": your terminal isn't one of this Kanna's")))?;
-    }
-    let undrawn = match request["path"].as_str() {
-        Some(path) if command.name == "open" && request["type"] == "md" => Some(diagrams::check(path).map(|r| r.failures).unwrap_or_default()),
-        _ => None,
-    };
-    if let Some(undrawn) = &undrawn {
-        reply["diagrams"] = Value::Array(undrawn.clone());
+    if let Some(after) = command.flow.after {
+        after(&request, &mut reply, &mut mux, &mut call)?;
     }
     if json_output {
         println!("{reply}");
     } else {
-        if let Some((id, _)) = located {
+        if let Some(id) = &call.task {
             for value in [&mut request, &mut reply] {
                 if value["task"].is_string() {
                     value["task"] = json!(id);
                 }
             }
         }
-        if !listed && (request.to_string().contains("task-") || reply.to_string().contains("task-")) {
+        let mut shorts = std::mem::take(&mut call.shorts);
+        if !call.listed && (request.to_string().contains("task-") || reply.to_string().contains("task-")) {
             shorts.extend(mux.call("tasks", json!({ "action": "list" })).map(|b| output::shorts(&b)).unwrap_or_default());
         }
         shorts.extend(output::shorts(&reply));
@@ -379,50 +307,11 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
         if !text.is_empty() {
             println!("{text}");
         }
-        for failure in undrawn.iter().flatten() {
-            eprintln!("{}", diagrams::line(failure));
+        for warning in &call.warnings {
+            eprintln!("{warning}");
         }
     }
     Ok(())
-}
-
-fn unplaced(command: &str, request: &Value) -> Option<&'static str> {
-    let given = |keys: &[&str]| keys.iter().any(|key| !request[*key].is_null());
-    match command {
-        "open" if !given(&["window", "workspace", "from"]) => Some("add --window WINDOW (or --window new)"),
-        "markup" if !request["type"].is_null() && !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
-        "comment" if !given(&["window", "from"]) => Some("add --window WINDOW (or --window new)"),
-        "arrange" if !given(&["window", "from"]) => Some("add --window WINDOW"),
-        "screenshot" if !given(&["pane", "window", "from"]) => Some("say PANE or --window WINDOW"),
-        _ => None,
-    }
-}
-
-fn locate(request: &mut Value, mux: &mut Session) -> Result<Option<(String, Vec<(String, String)>)>, Failure> {
-    let action = request["action"].as_str().unwrap_or("").to_string();
-    let Some(reference) = request["task"].as_str().filter(|_| ["park", "activate", "shelve", "done", "name"].contains(&action.as_str())).map(String::from) else { return Ok(None) };
-    let found = match mux.call("tasks", json!({ "action": "resolve", "task": reference })) {
-        Ok(found) => Some(found["task"].clone()),
-        Err(failure) if failure.message.ends_with("[ambiguous]") => return Err(failure),
-        Err(_) => None,
-    };
-    let on_shelf = found.as_ref().is_some_and(|t| t["place"] == "shelf");
-    if action == "shelve" && on_shelf {
-        return Err(fail(exit::FAILED, format!("{reference} is on the Shelf: `kanna task pick {reference}` moves it to the Desk")));
-    }
-    let pane = found.as_ref().and_then(|t| t["pane"].as_str()).map(String::from);
-    let id = found.as_ref().and_then(|t| t["id"].as_str()).map(String::from);
-    match (action.as_str(), id.as_deref()) {
-        ("name", Some(id)) => request["task"] = json!(id),
-        ("name", None) => {
-            request.as_object_mut().map(|r| r.remove("task"));
-            request["pane"] = json!(reference);
-        }
-        ("done", Some(id)) if on_shelf => request["task"] = json!(id),
-        (_, Some(_)) => request["task"] = json!(pane.unwrap_or(reference)),
-        (_, None) => {}
-    }
-    Ok(id.map(|id| (id, found.as_ref().map(output::shorts).unwrap_or_default())))
 }
 
 /// `kanna PATH`: a word that isn't a command but is a folder brings forward its project's Desk, or opens one.
@@ -445,19 +334,6 @@ fn explain(command: &Command, mut failure: Failure, mux: &mut Session, target: &
         _ => {}
     }
     failure
-}
-
-fn wire(command: &Command, request: &Value) -> &'static str {
-    match command.name {
-        "markup" if request.get("type").is_some() => "open",
-        "task" if ["new", "edit", "ready", "unready", "start", "stop", "setup", "pick", "shelve", "move", "send", "messages"].contains(&request["action"].as_str().unwrap_or("")) => "tasks",
-        "task" if request["action"] == "done" => "tasks",
-        "task" if request["action"] == "name" && request.get("task").is_some() => "tasks",
-        "task" if request["action"] == "name" => "rename-pane",
-        "task" if ["park", "activate", "desk"].contains(&request["action"].as_str().unwrap_or("")) => "desk",
-        "workspace" => "list",
-        name => name,
-    }
 }
 
 fn supported(target: &Target) -> Option<Vec<String>> {
