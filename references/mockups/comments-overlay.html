@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comments Overlay Mockup</title>
+<style>
+:root {
+  --page: #111214; --ctl: #2a2c31; --ctl-line: #3a3d44; --ctl-text: #e6e6e6; --ctl-dim: #8b8f98; --ctl-accent: #3478f6;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --bg: #14161a; --panel: #1b1e24; --bar: #202226; --card: #23252b; --edge: #3a3d44; --line: #2c313a; --fg: #e6e8eb; --muted: #8b93a0; --tint: rgba(52,120,246,.25); --accent: #3478f6;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ctl-text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+h1.t { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--ctl-dim); margin: 0 0 12px; max-width: 940px; }
+.controls { display: flex; gap: 6px; margin-bottom: 12px; }
+button { font: 12px var(--sans); color: var(--ctl-text); background: var(--ctl); border: 1px solid var(--ctl-line); border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+button.on { background: var(--ctl-accent); border-color: var(--ctl-accent); }
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; background: var(--bg); color: var(--fg); height: 560px; width: 980px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; height: 100vh; width: 100vw; }
+.wbar { height: 34px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); background: var(--bar); }
+.wbar b { color: var(--fg); }
+.wbar .chip { border: 1px solid var(--edge); border-radius: 5px; padding: 2px 8px; color: var(--fg); }
+.wbar .chip.on { border-color: var(--accent); }
+.body { flex: 1; min-height: 0; display: flex; position: relative; }
+.scroller { flex: 1; min-width: 0; overflow: hidden; padding: 22px 28px; font-size: 14px; line-height: 1.55; }
+.scroller h1 { font-size: 26px; margin: 0 0 .45em; }
+.scroller h2 { font-size: 21px; margin: 1.1em 0 .45em; }
+.scroller p { margin: 0 0 .8em; }
+.mark { background: var(--tint); border-bottom: 1.5px solid var(--accent); }
+.ov { flex: none; width: 84px; border-left: 1px solid var(--line); padding: 8px 6px; display: flex; flex-direction: column; gap: 5px; }
+.ov i { display: block; height: 3px; background: var(--edge); border-radius: 1px; }
+.ov i.s { width: 60%; background: var(--muted); }
+.threads { position: absolute; top: 0; bottom: 0; right: 84px; width: 280px; background: var(--bar); border-left: 1px solid var(--line); padding: 10px; font-size: 12px; }
+.threads .card { background: var(--card); border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; margin-top: 8px; }
+.threads .card .q { color: var(--muted); }
+.off .threads { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1 class="t">Comments overlay: the thread list floats over the page</h1>
+    <p>The list takes no width from the page: showing or hiding it doesn't move a word. It sits against the overview, which stays usable, and covers the right of the page while it's open.</p>
+    <div class="controls"><button id="toggle">Threads</button></div>
+  </div>
+  <div class="window" id="win">
+    <div class="wbar"><b>login.md</b><span class="chip" id="chip">Threads (1)</span></div>
+    <div class="body">
+      <div class="scroller" id="page"></div>
+      <div class="ov" id="ov"></div>
+      <div class="threads"><span style="color:var(--muted)">Threads</span><div class="card"><div class="q">allow list</div><b>you</b> Where does the allow list live?</div></div>
+    </div>
+  </div>
+</main>
+<script>
+const params = new URLSearchParams(location.search);
+if (params.has("picture")) document.body.classList.add("picture");
+let html = "<h1>Login</h1><p>How sign-in works, from the button to the session, and what the app checks before it trusts the provider's answer.</p>";
+for (let i = 1; i <= 8; i++) html += `<h2>Section ${i}</h2><p>Paragraph ${i} about the session, the token and how the redirect is checked against the ${i === 2 ? '<span class="mark">allow list</span>' : "allow list"} before the app trusts it and opens the session, and what it shows you when it refuses.</p>`;
+document.getElementById("page").innerHTML = html;
+document.getElementById("ov").innerHTML = Array.from({ length: 60 }, (_, i) => `<i class="${i % 4 ? "" : "s"}"></i>`).join("");
+const win = document.getElementById("win"), toggle = document.getElementById("toggle"), chip = document.getElementById("chip");
+function set(on) { win.classList.toggle("off", !on); toggle.classList.toggle("on", on); chip.classList.toggle("on", on); }
+let open = !params.has("closed");
+set(open);
+toggle.onclick = () => set(open = !open);
+</script>
+</body>
+</html>

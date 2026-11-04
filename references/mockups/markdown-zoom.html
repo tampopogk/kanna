@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markdown Zoom Mockup</title>
+<style>
+:root {
+  --page: #111214; --ctl: #2a2c31; --ctl-line: #3a3d44; --ctl-text: #e6e6e6; --ctl-dim: #8b8f98; --ctl-accent: #3478f6;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --fg: #e6e8eb; --muted: #8b93a0; --accent: #7aa2ff;
+  --ov-box: rgba(255,255,255,.14); --ov-edge: #2c313a; --reading: rgba(122,162,255,.16);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ctl-text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+h1.t { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--ctl-dim); margin: 0 0 12px; max-width: 940px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; align-items: center; }
+.controls .sep { width: 1px; height: 18px; background: var(--ctl-line); margin: 0 4px; }
+button { font: 12px var(--sans); color: var(--ctl-text); background: var(--ctl); border: 1px solid var(--ctl-line); border-radius: 5px; padding: 4px 9px; cursor: pointer; }
+button:hover { border-color: var(--ctl-accent); }
+.readout { font: 12px var(--mono); color: var(--ctl-dim); margin: 0 0 12px; min-height: 18px; }
+.readout b { color: var(--ctl-text); font-weight: 500; }
+
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: 0 20px 50px rgba(0,0,0,.5); background: var(--bg); color: var(--fg); height: 560px; width: 760px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; width: 100vw; }
+.wbar { height: 34px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.wbar b { color: var(--fg); font-weight: 600; }
+.wbar .sp { flex: 1; }
+.wbar .z { font: 11px var(--mono); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+.body { flex: 1; min-height: 0; display: flex; }
+.scroller { flex: 1; min-width: 0; overflow: auto; position: relative; }
+.sizer { position: relative; margin: 0 auto; }
+.sheet { position: absolute; left: 0; top: 0; transform-origin: 0 0; padding: 22px 0 120px; }
+.text { margin: 0 auto; font-size: 14px; line-height: 1.55; }
+.text h1 { font-size: 26px; margin: 0 0 .45em; }
+.text h2 { font-size: 21px; margin: 1.1em 0 .45em; }
+.text p { margin: 0 0 .8em; }
+.text pre { font: 12.5px/1.5 var(--mono); background: var(--panel); border-radius: 6px; padding: 8px 12px; margin: 0 0 .9em; white-space: pre; overflow: hidden; }
+.text p.reading { background: var(--reading); border-radius: 3px; }
+.ov { flex: none; width: 84px; position: relative; border-left: 1px solid var(--ov-edge); overflow: hidden; }
+.ov .shot { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+.ov .box { position: absolute; left: 0; width: 84px; background: var(--ov-box); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1 class="t">Markdown zoom: pinch magnifies the page; ⌘+ / ⌘− / ⌘0 change the text size</h1>
+    <p><b>Pinch</b> is a plain zoom of the page, like a PDF in Preview: the page keeps the wrap, margins and text size it was laid out with and is drawn bigger or smaller; zoomed in it is wider than the pane and scrolls both ways, and nothing moves on release. <b>⌘+ / ⌘− / ⌘0</b> step the text size: the page lays out again at the pane's width over the text size, so the text re-wraps to the pane, and the line at the top (tinted) stays at the top. The overview's box follows both.</p>
+    <div class="controls">
+      <button data-pinch="1.25">Pinch in</button>
+      <button data-pinch="0.8">Pinch out</button>
+      <span class="sep"></span>
+      <button data-text="1">⌘+</button>
+      <button data-text="-1">⌘−</button>
+      <button data-text="0">⌘0</button>
+    </div>
+    <div class="readout" id="readout"></div>
+  </div>
+  <div class="window">
+    <div class="wbar"><b>login.md</b><span class="sp"></span><span class="z" id="badge"></span></div>
+    <div class="body">
+      <div class="scroller" id="scroller"><div class="sizer" id="sizer"><div class="sheet" id="sheet"><div class="text" id="text"></div></div></div></div>
+      <div class="ov" id="ov"><div class="shot" id="shot"></div><div class="box" id="box"></div></div>
+    </div>
+  </div>
+</main>
+<script>
+const steps = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const params = new URLSearchParams(location.search);
+const state = { text: Number(params.get("text") || 1), page: Number(params.get("page") || 1) };
+if (params.has("picture")) document.body.classList.add("picture");
+
+const textEl = document.getElementById("text"), sheet = document.getElementById("sheet"), sizer = document.getElementById("sizer");
+const scroller = document.getElementById("scroller"), shot = document.getElementById("shot"), box = document.getElementById("box");
+let html = "<h1>Login</h1><p>How sign-in works, from the button to the session, and what the app checks before it trusts the provider's answer.</p>";
+html += "<pre>func signIn() async throws {\n    let url = try await provider.start()\n    try await session.open(url)\n}</pre>";
+for (let i = 1; i <= 14; i++) html += `<h2>Section ${i}</h2><p${i === 3 ? ' class="reading"' : ""}>Paragraph ${i} about the session, the token and how the redirect is checked against the allow list before the app trusts it and opens the session.</p>`;
+textEl.innerHTML = html;
+
+function layout(keep) {
+  const zoom = state.text * state.page;
+  const paneW = scroller.clientWidth;
+  const width = paneW / state.text;
+  const inset = Math.max(28, (width - 870) / 2);
+  sheet.style.width = width + "px";
+  textEl.style.width = (width - inset * 2) + "px";
+  sheet.style.transform = `scale(${zoom})`;
+  sizer.style.width = Math.max(width * zoom, 0) + "px";
+  sizer.style.height = sheet.offsetHeight * zoom + "px";
+  shot.innerHTML = "";
+  const clone = sheet.cloneNode(true); clone.removeAttribute("id"); clone.style.transform = "none"; clone.style.position = "static";
+  shot.appendChild(clone);
+  shot.style.transform = `scale(${84 / width})`;
+  if (keep) scroller.scrollTop = keep.top * zoom;
+  update();
+}
+
+function update() {
+  const zoom = state.text * state.page, width = sheet.offsetWidth, s = 84 / width;
+  box.style.top = scroller.scrollTop / zoom * s + "px";
+  box.style.height = scroller.clientHeight / zoom * s + "px";
+  document.getElementById("badge").textContent = `text ${Math.round(state.text * 100)}% · page ${Math.round(state.page * 100)}%`;
+  document.getElementById("readout").innerHTML = `text size <b>${Math.round(state.text * 100)}%</b> · page zoom <b>${Math.round(state.page * 100)}%</b> · laid out at <b>${Math.round(width)}pt</b> · page on screen <b>${Math.round(width * zoom)}pt</b> in a ${scroller.clientWidth}pt pane`;
+}
+
+function readingTop() {
+  const zoom = state.text * state.page;
+  const top = scroller.scrollTop / zoom;
+  const line = [...textEl.querySelectorAll("p, h2, pre")].find(el => el.offsetTop + el.offsetHeight > top + 22) || textEl.firstChild;
+  return { line, offset: line.offsetTop - top };
+}
+
+document.querySelectorAll("[data-pinch]").forEach(b => b.onclick = () => {
+  const zoom = state.text * state.page;
+  const cx = (scroller.scrollLeft + scroller.clientWidth / 2) / zoom, cy = (scroller.scrollTop + scroller.clientHeight / 2) / zoom;
+  state.page = Math.min(4, Math.max(0.5, state.page * Number(b.dataset.pinch)));
+  layout();
+  const z = state.text * state.page;
+  scroller.scrollLeft = cx * z - scroller.clientWidth / 2;
+  scroller.scrollTop = cy * z - scroller.clientHeight / 2;
+});
+
+document.querySelectorAll("[data-text]").forEach(b => b.onclick = () => {
+  const step = Number(b.dataset.text), now = state.text;
+  const reading = readingTop();
+  state.text = step === 0 ? 1 : step > 0 ? (steps.find(s => s > now + 0.001) || steps.at(-1)) : (steps.findLast(s => s < now - 0.001) || steps[0]);
+  layout();
+  scroller.scrollTop = (reading.line.offsetTop - reading.offset) * state.text * state.page;
+});
+
+scroller.addEventListener("scroll", update);
+layout();
+if (params.has("top")) scroller.scrollTop = Number(params.get("top")) * state.text * state.page;
+if (params.has("at")) scroller.scrollTop = (textEl.querySelectorAll("h2")[Number(params.get("at")) - 1].offsetTop + 22 - 12) * state.text * state.page;
+if (params.has("left")) scroller.scrollLeft = Number(params.get("left"));
+update();
+</script>
+</body>
+</html>
