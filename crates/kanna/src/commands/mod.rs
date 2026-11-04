@@ -1,5 +1,6 @@
 pub mod close;
 pub mod focus;
+pub mod restart;
 pub mod shared;
 pub mod zoom;
 
@@ -103,18 +104,7 @@ pub static COMMANDS: &[Command] = &[
     close::COMMAND,
     focus::COMMAND,
     zoom::COMMAND,
-    Command {
-        name: "restart",
-        group: "Panes",
-        summary: "Restart what runs in a pane, and wait until it is running again.",
-        usage: "kanna restart PANE",
-        options: &[],
-        notes: "",
-        examples: &[("kanna restart server", "Restart the server pane's command.")],
-        parse: |args| Ok(json!({ "pane": pane(args, "restart")? })),
-        show: |_, reply| output::pane_state(reply),
-        flow: Flow::PLAIN,
-    },
+    restart::COMMAND,
     Command {
         name: "send",
         group: "Panes",
