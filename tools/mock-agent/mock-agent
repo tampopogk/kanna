@@ -113,6 +113,36 @@ def session(args):
     return str(uuid.uuid4()), False
 
 
+def transcript(id):
+    socket_path = os.environ.get("KANNA_SOCKET")
+    return socket_path and os.path.join(os.path.dirname(socket_path), "mock-conversations", id)
+
+
+def wizard():
+    socket_path = os.environ.get("KANNA_SOCKET")
+    return socket_path and os.path.exists(os.path.join(os.path.dirname(socket_path), "mock-wizard"))
+
+
+def refused(id, resumed):
+    if PROGRAM != "claude":
+        return None
+    path = transcript(id)
+    if path and resumed and not os.path.exists(path):
+        return f"No conversation found with session ID: {id}"
+    if path and not resumed and "--session-id" in sys.argv[1:] and os.path.exists(path):
+        return f"Error: Session ID {id} is already in use."
+    return None
+
+
+def saved(id):
+    if PROGRAM != "claude":
+        return
+    path = transcript(id)
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "a").close()
+
+
 def first(args):
     told = [a for a in args if "Your task: " in a]
     return told[-1].split("Your task: ", 1)[1] if told else None
@@ -271,6 +301,10 @@ def main():
             return 1
         print(f"# Handoff\n\nmock handoff of session {id}: the next step is to finish the draft.")
         return 0
+    refusal = refused(id, resumed)
+    if refusal:
+        print(refusal)
+        return 1
     out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
@@ -283,19 +317,26 @@ def main():
             prompt = None
         if prompt is not None:
             stage(id, prompt)
-        talk(None if resumed or prompt is not None else first(sys.argv[1:]))
+        talk(id, None if resumed or prompt is not None else first(sys.argv[1:]))
     except KeyboardInterrupt:
         pass
     bye(id)
     return 0
 
 
-def talk(task):
+def talk(id, task):
     reported("idle")
     composer()
+    if wizard():
+        for _ in typed():
+            pass
+        return
+    if task:
+        saved(id)
     if task and not answer(task):
         return
     for line in typed():
+        saved(id)
         if not answer(line):
             return
 
