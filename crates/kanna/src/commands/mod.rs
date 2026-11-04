@@ -10,6 +10,7 @@ pub mod crashes;
 pub mod diagrams;
 pub mod focus;
 pub mod guests;
+pub mod help;
 pub mod instances;
 pub mod machine;
 pub mod markup;
