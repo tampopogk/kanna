@@ -1,10 +1,111 @@
-use crate::output;
-use kanna_client::{exit, fail, Failure};
+use super::{usage, Flow, Invocation};
+use crate::args::Argv;
+use crate::output::join;
+use crate::target::Session;
+use kanna_client::Failure;
+use kanna_client::{exit, fail};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+
+pub const COMMAND: super::Command = super::Command {
+    name: "accounts",
+    group: "Information",
+    summary: "Your Claude and Codex accounts for the agents on all your machines: add one once, on your Mac, and every machine's agents use it.",
+    usage: "kanna accounts [list]\n       kanna accounts add claude|codex [--api-key] [--label TEXT]\n       kanna accounts remove ACCOUNT|claude|codex\n       kanna accounts sign-in claude|codex",
+    options: &[
+        ("--api-key", "add: an API key (Anthropic Console or OpenAI) instead of your subscription."),
+        ("--label TEXT", "add: a name to know the account by."),
+    ],
+    notes: "add runs the agent's own sign-in. For Claude, claude setup-token gives a token that lasts a year; for Codex, codex login signs in to ChatGPT in a folder of Kanna's, never touching your everyday login. What it yields is kept in this Mac's Keychain (in the state folder's agent-secrets on Linux), never in a login file. A token or API key goes to each of your machines when you add it, or when a machine joins, and stays there; a ChatGPT login stays on the machine you added it on, which hands each Codex short-lived access tokens and refreshes them, one refresh at a time. Each agent uses one account: adding another replaces it. remove takes it off every machine, as revoking a machine (kanna machine revoke) takes back what it was given. sign-in is the fallback: this machine signs in to the agent by itself, with the sign-in page opened in your browser on the Mac you're at. Whether a subscription may run agents on several of your machines is Anthropic's and OpenAI's call: see docs/specs/agent-sign-in.md.",
+    examples: &[
+        ("kanna accounts", "Your accounts, which machine holds each, and the machines that get them."),
+        ("kanna accounts add claude", "Sign in to your Claude subscription once, for every machine's agents."),
+        ("kanna accounts add codex", "Sign in to ChatGPT once; this Mac holds the login and hands out access tokens."),
+        ("kanna accounts add codex --api-key", "Use an OpenAI API key instead."),
+        ("kanna accounts remove claude", "Take the Claude account off every machine."),
+        ("kanna accounts sign-in codex", "On a machine without the shared account: sign it in to Codex by itself."),
+    ],
+    parse,
+    show,
+    flow: Flow { offline: Some(offline), ..Flow::PLAIN },
+};
+
+fn offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
+    (request["local"] == "interactive").then(|| {
+        let mut mux = Session::connect(invocation.target, invocation.env)?;
+        mux.host = invocation.host.clone();
+        run(request, &mut |cmd, args| mux.call(cmd, args), invocation.json_output)
+    })
+}
+
+fn parse(args: &mut Argv) -> Result<Value, Failure> {
+    let api_key = args.flag("--api-key");
+    let label = args.option("--label")?;
+    let agent = |what: &str, args: &mut Argv| match args.positional().as_deref() {
+        Some(agent @ ("claude" | "codex")) => Ok(agent.to_string()),
+        _ => Err(usage("accounts", &format!("accounts {what} needs an agent: claude or codex"))),
+    };
+    let request = match args.positional().as_deref() {
+        None | Some("list") => json!({ "action": "list" }),
+        Some("add") => json!({ "action": "add", "agent": agent("add", args)?, "api_key": api_key, "label": label, "local": "interactive" }),
+        Some("sign-in") => json!({ "action": "sign-in", "agent": agent("sign-in", args)?, "local": "interactive" }),
+        Some("remove") => json!({ "action": "remove", "account": args.positional().ok_or_else(|| usage("accounts", "accounts remove needs an ACCOUNT: its ID, or claude or codex"))? }),
+        Some(other) => return Err(usage("accounts", &format!("unknown action \"{other}\" (list, add, remove or sign-in)"))),
+    };
+    if (api_key || label.is_some()) && request["action"] != "add" {
+        return Err(usage("accounts", "--api-key and --label go with add"));
+    }
+    Ok(request)
+}
+
+pub fn show(request: &Value, reply: &Value) -> String {
+    let what = |a: &Value| {
+        let kind = match a["kind"].as_str() {
+            Some("claude-subscription") => "Claude subscription",
+            Some("claude-api-key") => "Anthropic API key",
+            Some("codex-chatgpt") => "Codex, ChatGPT login",
+            Some("codex-api-key") => "OpenAI API key",
+            _ => "account",
+        };
+        match (a["label"].as_str().filter(|l| Some(*l) != a["kind"].as_str()), a["holder_name"].as_str()) {
+            (Some(label), Some(holder)) => format!("{kind} ({label}), held by {holder}"),
+            (Some(label), None) => format!("{kind} ({label})"),
+            (None, Some(holder)) => format!("{kind}, held by {holder}"),
+            (None, None) => kind.to_string(),
+        }
+    };
+    let machines = join(&reply["machines"]);
+    match request["action"].as_str() {
+        Some("add") => {
+            let replaced = reply["replaced"].as_array().filter(|r| !r.is_empty()).map_or(String::new(), |r| format!(" in place of {}", r.iter().map(&what).collect::<Vec<_>>().join(", ")));
+            let there = if machines.is_empty() { String::new() } else { format!(" and on {machines}") };
+            format!("added {}{replaced} ({}); your agents use it here{there}", what(&reply["account"]), reply["account"]["id"].as_str().unwrap_or("?"))
+        }
+        Some("remove") => {
+            let gone = reply["removed"].as_array().map(|r| r.iter().map(&what).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            if machines.is_empty() { format!("removed {gone}") } else { format!("removed {gone}; it comes off {machines} as each one hears it") }
+        }
+        _ => {
+            let mut out = vec![];
+            for account in reply["accounts"].as_array().into_iter().flatten() {
+                let broken = account["broken"].as_str().map_or(String::new(), |why| format!("  broken: {why}"));
+                out.push(format!("{:<7} {}  {}{broken}", account["agent"].as_str().unwrap_or("?"), account["id"].as_str().unwrap_or("?"), what(account)));
+            }
+            for account in reply["received"].as_array().into_iter().flatten() {
+                out.push(format!("{:<7} {}  {}, from {}", account["agent"].as_str().unwrap_or("?"), account["id"].as_str().unwrap_or("?"), what(account), account["from"].as_str().unwrap_or("?")));
+            }
+            if out.is_empty() {
+                out.push("no accounts: your agents use each machine's own sign-in (kanna accounts add claude, or codex)".into());
+            } else if reply["accounts"].as_array().is_some_and(|a| !a.is_empty()) {
+                out.push(if machines.is_empty() { "no other machine to go to yet".to_string() } else { format!("going to: {machines}") });
+            }
+            out.join("\n")
+        }
+    }
+}
 
 const CLAUDE_TOKEN: &str = "sk-ant-oat01-";
 
@@ -35,7 +136,7 @@ pub fn run(request: &Value, call: &mut dyn FnMut(&str, Value) -> Result<Value, F
 fn print(json_output: bool, request: &Value, reply: &Value) {
     match json_output {
         true => println!("{reply}"),
-        false => println!("{}", output::accounts(request, reply)),
+        false => println!("{}", show(request, reply)),
     }
 }
 
