@@ -3,6 +3,7 @@ pub mod close;
 pub mod focus;
 pub mod r#move;
 pub mod read;
+pub mod rename_tab;
 pub mod resize;
 pub mod restart;
 pub mod screenshot;
@@ -119,22 +120,7 @@ pub static COMMANDS: &[Command] = &[
     resize::COMMAND,
     r#move::COMMAND,
     arrange::COMMAND,
-    Command {
-        name: "rename-tab",
-        group: "Tabs and windows",
-        summary: "Rename a tab. (In the app: double-click the tab.)",
-        usage: "kanna rename-tab TAB TITLE...",
-        options: &[],
-        notes: "TAB is a tab ID such as tab-1 (see `kanna workspace list --all`). Everything after TAB is the title.",
-        examples: &[("kanna rename-tab tab-1 servers", "Call tab-1 \"servers\".")],
-        parse: |args| {
-            let tab = args.positional().ok_or_else(|| usage("rename-tab", "missing TAB (an ID like tab-1; see `kanna workspace list --all`)"))?;
-            let title = args.rest().ok_or_else(|| usage("rename-tab", "missing TITLE"))?;
-            Ok(json!({ "tab": tab, "title": title }))
-        },
-        show: output::renamed,
-        flow: Flow::PLAIN,
-    },
+    rename_tab::COMMAND,
     Command {
         name: "move-tab",
         group: "Tabs and windows",

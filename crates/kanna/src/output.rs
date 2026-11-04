@@ -150,10 +150,6 @@ pub fn window(args: &Value, reply: &Value) -> String {
     }
 }
 
-pub fn renamed(_: &Value, reply: &Value) -> String {
-    format!("{} is now \"{}\"", reply["tab"].as_str().unwrap_or("?"), reply["title"].as_str().unwrap_or(""))
-}
-
 pub fn pane_renamed(_: &Value, reply: &Value) -> String {
     let pane = &reply["pane"];
     let id = pane["id"].as_str().unwrap_or("?");
