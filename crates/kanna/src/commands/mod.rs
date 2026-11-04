@@ -13,6 +13,7 @@ pub mod send;
 pub mod send_key;
 pub mod shared;
 pub mod window;
+pub mod workspace;
 pub mod zoom;
 
 use crate::args::Argv;
@@ -125,22 +126,7 @@ pub static COMMANDS: &[Command] = &[
     arrange::COMMAND,
     rename_tab::COMMAND,
     move_tab::COMMAND,
-    Command {
-        name: "workspace",
-        group: "Tabs and windows",
-        summary: "Show your workspace as it will be seen: its dock, tabs and panes, which tab is shown, the focus and the zoom.",
-        usage: "kanna workspace list [--all]",
-        options: &[("--all", "Every window, workspace and pane, not just your own.")],
-        notes: "Your workspace is the one your terminal ($KANNA_TERMINAL) is in, on a Desk or on the Shelf: its ID (ws-3), its task, where it is, its docked pane, the focused pane (and whether it's zoomed), its tabs with `*` on the shown one, and its own windows. From a pane in a window that's no workspace's, it's that window. Layouts are written as `a:2/3 | b` (side by side) and `a / b` (stacked).\nWith --all: every window and what it shows, every workspace, free windows' tabs, and panes in no window. With Kanna.app closed there are no windows, and the terminals, which keep running, are listed alone. --json prints the reply: your own windows, workspace and panes, or with --all all of them.",
-        examples: &[
-            ("kanna workspace list", "See your workspace as the user will when they pull your task."),
-            ("kanna workspace list --all", "See every window, workspace and pane."),
-            ("kanna workspace list --all --json", "The same, as JSON."),
-        ],
-        parse: parse_workspace,
-        show: output::workspace,
-        flow: Flow { wire: Some(|_| "list"), offline: Some(workspace_offline), after: Some(workspace_after), ..Flow::PLAIN },
-    },
+    workspace::COMMAND,
     window::COMMAND,
     rename_pane::COMMAND,
     Command {
@@ -1000,20 +986,6 @@ fn parse_schedule(args: &mut Argv) -> Result<Value, Failure> {
     Ok(out)
 }
 
-fn parse_workspace(args: &mut Argv) -> Result<Value, Failure> {
-    let action = args.positional().ok_or_else(|| usage("workspace", "say list"))?;
-    if action != "list" {
-        return Err(usage("workspace", &format!("unknown action \"{action}\": list")));
-    }
-    if args.flag("--all") {
-        return Ok(json!({ "action": "list", "all": true }));
-    }
-    Ok(match caller() {
-        Some(pane) => json!({ "action": "list", "pane": pane }),
-        None => json!({ "action": "list" }),
-    })
-}
-
 fn parse_thread_action(args: &mut Argv, action: &str) -> Result<Value, Failure> {
     let all = args.flag("--all");
     let doc = args.option("--doc")?;
@@ -1426,17 +1398,6 @@ fn comment_online(request: &Value, mux: &mut Session, json_output: bool) -> Opti
     (request["doc"] == true).then(|| crate::threads::comment(request, mux, json_output))
 }
 
-fn workspace_offline(request: &Value, _: &Invocation) -> Option<Result<(), Failure>> {
-    (request["all"] != true && request["pane"].is_null()).then(|| Err(usage("workspace", "outside a Kanna terminal there's no workspace of yours: add --all")))
-}
-
-fn workspace_after(request: &Value, reply: &mut Value, _: &mut Session, _: &mut Call) -> Result<(), Failure> {
-    if let Some(pane) = request["pane"].as_str() {
-        *reply = output::scoped(reply, pane).ok_or_else(|| fail(exit::NOT_FOUND, format!("no pane \"{pane}\": your terminal isn't one of this Kanna's")))?;
-    }
-    Ok(())
-}
-
 fn diagrams_offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
     Some(crate::diagrams::run(request, invocation.json_output))
 }
@@ -1828,23 +1789,13 @@ pub mod tests {
                              "tabs": [{ "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }], "windows": [], "panes": ["p2", "p1"] }],
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
-        let text = output::workspace(&all, &reply);
+        let text = crate::commands::workspace::show(&all, &reply);
         assert!(text.contains("\nws-1, on the Desk\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
         let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "desk": "mac" } } });
         assert_eq!(output::opened(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
         assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
         let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
         assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
-    }
-
-    #[test]
-    fn workspace_list_lists_unplaced_panes_and_says_when_there_is_nothing() {
-        let all = json!({ "action": "list", "all": true });
-        let list = output::workspace(&all, &json!({ "windows": [], "panes": [{ "id": "p1", "type": "term", "state": "running" }] }));
-        assert_eq!(list, "Unplaced panes\np1");
-        assert_eq!(output::workspace(&all, &json!({ "windows": [], "panes": [] })), "no windows (open one with `kanna open`)");
-        let alone = output::scoped(&json!({ "windows": [], "panes": [{ "id": "p1", "name": "logs", "type": "term" }] }), "p1").unwrap();
-        assert_eq!(output::workspace(&json!({ "action": "list", "pane": "p1" }), &alone), "p1 (logs) isn't in a window or a workspace");
     }
 
     #[test]
