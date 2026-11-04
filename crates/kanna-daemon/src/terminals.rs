@@ -4,7 +4,6 @@ use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
-use crate::Event;
 use kanna_mux::json::{json, Map, Value};
 use kanna_mux::{terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -84,7 +83,7 @@ pub struct Terminals {
     pub core: RefCell<Option<WeakCore>>,
     spawner: Rc<dyn Spawner>,
     store: Store,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     env: Vec<(String, String)>,
     live: RefCell<HashMap<String, Terminal>>,
     starting: RefCell<HashMap<u64, Starting>>,
@@ -98,7 +97,7 @@ pub struct Terminals {
 }
 
 impl Terminals {
-    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: Sender<Event>, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
+    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: crate::runtime::Events, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
         let settings = RefCell::new(store.load_settings());
         Terminals {
             settings,
@@ -902,7 +901,7 @@ mod tests {
         let (spawns, spawned) = mpsc::channel();
         let (release, released) = mpsc::channel();
         let fake = fake_keeper(UnixListener::bind(dir.join("keeper.sock")).unwrap(), spawns, released);
-        let (events, _inbox) = mpsc::channel();
+        let (events, _inbox) = crate::runtime::channel();
         let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
         let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
         let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
@@ -912,6 +911,7 @@ mod tests {
         let opened = Rc::new(RefCell::new(None));
         let answer = opened.clone();
         core.handle(json!({"cmd": "open", "args": {"type": "term", "cmd": "sleep 30"}}), move |reply| *answer.borrow_mut() = Some(reply));
+        core.turn();
         spawned.recv_timeout(Duration::from_secs(5)).expect("the keeper was asked to spawn");
         let listed = core.handle_blocking(json!({"cmd": "list"}));
         assert_eq!(listed["ok"], true, "{listed}");
@@ -923,7 +923,7 @@ mod tests {
         while opened.borrow().is_none() {
             assert!(Instant::now() < by, "the spawn's reply never finished the start");
             assert!(terminals.heard(keeper.take().unwrap()).is_empty());
-            core.poll();
+            core.turn();
             std::thread::sleep(Duration::from_millis(5));
         }
         let reply = opened.borrow_mut().take().unwrap();

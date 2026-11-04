@@ -38,6 +38,7 @@ enum Watch {
     Idle,
     Attached { pid: i32, relaunch: Value, goodbye: bool },
     Gone { pid: i32, relaunch: Value, since: Instant, dead: Option<Instant> },
+    Looking,
     Relaunching { at: Instant, relaunch: Value },
 }
 
@@ -290,17 +291,17 @@ impl Crashes {
 
     pub fn next_deadline(&self) -> Option<Instant> {
         match &*self.watch.borrow() {
-            Watch::Gone { .. } => Some(Instant::now() + POLL),
+            Watch::Gone { .. } | Watch::Looking => Some(Instant::now() + POLL),
             Watch::Relaunching { at, .. } => Some(*at),
             _ => None,
         }
     }
 
-    fn record_of(&self, pid: i32) -> Option<(PathBuf, Value)> {
-        kanna_crash::records(&self.state_dir).into_iter().rev().find(|(_, r)| r["pid"].as_i64() == Some(pid as i64) && string(r, "process") == Some("app"))
+    fn record_of(state_dir: &Path, pid: i32) -> Option<(PathBuf, Value)> {
+        kanna_crash::records(state_dir).into_iter().rev().find(|(_, r)| r["pid"].as_i64() == Some(pid as i64) && string(r, "process") == Some("app"))
     }
 
-    fn from_ips(&self, pid: i32, relaunch: &Value) -> Option<(PathBuf, Value)> {
+    fn from_ips(state_dir: &Path, pid: i32, relaunch: &Value) -> Option<(PathBuf, Value)> {
         let executable = string(relaunch, "path").map(Path::new).and_then(Path::file_name)?.to_string_lossy().into_owned();
         let ips = kanna_crash::find_ips(&executable, pid as u64, SystemTime::now())?;
         let body = kanna_crash::ips_body(&ips)?;
@@ -314,10 +315,10 @@ impl Crashes {
             build: kanna_crash::build(),
             panes: vec![],
         };
-        match kanna_crash::write(&self.state_dir, &crash) {
+        match kanna_crash::write(state_dir, &crash) {
             Ok(path) => {
                 log!("kanna-daemon: the app (pid {pid}) left no crash record; wrote {} from {}", path.display(), ips.display());
-                let record = kanna_crash::records(&self.state_dir).into_iter().find(|(p, _)| *p == path)?.1;
+                let record = kanna_crash::records(state_dir).into_iter().find(|(p, _)| *p == path)?.1;
                 Some((path, record))
             }
             Err(error) => {
@@ -327,14 +328,36 @@ impl Crashes {
         }
     }
 
-    pub fn tick(&self, now: Instant, app_attached: bool) {
+    fn look_for_record(self: &Rc<Self>, pid: i32, relaunch: Value, since: Instant, dead_at: Instant) {
+        *self.watch.borrow_mut() = Watch::Looking;
+        let (this, state_dir, wanted) = (Rc::downgrade(self), self.state_dir.clone(), relaunch.clone());
+        crate::runtime::spawn("the app's crash record", async move {
+            let found = crate::runtime::off_loop(move || Self::record_of(&state_dir, pid).or_else(|| Self::from_ips(&state_dir, pid, &wanted))).await.flatten();
+            let Some(this) = this.upgrade() else { return };
+            if !matches!(*this.watch.borrow(), Watch::Looking) || this.stopping.get() {
+                return;
+            }
+            let now = Instant::now();
+            let next = match found {
+                Some((path, record)) => this.crashed(now, &path, &record, relaunch),
+                None if now.duration_since(dead_at) < IPS_WAIT => Watch::Gone { pid, relaunch, since, dead: Some(dead_at) },
+                None => {
+                    log!("kanna-daemon: the app (pid {pid}) is gone with no crash record and no .ips: it was killed, so it isn't relaunched");
+                    Watch::Idle
+                }
+            };
+            *this.watch.borrow_mut() = next;
+        });
+    }
+
+    pub fn tick(self: &Rc<Self>, now: Instant, app_attached: bool) {
         if self.stopping.get() {
             *self.watch.borrow_mut() = Watch::Idle;
             return;
         }
         let watch = std::mem::replace(&mut *self.watch.borrow_mut(), Watch::Idle);
         let next = match watch {
-            Watch::Gone { .. } | Watch::Relaunching { .. } if app_attached => Watch::Idle,
+            Watch::Gone { .. } | Watch::Looking | Watch::Relaunching { .. } if app_attached => Watch::Idle,
             Watch::Gone { pid, relaunch, since, dead } => {
                 if alive(pid) {
                     if now.duration_since(since) >= STILL_RUNNING {
@@ -344,15 +367,7 @@ impl Crashes {
                         Watch::Gone { pid, relaunch, since, dead }
                     }
                 } else {
-                    let dead_at = dead.unwrap_or(now);
-                    match self.record_of(pid).or_else(|| self.from_ips(pid, &relaunch)) {
-                        Some((path, record)) => self.crashed(now, &path, &record, relaunch),
-                        None if now.duration_since(dead_at) < IPS_WAIT => Watch::Gone { pid, relaunch, since, dead: Some(dead_at) },
-                        None => {
-                            log!("kanna-daemon: the app (pid {pid}) is gone with no crash record and no .ips: it was killed, so it isn't relaunched");
-                            Watch::Idle
-                        }
-                    }
+                    return self.look_for_record(pid, relaunch, since, dead.unwrap_or(now));
                 }
             }
             Watch::Relaunching { at, relaunch } if now >= at => {

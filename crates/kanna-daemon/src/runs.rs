@@ -3,7 +3,7 @@ use crate::pipelines;
 use crate::task_scripts;
 use crate::tasks::{self, git, Entry, Tasks};
 use crate::usage;
-use crate::Event;
+use crate::runtime;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, PaneState, Responder, WeakCore};
 use kanna_pipe::{Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
@@ -12,7 +12,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 
@@ -366,7 +365,7 @@ fn patch(doc: &mut Value, with: Value) {
     }
 }
 
-pub struct Measured {
+struct Measured {
     row: i64,
     session: Option<String>,
     doc: Value,
@@ -382,13 +381,11 @@ struct Measuring {
     start: Option<String>,
     end: Option<String>,
     since: f64,
-    prices: Value,
 }
 
 impl Measuring {
     fn of(row: &StageRow, repo: &str, session: Option<String>, end: Option<String>) -> Measuring {
         let paused = row.doc.get("paused").and_then(|p| string(p, "session")).map(String::from);
-        let files = tasks::config_files(Path::new(repo));
         Measuring {
             row: row.id,
             agent: row.agent.clone(),
@@ -399,7 +396,6 @@ impl Measuring {
             start: string(&row.doc, "start").map(String::from),
             end: end.or_else(|| string(&row.doc, "end").map(String::from)).filter(|e| !e.is_empty()),
             since: row.started_at,
-            prices: tasks::pricing(&files),
         }
     }
 
@@ -412,7 +408,7 @@ impl Measuring {
         let repo = Path::new(&self.repo);
         let session = self.session();
         let usage = self.agent.as_deref().zip(session.as_deref()).and_then(|(agent, session)| usage::of(agent, session, self.since));
-        let mut doc = json!({ "measured": true, "usage": usage.map_or(Value::Null, |u| u.doc(&self.prices)) });
+        let mut doc = json!({ "measured": true, "usage": usage.map_or(Value::Null, |u| u.doc(&tasks::pricing(&tasks::config_files(repo)))) });
         let end = self.end.clone().or_else(|| git(repo, &["rev-parse", "--verify", self.branch.as_deref()?]).ok());
         if let Some((start, end)) = self.start.as_deref().filter(|s| !s.is_empty()).zip(end) {
             let span = format!("{start}..{end}");
@@ -456,11 +452,10 @@ pub struct Runs {
     live: RefCell<Vec<Live>>,
     soon: Cell<bool>,
     host: String,
-    events: Sender<Event>,
 }
 
 impl Runs {
-    pub fn open(db: Rc<Db>, core: WeakCore, tasks: Weak<Tasks>, events: Sender<Event>) -> Runs {
+    pub fn open(db: Rc<Db>, core: WeakCore, tasks: Weak<Tasks>) -> Runs {
         let mut live = vec![];
         for row in db.live_runs().unwrap_or_else(|error| {
             log!("kanna-daemon: can't read the runs in kanna.db: {error}");
@@ -492,7 +487,7 @@ impl Runs {
             log!("kanna-daemon: {} carries on ({}, {})", row.id, row.state, visit.as_ref().map_or("between stages".to_string(), |v| format!("in {}", v.row.stage)));
             live.push(Live { row, doc, pipeline, visit });
         }
-        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), events };
+        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine() };
         for (row, repo) in this.db.unmeasured().unwrap_or_default() {
             this.measure(Measuring::of(&row, &repo, None, None));
         }
@@ -503,16 +498,13 @@ impl Runs {
         if measuring.row == 0 {
             return;
         }
-        let events = self.events.clone();
-        std::thread::spawn(move || {
-            let _ = events.send(Event::Measured(measuring.take()));
+        let db = self.db.clone();
+        runtime::spawn("runs.measure", async move {
+            let Some(measured) = runtime::off_loop(move || measuring.take()).await else { return };
+            if let Err(error) = db.patch_stage(measured.row, measured.session.as_deref(), &measured.doc) {
+                log!("kanna-daemon: couldn't save visit {}'s numbers: {error}", measured.row);
+            }
         });
-    }
-
-    pub fn measured(&self, measured: Measured) {
-        if let Err(error) = self.db.patch_stage(measured.row, measured.session.as_deref(), &measured.doc) {
-            log!("kanna-daemon: couldn't save visit {}'s numbers: {error}", measured.row);
-        }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -1307,8 +1299,8 @@ impl Runs {
         }) else {
             return;
         };
-        let measuring = Measuring::of(&row, &repo, said, Some(worker_head(&doc.worker)));
         let end = worker_head(&doc.worker);
+        let measuring = Measuring::of(&row, &repo, said, Some(end.clone()));
         let start = string(&row.doc, "start").unwrap_or("").to_string();
         let commits = if start.is_empty() || end.is_empty() { 0 } else { git(Path::new(&doc.worker), &["rev-list", "--count", &format!("{start}..{end}")]).ok().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0) };
         row.ended_at = Some(now());

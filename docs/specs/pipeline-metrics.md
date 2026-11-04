@@ -15,9 +15,9 @@ Every visit of a run keeps what it cost and what it changed. The Stats tab's **P
 ```mermaid
 flowchart LR
     C["conclude, stop, interrupted<br/>(on the daemon's loop)"] -->|"findings, failing, feedback size"| DB[("run_stages.doc")]
-    C -->|"Measuring"| T["a worker thread"]
-    T -->|"session file, git"| E["Event::Measured"]
-    E -->|"patch_stage"| DB
+    C -->|"Measuring"| T["runtime::off_loop"]
+    T -->|"session file, git"| P["a local task"]
+    P -->|"patch_stage"| DB
 ```
 
 | Field in `run_stages.doc` | From |
@@ -29,7 +29,7 @@ flowchart LR
 | `feedbackSize` | the bytes of the feedback |
 
 - **A turn** is one model response, so a stage's single prompt doesn't read as one turn. **A tool call** is one `tool_use` block, or one Codex tool item.
-- **Reading off the loop:** session files can be large, so the file and git are read on a thread and the result is patched on the row. `measured: true` marks a row as read. A starting daemon reads any ended visit without it.
+- **Reading off the loop:** session files can be large, so the file and git are read off the loop ([daemon runtime §3](daemon-runtime.md#3-a-handler-that-waits)) and the result is patched on the row. `measured: true` marks a row as read. A starting daemon reads any ended visit without it.
 - **`since`:** only what came after the visit's start counts, so a later visit resuming a session doesn't count the session's past.
 - **Agents without a reader** (opencode, agy) have `usage: null`, as does an agent with its own `HOME` or config folder that the daemon can't see.
 
