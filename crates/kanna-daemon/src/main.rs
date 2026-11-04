@@ -369,6 +369,7 @@ fn run() -> Result<(), String> {
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
+    scheduler.watch_deliveries(&tasks);
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
     if cfg!(target_os = "macos") {

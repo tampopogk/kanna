@@ -1,5 +1,5 @@
 use crate::tasks::Tasks;
-use crate::db::{self, Db, Schedule};
+use crate::db::{self, Db, Firing, How, Left, Schedule};
 use crate::messages::{PLANNER, SCHEDULE};
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError};
@@ -23,6 +23,8 @@ const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Au
 const DAY: i64 = 86_400;
 
 const LONGEST_WAIT: Duration = Duration::from_secs(60);
+
+const FIRINGS_SHOWN: i64 = 3;
 
 pub trait Zone {
     fn offset(&self, at: i64) -> i64;
@@ -186,6 +188,7 @@ pub trait Mailbox {
     fn post(&self, recipient: &str, repo: Option<&str>, from: &str, text: &str) -> Result<i64, KmuxError>;
     fn waiting(&self, message: i64) -> bool;
     fn label(&self, recipient: &str) -> String;
+    fn caller(&self, args: &Value) -> (String, Option<String>);
 }
 
 impl Mailbox for Tasks {
@@ -204,6 +207,10 @@ impl Mailbox for Tasks {
     fn label(&self, recipient: &str) -> String {
         self.label_of(recipient)
     }
+
+    fn caller(&self, args: &Value) -> (String, Option<String>) {
+        self.sender(args)
+    }
 }
 
 pub fn repo_of(folder: &str) -> Option<String> {
@@ -221,11 +228,12 @@ pub struct Schedules {
     mailbox: Rc<dyn Mailbox>,
     skew: Cell<f64>,
     known: RefCell<Option<Vec<Schedule>>>,
+    pub on_change: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl Schedules {
     pub fn new(db: Rc<Db>, zone: Box<dyn Zone>, mailbox: Rc<dyn Mailbox>) -> Schedules {
-        Schedules { db, zone, mailbox, skew: Cell::new(0.0), known: RefCell::default() }
+        Schedules { db, zone, mailbox, skew: Cell::new(0.0), known: RefCell::default(), on_change: RefCell::default() }
     }
 
     pub fn now(&self) -> f64 {
@@ -245,8 +253,15 @@ impl Schedules {
         Ok(all)
     }
 
-    fn changed(&self) {
+    fn forget(&self) {
         self.known.borrow_mut().take();
+    }
+
+    pub fn changed(&self) {
+        self.forget();
+        if let Some(on_change) = self.on_change.borrow().as_ref() {
+            on_change();
+        }
     }
 
     pub fn handle(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -254,7 +269,11 @@ impl Schedules {
             Some("add") => self.add(args),
             Some("list") => self.list(args),
             Some("remove") => self.remove(args),
-            _ => Err(bad("schedule needs an action: add, list or remove")),
+            Some("pause") => self.pause(args),
+            Some("resume") => self.resume(args),
+            Some("run") => self.run(args),
+            Some("reply") => self.reply(args),
+            _ => Err(bad("schedule needs an action: add, list, remove, pause, resume, run or reply")),
         }
     }
 
@@ -296,7 +315,7 @@ impl Schedules {
         if let Some(by) = string(args, "by").filter(|b| !b.is_empty()) {
             doc["by"] = json!(by);
         }
-        let mut schedule = Schedule { id: 0, repo, name, target: recipient, rule: rule.text(), prompt, next: rule.next(now, now, &*self.zone), message: None, made_at: now, doc };
+        let mut schedule = Schedule { id: 0, repo, name, target: recipient, rule: rule.text(), prompt, next: rule.next(now, now, &*self.zone), message: None, made_at: now, paused: None, doc };
         schedule.id = self.db.add_schedule(&schedule).map_err(|e| failed("save the schedule", e))?;
         self.changed();
         Ok(match self.value(&schedule) {
@@ -322,6 +341,34 @@ impl Schedules {
             "nextText": local_text(schedule.next, &*self.zone),
             "message": opt(schedule.message.map(|m| m.to_string()).as_deref()),
             "waiting": self.waiting(schedule),
+            "paused": schedule.paused.is_some(),
+            "firings": self.firings(schedule),
+        })
+    }
+
+    fn firings(&self, schedule: &Schedule) -> Value {
+        let firings = self.db.firings(schedule.id, FIRINGS_SHOWN).unwrap_or_else(|error| {
+            log!("kanna-daemon: couldn't read schedule s{}'s firings in {}: {error}", schedule.id, db::FILE);
+            vec![]
+        });
+        Value::Array(firings.iter().map(|firing| self.firing(firing)).collect())
+    }
+
+    fn firing(&self, firing: &Firing) -> Value {
+        let state = match (firing.state.as_str(), firing.delivered, firing.message) {
+            ("left", Some(_), _) => "delivered",
+            ("left", None, Some(message)) if self.mailbox.waiting(message) => "waiting",
+            ("left", None, _) => "undelivered",
+            (state, _, _) => state,
+        };
+        json!({
+            "at": num(firing.at),
+            "atText": local_text(firing.at, &*self.zone),
+            "how": firing.how,
+            "state": state,
+            "deliveredText": opt(firing.delivered.map(|at| local_text(at, &*self.zone)).as_deref()),
+            "detail": opt(firing.detail.as_deref()),
+            "reply": opt(firing.reply.as_deref()),
         })
     }
 
@@ -332,7 +379,7 @@ impl Schedules {
         Ok(Map::from_iter([("repo".to_string(), opt(repo.as_deref())), ("schedules".to_string(), Value::Array(schedules))]))
     }
 
-    fn remove(&self, args: &Value) -> Result<Map, KmuxError> {
+    fn find(&self, args: &Value) -> Result<Schedule, KmuxError> {
         let which = string(args, "schedule").filter(|s| !s.is_empty()).ok_or_else(|| bad("say which schedule: its name or ID (s3)"))?;
         let repo = self.repo(args)?;
         let all = self.all()?;
@@ -344,14 +391,84 @@ impl Schedules {
                 if here.is_empty() { named } else { here }
             }
         };
-        let schedule = match found.as_slice() {
-            [one] => *one,
-            [] => return Err(KmuxError::new("not_found", format!("no schedule {which}"))),
-            many => return Err(bad(format!("{which} names {} schedules ({}): say which by ID", many.len(), many.iter().map(|s| format!("s{}", s.id)).collect::<Vec<_>>().join(", ")))),
-        };
+        match found.as_slice() {
+            [one] => Ok((*one).clone()),
+            [] => Err(KmuxError::new("not_found", format!("no schedule {which}"))),
+            many => Err(bad(format!("{which} names {} schedules ({}): say which by ID", many.len(), many.iter().map(|s| format!("s{}", s.id)).collect::<Vec<_>>().join(", ")))),
+        }
+    }
+
+    fn named(schedule: &Schedule) -> Map {
+        Map::from_iter([("schedule".to_string(), json!(format!("s{}", schedule.id))), ("name".to_string(), opt(schedule.name.as_deref()))])
+    }
+
+    fn remove(&self, args: &Value) -> Result<Map, KmuxError> {
+        let schedule = self.find(args)?;
         self.db.remove_schedule(schedule.id).map_err(|e| failed("remove the schedule", e))?;
         self.changed();
-        Ok(Map::from_iter([("schedule".to_string(), json!(format!("s{}", schedule.id))), ("name".to_string(), opt(schedule.name.as_deref()))]))
+        Ok(Self::named(&schedule))
+    }
+
+    fn pause(&self, args: &Value) -> Result<Map, KmuxError> {
+        let schedule = self.find(args)?;
+        if schedule.paused.is_none() {
+            self.db.schedule_paused(schedule.id, Some(self.now())).map_err(|e| failed("pause the schedule", e))?;
+            self.changed();
+        }
+        Ok(Self::named(&schedule))
+    }
+
+    fn resume(&self, args: &Value) -> Result<Map, KmuxError> {
+        let schedule = self.find(args)?;
+        if schedule.paused.is_some() {
+            self.db.schedule_paused(schedule.id, None).map_err(|e| failed("resume the schedule", e))?;
+            self.changed();
+        }
+        let mut out = Self::named(&schedule);
+        out.insert("nextText".to_string(), json!(local_text(schedule.next, &*self.zone)));
+        out.insert("missed".to_string(), json!(schedule.next <= self.now()));
+        Ok(out)
+    }
+
+    fn run(&self, args: &Value) -> Result<Map, KmuxError> {
+        let schedule = self.find(args)?;
+        let now = self.now();
+        let left = self.leave(&schedule);
+        self.db.schedule_fired(schedule.id, now, How::Run, &left, schedule.next).map_err(|e| failed("save the firing", e))?;
+        self.changed();
+        if let Left::Failed(why) = left {
+            return Err(KmuxError::new("failed", why));
+        }
+        let mut out = Self::named(&schedule);
+        out.insert("left".to_string(), json!(matches!(left, Left::Message(_))));
+        Ok(out)
+    }
+
+    fn reply(&self, args: &Value) -> Result<Map, KmuxError> {
+        let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what: kanna schedule reply NAME TEXT"))?;
+        let schedule = self.find(args)?;
+        let (caller, repo) = self.mailbox.caller(args);
+        if caller != schedule.target || (caller == PLANNER && repo != schedule.repo) {
+            return Err(bad(format!("only {}, the schedule's target, replies to it", self.mailbox.label(&schedule.target))));
+        }
+        let firings = self.db.firings(schedule.id, db::FIRINGS_KEPT).map_err(|e| failed("read the firings", e))?;
+        let firing = firings.iter().find(|f| f.delivered.is_some()).ok_or_else(|| bad(format!("{} has no delivered message to reply to", label(&schedule))))?;
+        self.db.firing_reply(firing.id, text, self.now()).map_err(|e| failed("save the reply", e))?;
+        self.changed();
+        Ok(Self::named(&schedule))
+    }
+
+    fn leave(&self, schedule: &Schedule) -> Left {
+        if self.waiting(schedule) {
+            return Left::Skipped;
+        }
+        match self.mailbox.post(&schedule.target, schedule.repo.as_deref(), &format!("{SCHEDULE}{}", label(schedule)), &schedule.prompt) {
+            Ok(id) => Left::Message(id),
+            Err(error) => {
+                log!("kanna-daemon: schedule {} couldn't leave its message for {}: {}", label(schedule), schedule.target, error.message);
+                Left::Failed(error.message)
+            }
+        }
     }
 
     pub fn seed(&self, repo: &str) {
@@ -367,6 +484,7 @@ impl Schedules {
             next: rule.next(now, now, &*self.zone),
             message: None,
             made_at: now,
+            paused: None,
             doc: json!({ "by": "kanna" }),
         };
         match self.db.seed_once(&format!("quiz_schedule:{repo}"), &schedule) {
@@ -382,11 +500,11 @@ impl Schedules {
     pub fn fire(&self) -> usize {
         let now = self.now();
         let Ok(all) = self.all() else { return 0 };
-        let due: Vec<&Schedule> = all.iter().filter(|s| s.next <= now).collect();
+        let due: Vec<&Schedule> = all.iter().filter(|s| s.next <= now && s.paused.is_none()).collect();
         if due.is_empty() {
             return 0;
         }
-        self.changed();
+        self.forget();
         let mut fired = 0;
         for schedule in due {
             let rule = match Rule::parse(&schedule.rule) {
@@ -396,26 +514,18 @@ impl Schedules {
                     continue;
                 }
             };
-            let message = match self.waiting(schedule) {
-                true => None,
-                false => match self.mailbox.post(&schedule.target, schedule.repo.as_deref(), &format!("{SCHEDULE}{}", label(schedule)), &schedule.prompt) {
-                    Ok(id) => Some(id),
-                    Err(error) => {
-                        log!("kanna-daemon: schedule {} couldn't leave its message for {}: {}", label(schedule), schedule.target, error.message);
-                        None
-                    }
-                },
-            };
-            match self.db.schedule_fired(schedule.id, rule.next(schedule.next, now, &*self.zone), message) {
+            let left = self.leave(schedule);
+            match self.db.schedule_fired(schedule.id, now, How::Rule, &left, rule.next(schedule.next, now, &*self.zone)) {
                 Ok(()) => fired += 1,
                 Err(error) => log!("kanna-daemon: couldn't fire schedule s{}: {error}", schedule.id),
             }
         }
+        self.changed();
         fired
     }
 
     pub fn next_due(&self) -> Option<f64> {
-        self.all().ok()?.iter().map(|s| s.next).reduce(f64::min)
+        self.all().ok()?.iter().filter(|s| s.paused.is_none()).map(|s| s.next).reduce(f64::min)
     }
 }
 
@@ -432,6 +542,15 @@ impl Scheduler {
             }
         }
         Scheduler { schedules }
+    }
+
+    pub fn watch_deliveries(self: &Rc<Self>, tasks: &Tasks) {
+        let this = Rc::downgrade(self);
+        *tasks.on_delivered.borrow_mut() = Some(Box::new(move |messages| {
+            if let Some(this) = this.upgrade().filter(|_| messages.iter().any(|m| m.sender.starts_with(SCHEDULE))) {
+                this.schedules.changed();
+            }
+        }));
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle, debug: bool) {
@@ -587,6 +706,7 @@ mod tests {
         db: RefCell<Option<Rc<Db>>>,
         posted: RefCell<Vec<(i64, String, Option<String>, String, String)>>,
         delivered: RefCell<Vec<i64>>,
+        refused: RefCell<Option<String>>,
     }
 
     impl Mailbox for Fake {
@@ -598,6 +718,9 @@ mod tests {
             }
         }
         fn post(&self, recipient: &str, repo: Option<&str>, from: &str, text: &str) -> Result<i64, KmuxError> {
+            if let Some(why) = self.refused.borrow().as_ref() {
+                return Err(KmuxError::new("done", why.clone()));
+            }
             let db = self.db.borrow().clone().expect("the fake's db");
             let id = db.put_message(recipient, repo.unwrap_or("/r"), from, text, None, None).unwrap().id;
             self.posted.borrow_mut().push((id, recipient.into(), repo.map(String::from), from.into(), text.into()));
@@ -609,11 +732,15 @@ mod tests {
         fn label(&self, recipient: &str) -> String {
             recipient.strip_prefix("task-").unwrap_or(recipient).to_string()
         }
+        fn caller(&self, args: &Value) -> (String, Option<String>) {
+            (args.get("by").and_then(Value::as_str).unwrap_or("user").to_string(), args.get("from_repo").and_then(Value::as_str).map(String::from))
+        }
     }
 
     impl Fake {
         fn deliver_all(&self) {
             let ids: Vec<i64> = self.posted.borrow().iter().map(|p| p.0).collect();
+            self.db.borrow().as_ref().expect("the fake's db").delivered(&ids).unwrap();
             self.delivered.borrow_mut().extend(ids);
         }
         fn taken(&self) -> Vec<(String, Option<String>, String, String)> {
@@ -718,6 +845,198 @@ mod tests {
         let taken = mail.taken();
         assert!(taken.contains(&("planner".to_string(), Some(repo.clone()), "schedule plan".to_string(), "Plan.".to_string())), "{taken:?}");
         assert!(taken.contains(&("planner".to_string(), Some(repo.clone()), "schedule quiz".to_string(), QUIZ_PROMPT.to_string())), "the quiz schedule too: {taken:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn row(s: &Schedules, name: &str) -> Value {
+        ok(s, json!({ "action": "list" }))["schedules"].as_array().unwrap().iter().find(|v| v["name"] == name).unwrap().clone()
+    }
+
+    fn states(s: &Schedules, name: &str) -> Vec<String> {
+        row(s, name)["firings"].as_array().unwrap().iter().map(|f| f["state"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn a_paused_schedule_doesn_t_fire_and_resuming_fires_a_missed_time_once() {
+        let dir = folder("pause");
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        ok(&s, json!({ "action": "add", "rule": "every 1h", "target": "71af", "prompt": "Check.", "name": "check" }));
+        let next = row(&s, "check")["next"].as_f64().unwrap();
+        ok(&s, json!({ "action": "pause", "schedule": "check" }));
+        ok(&s, json!({ "action": "pause", "schedule": "check" }));
+        assert_eq!(row(&s, "check")["paused"], true);
+        assert_eq!(s.next_due(), None, "nothing to wake for, so a passed next doesn't spin the loop");
+        s.advance(5.0 * 3600.0);
+        assert_eq!(s.fire(), 0);
+        assert!(mail.taken().is_empty());
+        assert_eq!(row(&s, "check")["next"].as_f64().unwrap(), next, "next stays while paused");
+        assert!(states(&s, "check").is_empty());
+        drop(s);
+        let s = schedules(&dir, &mail);
+        s.advance(5.0 * 3600.0);
+        assert_eq!(s.fire(), 0, "paused survives a restart");
+        assert_eq!(ok(&s, json!({ "action": "resume", "schedule": "check" }))["missed"], true);
+        assert_eq!(s.fire(), 1);
+        assert_eq!(s.fire(), 0, "once, not once per missed time");
+        assert_eq!(mail.taken().len(), 1);
+        assert_eq!(row(&s, "check")["paused"], false);
+        assert!(row(&s, "check")["next"].as_f64().unwrap() > s.now());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resuming_before_the_next_time_fires_nothing_early() {
+        let dir = folder("resume");
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        ok(&s, json!({ "action": "add", "rule": "every 1h", "target": "71af", "prompt": "Check.", "name": "check" }));
+        let next = row(&s, "check")["next"].as_f64().unwrap();
+        ok(&s, json!({ "action": "pause", "schedule": "check" }));
+        s.advance(60.0);
+        assert_eq!(ok(&s, json!({ "action": "resume", "schedule": "check" }))["missed"], false);
+        assert_eq!(s.fire(), 0);
+        assert_eq!(row(&s, "check")["next"].as_f64().unwrap(), next);
+        assert!(s.next_due().is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_now_leaves_its_message_under_the_one_waiting_rule_and_leaves_next_alone() {
+        let dir = folder("run");
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        ok(&s, json!({ "action": "add", "rule": "every 1h", "target": "71af", "prompt": "Check.", "name": "check" }));
+        let next = row(&s, "check")["next"].as_f64().unwrap();
+        assert_eq!(ok(&s, json!({ "action": "run", "schedule": "check" }))["left"], true);
+        assert_eq!(row(&s, "check")["waiting"], true);
+        assert_eq!(row(&s, "check")["next"].as_f64().unwrap(), next);
+        assert_eq!(ok(&s, json!({ "action": "run", "schedule": "check" }))["left"], false, "the last still waits");
+        assert_eq!(mail.taken().len(), 1);
+        assert_eq!(states(&s, "check"), ["skipped", "waiting"]);
+        assert_eq!(row(&s, "check")["firings"][0]["how"], "run");
+        mail.deliver_all();
+        ok(&s, json!({ "action": "pause", "schedule": "check" }));
+        assert_eq!(ok(&s, json!({ "action": "run", "schedule": "check" }))["left"], true, "a paused schedule runs by hand");
+        assert_eq!(row(&s, "check")["paused"], true, "and stays paused");
+        assert_eq!(s.handle(&json!({ "action": "run", "schedule": "nope" })).unwrap_err().code, "not_found");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_firing_log_says_what_became_of_each_firing_and_goes_with_its_schedule() {
+        let dir = folder("log");
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        ok(&s, json!({ "action": "add", "rule": "every 5m", "target": "71af", "prompt": "Pull.", "name": "pull" }));
+        assert!(states(&s, "pull").is_empty());
+        s.advance(301.0);
+        s.fire();
+        assert_eq!(states(&s, "pull"), ["waiting"]);
+        s.advance(300.0);
+        s.fire();
+        assert_eq!(states(&s, "pull"), ["skipped", "waiting"]);
+        mail.deliver_all();
+        assert_eq!(states(&s, "pull"), ["skipped", "delivered"]);
+        assert!(row(&s, "pull")["firings"][1]["deliveredText"].is_string());
+        *mail.refused.borrow_mut() = Some("task-71af is done, so it takes no messages".into());
+        s.advance(300.0);
+        s.fire();
+        let failed = &row(&s, "pull")["firings"][0];
+        assert_eq!((failed["state"].as_str(), failed["detail"].as_str()), (Some("failed"), Some("task-71af is done, so it takes no messages")));
+        assert_eq!(s.handle(&json!({ "action": "run", "schedule": "pull" })).unwrap_err().code, "failed");
+        *mail.refused.borrow_mut() = None;
+        mail.delivered.borrow_mut().clear();
+        s.advance(300.0);
+        s.fire();
+        assert_eq!(row(&s, "pull")["firings"].as_array().unwrap().len(), FIRINGS_SHOWN as usize);
+        for _ in 0..db::FIRINGS_KEPT + 5 {
+            s.advance(300.0);
+            s.fire();
+        }
+        let db = mail.db.borrow().clone().unwrap();
+        assert_eq!(db.firings(1, 1000).unwrap().len() as i64, db::FIRINGS_KEPT);
+        ok(&s, json!({ "action": "remove", "schedule": "pull" }));
+        assert!(db.firings(1, 1000).unwrap().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_message_that_no_longer_waits_and_never_arrived_shows_as_undelivered() {
+        let dir = folder("lost");
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        ok(&s, json!({ "action": "add", "rule": "every 5m", "target": "71af", "prompt": "Pull.", "name": "pull" }));
+        ok(&s, json!({ "action": "run", "schedule": "pull" }));
+        mail.delivered.borrow_mut().extend(mail.posted.borrow().iter().map(|p| p.0));
+        assert_eq!(states(&s, "pull"), ["undelivered"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_the_target_replies_and_the_reply_lands_on_the_newest_delivered_firing() {
+        let dir = folder("reply");
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        ok(&s, json!({ "action": "add", "rule": "every 5m", "target": "71af", "prompt": "Pull.", "name": "pull" }));
+        let refuse = |args: Value| s.handle(&args).err().unwrap_or_else(|| panic!("{args} worked")).message;
+        ok(&s, json!({ "action": "run", "schedule": "pull" }));
+        assert!(refuse(json!({ "action": "reply", "schedule": "pull", "text": "Hi.", "by": "task-71af" })).contains("no delivered message"));
+        mail.deliver_all();
+        assert!(refuse(json!({ "action": "reply", "schedule": "pull", "text": "Hi.", "by": "task-other" })).contains("target"));
+        assert!(refuse(json!({ "action": "reply", "schedule": "pull", "text": "Hi." })).contains("target"), "the user isn't its target");
+        assert!(refuse(json!({ "action": "reply", "schedule": "pull", "text": " ", "by": "task-71af" })).contains("say what"));
+        ok(&s, json!({ "action": "run", "schedule": "pull" }));
+        ok(&s, json!({ "action": "reply", "schedule": "pull", "text": "First.", "by": "task-71af" }));
+        ok(&s, json!({ "action": "reply", "schedule": "pull", "text": "All green.", "by": "task-71af" }));
+        let listed = row(&s, "pull");
+        assert_eq!(listed["firings"][0]["reply"], Value::Null, "that message waits: the agent hasn't read it");
+        assert_eq!(listed["firings"][1]["reply"], "All green.");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_planner_s_reply_must_come_from_its_own_repo() {
+        let dir = folder("planner-reply");
+        let repo = repo(&dir);
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        ok(&s, json!({ "action": "add", "rule": "every 1h", "target": "planner", "prompt": "Plan.", "name": "plan", "repo": repo }));
+        ok(&s, json!({ "action": "run", "schedule": "plan", "repo": repo }));
+        mail.deliver_all();
+        assert!(s.handle(&json!({ "action": "reply", "schedule": "plan", "repo": repo, "text": "Done.", "by": "planner", "from_repo": "/elsewhere" })).is_err());
+        ok(&s, json!({ "action": "reply", "schedule": "plan", "repo": repo, "text": "Done.", "by": "planner", "from_repo": repo }));
+        assert_eq!(row(&s, "plan")["firings"][0]["reply"], "Done.");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_change_tells_the_app() {
+        let dir = folder("notice");
+        let mail = Rc::new(Fake::default());
+        let s = schedules(&dir, &mail);
+        let told = Rc::new(Cell::new(0));
+        let count = told.clone();
+        *s.on_change.borrow_mut() = Some(Box::new(move || count.set(count.get() + 1)));
+        let once = |args: Value| {
+            let before = told.get();
+            ok(&s, args);
+            assert_eq!(told.get(), before + 1);
+        };
+        once(json!({ "action": "add", "rule": "every 1h", "target": "71af", "prompt": "Check.", "name": "check" }));
+        once(json!({ "action": "pause", "schedule": "check" }));
+        once(json!({ "action": "resume", "schedule": "check" }));
+        once(json!({ "action": "run", "schedule": "check" }));
+        mail.deliver_all();
+        once(json!({ "action": "reply", "schedule": "check", "text": "Hi.", "by": "task-71af" }));
+        s.advance(7200.0);
+        let before = told.get();
+        s.fire();
+        assert_eq!(told.get(), before + 1, "a firing");
+        let before = told.get();
+        s.fire();
+        assert_eq!(told.get(), before, "nothing due, nothing to tell");
+        once(json!({ "action": "remove", "schedule": "check" }));
         fs::remove_dir_all(&dir).unwrap();
     }
 

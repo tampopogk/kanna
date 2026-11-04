@@ -4,7 +4,7 @@
 
 **A schedule prompts an agent at set times.** At each time its rule gives, the daemon leaves a task or a repo's planning agent a message, as `kanna task send` does, from `schedule NAME`. [Agent messaging](agent-messaging.md) delivers it, as `[message from schedule NAME] PROMPT`. That's all a schedule does: no shell commands, no task starts of its own, no notifications.
 
-The daemon runs it, since it's always running, and keeps schedules in [its database](database.md), so they survive restarts. There's no window for them: `kanna schedule` makes, lists and removes them, and agents make them when you ask in words.
+The daemon runs it, since it's always running, and keeps schedules in [its database](database.md), so they survive restarts. `kanna schedule` makes, lists, pauses, runs and removes them, and agents make them when you ask in words. The [Schedules tab](schedules-tab.md) shows them and what each last did.
 
 ## Contents
 
@@ -72,8 +72,9 @@ flowchart LR
 | Command | Does |
 |---|---|
 | `kanna schedule add RULE TARGET PROMPT… [--name NAME] [--repo DIR]` | Make a schedule; prints its ID (`s3`), its name and when it next fires. RULE is two words, quoted or not (`daily 09:00`) |
-| `kanna schedule list` | Every schedule: ID, name, repo, rule, target, next time, whether its message is waiting, prompt |
+| `kanna schedule list` | Every schedule: ID, name, repo, rule, target, next time, whether it's paused or its message is waiting, its last firing, prompt |
 | `kanna schedule remove NAME\|ID` | Remove one; a NAME is looked up in this repo first |
+| `kanna schedule pause\|resume\|run\|reply NAME\|ID` | See the [Schedules tab](schedules-tab.md#6-commands) |
 
 ```sh
 kanna schedule add 'weekdays 17:30' planner "Summarise what landed today." --name evening
@@ -92,7 +93,7 @@ kanna schedule remove evening
 
 - **`schedule.rs` in the daemon:** rule parsing and next times (pure, with the time zone behind a trait so tests can use a zone with DST without touching the process's `TZ`), and the scheduler, which leaves a due schedule's message through a `Mailbox`: the tasks' messaging (`Tasks::recipient`, `post`, `waiting`), faked in its tests.
 - **Fire:** the daemon's loop asks the scheduler for its next deadline (at most a minute away, since the monotonic clock stops while the Mac sleeps) and calls it; a due schedule leaves its message, unless its last is still waiting, and gets its next time and the message's ID in one write.
-- **`schedules` table**, in [the database](database.md): `id`, `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next`, `message` (→ `messages.id`, the last one left), `made_at`, and a JSON `doc` for the rest (who made it). `meta` keeps which repos have had the quiz schedule added.
+- **`schedules` table**, in [the database](database.md): `id`, `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next`, `message` (→ `messages.id`, the last one left), `made_at`, `paused`, and a JSON `doc` for the rest (who made it). `meta` keeps which repos have had the quiz schedule added.
 - **Messages from a schedule** are from `schedule NAME`, and the recipient's permission class is used for them, as for yours (`messages::yours`).
 - **A test clock:** with `KANNA_DEBUG=1`, `debug.clock {"advance": SECONDS}` moves the scheduler's clock forward, for the e2e scenario.
 

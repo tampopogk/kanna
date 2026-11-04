@@ -158,7 +158,7 @@ sequenceDiagram
 
 ## Schedules
 
-**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, and a JSON `doc` (who made it). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
+**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, `paused` (migration 22), and a JSON `doc` (who made it). `schedule_firings` (migration 22) logs each firing ([Schedules tab](schedules-tab.md#7-how-its-built)). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
 
 ## Planners
 

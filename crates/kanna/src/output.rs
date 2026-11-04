@@ -997,25 +997,32 @@ pub fn schedule(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
         Some("add") => format!("{}: {} → {}, next {}", named(reply), reply["rule"].as_str().unwrap_or("?"), reply["target"].as_str().unwrap_or("?"), reply["nextText"].as_str().unwrap_or("?")),
         Some("remove") => format!("removed {}", named(reply)),
+        Some("pause") => format!("paused {}", named(reply)),
+        Some("resume") if reply["missed"] == true => format!("resumed {}: it missed {}, so it fires once now", named(reply), reply["nextText"].as_str().unwrap_or("?")),
+        Some("resume") => format!("resumed {}, next {}", named(reply), reply["nextText"].as_str().unwrap_or("?")),
+        Some("run") if reply["left"] == true => format!("ran {}: its message is left", named(reply)),
+        Some("run") => format!("{}: its last message still waits, so this left none", named(reply)),
+        Some("reply") => format!("replied to {}", named(reply)),
         _ => {
             let all = reply["schedules"].as_array().cloned().unwrap_or_default();
             if all.is_empty() {
                 return "no schedules".into();
             }
-            let rows: Vec<[String; 7]> = all
+            let rows: Vec<[String; 8]> = all
                 .iter()
                 .map(|s| {
                     let repo = s["repo"].as_str().map_or("-".to_string(), |r| r.rsplit('/').next().unwrap_or(r).to_string());
-                    let waiting = if s["waiting"] == true { "waiting" } else { "" };
+                    let status = [(s["paused"] == true, "paused"), (s["waiting"] == true, "waiting")].iter().filter(|(on, _)| *on).map(|(_, word)| *word).collect::<Vec<_>>().join(" ");
+                    let last = s["firings"][0]["atText"].as_str().map_or(String::new(), |at| format!("last {at} {}", s["firings"][0]["state"].as_str().unwrap_or("?")));
                     let prompt: String = s["prompt"].as_str().unwrap_or("").chars().take(60).collect();
-                    [id(s), s["name"].as_str().unwrap_or("-").to_string(), repo, s["rule"].as_str().unwrap_or("?").to_string(), s["target"].as_str().unwrap_or("?").to_string(), format!("next {}", s["nextText"].as_str().unwrap_or("?")), format!("{waiting:7} {prompt}")]
+                    [id(s), s["name"].as_str().unwrap_or("-").to_string(), repo, s["rule"].as_str().unwrap_or("?").to_string(), s["target"].as_str().unwrap_or("?").to_string(), format!("next {}", s["nextText"].as_str().unwrap_or("?")), status, format!("{last}  {prompt}")]
                 })
                 .collect();
-            let widths: Vec<usize> = (0..6).map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
+            let widths: Vec<usize> = (0..7).map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
             rows.iter()
                 .map(|r| {
-                    let cells: Vec<String> = (0..6).map(|i| format!("{:w$}", r[i], w = widths[i])).collect();
-                    format!("{}  {}", cells.join("  "), r[6]).trim_end().to_string()
+                    let cells: Vec<String> = (0..7).map(|i| format!("{:w$}", r[i], w = widths[i])).collect();
+                    format!("{}  {}", cells.join("  "), r[7].trim_start()).trim_end().to_string()
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
