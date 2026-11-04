@@ -264,6 +264,10 @@ impl App {
                 let pane = message["args"]["pane"]["id"].clone();
                 self.tell("update", json!({"pane": pane, "state": "running"}));
             }
+            if message["cmd"] == "app.front" {
+                self.send(json!({"id": message["id"], "ok": true, "front": null}));
+                continue;
+            }
             if message["cmd"] == "app.snap" {
                 let line = message["args"]["line"].as_u64().unwrap_or(1);
                 let last = message["args"]["last"].as_u64().unwrap_or(line + 2);
