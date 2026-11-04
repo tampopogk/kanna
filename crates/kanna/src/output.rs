@@ -947,6 +947,18 @@ pub fn stats(_: &Value, reply: &Value) -> String {
             let chart = &tile["chart"];
             let label = tile["label"].as_str().unwrap_or("?").to_string();
             let head = if i == 0 { title.clone() } else { String::new() };
+            if chart["kind"] == "list" {
+                rows.push([head, label, String::new(), String::new(), String::new()]);
+                let listed = chart["rows"].as_array().cloned().unwrap_or_default();
+                if listed.is_empty() {
+                    rows.push([String::new(), format!("  {}", chart["empty"].as_str().unwrap_or("")), String::new(), String::new(), String::new()]);
+                }
+                for row in listed {
+                    let detail = [row["detail"].as_str().unwrap_or(""), row["note"].as_str().unwrap_or("")].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" · ");
+                    rows.push([String::new(), format!("  {}", row["label"].as_str().unwrap_or("?")), row["figure"].as_str().unwrap_or("").to_string(), String::new(), detail]);
+                }
+                continue;
+            }
             if chart["kind"] == "ranked" {
                 rows.push([head, label, String::new(), String::new(), String::new()]);
                 for row in chart["rows"].as_array().into_iter().flatten() {
