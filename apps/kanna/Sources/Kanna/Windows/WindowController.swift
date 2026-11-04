@@ -18,8 +18,10 @@ final class WindowController: NSObject, NSWindowDelegate {
     let deskStrip = DeskStrip()
     let deskView = DeskView()
     let machinesPage = MachinesPage()
+    let buildsPage = BuildsPage()
     let statsPage = StatsPage()
-    static let pages = ["Desk", "Machines", "Stats"]
+    static let pages = ["Desk", "Machines", "Builds", "Stats"]
+    var builds: [BuildMac] = []
     var stats: StatsReport?
     var page: String?
     var machines: [MachineRow] = []
@@ -82,12 +84,14 @@ final class WindowController: NSObject, NSWindowDelegate {
         content.addSubview(deskStrip)
         content.addSubview(deskView)
         content.addSubview(machinesPage)
+        content.addSubview(buildsPage)
         content.addSubview(statsPage)
         content.addSubview(deskStage)
         deskStage.isHidden = true
         deskStrip.isHidden = true
         deskView.isHidden = true
         machinesPage.isHidden = true
+        buildsPage.isHidden = true
         statsPage.isHidden = true
         window.contentView = content
         if let previous {
@@ -205,7 +209,8 @@ final class WindowController: NSObject, NSWindowDelegate {
             if !showsDeskView { deskView.clearSearch() }
         }
         machinesPage.isHidden = pageShown != Self.pages[1]
-        statsPage.isHidden = pageShown != Self.pages[2]
+        buildsPage.isHidden = pageShown != Self.pages[2]
+        statsPage.isHidden = pageShown != Self.pages[3]
         if deskStrip.isHidden == (desk && !taskless) { deskStrip.isHidden = !desk || taskless }
         if taskless {
         } else if desk {
@@ -245,6 +250,9 @@ final class WindowController: NSObject, NSWindowDelegate {
             machinesPage.frame = below
             machinesPage.show(machines)
         } else if pageShown == Self.pages[2] {
+            buildsPage.frame = below
+            buildsPage.show(builds)
+        } else if pageShown == Self.pages[3] {
             statsPage.frame = below
             statsPage.show(stats, project: project)
         }

@@ -178,6 +178,7 @@ extension AppController {
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
+                    "buildsPage": .bool(!controller.buildsPage.isHidden), "builds": .array(controller.buildsPage.macs.map { mac in ["name": .string(mac.name), "summary": .string(mac.summary), "rows": .array(mac.rows.map { ["job": .string($0.job), "mark": .string($0.mark), "label": .string($0.label), "state": .string($0.state), "note": .string($0.note)] }), "recent": .array(mac.recent.map { ["job": .string($0.job), "label": .string($0.label), "state": .string($0.state)] })] }),
                     "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "machinesPage": .bool(!controller.machinesPage.isHidden), "machines": .array(controller.machinesPage.machines.map { ["name": .string($0.name), "detail": .string($0.detail), "path": .string($0.path), "note": .string($0.note), "tip": .string($0.explanation)] }),
                     "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.deskTasks.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
@@ -380,7 +381,9 @@ extension AppController {
                     "detail": log.detail.map { .string($0.hash) } ?? .null, "detailShown": .bool(log.detailShown), "zoom": .number(Double(log.zoom)), "width": .number(log.bounds.width)]
         }
         commands["debug.ios"] = { [weak self] args in
-            guard let self, let id = args["pane"]?.string, let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
+            guard let self, let id = args["pane"]?.string else { throw KannaError("wrong_type", "not a running ios pane") }
+            if let answer = args["approve"]?.bool, let view = contents.ios(id) { return ["answered": .bool(view.answer(answer))] }
+            guard let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
             if let x = args["x"]?.number, let y = args["y"]?.number {
                 screen.touch(.leftMouseDown, at: CGPoint(x: x, y: y))
                 try await Task.sleep(for: .milliseconds(80))

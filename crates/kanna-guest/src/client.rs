@@ -136,6 +136,33 @@ pub fn results_dir(root: &Path, job: &str) -> PathBuf {
     root.join(".kanna/build").join(job)
 }
 
+pub fn receive_entries(conn: &mut dyn Pipe, mut intake: Option<&mut Intake>) -> io::Result<Option<String>> {
+    let mut failure: Option<String> = None;
+    loop {
+        let frame = frame::read_header(conn, crate::intake::MAX_FILE)?;
+        let rel = frame.str("path").unwrap_or_default().to_string();
+        let mut payload = Counted { inner: (&mut *conn).take(frame.size), read: 0 };
+        let result = match (frame.op(), intake.as_deref_mut()) {
+            ("end", _) => return Ok(failure),
+            (_, Some(intake)) if failure.is_none() => match frame.op() {
+                "file" => intake.file(&rel, frame.header["exec"] == true, frame.size, frame.str("sha").unwrap_or_default(), &mut payload),
+                "dir" => intake.dir(&rel),
+                "link" => intake.link(&rel, frame.str("target").unwrap_or_default()),
+                other => return Err(frame::bad(format!("unexpected {other:?} inside an artifact"))),
+            },
+            ("file" | "dir" | "link", _) => Ok(()),
+            (other, _) => return Err(frame::bad(format!("unexpected {other:?} inside an artifact"))),
+        };
+        let left = frame.size - payload.read;
+        io::copy(&mut payload.inner.take(left), &mut io::sink())?;
+        match result {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => failure = Some(e.to_string()),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 struct Receiver<'a> {
     request: &'a Request,
     out: &'a mut dyn Write,
@@ -215,30 +242,7 @@ impl Receiver<'_> {
                 None
             }
         };
-        let mut failure: Option<String> = None;
-        loop {
-            let frame = frame::read_header(conn, crate::intake::MAX_FILE)?;
-            let rel = frame.str("path").unwrap_or_default().to_string();
-            let mut payload = Counted { inner: (&mut *conn).take(frame.size), read: 0 };
-            let result = match (frame.op(), intake.as_mut()) {
-                ("end", _) => break,
-                (_, Some(intake)) if failure.is_none() => match frame.op() {
-                    "file" => intake.file(&rel, frame.header["exec"] == true, frame.size, frame.str("sha").unwrap_or_default(), &mut payload),
-                    "dir" => intake.dir(&rel),
-                    "link" => intake.link(&rel, frame.str("target").unwrap_or_default()),
-                    other => return Err(frame::bad(format!("unexpected {other:?} inside an artifact"))),
-                },
-                ("file" | "dir" | "link", _) => Ok(()),
-                (other, _) => return Err(frame::bad(format!("unexpected {other:?} inside an artifact"))),
-            };
-            let left = frame.size - payload.read;
-            io::copy(&mut payload.inner.take(left), &mut io::sink())?;
-            match result {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => failure = Some(e.to_string()),
-                Err(e) => return Err(e),
-            }
-        }
+        let failure = receive_entries(conn, intake.as_mut())?;
         if let Some(intake) = intake {
             match failure {
                 Some(why) => {

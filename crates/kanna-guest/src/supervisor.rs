@@ -570,7 +570,7 @@ impl Supervisor {
     }
 }
 
-fn send_artifact(conn: &mut impl Write, index: usize, artifact: &Value) -> io::Result<()> {
+pub fn send_artifact(conn: &mut impl Write, index: usize, artifact: &Value) -> io::Result<()> {
     let mut header = artifact.clone();
     header["op"] = json!("artifact");
     header["index"] = json!(index);
