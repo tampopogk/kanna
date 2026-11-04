@@ -696,6 +696,58 @@ JSON
   check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == False ]]' || { echo "at 500 pt: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
 }
 
+scenario markdown_zoom_anchor M4
+markdown_zoom_anchor() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdza" start width
+  mkdir -p "$dir"
+  {
+    printf '# Anchors\n\n'
+    for i in $(seq 60); do
+      printf '## Section %s\n\n' "$i"
+      for j in $(seq 6); do printf 'Sentence %s.%s says enough about the session, the token and the redirect to wrap across the line. ' "$i" "$j"; done
+      printf '\n\n'
+      (( i % 5 == 0 )) && printf '```mermaid\nflowchart TD\n    A%s[app] --> P%s[provider] --> R%s[redirect] --> S%s[session]\n```\n\n' "$i" "$i" "$i" "$i"
+    done
+  } >"$dir/anchors.md"
+  kanna open --window new --name zaleft --cmd 'exec sleep 600' >/dev/null || return 1
+  kanna open --window win-1 md --name zadoc --split right "$dir/anchors.md" >/dev/null || return 1
+  check wait_for 5 eval 'doc_text zadoc "Section 60"' || return 1
+  check wait_for 10 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"zadoc\"}}" | field diagrams | grep -c flowchart)" -ge 1 ]]' || return 1
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1400,800]}}' >/dev/null
+  mdz() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"zadoc\"${2:-}}}" | field "$1"; }
+  place() { echo "$(mdz scroll) | $(mdz top.text) | $(mdz top.fraction)"; }
+  sleep 0.5
+  mdz scroll ',"scroll":7000' >/dev/null; sleep 0.3
+  start="$(place)"
+  width="$(mdz layout_width)"
+  check test "$(mdz top.text)" != "" || { echo "no text at the top: $start"; return 1; }
+  for _ in $(seq 20); do
+    kanna zoom zadoc >/dev/null || return 1
+    check wait_for 5 eval '[[ "$(mdz layout_width)" != "$width" ]]' || { echo "the pane zoom didn't widen the doc"; return 1; }
+    kanna zoom zadoc >/dev/null || return 1
+    check wait_for 5 eval '[[ "$(mdz layout_width)" == "$width" ]]' || { echo "the pane unzoom didn't narrow the doc"; return 1; }
+  done
+  check test "$(place)" == "$start" || { echo "20 zooms moved the view from $start to $(place)"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"zadoc","at":[300,300]}}' >/dev/null; sleep 0.3
+  mdz scroll ',"scroll":7000' >/dev/null; sleep 0.3
+  start="$(place)"
+  key cmd+shift+=
+  check python3 -c 'import sys; assert float(sys.argv[1]) > 1, sys.argv[1]' "$(mdz zoom)" || return 1
+  check test "$(mdz top.text)" == "$(cut -d'|' -f2 <<<"$start" | xargs)" || { echo "⌘+ moved the text at the top from $start to $(place)"; return 1; }
+  key cmd+-
+  check test "$(mdz zoom)" == 1 || return 1
+  check test "$(place)" == "$start" || { echo "⌘+ then ⌘− moved the view from $start to $(place)"; return 1; }
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[900,800]}}' >/dev/null; sleep 0.5
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1400,800]}}' >/dev/null; sleep 0.5
+  check test "$(place)" == "$start" || { echo "a window resize moved the view from $start to $(place)"; return 1; }
+  kanna markup zadoc >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdz markup)" == True ]]' || return 1
+  kanna markup zadoc --off >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdz markup)" == False ]]' || return 1
+  check test "$(place)" == "$start" || { echo "turning comments on and off moved the view from $start to $(place)"; return 1; }
+}
+
 scenario markdown_zoom M4
 markdown_zoom() {
   start_daemon && start_app || return 1

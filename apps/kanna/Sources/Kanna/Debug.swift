@@ -281,6 +281,7 @@ extension AppController {
                     "page_zoom": .number(Double(markdown.pageZoom)), "top_line": markdown.topCharacter.map { .number(Double($0)) } ?? .null,
                     "lines": lines, "scroll_x": .number(Double(markdown.scrollLeft)), "diagrams": .array(diagrams), "images": .array(images),
                     "render_ms": .number(markdown.renderMs), "parse_ms": .number(markdown.parseMs), "scroll": .number(Double(markdown.scrollTop)),
+                    "top": markdown.top.map { ["text": .string($0.text), "fraction": .number(Double($0.fraction))] } ?? .null,
                     "layout_width": .number(Double(markdown.layoutWidth)), "threads": .array(threads),
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,
                     "active": markdown.activeThread.map { .string($0) } ?? .null, "agent": markdown.agent.map { .string($0) } ?? .null,
