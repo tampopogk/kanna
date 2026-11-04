@@ -1,4 +1,4 @@
-use crate::diagrams::shown;
+use crate::commands::diagrams::shown;
 use crate::target::Target;
 use kanna_client::{exit, fail, Failure};
 use kanna_pipe::{Context, Error, Pipeline, Rule, Sizes, ASSUMED_PARTS};

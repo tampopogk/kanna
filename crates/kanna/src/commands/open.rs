@@ -45,8 +45,8 @@ pub const COMMAND: Command = Command {
 
 fn after(request: &Value, reply: &mut Value, _: &mut Session, call: &mut Call) -> Result<(), Failure> {
     if let (Some(path), "md") = (request["path"].as_str(), request["type"].as_str().unwrap_or_default()) {
-        let undrawn = crate::diagrams::check(path).map(|r| r.failures).unwrap_or_default();
-        call.warnings = undrawn.iter().map(crate::diagrams::line).collect();
+        let undrawn = crate::commands::diagrams::check(path).map(|r| r.failures).unwrap_or_default();
+        call.warnings = undrawn.iter().map(crate::commands::diagrams::line).collect();
         reply["diagrams"] = Value::Array(undrawn);
     }
     Ok(())

@@ -3,6 +3,7 @@ pub mod capabilities;
 pub mod close;
 pub mod comment;
 pub mod crashes;
+pub mod diagrams;
 pub mod focus;
 pub mod markup;
 pub mod r#move;
@@ -112,32 +113,7 @@ pub static COMMANDS: &[Command] = &[
     task::COMMAND,
     navigate::COMMAND,
     capabilities::COMMAND,
-    Command {
-        name: "diagrams",
-        group: "Information",
-        summary: "Check that a markdown file's mermaid diagrams and call trees draw in Kanna, without opening anything.",
-        usage: "kanna diagrams check FILE.md...",
-        options: &[],
-        notes: "Prints FILE:LINE: message for each ```mermaid block that won't draw, LINE being its fence line: merman can't parse it, or Kanna.app doesn't draw its type. For a ```calltree block, LINE is the line at fault: a call that isn't NAME  PATH:LINE, an indent that jumps a level, a call before any process, a hop with no process after it, a repo path that doesn't exist or a line past its file's end. Then `N diagrams, all draw`, or exits 1 saying how many don't. `kanna open md` checks the same and prints the failures after it opens the pane.\nNeeds no Kanna.app or daemon. It can't see labels that overlap or clip: take `kanna screenshot PANE` of the markdown pane and look.",
-        examples: &[
-            ("kanna diagrams check docs/specs/plan.md", "Check one doc's diagrams."),
-            ("kanna diagrams check docs/specs/*.md --json", "Check many; the count and the failures as JSON."),
-        ],
-        parse: |args| {
-            match args.positional().as_deref() {
-                Some("check") => {}
-                Some(other) => return Err(usage("diagrams", &format!("unknown action \"{other}\" (check)"))),
-                None => return Err(usage("diagrams", "missing check")),
-            }
-            let files = args.positionals();
-            if files.is_empty() {
-                return Err(usage("diagrams", "missing FILE.md"));
-            }
-            Ok(json!({ "action": "check", "files": files }))
-        },
-        show: |_, _| String::new(),
-        flow: Flow { offline: Some(diagrams_offline), ..Flow::PLAIN },
-    },
+    diagrams::COMMAND,
     Command {
         name: "pipeline",
         group: "Information",
@@ -374,10 +350,6 @@ pub fn sent_as(name: &str) -> &str {
         "workspace" => "list",
         name => name,
     }
-}
-
-fn diagrams_offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
-    Some(crate::diagrams::run(request, invocation.json_output))
 }
 
 fn pipeline_offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
