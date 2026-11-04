@@ -622,6 +622,7 @@ JSON
   mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"${3:-longdoc}\"${2:-}}}" | field "$1"; }
   mdwin() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-1\",\"size\":[$1,700]}}" >/dev/null; }
   mdshot() { raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$1.png\"}}" >/dev/null; cp "$KANNA_STATE_DIR/$1.png" "$out/" 2>/dev/null; }
+  mdattop() { python3 -c 'import sys; sys.exit(0 if abs(float(sys.argv[1])) < 1 else 1)' "$(mdo scroll)"; }
   mdwin 1200
   check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "no overview: wanted $(mdo overview.wanted), width $(mdo width)"; return 1; }
   check eval '(( $(mdo overview.box_height | cut -d. -f1) > 10 ))' || { echo "box $(mdo overview.box_y) $(mdo overview.box_height)"; return 1; }
@@ -631,15 +632,21 @@ JSON
   check wait_for 5 eval '[[ "$(mdo overview.top | cut -d. -f1)" == 2000 ]]' || { echo "the box didn't follow the scroll: top $(mdo overview.top)"; return 1; }
   sleep 0.3
   check test "$(mdo pictures)" == "$pictures" || { echo "a scroll drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
-  mdo zoom ',"zoom":1' >/dev/null; sleep 0.3
-  check test "$(mdo pictures)" == "$pictures" || { echo "a zoom drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
-  mdo zoom ',"zoom":0' >/dev/null
+  local box; box="$(mdo overview.box_height)"
+  raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"longdoc"}}' >/dev/null; sleep 0.3
+  check test "$(mdo pictures)" == "$pictures" || { echo "a pinch drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  check python3 -c 'import sys; assert float(sys.argv[2]) < float(sys.argv[1]) * 0.8, sys.argv[1:]' "$box" "$(mdo overview.box_height)" || { echo "the box didn't follow the pinch"; return 1; }
+  mdo zoom ',"page_zoom":1' >/dev/null
+  mdo zoom ',"zoom":1' >/dev/null
+  check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "a text size step didn't draw the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  mdo zoom ',"zoom":0' >/dev/null; sleep 0.3
+  pictures="$(mdo pictures)"
   mdo scroll ',"overview_click":3' >/dev/null
-  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
+  check wait_for 5 eval 'mdattop' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
   mdo scroll ',"overview_marks_click":690' >/dev/null
   check wait_for 5 eval '(( $(mdo scroll | cut -d. -f1) > 2000 ))' || { echo "a click at the foot of the marks left the scroll at $(mdo scroll)"; return 1; }
   mdo scroll ',"overview_drag":[10,-400]' >/dev/null
-  check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "dragging the box up left the scroll at $(mdo scroll)"; return 1; }
+  check wait_for 5 eval 'mdattop' || { echo "dragging the box up left the scroll at $(mdo scroll)"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"longdoc","at":[300,300]}}' >/dev/null; sleep 0.3
   key cmd+f
   raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"redirect"}}' >/dev/null
@@ -668,9 +675,13 @@ JSON
   check test "$(mdo overview.wanted '' shortdoc)" == False || { echo "a doc that fits wants the overview"; return 1; }
   check test "$(mdo overview.shown '' shortdoc)" == False || return 1
   kanna close shortdoc >/dev/null
-  kanna markup longdoc >/dev/null || return 1
   mdwin 1500
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || return 1
+  local page_width page_lines; page_width="$(mdo layout_width)"; page_lines="$(mdo lines ',"lines":true')"
+  kanna markup longdoc >/dev/null || return 1
   check wait_for 5 eval '[[ "$(mdo markup)" == True && "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1500 pt with comments: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check test "$(mdo layout_width)" == "$page_width" || { echo "the comments list moved the page: width $page_width, then $(mdo layout_width)"; return 1; }
+  check test "$(mdo lines ',"lines":true')" == "$page_lines" || { echo "the comments list changed the line breaks"; return 1; }
   check wait_for 5 eval '[[ "$(mdo overview.marks_by_kind.comment)" == 1 ]]' || { echo "comment marks: $(mdo overview.marks_by_kind)"; return 1; }
   mdo overview.shown ',"overview_hover":true' >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
@@ -679,10 +690,115 @@ JSON
   mdshot markdown_overview-threads-dark
   mdo overview.shown ',"overview_hover":false' >/dev/null
   mdwin 1000
-  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt the overview should go first: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True && "$(mdo threads_shown)" == True ]]' || { echo "at 1000 pt both stay: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
   mdshot markdown_overview-narrow
   mdwin 500
   check wait_for 5 eval '[[ "$(mdo overview.shown)" == False && "$(mdo threads_shown)" == False ]]' || { echo "at 500 pt: overview $(mdo overview.shown), list $(mdo threads_shown)"; return 1; }
+}
+
+scenario markdown_zoom_anchor M4
+markdown_zoom_anchor() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdza" start width
+  mkdir -p "$dir"
+  {
+    printf '# Anchors\n\n'
+    for i in $(seq 60); do
+      printf '## Section %s\n\n' "$i"
+      for j in $(seq 6); do printf 'Sentence %s.%s says enough about the session, the token and the redirect to wrap across the line. ' "$i" "$j"; done
+      printf '\n\n'
+      (( i % 5 == 0 )) && printf '```mermaid\nflowchart TD\n    A%s[app] --> P%s[provider] --> R%s[redirect] --> S%s[session]\n```\n\n' "$i" "$i" "$i" "$i"
+    done
+  } >"$dir/anchors.md"
+  kanna open --window new --name zaleft --cmd 'exec sleep 600' >/dev/null || return 1
+  kanna open --window win-1 md --name zadoc --split right "$dir/anchors.md" >/dev/null || return 1
+  check wait_for 5 eval 'doc_text zadoc "Section 60"' || return 1
+  check wait_for 10 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"zadoc\"}}" | field diagrams | grep -c flowchart)" -ge 1 ]]' || return 1
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1400,800]}}' >/dev/null
+  mdz() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"zadoc\"${2:-}}}" | field "$1"; }
+  place() { echo "$(mdz scroll) | $(mdz top.text) | $(mdz top.fraction)"; }
+  sleep 0.5
+  mdz scroll ',"scroll":7000' >/dev/null; sleep 0.3
+  start="$(place)"
+  width="$(mdz layout_width)"
+  check test "$(mdz top.text)" != "" || { echo "no text at the top: $start"; return 1; }
+  for _ in $(seq 20); do
+    kanna zoom zadoc >/dev/null || return 1
+    check wait_for 5 eval '[[ "$(mdz layout_width)" != "$width" ]]' || { echo "the pane zoom didn't widen the doc"; return 1; }
+    kanna zoom zadoc >/dev/null || return 1
+    check wait_for 5 eval '[[ "$(mdz layout_width)" == "$width" ]]' || { echo "the pane unzoom didn't narrow the doc"; return 1; }
+  done
+  check test "$(place)" == "$start" || { echo "20 zooms moved the view from $start to $(place)"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"zadoc","at":[300,300]}}' >/dev/null; sleep 0.3
+  mdz scroll ',"scroll":7000' >/dev/null; sleep 0.3
+  start="$(place)"
+  key cmd+shift+=
+  check python3 -c 'import sys; assert float(sys.argv[1]) > 1, sys.argv[1]' "$(mdz zoom)" || return 1
+  check test "$(mdz top.text)" == "$(cut -d'|' -f2 <<<"$start" | xargs)" || { echo "⌘+ moved the text at the top from $start to $(place)"; return 1; }
+  key cmd+-
+  check test "$(mdz zoom)" == 1 || return 1
+  check test "$(place)" == "$start" || { echo "⌘+ then ⌘− moved the view from $start to $(place)"; return 1; }
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[900,800]}}' >/dev/null; sleep 0.5
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[1400,800]}}' >/dev/null; sleep 0.5
+  check test "$(place)" == "$start" || { echo "a window resize moved the view from $start to $(place)"; return 1; }
+  kanna markup zadoc >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdz markup)" == True ]]' || return 1
+  kanna markup zadoc --off >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdz markup)" == False ]]' || return 1
+  check test "$(place)" == "$start" || { echo "turning comments on and off moved the view from $start to $(place)"; return 1; }
+}
+
+scenario markdown_zoom M4
+markdown_zoom() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdzoom" before pinched after stepped
+  mkdir -p "$dir"
+  {
+    printf '# Zoom\n\n'
+    for i in $(seq 60); do printf '## Section %s\n\nParagraph %s about the session, the token and how the redirect is checked against the allow list before the app trusts it and opens the session.\n\n' "$i" "$i"; done
+  } >"$dir/zoom.md"
+  kanna open --window new md "$dir/zoom.md" --name zdoc >/dev/null || return 1
+  mdz() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"zdoc\",\"lines\":true${1:-}}}"; }
+  check wait_for 5 eval 'mdz | field text | grep -q "Section 60"' || return 1
+  mdz ',"scroll":1500' >/dev/null; sleep 0.5
+  before="$(mdz)"
+  pinched="$(raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"zdoc"}}')"
+  sleep 0.5
+  after="$(mdz)"
+  check python3 -c 'import json, sys
+before, pinch, after = (json.loads(a) for a in sys.argv[1:])
+z = pinch["zooms"]
+assert z and z[-1] > 1.2, ("the pinch did not zoom", z)
+assert abs(after["zoom"] - z[-1]) < 0.001, ("the zoom snapped on release", z[-1], after["zoom"])
+assert abs(after["page_zoom"] - z[-1]) < 0.001 and after["text_size"] == 1, ("a pinch is page zoom", after["text_size"], after["page_zoom"])
+assert after["top_line"] == pinch["top_lines"][-1], ("the top line moved on release", pinch["top_lines"][-1], after["top_line"])
+assert set(pinch["layout_widths"]) == {before["layout_width"]} and after["layout_width"] == before["layout_width"], ("a pinch laid the page out again", before["layout_width"], pinch["layout_widths"], after["layout_width"])
+assert after["lines"] == before["lines"], "a pinch changed the line breaks"' "$before" "$pinched" "$after" || return 1
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"zdoc","at":[40,200]}}' >/dev/null; sleep 0.3
+  key cmd+shift+=
+  stepped="$(mdz)"
+  check python3 -c 'import json, sys
+after, stepped = (json.loads(a) for a in sys.argv[1:])
+assert stepped["text_size"] == 1.1, ("⌘+ steps the text size", stepped["text_size"])
+assert abs(stepped["page_zoom"] - after["page_zoom"]) < 0.001, ("⌘+ kept the page zoom", after["page_zoom"], stepped["page_zoom"])
+assert stepped["layout_width"] < after["layout_width"] - 10, ("⌘+ re-wraps to the pane", after["layout_width"], stepped["layout_width"])
+assert stepped["lines"] != after["lines"], "⌘+ kept the line breaks"
+reading = after["top_line"]
+holding = max(l for l in stepped["lines"] if l <= reading)
+assert stepped["top_line"] == holding, ("⌘+ lost the reading line", reading, holding, stepped["top_line"])' "$after" "$stepped" || return 1
+  sleep 1
+  stop_app
+  start_app || return 1
+  check wait_for 10 eval 'mdz | field text | grep -q "Section 60"' || return 1
+  check python3 -c 'import json, sys
+stepped, back = (json.loads(a) for a in sys.argv[1:])
+assert back["text_size"] == stepped["text_size"], ("the text size came back", stepped["text_size"], back["text_size"])
+assert abs(back["page_zoom"] - stepped["page_zoom"]) < 0.001, ("the page zoom came back", stepped["page_zoom"], back["page_zoom"])' "$stepped" "$(mdz)" || return 1
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"zdoc","at":[40,200]}}' >/dev/null; sleep 0.3
+  key cmd+0
+  check python3 -c 'import json, sys
+back = json.loads(sys.argv[1])
+assert back["text_size"] == 1 and back["page_zoom"] > 1.2, ("⌘0 resets the text size only", back["text_size"], back["page_zoom"])' "$(mdz)" || return 1
 }
 
 scenario markdown_diff_overview M4
@@ -1031,7 +1147,7 @@ windows_tabs_ui() {
   mdzoom() { raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field zoom; }
   local width_before; width_before="$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)"
   key cmd+shift+=; check python3 -c 'import sys; assert float(sys.argv[1]) > 1' "$(mdzoom)" || return 1
-  check test "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)" == "$width_before" || { echo "width $width_before -> $(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)"; return 1; }
+  check python3 -c 'import sys; assert float(sys.argv[2]) < float(sys.argv[1]), sys.argv[1:]' "$width_before" "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | field layout_width)" || { echo "⌘+ didn't re-wrap"; return 1; }
   key cmd+0; check test "$(mdzoom)" == 1 || return 1
   local pinched
   pinched="$(raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"doc"}}')"
@@ -1599,6 +1715,8 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check eval 'md_comments_md | box_fits' || return 1
   sleep 0.3; md_comments_shot md_comments-long
   key escape; check test "$(md_comments_md | field box)" == None || return 1
+  xy="$(md_comments_md ',"mark":"c3"')"
+  md_comments_md ",\"scroll\":$(python3 -c 'import sys; print(max(0, float(sys.argv[1]) + float(sys.argv[2]) - 34 - 60))' "$(md_comments_md | field scroll)" "$(echo "$xy" | field y)")" >/dev/null
   for _ in 1 2 3 4 5; do md_comments_md ',"zoom":1' >/dev/null; done
   check test "$(md_comments_md | field zoom)" == 2 || return 1
   xy="$(md_comments_md ',"mark":"c3"')"
@@ -1972,9 +2090,11 @@ HTML
   page_comments_plain ',"js":"window.kept = 42; window.scrollTo(0, 300); window.scrollY"' >/dev/null
   check wait_for 5 eval '[[ "$(page_comments_plain ",\"js\":\"window.scrollY\"" | field value)" == 300 ]]' || { page_comments_plain ',"js":"window.scrollY"'; return 1; }
   kept="$(page_comments_kept)"
+  local page_width; page_width="$(page_comments_plain | field page_width)"
   KANNA_TERMINAL="$agent_id" kanna markup plain | grep -qF "comments on in" || return 1
   check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == True ]]' && check wait_for 5 eval 'page_comments_plain | grep -q threads' || { page_comments_plain; return 1; }
   check test "$(page_comments_kept)" == "$kept" || { echo "turning comments on should keep the web view, its page, its scroll and its JS state ($kept)"; return 1; }
+  check test "$(page_comments_plain | field page_width)" == "$page_width" || { echo "the comments list moved the page: width $page_width, then $(page_comments_plain | field page_width)"; return 1; }
   kanna markup plain --off | grep -qF "comments off in" || return 1
   check wait_for 5 eval '[[ "$(page_comments_plain | field markup)" == False ]]' || return 1
   [[ "$(page_comments_plain)" != *threads* ]] || { echo "turning comments off should take the comment UI away"; return 1; }
@@ -3644,7 +3764,7 @@ task_start_stop() {
   KANNA_TERMINAL="$task" kanna open --name side --cmd 'exec cat' >/dev/null || { echo "task_start_stop line $LINENO"; return 1; }
   expected="stopped $(sid 1); \`kanna task start $(sid 1)\` starts it again"; says kanna task stop "Task 1" || { echo "task_start_stop line $LINENO"; return 1; }
   check is "Task 1" state exited || { echo "task_start_stop: Task 1's agent is still running"; return 1; }
-  unwrapped "Task 1" "claude --resume $session" || { echo "task_start_stop: Task 1's agent wasn't quit with its keys"; kanna read "Task 1"; return 1; }
+  unwrapped "Task 1" "claude --model mock-model --dangerously-skip-permissions --resume $session" || { echo "task_start_stop: Task 1's agent wasn't quit with its keys"; kanna read "Task 1"; return 1; }
   ! tail -n +"$((logged + 1))" "$out/daemon.log" | grep -E "in $task (has no quit keys|didn't quit)|quit keys in $task " || { echo "task_start_stop: Task 1's agent was hung up"; return 1; }
   check is side state exited || { echo "task_start_stop: Task 1's terminal tab didn't stay, hung up"; kanna workspace list --all; return 1; }
   (cd "$repo" && kanna task list) | placed | grep -qE "^$(sid 1) +Task 1 +Desk +stopped" || { echo "task_start_stop: Task 1 left the Shelf"; (cd "$repo" && kanna task list); return 1; }
@@ -3947,6 +4067,28 @@ print("%d %s" % (i["count"], i["p95"]) if i else "0 0")')"
     || { echo "typing_latency: a keystroke's echo took ${drawn#* }ms to draw (p95), over ${bound}ms"; return 1; }
 }
 
+scenario task_restart_no_conversation M4
+task_restart_no_conversation() {
+  start_daemon && start_app || { echo "task_restart_no_conversation line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" wizard="$KANNA_STATE_DIR/mock-wizard"
+  mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" && touch "$wizard" || { echo "task_restart_no_conversation line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_restart_no_conversation line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new Wizard "say hi" --agent "$agent") >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
+  kanna task pick "$(tid 1)" >/dev/null && kanna task activate "$(tid 1)" >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
+  check wait_for 10 shows Wizard "--session-id" || { kanna read Wizard; return 1; }
+  [[ "$(pane Wizard cmd)" == *"--resume"* ]] || { echo "task_restart_no_conversation: the pane's command isn't the resuming one: $(pane Wizard cmd)"; return 1; }
+  kanna restart Wizard >/dev/null
+  check wait_for 5 shows Wizard "--session-id" || { echo "task_restart_no_conversation: restart didn't start it fresh"; kanna read Wizard; return 1; }
+  rm "$wizard"
+  kanna task stop Wizard >/dev/null && check wait_for 5 is Wizard state exited || { echo "task_restart_no_conversation: Wizard didn't stop"; return 1; }
+  kanna task start Wizard >/dev/null && check wait_for 5 shows Wizard "echo: " || { echo "task_restart_no_conversation: starting it again didn't give the first message"; kanna read Wizard; return 1; }
+  kanna read Wizard | grep -q -- "--session-id" || { echo "task_restart_no_conversation: task start didn't start it fresh"; kanna read Wizard; return 1; }
+  kanna restart Wizard >/dev/null
+  check wait_for 5 shows Wizard "--resume" || { echo "task_restart_no_conversation: with a conversation, restart didn't resume"; kanna read Wizard; return 1; }
+  kanna read Wizard | grep -q "already in use" && { echo "task_restart_no_conversation: the session was started twice"; kanna read Wizard; return 1; }
+  return 0
+}
+
 scenario task_restart_typing M4
 task_restart_typing() {
   start_daemon && start_app || { echo "task_restart_typing line $LINENO"; return 1; }
@@ -4074,7 +4216,7 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
     [[ "$(kanna task shelve "$task")" == *"to the Shelf as $id"* ]] || { echo "real_agent_tasks: $agent's task didn't move back to the Shelf as $id"; return 1; }
     [[ "$(kanna task stop "$id")" == "stopped $id on the Shelf; "* ]] || { echo "real_agent_tasks: $agent's task didn't stop"; return 1; }
     check is "$agent task" state exited || { echo "real_agent_tasks: $agent is still running"; return 1; }
-    said="$(kanna read "$agent task" | tr -d '\r\n' | grep -oE "$agent (--remote [^ ]+ )?(--)?resume [0-9a-f-]{36}" | tail -1 | grep -oE '[0-9a-f-]{36}$')"
+    said="$(kanna read "$agent task" | tr -d '\r\n' | grep -oE "$agent( --?[^ ]+( [^- ][^ ]*)?)* (--)?resume [0-9a-f-]{36}" | tail -1 | grep -oE '[0-9a-f-]{36}$')"
     [[ -n "$said" ]] || { echo "real_agent_tasks: $agent wasn't quit with its keys, so it didn't say its session"; kanna read "$agent task" --lines 60; return 1; }
     ! tail -n +"$((logged + 1))" "$out/daemon.log" | grep -E "in $task (has no quit keys|didn't quit)|quit keys in $task " || { echo "real_agent_tasks: $agent was hung up"; return 1; }
     [[ "$(raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys; print(next(t for t in json.load(sys.stdin)["shelf"] if t["id"].startswith(sys.argv[1])).get("session"))' "$id")" == "$said" ]] || { echo "real_agent_tasks: the session $agent said ($said) wasn't kept"; return 1; }
@@ -4116,6 +4258,15 @@ real_agent_program_status() {
     check wait_for 30 eval '[[ "$(reported "$pane")" == "working working" ]]' || { echo "real_agent_program_status: $agent's turn wasn't working from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; tail -2 "$agents/mock.jsonl" | cut -c1-300; return 1; }
     check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: $agent's turn didn't end idle from OSC 7501 but $(reported "$pane")"; kanna status explain "$pane"; kanna read "$pane"; return 1; }
     shows "$pane" "slow streamed answer" || { echo "real_agent_program_status: $agent didn't show the mock's answer"; kanna read "$pane"; return 1; }
+    if [[ $agent == claude ]]; then
+      rm -f "$repo/background-done.txt"
+      kanna send "$pane" "SHELL_IN_BACKGROUND" || { echo "real_agent_program_status line $LINENO"; return 1; }
+      check wait_for 60 eval 'shows "$pane" "SHELL_IN_BACKGROUND_DONE" && [[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status: claude's turn didn't end idle with its background shell running but $(reported "$pane")"; kanna read "$pane"; return 1; }
+      [[ ! -e "$repo/background-done.txt" ]] || { echo "real_agent_program_status: claude's background shell ended before its turn did"; return 1; }
+      check wait_for 30 eval '[[ -e "$repo/background-done.txt" ]]' || { echo "real_agent_program_status: claude's background shell didn't finish"; return 1; }
+      check wait_for 10 eval '[[ "$(reported "$pane")" == working* ]]' || { echo "real_agent_program_status: claude wasn't working within Shelf runners' 10s grace once its background shell ended but $(reported "$pane")"; kanna read "$pane"; return 1; }
+      check wait_for 60 eval '[[ "$(reported "$pane")" =~ ^(idle|done)" idle"$ ]]' || { echo "real_agent_program_status line $LINENO"; return 1; }
+    fi
     [[ $agent == codex ]] || continue
     kanna send "$pane" "BACKGROUND_TURN" || { echo "real_agent_program_status line $LINENO"; return 1; }
     check wait_for 60 eval 'shows "$pane" "BACKGROUND_DONE" && shows "$pane" "Worked for" && shows "$pane" "background terminal running"' || { echo "real_agent_program_status: codex's turn didn't end with a background terminal running"; kanna read "$pane"; return 1; }
@@ -4178,7 +4329,7 @@ codex_task() {
   ln -s "$mock_agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}}\n' "$fake/codex" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}, "agents": {"prompts": "skip"}}\n' "$fake/codex" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json"
   printf '{"tasks": {"agent": "touch %s/owned; claude"}}\n' "$KANNA_STATE_DIR" >"$repo/.kanna/config.json"
   in_repo task new "Codex task" "run git branch -m codex-mock-work" >/dev/null || { echo "codex_task line $LINENO"; return 1; }
   check test "$(in_repo --json task list | field shelf.0.agent)" == "$fake/codex" || { echo "codex_task: tasks.agent in your config wasn't the task's agent, or the repo's command was taken"; in_repo --json task list; return 1; }
@@ -4574,10 +4725,10 @@ planner_choice() {
   ! shows "$planner" "Folder, repo or name" || { echo "planner_choice: a Desk on a repo asked where"; return 1; }
   kanna send "$planner" 2 >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "codex plans repo from now on" || { kanna read "$planner"; return 1; }
-  check wait_for 5 shows "$planner" "Let Kanna's agents work without permission prompts?" || { echo "planner_choice: the first Desk didn't ask about permission prompts"; kanna read "$planner"; return 1; }
+  check wait_for 5 spaceless "$planner" "Let Kanna's agents work without permission prompts?" || { echo "planner_choice: the first Desk didn't ask about permission prompts"; kanna read "$planner"; return 1; }
   ! shows "$planner" "args:" || { echo "planner_choice: the agent started before the question was answered"; return 1; }
   kanna send "$planner" y >/dev/null || { echo "planner_choice line $LINENO"; return 1; }
-  check wait_for 5 shows "$planner" "Kanna's agents work without permission prompts from now on" || { kanna read "$planner"; return 1; }
+  check wait_for 5 spaceless "$planner" "Kanna's agents work without permission prompts from now on" || { kanna read "$planner"; return 1; }
   check wait_for 10 spaceless "$planner" "args: -c approval_policy=\"never\" -c sandbox_mode=\"danger-full-access\" -c model_auto_compact_token_limit=300000 You are the Kanna planning agent. --remote unix://" || { echo "planner_choice: codex didn't start as the planner"; kanna read "$planner"; return 1; }
   check grep -Eq '"prompts" ?: "skip"' "$mine" && check grep -Eq '"runners" ?: 0' "$mine" || { echo "planner_choice: the answer wasn't saved with the file's other keys"; cat "$mine"; return 1; }
   check grep -Eq '"agent" ?: "codex"' "$repo/.kanna/config.json" || { cat "$repo/.kanna/config.json"; return 1; }
@@ -4595,7 +4746,7 @@ planner_choice() {
   check wait_for 10 shows "$planner" "^resumed $session" || { echo "planner_choice: the next Desk didn't come back to the project's planner"; kanna read "$planner"; return 1; }
   spaceless "$planner" "Back to repo's planning conversation." && ! spaceless "$planner" "You are the Kanna planning agent." || { echo "planner_choice: the next Desk's planner was told again"; kanna read "$planner"; return 1; }
   ! shows "$planner" "Choose an agent" || { echo "planner_choice: the next Desk asked again"; return 1; }
-  ! shows "$planner" "permission prompts?" || { echo "planner_choice: the next Desk asked about permission prompts again"; return 1; }
+  ! spaceless "$planner" "permission prompts?" || { echo "planner_choice: the next Desk asked about permission prompts again"; return 1; }
   key cmd+n
   check wait_for 10 eval '[[ "$(desk lead d3)" == term-* ]]' || { echo "planner_choice: ⌘N opened no Desk"; kanna workspace list --all; return 1; }
   planner="$(desk lead d3)"
@@ -5192,6 +5343,29 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
   for t in $(tid 9) $(tid 11); do
     in_repo task messages $t | grep -q delivered || { echo "shelf_runners: $t didn't get its message"; in_repo task messages $t; return 1; }
   done
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude"
+  clock() { python3 -c 'import time; print(time.time())'; }
+  waited() { raw '{"id":1,"cmd":"tasks","args":{"action":"events","task":"'"$1"'"}}' | python3 -c 'import json, sys
+print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"] == "waiting" for p in (e.get("doc") or {}).get("processes", [])))'; }
+  in_repo task new "Background" "background 4" --agent "$fake/claude" >/dev/null && in_repo task new "Wakes" "background 2 wake 4" --agent "$fake/claude" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  runners 3
+  check wait_for 10 eval '[[ "$(of $(tid 13) 2)" == running && "$(of $(tid 13) 3)" == term-* ]]' || { echo "shelf_runners: the background task didn't start"; shelf; return 1; }
+  local bg; bg="$(of $(tid 13) 3)"
+  check wait_for 10 shows "$bg" BACKGROUND_STARTED || { kanna read "$bg"; return 1; }
+  check wait_for 5 is "$bg" status idle || { echo "shelf_runners: the background task didn't report idle"; kanna read "$bg"; return 1; }
+  sleep 1.5
+  check test "$(of $(tid 13) 2)" == running || { echo "shelf_runners: a task idle with its background command running was stopped"; shelf; kanna read "$bg"; return 1; }
+  check test "$(waited $(tid 13))" == "sleep 4" || { echo "shelf_runners: why it waits isn't in its events: $(waited $(tid 13))"; return 1; }
+  check wait_for 10 shows "$bg" BACKGROUND_EXITED || { kanna read "$bg"; return 1; }
+  local exited stopped; exited="$(clock)"
+  sleep 5
+  check test "$(of $(tid 13) 2)" == running || { echo "shelf_runners: the background task was stopped within the grace"; shelf; return 1; }
+  check wait_for 20 eval '[[ "$(of $(tid 13) 2)" == stopped:finished ]]' || { echo "shelf_runners: the background task didn't stop once its command was done"; shelf; return 1; }
+  stopped="$(clock)"
+  python3 -c 'import sys; sys.exit(not float(sys.argv[2]) - float(sys.argv[1]) >= 8)' "$exited" "$stopped" || { echo "shelf_runners: the background task stopped before the grace passed"; return 1; }
+  local wakes; wakes="$(of $(tid 14) 3)"
+  check wait_for 30 eval '[[ "$(of $(tid 14) 2)" == stopped:finished ]]' || { echo "shelf_runners: the task woken by its background command didn't stop"; shelf; kanna read "$wakes"; return 1; }
+  shows "$wakes" WOKE_DONE || { echo "shelf_runners: the task that worked again within the grace was stopped mid-turn"; kanna read "$wakes"; return 1; }
 }
 
 scenario agent_messaging M4
