@@ -152,7 +152,7 @@ for arch in "${archs[@]}"; do
     mkdir -p "$dist/dSYMs/$arch/$(dirname "$rel")"
     dsymutil "$binary" -o "$dist/dSYMs/$arch/$rel.dSYM"
     stripped="$(strip -S "$binary" 2>&1)" || fail "strip -S $binary failed: $stripped"
-    [[ "$(dsymutil -s "$binary" | grep -c N_OSO)" == 0 ]] || fail "$binary still has a debug map after strip -S"
+    [[ "$(dsymutil -s "$binary" | grep -Ec '^\[ *[0-9]+\] [0-9a-f]+ [0-9a-f]+ \(N_OSO ')" == 0 ]] || fail "$binary still has a debug map after strip -S"
   done
   zip="$dist/$dmg_prefix-$version-$arch-dSYMs.zip"
   ditto -c -k --norsrc --noextattr "$dist/dSYMs/$arch" "$zip"

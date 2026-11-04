@@ -928,16 +928,23 @@ impl Db {
 
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
         let mut statement = self.conn.prepare(
-            "select t.id, coalesce(json_extract(t.doc, '$.name'), t.id),
-                    coalesce((select min(at) from task_events where task = t.id and what = 'made'), t.made_at),
-                    (select min(at) from task_events where task = t.id and what = 'started'),
-                    (select min(at) from task_events where task = t.id and what = 'done')
-             from tasks t
-             where t.repo = ?1 and (t.made_at >= ?2 or exists (select 1 from task_events e where e.task = t.id and e.at >= ?2 and e.what in ('made', 'started', 'done')))
-             order by t.made_at, t.id",
+            "select id, name, made, started, done from (
+                 select t.id, coalesce(json_extract(t.doc, '$.name'), t.id) as name, t.made_at,
+                        coalesce((select min(at) from task_events where task = t.id and what = 'made'), t.made_at) as made,
+                        (select min(at) from task_events where task = t.id and what = 'started') as started,
+                        coalesce((select min(at) from task_events where task = t.id and what = 'done'),
+                                 case when t.place = 'done' then coalesce((select max(at) from task_events where task = t.id), t.made_at) end) as done
+                 from tasks t where t.repo = ?1)
+             where made >= ?2 or started >= ?2 or done is null or done >= ?2
+             order by made_at, id",
         )?;
         let rows = statement.query_map(params![repo, since], |r| Ok(Life { task: r.get(0)?, name: r.get(1)?, made: r.get(2)?, started: r.get(3)?, done: r.get(4)? }))?;
         rows.collect()
+    }
+
+    #[cfg(test)]
+    pub fn run(&self, sql: &str) {
+        self.conn.execute_batch(sql).unwrap();
     }
 
     pub fn touch_project(&self, path: &str) -> rusqlite::Result<()> {
