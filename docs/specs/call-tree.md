@@ -19,9 +19,9 @@ A fenced `calltree` block in a markdown doc draws as a call tree: one indented r
 ````markdown
 ```calltree
 kanna CLI
-main          crates/kanna/src/lib.rs:17                kanna task name t12 "New name"
-  parse       crates/kanna/src/commands.rs:440          task name TASK NAME → request
-  wire        crates/kanna/src/lib.rs:316               task name with a TASK → tasks
+main          crates/kanna/src/lib.rs:14                kanna task name t12 "New name"
+  parse       crates/kanna/src/commands/task.rs:143     task name TASK NAME → request
+  wire        crates/kanna/src/commands/task.rs:260     task name with a TASK → tasks
     -> socket {"cmd":"tasks","action":"name"}
 kanna-daemon
     Tasks::name    crates/kanna-daemon/src/tasks.rs:1043  finds the task on the Shelf

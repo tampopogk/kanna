@@ -351,11 +351,11 @@ pub mod tests {
                              "tabs": [{ "id": "tab-1", "title": "Tab 1", "active": true, "layout": { "pane": "p2" } }], "windows": [], "panes": ["p2", "p1"] }],
             "panes": [{ "id": "p1", "name": "agent", "type": "term", "state": "running", "cmd": "claude" }, { "id": "p2", "name": null, "type": "term", "state": "running" }]
         });
-        let text = crate::commands::workspace::show(&all, &reply);
+        let text = workspace::show(&all, &reply);
         assert!(text.contains("\nws-1, on the Desk\n  dock: p1 (agent)  left 2/5  frozen\n  focus: agent\n  *tab-1 \"Tab 1\"  p2"), "{text}");
         let opened = json!({ "pane": { "id": "p1", "name": "agent", "state": "running" }, "window": null, "tab": null, "dock": "left", "workspace": { "id": "ws-1", "where": { "desk": "mac" } } });
-        assert_eq!(crate::commands::open::show(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
-        assert_eq!(crate::commands::open::show(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
+        assert_eq!(open::show(&json!({}), &opened), "opened p1 (agent) docked left in ws-1 (on the Desk): running");
+        assert_eq!(open::show(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
         let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
         assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
     }

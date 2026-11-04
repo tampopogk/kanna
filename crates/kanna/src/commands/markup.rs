@@ -131,7 +131,7 @@ pub fn show(args: &Value, reply: &Value) -> String {
         return format!("comments on in {}, which already shows {shown}{tab}; focused", label(&reply["pane"]));
     }
     if args.get("type").is_some() {
-        return crate::commands::open::show(args, reply);
+        return super::open::show(args, reply);
     }
     let pane = &reply["pane"];
     let to = pane["agent"].as_str().map(|agent| format!(", sent to {agent}")).unwrap_or_default();

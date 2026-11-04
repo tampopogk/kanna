@@ -1,4 +1,4 @@
-use super::{absolute, file_line, file_url, from_caller, git_line, is_markdown, no_dock, usage, Call, Command, Flow};
+use super::{absolute, diagrams, file_line, file_url, from_caller, git_line, is_markdown, no_dock, usage, Call, Command, Flow};
 use crate::args::Argv;
 use crate::output::{label, state, whose_text};
 use crate::target::Session;
@@ -45,8 +45,8 @@ pub const COMMAND: Command = Command {
 
 fn after(request: &Value, reply: &mut Value, _: &mut Session, call: &mut Call) -> Result<(), Failure> {
     if let (Some(path), "md") = (request["path"].as_str(), request["type"].as_str().unwrap_or_default()) {
-        let undrawn = crate::commands::diagrams::check(path).map(|r| r.failures).unwrap_or_default();
-        call.warnings = undrawn.iter().map(crate::commands::diagrams::line).collect();
+        let undrawn = diagrams::check(path).map(|r| r.failures).unwrap_or_default();
+        call.warnings = undrawn.iter().map(diagrams::line).collect();
         reply["diagrams"] = Value::Array(undrawn);
     }
     Ok(())
