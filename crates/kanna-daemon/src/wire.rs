@@ -34,11 +34,11 @@ struct State {
 
 pub struct Wire {
     state: Mutex<State>,
-    events: Mutex<Sender<Event>>,
+    events: Mutex<crate::runtime::Events>,
 }
 
 impl Wire {
-    pub fn new(events: Sender<Event>) -> Wire {
+    pub fn new(events: crate::runtime::Events) -> Wire {
         Wire { state: Mutex::default(), events: Mutex::new(events) }
     }
 

@@ -125,11 +125,12 @@ final class Contents {
     func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? log(id)?.keyView ?? serial(id)?.keyView ?? run(id)?.keyView }
     func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
-    private func send(_ text: String, to agent: String, done: @escaping (String?) -> Void) {
-        guard let onCall else { return done("not connected to the daemon") }
-        onCall("send", ["pane": .string(agent), "text": .string(text)]) { answer in
-            guard answer["ok"]?.bool == true else { return done(answer["error"]?["message"]?.string ?? "send failed") }
-            done(nil)
+    private func send(_ text: String, to agent: String, doc: String, thread: String, done: @escaping (DocDelivery) -> Void) {
+        guard let onCall else { return done(.failed("not connected to the daemon")) }
+        let args: [String: JSON] = ["action": .string("comment"), "pane": .string(agent), "text": .string(text), "doc": .string(doc), "thread": .string(thread)]
+        onCall("tasks", args) { answer in
+            guard answer["ok"]?.bool == true else { return done(.failed(answer["error"]?["message"]?.string ?? "send failed")) }
+            done(answer["state"]?.string == "waiting" ? .waiting : .sent)
         }
     }
 
@@ -196,7 +197,7 @@ final class Contents {
             markdown.onFocus = { [weak self] in self?.onFocus?(id) }
             markdown.agent = pane["agent"]?.string
             markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
-            markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            markdown.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
             markdown.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             markdown.onComments = { [weak self] button in self?.onComments?(id, button) }
             if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
@@ -349,7 +350,7 @@ final class Contents {
             web.onTitleChange = { [weak self] title in self?.onUpdate?(id, ["title": .string(title)]) }
             web.agent = pane["agent"]?.string
             web.agentStatus = web.agent.flatMap { self.agentStatus?($0) }
-            web.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            web.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
             web.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             web.onComments = { [weak self] button in self?.onComments?(id, button) }
             web.onMarkup = { [weak self] markup in self?.marked(markup, in: id) }

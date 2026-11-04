@@ -20,7 +20,7 @@ mod workspace;
 pub use crate::core::{normalize_url, project, resolve, responder, TASKS_PER_PROJECT, CommandHandler, Core, OpenPrep, PrefixHandler, CoreHandle, PaneHost, Responder, TaskBook, WeakCore, CORE_COMMANDS, DEBUG_COMMANDS};
 pub use brand::Brand;
 pub use error::KmuxError;
-pub use exec::Wakeup;
+pub use exec::Timing;
 pub use instance::{Instance, DEFAULT_NAME};
 pub use layout::{pane_entry, pane_table, placement, read_pane_table, serve, Edge, LayoutCall, LayoutHost, LayoutLink, LocalLayout, Placement, SavedLayout, Scope, SplitSide, Spot};
 pub use model::Model;
