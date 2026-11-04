@@ -150,15 +150,6 @@ pub fn window(args: &Value, reply: &Value) -> String {
     }
 }
 
-pub fn pane_renamed(_: &Value, reply: &Value) -> String {
-    let pane = &reply["pane"];
-    let id = pane["id"].as_str().unwrap_or("?");
-    match pane["name"].as_str() {
-        Some(name) => format!("{id} is now \"{name}\""),
-        None => format!("{id} has no name"),
-    }
-}
-
 pub fn task(request: &Value, reply: &Value) -> String {
     let id = reply["task"].as_str().unwrap_or("?");
     match request["action"].as_str() {

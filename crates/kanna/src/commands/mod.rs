@@ -4,6 +4,7 @@ pub mod focus;
 pub mod r#move;
 pub mod move_tab;
 pub mod read;
+pub mod rename_pane;
 pub mod rename_tab;
 pub mod resize;
 pub mod restart;
@@ -151,22 +152,7 @@ pub static COMMANDS: &[Command] = &[
         show: output::window,
         flow: Flow::PLAIN,
     },
-    Command {
-        name: "rename-pane",
-        group: "Panes",
-        summary: "Give a pane a name, change it, or clear it.",
-        usage: "kanna rename-pane PANE NAME",
-        options: &[],
-        notes: "PANE is the pane's current name or its ID (see `kanna workspace list --all`). An empty NAME (\"\") clears the name, so the pane goes by its ID. No two panes share a name, and a name can't be another pane's ID.",
-        examples: &[("kanna rename-pane term-3 server", "Call term-3 \"server\"."), ("kanna rename-pane server \"\"", "Clear the name; refer to it as term-3 again.")],
-        parse: |args| {
-            let pane = args.positional().ok_or_else(|| usage("rename-pane", "missing PANE"))?;
-            let name = args.positional().ok_or_else(|| usage("rename-pane", "missing NAME (\"\" to clear it)"))?;
-            Ok(json!({ "pane": pane, "name": name }))
-        },
-        show: output::pane_renamed,
-        flow: Flow::PLAIN,
-    },
+    rename_pane::COMMAND,
     Command {
         name: "task",
         group: "Tabs and windows",
