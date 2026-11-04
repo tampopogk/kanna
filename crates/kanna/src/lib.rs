@@ -124,7 +124,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             match args.positional() {
                 None => println!("{}", overview(&target)),
                 Some(topic) if topic == "instances" => println!("{}", commands::instances::HELP),
-                Some(topic) if topic == "raw" => println!("{RAW_HELP}"),
+                Some(topic) if topic == "raw" => println!("{}", commands::raw::HELP),
                 Some(topic) if topic == "completions" => println!("{COMPLETIONS_HELP}"),
                 Some(topic) => println!("{}", help(lookup(&topic)?, &target)),
             }
@@ -157,20 +157,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             return Ok(());
         }
         "instances" => return commands::instances::run(&mut args, &invocation, wants_help),
-        "raw" => {
-            if wants_help {
-                println!("{RAW_HELP}");
-                return Ok(());
-            }
-            let text = args.positional().ok_or_else(|| fail(exit::USAGE, "raw: missing REQUEST, e.g. kanna raw '{\"cmd\":\"list\"}'"))?;
-            let request: Value = serde_json::from_str(&text).map_err(|e| fail(exit::USAGE, format!("raw: REQUEST is not valid JSON: {e}")))?;
-            let cmd = request["cmd"].as_str().ok_or_else(|| fail(exit::USAGE, "raw: REQUEST needs a \"cmd\""))?;
-            let mut session = Session::connect(&target, env)?;
-            session.host = host;
-            let reply = session.call(cmd, request.get("args").cloned().unwrap_or(json!({})))?;
-            println!("{reply}");
-            return Ok(());
-        }
+        "raw" => return commands::raw::run(&mut args, &invocation, wants_help),
         _ => {}
     }
 
@@ -291,8 +278,6 @@ const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the 
 pub const CONFIG_SCHEMA: &str = include_str!("../../../schemas/config.schema.json");
 
 const CONFIG_HELP: &str = "usage: kanna config schema\n\nKanna's settings are ~/.kanna-v4/config.json, overridden key by key by a repo's .kanna/config.json, e.g.\n  { \"version\": 1, \"planning\": { \"context\": 300000 }, \"tasks\": { \"agent\": \"codex\" }, \"shelf\": { \"runners\": 3 } }\n(agents.prompts, whether agents skip permission prompts, is read only from ~/.kanna-v4/config.json.)\n\n`kanna config schema` prints their JSON Schema: every key, its type, default and what it does.";
-
-const RAW_HELP: &str = "usage: kanna raw REQUEST\n\nSends one control-protocol request as JSON and prints the reply, e.g.\n  kanna raw '{\"cmd\":\"list\"}'\n  kanna raw '{\"cmd\":\"open\",\"args\":{\"type\":\"term\",\"name\":\"a\"}}'";
 
 fn overview(target: &Target) -> String {
     let supported = supported(target);

@@ -19,6 +19,7 @@ pub mod pipeline;
 pub mod project;
 pub mod projects;
 pub mod quiz;
+pub mod raw;
 pub mod read;
 pub mod rename_pane;
 pub mod rename_tab;
