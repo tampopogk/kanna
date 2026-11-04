@@ -166,7 +166,7 @@ extension AppController {
             }
             let page = controller.deskView
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
-                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf)]
+                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf), "dots": .array(page.shelfDots)]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
@@ -199,7 +199,7 @@ extension AppController {
                 return ["editor": .string(shown)]
             }
             let text = try? await web.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String
-            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)),
+            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)), "page_width": .number(Double(web.webView.frame.width)),
                                          "notice": web.shownNotice.map { .string($0) } ?? .null, "markup": .bool(web.markable),
                                          "view": .string(Self.identity(web)), "web_view": .string(Self.identity(web.webView)), "loads": .number(Double(web.loads))]
             guard let markup = web.markup else { return reply }
@@ -255,6 +255,7 @@ extension AppController {
         commands["debug.md"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let markdown = contents.markdown(id) else { throw KannaError("wrong_type", "not a running md pane") }
             if let step = args["zoom"]?.number { markdown.zoom(by: Int(step)) }
+            if let page = args["page_zoom"]?.number { markdown.set(pageZoom: CGFloat(page)) }
             if let y = args["scroll"]?.number { markdown.scroll(toY: CGFloat(y)) }
             if let step = args["change"]?.number { markdown.jump(by: Int(step)) }
             if let target = args["follow"]?.string { markdown.follow(target) }
@@ -275,8 +276,12 @@ extension AppController {
             let overview = self.overview(markdown.overview, wanted: markdown.overviewWanted, args: args)
             let diagrams: [JSON] = markdown.drawnDiagrams.map { ["type": .string($0.type), "labels": .array($0.labels.map { .string($0) })] }
             let images: [JSON] = markdown.drawnImages.map { .array([.number(Double($0.width)), .number(Double($0.height))]) }
-            return ["text": .string(markdown.text), "zoom": .number(Double(markdown.zoom)), "diagrams": .array(diagrams), "images": .array(images),
+            let lines: JSON = args["lines"]?.bool == true ? .array(markdown.lineStarts.map { .number(Double($0)) }) : .null
+            return ["text": .string(markdown.text), "zoom": .number(Double(markdown.zoom)), "text_size": .number(Double(markdown.textSize)),
+                    "page_zoom": .number(Double(markdown.pageZoom)), "top_line": markdown.topCharacter.map { .number(Double($0)) } ?? .null,
+                    "lines": lines, "scroll_x": .number(Double(markdown.scrollLeft)), "diagrams": .array(diagrams), "images": .array(images),
                     "render_ms": .number(markdown.renderMs), "parse_ms": .number(markdown.parseMs), "scroll": .number(Double(markdown.scrollTop)),
+                    "top": markdown.top.map { ["text": .string($0.text), "fraction": .number(Double($0.fraction))] } ?? .null,
                     "layout_width": .number(Double(markdown.layoutWidth)), "threads": .array(threads),
                     "box": markdown.commentBoxThread.map { .string($0) } ?? .null, "box_text": markdown.commentBoxText.map { .string($0) } ?? .null,
                     "active": markdown.activeThread.map { .string($0) } ?? .null, "agent": markdown.agent.map { .string($0) } ?? .null,
@@ -620,7 +625,7 @@ extension AppController {
         let magnification = CGEventField(rawValue: 113)!
         let phaseField = CGEventField(rawValue: 132)!
         let zoomGesture: Int64 = 8
-        var zooms: [JSON] = [], renders: [JSON] = []
+        var zooms: [JSON] = [], renders: [JSON] = [], tops: [JSON] = [], widths: [JSON] = []
         let phases = [(1, 0.0)] + steps.map { (2, $0) } + [(4, 0.0)]
         for (phase, value) in phases {
             guard let cg = CGEvent(source: nil) else { continue }
@@ -635,11 +640,13 @@ extension AppController {
             if phase == 2, let markdown = contents.markdown(id) {
                 zooms.append(.number(Double(markdown.zoom)))
                 renders.append(.number(markdown.renderMs))
+                tops.append(markdown.topCharacter.map { .number(Double($0)) } ?? .null)
+                widths.append(.number(Double(markdown.layoutWidth)))
             } else if phase == 2, let web = contents.web(id) {
                 zooms.append(.number(Double(web.zoom)))
             }
         }
-        return ["zooms": .array(zooms), "render_ms": .array(renders)]
+        return ["zooms": .array(zooms), "render_ms": .array(renders), "top_lines": .array(tops), "layout_widths": .array(widths)]
     }
 }
 

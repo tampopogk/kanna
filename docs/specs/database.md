@@ -48,12 +48,12 @@ flowchart LR
 | `id` | integer, key | |
 | `task` | text → `tasks.id` | |
 | `at` | real | when |
-| `what` | text | `made`, `started`, `stopped`, `exited`, `picked`, `shelved`, `activated`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
+| `what` | text | `made`, `started`, `waiting` (a Shelf turn's end held by [background work](shelf-runners.md#background-work)), `stopped`, `exited`, `picked`, `shelved`, `activated`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
 | `from_place`, `to_place` | text | where it was and went, for a move |
 | `by` | text | a pane, `user`, or `daemon` |
 | `doc` | JSON | window, exit code, old name, … |
 
-**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)).
+**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)); a doc's comment names its doc and thread in `comment` (migration 21).
 
 | Column | Type | Holds |
 |---|---|---|

@@ -117,11 +117,13 @@ impl DaemonLayout {
     pub fn save_now(&self) {
         self.save_at.set(None);
         let Some(db) = &self.db else { return };
+        let started = Instant::now();
         let Some(state) = self.owner.borrow_mut().changed_state() else { return };
         if let Err(error) = db.put_layout(&state) {
             log!("kanna-daemon: couldn't save the layout: {error}");
             self.owner.borrow_mut().forget_saved();
         }
+        crate::perf::since("layout.save", started);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {

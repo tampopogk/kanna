@@ -1,5 +1,4 @@
 use crate::Event;
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 pub const OWNER: &str = "KANNA_E2E_OWNER";
@@ -12,7 +11,7 @@ pub fn gone(pid: i32) -> bool {
     (unsafe { libc::kill(pid, 0) }) != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
-pub fn watch(events: Sender<Event>) -> Option<i32> {
+pub fn watch(events: crate::runtime::Events) -> Option<i32> {
     let pid = owner()?;
     let spawned = std::thread::Builder::new().name("kanna.lifeline".into()).spawn(move || {
         wait_for_exit(pid);
