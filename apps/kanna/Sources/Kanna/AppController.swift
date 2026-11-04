@@ -168,6 +168,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
+        contents.pageZoom = { [weak self] pane in self?.physical.pageZoom(pane) }
+        contents.onPageZoom = { [weak self] pane, zoom in self?.physical.setPageZoom(pane, zoom) }
         OverviewSetting.enabled = physical.overview
         contents.agentStatus = { [weak self] pane in self?.agentStatuses.statuses[pane] }
         contents.agentName = { [weak self] pane in self?.agentName(pane) ?? pane }
