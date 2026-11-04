@@ -20,7 +20,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     private(set) var markup: PageMarkupView?
     var agent: String? { didSet { markup?.agent = agent } }
     var agentStatus: String? { didSet { markup?.agentStatus = agentStatus } }
-    var onSend: ((String, String, @escaping (String?) -> Void) -> Void)? { didSet { markup?.onSend = onSend } }
+    var onSend: DocSend? { didSet { markup?.onSend = onSend } }
     var onMarkup: ((PageMarkupView?) -> Void)?
     var onComments: ((NSView) -> Void)?
     var agentName: ((String) -> String)? { didSet { markup?.agentName = agentName } }
