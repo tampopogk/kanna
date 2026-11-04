@@ -4,6 +4,7 @@ use crate::messages::{self, Channel, Ready, PLANNER, USER};
 use crate::replica::{self, Grant, Hlc, Permit, Replica, Roster};
 use crate::project_import;
 use crate::stacks::{self, Base, Conflict, Made, Mark, Step, Where, KANNA};
+use crate::task_events::{self, Hears, Sent, TaskEvent};
 use crate::task_scripts::{self, Cleanup, Scripts, Setup};
 use crate::Event;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -48,6 +49,8 @@ pub struct Entry {
     pub bases: Vec<Base>,
     pub stale: Vec<String>,
     pub conflict: Option<Conflict>,
+    pub hears: Hears,
+    pub sent: Vec<Sent>,
 }
 
 impl Entry {
@@ -97,6 +100,8 @@ impl Entry {
                 "bases": Value::Array(self.bases.iter().map(Base::to_value).collect()),
                 "stale": self.stale,
                 "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
+                "hears": self.hears.to_value(),
+                "sent": Value::Array(self.sent.iter().map(Sent::to_value).collect()),
             }),
         }
     }
@@ -123,6 +128,8 @@ impl Entry {
             bases: Base::list(row.doc.get("bases")),
             stale: stacks::ids(row.doc.get("stale")),
             conflict: Conflict::from_value(row.doc.get("conflict")),
+            hears: Hears::from_value(row.doc.get("hears")),
+            sent: Sent::list(row.doc.get("sent")),
         }
     }
 
@@ -876,6 +883,14 @@ fn gone() -> KmuxError {
     KmuxError::new("app_gone", "the daemon is stopping")
 }
 
+fn hears_conflicts(entry: &Entry) -> bool {
+    entry.bases.is_empty() && entry.hears.hears(TaskEvent::MainConflicts)
+}
+
+fn main_key(repo: &str) -> String {
+    format!("main:{repo}")
+}
+
 pub struct Tasks {
     state: PathBuf,
     db: Rc<Db>,
@@ -903,6 +918,7 @@ pub struct Tasks {
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     pub background: RefCell<Option<Box<dyn Fn(&str) -> Option<Vec<Process>>>>>,
@@ -927,6 +943,8 @@ pub struct Tasks {
     importing: RefCell<Option<project_import::Import>>,
     watching: Cell<bool>,
     again: Cell<bool>,
+    listening: Cell<bool>,
+    listen_again: Cell<bool>,
     heads: RefCell<Option<std::sync::mpsc::Sender<stacks::Heads>>>,
     following: RefCell<HashSet<PathBuf>>,
     news: RefCell<News>,
@@ -1077,6 +1095,7 @@ impl Tasks {
             background: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
+            on_delivered: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -1097,6 +1116,8 @@ impl Tasks {
             importing: RefCell::default(),
             watching: Cell::new(false),
             again: Cell::new(false),
+            listening: Cell::new(false),
+            listen_again: Cell::new(false),
             heads: RefCell::default(),
             following: RefCell::default(),
             news: RefCell::default(),
@@ -2516,7 +2537,10 @@ impl Tasks {
                     Some("send") => responder.reply(this.send(&args)),
                     Some("comment") => this.comment(&args, responder),
                     Some("messages") => responder.reply(this.messages(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, send, comment or messages"))),
+                    Some("subscribe") => responder.reply(this.subscribe(&args, true)),
+                    Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
+                    Some("hearing") => responder.reply(this.hearing(&args)),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, send, comment, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -2735,7 +2759,7 @@ impl Tasks {
         Ok(Map::from_iter([("task".to_string(), json!(id)), ("events".to_string(), Value::Array(events))]))
     }
 
-    fn sender(&self, args: &Value) -> (String, Option<String>) {
+    pub fn sender(&self, args: &Value) -> (String, Option<String>) {
         let Some(pane) = who(args) else { return (USER.into(), None) };
         if let Some(id) = self.task_of(pane) {
             let repo = self.known(&id).map(|e| e.repo);
@@ -2881,6 +2905,10 @@ impl Tasks {
 
     pub fn waiting(&self, message: i64) -> bool {
         self.waiting.borrow().iter().any(|m| m.id == message)
+    }
+
+    pub fn name_of(&self, recipient: &str) -> Option<String> {
+        self.known(recipient).and_then(|entry| entry.name)
     }
 
     pub fn label_of(&self, recipient: &str) -> String {
@@ -3029,6 +3057,9 @@ impl Tasks {
         }
         self.waiting.borrow_mut().retain(|m| !ids.contains(&m.id));
         self.mark_sent(&list);
+        if let Some(on_delivered) = self.on_delivered.borrow().as_ref() {
+            on_delivered(&list);
+        }
         if let Some(turn) = self.turns.borrow_mut().get_mut(&pane) {
             let status = self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status);
             *turn = Turn::underway();
@@ -4334,15 +4365,20 @@ impl Tasks {
         Some(entry)
     }
 
-    fn tell(&self, id: &str, text: String) {
-        let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == id) else { return };
+    fn tell(&self, id: &str, text: String) -> Option<i64> {
+        let entry = self.open_tasks().into_iter().find(|e| e.id == id)?;
         match self.db.put_message(id, &entry.repo, KANNA, &text, Some(messages::PROMPTING), None) {
             Ok(message) => {
                 log!("kanna-daemon: a message from {KANNA} waits for {id}");
+                let id = message.id;
                 self.waiting.borrow_mut().push(message);
                 self.refill();
+                Some(id)
             }
-            Err(error) => log!("kanna-daemon: couldn't save {KANNA}'s message for {id} in {}: {error}", db::FILE),
+            Err(error) => {
+                log!("kanna-daemon: couldn't save {KANNA}'s message for {id} in {}: {error}", db::FILE);
+                None
+            }
         }
     }
 
@@ -4445,7 +4481,7 @@ impl Tasks {
         log!("kanna-daemon: {id} is ready at {head}");
         let behind: Vec<String> = self.open_tasks().into_iter().filter(|e| !e.stale.is_empty() && e.bases.iter().any(|b| b.id == id)).map(|e| e.id).collect();
         for task in behind {
-            self.tell(&task, format!("{} is ready again: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready set`.", self.label(&id)));
+            self.emit(&task, TaskEvent::BaseMoved, format!("{} is ready again: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready set`.", self.label(&id)), None);
         }
         let freed: Vec<Value> = blocked.iter().filter_map(|e| self.known(&e.id)).filter(|e| self.waits(e).is_empty()).map(|e| json!({ "id": e.id, "name": opt(e.name.as_deref()) })).collect();
         self.changed();
@@ -4466,7 +4502,7 @@ impl Tasks {
     }
 
     fn follow(&self) {
-        let repos: HashSet<PathBuf> = self.probes().into_iter().map(|p| p.repo).collect();
+        let repos: HashSet<PathBuf> = self.open_tasks().into_iter().filter(|e| e.folder.is_some()).map(|e| PathBuf::from(e.repo)).collect();
         if *self.following.borrow() == repos {
             return;
         }
@@ -4476,8 +4512,130 @@ impl Tasks {
         let _ = to.send(stacks::Heads::Repos(repos));
     }
 
-    pub fn heads_moved(&self) {
+    pub fn heads_moved(self: &Rc<Self>) {
         self.watch();
+        self.listen();
+    }
+
+    fn listen(self: &Rc<Self>) {
+        if self.listening.get() {
+            self.listen_again.set(true);
+            return;
+        }
+        let probes = self.main_probes();
+        if probes.is_empty() {
+            return;
+        }
+        self.listening.set(true);
+        let tasks = Rc::downgrade(self);
+        crate::runtime::spawn("task events", async move {
+            let seen = crate::runtime::off_loop(move || task_events::look(probes)).await.unwrap_or_default();
+            let Some(tasks) = tasks.upgrade() else { return };
+            tasks.listening.set(false);
+            tasks.listened(seen);
+            if tasks.listen_again.replace(false) {
+                tasks.listen();
+            }
+        });
+    }
+
+    fn main_probes(&self) -> Vec<task_events::Probe> {
+        let mut probes: Vec<task_events::Probe> = vec![];
+        for entry in self.open_tasks() {
+            let Some(folder) = entry.folder.clone() else { continue };
+            let task = task_events::TaskProbe { id: entry.id.clone(), folder: PathBuf::from(folder), conflicts: hears_conflicts(&entry), commits: entry.hears.hears(TaskEvent::MainMoved) };
+            match probes.iter_mut().find(|p| p.repo == Path::new(&entry.repo)) {
+                Some(probe) => probe.tasks.push(task),
+                None => probes.push(task_events::Probe { repo: PathBuf::from(&entry.repo), last: self.last_main(&entry.repo), tasks: vec![task] }),
+            }
+        }
+        probes
+    }
+
+    fn last_main(&self, repo: &str) -> Option<task_events::Main> {
+        self.db.meta(&main_key(repo)).ok().flatten().and_then(|text| task_events::Main::saved(&text))
+    }
+
+    fn listened(&self, seen: Vec<task_events::Seen>) {
+        let moved = seen.iter().any(|repo| !repo.tasks.is_empty());
+        for repo in seen {
+            let key = repo.repo.to_string_lossy().into_owned();
+            if self.last_main(&key).as_ref() != Some(&repo.main) {
+                if let Err(error) = self.db.put_meta(&main_key(&key), &repo.main.text()) {
+                    log!("kanna-daemon: couldn't save {key}'s main in {}: {error}", db::FILE);
+                }
+            }
+            for task in &repo.tasks {
+                self.heard_main(task, &repo.main.branch);
+            }
+        }
+        if moved {
+            self.changed();
+        }
+    }
+
+    fn heard_main(&self, task: &task_events::SeenTask, main: &str) {
+        let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == task.id) else { return };
+        let waiting = |event| Sent::of(&entry.sent, event).is_some_and(|sent| self.waiting(sent.message));
+        if hears_conflicts(&entry) {
+            let event = TaskEvent::MainConflicts;
+            match task_events::conflict_step(task, Sent::of(&entry.sent, event), waiting(event)) {
+                task_events::Step::Tell { about } => self.emit(&entry.id, event, task_events::conflict_text(main, &task.conflicts), Some(about)),
+                task_events::Step::Over => {
+                    self.alter(&entry.id, Change::new("conflict over").by(Some("daemon")), |e| e.sent.iter_mut().filter(|s| s.event == event.name()).for_each(|s| s.about = None));
+                }
+                task_events::Step::Nothing => {}
+            }
+        }
+        if task.ahead > 0 && !waiting(TaskEvent::MainMoved) {
+            self.emit(&entry.id, TaskEvent::MainMoved, task_events::moved_text(main, task), None);
+        }
+    }
+
+    fn emit(&self, id: &str, event: TaskEvent, text: String, about: Option<String>) {
+        let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == id) else { return };
+        if !entry.hears.hears(event) {
+            log!("kanna-daemon: {id} doesn't hear {}", event.name());
+            return;
+        }
+        let Some(message) = self.tell(id, text) else { return };
+        let sent = Sent { event: event.name().to_string(), message, about, at: now() };
+        self.alter(id, Change::new("event").by(Some("daemon")).with("event", json!(event.name())).with("message", json!(message)), |e| {
+            e.sent.retain(|s| s.event != sent.event);
+            e.sent.push(sent.clone());
+        });
+    }
+
+    fn subscribe(&self, args: &Value, on: bool) -> Result<Map, KmuxError> {
+        let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
+        let id = self.task_of(reference).or(self.resolve(reference)?).ok_or_else(|| not_found(reference))?;
+        let named = string(args, "event").ok_or_else(|| bad(format!("say which event: {}", TaskEvent::names())))?;
+        let event = TaskEvent::parse(named).ok_or_else(|| bad(format!("no event \"{named}\": {}", TaskEvent::names())))?;
+        let entry = self.open_tasks().into_iter().find(|e| e.id == id).ok_or_else(|| KmuxError::new("done", format!("{} is done", self.short(&id))))?;
+        let changed = entry.hears.hears(event) != on;
+        let entry = match changed {
+            true => self.alter(&id, Change::new(if on { "subscribed" } else { "unsubscribed" }).by(who(args)).with("event", json!(event.name())), |e| e.hears.set(event, on)).ok_or_else(|| not_found(reference))?,
+            false => entry,
+        };
+        Ok(Map::from_iter([("task".to_string(), json!(self.short(&id))), ("event".to_string(), json!(event.name())), ("on".to_string(), json!(on)), ("changed".to_string(), json!(changed)), ("hears".to_string(), json!(entry.hears.names()))]))
+    }
+
+    fn hearing(&self, args: &Value) -> Result<Map, KmuxError> {
+        let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
+        let id = self.task_of(reference).or(self.resolve(reference)?).ok_or_else(|| not_found(reference))?;
+        let entry = self.known(&id).ok_or_else(|| not_found(reference))?;
+        let failed = |error: rusqlite::Error| KmuxError::new("failed", format!("couldn't read {id}'s events: {error}"));
+        let messages = self.db.messages(Some(&id)).map_err(failed)?;
+        let sent = self.db.events(&id).map_err(failed)?;
+        let sent = sent
+            .iter()
+            .filter(|logged| logged.what == "event")
+            .map(|logged| {
+                let message = messages.iter().find(|m| Some(m.id) == logged.doc.get("message").and_then(Value::as_i64));
+                json!({ "at": num(logged.at), "event": string(&logged.doc, "event"), "delivered": message.and_then(|m| m.delivered).map(num), "text": message.map(|m| m.text.as_str()) })
+            })
+            .collect();
+        Ok(Map::from_iter([("task".to_string(), json!(self.short(&id))), ("hears".to_string(), json!(entry.hears.names())), ("sent".to_string(), Value::Array(sent))]))
     }
 
     fn watch(&self) {
@@ -4535,7 +4693,7 @@ impl Tasks {
                         true => format!(" Nothing you build on is outside {main} now: you're an ordinary task again, and can merge into {main} once you're done."),
                         false => format!(" You still merge after {}.", left.bases.iter().map(|b| self.label(&b.id)).collect::<Vec<_>>().join(", ")),
                     };
-                    self.tell(&id, format!("{}'s work is in {main} now: merge {main} into your branch (git merge {main}).{rest}", self.label(&base)));
+                    self.emit(&id, TaskEvent::BaseMerged, format!("{}'s work is in {main} now: merge {main} into your branch (git merge {main}).{rest}", self.label(&base)), None);
                 }
                 Step::Stale { id, behind, waiting } => {
                     log!("kanna-daemon: {id} is stale: behind {behind:?}, on stale {waiting:?}");
@@ -4554,7 +4712,7 @@ impl Tasks {
                         let names: Vec<String> = waiting.iter().map(|b| self.label(b)).collect();
                         said.push(format!("{} is stale, so this task is too: what it builds on moved. Wait for it: you get a message when it's ready again; then merge its branch, rerun the tests and run `kanna task ready set`.", names.join(", ")));
                     }
-                    self.tell(&id, said.join(" "));
+                    self.emit(&id, TaskEvent::BaseMoved, said.join(" "), None);
                 }
             }
         }
@@ -5333,7 +5491,7 @@ mod tests {
 
     #[test]
     fn entries_round_trip_through_the_db() {
-        let entry = Entry { id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, ready: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()] };
+        let entry = Entry { id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, ready: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }] };
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).held, None, "a task on the Shelf isn't held");
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the Shelf");
@@ -5821,6 +5979,196 @@ mod tests {
         assert_eq!((kept.bases, kept.ready), (entry(&c).bases, None), "the stack survives a restart");
         let events = tasks.db.events(&b).unwrap().into_iter().map(|e| e.what).collect::<Vec<_>>();
         assert!(["ready", "stale", "base merged"].iter().all(|what| events.iter().any(|e| e == what)), "{events:?}");
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    fn main_rig(name: &str, tracked: &str) -> (PathBuf, kanna_mux::Core, Tasks) {
+        let state = std::env::temp_dir().join(format!("kanna-main-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let state = fs::canonicalize(&state).unwrap();
+        rig_sh(&state, &format!("git init -q -b main && git config user.name e && git config user.email e@e && for f in {tracked}; do echo base >$f; done && git add . && git commit -q -m first"));
+        let core = kanna_mux::Core::default();
+        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        (state, core, tasks)
+    }
+
+    fn rig_sh(dir: &Path, script: &str) {
+        let out = Command::new("/bin/sh").arg("-c").arg(script).current_dir(dir).env("GIT_AUTHOR_NAME", "e").env("GIT_AUTHOR_EMAIL", "e@e").env("GIT_COMMITTER_NAME", "e").env("GIT_COMMITTER_EMAIL", "e@e").output().unwrap();
+        assert!(out.status.success(), "{script}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn rig_task(tasks: &Tasks, state: &Path, name: &str) -> (String, PathBuf) {
+        let repo = state.to_str().unwrap();
+        let id = tasks.add(&json!({ "repo": repo, "name": name })).map(|m| string(&m["task"], "id").unwrap().to_string()).unwrap();
+        let (folder, _) = make_worktree(state, &id, None).unwrap();
+        tasks.entries.borrow_mut().iter_mut().find(|e| e.id == id).unwrap().folder = Some(folder.clone());
+        (id, PathBuf::from(folder))
+    }
+
+    fn listen(tasks: &Tasks) {
+        tasks.listened(task_events::look(tasks.main_probes()));
+    }
+
+    fn told(tasks: &Tasks, id: &str) -> Vec<String> {
+        tasks.waiting.borrow().iter().filter(|m| m.recipient == id && m.sender == KANNA).map(|m| m.text.clone()).collect()
+    }
+
+    fn deliver_all(tasks: &Tasks) {
+        let ids: Vec<i64> = tasks.waiting.borrow().iter().map(|m| m.id).collect();
+        tasks.db.delivered(&ids).unwrap();
+        tasks.waiting.borrow_mut().clear();
+    }
+
+    #[test]
+    fn main_moving_into_a_conflict_leaves_one_message_until_the_branch_merges_it() {
+        let (state, _core, tasks) = main_rig("conflict", "f g h");
+        let (a, fa) = rig_task(&tasks, &state, "A");
+        let (calm, fc) = rig_task(&tasks, &state, "Calm");
+        rig_sh(&fa, "echo a >f && git commit -q -am a");
+        rig_sh(&fc, "echo c >h && git commit -q -am c");
+        listen(&tasks);
+        assert!(told(&tasks, &a).is_empty(), "the first look only records main");
+
+        rig_sh(&state, "echo main >f && git commit -q -am m1");
+        listen(&tasks);
+        assert_eq!(told(&tasks, &a), vec!["main conflicts with your branch in f: merge or rebase main, rerun your tests, then carry on with what you were doing.".to_string()]);
+        assert!(told(&tasks, &calm).is_empty(), "no conflict, no message");
+        let message = tasks.waiting.borrow().iter().find(|m| m.recipient == a).cloned().unwrap();
+        assert_eq!(message.mode.as_deref(), Some(messages::PROMPTING), "Kanna's messages come in the envelope");
+        assert!(fs::read_to_string(fa.join("f")).unwrap() == "a\n" && !fa.join(".git/MERGE_HEAD").exists(), "the worktree isn't touched");
+
+        rig_sh(&fa, "echo a >g && git commit -q -am a2");
+        rig_sh(&state, "echo main >g && git commit -q -am m2");
+        listen(&tasks);
+        assert_eq!(told(&tasks, &a).len(), 1, "a move while one waits leaves no second one, even with new files");
+
+        deliver_all(&tasks);
+        rig_sh(&state, "git commit -q --allow-empty -m m3");
+        listen(&tasks);
+        assert_eq!(told(&tasks, &a).len(), 1, "main moved and new files conflict since the message it last took");
+        assert!(told(&tasks, &a)[0].contains("in f, g:"), "{:?}", told(&tasks, &a));
+
+        deliver_all(&tasks);
+        rig_sh(&state, "git commit -q --allow-empty -m m4");
+        listen(&tasks);
+        assert!(told(&tasks, &a).is_empty(), "the same files aren't told again");
+
+        rig_sh(&fa, "git merge -q main; echo merged >f && echo merged >g && git add . && git commit -q -m merged");
+        rig_sh(&state, "echo main2 >f && git commit -q -am m5");
+        listen(&tasks);
+        assert_eq!(told(&tasks, &a).len(), 1, "it merged, so the same file conflicts afresh");
+
+        deliver_all(&tasks);
+        rig_sh(&state, "git revert --no-edit HEAD >/dev/null");
+        listen(&tasks);
+        assert!(told(&tasks, &a).is_empty());
+        assert!(tasks.known(&a).unwrap().sent[0].about.is_none(), "the conflict is over");
+
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn unsubscribing_stops_an_event_and_main_moved_is_heard_only_by_who_asked() {
+        let (state, core, tasks) = main_rig("subscribe", "f h");
+        let (a, fa) = rig_task(&tasks, &state, "A");
+        let (b, _) = rig_task(&tasks, &state, "B");
+        rig_sh(&fa, "echo a >f && git commit -q -am a");
+        listen(&tasks);
+
+        let said = tasks.subscribe(&json!({ "task": a, "event": "main-conflicts" }), false).unwrap();
+        assert_eq!((said["changed"].clone(), said["hears"].clone()), (json!(true), json!(["base-merged", "base-moved"])));
+        assert_eq!(tasks.subscribe(&json!({ "task": a, "event": "main-conflicts" }), false).unwrap()["changed"], json!(false));
+        assert!(tasks.subscribe(&json!({ "task": a, "event": "main-wobbled" }), true).unwrap_err().message.contains("main-conflicts, main-moved, base-merged, base-moved"));
+        tasks.subscribe(&json!({ "task": b, "event": "main-moved" }), true).unwrap();
+
+        rig_sh(&state, "echo main >f && git commit -q -am 'a commit on main'");
+        listen(&tasks);
+        assert!(told(&tasks, &a).is_empty(), "unsubscribed from conflicts, and never asked for moves");
+        let text = told(&tasks, &b);
+        assert_eq!(text.len(), 1);
+        assert!(text[0].starts_with("main moved: 1 commit your branch hasn't merged yet.\n") && text[0].ends_with(" a commit on main"), "{text:?}");
+        rig_sh(&state, "git commit -q --allow-empty -m another");
+        listen(&tasks);
+        assert_eq!(told(&tasks, &b).len(), 1, "one waiting per task and event");
+
+        deliver_all(&tasks);
+        rig_sh(&state, "git commit -q --allow-empty -m third");
+        listen(&tasks);
+        assert!(told(&tasks, &b)[0].starts_with("main moved: 3 commits"), "all that's new to the branch: {:?}", told(&tasks, &b));
+
+        let heard = tasks.hearing(&json!({ "task": b })).unwrap();
+        assert_eq!(heard["hears"], json!(["main-conflicts", "main-moved", "base-merged", "base-moved"]));
+        let sent = heard["sent"].as_array().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["event"], json!("main-moved"));
+        assert!(sent[0]["delivered"].is_number() && sent[1]["delivered"].is_null(), "{sent:?}");
+
+        let again = Tasks::open(tasks.db.clone(), &state, core.weak(), crate::runtime::channel().0);
+        assert!(!again.known(&a).unwrap().hears.hears(TaskEvent::MainConflicts), "what it hears survives a restart");
+        assert_eq!(again.last_main(state.to_str().unwrap()).unwrap().head, git(&state, &["rev-parse", "HEAD"]).unwrap(), "and so does the last main");
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn a_task_that_merged_its_branch_hears_nothing_of_it() {
+        let (state, _core, tasks) = main_rig("own-merge", "f g");
+        let (merging, fm) = rig_task(&tasks, &state, "Merging");
+        let (peer, fp) = rig_task(&tasks, &state, "Peer");
+        let (calm, fc) = rig_task(&tasks, &state, "Calm");
+        for id in [&merging, &peer, &calm] {
+            tasks.subscribe(&json!({ "task": id, "event": "main-moved" }), true).unwrap();
+        }
+        rig_sh(&fm, "echo merging >f && git commit -q -am merging");
+        rig_sh(&fp, "echo peer >f && git commit -q -am peer");
+        rig_sh(&fc, "echo calm >g && git commit -q -am calm");
+        listen(&tasks);
+
+        rig_sh(&state, &format!("git merge -q --no-ff --no-edit {}", git(&fm, &["rev-parse", "HEAD"]).unwrap()));
+        listen(&tasks);
+        assert!(told(&tasks, &merging).is_empty(), "its own merge moved main");
+        assert_eq!(told(&tasks, &peer).len(), 2, "the others hear it: a conflict and a move");
+        assert_eq!(told(&tasks, &calm).len(), 1);
+
+        deliver_all(&tasks);
+        rig_sh(&state, "git commit -q --allow-empty -m later");
+        listen(&tasks);
+        assert!(told(&tasks, &merging).is_empty(), "a merged task stays out of later moves too");
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn a_stacked_task_hears_its_ripple_and_no_main_conflicts_and_going_deaf_leaves_it_stale() {
+        let (state, _core, tasks) = main_rig("stacked", "f h");
+        let (a, fa) = rig_task(&tasks, &state, "A");
+        let (b, fb) = rig_task(&tasks, &state, "B");
+        rig_sh(&fa, "echo a >h && git commit -q -am a");
+        rig_sh(&fb, &format!("git merge -q --ff-only {} && echo b >f && git commit -q -am b", git(&fa, &["rev-parse", "HEAD"]).unwrap()));
+        let base = Base { id: a.clone(), branch: a.clone(), head: git(&fa, &["rev-parse", "HEAD"]).unwrap() };
+        tasks.entries.borrow_mut().iter_mut().find(|e| e.id == b).unwrap().bases = vec![base];
+        tasks.mark(&json!({ "task": a })).unwrap();
+        listen(&tasks);
+
+        rig_sh(&state, "echo main >f && git commit -q -am m1");
+        listen(&tasks);
+        assert!(told(&tasks, &b).is_empty(), "a stacked task can't take main's conflicts until its base lands");
+
+        rig_sh(&fa, "git commit -q --allow-empty -m a2");
+        tasks.watched(stacks::look(tasks.probes()));
+        assert_eq!(told(&tasks, &b).len(), 1, "as it always was");
+        assert!(told(&tasks, &b)[0].contains("moved since this task was built on it"));
+        let events: Vec<_> = tasks.hearing(&json!({ "task": b })).unwrap()["sent"].as_array().unwrap().iter().map(|s| s["event"].clone()).collect();
+        assert_eq!(events, vec![json!("base-moved")]);
+
+        tasks.subscribe(&json!({ "task": b, "event": "base-moved" }), false).unwrap();
+        deliver_all(&tasks);
+        let task = |id: &String| tasks.entries.borrow().iter().find(|e| e.id == *id).cloned().unwrap();
+        tasks.entries.borrow_mut().iter_mut().find(|e| e.id == b).unwrap().stale.clear();
+        rig_sh(&fa, "git commit -q --allow-empty -m a3");
+        tasks.mark(&json!({ "task": a })).unwrap();
+        tasks.watched(stacks::look(tasks.probes()));
+        assert!(told(&tasks, &b).is_empty(), "unsubscribed");
+        assert_eq!(task(&b).stale, vec![a.clone()], "it goes stale all the same");
         let _ = fs::remove_dir_all(&state);
     }
 

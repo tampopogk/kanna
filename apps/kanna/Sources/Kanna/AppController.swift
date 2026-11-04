@@ -260,6 +260,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
+        link.onSchedules = { [weak self] in self?.schedulesChanged(on: machine) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
             self?.contents.update(pane)
@@ -326,6 +327,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.subscribeLogs(on: machine)
         contents.subscribeFiles(on: machine)
         contents.subscribeSerials(on: machine)
+        schedulesChanged(on: machine)
         loadRecent()
         layoutChanged()
         if machine == nil {
@@ -691,6 +693,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.page = page
             if page == WindowController.pages[1] { links?.refresh() }
             if page == WindowController.pages[2] { loadStats(controller) }
+            if page == WindowController.pages[3] { loadSchedules(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }

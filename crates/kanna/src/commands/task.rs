@@ -8,7 +8,7 @@ pub const COMMAND: Command = Command {
     name: "task",
     group: "Tabs and windows",
     summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-    usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
+    usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task subscribe|unsubscribe EVENT [TASK]\n       kanna task events [TASK]\n       kanna task done [TASK] [--keep]",
     options: &[
         ("--agent CMD", "new: the agent to start (default: claude)."),
         ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
@@ -44,11 +44,13 @@ pub const COMMAND: Command = Command {
         ("kanna task send 71af \"Is your spec at docs/specs/x.md final?\"", "Leave task-71af a message: it gets it when its turn is over, and answers with kanna task send."),
         ("kanna task send planner \"The spec is final\"", "Tell this repo's planning agent something, when the user asks you to."),
         ("kanna task messages 71af", "task-71af's messages: sent, received, and whether each was delivered."),
+        ("kanna task subscribe main-moved 71af", "task-71af also hears every move of main."),
+        ("kanna task events 71af", "What task-71af hears, and every event message it was sent."),
         ("kanna task done agent", "End the task docked as agent: close its agent and tabs."),
         ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
     ],
     parse: |args| {
-        let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages or done"))?;
+        let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages, subscribe, unsubscribe, events or done"))?;
         let action = match action.as_str() {
             "defer" => "shelve".to_string(),
             "pull" => "activate".to_string(),
@@ -164,6 +166,16 @@ pub const COMMAND: Command = Command {
                     out["task"] = json!(task);
                 }
             }
+            "subscribe" | "unsubscribe" => {
+                out["event"] = json!(args.positional().ok_or_else(|| usage("task", &format!("{action} needs an EVENT: main-conflicts, main-moved, base-merged or base-moved")))?);
+                let task = args.positional().or_else(|| caller());
+                out["task"] = json!(task.ok_or_else(|| usage("task", &format!("{action} needs a TASK, or run it from the task's terminal")))?);
+            }
+            "events" => {
+                out["action"] = json!("hearing");
+                let task = args.positional().or_else(|| caller());
+                out["task"] = json!(task.ok_or_else(|| usage("task", "events needs a TASK, or run it from the task's terminal"))?);
+            }
             "done" => {
                 if args.flag("--keep") {
                     out["keep"] = json!(true);
@@ -171,9 +183,9 @@ pub const COMMAND: Command = Command {
                 let task = args.positional().or_else(|| caller());
                 out["task"] = json!(task.ok_or_else(|| usage("task", "done needs a TASK (see `kanna task list`)"))?);
             }
-            other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages or done)"))),
+            other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages, subscribe, unsubscribe, events or done)"))),
         }
-        if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "move", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+        if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "move", "done", "park", "activate", "subscribe", "unsubscribe"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
             if let Some(by) = caller() {
                 out["by"] = json!(by);
             }
@@ -260,7 +272,7 @@ fn before(request: &mut Value, mux: &mut Session) -> Result<Call, Failure> {
 fn wire(request: &Value) -> &'static str {
     let action = request["action"].as_str().unwrap_or("");
     match action {
-        "new" | "edit" | "ready" | "unready" | "start" | "stop" | "setup" | "pick" | "shelve" | "move" | "send" | "messages" | "done" => "tasks",
+        "new" | "edit" | "ready" | "unready" | "start" | "stop" | "setup" | "pick" | "shelve" | "move" | "send" | "messages" | "subscribe" | "unsubscribe" | "hearing" | "done" => "tasks",
         "name" if request.get("task").is_some() => "tasks",
         "name" => "rename-pane",
         "park" | "activate" | "desk" => "desk",
@@ -508,6 +520,37 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 (to, _) => format!("queued for {to}: it gets it at its prompt"),
             };
             said + &warning
+        }
+        Some("subscribe") | Some("unsubscribe") => {
+            let (task, event) = (reply["task"].as_str().unwrap_or("?"), reply["event"].as_str().unwrap_or("?"));
+            match (reply["on"] == json!(true), reply["changed"] == json!(true)) {
+                (true, true) => format!("{task} hears {event}"),
+                (true, false) => format!("{task} already hears {event}"),
+                (false, true) => format!("{task} no longer hears {event}"),
+                (false, false) => format!("{task} doesn't hear {event}"),
+            }
+        }
+        Some("hearing") => {
+            let names = |v: &Value| v.as_array().map_or(String::new(), |l| l.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+            let sent = reply["sent"].as_array().cloned().unwrap_or_default();
+            let mut lines = vec![format!("hears: {}", names(&reply["hears"]))];
+            let rows: Vec<[String; 4]> = sent
+                .iter()
+                .map(|s| {
+                    let text: String = s["text"].as_str().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+                    let text = if text.chars().count() > 60 { format!("{}…", text.chars().take(59).collect::<String>()) } else { text };
+                    [ago(now - s["at"].as_f64().unwrap_or(now)), s["event"].as_str().unwrap_or("?").to_string(), if s["delivered"].is_null() { "waiting" } else { "delivered" }.to_string(), text]
+                })
+                .collect();
+            if !rows.is_empty() {
+                let head = ["SENT", "EVENT", "STATE", "TEXT"];
+                let width = |i: usize| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0).max(head[i].len());
+                let line = |r: [&str; 4]| format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = width(0), w1 = width(1), w2 = width(2)).trim_end().to_string();
+                lines.push(line(head));
+                lines.extend(rows.iter().map(|r| line([&r[0], &r[1], &r[2], &r[3]])));
+            }
+            lines.join("\n")
         }
         Some("messages") => {
             let list = reply["messages"].as_array().cloned().unwrap_or_default();

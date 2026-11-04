@@ -4546,7 +4546,7 @@ assert t["code", "lines-covered"]["note"].startswith("not set up"), t["code", "l
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
   local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "stats_tab line $LINENO: $opened"; return 1; }
   d="${BASH_REMATCH[1]}"
-  check wait_for 10 eval '[[ "$(desk pages "$d")" == '"'"'["Desk", "Machines", "Stats"]'"'"' ]]' || { echo "stats_tab: the Desk view's fixed tabs"; desk pages "$d"; return 1; }
+  check wait_for 10 eval '[[ "$(desk pages "$d")" == '"'"'["Desk", "Machines", "Stats", "Schedules"]'"'"' ]]' || { echo "stats_tab: the Desk view's fixed tabs"; desk pages "$d"; return 1; }
   raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\",\"size\":[1300,900]}}" >/dev/null
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Machines\",\"window\":\"$d\"}}" >/dev/null
   check wait_for 5 eval '[[ "$(desk machinesPage "$d")" == True ]]' || { echo "stats_tab: the Machines tab"; return 1; }
@@ -4573,6 +4573,12 @@ assert shown["code", "erosion"]["figure"] == "100%" and shown["code", "worst"]["
   check wait_for 10 eval 'kanna workspace list --all --json | python3 -c "import json, sys; panes = json.load(sys.stdin)[\"panes\"]; sys.exit(0 if any(p.get(\"type\") == \"code\" and p.get(\"path\", \"\").endswith(\"/src/lib.rs\") and p.get(\"line\") == 1 for p in panes) else 1)"' || { echo "stats_tab: clicking busy opened no code tab at src/lib.rs:1: $clicked $(state | tr -d '\n' | cut -c1-400)"; return 1; }
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Stats\",\"window\":\"$d\"}}" >/dev/null
   check wait_for 5 eval '[[ "$(desk statsPage "$d")" == True ]]' || { echo "stats_tab: back to the Stats tab"; return 1; }
+  python3 -c '
+import json, sys
+sections = json.loads(sys.argv[1])
+bands = [s["band"] for s in sections]
+assert len(bands) >= 4 and all(b and b["height"] >= 28 and b["width"] > 200 for b in bands), bands
+assert len({b["x"] for b in bands}) == 1 and all(a["y"] + a["height"] < b["y"] for a, b in zip(bands, bands[1:])), bands' "$(desk statsSections "$d")" || { echo "stats_tab: the section headings' bands"; return 1; }
   sleep 0.5; snap "$d" stats_tab-dark >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
   snap "$d" stats_tab-light >/dev/null
@@ -4653,6 +4659,121 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   check test "$(kanna read "$term" | grep -c 'message from schedule hello')" -eq 1 || { echo "scheduler: the message came more than once"; kanna read "$term"; return 1; }
   schedule list | grep -E '^s2 ' | grep -q waiting && { echo "scheduler: still waiting after it was delivered"; schedule list; return 1; }
   [[ "$(schedule remove hello)" == "removed s2 hello" ]] || { echo "scheduler line $LINENO"; return 1; }
+}
+
+scenario schedules_tab M4
+schedules_tab() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" other="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/aaa" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$other" "$fake" && git -C "$repo" init -q -b main && git -C "$other" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "schedules_tab line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"; other="$(cd "$other" && pwd -P)"
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  start_daemon && start_app || { echo "schedules_tab line $LINENO"; return 1; }
+  schedule() { (cd "$repo" && kanna schedule "$@"); }
+  local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "schedules_tab line $LINENO: $opened"; return 1; }
+  d="${BASH_REMATCH[1]}"
+  terminal_of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+r = json.load(sys.stdin)
+t = [t for t in r["desk"] + r["shelf"] if t["id"] == sys.argv[1]][0]
+print(t.get("pane") or t.get("held") or "")' "$1"; }
+  local busy term; busy="$(cd "$repo" && kanna --json task new "Sched target" "work 1" --agent "$fake/codex" | field task.id)" || { echo "schedules_tab line $LINENO"; return 1; }
+  kanna task pick "$busy" >/dev/null || { echo "schedules_tab line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ -n "$(terminal_of $busy)" ]]' || { echo "schedules_tab: the task didn't run"; return 1; }
+  term="$(terminal_of $busy)"
+  check wait_for 15 is "$term" status idle || { echo "schedules_tab: the task never went idle"; return 1; }
+  (cd "$other" && kanna schedule list) >/dev/null || { echo "schedules_tab line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  shown() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\"}}" | python3 -c "$1"; }
+  rowis() { shown 'import json, sys
+rows = {r["name"]: r for r in json.load(sys.stdin)["schedules"] if r["repo"] == "'"$repo"'"}
+r = rows.get("ping")
+sys.exit(0 if r is not None and ('"$1"') else 1)'; }
+  click() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"schedule\":\"$1\",\"window\":\"$d\"}}" | grep -q '"ok":true'; }
+  schedule add every 5m "$busy" "hello from the tab" --name ping >/dev/null || { echo "schedules_tab line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk pages "$d")" == '"'"'["Desk", "Machines", "Stats", "Schedules"]'"'"' ]]' || { echo "schedules_tab: the Desk view's fixed tabs"; desk pages "$d"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\",\"size\":[1300,900]}}" >/dev/null
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Schedules\",\"window\":\"$d\"}}" >/dev/null
+  check wait_for 5 eval '[[ "$(desk schedulesPage "$d")" == True ]]' || { echo "schedules_tab: the Schedules tab"; return 1; }
+  check wait_for 5 rowis 'r["rule"] == "every 5m" and r["target"] == "Sched target" and not r["waiting"] and not r["firings"]' || { echo "schedules_tab: no row for ping"; desk schedules "$d"; return 1; }
+  check test "$(desk scheduleGroups "$d")" == "[\"$repo\", \"$other\"]" || { echo "schedules_tab: the groups' order"; desk scheduleGroups "$d"; return 1; }
+  raw '{"id":1,"cmd":"debug.clock","args":{"advance":301}}' | grep -q '"ok":true' || { echo "schedules_tab: the daemon has no test clock"; return 1; }
+  check wait_for 10 rowis 'len(r["firings"]) == 1 and r["firings"][0]["state"] in ("waiting", "delivered")' || { echo "schedules_tab: a firing didn't appear, live"; desk schedules "$d"; schedule list; return 1; }
+  check wait_for 20 rowis 'r["firings"][0]["state"] == "delivered" and not r["waiting"]' || { echo "schedules_tab: the delivery didn't appear, live"; desk schedules "$d"; schedule list; return 1; }
+  check wait_for 15 is "$term" status idle || { echo "schedules_tab: the turn didn't end"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"schedule\",\"args\":{\"action\":\"reply\",\"schedule\":\"ping\",\"repo\":\"$repo\",\"text\":\"All green.\",\"by\":\"$term\"}}" | grep -q '"ok":true' || { echo "schedules_tab: the target couldn't reply"; return 1; }
+  check wait_for 5 rowis 'r["firings"][0]["note"] == "All green."' || { echo "schedules_tab: the reply didn't appear"; desk schedules "$d"; return 1; }
+  click "$(schedule list | awk '$2 == "ping" {print $1}'):pause" || { echo "schedules_tab: no Pause button"; return 1; }
+  check wait_for 5 rowis 'r["paused"]' || { echo "schedules_tab: Pause from the tab"; desk schedules "$d"; return 1; }
+  schedule list | grep -E ' ping ' | grep -q ' paused ' || { echo "schedules_tab: list doesn't say paused"; schedule list; return 1; }
+  raw '{"id":1,"cmd":"debug.clock","args":{"advance":301}}' >/dev/null
+  sleep 2
+  check rowis 'len(r["firings"]) == 1' || { echo "schedules_tab: a paused schedule fired"; desk schedules "$d"; return 1; }
+  [[ "$(schedule resume ping)" == *"so it fires once now" ]] || { echo "schedules_tab: resume didn't say it missed a time"; return 1; }
+  check wait_for 70 rowis 'len(r["firings"]) == 2 and not r["paused"]' || { echo "schedules_tab: resume, from the CLI, didn't fire the missed time once"; desk schedules "$d"; schedule list; return 1; }
+  check wait_for 20 rowis 'r["firings"][0]["state"] == "delivered" and r["runs"]' || { echo "schedules_tab: the missed time's message wasn't delivered"; desk schedules "$d"; return 1; }
+  check wait_for 15 is "$term" status idle || { echo "schedules_tab: the second turn didn't end"; return 1; }
+  local id; id="$(schedule list | awk '$2 == "ping" {print $1}')"
+  click "$id:run" || { echo "schedules_tab: no Run now button"; return 1; }
+  check wait_for 5 rowis 'len(r["firings"]) == 3' || { echo "schedules_tab: Run now from the tab"; desk schedules "$d"; return 1; }
+  click "$id:prompt" || { echo "schedules_tab: no prompt to expand"; return 1; }
+  check wait_for 5 rowis 'r["open"]' || { echo "schedules_tab: the prompt didn't expand"; return 1; }
+  click "$id:remove" || { echo "schedules_tab: no Remove button"; return 1; }
+  sleep 1
+  check rowis 'True' || { echo "schedules_tab: Remove went without its second click"; return 1; }
+  click "$id:remove" || { echo "schedules_tab: no Remove? button"; return 1; }
+  check wait_for 5 eval '! rowis True' || { echo "schedules_tab: Remove from the tab"; desk schedules "$d"; return 1; }
+}
+
+
+scenario task_events M4
+task_events() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" config user.email e@e && git -C "$repo" config user.name e || { echo "task_events line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"
+  printf '/.kanna\n/.kanna-worktrees\n' >"$repo/.gitignore" && echo base >"$repo/shared" && echo base >"$repo/calm" && git -C "$repo" add . && git -C "$repo" commit -q -m first || { echo "task_events line $LINENO"; return 1; }
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  start_daemon && start_app || { echo "task_events line $LINENO"; return 1; }
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  task_of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-", t.get("folder") or "-")' "$1"; }
+  in_repo task new "Busy" "work 12" --agent "$fake/codex" >/dev/null || { echo "task_events line $LINENO"; return 1; }
+  local busy term folder said; busy="$(tid 1)"
+  check wait_for 10 eval '[[ "$(task_of $busy)" == running* ]]' || { echo "task_events: the task didn't run"; return 1; }
+  term="$(task_of $busy | cut -d' ' -f2)" folder="$(task_of $busy | cut -d' ' -f3)"
+  check wait_for 10 is "$term" status working || { echo "task_events: the task never showed as working"; return 1; }
+  [[ "$(in_repo task events "$busy")" == "hears: main-conflicts, base-merged, base-moved" ]] || { echo "task_events: its events start as $(in_repo task events "$busy")"; return 1; }
+  echo ours >"$folder/shared" && git -C "$folder" commit -q -am ours || { echo "task_events line $LINENO"; return 1; }
+  local main_saved='sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select value from meta where key like '"'"'main:%'"'"'"'
+  check wait_for 10 eval '[[ -n "$('"$main_saved"')" ]]' || { echo "task_events: the daemon never saw main"; return 1; }
+
+  echo theirs >"$repo/calm" && git -C "$repo" commit -q -am "no conflict" || { echo "task_events line $LINENO"; return 1; }
+  local first; first="$(git -C "$repo" rev-parse HEAD)"
+  check wait_for 10 eval '[[ "$('"$main_saved"')" == *"$first" ]]' || { echo "task_events: the daemon didn't see main move"; return 1; }
+  in_repo task messages "$busy" | grep -q conflicts && { echo "task_events: told of a conflict that isn't one"; in_repo task messages "$busy"; return 1; }
+
+  echo theirs >"$repo/shared" && git -C "$repo" commit -q -am conflict || { echo "task_events line $LINENO"; return 1; }
+  check wait_for 10 eval 'in_repo task messages "$busy" | grep -q "main conflicts with your branch in shared"' || { echo "task_events: main moving into a conflict left no message"; in_repo task messages "$busy"; return 1; }
+  check test "$(git -C "$folder" rev-parse --abbrev-ref HEAD)" != main || return 1
+  check test "$(cat "$folder/shared")" == ours || { echo "task_events: the worktree was touched"; return 1; }
+  git -C "$repo" commit -q --allow-empty -m again || { echo "task_events line $LINENO"; return 1; }
+  sleep 1
+  check test "$(in_repo task messages "$busy" | grep -c 'main conflicts')" -eq 1 || { echo "task_events: a second move left a second message"; in_repo task messages "$busy"; return 1; }
+  shows "$term" "main conflicts with" && { echo "task_events: the message went in mid-turn"; kanna read "$term"; return 1; }
+  check wait_for 30 unwrapped "$term" "peer: [message from kanna] main conflicts with your branch in shared: merge or rebase main, rerun your tests" || { echo "task_events: the message didn't arrive at the turn's end"; kanna read "$term"; in_repo task messages "$busy"; return 1; }
+  in_repo task events "$busy" | grep -qE 'main-conflicts +delivered +main conflicts with your branch in shared' || { echo "task_events: events doesn't list what was sent"; in_repo task events "$busy"; return 1; }
+
+  said="$(in_repo task subscribe main-moved "$busy")"
+  [[ "$said" == *"hears main-moved" ]] || { echo "task_events: subscribe said $said"; return 1; }
+  said="$(in_repo task unsubscribe main-conflicts "$busy")"
+  [[ "$said" == *"no longer hears main-conflicts" ]] || { echo "task_events: unsubscribe said $said"; return 1; }
+  git -C "$folder" merge -q main >/dev/null 2>&1; echo merged >"$folder/shared" && git -C "$folder" add shared && git -C "$folder" commit -q -m merged || { echo "task_events line $LINENO"; return 1; }
+  echo ours2 >"$folder/shared" && git -C "$folder" commit -q -am ours2 || { echo "task_events line $LINENO"; return 1; }
+  echo theirs2 >"$repo/shared" && git -C "$repo" commit -q -am "moved again" || { echo "task_events line $LINENO"; return 1; }
+  check wait_for 10 eval 'in_repo task messages "$busy" | grep -q "main moved: 1 commit"' || { echo "task_events: a subscribed task didn't hear main move"; in_repo task messages "$busy"; return 1; }
+  check test "$(in_repo task messages "$busy" | grep -c 'main conflicts')" -eq 1 || { echo "task_events: told of a conflict after unsubscribing"; in_repo task messages "$busy"; return 1; }
+  [[ "$(in_repo task subscribe main-wobbled "$busy" 2>&1)" == *"main-conflicts, main-moved, base-merged, base-moved"* ]] || { echo "task_events: an unknown event wasn't refused with the list"; return 1; }
 }
 
 scenario daemon_upgrade M4
@@ -6045,7 +6166,7 @@ machine_remote_task() {
 
   raw '{"id":1,"cmd":"debug.click","args":{"deskView":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk empty)" == True && "$(desk page)" == True ]]' || { echo "machine_remote_task: parking didn't show the Desk view"; desk empty; desk page; return 1; }
-  check test "$(desk pages)" == '["Desk", "Machines", "Stats"]' || { echo "machine_remote_task: the empty Desk's fixed tabs"; desk pages; return 1; }
+  check test "$(desk pages)" == '["Desk", "Machines", "Stats", "Schedules"]' || { echo "machine_remote_task: the empty Desk's fixed tabs"; desk pages; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"page":"Machines","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: the Machines tab didn't show the Machines page"; return 1; }
   check python3 -c 'import json, sys
@@ -6060,9 +6181,13 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk machinesPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Machines tab didn't show the Stats tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk statsPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Stats tab didn't wrap to the Shelf tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk schedulesPage)" == True && "$(desk statsPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Stats tab didn't show the Schedules tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk schedulesPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Schedules tab didn't wrap to the Shelf tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Shelf tab didn't show the Stats tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk schedulesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Shelf tab didn't show the Schedules tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk schedulesPage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Schedules tab didn't show the Stats tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk statsPage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Stats tab didn't show the Machines tab"; return 1; }
   sleep 0.5; snap d1 machine_remote_machines >/dev/null

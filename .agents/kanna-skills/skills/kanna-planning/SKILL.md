@@ -97,5 +97,7 @@ Run the `kanna` on your PATH, from this terminal, as it is: its `KANNA_*` variab
 | `kanna task messages [TASK]` | A task's messages, or every message: sent, received, delivered or waiting |
 | `kanna task done TASK` | End a task, or take it off the Shelf; says which blocked tasks can start now |
 | `kanna schedule add RULE TARGET PROMPT [--name NAME]` | Leave a task, or you (`planner`), a message at set times |
-| `kanna schedule list` | Every schedule, when it next fires, and whether its message is waiting |
+| `kanna schedule list` | Every schedule, when it next fires, whether it's paused or its message is waiting, and its last firing |
+| `kanna schedule pause NAME\|ID` / `resume` / `run` | Pause one, resume it (a time missed while paused fires once), or leave its message now |
+| `kanna schedule reply NAME\|ID TEXT` | When a schedule's message reached you: leave a result beside that firing on the Schedules tab |
 | `kanna schedule remove NAME\|ID` | Remove a schedule (the daily `quiz` one too, if the user asks) |

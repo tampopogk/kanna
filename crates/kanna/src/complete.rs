@@ -342,7 +342,7 @@ fn refine(form: &[&'static str], slot: &'static str) -> &'static str {
     match (form.first().copied(), slot) {
         (Some("md"), "FILE") => "FILE.md",
         (Some("web"), "URL") => "FILE.html",
-        (Some("remove"), "NAME|ID") => "SCHEDULE",
+        (Some("remove" | "pause" | "resume" | "run" | "reply"), "NAME|ID") => "SCHEDULE",
         (_, slot) if slot.starts_with("FILE[") => "FILE",
         _ => slot,
     }
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn schedule_completes_its_actions_the_rule_its_target_and_what_to_remove() {
-        assert_eq!(words(&at("schedule ")), ["add", "list", "remove"]);
+        assert_eq!(words(&at("schedule ")), ["add", "list", "remove", "pause", "resume", "run", "reply"]);
         assert!(words(&at("schedule add ")).starts_with(&["daily".into(), "weekdays".into(), "weekends".into(), "every".into()]));
         assert_eq!(words(&at("schedule add daily ")), ["09:00", "12:00", "17:30", "18:00"]);
         assert_eq!(words(&at("schedule add every ")), ["30m", "1h", "2h", "4h"]);
@@ -658,6 +658,10 @@ mod tests {
         assert_eq!(at("schedule add 'daily 09:00' planner "), []);
         assert_eq!(at("schedule add daily 09:00 planner "), []);
         assert_eq!(at("schedule remove "), [Want::Schedules]);
+        assert_eq!(at("schedule pause "), [Want::Schedules]);
+        assert_eq!(at("schedule resume "), [Want::Schedules]);
+        assert_eq!(at("schedule run "), [Want::Schedules]);
+        assert_eq!(at("schedule reply "), [Want::Schedules]);
         assert_eq!(at("schedule list --repo "), [Want::Dirs]);
         assert!(words(&at("schedule add daily 09:00 planner hi -")).contains(&"--name".into()));
         let list = json!({ "schedules": [{ "schedule": "s1", "name": "quiz", "rule": "daily 09:00", "target": "planner" }, { "schedule": "s2", "name": null, "rule": "every 2h", "target": "agent" }] });

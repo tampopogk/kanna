@@ -47,6 +47,7 @@ mod screenshot;
 mod serial;
 mod store;
 mod stacks;
+mod task_events;
 mod task_scripts;
 mod terminals;
 mod transfer;
@@ -374,6 +375,7 @@ fn run() -> Result<(), String> {
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
+    scheduler.watch_deliveries(&tasks);
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
     if cfg!(target_os = "macos") {
@@ -524,6 +526,7 @@ fn run() -> Result<(), String> {
     }));
     *app.logs.borrow_mut() = Some(logs.clone());
     app.connect_tasks(&tasks);
+    app.connect_schedules(&scheduler);
     let shown = tasks.on_change.borrow_mut().take();
     let logs_told = Rc::downgrade(&logs);
     *tasks.on_change.borrow_mut() = Some(Box::new(move |view| {
