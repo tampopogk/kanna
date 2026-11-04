@@ -134,15 +134,6 @@ pub fn moved(reply: &Value) -> String {
     layout(reply)
 }
 
-pub fn closed(args: &Value, reply: &Value) -> String {
-    let panes = join(&reply["closed"]);
-    match (args["window"].as_str(), args["tab"].as_str()) {
-        (Some(window), _) => format!("closed {window} (panes {panes})"),
-        (_, Some(tab)) => format!("closed {tab} (panes {panes})"),
-        _ => format!("closed {panes}"),
-    }
-}
-
 pub fn focused(args: &Value, reply: &Value) -> String {
     let window = reply["window"].as_str().or(reply["front"].as_str()).or(args["window"].as_str()).unwrap_or("?");
     let front = !reply["front"].is_null();
