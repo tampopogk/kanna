@@ -70,7 +70,7 @@ sequenceDiagram
 | Window frames | by window ID; a window goes back to its frame if that is still on a screen, and a new one cascades from the frontmost | `frame` |
 | The docked pane's width, when dragged | by workspace (a lead's by its window), with the layout's width it was dragged from, so it outlives the agent's terminal starting again | `dock.width`, `lead.width`, a Desk task's agent's `width`, while the layout's width is still the one it was dragged from |
 | Which window is in front, and the order | by window ID, newest in front, as `order`; after a restart the windows come forward in that order ([the app owns the physical layout](physical-layout.md)) | the app's key window |
-| Text size | by pane, for markdown, code and diff panes (1 isn't kept) | the pane's view opens at it |
+| Text size, page zoom | text size by pane, for markdown, code and diff panes; page zoom (a pinch) by markdown pane ([markdown zoom](markdown-zoom.md)); 1 isn't kept | the pane's view opens at them |
 | Its Desks and their tasks | each Desk's ID (`d1`, …), project, the workspace it shows and its planner; the order of the Desk's tasks and when each was last active; the next Desk number ([each app's Desks](app-desk.md)) | the app composes a Desk window from them |
 
 `app-state.json` is in the daemon's state folder (`$KANNA_STATE_DIR`, or the socket's folder), saved half a second after a change and on quit, written atomically with mode 0600; `--fresh` starts without it and `KANNA_NO_STATE=1` neither reads nor writes it. Entries for panes, workspaces and windows the daemon no longer has are dropped when the app attaches.
@@ -103,7 +103,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 | `debug.drag {pane, to}`, `{tab, to}`, `{divider: pane, at}` | kmux's: a drag replayed along scripted points, with no hint shown; `to` is `{pane, x, y}` (fractions from the top left), `{tab}`, `{plus: window}` or `{outside: true}`; `divider` is the divider after that pane, moved to `at` of the pair |
 | `debug.menu` | every menu item: `{menu, item, shortcut}` |
 | `debug.view` | the view the app draws: the daemon's `layout` with the app's physical state laid over it ([2](#2-what-the-app-keeps)) |
-| `debug.pinch {pane, steps?}` | a trackpad pinch over a markdown pane; the zoom after each step |
+| `debug.pinch {pane, steps?}` | a trackpad pinch over a markdown or web pane; the zoom after each step, and a markdown pane's top line and laid-out width |
 | `debug.wheel {pane, delta?, count?, every_ms?}` | `count` scroll-wheel events of `delta` pixels over a pane, `every_ms` apart, as a trackpad scroll sends them; a markdown pane's scroll after |
 | `debug.drop {pane, files \| image \| text}` | a drop on a terminal: file paths, a PNG or TIFF file's data, or text, as a drag would bring them |
 | `debug.stats` | the app's pid and memory footprint |

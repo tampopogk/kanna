@@ -48,12 +48,12 @@ flowchart LR
 | `id` | integer, key | |
 | `task` | text → `tasks.id` | |
 | `at` | real | when |
-| `what` | text | `made`, `started`, `stopped`, `exited`, `shelved`, `deferred`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
+| `what` | text | `made`, `started`, `stopped`, `exited`, `picked`, `shelved`, `activated`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
 | `from_place`, `to_place` | text | where it was and went, for a move |
 | `by` | text | a pane, `user`, or `daemon` |
 | `doc` | JSON | window, exit code, old name, … |
 
-**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)).
+**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)); a doc's comment names its doc and thread in `comment` (migration 21).
 
 | Column | Type | Holds |
 |---|---|---|
@@ -76,7 +76,7 @@ flowchart LR
 - **Migration 13 names places as users see them:** `shelf` becomes `desk` and `backlog` becomes `shelf`, in `tasks.place` and the events' `from_place` and `to_place`, and the events `shelved`, `deferred`, `pulled` and `parked` become `picked`, `shelved`, `activated` and `left` ([internal names](internal-names.md)).
 - **Migrations by a number:** `PRAGMA user_version` is the schema's version; on open the daemon runs each step above it in one transaction. A db from a newer Kanna (a higher version) isn't touched: the daemon moves it aside as `kanna.db.newer` and says so in its log, as settings files from a newer Kanna are skipped.
 - **One row per task, for its whole life.** A task keeps its ID ([task IDs](task-ids.md)) from made to done, on the Shelf or a Desk: `place` and `terminal` say where it is and which terminal is its agent (`term-152`); a start gives the agent a new terminal, and the row follows it. `kanna task done` sets `place = done` instead of deleting the row, so its events keep their task. A new ID is random and checked against every row, done ones too, so an ID is never handed out twice.
-- **Every change of place or state writes an event,** in the same transaction as the change. The daemon writes the ones it makes: made, started, stopped, picked, shelved and done from `tasks` commands; exited when an agent's terminal ends without a stop; renamed and done when it sees a task's pane renamed or closed (`kanna task name`, `kanna task done` on the Desk, ⌘W). `by` is the terminal the CLI ran in (`$KANNA_TERMINAL`), else `user`; `daemon` for what it noticed itself. Which task is active and showing the Desk view are each app's and aren't recorded ([each app's Desks](app-desk.md)); a picked event names the app that claimed the task (`app`).
+- **Every change of place or state writes an event,** in the same transaction as the change. The daemon writes the ones it makes: made, started, stopped, picked, shelved and done from `tasks` commands; exited when an agent's terminal ends without a stop; renamed and done when it sees a task's pane renamed or closed (`kanna task name`, `kanna task done` on the Desk, ⌘W). `by` is the terminal the CLI ran in (`$KANNA_TERMINAL`), else `user`; `daemon` for what it noticed itself. A Desk task's done keeps the caller of the `kanna task done` that closed its pane. Which task is active is each app's ([each app's Desks](app-desk.md)), but the app reports each change, recorded as `activated` ([Desk news](desk-news.md)); showing the Desk view isn't recorded. A picked event names the app that claimed the task (`app`).
 - **A task the daemon didn't make** (an agent docked by hand) gets an ID the first time it's moved, as it does when it's moved to the Shelf.
 - **Reading it:** `tasks events TASK` (an ID, a unique start of one, or the agent's terminal) answers the task's events, oldest first; the Desk's and the Shelf's history builds on it.
 - **On first run** the daemon imports `backlog.json` (tasks, the running list, the counter) in one transaction, with a `made` event for each task at its `madeAt`, then renames the file `backlog.json.imported` and never reads it again.
@@ -136,7 +136,11 @@ sequenceDiagram
 - **An answer** has a kind (`architecture`, `drawing`, `behaviour`, `where`, `why`, `bug`; the daemon refuses others), the file and lines it's about (`FILE:LINE[-LAST]`, kept relative to the repo, the lines in the doc), and right or wrong.
 - **A miss stays a miss until it's asked again:** `history --misses` answers the wrong answers that no later answer names as `again`. A miss asked again and missed is a new miss, standing for the old one. `again` is a column because that query joins on it; an answer from another repo's quiz is refused.
 - **`history`** answers this repo's rounds, newest first, each with its commit, doc and answers (with `--misses`, only rounds with misses); the newest round's `head` is where the next round's "what's new" starts.
-- **Still no score:** the end of a round says what you knew of these changes; `history` is for the agent picking questions, not a total shown to you.
+- **The totals are on the Stats tab:** the end of a round says what you knew of these changes; `history` is for the agent picking questions, and [Stats](stats.md) reads the answers for your totals over time.
+
+## Samples
+
+**Built.** A metric's value at each of main's first-parent commits, written by the Stats sampler; the table and how it's filled are in [stats §3](stats.md#3-where-they-come-from). A relocated repo's samples move with it.
 
 ## Recent projects
 

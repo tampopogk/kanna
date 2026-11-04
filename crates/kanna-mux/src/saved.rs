@@ -37,6 +37,9 @@ fn put_tabs(out: &mut Map, tabs: &Tabs) {
     out.insert("focused".into(), opt(tabs.focused.as_deref()));
     out.insert("zoomed".into(), opt(tabs.zoomed().map(String::as_str)));
     out.insert("tabCount".into(), num(tabs.count as f64));
+    if !tabs.recent.is_empty() {
+        out.insert("recent".into(), Value::Array(tabs.recent.iter().cloned().map(Value::String).collect()));
+    }
     out.insert("tabs".into(), Value::Array(tabs.tabs.iter().map(tab_json).collect()));
 }
 
@@ -189,6 +192,8 @@ impl Reader<'_> {
         let active = string(item, "active");
         tabs.active = if tabs.tabs.iter().any(|t| Some(t.id.as_str()) == active) { active.map(String::from) } else { tabs.tabs.first().map(|t| t.id.clone()) };
         tabs.count = whole(item.get("tabCount")).unwrap_or(0).max(tabs.tabs.len());
+        let ids = tabs.panes();
+        tabs.recent = item.get("recent").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).filter(|id| ids.iter().any(|i| i == id)).map(String::from).collect();
         Ok(tabs)
     }
 

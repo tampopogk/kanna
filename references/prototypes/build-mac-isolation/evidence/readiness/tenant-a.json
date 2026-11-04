@@ -1,0 +1,30 @@
+{
+ "ready": true,
+ "attempts": [
+  {
+   "check": "BUDDY_RUNNING",
+   "job": "b7848090-78c7-4c22-a11f-7cb46f5ce3be",
+   "vm": "vm-a",
+   "build_exit": 0,
+   "clicks": [
+    "\"My computer does not connect to the internet\" RadioButton",
+    "\"Next Button\" Button",
+    "\"My computer does not connect to the internet\" RadioButton",
+    "\"action-button-1\" Button",
+    "\"My computer does not connect to the internet\" RadioButton"
+   ]
+  },
+  {
+   "check": "BUDDY_RUNNING",
+   "job": "ebfd2e82-3c2a-4475-b25f-531c9780c83e",
+   "vm": "vm-a",
+   "build_exit": 65,
+   "clicks": [
+    "\"Get Started\" Button"
+   ]
+  },
+  {
+   "check": "BUDDY_GONE"
+  }
+ ]
+}

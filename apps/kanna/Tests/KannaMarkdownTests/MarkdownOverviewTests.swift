@@ -37,17 +37,11 @@ struct MarkdownOverviewTests {
         #expect(shown(cutoff(zoom: 1.5), zoom: 1.5).overview)
     }
 
-    @Test func theCommentsListOutlastsTheOverview() {
-        var last = (overview: true, comments: true)
-        var seen: [String] = []
+    @Test func theCommentsListLeavesTheOverviewAlone() {
         for width in stride(from: CGFloat(1600), through: 300, by: -10) {
-            let now = shown(width, comments: true)
-            #expect(!(now.overview && !last.overview) && !(now.comments && !last.comments))
-            let name = "\(now.overview ? "overview" : "")+\(now.comments ? "list" : "")"
-            if seen.last != name { seen.append(name) }
-            last = now
+            #expect(shown(width, comments: true).overview == shown(width).overview)
+            #expect(shown(width, comments: true, forced: true).overview == shown(width).overview)
         }
-        #expect(seen == ["overview+list", "+list", "+"])
     }
 
     @Test func theListShowsAtTwiceItsWidthAlone() {
@@ -62,16 +56,18 @@ struct MarkdownOverviewTests {
     }
 
     @Test func thePictureKeyChangesWithTheLook() {
-        let key = MarkdownPictureKey(revision: 1, width: 900, dark: true, comments: [])
+        let key = MarkdownPictureKey(revision: 1, width: 900, height: 4000, dark: true, comments: [])
         var reload = key
         reload.revision += 1
         var wider = key
         wider.width = 1000
+        var taller = key
+        taller.height = 4200
         var light = key
         light.dark = false
         var commented = key
         commented.comments = MarkdownPictureKey.comments([DocMark(range: NSRange(location: 4, length: 3), kind: .open)])
-        for changed in [reload, wider, light, commented] { #expect(changed != key) }
+        for changed in [reload, wider, taller, light, commented] { #expect(changed != key) }
         var resolved = commented
         resolved.comments = MarkdownPictureKey.comments([DocMark(range: NSRange(location: 4, length: 3), kind: .resolved)])
         #expect(resolved != commented)

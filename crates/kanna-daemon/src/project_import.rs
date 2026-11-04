@@ -1,4 +1,4 @@
-use crate::projects::{canonical, home_place, identity, tilde};
+use crate::projects::{canonical, home_place, identity_off_loop, tilde};
 use kanna_mux::json::{json, Value};
 use kanna_mux::{project, KmuxError};
 use std::fs;
@@ -62,8 +62,8 @@ pub fn plan(repos: &Path, path: &Path, homes: &[PathBuf]) -> Result<Import, Kmux
         return Err(refused("in_place", format!("{} is in its place already", tilde(&from))));
     }
     if to.exists() || fs::symlink_metadata(&to).is_ok() {
-        let theirs = identity(&canonical(&to));
-        return Err(match identity(&from).filter(|mine| mine.starts_with("url:") && Some(mine) == theirs.as_ref()) {
+        let theirs = identity_off_loop(&canonical(&to));
+        return Err(match identity_off_loop(&from).filter(|mine| mine.starts_with("url:") && Some(mine) == theirs.as_ref()) {
             Some(same) => refused(
                 "clash",
                 format!("{} and {} are both clones of {}, and a project has one place: keep one of them (remove the other, or give it another origin), then import again", tilde(&from), tilde(&to), &same[4..]),
@@ -92,6 +92,22 @@ pub fn shifted(text: &str, from: &Path, to: &Path) -> Option<String> {
 pub struct Copied {
     pub worktrees: usize,
     pub outside: Vec<PathBuf>,
+}
+
+pub struct Moved {
+    pub copied: Copied,
+    pub sessions: Carried,
+    pub mentions: Vec<String>,
+}
+
+pub fn moved(plan: &Import) -> Result<Moved, String> {
+    let copied = copy(plan)?;
+    let mut sessions = Carried::default();
+    for from in plan.froms() {
+        let found = Stores::here().carry(&from, &plan.to);
+        sessions = Carried { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
+    }
+    Ok(Moved { copied, sessions, mentions: mentions(&crate::agents::home(), &plan.to, &plan.from) })
 }
 
 pub fn copy(plan: &Import) -> Result<Copied, String> {
@@ -614,7 +630,7 @@ mod tests {
         let row = |id: &str, repo: &str, folder: &str| crate::db::Row { id: id.into(), repo: repo.into(), place: crate::db::Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": id, "folder": folder }) };
         db.put(&row("task-00000001", "/w/app", "/w/app/.kanna-worktrees/task-00000001"), None).unwrap();
         db.put(&row("task-00000002", "/w/app-old", "/w/app-old/.kanna-worktrees/task-00000002"), None).unwrap();
-        db.put_message("task-00000001", "/w/app", "user", "hi", None).unwrap();
+        db.put_message("task-00000001", "/w/app", "user", "hi", None, None).unwrap();
         db.touch_project("/w/app").unwrap();
         db.touch_project("/r/a/app").unwrap();
         db.put_planner("/w/app", &json!({ "agent": "claude", "session": "s" })).unwrap();

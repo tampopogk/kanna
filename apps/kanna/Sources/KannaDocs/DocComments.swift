@@ -107,6 +107,7 @@ package final class DocBar: FlippedView {
     package let agent = Chip("")
     package let threads = Chip("Threads")
     package let diff = Chip("")
+    package let comments = Chip("Comments")
 
     package init() {
         super.init(frame: .zero)
@@ -114,8 +115,10 @@ package final class DocBar: FlippedView {
         path.font = DocTheme.mono
         path.textColor = DocTheme.soft
         path.lineBreakMode = .byTruncatingTail
-        for view in [path, agent, threads, diff] { addSubview(view) }
+        for view in [path, agent, threads, diff, comments] { addSubview(view) }
         threads.on = true
+        comments.isHidden = true
+        diff.isHidden = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -123,7 +126,7 @@ package final class DocBar: FlippedView {
     package override func layout() {
         super.layout()
         var x = bounds.width - 10
-        for chip in [threads, agent] where !chip.isHidden {
+        for chip in [comments, threads, agent] where !chip.isHidden {
             x -= chip.frame.width
             chip.frame.origin = NSPoint(x: x, y: 6)
             x -= 10
@@ -186,18 +189,40 @@ package final class BoxField: NSTextView {
     }
 
     package var trimmed: String { string.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    package static func sends(_ event: NSEvent) -> Bool {
+        (event.keyCode == 36 || event.keyCode == 76) && event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command
+    }
+
+    package static func cancels(_ event: NSEvent) -> Bool { event.keyCode == 53 }
+
+    package var caretRect: NSRect {
+        let line = layoutManager?.defaultLineHeight(for: font ?? DocTheme.sans) ?? 16
+        guard let manager = layoutManager, let container = textContainer else { return NSRect(x: 0, y: 0, width: 1, height: line) }
+        let length = (string as NSString).length, at = min(selectedRange().location, length)
+        var rect = manager.extraLineFragmentRect
+        if at < length || rect.height == 0 {
+            let char = NSRange(location: min(at, max(0, length - 1)), length: length == 0 ? 0 : 1)
+            rect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: char, actualCharacterRange: nil), in: container)
+        }
+        rect.size = NSSize(width: 1, height: max(rect.height, line))
+        return rect.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+    }
 }
 
 @MainActor
 package final class GrowField: NSScrollView {
-    package static let most: CGFloat = 160
+    package static let lines = 8
     package let field: BoxField
     package let least: CGFloat
+    package let most: CGFloat
     package var onGrow: (() -> Void)?
 
     package init(_ field: BoxField, width: CGFloat, least: CGFloat) {
         self.field = field
         self.least = least
+        let line = NSLayoutManager().defaultLineHeight(for: field.font ?? DocTheme.sans)
+        most = max(least, ceil(line * CGFloat(Self.lines) + field.textContainerInset.height * 2))
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: least))
         drawsBackground = false
         borderType = .noBorder
@@ -223,7 +248,7 @@ package final class GrowField: NSScrollView {
         guard let manager = field.layoutManager, let container = field.textContainer else { return least }
         manager.ensureLayout(for: container)
         let used = manager.usedRect(for: container).height + field.textContainerInset.height * 2
-        return min(Self.most, max(least, ceil(used)))
+        return min(most, max(least, ceil(used)))
     }
 
     package func fit() {
@@ -241,9 +266,12 @@ package enum DocWait: Equatable {
 
     package static let grace: TimeInterval = 5
 
+    package static let waitingNote = "Waiting · it goes to the agent when its turn is over"
+
     package static func of(_ thread: DocThread, agent: String?, status: String?, now: Date = Date()) -> DocWait? {
         guard thread.isOpen, let last = thread.messages.last, last.who == "you" else { return nil }
         if thread.status == "unsent" { return .note("Not sent · \(thread.error ?? "no agent")", warn: false) }
+        if thread.status == "waiting" { return .note(waitingNote, warn: false) }
         guard agent != nil else { return .note("Not answered · no agent", warn: false) }
         switch status {
         case "working": return .typing
@@ -448,7 +476,7 @@ package final class ReplyRow: FlippedView {
         send.identifier = NSUserInterfaceItemIdentifier("send")
         act.identifier = NSUserInterfaceItemIdentifier("act")
         field.font = DocTheme.small
-        let boxWidth = width - act.frame.width - 6 - send.frame.width - 6
+        let boxWidth = width
         self.act = act
         self.send = send
         self.field = field
@@ -470,13 +498,14 @@ package final class ReplyRow: FlippedView {
 
     private func place() {
         box.frame.size.height = grow.frame.height + 8
-        frame.size.height = box.frame.height
-        act.frame.origin = NSPoint(x: frame.width - act.frame.width, y: frame.height - 23)
-        send.frame.origin = NSPoint(x: act.frame.minX - 6 - send.frame.width, y: frame.height - 23)
+        act.frame.origin = NSPoint(x: frame.width - act.frame.width, y: box.frame.maxY + 6)
+        send.frame.origin = NSPoint(x: act.frame.minX - 6 - send.frame.width, y: act.frame.minY)
+        frame.size.height = act.frame.maxY
         box.needsDisplay = true
     }
 
     package var fieldFrame: NSRect { box.convert(grow.frame, to: self) }
+    package var boxFrame: NSRect { box.frame }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -816,7 +845,7 @@ package final class ThreadPanel: FlippedView {
             }
             card.row.send.onPress = submit
             card.field.onKey = { event in
-                guard event.keyCode == 36, !event.modifierFlags.contains(.shift) else { return false }
+                guard BoxField.sends(event) else { return false }
                 submit()
                 return true
             }
@@ -828,6 +857,7 @@ package final class ThreadPanel: FlippedView {
         if let focused, let card = cards.first(where: { $0.thread.id == focused }) {
             window?.makeFirstResponder(card.field)
             card.field.setSelectedRange(NSRange(location: (card.field.string as NSString).length, length: 0))
+            keepTyping(card)
         }
     }
 
@@ -838,7 +868,15 @@ package final class ThreadPanel: FlippedView {
             y += card.frame.height + 8
         }
         content.frame.size.height = max(y + 2, scroll.contentSize.height)
-        if let card = cards.first(where: { window?.firstResponder === $0.field }) { content.scrollToVisible(card.frame) }
+        if let card = cards.first(where: { window?.firstResponder === $0.field }) { keepTyping(card) }
+    }
+
+    package func keepTyping(_ card: ThreadCard) {
+        let row = card.row.convert(card.row.bounds, to: content).insetBy(dx: 0, dy: -8)
+        let caret = card.field.convert(card.field.caretRect, to: content).insetBy(dx: 0, dy: -4)
+        let visible = scroll.contentView.bounds.height
+        content.scrollToVisible(row.height <= visible ? row : caret)
+        content.scrollToVisible(caret)
     }
 
     package func reveal(_ id: String) {
