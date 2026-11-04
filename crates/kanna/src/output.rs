@@ -586,38 +586,6 @@ pub fn project(_: &Value, reply: &Value) -> String {
     out.join("\n")
 }
 
-pub fn schedule(request: &Value, reply: &Value) -> String {
-    let id = |s: &Value| s["schedule"].as_str().unwrap_or("?").to_string();
-    let named = |s: &Value| s["name"].as_str().map_or_else(|| id(s), |n| format!("{} {n}", id(s)));
-    match request["action"].as_str() {
-        Some("add") => format!("{}: {} → {}, next {}", named(reply), reply["rule"].as_str().unwrap_or("?"), reply["target"].as_str().unwrap_or("?"), reply["nextText"].as_str().unwrap_or("?")),
-        Some("remove") => format!("removed {}", named(reply)),
-        _ => {
-            let all = reply["schedules"].as_array().cloned().unwrap_or_default();
-            if all.is_empty() {
-                return "no schedules".into();
-            }
-            let rows: Vec<[String; 7]> = all
-                .iter()
-                .map(|s| {
-                    let repo = s["repo"].as_str().map_or("-".to_string(), |r| r.rsplit('/').next().unwrap_or(r).to_string());
-                    let waiting = if s["waiting"] == true { "waiting" } else { "" };
-                    let prompt: String = s["prompt"].as_str().unwrap_or("").chars().take(60).collect();
-                    [id(s), s["name"].as_str().unwrap_or("-").to_string(), repo, s["rule"].as_str().unwrap_or("?").to_string(), s["target"].as_str().unwrap_or("?").to_string(), format!("next {}", s["nextText"].as_str().unwrap_or("?")), format!("{waiting:7} {prompt}")]
-                })
-                .collect();
-            let widths: Vec<usize> = (0..6).map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0)).collect();
-            rows.iter()
-                .map(|r| {
-                    let cells: Vec<String> = (0..6).map(|i| format!("{:w$}", r[i], w = widths[i])).collect();
-                    format!("{}  {}", cells.join("  "), r[6]).trim_end().to_string()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-    }
-}
-
 pub fn home_relative(path: &str) -> String {
     match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
         Some(rest) if rest.starts_with('/') => format!("~{rest}"),
