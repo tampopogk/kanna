@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build Queue Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { border-color: var(--accent); color: var(--accent); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 820px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { font-size: 12px; font-weight: 600; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 34%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; }
+.term .p { color: var(--warn); } .term .d { color: var(--muted); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; color: var(--muted); white-space: nowrap; cursor: pointer; border-radius: 6px; }
+.dtab.fixed { font-weight: 500; }
+.dtab.on { color: var(--text); background: var(--panel); }
+.dtab .count { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--panel2); color: var(--text); }
+.dtabs .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; }
+.strip { height: 40px; flex: none; display: flex; gap: 8px; align-items: center; padding: 0 10px; border-top: 1px solid var(--line); }
+.chip { padding: 4px 10px; border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 12px; }
+.chip.on { color: var(--text); border: 1px solid var(--accent); }
+
+.page { flex: 1; overflow: auto; padding: 28px 32px 40px; }
+.page h2 { font-size: 22px; margin: 0; }
+.page .sub { color: var(--muted); margin: 4px 0 0; }
+.mac { margin-top: 26px; max-width: 980px; }
+.mac .sh { display: flex; align-items: baseline; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.mac .sh b { font-size: 13px; }
+.mac .sh span { color: var(--muted); font-size: 12px; }
+.mac .sh .right { margin-left: auto; }
+table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+td { padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+td.n { width: 28px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+td.task b { font-weight: 600; }
+td.task small, td.state small { display: block; color: var(--muted); font: 11px var(--mono); }
+td.state { width: 170px; }
+td.act { width: 80px; text-align: right; }
+.st { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.running .dot { background: var(--ok); animation: pulse 1.4s infinite; }
+.queued .dot { background: var(--warn); }
+.cancelling .dot { background: var(--bad); }
+.done .dot { background: var(--muted); }
+.failed .dot { background: var(--bad); }
+@keyframes pulse { 50% { opacity: .35; } }
+tr.mine td.task b::after { content: "this task"; margin-left: 8px; font: 500 10px var(--sans); color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 0 5px; }
+tr.past td { color: var(--muted); }
+.empty { color: var(--muted); padding: 14px 6px; }
+[data-tip] { position: relative; }
+[data-tip]:hover::after, [data-tip]:focus::after { content: attr(data-tip); position: absolute; left: 0; top: 100%; margin-top: 4px; z-index: 5; background: var(--panel2); border: 1px solid var(--line); color: var(--text); padding: 6px 8px; border-radius: 6px; font: 12px var(--sans); white-space: nowrap; }
+
+.ios { flex: 1; display: flex; align-items: center; justify-content: center; background: var(--panel); }
+.phone { width: 300px; height: 620px; border-radius: 44px; border: 10px solid #000; background: #f2f2f7; color: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; position: relative; }
+.phone.loading { background: #1c1c1e; color: #aaa; }
+.phone .bar2 { width: 160px; height: 6px; border-radius: 3px; background: #333; overflow: hidden; }
+.phone .bar2 i { display: block; height: 100%; background: var(--accent); }
+.phone h3 { margin: 0; font: 600 22px var(--sans); }
+.phone .row { width: 240px; padding: 10px 12px; background: #fff; border-radius: 10px; font-size: 14px; }
+.phone .err { color: #ff6b6b; text-align: center; padding: 0 24px; }
+</style>
+</head>
+<body>
+<main>
+<div class="intro">
+  <h1>Build queue and remote iOS (Cloud 12)</h1>
+  <p>The Desk view gets a fixed <b>Builds</b> tab after Machines: each build Mac's queue in the order it runs, running jobs first, with Cancel on jobs from your machines. A remote task's iOS pane fetches its <code>.app</code> from the task's machine, then installs it in this Mac's Simulator. Fixture data only.</p>
+  <div class="controls" id="controls"></div>
+</div>
+<div class="window">
+  <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="where" id="where"></div></div>
+  <div class="content">
+    <div class="agent"><div class="head" id="head"></div><div class="term" id="term"></div></div>
+    <div class="docs"><div class="dtabs" id="tabs"></div><div id="body" style="flex:1;display:flex;min-height:0"></div></div>
+  </div>
+  <div class="strip" id="strip"></div>
+</div>
+</main>
+<script>
+const scenes = {
+  queue: 'Builds: two tasks queued',
+  cancel: 'Cancel a queued build',
+  empty: 'Builds: nothing queued',
+  fetch: 'Remote iOS: fetching .app',
+  ios: 'Remote iOS: running',
+  'ios-fail': 'Remote iOS: no .app',
+};
+let scene = 'queue';
+let cancelled = false;
+
+const jobs = () => [
+  { task: 'Login screen', machine: 'linux-vm', cmd: 'xcodebuild -scheme Recipes -sdk iphonesimulator build', state: 'running', since: '2m 14s', guest: 'vm-a · build slot' },
+  { task: 'Settings page', machine: 'r720-2', cmd: 'xcodebuild -scheme Recipes test', state: cancelled ? 'cancelling' : 'queued', since: '41s', mine: true },
+  { task: 'Widget extension', machine: 'linux-vm', cmd: 'swift test --package-path Packages/Core', state: 'queued', since: '12s' },
+];
+
+function tabs(active) {
+  const fixed = ['Desk', 'Machines', 'Builds', 'Stats'];
+  const count = scene === 'empty' ? '' : `<span class="count">${cancelled ? 2 : 3}</span>`;
+  if (active === 'task') return `<div class="dtab">diff</div><div class="dtab on">ios-3 · Recipes</div>`;
+  return fixed.map(t => `<div class="dtab fixed ${t === active ? 'on' : ''}">${t}${t === 'Builds' ? count : ''}</div>`).join('');
+}
+
+function row(j, i) {
+  const label = { running: 'Running', queued: `Queued · ${i}${['', 'st', 'nd', 'rd'][i] || 'th'}`, cancelling: 'Cancelling', done: 'Passed', failed: 'Failed' }[j.state];
+  const act = j.state === 'running' || j.state === 'queued' ? `<button data-cancel="${j.task}">Cancel</button>` : '';
+  return `<tr class="${j.mine ? 'mine' : ''} ${j.past ? 'past' : ''}"><td class="n">${j.state === 'running' ? '▶' : j.past ? '' : i}</td>
+    <td class="task" tabindex="0" data-tip="${j.machine} · Direct · LAN"><b>${j.task}</b><small>${j.cmd}</small></td>
+    <td class="state"><span class="st ${j.state}"><span class="dot"></span>${label}</span><small>${j.guest || (j.past ? j.since : 'waiting ' + j.since)}</small></td>
+    <td class="act">${act}</td></tr>`;
+}
+
+function builds() {
+  const list = scene === 'empty' ? [] : jobs().filter(j => !(cancelled && j.state === 'cancelling' && scene === 'queue'));
+  let q = 0;
+  const rows = list.map(j => row(j, j.state === 'running' ? 0 : ++q)).join('');
+  const past = [
+    { task: 'Login screen', machine: 'linux-vm', cmd: 'xcodebuild -scheme Recipes build', state: 'done', since: '6 min ago · 33 s', past: true },
+    { task: 'Settings page', machine: 'r720-2', cmd: 'xcodebuild -scheme Recipes test', state: 'failed', since: '9 min ago · exit 65', past: true },
+  ].map(j => row(j, 0)).join('');
+  return `<div class="page"><h2>Builds</h2><p class="sub">Your machines' jobs on build Macs, in the order they run.</p>
+    <div class="mac"><div class="sh"><b>studio-build</b><span>arm64 · macOS 26.1 · Xcode 26.1 · iOS 26.1 Simulator</span><span class="right">2 guests · 1 build slot busy</span></div>
+    <table>${rows || '<tr><td class="empty" colspan="4">Nothing running or queued.</td></tr>'}</table></div>
+    <div class="mac"><div class="sh"><b>Recent</b><span>last 20 on any build Mac</span></div><table>${past}</table></div></div>`;
+}
+
+function ios() {
+  if (scene === 'fetch') return `<div class="ios"><div class="phone loading"><div>Fetching Recipes.app from linux-vm…</div><div class="bar2"><i style="width:58%"></i></div><div style="font-size:12px">21 of 36 MB</div></div></div>`;
+  if (scene === 'ios-fail') return `<div class="ios"><div class="phone loading"><div class="err">No app at build/Debug-iphonesimulator/Recipes.app on linux-vm.<br><br>Build it with<br><code>kanna build --fetch …/Recipes.app -- xcodebuild …</code></div></div></div>`;
+  return `<div class="ios"><div class="phone"><h3>Recipes</h3><div class="row">Pasta e fagioli</div><div class="row">Shakshuka</div><div class="row">Miso soup</div></div></div>`;
+}
+
+function term() {
+  if (scene.startsWith('ios') || scene === 'fetch') return `<span class="p">$</span> kanna build --fetch build/Debug-iphonesimulator/Recipes.app -- \\
+    xcodebuild -scheme Recipes -sdk iphonesimulator -derivedDataPath build
+<span class="d">kanna build: queued on studio-build, 1st (behind Login screen)</span>
+<span class="d">kanna build: running on studio-build (vm-a)</span>
+** BUILD SUCCEEDED **
+<span class="d">kanna build: fetched build/Debug-iphonesimulator/Recipes.app</span>
+<span class="p">$</span> kanna open ios build/Debug-iphonesimulator/Recipes.app --tab
+opened ios-3 in ws-2 (task-5c1e, on the Desk), tab-4: running`;
+  return `<span class="p">$</span> kanna build -- xcodebuild -scheme Recipes test
+<span class="d">kanna build: queued on studio-build, 1st (behind Login screen)</span>
+${cancelled ? '<span class="d">kanna build: cancelled while queued</span>\n<span class="p">$</span> echo $?\n130' : ''}`;
+}
+
+function render() {
+  const taskView = scene === 'fetch' || scene.startsWith('ios');
+  document.getElementById('where').textContent = taskView ? 'Recipes — Settings page' : 'Recipes';
+  document.getElementById('head').textContent = taskView ? 'Settings page · claude' : 'Planning · claude';
+  document.getElementById('tabs').innerHTML = tabs(taskView ? 'task' : 'Builds');
+  document.getElementById('body').innerHTML = taskView ? ios() : builds();
+  document.getElementById('term').innerHTML = taskView || scene === 'cancel' ? term() : '<span class="p">$</span> kanna build queue\n<span class="d">studio-build</span>\n  ▶ Login screen      linux-vm  running 2m 14s  vm-a\n  1 Settings page     r720-2    queued 41s\n  2 Widget extension  linux-vm  queued 12s';
+  document.getElementById('strip').innerHTML = ['Login screen', 'Settings page', 'Widget extension'].map(n => `<span class="chip ${taskView && n === 'Settings page' ? 'on' : ''}">${n}</span>`).join('');
+  document.getElementById('controls').innerHTML = Object.entries(scenes).map(([k, v]) => `<button data-scene="${k}" class="${k === scene ? 'on' : ''}">${v}</button>`).join('') + '<button data-theme>Light / dark</button>';
+  document.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { if (b.dataset.cancel === 'Settings page') { cancelled = true; scene = 'cancel'; render(); setTimeout(() => { scene = 'queue'; render(); }, 1200); } });
+}
+document.getElementById('controls').addEventListener('click', e => {
+  if (e.target.dataset.scene) { scene = e.target.dataset.scene; cancelled = scene === 'cancel'; render(); }
+  if (e.target.hasAttribute('data-theme')) { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'light' ? 'dark' : 'light'; }
+});
+const hash = location.hash.slice(1).split(',');
+if (hash.includes('picture')) document.body.classList.add('picture');
+if (hash.includes('light')) document.documentElement.dataset.theme = 'light';
+const start = hash.find(h => scenes[h]);
+if (start) { scene = start; cancelled = scene === 'cancel'; }
+render();
+</script>
+</body>
+</html>

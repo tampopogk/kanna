@@ -51,7 +51,7 @@ fn rig(name: &str) -> Rig {
 
 fn request(rig: &Rig, argv: &[&str]) -> (Request, client::Worktree) {
     let worktree = client::worktree(&rig.repo).unwrap();
-    let request = Request { root: worktree.root.clone(), cwd: worktree.cwd.clone(), argv: argv.iter().map(|s| s.to_string()).collect(), env: BTreeMap::new(), fetch: vec![], ui: false, job: client::new_job() };
+    let request = Request { root: worktree.root.clone(), cwd: worktree.cwd.clone(), argv: argv.iter().map(|s| s.to_string()).collect(), env: BTreeMap::new(), fetch: vec![], ui: false, job: client::new_job(), needs: serde_json::Value::Null, label: String::new() };
     (request, worktree)
 }
 

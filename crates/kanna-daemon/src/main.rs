@@ -8,6 +8,7 @@ mod accounts;
 mod agents;
 mod app_link;
 mod builds;
+mod build_queue;
 mod guests;
 mod tasks;
 mod db;
@@ -371,6 +372,7 @@ fn run() -> Result<(), String> {
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
+    builds::install(&state_dir, &core, build_callers.clone());
     if cfg!(target_os = "macos") {
         guests.start();
     }

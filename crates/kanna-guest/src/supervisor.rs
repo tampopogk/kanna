@@ -186,7 +186,7 @@ impl Supervisor {
             Err(e) => return Err(e),
         };
         let result = match first.op() {
-            "hello" => frame::send(&mut conn, &json!({ "op": "hello", "versions": self.versions(), "identity": identity() }), b""),
+            "hello" => frame::send(&mut conn, &json!({ "op": "hello", "versions": self.versions(), "runtimes": self.runtimes(), "identity": identity() }), b""),
             "run" => self.run(&mut conn, &first, &payload),
             "attach" => self.job(first.str("job").unwrap_or_default()).and_then(|job| self.attach(&mut conn, &job, offsets(&first.header["at"]))),
             "cancel" => self.job(first.str("job").unwrap_or_default()).and_then(|job| {
@@ -215,6 +215,12 @@ impl Supervisor {
             "swift": output_of("/usr/bin/xcrun", &["swift", "--version"], &env).lines().next().unwrap_or_default(),
             "developer_dir": output_of("/usr/bin/xcode-select", &["-p"], &env),
         })
+    }
+
+    fn runtimes(&self) -> Vec<String> {
+        let listed = output_of("/usr/bin/xcrun", &["simctl", "list", "runtimes", "--json"], &self.base_env(None));
+        let parsed: Value = serde_json::from_str(&listed).unwrap_or(Value::Null);
+        parsed["runtimes"].as_array().into_iter().flatten().filter(|r| r["isAvailable"] == true && r["platform"] == "iOS").filter_map(|r| r["version"].as_str().map(String::from)).collect()
     }
 
     fn base_env(&self, developer_dir: Option<&str>) -> Vec<(String, String)> {

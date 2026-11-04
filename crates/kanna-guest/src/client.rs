@@ -38,6 +38,8 @@ pub struct Request {
     pub fetch: Vec<String>,
     pub ui: bool,
     pub job: String,
+    pub needs: Value,
+    pub label: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -346,6 +348,11 @@ pub fn run(connect: Connect, request: &Request, worktree: &Worktree, out: &mut d
     result
 }
 
+enum Submitted {
+    Accepted(Box<dyn Pipe>),
+    Ended(Outcome, Value),
+}
+
 fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, staging: &Path, out: &mut dyn Write, err: &mut dyn Write) -> Outcome {
     let listed = match listed(&request.root) {
         Ok(listed) => listed,
@@ -366,27 +373,55 @@ fn submit_and_follow(connect: Connect, request: &Request, worktree: &Worktree, s
     let header = json!({
         "op": "run", "job": request.job, "mirror": { "machine": "local", "repo": worktree.repo, "task": worktree.task },
         "commit": worktree.commit, "root": request.root, "cwd": request.cwd, "argv": request.argv, "env": request.env, "fetch": request.fetch, "ui": request.ui,
-        "developer_dir": request.env.get("DEVELOPER_DIR"),
+        "developer_dir": request.env.get("DEVELOPER_DIR"), "needs": request.needs, "label": request.label,
     });
     let mut receiver = Receiver { request, out, err, at: [0, 0], map: vec![], lines: [vec![], vec![]], diagnostics: vec![], expected_to, status: Value::Null, exited: false, notes: vec![] };
-    let submitted = (|| -> io::Result<Option<(Box<dyn Pipe>, bool)>> {
-        let mut conn = connect()?;
-        frame::send(&mut conn, &header, &manifest::encode(&entries))?;
-        let (reply, payload) = frame::read(&mut conn, 64 << 20)?;
-        match reply.op() {
-            "need" => {
-                send_snapshot(&mut *conn, &request.root, &worktree.commit, staging, &entries, &reply, &payload)?;
-                Ok(Some((conn, true)))
+    let manifest = manifest::encode(&entries);
+    let wait_until = Instant::now() + RECONNECT_FOR;
+    let mut queued = false;
+    let mut said = None;
+    let mut conn = loop {
+        let attempt = (|| -> io::Result<Submitted> {
+            let mut conn = connect()?;
+            frame::send(&mut conn, &header, &manifest)?;
+            loop {
+                let (reply, payload) = frame::read(&mut conn, 64 << 20)?;
+                match reply.op() {
+                    "queued" => {
+                        let ahead = reply.header["ahead"].as_u64().unwrap_or(0);
+                        queued = true;
+                        if said != Some(ahead) {
+                            said = Some(ahead);
+                            let _ = writeln!(receiver.err, "kanna build: queued on the build Mac, {ahead} ahead (job {})", request.job);
+                        }
+                    }
+                    "granted" => {
+                        if queued {
+                            let _ = writeln!(receiver.err, "kanna build: running in {}", reply.str("guest").unwrap_or("a guest"));
+                        }
+                        queued = false;
+                    }
+                    "need" => {
+                        send_snapshot(&mut *conn, &request.root, &worktree.commit, staging, &entries, &reply, &payload)?;
+                        return Ok(Submitted::Accepted(conn));
+                    }
+                    "exists" => return Ok(Submitted::Accepted(conn)),
+                    "done" => return Ok(Submitted::Ended(outcome(&reply.header["status"]), reply.header["status"].clone())),
+                    "error" => return Err(io::Error::other(reply.str("error").unwrap_or("refused").to_string())),
+                    other => return Err(frame::bad(format!("unexpected {other:?} ({} bytes) from the build Mac", payload.len()))),
+                }
             }
-            "exists" => Ok(Some((conn, true))),
-            "error" => Err(io::Error::other(reply.str("error").unwrap_or("refused").to_string())),
-            other => Err(frame::bad(format!("unexpected {other:?} ({} bytes) from the build Mac", payload.len()))),
+        })();
+        match attempt {
+            Ok(Submitted::Accepted(conn)) => break conn,
+            Ok(Submitted::Ended(ended, status)) => {
+                receiver.status = status;
+                finish(&mut receiver, &ended);
+                return ended;
+            }
+            Err(e) if queued && transport(&e) && Instant::now() < wait_until => std::thread::sleep(Duration::from_secs(1)),
+            Err(e) => return Outcome::Failed(format!("couldn't send the job to the build Mac: {e}")),
         }
-    })();
-    let mut conn = match submitted {
-        Ok(Some((conn, _))) => conn,
-        Ok(None) => return Outcome::Failed("the build Mac refused the job".into()),
-        Err(e) => return Outcome::Failed(format!("couldn't send the job to the build Mac: {e}")),
     };
     let _ = std::fs::remove_dir_all(staging);
     let deadline = || Instant::now() + RECONNECT_FOR;

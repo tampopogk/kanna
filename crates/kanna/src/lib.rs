@@ -45,6 +45,15 @@ pub fn main() -> std::process::ExitCode {
             }
         };
     }
+    if args.first().is_some_and(|a| a == "builds") {
+        return match builds(&args[1..], &process_env) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(failure) => {
+                eprintln!("kanna: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
     if args.first().is_some_and(|a| a == "guests") {
         return match guests(&args[1..], &process_env) {
             Ok(()) => std::process::ExitCode::SUCCESS,
@@ -87,7 +96,7 @@ fn shim(tool: &str, argv0: &str, args: Vec<String>) -> Result<i32, Failure> {
         return Err(fail(exit::FAILED, format!("swift: {error}")));
     }
     let argv = std::iter::once(tool.to_string()).chain(args).collect();
-    build::run(build_socket(&process_env)?, build::Options { mac: None, fetch: fetch_policy(), ui: std::env::var("KANNA_BUILD_UI").is_ok_and(|v| v == "1"), argv })
+    build::run(build_socket(&process_env)?, build::Options { mac: None, fetch: fetch_policy(), ui: std::env::var("KANNA_BUILD_UI").is_ok_and(|v| v == "1"), argv, needs: build::needs_from_env() })
 }
 
 const GUESTS_HELP: &str = "kanna guests [list]
@@ -99,6 +108,37 @@ A build Mac's guests: macOS VMs that run builds for one tenant, each an APFS clo
 machine identity and a data disk (default 64 GiB, the volume KannaData) for its builds. `data` adds one to a guest made
 without it, attached when the guest next starts. The daemon keeps every guest that isn't stopped running; retire destroys
 its disks.";
+
+fn builds(args: &[String], env: Env) -> Result<(), Failure> {
+    let mut args = Argv::new(args.to_vec());
+    let json_output = args.flag("--json");
+    if args.flag("--help") || args.flag("-h") {
+        println!("{}", build::BUILDS_HELP);
+        return Ok(());
+    }
+    let action = args.positional().unwrap_or_else(|| "list".into());
+    let mut request = json!({});
+    match action.as_str() {
+        "list" => {}
+        "cancel" => request["job"] = json!(args.positional().ok_or_else(|| fail(exit::USAGE, format!("builds cancel needs a JOB\n\n{}", build::BUILDS_HELP)))?),
+        other => return Err(fail(exit::USAGE, format!("builds: unknown action \"{other}\"\n\n{}", build::BUILDS_HELP))),
+    }
+    let target = Target::resolve(&kanna_build::Build::current(), Choice { mux: None, instance: None, background: false, fresh: false }, env)?;
+    let reply = Session::connect(&target, env)?.call("build.pool", request)?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&reply).unwrap_or_default());
+    } else if action == "cancel" {
+        println!("{}", match reply["done"].as_str() {
+            Some("dequeued") => "taken out of the queue",
+            Some("stopping") => "stopping",
+            Some("finished") => "already finished",
+            _ => "asked; it stops as soon as it reaches its guest",
+        });
+    } else {
+        println!("{}", build::render(&reply));
+    }
+    Ok(())
+}
 
 fn guests(args: &[String], env: Env) -> Result<(), Failure> {
     let mut args = Argv::new(args.to_vec());
