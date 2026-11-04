@@ -2847,6 +2847,10 @@ impl Tasks {
         self.waiting.borrow().iter().any(|m| m.id == message)
     }
 
+    pub fn name_of(&self, recipient: &str) -> Option<String> {
+        self.known(recipient).and_then(|entry| entry.name)
+    }
+
     pub fn label_of(&self, recipient: &str) -> String {
         if recipient == PLANNER { recipient.to_string() } else { self.short(recipient) }
     }

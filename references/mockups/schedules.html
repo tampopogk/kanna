@@ -144,7 +144,7 @@ function esc(text) { return String(text).replace(/[&<>]/g, c => ({ "&": "&amp;",
 
 function drawFiring(f) {
   const label = { delivered: `delivered ${f.note}`, waiting: "waiting", skipped: "no message", failed: "not left", undelivered: "not delivered" }[f.state];
-  const said = f.state === "failed" || f.state === "skipped" ? `<div class="reply note">${esc(f.reply)}</div>` : f.reply ? `<div class="reply">${esc(f.reply)}</div>` : `<div class="reply"></div>`;
+  const said = f.state === "failed" || f.state === "skipped" || f.state === "waiting" ? `<div class="reply note">${esc(f.reply || "")}</div>` : f.reply ? `<div class="reply">${esc(f.reply)}</div>` : `<div class="reply"></div>`;
   return `<div class="firing"><div class="at">${esc(f.at)}</div><div class="state ${f.state}">${esc(label)}</div>${said}</div>`;
 }
 
@@ -189,7 +189,7 @@ document.addEventListener("click", event => {
   const key = on.dataset.key, { group, schedule } = find(key);
   if (on.dataset.do === "open") open.has(key) ? open.delete(key) : open.add(key);
   if (on.dataset.do === "pause") schedule.paused = !schedule.paused;
-  if (on.dataset.do === "run") { schedule.waiting = true; schedule.firings = [firing("now, by hand", "waiting", null, null), ...schedule.firings].slice(0, 3); }
+  if (on.dataset.do === "run") { schedule.waiting = true; schedule.firings = [firing("Wed 5 Nov 16:12", "waiting", null, "run by hand"), ...schedule.firings].slice(0, 3); }
   if (on.dataset.do === "remove") {
     if (confirming === key) { group.schedules = group.schedules.filter(s => s !== schedule); confirming = null; }
     else { confirming = key; setTimeout(() => { if (confirming === key) { confirming = null; draw(); } }, 3000); }

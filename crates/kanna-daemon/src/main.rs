@@ -520,6 +520,7 @@ fn run() -> Result<(), String> {
     }));
     *app.logs.borrow_mut() = Some(logs.clone());
     app.connect_tasks(&tasks);
+    app.connect_schedules(&scheduler);
     let shown = tasks.on_change.borrow_mut().take();
     let logs_told = Rc::downgrade(&logs);
     *tasks.on_change.borrow_mut() = Some(Box::new(move |view| {

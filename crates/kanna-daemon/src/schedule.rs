@@ -189,6 +189,7 @@ pub trait Mailbox {
     fn waiting(&self, message: i64) -> bool;
     fn label(&self, recipient: &str) -> String;
     fn caller(&self, args: &Value) -> (String, Option<String>);
+    fn title(&self, recipient: &str) -> String;
 }
 
 impl Mailbox for Tasks {
@@ -210,6 +211,10 @@ impl Mailbox for Tasks {
 
     fn caller(&self, args: &Value) -> (String, Option<String>) {
         self.sender(args)
+    }
+
+    fn title(&self, recipient: &str) -> String {
+        self.name_of(recipient).unwrap_or_else(|| self.label_of(recipient))
     }
 }
 
@@ -335,6 +340,7 @@ impl Schedules {
             "repo": opt(schedule.repo.as_deref()),
             "rule": schedule.rule,
             "target": self.mailbox.label(&schedule.target),
+            "targetName": self.mailbox.title(&schedule.target),
             "task": schedule.target,
             "prompt": schedule.prompt,
             "next": num(schedule.next),
@@ -732,6 +738,9 @@ mod tests {
         fn label(&self, recipient: &str) -> String {
             recipient.strip_prefix("task-").unwrap_or(recipient).to_string()
         }
+        fn title(&self, recipient: &str) -> String {
+            format!("{} by name", self.label(recipient))
+        }
         fn caller(&self, args: &Value) -> (String, Option<String>) {
             (args.get("by").and_then(Value::as_str).unwrap_or("user").to_string(), args.get("from_repo").and_then(Value::as_str).map(String::from))
         }
@@ -768,6 +777,7 @@ mod tests {
         assert_eq!((added["schedule"].as_str(), added["rule"].as_str(), added["prompt"].as_str()), (Some("s2"), Some("weekdays 18:00"), Some("Summarise today.")), "s1 is the repo's quiz");
         let task = ok(&s, json!({ "action": "add", "rule": "every 2h", "target": "71af", "prompt": "Run the tests." }));
         assert_eq!((task["task"].as_str(), task["target"].as_str()), (Some("task-71af"), Some("71af")), "a task is kept by its ID");
+        assert_eq!(task["targetName"], "71af by name", "and shown by its name");
         let refuse = |args: Value| s.handle(&args).err().unwrap_or_else(|| panic!("{args} worked")).message;
         assert!(refuse(json!({ "action": "add", "rule": "dialy 09:00", "target": "71af", "prompt": "x" })).contains("try \"daily 09:00\""));
         assert!(refuse(json!({ "action": "add", "rule": "daily 09:00", "target": "planner", "prompt": "x" })).contains("--repo"));
