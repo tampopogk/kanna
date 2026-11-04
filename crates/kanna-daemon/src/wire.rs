@@ -12,12 +12,9 @@ use std::time::Instant;
 
 pub const CHUNK: usize = 64 << 10;
 
-pub const FLOW_PROTOCOL: u64 = 3;
-
 struct Link {
     conn: u64,
     out: Outbox,
-    flow: bool,
 }
 
 struct Line {
@@ -36,11 +33,11 @@ struct State {
 
 pub struct Wire {
     state: Mutex<State>,
-    events: Mutex<Sender<Event>>,
+    events: Mutex<crate::runtime::Events>,
 }
 
 impl Wire {
-    pub fn new(events: Sender<Event>) -> Wire {
+    pub fn new(events: crate::runtime::Events) -> Wire {
         Wire { state: Mutex::default(), events: Mutex::new(events) }
     }
 
@@ -48,8 +45,8 @@ impl Wire {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub fn connect(&self, conn: u64, out: Outbox, flow: bool) {
-        self.state().link = Some(Link { conn, out, flow });
+    pub fn connect(&self, conn: u64, out: Outbox) {
+        self.state().link = Some(Link { conn, out });
     }
 
     pub fn disconnect(&self) {
@@ -112,12 +109,12 @@ impl Wire {
             feed.discard();
             return;
         }
-        if link.flow && feed.inflight {
+        if feed.inflight {
             return;
         }
-        let Some(chunk) = feed.chunk(if link.flow { CHUNK } else { usize::MAX }) else { return };
+        let Some(chunk) = feed.chunk(CHUNK) else { return };
         let queued = link.out.push_for(Some(id), &output(id, &chunk.bytes, chunk.offset), chunk.typed);
-        feed.inflight = link.flow;
+        feed.inflight = true;
         if queued > QUEUE_BEHIND && link.out.fell_behind() {
             let _ = self.events.lock().unwrap_or_else(PoisonError::into_inner).send(Event::AppBehind { conn: link.conn, queued });
         }

@@ -32,7 +32,16 @@ def composer():
     out("\r\n› \r\n  ? for shortcuts\x1b[1A\x1b[3G")
 
 
+REPORTS = os.environ.get("MOCK_AGENT_REPORTS") == "1"
+
+
+def report(state):
+    if REPORTS:
+        out(f"\x1b]7501;state={state}\x1b\\")
+
+
 def work(seconds):
+    report("working")
     out("\x1b]9;4;3\x07")
     start = time.monotonic()
     frame = 0
@@ -42,6 +51,7 @@ def work(seconds):
         frame += 1
         time.sleep(0.1)
     out("\r\x1b[2K\x1b]9;4;0\x07")
+    report("idle")
 
 
 CHOICES = ["Yes", "No"]
@@ -101,6 +111,36 @@ def session(args):
         if flag in args[:-1]:
             return args[args.index(flag) + 1], resumed
     return str(uuid.uuid4()), False
+
+
+def transcript(id):
+    socket_path = os.environ.get("KANNA_SOCKET")
+    return socket_path and os.path.join(os.path.dirname(socket_path), "mock-conversations", id)
+
+
+def wizard():
+    socket_path = os.environ.get("KANNA_SOCKET")
+    return socket_path and os.path.exists(os.path.join(os.path.dirname(socket_path), "mock-wizard"))
+
+
+def refused(id, resumed):
+    if PROGRAM != "claude":
+        return None
+    path = transcript(id)
+    if path and resumed and not os.path.exists(path):
+        return f"No conversation found with session ID: {id}"
+    if path and not resumed and "--session-id" in sys.argv[1:] and os.path.exists(path):
+        return f"Error: Session ID {id} is already in use."
+    return None
+
+
+def saved(id):
+    if PROGRAM != "claude":
+        return
+    path = transcript(id)
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "a").close()
 
 
 def first(args):
@@ -256,6 +296,15 @@ def main():
         tty.setraw(fd, termios.TCSANOW)
         atexit.register(lambda: termios.tcsetattr(fd, termios.TCSANOW, saved))
     id, resumed = session(sys.argv[1:])
+    if "-p" in sys.argv[1:] or sys.argv[1:2] == ["exec"]:
+        if os.path.exists(os.path.join(os.environ.get("HOME", "/nonexistent"), ".mock-handoff-fails")):
+            return 1
+        print(f"# Handoff\n\nmock handoff of session {id}: the next step is to finish the draft.")
+        return 0
+    refusal = refused(id, resumed)
+    if refusal:
+        print(refusal)
+        return 1
     out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, ask, report STATUS or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
@@ -268,19 +317,26 @@ def main():
             prompt = None
         if prompt is not None:
             stage(id, prompt)
-        talk(None if resumed or prompt is not None else first(sys.argv[1:]))
+        talk(id, None if resumed or prompt is not None else first(sys.argv[1:]))
     except KeyboardInterrupt:
         pass
     bye(id)
     return 0
 
 
-def talk(task):
+def talk(id, task):
     reported("idle")
     composer()
+    if wizard():
+        for _ in typed():
+            pass
+        return
+    if task:
+        saved(id)
     if task and not answer(task):
         return
     for line in typed():
+        saved(id)
         if not answer(line):
             return
 

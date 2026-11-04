@@ -1,7 +1,7 @@
 use crate::log::PeerLog;
 use crate::pair::{hello_a, hello_b, pake_bytes, pake_hex, Offer, Party, Role};
-use crate::update::{self, Install};
-use crate::{is_key, relay_mode, relay_url, Refused, Relay, ALPN, KINDS, UPDATE};
+use crate::protocol;
+use crate::{is_key, relay_mode, relay_url, Refused, Relay, ALPN, KINDS};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
@@ -9,7 +9,6 @@ use n0_future::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -30,6 +29,8 @@ const REPLICA: &str = "replica";
 pub(crate) const MAX_HEADER: u64 = 64 << 10;
 
 pub(crate) const MAX_LINE: u64 = 16 << 20;
+
+const MAX_TRANSFER: u64 = 4 << 30;
 
 pub(crate) const DIAL: Duration = Duration::from_secs(10);
 
@@ -70,8 +71,11 @@ pub trait Host: Send + Sync + 'static {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>);
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>);
     fn save(&self, state: Value);
-    fn restart(&self);
     fn app(&self, _from: String, _hello: Value, _stream: std::os::unix::net::UnixStream) {}
+    fn inbox(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn job(&self, _from: String, _stream: std::os::unix::net::UnixStream) {}
 }
 
 pub struct Config {
@@ -82,7 +86,6 @@ pub struct Config {
     pub port: Option<u16>,
     pub mdns: bool,
     pub release: Value,
-    pub install: Option<Install>,
 }
 
 #[derive(Clone)]
@@ -94,8 +97,6 @@ pub(crate) struct Inner {
     pub(crate) host: Box<dyn Host>,
     capabilities: Value,
     pub(crate) release: Value,
-    pub(crate) install: Option<Install>,
-    pub(crate) updating: AtomicBool,
     state: Mutex<State>,
     outcome: watch::Sender<Option<Result<Value, Failure>>>,
     revoked: watch::Sender<u64>,
@@ -163,7 +164,7 @@ impl Node {
             endpoint.insert_relay(relay.url.clone(), relay.config()).await;
         }
         let state = State { name, port, relay, log, broken, addrs, offer: None, nearby: BTreeMap::new(), conns: HashMap::new(), releases: HashMap::new() };
-        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, install: config.install, updating: AtomicBool::new(false), state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
+        let node = Node(Arc::new(Inner { endpoint, secret: config.secret, host, capabilities: config.capabilities, release: config.release, state: Mutex::new(state), outcome: watch::channel(None).0, revoked: watch::channel(0).0 }));
         if config.mdns {
             node.discover();
         }
@@ -401,14 +402,6 @@ impl Node {
         }
     }
 
-    pub(crate) fn trusted(&self) -> Vec<String> {
-        self.state().log.as_ref().map(|l| l.view().trusted().into_iter().collect()).unwrap_or_default()
-    }
-
-    pub(crate) fn capabilities_of(&self, key: &str) -> Value {
-        self.state().log.as_ref().and_then(|l| l.view().descriptors.get(key).map(|d| d["capabilities"].clone())).unwrap_or(Value::Null)
-    }
-
     pub(crate) fn forget(&self, key: &str) {
         self.state().conns.remove(key);
     }
@@ -466,16 +459,6 @@ impl Node {
             let _ = send.finish();
             return;
         }
-        if kind == UPDATE {
-            match self.admit(&remote, None) {
-                Ok(_) => self.receive_update(&header, &mut send, &mut recv).await,
-                Err(failure) => {
-                    let _ = write_line(&mut send, &refusal(&failure)).await;
-                }
-            }
-            let _ = send.finish();
-            return;
-        }
         if !KINDS.contains(&kind.as_str()) {
             let _ = write_line(&mut send, &refusal(&Failure::new("unknown_stream", format!("no stream kind \"{kind}\"")))).await;
             let _ = send.finish();
@@ -491,10 +474,9 @@ impl Node {
                 return;
             }
         };
-        let mine = self.protocols();
-        let theirs = if cert.is_some() { mine } else { update::protocols(&header["protocols"]).unwrap_or([1, 1]) };
-        let Some(protocol) = update::common(mine, theirs) else {
-            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {}–{}", self.state().name, mine[0], mine[1]) }, "release": self.0.release });
+        let mine = self.protocol();
+        if cert.is_none() && protocol::of(&header) != Some(mine) {
+            let refused = json!({ "ok": false, "error": { "code": "other_protocol", "message": format!("{} speaks protocol {mine}", self.state().name) }, "release": self.0.release });
             let _ = write_line(&mut send, &refused).await;
             let _ = send.finish();
             return;
@@ -511,7 +493,7 @@ impl Node {
             },
             None => None,
         };
-        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": protocol, "release": self.0.release })).await.is_err() {
+        if write_line(&mut send, &json!({ "ok": true, "kind": kind, "name": name, "protocol": mine, "release": self.0.release })).await.is_err() {
             return;
         }
         if let Some(tcp) = target {
@@ -534,6 +516,38 @@ impl Node {
         if kind == "sync" && cert.is_some() {
             let _ = write_line(&mut send, &refusal(&Failure::new("not_a_daemon", "only a machine's daemon syncs"))).await;
             let _ = send.finish();
+            return;
+        }
+        if kind == "transfer" {
+            let reply = match cert {
+                Some(_) => refusal(&Failure::new("not_a_daemon", "only a machine's daemon sends a task")),
+                None => self.take_transfer(&remote, &from, &mut recv).await,
+            };
+            let _ = write_line(&mut send, &reply).await;
+            let _ = send.finish();
+            return;
+        }
+        if kind == "job" {
+            if cert.is_some() {
+                let _ = write_line(&mut send, &refusal(&Failure::new("not_a_daemon", "only a machine's daemon sends a job"))).await;
+                let _ = send.finish();
+                return;
+            }
+            let Ok((ours, theirs)) = std::os::unix::net::UnixStream::pair() else { return };
+            self.0.host.job(from, theirs);
+            let (node, remote) = (self.clone(), remote.clone());
+            let watched = async move {
+                while revoked.changed().await.is_ok() {
+                    if node.admit(&remote, None).is_err() {
+                        return;
+                    }
+                }
+                std::future::pending::<()>().await
+            };
+            tokio::select! {
+                () = splice_unix(ours, send, recv) => {}
+                () = watched => {}
+            }
             return;
         }
         if kind == "control" || kind == "sync" {
@@ -611,6 +625,44 @@ impl Node {
             () = watched => {}
         }
         let _ = send.finish();
+    }
+
+    async fn take_transfer(&self, remote: &str, from: &str, recv: &mut BufReader<RecvStream>) -> Value {
+        let header = match read_line(recv, MAX_LINE).await {
+            Ok(header) => header,
+            Err(e) => return refusal(&Failure::new("bad_request", format!("no transfer header: {e}"))),
+        };
+        let id = header["id"].as_str().unwrap_or_default().to_string();
+        if id.is_empty() || id.len() > 96 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return refusal(&Failure::new("bad_request", "a transfer needs an ID of letters, digits and dashes"));
+        }
+        let Some(size) = header["size"].as_u64().filter(|size| *size <= MAX_TRANSFER) else {
+            return refusal(&Failure::new("too_big", format!("a transfer carries at most {} MB", MAX_TRANSFER >> 20)));
+        };
+        let Some(inbox) = self.0.host.inbox() else { return refusal(&Failure::new("unavailable", "this machine takes no transfers")) };
+        let file = inbox.join(format!("{id}.in"));
+        if let Err(e) = receive_file(recv, &inbox, &file, size).await {
+            return refusal(&Failure::new("unreachable", format!("lost the transfer on the way: {e}")));
+        }
+        let mut args = header["args"].as_object().cloned().unwrap_or_default();
+        args.insert("action".into(), json!("transfer"));
+        args.insert("id".into(), json!(id));
+        args.insert("file".into(), json!(file.to_string_lossy()));
+        args.insert(PEER.into(), json!(remote));
+        self.control(from, json!({ "id": 1, "cmd": REPLICA, "args": args })).await
+    }
+
+    pub async fn transfer(&self, key: &str, id: &str, args: Value, path: &std::path::Path) -> Result<Value, Failure> {
+        self.usable()?;
+        let name = self.name_of(key);
+        let size = tokio::fs::metadata(path).await.map_err(|e| Failure::new("failed", format!("can't read {}: {e}", path.display())))?.len();
+        let (mut send, mut recv, _) = self.open_to(key, "transfer", json!({})).await?;
+        let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
+        write_line(&mut send, &json!({ "id": id, "size": size, "args": args })).await.map_err(lost)?;
+        let mut file = tokio::fs::File::open(path).await.map_err(|e| Failure::new("failed", format!("can't read {}: {e}", path.display())))?;
+        tokio::io::copy(&mut file, &mut send).await.map_err(|e| lost(e.to_string()))?;
+        let _ = send.finish();
+        read_line(&mut recv, MAX_LINE).await.map_err(lost)
     }
 
     async fn control(&self, from: &str, request: Value) -> Value {
@@ -710,8 +762,8 @@ impl Node {
         Ok((conn, true))
     }
 
-    pub(crate) fn protocols(&self) -> [u32; 2] {
-        update::protocols(&self.0.release["protocols"]).unwrap_or([1, 1])
+    pub(crate) fn protocol(&self) -> u32 {
+        protocol::of(&self.0.release).unwrap_or(0)
     }
 
     async fn open(&self, conn: &Connection, kind: &str, name: &str) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
@@ -722,7 +774,7 @@ impl Node {
         let lost = |e: String| Failure::new("unreachable", format!("lost {name}: {e}"));
         let (mut send, recv) = conn.open_bi().await.map_err(|e| lost(e.to_string()))?;
         let mut recv = BufReader::new(recv);
-        let mut header = json!({ "kind": kind, "protocols": self.protocols() });
+        let mut header = json!({ "kind": kind, "protocol": self.protocol() });
         if let (Some(header), Some(extra)) = (header.as_object_mut(), extra.as_object()) {
             header.extend(extra.clone());
         }
@@ -735,14 +787,13 @@ impl Node {
         if ack["ok"] != true {
             let failure = Failure::from_reply(&ack);
             if failure.code == "other_protocol" {
-                return Err(Failure::new("other_protocol", update::other_protocol(name, &ack["release"], self.protocols())));
+                return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
             }
             return Err(Failure::new(&failure.code, format!("{name} refused this machine: {}", failure.message)));
         }
-        if kind != UPDATE && !update::agreed(&ack, self.protocols()) {
+        if protocol::of(&ack) != Some(self.protocol()) {
             let _ = send.finish();
-            let release = if ack["release"].is_object() { ack["release"].clone() } else { json!({ "protocols": [1, 1] }) };
-            return Err(Failure::new("other_protocol", update::other_protocol(name, &release, self.protocols())));
+            return Err(Failure::new("other_protocol", protocol::other_protocol(name, &ack["release"], self.protocol())));
         }
         Ok((send, recv, ack))
     }
@@ -762,12 +813,6 @@ impl Node {
                 }
             }
         }
-    }
-
-    pub(crate) async fn release_of(&self, key: &str) -> Result<Value, Failure> {
-        let (mut send, _, ack) = self.open_to(key, "control", json!({})).await?;
-        let _ = send.finish();
-        Ok(ack["release"].clone())
     }
 
     async fn control_stream(&self, host: &str) -> Result<(SendStream, BufReader<RecvStream>, String), Failure> {
@@ -811,6 +856,13 @@ impl Node {
         let reply = read_line(&mut recv, MAX_LINE).await.map_err(lost)?;
         let _ = send.finish();
         Ok(reply)
+    }
+
+    pub async fn job(&self, host: &str) -> Result<(std::os::unix::net::UnixStream, String), Failure> {
+        let (send, recv, name) = self.stream(host, "job").await?;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|e| Failure::new("failed", e.to_string()))?;
+        tokio::spawn(splice_unix(ours, send, recv));
+        Ok((theirs, name))
     }
 
     pub async fn sync(&self, host: &str) -> Result<Value, Failure> {
@@ -1109,6 +1161,20 @@ pub(crate) async fn splice(tcp: tokio::net::TcpStream, mut send: SendStream, mut
     tokio::join!(inbound, outbound);
 }
 
+pub(crate) async fn splice_unix(unix: std::os::unix::net::UnixStream, mut send: SendStream, mut recv: BufReader<RecvStream>) {
+    let Ok(unix) = unix.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(unix)) else { return };
+    let (mut from_unix, mut to_unix) = unix.into_split();
+    let inbound = async move {
+        let _ = tokio::io::copy(&mut recv, &mut to_unix).await;
+        let _ = to_unix.shutdown().await;
+    };
+    let outbound = async move {
+        let _ = tokio::io::copy(&mut from_unix, &mut send).await;
+        let _ = send.finish();
+    };
+    tokio::join!(inbound, outbound);
+}
+
 async fn refuse(send: &mut SendStream, failure: Failure) -> Result<Value, Failure> {
     let _ = write_line(send, &refusal(&failure)).await;
     let _ = send.finish();
@@ -1117,6 +1183,19 @@ async fn refuse(send: &mut SendStream, failure: Failure) -> Result<Value, Failur
 
 fn unix_time() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+async fn receive_file<R: tokio::io::AsyncRead + Unpin>(recv: &mut R, inbox: &std::path::Path, file: &std::path::Path, size: u64) -> Result<(), String> {
+    tokio::fs::create_dir_all(inbox).await.map_err(|e| e.to_string())?;
+    let part = file.with_extension("part");
+    let mut out = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
+    let copied = tokio::io::copy(&mut (&mut *recv).take(size), &mut out).await.map_err(|e| e.to_string())?;
+    if copied != size {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(format!("{copied} of {size} bytes came"));
+    }
+    out.sync_all().await.map_err(|e| e.to_string())?;
+    tokio::fs::rename(&part, file).await.map_err(|e| e.to_string())
 }
 
 pub(crate) async fn read_line<R: tokio::io::AsyncBufRead + Unpin>(recv: &mut R, max: u64) -> Result<Value, String> {

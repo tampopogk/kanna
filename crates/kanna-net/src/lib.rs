@@ -2,12 +2,11 @@ mod client;
 pub mod log;
 mod node;
 pub mod pair;
-pub mod update;
+pub mod protocol;
 
 pub use iroh::SecretKey;
 pub use client::Client;
 pub use node::{Config, Failure, Host, Node, DEFAULT_PORT, PEER};
-pub use update::{Install, Tarball};
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -52,8 +51,6 @@ pub fn relay_url(text: &str) -> Result<iroh::RelayUrl, Failure> {
 }
 
 pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
-
-pub const UPDATE: &str = "update";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Refused {

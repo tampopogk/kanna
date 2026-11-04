@@ -23,8 +23,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "open",
         group: "Panes",
-        summary: "Open a terminal, web, iOS, markdown, code, diff or serial pane and wait until it is running.",
-        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]",
+        summary: "Open a terminal, web, iOS, markdown, code, diff, log or serial pane and wait until it is running.",
+        usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open log [REV...] [-- PATH...] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]",
         options: &[
             ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
             ("--cwd DIR", "Working directory."),
@@ -50,6 +50,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna open md docs/specs/presenting.md --diff main --tab", "Show a spec with what this branch changed in it marked."),
             ("kanna open code src/main.rs:42", "Show a source file, highlighted, at line 42; it follows the file on disk."),
             ("kanna open diff --merge-base main", "Show everything this branch changed since it left main, committed or not, with untracked files; it follows the worktree."),
+            ("kanna open log", "Show the history as a graph: from a task, its branch and main; from the main checkout, main and the open tasks' branches, each labelled with its task. It follows the repo."),
             ("kanna open serial usbmodem1101 --tab", "Show what the device on /dev/cu.usbmodem1101 sends, at 115200; `kanna serial` reads and writes the same port."),
         ],
         parse: parse_open,
@@ -352,7 +353,7 @@ pub static COMMANDS: &[Command] = &[
         name: "task",
         group: "Tabs and windows",
         summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
+        usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task done [TASK] [--keep]",
         options: &[
             ("--agent CMD", "new: the agent to start (default: claude)."),
             ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
@@ -384,6 +385,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task name agent \"Tab bar light mode\"", "Name the task docked as agent; from its terminal, leave out agent."),
             ("kanna task name task-3f9a \"Search the Shelf\"", "Rename task-3f9a, waiting on the Shelf; it starts with that name."),
             ("kanna task shelve agent", "Move the task docked as agent back to the Shelf; from its terminal, leave out agent."),
+            ("kanna task move 3f9a r720-1", "Move task-3f9a from this machine's Shelf to r720-1 at its turn's end: its branch, uncommitted work and conversation go, and it carries on there."),
             ("kanna task send 71af \"Is your spec at docs/specs/x.md final?\"", "Leave task-71af a message: it gets it when its turn is over, and answers with kanna task send."),
             ("kanna task send planner \"The spec is final\"", "Tell this repo's planning agent something, when the user asks you to."),
             ("kanna task messages 71af", "task-71af's messages: sent, received, and whether each was delivered."),
@@ -391,7 +393,7 @@ pub static COMMANDS: &[Command] = &[
             ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
         ],
         parse: |args| {
-            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done"))?;
+            let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages or done"))?;
             let action = match action.as_str() {
                 "defer" => "shelve".to_string(),
                 "pull" => "activate".to_string(),
@@ -453,6 +455,10 @@ pub static COMMANDS: &[Command] = &[
                     out["after"] = json!(after.ok_or_else(|| usage("task", "edit needs --after TASK,... or --after none"))?);
                 }
                 "pick" => out["task"] = json!(args.positional().ok_or_else(|| usage("task", "pick needs a TASK from the Shelf (see `kanna task list`)"))?),
+                "move" => {
+                    out["task"] = json!(args.positional().ok_or_else(|| usage("task", "move needs a TASK from the Shelf and a MACHINE: kanna task move TASK MACHINE"))?);
+                    out["to"] = json!(args.positional().ok_or_else(|| usage("task", "move needs a MACHINE (see `kanna machine`): kanna task move TASK MACHINE"))?);
+                }
                 "stop" => {
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
@@ -510,9 +516,9 @@ pub static COMMANDS: &[Command] = &[
                     let task = args.positional().or_else(|| caller());
                     out["task"] = json!(task.ok_or_else(|| usage("task", "done needs a TASK (see `kanna task list`)"))?);
                 }
-                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, list, activate, park, name, send, messages or done)"))),
+                other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages or done)"))),
             }
-            if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+            if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "move", "done", "park", "activate"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
                 if let Some(by) = caller() {
                     out["by"] = json!(by);
                 }
@@ -524,8 +530,8 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "navigate",
         group: "Panes",
-        summary: "Point a web pane at a new URL (or go back or forward), a markdown pane at another file, a code pane at another file or line, or a diff pane at another diff.",
-        usage: "kanna navigate PANE URL\n       kanna navigate PANE --back|--forward\n       kanna navigate PANE FILE.md\n       kanna navigate PANE FILE[:LINE]\n       kanna navigate PANE diff [GIT-DIFF-ARGS]",
+        summary: "Point a web pane at a new URL (or go back or forward), a markdown pane at another file, a code pane at another file or line, a diff pane at another diff, or a log pane at another range.",
+        usage: "kanna navigate PANE URL\n       kanna navigate PANE --back|--forward\n       kanna navigate PANE FILE.md\n       kanna navigate PANE FILE[:LINE]\n       kanna navigate PANE diff [GIT-DIFF-ARGS]\n       kanna navigate PANE log [REV...]",
         options: &[
             ("--back", "Go back a page: in a markdown pane, or a web pane opened with `open web URL --history`."),
             ("--forward", "Go forward a page (after --back)."),
@@ -538,7 +544,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: |args| {
             let pane = pane(args, "navigate")?;
-            if args.first() == Some("diff") {
+            if matches!(args.first(), Some("diff" | "log")) {
                 args.positional();
                 return Ok(json!({ "pane": pane, "args": args.remaining() }));
             }
@@ -728,7 +734,7 @@ pub static COMMANDS: &[Command] = &[
             ("--json DOC", "start, answer: a JSON object kept with the round (commits covered, agent) or the answer (question, choices, the pick, the right choice, explanation)."),
             ("--misses", "history: only the misses not asked again since."),
         ],
-        notes: "For the kanna-quiz skill's agents, run in the repo. open, for the planning agent, brings the repo's Quiz window forward, or opens one: a window with the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it; it isn't a task. start begins a round on this repo at main's commit and prints its ID (r12); answer records one answer to it and prints the answer's ID (a7); history lists this repo's rounds, newest first, each with its commit and answers. Nothing here is a score: history is for picking the next round's questions.",
+        notes: "For the kanna-quiz skill's agents, run in the repo. open, for the planning agent, brings the repo's Quiz window forward, or opens one: a window with the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it; it isn't a task. start begins a round on this repo at main's commit and prints its ID (r12); answer records one answer to it and prints the answer's ID (a7); history lists this repo's rounds, newest first, each with its commit and answers. history is for picking the next round's questions; your totals over time are on the Desk view's Stats tab (kanna stats).",
         examples: &[
             ("kanna quiz open --agent codex", "Open the Quiz window with Codex as the quiz agent, or bring it forward."),
             ("kanna quiz start --json '{\"commits\": [\"67b287c\"]}'", "Start a round on main's commit; prints its ID, e.g. r12."),
@@ -738,6 +744,17 @@ pub static COMMANDS: &[Command] = &[
         ],
         parse: parse_quiz,
         show: output::quiz,
+    },
+    Command {
+        name: "stats",
+        group: "Information",
+        summary: "Print this project's numbers over the last 30 days, as the Desk view's Stats tab shows them.",
+        usage: "kanna stats",
+        options: &[],
+        notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality isn't measured yet. Each line is a number, its note and a sparkline of its 30 days, oldest first.",
+        examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them.")],
+        parse: parse_stats,
+        show: output::stats,
     },
     Command {
         name: "projects",
@@ -799,14 +816,13 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "machine",
         group: "Information",
-        summary: "Your machines: pair one, list them, check one's link, give an address or a relay, update them, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
-        usage: "kanna machine [list]\n       kanna machine pair\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna machine update [MACHINE ...] [--tarball FILE]\n       kanna --host MACHINE COMMAND ...",
+        summary: "Your machines: pair one, list them, check one's link, give an address or a relay, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
+        usage: "kanna machine [list]\n       kanna machine pair\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
         options: &[
             ("--peer KEY[@HOST[:PORT]]", "pair CODE: the machine to pair with, as `kanna machine pair` prints it there, when it isn't on this LAN."),
-            ("--tarball FILE", "update: the Linux tarball to install (scripts/build-linux.sh makes one); without it, this release's tarball is downloaded."),
             ("--host MACHINE", "Before any command: run it on that machine (its name or key) instead of this one. KANNA_HOST does the same."),
         ],
-        notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna machine pair` on it: it shows a six-digit code and waits. On one of your machines (or the first one, which starts them), run `kanna machine pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna machine name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna machine addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.\n`kanna machine relay URL` names the iroh-relay this machine meets the others through when they aren't on its LAN; run it on each machine, and the app dials them through it too. A relay that admits only holders of a secret (iroh-relay's access.shared_token) takes it with --token-file FILE; the token stays in this machine's kanna.db and is never put in the peer log. iroh moves to a direct path by itself whenever one opens. `none` goes back to the LAN and given addresses only.\n`kanna machine update` puts one commit on each of your Linux machines (or those named): this release's tarball, or the one --tarball gives. Each machine installs it in /opt/kanna/COMMIT beside the one it runs, switches current to it and restarts its daemon; the keeper keeps every terminal and agent running. Macs update with Kanna.app. Machines of another protocol take an update too.",
+        notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna machine pair` on it: it shows a six-digit code and waits. On one of your machines (or the first one, which starts them), run `kanna machine pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna machine name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna machine addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.\n`kanna machine relay URL` names the iroh-relay this machine meets the others through when they aren't on its LAN; run it on each machine, and the app dials them through it too. A relay that admits only holders of a secret (iroh-relay's access.shared_token) takes it with --token-file FILE; the token stays in this machine's kanna.db and is never put in the peer log. iroh moves to a direct path by itself whenever one opens. `none` goes back to the LAN and given addresses only.",
         examples: &[
             ("kanna machine list", "This machine, your other machines and how each is reached."),
             ("kanna machine pair", "On a new machine: show a code to pair it with."),
@@ -815,11 +831,30 @@ pub static COMMANDS: &[Command] = &[
             ("kanna machine addr r720-1 10.0.0.5", "Also try r720-1 at 10.0.0.5, port 7470."),
             ("kanna machine relay https://relay.example.com:8443", "Meet your other machines through your own relay when away."),
             ("kanna machine revoke old-laptop", "Shut old-laptop out of every machine for good."),
-            ("kanna machine update", "Put this release on each of your Linux machines."),
-            ("kanna machine update r720-1 --tarball target/release-linux/Kanna-4.1.0-linux-x86_64.tar.gz", "Put the build in that tarball on r720-1."),
         ],
         parse: parse_machine,
         show: output::machine,
+    },
+    Command {
+        name: "accounts",
+        group: "Information",
+        summary: "Your Claude and Codex accounts for the agents on all your machines: add one once, on your Mac, and every machine's agents use it.",
+        usage: "kanna accounts [list]\n       kanna accounts add claude|codex [--api-key] [--label TEXT]\n       kanna accounts remove ACCOUNT|claude|codex\n       kanna accounts sign-in claude|codex",
+        options: &[
+            ("--api-key", "add: an API key (Anthropic Console or OpenAI) instead of your subscription."),
+            ("--label TEXT", "add: a name to know the account by."),
+        ],
+        notes: "add runs the agent's own sign-in. For Claude, claude setup-token gives a token that lasts a year; for Codex, codex login signs in to ChatGPT in a folder of Kanna's, never touching your everyday login. What it yields is kept in this Mac's Keychain (in the state folder's agent-secrets on Linux), never in a login file. A token or API key goes to each of your machines when you add it, or when a machine joins, and stays there; a ChatGPT login stays on the machine you added it on, which hands each Codex short-lived access tokens and refreshes them, one refresh at a time. Each agent uses one account: adding another replaces it. remove takes it off every machine, as revoking a machine (kanna machine revoke) takes back what it was given. sign-in is the fallback: this machine signs in to the agent by itself, with the sign-in page opened in your browser on the Mac you're at. Whether a subscription may run agents on several of your machines is Anthropic's and OpenAI's call: see docs/specs/agent-sign-in.md.",
+        examples: &[
+            ("kanna accounts", "Your accounts, which machine holds each, and the machines that get them."),
+            ("kanna accounts add claude", "Sign in to your Claude subscription once, for every machine's agents."),
+            ("kanna accounts add codex", "Sign in to ChatGPT once; this Mac holds the login and hands out access tokens."),
+            ("kanna accounts add codex --api-key", "Use an OpenAI API key instead."),
+            ("kanna accounts remove claude", "Take the Claude account off every machine."),
+            ("kanna accounts sign-in codex", "On a machine without the shared account: sign it in to Codex by itself."),
+        ],
+        parse: parse_accounts,
+        show: output::accounts,
     },
     Command {
         name: "agents",
@@ -857,7 +892,7 @@ pub static COMMANDS: &[Command] = &[
             ("--all", "comments: resolved ones too."),
             ("--doc FILE", "The doc a comment is on. Default: found from the comment's ID, the docs whose comments come to this pane first."),
         ],
-        notes: "A markdown or web pane like `kanna open md FILE` or `kanna open web FILE`, with a thread list and a comment box: select text and press ⌘↵, ⌘-click a part, or ⌘-drag a box. Each comment is sent to the terminal that ran markup (or the one --to names), with the part or box and, for a page or an image, a screenshot with it marked up. `kanna open` shows the doc without comments; `kanna markup PANE` turns them on there.",
+        notes: "A markdown or web pane like `kanna open md FILE` or `kanna open web FILE`, with a thread list and a comment box: select text and press ⌘↵, ⌘-click a part, or ⌘-drag a box. Each comment is sent to the terminal that ran markup (or the one --to names), with the part or box and, for a page or an image, a screenshot with it marked up: to a task's or planner's Claude or Codex as a message once its turn is over (`kanna task messages` lists it), and typed into any other agent at once. When a pane in your workspace already shows FILE (the focused one, else the one focused last), comments come on there and it's focused, unless placement options ask for a new pane. `kanna open` shows the doc without comments; `kanna markup PANE` turns them on there.",
         examples: &[
             ("kanna markup references/mockups/desk.html --split right", "Review a mockup beside this pane."),
             ("kanna markup docs/specs/desk.md --tab", "Review a spec in a new tab."),
@@ -1043,6 +1078,11 @@ fn parse_quiz(args: &mut Argv) -> Result<Value, Failure> {
         out["doc"] = doc;
     }
     Ok(out)
+}
+
+fn parse_stats(_: &mut Argv) -> Result<Value, Failure> {
+    let repo = repo_here().map_err(|_| usage("stats", "stats are a git repo's: run this in one"))?;
+    Ok(json!({ "repo": repo }))
 }
 
 fn parse_run(args: &mut Argv) -> Result<Value, Failure> {
@@ -1437,10 +1477,29 @@ fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {
     Ok(request)
 }
 
+fn parse_accounts(args: &mut Argv) -> Result<Value, Failure> {
+    let api_key = args.flag("--api-key");
+    let label = args.option("--label")?;
+    let agent = |what: &str, args: &mut Argv| match args.positional().as_deref() {
+        Some(agent @ ("claude" | "codex")) => Ok(agent.to_string()),
+        _ => Err(usage("accounts", &format!("accounts {what} needs an agent: claude or codex"))),
+    };
+    let request = match args.positional().as_deref() {
+        None | Some("list") => json!({ "action": "list" }),
+        Some("add") => json!({ "action": "add", "agent": agent("add", args)?, "api_key": api_key, "label": label, "local": "interactive" }),
+        Some("sign-in") => json!({ "action": "sign-in", "agent": agent("sign-in", args)?, "local": "interactive" }),
+        Some("remove") => json!({ "action": "remove", "account": args.positional().ok_or_else(|| usage("accounts", "accounts remove needs an ACCOUNT: its ID, or claude or codex"))? }),
+        Some(other) => return Err(usage("accounts", &format!("unknown action \"{other}\" (list, add, remove or sign-in)"))),
+    };
+    if (api_key || label.is_some()) && request["action"] != "add" {
+        return Err(usage("accounts", "--api-key and --label go with add"));
+    }
+    Ok(request)
+}
+
 fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
     let peer = args.option("--peer")?;
     let token_file = args.option("--token-file")?;
-    let tarball = args.option("--tarball")?;
     let action = args.positional();
     let machine = |what: &str, args: &mut Argv| args.positional().ok_or_else(|| usage("machine", &format!("machine {what} needs a MACHINE: its name or key")));
     let request = match action.as_deref() {
@@ -1451,10 +1510,6 @@ fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
         },
         Some("name") => json!({ "action": "name", "name": args.positional().ok_or_else(|| usage("machine", "machine name needs a NAME"))? }),
         Some(what @ ("ping" | "revoke" | "sync")) => json!({ "action": what, "host": machine(what, args)? }),
-        Some("update") => {
-            let tarball = tarball.as_ref().map(|t| std::path::absolute(t).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| t.clone()));
-            json!({ "action": "update", "hosts": args.positionals(), "tarball": tarball })
-        }
         Some("addr") => {
             let host = machine("addr", args)?;
             json!({ "action": "addr", "host": host, "addr": args.positional().ok_or_else(|| usage("machine", "machine addr needs a HOST or HOST:PORT"))? })
@@ -1469,16 +1524,13 @@ fn parse_machine(args: &mut Argv) -> Result<Value, Failure> {
                 json!({ "action": "relay", "url": url, "token": token })
             }
         },
-        Some(other) => return Err(usage("machine", &format!("unknown action \"{other}\" (list, pair, name, ping, addr, relay, update or revoke)"))),
+        Some(other) => return Err(usage("machine", &format!("unknown action \"{other}\" (list, pair, name, ping, addr, relay or revoke)"))),
     };
     if token_file.is_some() && (request["action"] != "relay" || request["url"].is_null()) {
         return Err(usage("machine", "--token-file goes with relay URL"));
     }
     if peer.is_some() && request["action"] != "pair" {
         return Err(usage("machine", "--peer goes with pair CODE"));
-    }
-    if tarball.is_some() && request["action"] != "update" {
-        return Err(usage("machine", "--tarball goes with update"));
     }
     Ok(request)
 }
@@ -1672,12 +1724,12 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
     let diff = args.optional("--diff", |word| !word.starts_with('-') && !is_markdown(word));
     let kind = match args.positional() {
         None => "term".to_string(),
-        Some(kind) if ["term", "web", "ios", "md", "code", "diff", "serial"].contains(&kind.as_str()) => kind,
+        Some(kind) if ["term", "web", "ios", "md", "code", "diff", "log", "serial"].contains(&kind.as_str()) => kind,
         Some(other) if is_markdown(&other) => {
             return Err(usage("open", &format!("to show a markdown file use: kanna open md {other}")));
         }
         Some(other) => {
-            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code, diff or serial). To run a command use --cmd \"{other}\"")));
+            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code, diff, log or serial). To run a command use --cmd \"{other}\"")));
         }
     };
     if kind == "web" {
@@ -1696,7 +1748,7 @@ fn parse_open(args: &mut Argv) -> Result<Value, Failure> {
             out.insert("line".into(), json!(line));
         }
     }
-    if kind == "diff" {
+    if kind == "diff" || kind == "log" {
         let folder = out.remove("cwd").and_then(|cwd| cwd.as_str().map(String::from)).unwrap_or_else(|| absolute("."));
         out.insert("path".into(), json!(folder));
         out.insert("args".into(), json!(args.remaining()));

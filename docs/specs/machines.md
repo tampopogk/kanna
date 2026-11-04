@@ -4,7 +4,7 @@
 
 **Your machines** are the machines your daemons trust: paired by code, listed in your signed peer log, connected over iroh, sharing your Shelf and passing tasks between them. A MacBook Pro is usually the client; a Mac mini at home, a Linux box, or a VM Kanna Cloud made for you runs tasks too. Once a machine has joined, it's a peer like any other, whoever runs it. Kanna develops any project, not only Kanna.
 
-It's free and open source, with no account and no server of Kanna's: on the LAN, and from away through a relay of your own or an address you give. [Kanna Cloud](kanna-cloud.md) is a service that hands you machines; what it makes joins your machines, and the line between the two is enrollment.
+It's free and open source, with no account and no server of Kanna's: on the LAN, and from away through a relay of your own or an address you give. [Kanna Cloud](kanna-cloud.md) is Kanna's paid service that runs tasks on Kanna's infrastructure; nothing it runs ever joins your machines.
 
 **The first milestone** is your machines on the LAN, reached from away through your own relay or a fixed address. All of them are yours, so it needs no isolation between users.
 
@@ -18,7 +18,7 @@ It's free and open source, with no account and no server of Kanna's: on the LAN,
 6. [One app, several machines](#6-one-app-several-machines)
 7. [Terminals and panes](#7-terminals-and-panes)
 8. [Where tasks run](#8-where-tasks-run)
-9. [Server setup and updates](#9-server-setup-and-updates)
+9. [Server setup and versions](#9-server-setup-and-versions)
 10. [Build order](#10-build-order)
 11. [Open questions](#11-open-questions)
 12. [Rejected](#12-rejected)
@@ -29,15 +29,15 @@ It's free and open source, with no account and no server of Kanna's: on the LAN,
 - **You work on projects, not machines.** Kanna decides where a task runs (§2). The app shows a machine only where it matters: a slow path, an offline machine, the Machines tab.
 - **LAN first.** Machines connect directly whenever they can. A relay is only for when you're away or the LAN fails, and the app shows which path each machine is on.
 - **Free and complete on its own.** Everything here, your own relay included, is open source and needs no account. Trust never depends on an account or a server.
-- **Yours alone.** Every machine in your peer log runs only your work, so the boundary is the peer log, not a sandbox between users. Who runs a machine changes only how far you trust it ([Cloud §8](kanna-cloud.md#8-threat-model) for a VM Kanna runs).
+- **Yours alone.** Every machine in your peer log runs only your work, so the boundary is the peer log, not a sandbox between users. Who runs a machine changes only how far you trust it ([Cloud §10](kanna-cloud.md#10-threat-model) for a VM Kanna runs).
 - **End to end.** A relay carries only ciphertext and can't add a device.
 - **Every daemon can send and receive tasks**, Macs included, at a boundary: not started, or stopped at a turn's end.
-- **Versions are compatible, not identical.** Daemons and apps of different releases work together over a range of protocol versions, so machines update on their own schedule.
+- **One protocol per build.** Daemons and apps of different releases work together while their protocol is the same; when it isn't, the Machines tab shows the machine as Incompatible and says which side to update.
 - **Bring your own key.** Agents run on your own Claude or Codex subscription or API key. An account is added once and every machine can use it ([agent sign-in](agent-sign-in.md)).
 
 ## 2. Machines and roles
 
-Every machine runs the same daemon and keeper. They differ in what each is for, which you say with placement preferences; matching tasks to machines by capability is [Kanna Cloud's](kanna-cloud.md#5-directory-and-relays).
+Every machine runs the same daemon and keeper. They differ in what each is for, which you say with placement preferences; matching tasks to machines by capability is [Kanna Cloud's](kanna-cloud.md#7-directory-and-relays).
 
 ```mermaid
 flowchart LR
@@ -62,7 +62,6 @@ flowchart LR
 | `mbp` | the client; still a Kanna machine for local projects | yes |
 | your Linux machines | run tasks: a box under the desk, a VM on it, a rented server | yes ([setup](machine-setup.md)) |
 | your other Macs | run tasks that need macOS, whole | yes |
-| a VM Kanna Cloud made | runs tasks, like a Linux machine of yours | yes, once it has joined ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)) |
 | your relay | an `iroh-relay` at a stable address, for reach from away | no |
 
 **Placement: where work goes.**
@@ -86,7 +85,7 @@ Networking is built into the daemon with **[iroh](https://github.com/n0-computer
 In short ([detail](machine-identity.md)):
 
 - **The daemon has `device.key`**, an Ed25519 key that is its iroh endpoint and signs for the device. The app has its own endpoint key, certified by `device.key`. The CLI goes through the local daemon.
-- **Pairing** is a PAKE over a one-time code, run directly between your two devices. You are the only party: no server takes part. A machine Kanna Cloud makes is handed the code as a token instead ([Cloud §4](kanna-cloud.md#4-enrollment-by-token)).
+- **Pairing** is a PAKE over a one-time code, run directly between your two devices. You are the only party: no server takes part.
 - **The peers form a signed log**, replicated to every peer. A revocation beats any later add, and a name that comes back with another key is refused. Signing a peer takes a gesture in the app.
 
 ## 5. The app link over the network
@@ -99,11 +98,11 @@ sequenceDiagram
     participant D as daemon on linux-1
     A->>D: connect (iroh: the app's endpoint key)
     A->>D: control stream {kind, cert}
-    A->>D: app.hello {pid, app, client: "mbp", protocols: 3..5, commit}
-    alt no protocol in common
-        D-->>A: ok: false, other_protocol {mine: 1..2, commit}
-        Note over A: "linux-1 runs an older Kanna: kanna machine update linux-1", and the daemon keeps running
-    else in common
+    A->>D: app.hello {pid, app, client: "mbp", protocol: 4, commit}
+    alt another protocol
+        D-->>A: ok: false, other_protocol {protocol: 3, commit}
+        Note over A: linux-1 is Incompatible: "update Kanna on linux-1", and the daemon keeps running
+    else the same
         D-->>A: ok, protocol: 4, daemon {machine, commit, capabilities}, panes, layout
     end
 ```
@@ -111,14 +110,14 @@ sequenceDiagram
 | | Local daemon | Remote daemon |
 |---|---|---|
 | Transport | unix socket | iroh, through `kanna-net` in `kanna-ffi` for the app |
-| Version check | binary hash; another build is replaced ([daemon build](daemon-build.md)) | the highest protocol both support; `other_protocol` only when there is none |
+| Version check | binary hash; another build is replaced ([daemon build](daemon-build.md)) | the same protocol; `other_protocol` when it isn't |
 | Who starts it | the app; on a Mac that serves your other machines, launchd | systemd (Linux), launchd (Macs) |
 | Apps | one (`app_attached`) | one; lifting the limit is its own slice, needed before the phone |
 
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `machine call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
 - **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
-- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocols the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([updates §6](machine-update.md#6-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. Two more kinds aren't negotiated: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)), and `update`, which carries a new build to any trusted daemon of any protocol ([updates §4](machine-update.md#4-the-update-stream)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). A `sync` stream is a daemon's only (an app's certificate is refused) and carries the replicated Shelf's requests ([tasks §2](machine-tasks.md#2-owners-and-grants)), each stamped with the asking daemon's key. Until their slices, `file`, `job` and `transfer` are acknowledged and closed; `job` is used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
+- **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`) and the protocol the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([versions §2](machine-versions.md#2-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. One more kind isn't checked: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). A `sync` stream is a daemon's only (an app's certificate is refused) and carries the replicated Shelf's requests ([tasks §2](machine-tasks.md#2-owners-and-grants)), each stamped with the asking daemon's key. A `transfer` stream is a daemon's only and carries one task moving here, a header line and its bytes ([task transfer §6](task-transfer.md#6-interfaces)). Until their slices, `file` and `job` are acknowledged and closed; `job` is used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
 
@@ -148,11 +147,11 @@ In short ([detail](machine-tasks.md)):
 
 - **The Shelf is replicated** to every one of your daemons, eventually consistent, ordered oldest first by a hybrid logical clock.
 - **Each task has one owner.** A runner elsewhere with free slots, within the task's preferences, asks for it, and the owner grants it to exactly one.
-- **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, the transcript is copied, and the agent resumes by session ID at the receiver's own paths.
+- **Transfer** moves a task between any two daemons at a boundary. The branch goes as a git bundle over the link, and a new agent at the receiver's own paths carries on from a handoff the old one wrote ([task transfer](task-transfer.md)).
 
-## 9. Server setup and updates
+## 9. Server setup and versions
 
-A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit ([setting up a Linux machine](machine-setup.md)), and `kanna machine update` puts one build on every Linux machine, each daemon installing it and restarting itself with its terminals kept ([updates](machine-update.md)). Daemons updating themselves from a peer or the release site is slice 6b.
+A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit ([setting up a Linux machine](machine-setup.md)), or with the release's Linux tarball installed however you like. Kanna doesn't update your Linux machines: machines work together while their protocol is the same, and the Machines tab shows a machine as Incompatible, and which side to update, when it isn't ([versions](machine-versions.md)). Kanna Cloud's servers are installed and updated by an internal tool.
 
 ## 10. Build order
 
@@ -168,13 +167,13 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 - **A TCP listener with Kanna's own signed hello** (the research's plan): that relied on a WireGuard mesh for reach. iroh gives reach and encryption in one piece.
 - **The local daemon proxying the app's remote links:** it would put the MBP's daemon in every keystroke's path and make one app link carry several daemons. The CLI goes through it only because a short-lived process shouldn't register with a relay.
 - **n0's public relays by default:** free reach from away, but on a third party's terms and capacity.
-- **A fixed `/kanna/repos` path:** it needs root on users' Macs, and agents resume by ID from any path anyway.
+- **A fixed `/kanna/repos` path:** it needs root on users' Macs, and a moved task starts a new agent from a handoff, which doesn't care about paths.
 
 ## 13. Glossary
 
 | Term | Meaning |
 |---|---|
-| **Peer** | One machine's Kanna, known by its device key: the MBP, a Linux machine, a Mac, a Cloud VM |
+| **Peer** | One machine's Kanna, known by its device key: the MBP, a Linux machine, a Mac |
 | **iroh** | A Rust library for direct, encrypted QUIC connections between keys, with hole punching and relays |
 | **ALPN** | Application-Layer Protocol Negotiation: the name a connection asks for when it opens (`kanna/1`), so both ends agree what protocol it speaks before any data flows |
 | **Relay** | A server that forwards encrypted packets between peers that can't connect directly |
@@ -182,4 +181,4 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 | **Owner** | The machine that starts a task's agent, so it never starts twice; it can grant that to a runner that asks |
 | **Hybrid logical clock** | A timestamp that stays ordered across machines whose clocks drift |
 | **Your machines** | The machines in your peer log, whoever runs them |
-| **Kanna Cloud** | A service that hands you machines, which join yours ([spec](kanna-cloud.md)) |
+| **Kanna Cloud** | Kanna's paid service that runs your tasks on its infrastructure, reached through one link, never joining your machines ([spec](kanna-cloud.md)) |

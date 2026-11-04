@@ -18,9 +18,11 @@ The Shelf looks the same as before: rows show nothing about how far a task got, 
 stateDiagram-v2
     direction LR
     [*] --> waiting: kanna task new
-    waiting --> running: a runner is free (oldest first, not blocked)
+    waiting --> running: a runner is free (its turn by age, not blocked)
     running --> needs_you: its turn ends asking you
     running --> finished: its turn ends
+    needs_you --> running: a message, and a runner is free (its turn by age)
+    finished --> running: a message, and a runner is free (its turn by age)
     needs_you --> desk: Move to Desk (resumes its session)
     finished --> desk: Move to Desk (resumes its session)
     running --> desk: Move to Desk (as it is)
@@ -28,19 +30,19 @@ stateDiagram-v2
 ```
 
 - **Runners:** `shelf.runners` ([settings](settings.md#3-keys), default 3, the repo's file over yours) of a repo's Shelf tasks run at once. 0 turns it off: Kanna starts and stops none. The old name `backlog.runners` is still read; when a file has both, `shelf.runners` wins.
-- **Oldest first,** skipping a [blocked](task-dependencies.md) task until what it waits for is Done.
+- **One queue, oldest first:** a free runner takes the task made longest ago that has something to do: one that hasn't started, or a stopped one with a [message](agent-messaging.md#3-stopped-tasks) waiting. A [blocked](task-dependencies.md) task is skipped until what it waits for is Done.
 - **Every Shelf task runs.** A task that needs you (a mockup to discuss, a question) runs until it asks.
 - **So tasks are written to be done in one go:** the [planning agent](planning-agent.md#2-what-it-is) reads the code, asks you until the outcome, scope, decisions and how to judge it done are settled, writes a first message that says all of it and what to do when stuck, and reads it back to you before it makes the task (the `kanna-planning` skill).
 - **A runner frees when a turn ends:** the agent's [report](agent-status.md#3-the-report-osc-7501) goes from working to idle or done (finished) or to blocked (needs you), which ends the turn at once. Kanna quits the agent, keeps its session, and starts the next.
 - **An agent too old to report isn't run:** Kanna [quits it](agent-status.md#2-kannas-agents) as it starts, stops the task as `too-old`, and runners skip it until you start it yourself.
-- **Nothing shows it:** Shelf rows and `kanna task list` look as they do for any Shelf task, and the Desk's tasks aren't re-sorted. Why a task stopped (needs you, finished) is kept in its events only (`tasks events`, the socket command).
+- **Nothing shows it:** Shelf rows and `kanna task list` show a runner's status as they do for any running Shelf task ([Shelf row status](shelf-row-status.md)), and the Desk's tasks aren't re-sorted. Why a task stopped (needs you, finished) is kept in its events (`tasks events`, the socket command), and its row keeps the status it stopped with.
 - **Moved to the Shelf running, a task counts as a runner,** and Kanna stops it when its turn ends, at once if it arrives idle. That can leave more running than `shelf.runners` for a while: Kanna stops none to make room, and starts no more until fewer run.
-- **A message wakes a stopped task:** it runs for it as a runner, ahead of tasks that haven't started, and a running one with a message waiting gets it instead of being stopped ([agent messaging](agent-messaging.md#3-stopped-tasks)).
+- **A message wakes a stopped task:** it runs for it as a runner, taking its turn by age: a message doesn't put it ahead of an older task that hasn't started, so messaging many tasks at once (the planner's merge nudges) doesn't hold up new work. A running one with a message waiting gets it instead of being stopped ([agent messaging](agent-messaging.md#3-stopped-tasks)).
 - **Resume on the Desk:** Move to Desk (or `kanna task start`) resumes a stopped task's session where it stopped.
 
 ## 2. How it's built
 
-- **The runners are the daemon's** (`Tasks::tick` in `tasks.rs`, the Shelf's code): every 2s, and whenever a task is made, edited, done or stopped, it starts each repo's oldest waiting tasks (never started, not blocked) until `shelf.runners` of them run. Tasks you start on the Shelf, or move there running, count too. With several machines, a runner also asks other machines for their waiting tasks in the same project, oldest first with its own ([machine tasks §2](machine-tasks.md#2-owners-and-grants)).
+- **The runners are the daemon's** (`Tasks::tick` in `tasks.rs`, the Shelf's code): every 2s, and whenever a task is made, edited, done or stopped, `Tasks::candidates` sorts each repo's tasks with something to do (never started and not blocked, or stopped with a message waiting) by when they were made, and it starts them from the oldest until `shelf.runners` run. Tasks you start on the Shelf, or move there running, count too. With several machines, a runner also asks other machines for their waiting tasks in the same project, oldest first with its own ([machine tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **A turn's end is the agent's report:** `Turn` (`kanna-detect`) watches a running Shelf task's agent and says its turn is over when its root record goes from working to idle, done or blocked, counted by the terminal as the reports arrive, so a short turn between two looks isn't missed ([agent status](agent-status.md#3-the-report-osc-7501)).
 - **Each agent says how it quits and where its session is**, in `agent-rules/quit/AGENT.json`: the keys that quit it, and a pattern that finds its session ID in what it prints as it exits.
 
@@ -57,7 +59,7 @@ stateDiagram-v2
 - **A task's own session wins:** one Kanna gave at start (claude's `--session-id`) is the one it resumes. Kanna reads the session an agent says from its screen once it exits, and keeps it only for a task without one: codex and antigravity, which take no ID, and a task Kanna didn't start. With neither, the task starts fresh from its first message, never the agent's own latest session ([tasks](tasks.md#which-agents-resume)).
 - **Stopping one:** Kanna ends the agent, then hangs up the task's other terminals and closes nothing, so the layout its agent set up to [present its work](presenting.md) is what you see when you make it active, and saves the task stopped, with why (`stopped` and `why` in its events).
 - **The quit files are bundled only:** nothing outside Kanna's build can change which keys Kanna types into an agent.
-- **Tested** by `tasks.rs` tests of each way, with a fake agent: the keys typed, the session kept, a hang-up only after a timeout; by e2e `task_start_stop` (`kanna task stop` quits the mock as claude by its keys) and `real_agent_tasks` (real claude and codex quit by keys and resume their session: claude Kanna's, codex the one it said); and by e2e `shelf_runners` with the mock agent as codex: with runners 0 nothing runs; with 3, five tasks run three at a time in order, skipping a blocked one until its blocker is Done; one that asks is stopped as needs you (in its events), its session read from what it said as it quit; Move to Desk resumes it there; moved back to the Shelf idle, it's stopped as finished; one that presents its work keeps its tabs, focus and zoom through the stop ([presenting](presenting.md#3-how-its-built)).
+- **Tested** by `tasks.rs` tests of each way, with a fake agent: the keys typed, the session kept, a hang-up only after a timeout; by e2e `task_start_stop` (`kanna task stop` quits the mock as claude by its keys) and `real_agent_tasks` (real claude and codex quit by keys and resume their session: claude Kanna's, codex the one it said); and by e2e `shelf_runners` with the mock agent as codex: with runners 0 nothing runs; with 3, five tasks run three at a time in order, skipping a blocked one until its blocker is Done; one that asks is stopped as needs you (in its events), its session read from what it said as it quit; Move to Desk resumes it there; moved back to the Shelf idle, it's stopped as finished; one that presents its work keeps its tabs, focus and zoom through the stop ([presenting](presenting.md#3-how-its-built)); with one runner, tasks run by age whether stopped with a message or never started: a newer stopped task with a message waits behind an older new one, and an older one runs before a newer new one. A `tasks.rs` test checks the order of the queue.
 
 ## 3. Glossary
 

@@ -220,7 +220,7 @@ public final class CodePaneView: NSView {
     public func zoom(by step: Int) {
         let target = step == 0 ? CodeTheme.fontSize : Self.clamp(fontSize + CGFloat(step))
         guard target != fontSize else { return }
-        let top = topLine
+        let top = topSpot
         fontSize = target
         textView.font = CodeTheme.font(size: fontSize)
         let attributes: [NSAttributedString.Key: Any] = [.font: CodeTheme.font(size: fontSize), .foregroundColor: CodeTheme.text]
@@ -230,10 +230,7 @@ public final class CodePaneView: NSView {
         textView.gap = 0
         placeComment()
         sizeText()
-        if let rect = textView.rect(forLine: top) {
-            scrollView.contentView.scroll(to: NSPoint(x: -scrollView.contentView.contentInsets.left, y: max(0, rect.minY - textView.textContainerInset.height)))
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-        }
+        restore(top)
         gutter.needsDisplay = true
         overviewChanged()
         needsLayout = true
@@ -519,6 +516,25 @@ public final class CodePaneView: NSView {
         guard button.enabled else { return false }
         button.click()
         return true
+    }
+
+    var topSpot: (line: Int, fraction: CGFloat)? {
+        let clip = scrollView.contentView
+        guard clip.bounds.minY > -clip.contentInsets.top + 0.5, let container = textView.textContainer, textView.textStorage?.length ?? 0 > 0 else { return nil }
+        let y = clip.bounds.minY + clip.contentInsets.top
+        let band = NSRect(x: 0, y: max(0, y - textView.textContainerInset.height), width: max(1, container.size.width), height: 1)
+        let glyphs = layoutManager.glyphRange(forBoundingRect: band, in: container)
+        let line = file.line(at: layoutManager.characterIndexForGlyph(at: glyphs.location))
+        guard let rect = textView.rawRect(forLine: line), rect.height > 0 else { return (line, 0) }
+        return (line, (y - rect.minY) / rect.height)
+    }
+
+    func restore(_ spot: (line: Int, fraction: CGFloat)?) {
+        let clip = scrollView.contentView
+        var y = -clip.contentInsets.top
+        if let spot, let rect = textView.rawRect(forLine: spot.line) { y = max(y, rect.minY + spot.fraction * rect.height - clip.contentInsets.top) }
+        clip.scroll(to: NSPoint(x: -clip.contentInsets.left, y: y))
+        scrollView.reflectScrolledClipView(clip)
     }
 
     public var topLine: Int {

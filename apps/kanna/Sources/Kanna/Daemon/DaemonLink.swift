@@ -12,7 +12,6 @@ final class DaemonLink: TerminalLink {
     private var more: Set<String> = []
     private var run: String?
     private(set) var attached = false
-    private var acks = false
     let machine: String?
     var client: String?
     private(set) var refusal: JSON?
@@ -28,6 +27,7 @@ final class DaemonLink: TerminalLink {
     var onFolder: ((String, String, JSON?) -> Void)?
     var onShelf: (([JSON], [JSON]) -> Void)?
     var onDiff: ((String, JSON) -> Void)?
+    var onLog: ((String, JSON) -> Void)?
     var onToast: ((JSON) -> Void)?
     var onQuit: (() -> Void)?
     var onFile: ((String, JSON) -> Void)?
@@ -40,7 +40,6 @@ final class DaemonLink: TerminalLink {
 
     var socketPath: String { connection.path }
 
-    static let protocols: [JSON] = Protocols.mine.map { .number(Double($0)) }
     static let remoteScrollback = 1000
     static let localOnly: Set<String> = ["app.machine.confirm"]
 
@@ -52,7 +51,7 @@ final class DaemonLink: TerminalLink {
             path: socketPath,
             dial: dial,
             hello: { [weak self] in
-                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocols": .array(Self.protocols), "commit": .string(KannaBuild.commit)]
+                var args: [String: JSON] = ["pid": .number(Double(ProcessInfo.processInfo.processIdentifier)), "protocol": .number(Double(Protocols.mine)), "commit": .string(KannaBuild.commit)]
                 if machine == nil, let build = KannaBuild.daemonBuild { args["build"] = .string(build) }
                 if let client = self?.client { args["client"] = .string(client) }
                 if machine == nil { args["relaunch"] = Self.relaunch }
@@ -130,7 +129,6 @@ final class DaemonLink: TerminalLink {
             }
             attached = ok
             if ok {
-                acks = (message["protocol"]?.number ?? 0) >= Double(Protocols.flow)
                 starter?.attached()
                 refusal = nil
                 daemonInfo = message["daemon"]
@@ -182,8 +180,8 @@ final class DaemonLink: TerminalLink {
         case "pane":
             if let pane = args["pane"] { onPane?(pane) }
         case "output":
-            let ack: () -> Void = { [weak self, acks] in
-                guard acks, let id = args["terminal"]?.string else { return }
+            let ack: () -> Void = { [weak self] in
+                guard let id = args["terminal"]?.string else { return }
                 self?.send("taken", ["terminal": .string(id)])
             }
             if let terminal, let data = args["data"]?.string.flatMap({ Data(base64Encoded: $0) }) {
@@ -221,6 +219,8 @@ final class DaemonLink: TerminalLink {
             onView?(args)
         case "diff":
             if let content = args["content"]?.string { onDiff?(content, args) }
+        case "log":
+            if let content = args["content"]?.string { onLog?(content, args) }
         case "file":
             if let content = args["content"]?.string { onFile?(content, args) }
         case "markup":

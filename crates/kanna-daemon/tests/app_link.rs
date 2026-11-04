@@ -53,36 +53,6 @@ fn an_echo_is_not_held_behind_another_terminals_flood() {
 }
 
 #[test]
-fn a_flood_is_held_back_at_the_pty() {
-    let mut instance = Instance::start();
-    let pane = instance.open("flood", Some("yes"));
-    std::thread::sleep(Duration::from_secs(3));
-    let alone = instance.rss_mb();
-    assert!(alone < 150, "with no app the daemon grew to {alone} MB");
-
-    let mut app = instance.app_speaking([2, 2]);
-    app.tell("attach", json!({"terminal": pane}));
-    app.until("the view to start", |m| is(m, "snapshot", &pane));
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !instance.log().contains("the app is") {
-        assert!(Instant::now() < deadline, "the app never fell behind");
-        assert!(instance.rss_mb() < 150, "with a stalled app the daemon grew to {} MB", instance.rss_mb());
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    std::thread::sleep(Duration::from_secs(2));
-    let stalled = instance.rss_mb();
-    assert!(stalled < 150, "with a stalled app the daemon grew to {stalled} MB");
-
-    app.until("the view to start over", |m| is(m, "snapshot", &pane));
-    app.until("more output", |m| is(m, "output", &pane));
-
-    let asked = Instant::now();
-    unsafe { libc::kill(instance.pid(), libc::SIGTERM) };
-    wait_for("the daemon to stop", || instance.daemon.try_wait().unwrap().is_some());
-    assert!(asked.elapsed() < Duration::from_secs(2), "the daemon took {:?} to stop", asked.elapsed());
-}
-
-#[test]
 fn a_resize_beyond_reason_is_refused() {
     let instance = Instance::start();
     let pane = instance.open("cat", Some("cat"));
@@ -319,7 +289,7 @@ fn a_request_the_app_never_answers_times_out() {
     let request = app.until("the request", |m| m["cmd"] == "debug.app");
     app.send(json!({"id": request["id"], "ok": true, "late": true}));
     let mut second = App::raw(&instance.socket());
-    second.send(json!({"id": 0, "cmd": "app.hello", "args": {"protocols": kanna_build::PROTOCOLS}}));
+    second.send(json!({"id": 0, "cmd": "app.hello", "args": {"protocol": kanna_build::PROTOCOL}}));
     assert_eq!(second.next().unwrap()["error"]["code"], "app_attached");
 }
 
@@ -454,18 +424,23 @@ fn every_debug_command_goes_to_the_app_with_pane_names_resolved() {
 fn an_app_of_another_protocol_is_told_so_and_the_daemon_keeps_running() {
     let instance = Instance::start();
     let mut other = App::raw(&instance.socket());
-    other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [7, 9]}}));
+    other.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": [2, 3]}}));
     let reply = other.next().unwrap();
     assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
-    assert_eq!(reply["mine"], json!(kanna_build::PROTOCOLS), "{reply}");
+    assert_eq!(reply["protocol"], json!(kanna_build::PROTOCOL), "{reply}");
     assert!(reply["version"].is_string() && reply["commit"].is_string(), "{reply}");
     assert_eq!(instance.call("capabilities", json!({}))["ok"], true);
 
     let mut app = App::raw(&instance.socket());
-    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocols": [1, 4]}}));
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocol": kanna_build::PROTOCOL + 1}}));
+    let reply = app.next().unwrap();
+    assert_eq!(reply["error"]["code"], "other_protocol", "{reply}");
+
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "protocol": kanna_build::PROTOCOL}}));
     let reply = app.next().unwrap();
     assert_eq!(reply["ok"], true, "{reply}");
-    assert_eq!(reply["daemon"]["protocols"], json!(kanna_build::PROTOCOLS), "{reply}");
+    assert_eq!(reply["daemon"]["protocol"], json!(kanna_build::PROTOCOL), "{reply}");
 }
 
 #[test]

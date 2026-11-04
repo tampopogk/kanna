@@ -68,6 +68,7 @@ const TYPES: &[(&str, &str)] = &[
     ("ios", "An app in the iOS simulator."),
     ("code", "A source file, highlighted."),
     ("diff", "What git diff shows, with untracked files."),
+    ("log", "The history as a graph, task branches labelled."),
     ("serial", "A serial port, shared with kanna serial."),
 ];
 
@@ -444,7 +445,7 @@ pub fn schedules(list: &Value) -> Vec<String> {
 }
 
 pub fn panes(list: &Value, current: &str) -> Vec<String> {
-    let by_id = ["term", "file", "page", "ios", "diff"].iter().any(|prefix| current.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')).is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())));
+    let by_id = ["term", "file", "page", "ios", "diff", "log"].iter().any(|prefix| current.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')).is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())));
     let mut out = Vec::new();
     for pane in list["panes"].as_array().into_iter().flatten() {
         let id = pane["id"].as_str().unwrap_or_default();
@@ -468,6 +469,7 @@ fn describe(pane: &Value) -> String {
             None => file(path),
         }),
         "ios" => pane["app"].as_str().map(String::from),
+        "log" => Some(std::iter::once("git log".to_string()).chain(pane["args"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(String::from))).collect::<Vec<_>>().join(" ")),
         "diff" => Some(std::iter::once("git diff".to_string()).chain(pane["args"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(String::from))).collect::<Vec<_>>().join(" ")),
         _ => Some(pane["cmd"].as_str().map(short).unwrap_or_else(|| "shell".into())),
     };
@@ -575,7 +577,7 @@ mod tests {
 
     #[test]
     fn open_completes_the_pane_type_then_its_file() {
-        assert_eq!(words(&at("open ")), ["term", "web", "md", "ios", "code", "diff", "serial"]);
+        assert_eq!(words(&at("open ")), ["term", "web", "md", "ios", "code", "diff", "log", "serial"]);
         assert_eq!(at("open code "), [Want::Files(&[])]);
         assert_eq!(at("open md "), [Want::Files(MARKDOWN)]);
         assert_eq!(at("open md --name x "), [Want::Files(MARKDOWN)]);
@@ -613,7 +615,7 @@ mod tests {
         assert_eq!(words(&at("move p1 --side ")), ["left", "right", "top", "bottom", "swap"]);
         assert_eq!(at("rename-tab "), [Want::Tabs]);
         assert_eq!(at("navigate "), [Want::Panes]);
-        assert_eq!(at("navigate p1 "), [Want::Words(vec![("diff".into(), String::new())]), Want::Files(MARKDOWN), Want::Files(&[])]);
+        assert_eq!(at("navigate p1 "), [Want::Words(vec![("diff".into(), String::new()), ("log".into(), String::new())]), Want::Files(MARKDOWN), Want::Files(&[])]);
         assert_eq!(at("markup ")[1..], [Want::Files(MARKDOWN), Want::Files(HTML), Want::Panes]);
         assert_eq!(lines(&[Want::Files(MARKDOWN), Want::Files(HTML)], &[String::new()], &|_| None), [":files md markdown mdown html htm"]);
         assert_eq!(lines(&[Want::Files(MARKDOWN), Want::Files(&[])], &[String::new()], &|_| None), [":files"]);

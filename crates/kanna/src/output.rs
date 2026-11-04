@@ -99,6 +99,13 @@ pub fn commented(args: &Value, reply: &Value) -> String {
 }
 
 pub fn marked(args: &Value, reply: &Value) -> String {
+    if args.get("type").is_some() && reply["reused"] == true {
+        let full = args["path"].as_str().map(String::from).or_else(|| args["url"].as_str().map(|u| u.trim_start_matches("file://").to_string())).unwrap_or_default();
+        let here = std::env::current_dir().map(|d| format!("{}/", d.display())).unwrap_or_default();
+        let shown = full.strip_prefix(&here).unwrap_or(&full);
+        let tab = reply["tab"].as_str().map(|t| format!(" ({t})")).unwrap_or_default();
+        return format!("comments on in {}, which already shows {shown}{tab}; focused", label(&reply["pane"]));
+    }
     if args.get("type").is_some() {
         return opened(args, reply);
     }
@@ -306,6 +313,8 @@ pub fn task(request: &Value, reply: &Value) -> String {
         Some("unready") => format!("{} isn't ready", reply["task"]["id"].as_str().unwrap_or("?")),
         Some("setup") if reply["tab"].is_string() => format!("{id}'s setup runs again in {} (a Setup tab)", reply["pane"].as_str().unwrap_or("?")),
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
+        Some("move") if reply["waiting"] == true => format!("{} moves to {} when it's reachable ({})", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["why"].as_str().unwrap_or("away")),
+        Some("move") => format!("{} carries on on {}{}", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["folder"].as_str().map_or(String::new(), |f| format!(", in {f}"))),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
         Some("pick") => format!(
             "moved {} to the Desk: {} in {}{}",
@@ -900,6 +909,88 @@ pub fn quiz(request: &Value, reply: &Value) -> String {
     }
 }
 
+pub fn duration(seconds: f64) -> String {
+    let minutes = (seconds / 60.0).round() as i64;
+    match minutes {
+        m if m < 60 => format!("{m}m"),
+        m if m < 48 * 60 && m % 60 == 0 => format!("{}h", m / 60),
+        m if m < 48 * 60 => format!("{}h {}m", m / 60, m % 60),
+        m => format!("{}d", (m as f64 / 1440.0).round() as i64),
+    }
+}
+
+fn figure(value: &Value, unit: Option<&str>) -> String {
+    match (value.as_f64(), unit) {
+        (None, _) => "—".to_string(),
+        (Some(v), Some("%")) => format!("{}%", v.round() as i64),
+        (Some(v), Some("s")) => duration(v),
+        (Some(v), _) => format!("{}", v.round() as i64),
+    }
+}
+
+fn spark(values: &[Value], max: Option<f64>) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let top = max.unwrap_or_else(|| values.iter().filter_map(Value::as_f64).fold(0.0, f64::max)).max(1.0);
+    values.iter().map(|v| v.as_f64().map_or(' ', |v| BARS[((v / top).clamp(0.0, 1.0) * 7.0).round() as usize])).collect()
+}
+
+pub fn stats(_: &Value, reply: &Value) -> String {
+    let mut rows: Vec<[String; 5]> = vec![];
+    for section in reply["sections"].as_array().into_iter().flatten() {
+        let title = section["title"].as_str().unwrap_or("?").to_string();
+        let tiles = section["tiles"].as_array().cloned().unwrap_or_default();
+        if tiles.is_empty() {
+            rows.push([title, section["empty"].as_str().unwrap_or("").to_string(), String::new(), String::new(), String::new()]);
+            continue;
+        }
+        for (i, tile) in tiles.iter().enumerate() {
+            let chart = &tile["chart"];
+            let label = tile["label"].as_str().unwrap_or("?").to_string();
+            let head = if i == 0 { title.clone() } else { String::new() };
+            if chart["kind"] == "list" {
+                rows.push([head, label, String::new(), String::new(), String::new()]);
+                let listed = chart["rows"].as_array().cloned().unwrap_or_default();
+                if listed.is_empty() {
+                    rows.push([String::new(), format!("  {}", chart["empty"].as_str().unwrap_or("")), String::new(), String::new(), String::new()]);
+                }
+                for row in listed {
+                    let detail = [row["detail"].as_str().unwrap_or(""), row["note"].as_str().unwrap_or("")].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" · ");
+                    rows.push([String::new(), format!("  {}", row["label"].as_str().unwrap_or("?")), row["figure"].as_str().unwrap_or("").to_string(), String::new(), detail]);
+                }
+                continue;
+            }
+            if chart["kind"] == "ranked" {
+                rows.push([head, label, String::new(), String::new(), String::new()]);
+                for row in chart["rows"].as_array().into_iter().flatten() {
+                    rows.push([String::new(), format!("  {}", row["label"].as_str().unwrap_or("?")), figure(&row["value"], Some("%")), row["note"].as_str().unwrap_or("").to_string(), String::new()]);
+                }
+                continue;
+            }
+            let values = match chart["kind"].as_str() {
+                Some("dots") => chart["line"].as_array().cloned().unwrap_or_default(),
+                _ => chart["values"].as_array().cloned().unwrap_or_default(),
+            };
+            let unit = tile["unit"].as_str();
+            rows.push([head, label, figure(&tile["value"], unit), tile["note"].as_str().unwrap_or("").to_string(), spark(&values, chart["max"].as_f64())]);
+        }
+    }
+    let width = |column: usize| rows.iter().filter(|r| !r[2].is_empty() || column < 1).map(|r| r[column].chars().count()).max().unwrap_or(0);
+    let widths = [width(0), width(1), width(2), width(3)];
+    let mut out = vec![];
+    if let Some(project) = reply["project"].as_str() {
+        out.push(format!("{} · main · last 30 days", home_relative(project)));
+    }
+    for row in &rows {
+        let line = if row[2].is_empty() && row[4].is_empty() {
+            format!("{:<w0$}  {}", row[0], row[1], w0 = widths[0])
+        } else {
+            format!("{:<w0$}  {:<w1$}  {:>w2$}  {:<w3$}  {}", row[0], row[1], row[2], row[3], row[4], w0 = widths[0], w1 = widths[1], w2 = widths[2], w3 = widths[3])
+        };
+        out.push(line.trim_end().to_string());
+    }
+    out.join("\n")
+}
+
 pub fn schedule(request: &Value, reply: &Value) -> String {
     let id = |s: &Value| s["schedule"].as_str().unwrap_or("?").to_string();
     let named = |s: &Value| s["name"].as_str().map_or_else(|| id(s), |n| format!("{} {n}", id(s)));
@@ -1321,6 +1412,52 @@ fn short_key(key: &Value) -> String {
     key.as_str().unwrap_or("?").chars().take(10).collect()
 }
 
+pub fn accounts(request: &Value, reply: &Value) -> String {
+    let what = |a: &Value| {
+        let kind = match a["kind"].as_str() {
+            Some("claude-subscription") => "Claude subscription",
+            Some("claude-api-key") => "Anthropic API key",
+            Some("codex-chatgpt") => "Codex, ChatGPT login",
+            Some("codex-api-key") => "OpenAI API key",
+            _ => "account",
+        };
+        match (a["label"].as_str().filter(|l| Some(*l) != a["kind"].as_str()), a["holder_name"].as_str()) {
+            (Some(label), Some(holder)) => format!("{kind} ({label}), held by {holder}"),
+            (Some(label), None) => format!("{kind} ({label})"),
+            (None, Some(holder)) => format!("{kind}, held by {holder}"),
+            (None, None) => kind.to_string(),
+        }
+    };
+    let machines = join(&reply["machines"]);
+    match request["action"].as_str() {
+        Some("add") => {
+            let replaced = reply["replaced"].as_array().filter(|r| !r.is_empty()).map_or(String::new(), |r| format!(" in place of {}", r.iter().map(&what).collect::<Vec<_>>().join(", ")));
+            let there = if machines.is_empty() { String::new() } else { format!(" and on {machines}") };
+            format!("added {}{replaced} ({}); your agents use it here{there}", what(&reply["account"]), reply["account"]["id"].as_str().unwrap_or("?"))
+        }
+        Some("remove") => {
+            let gone = reply["removed"].as_array().map(|r| r.iter().map(&what).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            if machines.is_empty() { format!("removed {gone}") } else { format!("removed {gone}; it comes off {machines} as each one hears it") }
+        }
+        _ => {
+            let mut out = vec![];
+            for account in reply["accounts"].as_array().into_iter().flatten() {
+                let broken = account["broken"].as_str().map_or(String::new(), |why| format!("  broken: {why}"));
+                out.push(format!("{:<7} {}  {}{broken}", account["agent"].as_str().unwrap_or("?"), account["id"].as_str().unwrap_or("?"), what(account)));
+            }
+            for account in reply["received"].as_array().into_iter().flatten() {
+                out.push(format!("{:<7} {}  {}, from {}", account["agent"].as_str().unwrap_or("?"), account["id"].as_str().unwrap_or("?"), what(account), account["from"].as_str().unwrap_or("?")));
+            }
+            if out.is_empty() {
+                out.push("no accounts: your agents use each machine's own sign-in (kanna accounts add claude, or codex)".into());
+            } else if reply["accounts"].as_array().is_some_and(|a| !a.is_empty()) {
+                out.push(if machines.is_empty() { "no other machine to go to yet".to_string() } else { format!("going to: {machines}") });
+            }
+            out.join("\n")
+        }
+    }
+}
+
 fn release(release: &Value) -> String {
     match (release["version"].as_str(), release["commit"].as_str()) {
         (Some(version), Some(commit)) => format!("{version} ({})", short_commit(commit)),
@@ -1334,37 +1471,12 @@ fn short_commit(commit: &str) -> String {
     format!("{}{dirty}", commit.chars().take(8).collect::<String>())
 }
 
-fn machine_update(reply: &Value) -> String {
-    let mut out = vec![format!("Kanna {} for {} {}", release(&reply["release"]), reply["release"]["os"].as_str().unwrap_or("?"), reply["release"]["arch"].as_str().unwrap_or("?"))];
-    let machines = reply["machines"].as_array().cloned().unwrap_or_default();
-    if machines.is_empty() {
-        out.push("no other machines".into());
-    }
-    for machine in machines {
-        let name = machine["name"].as_str().unwrap_or("?");
-        let line = if let Some(skipped) = machine["skipped"].as_str() {
-            format!("skipped ({skipped})")
-        } else if machine["already"] == true {
-            "already runs it".to_string()
-        } else if machine["ok"] == true {
-            let from = machine["from"].as_str().map_or(String::new(), |f| format!(" from {}", short_commit(f)));
-            let mb = machine["bytes"].as_f64().unwrap_or(0.0) / 1e6;
-            format!("updated{from}: sent {mb:.0} MB in {:.1}s, restarted with its terminals in {:.1}s", machine["sent_secs"].as_f64().unwrap_or(0.0), machine["back_secs"].as_f64().unwrap_or(0.0))
-        } else {
-            format!("failed: {}", machine["error"]["message"].as_str().unwrap_or("?"))
-        };
-        out.push(format!("  {name:<14} {line}"));
-    }
-    out.join("\n")
-}
-
 pub fn machine(request: &Value, reply: &Value) -> String {
     match request["action"].as_str() {
         Some("pair") => format!("added {} to your machines", reply["name"].as_str().unwrap_or("?")),
         Some("name") => format!("this machine is {} now", reply["name"].as_str().unwrap_or("?")),
         Some("addr") => format!("will try {} for {}", reply["addr"].as_str().unwrap_or("?"), request["host"].as_str().unwrap_or("?")),
         Some("sync") => format!("swapped peer logs with {}", reply["name"].as_str().unwrap_or("?")),
-        Some("update") => machine_update(reply),
         Some("relay") => match reply["relay"].as_str() {
             Some(url) => format!("this machine meets the others through {url} when away"),
             None => "this machine uses no relay: only the LAN and addresses you give".into(),
@@ -1372,7 +1484,12 @@ pub fn machine(request: &Value, reply: &Value) -> String {
         Some("revoke") => {
             let told = join(&reply["told"]);
             let told = if told.is_empty() { "no other machine was reachable to hear it yet".to_string() } else { format!("told {told}") };
-            format!("revoked {} for good; {told}", reply["name"].as_str().unwrap_or("?"))
+            let accounts = match reply["accounts"].as_bool() {
+                Some(true) => "\nit dropped the agent accounts it was given; if it may be in someone else's hands, rotate them too (kanna accounts)",
+                Some(false) => "\nit couldn't be told to drop the agent accounts it was given: rotate them (kanna accounts)",
+                None => "",
+            };
+            format!("revoked {} for good; {told}{accounts}", reply["name"].as_str().unwrap_or("?"))
         }
         Some("ping") => {
             let streams = reply["streams"].as_object().map(|s| s.iter().map(|(kind, r)| format!("{kind} {}", if r["ok"] == true { "ok".to_string() } else { r["error"]["code"].as_str().unwrap_or("failed").to_string() })).collect::<Vec<_>>().join(", ")).unwrap_or_default();

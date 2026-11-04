@@ -49,7 +49,7 @@ sequenceDiagram
 
 - **`release`** (a task held on the Shelf): after the claim, `started` takes it off the Shelf, saves it on the Desk and publishes it. The agent's restart (`revive`: the agent, then `core.wake` for its tabs) runs on the daemon loop's **next turn** (`Event::Turn`), so the layout's flush at the top of the loop sends the Desk change before the restart's keeper round trips.
 - **A fresh or moved task** (`launch`) opens its agent with `wait: false`, publishes, then looks up the branch only if `make_worktree` didn't already give it.
-- **Branch lookups** go to a thread and come back as `Event::Branch`; the reply waits on them, the Desk doesn't.
+- **Branch lookups** read the worktree's `HEAD`, without running git.
 - **A restarted terminal's folder:** a restart gives the agent a new terminal ID ([IDs](presentation-layers.md#3-ids)), and the app files Desk cards by their terminal's folder. The daemon sends the app the new ID's folder as the ID changes, not once the terminal has started, so the card is filed under its project at once.
 - **The spinner:** a terminal pane the app has no started terminal for yet (`PaneView.waiting`) shows a small spinner, gone once its terminal attaches or the pane shows a message.
 - **Keeper spawns don't wait:** the restart sends its spawns and the loop goes on; each terminal starts when the keeper's reply comes back, so a busy or paused keeper doesn't hold up the Desk or anything else ([spawns without waiting](async-spawns.md)).
