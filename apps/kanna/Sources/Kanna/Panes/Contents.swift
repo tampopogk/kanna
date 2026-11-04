@@ -401,6 +401,7 @@ final class Contents {
                 guard current() else { return }
                 if device.name != wanted { self?.onUpdate?(id, ["device": .string(device.name)]) }
                 view.show(device: device.name, app: appName)
+                if !restoring, app.hasSuffix(".app") { try Simulator.checkFits(app, on: device) }
                 view.show(status: "Booting \(device.name)…")
                 try await Simulator.boot(device)
                 guard current() else { return }

@@ -125,7 +125,7 @@ const jobs = () => [
 
 function tabs(active) {
   const fixed = ['Desk', 'Machines', 'Builds', 'Stats'];
-  const count = scene === 'empty' ? '' : `<span class="count">${cancelled ? 2 : 3}</span>`;
+  const count = '';
   if (active === 'task') return `<div class="dtab">diff</div><div class="dtab on">ios-3 · Recipes</div>`;
   return fixed.map(t => `<div class="dtab fixed ${t === active ? 'on' : ''}">${t}${t === 'Builds' ? count : ''}</div>`).join('');
 }
@@ -154,7 +154,7 @@ function builds() {
 }
 
 function ios() {
-  if (scene === 'fetch') return `<div class="ios"><div class="phone loading"><div>Fetching Recipes.app from linux-vm…</div><div class="bar2"><i style="width:58%"></i></div><div style="font-size:12px">21 of 36 MB</div></div></div>`;
+  if (scene === 'fetch') return `<div class="ios"><div class="phone loading"><div>Fetching Recipes.app from linux-vm…</div></div></div>`;
   if (scene === 'ios-fail') return `<div class="ios"><div class="phone loading"><div class="err">No app at build/Debug-iphonesimulator/Recipes.app on linux-vm.<br><br>Build it with<br><code>kanna build --fetch …/Recipes.app -- xcodebuild …</code></div></div></div>`;
   return `<div class="ios"><div class="phone"><h3>Recipes</h3><div class="row">Pasta e fagioli</div><div class="row">Shakshuka</div><div class="row">Miso soup</div></div></div>`;
 }
@@ -162,14 +162,14 @@ function ios() {
 function term() {
   if (scene.startsWith('ios') || scene === 'fetch') return `<span class="p">$</span> kanna build --fetch build/Debug-iphonesimulator/Recipes.app -- \\
     xcodebuild -scheme Recipes -sdk iphonesimulator -derivedDataPath build
-<span class="d">kanna build: queued on studio-build, 1st (behind Login screen)</span>
+<span class="d">kanna build: queued on the build Mac, 0 ahead</span>
 <span class="d">kanna build: running on studio-build (vm-a)</span>
 ** BUILD SUCCEEDED **
 <span class="d">kanna build: fetched build/Debug-iphonesimulator/Recipes.app</span>
 <span class="p">$</span> kanna open ios build/Debug-iphonesimulator/Recipes.app --tab
 opened ios-3 in ws-2 (task-5c1e, on the Desk), tab-4: running`;
   return `<span class="p">$</span> kanna build -- xcodebuild -scheme Recipes test
-<span class="d">kanna build: queued on studio-build, 1st (behind Login screen)</span>
+<span class="d">kanna build: queued on the build Mac, 0 ahead</span>
 ${cancelled ? '<span class="d">kanna build: cancelled while queued</span>\n<span class="p">$</span> echo $?\n130' : ''}`;
 }
 
@@ -179,7 +179,7 @@ function render() {
   document.getElementById('head').textContent = taskView ? 'Settings page · claude' : 'Planning · claude';
   document.getElementById('tabs').innerHTML = tabs(taskView ? 'task' : 'Builds');
   document.getElementById('body').innerHTML = taskView ? ios() : builds();
-  document.getElementById('term').innerHTML = taskView || scene === 'cancel' ? term() : '<span class="p">$</span> kanna build queue\n<span class="d">studio-build</span>\n  ▶ Login screen      linux-vm  running 2m 14s  vm-a\n  1 Settings page     r720-2    queued 41s\n  2 Widget extension  linux-vm  queued 12s';
+  document.getElementById('term').innerHTML = taskView || scene === 'cancel' ? term() : '<span class="p">$</span> kanna builds\n<span class="d">studio-build</span>\n  ▶ Login screen      linux-vm  running 2m 14s  vm-a\n  1 Settings page     r720-2    queued 41s\n  2 Widget extension  linux-vm  queued 12s';
   document.getElementById('strip').innerHTML = ['Login screen', 'Settings page', 'Widget extension'].map(n => `<span class="chip ${taskView && n === 'Settings page' ? 'on' : ''}">${n}</span>`).join('');
   document.getElementById('controls').innerHTML = Object.entries(scenes).map(([k, v]) => `<button data-scene="${k}" class="${k === scene ? 'on' : ''}">${v}</button>`).join('') + '<button data-theme>Light / dark</button>';
   document.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { if (b.dataset.cancel === 'Settings page') { cancelled = true; scene = 'cancel'; render(); setTimeout(() => { scene = 'queue'; render(); }, 1200); } });

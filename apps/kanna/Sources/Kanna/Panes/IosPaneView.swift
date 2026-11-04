@@ -97,7 +97,6 @@ enum Simulator {
         var name = app
         if app.hasSuffix(".app") || app.contains("/") {
             guard let bundle = Bundle(path: app), let id = bundle.bundleIdentifier else { throw Failure(message: "no app at \(app)") }
-            try checkFits(app, on: device)
             try await simctl("install", device.udid, app)
             bundleID = id
             name = (app as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
