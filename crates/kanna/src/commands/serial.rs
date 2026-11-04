@@ -1,11 +1,46 @@
+use super::{Command, Flow};
+use kanna_client::Failure;
+use serde_json::Value;
 use crate::args::Argv;
 use crate::commands::usage;
 use crate::target::Session;
-use kanna_client::{exit, fail, Failure};
+use kanna_client::{exit, fail};
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+pub const COMMAND: Command = Command {
+    name: "serial",
+    group: "Panes",
+    summary: "List serial ports, and read, write, reset or borrow the port a serial pane has open.",
+    usage: "kanna serial list\n       kanna serial read PANE [--since T|--last N] [--follow] [--until REGEX [--timeout S]] [--raw]\n       kanna serial send PANE TEXT [--hex] [--no-ending]\n       kanna serial reset PANE [--hold MS]\n       kanna serial set PANE [--baud N] [--line-ending lf|crlf|cr]\n       kanna serial borrow PANE|PORT -- CMD...\n       kanna serial log PANE",
+    options: &[
+        ("--since T", "read: rows from T on, a time today (14:37:40.118, as send and reset print) or a duration back (10s, 2m)."),
+        ("--last N", "read: the last N rows."),
+        ("--follow", "read: keep printing rows as they come, through unplugging, until interrupted."),
+        ("--until REGEX", "read: follow until a line the device sent matches, print it and exit 0; exit 1 after --timeout."),
+        ("--timeout S", "read --until: seconds to wait (default 30)."),
+        ("--raw", "read: only what the device sent, as its bytes."),
+        ("--hex", "send: TEXT is hex bytes (1b 5b 41), sent with no line ending."),
+        ("--no-ending", "send: leave off the pane's line ending."),
+        ("--hold MS", "reset: how long to hold reset (default 100)."),
+    ],
+    notes: "Kanna's daemon owns each port, so a serial pane (kanna open serial PORT), these commands and an agent share one connection. Rows print as TIME TEXT; → marks a line sent to the device and # one from Kanna (connected, unplugged, back, reset, lent). read without --since or --last prints the rows kept in memory (the last 10,000); with --follow or --until and neither, it starts from now, so an old boot banner doesn't match. Bytes that aren't text show as \\xNN. Every row is also appended to the port's log file in the state folder (kanna serial log PANE), to grep a whole session.\nborrow lends the port to CMD, a flash for example: the pane lets go of the port, CMD runs here, and the pane takes the port back when CMD exits (or this command is killed); it exits with CMD's code. With PORT (a path or USB vid:pid), a script needn't know the pane; with no pane open on the port it just runs CMD.\nsend, reset and set fail with unplugged or lent while the port isn't there to use.",
+    examples: &[
+        ("kanna serial list", "The ports plugged in, by USB name, and the panes that have each open."),
+        ("kanna serial read serial-1 --until 'app: ready|Guru Meditation' --timeout 20", "Wait for the firmware to boot, or to crash."),
+        ("kanna serial send serial-1 'wifi status'", "Type a line to the device's console."),
+        ("kanna serial borrow serial-1 -- idf.py flash", "Flash while the pane lends the port, and watch it boot again after."),
+    ],
+    parse,
+    show: |_, _| String::new(),
+    flow: Flow { online: Some(online), ..Flow::PLAIN },
+};
+
+fn online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
+    Some(run(request, mux, json_output))
+}
 
 const POLL_MS: u64 = 10_000;
 
