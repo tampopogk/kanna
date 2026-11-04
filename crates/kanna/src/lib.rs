@@ -125,7 +125,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
                 None => println!("{}", overview(&target)),
                 Some(topic) if topic == "instances" => println!("{}", commands::instances::HELP),
                 Some(topic) if topic == "raw" => println!("{}", commands::raw::HELP),
-                Some(topic) if topic == "completions" => println!("{COMPLETIONS_HELP}"),
+                Some(topic) if topic == "completions" => println!("{}", commands::completions::HELP),
                 Some(topic) => println!("{}", help(lookup(&topic)?, &target)),
             }
             return Ok(());
@@ -142,14 +142,7 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
             return Ok(());
         }
         "config" => return commands::config::run(&mut args),
-        "completions" => {
-            match args.positional().as_deref() {
-                Some("zsh") => print!("{}", complete::ZSH),
-                Some("bash") => print!("{}", complete::BASH),
-                _ => println!("{COMPLETIONS_HELP}"),
-            }
-            return Ok(());
-        }
+        "completions" => return commands::completions::run(&mut args),
         "instances" => return commands::instances::run(&mut args, &invocation, wants_help),
         "raw" => return commands::raw::run(&mut args, &invocation, wants_help),
         _ => {}
@@ -266,8 +259,6 @@ fn mark(command: &Command, supported: Option<&[String]>, target: &Target) -> Str
         _ => String::new(),
     }
 }
-
-const COMPLETIONS_HELP: &str = "usage: kanna completions zsh|bash\n\nPrints the tab-completion script for your shell. Load it from your shell's startup file:\n  zsh:  source <(kanna completions zsh)     in ~/.zshrc\n  bash: eval \"$(kanna completions bash)\"  in ~/.bashrc\n\nTab then completes commands, options, pane names and IDs, tabs, windows, instances,\nand files of the kind a command takes (markdown for open md, HTML for markup).";
 
 fn overview(target: &Target) -> String {
     let supported = supported(target);
