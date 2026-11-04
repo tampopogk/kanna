@@ -650,10 +650,10 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, f64)>> {
+    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, Option<f64>)>> {
         let mut statement = self.conn.prepare(
-            "select t.id, t.repo, t.terminal, t.made_at, t.doc, coalesce((select max(at) from task_events e where e.task = t.id and e.what = 'done'), t.made_at) as done_at \
-             from tasks t where t.place = 'done' order by done_at desc, t.rowid desc",
+            "select t.id, t.repo, t.terminal, t.made_at, t.doc, (select max(at) from task_events e where e.task = t.id and e.what = 'done') as done_at \
+             from tasks t where t.place = 'done' order by coalesce(done_at, t.made_at) desc, t.rowid desc",
         )?;
         let rows = statement.query_map([], |r| {
             let doc: String = r.get(4)?;
@@ -1500,7 +1500,7 @@ mod tests {
             }
         }
         let done = db.done_tasks().unwrap();
-        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", 40.0), ("t1", 30.0), ("t2", 20.0)]);
+        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", Some(40.0)), ("t1", Some(30.0)), ("t2", Some(20.0))]);
         assert_eq!(done[0].0.doc["name"], "t4");
         assert_eq!(db.tasks().unwrap().len(), 1, "the open tasks leave out the done ones");
         fs::remove_dir_all(&dir).unwrap();

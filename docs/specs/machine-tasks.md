@@ -72,7 +72,7 @@ sequenceDiagram
 - **A machine's clones** are the projects in its `~/.kanna-v4/repos`, the repos of its tasks and its recent projects, matched by project identity. A task granted here goes onto the Shelf of that clone, made from its record.
 - **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task on its Desk, now named by its device (`claimed by: mbp`).
 - **Task IDs** stay random 32 bits ([task IDs](task-ids.md)). Apps key views by (machine, ID). An ID already in the replica is refused when a task is made; one two machines make at once, before they've synced, stays two births, and neither is started or granted (`ambiguous`).
-- **What the app sees:** each daemon's Shelf is the tasks it owns, so a granted task moves from the owner's Shelf to the runner's in the Desk view's merged Shelf. `kanna task list` also lists other machines' waiting and started tasks, `on vm` in WHERE.
+- **What the app sees:** each daemon's Shelf is the tasks it owns, so a granted task moves from the owner's Shelf to the runner's in the Desk view's merged Shelf. `kanna task list` also lists other machines' waiting and started tasks, `on vm` in WHERE, and keeps them out of `--include-done` even though their row here has the place `done`: the record, not that row, says whether a task is finished.
 
 | Request (`replica` on a `sync` stream) | Reply |
 |---|---|

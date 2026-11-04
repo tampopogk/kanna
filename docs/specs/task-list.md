@@ -106,7 +106,7 @@ flowchart TD
 - **The caller's repo by default:** the repo the CLI runs in (its git common dir, as `kanna task new` finds it). Outside a git repo, every repo's.
 - **`--all`:** every repo's, as the list was before.
 - **QUERY** filters as before ([Shelf search](shelf-search.md#cli)).
-- **`--include-done`:** done tasks too, from `kanna.db` ([database](database.md)), with `done` and `doneAt` in `--json`. With QUERY, every done task that matches; without it, only the 5 done last, and `moreDone` in `--json` says how many are left out: every task ever made would swamp an agent's context.
+- **`--include-done`:** done tasks too, from `kanna.db` ([database](database.md)), with `done` and `doneAt` in `--json`. With QUERY, every done task that matches; without it, only the 5 done last, and `moreDone` in `--json` says how many are left out: every task ever made would swamp an agent's context. A task that left this machine and still runs on another ([moved](task-transfer.md), granted or taken over) is under Other machines, not Done. Once its record says it's done it joins Done, at the time its record says.
 
 ## 5. --json
 

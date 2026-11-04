@@ -167,6 +167,35 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
 }
 
 #[test]
+fn a_moved_task_is_listed_where_it_runs_and_done_says_where_that_is() {
+    let (mbp, vm) = (machine("mbp"), machine("vm"));
+    pair(&mbp, &vm);
+    let (here, _there) = (clone(&mbp), clone(&vm));
+    let claude = mock(&mbp, "claude");
+    let (task, _, _) = started_task(&mbp, &here, &claude);
+    let done_ids = |list: &Value| list["done"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    mbp.kanna(&["task", "move", &task, "vm", "--json"]).json();
+    within(10, "mbp to see vm own it", || record(&mbp, &task)["owner"].as_str() == Some(key(&vm).as_str()) && record(&mbp, &task)["state"] == "started");
+
+    let listed = mbp.kanna_in(&here, &["task", "list", "--include-done", "--json"]).json();
+    assert!(done_ids(&listed).is_empty(), "a task running on vm isn't done: {listed}");
+    assert_eq!(listed["elsewhere"][0]["machine"], "vm", "{listed}");
+
+    let refused = mbp.kanna_in(&here, &["task", "done", &task]).fails(1, "runs on vm, so nothing changed");
+    assert!(refused.contains("kanna --host vm task done"), "{refused}");
+    assert!(!shelf_task(&vm, &task).is_null(), "it keeps running on vm");
+
+    std::thread::sleep(Duration::from_secs(2));
+    vm.kanna(&["task", "done", &task]).ok();
+    within(10, "mbp to see it finished on vm", || record(&mbp, &task)["state"] == "done");
+    let listed = mbp.kanna_in(&here, &["task", "list", "--include-done", "--json"]).json();
+    assert_eq!(done_ids(&listed), [task.clone()], "{listed}");
+    assert!(listed["elsewhere"].as_array().unwrap().is_empty(), "{listed}");
+    let finished = &listed["done"][0];
+    assert!(finished["doneAt"].as_f64().unwrap() > finished["madeAt"].as_f64().unwrap() + 2.0, "it says when it finished, not when it was made: {listed}");
+}
+
+#[test]
 fn a_receiver_that_stops_before_it_answers_carries_the_task_on_once_it_is_back() {
     let mbp = machine("mbp");
     let mut vm = Daemon::start_with(&[("KANNA_TRANSFER_EXIT", "installed")]);

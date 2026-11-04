@@ -64,6 +64,7 @@ sequenceDiagram
 - **The dirty tree comes back staged:** `reset --soft` to the commit before the WIP one, and the index's tree is checked against the WIP commit's. The task's base is recorded for the worktree, as on the sender.
 - **The agent runs from this machine's path:** an agent named by an absolute path that isn't here runs by its program's name.
 - **It carries on:** the task goes onto this Shelf with its folder (`moved`, from the sender), its agent starts a new session with the handoff as its first message (§4), and then it answers. No tab opens beside it. If its agent can't be started, the task stays here, stopped with why, and the receiver still answers, so only one machine has it.
+- **On the sender it's away, not done:** its row there has the place `done`, but `kanna task list` shows it under Other machines, and under Done only once its record says it's done, with the time it finished. `kanna task done` on the sender changes nothing and says which machine runs it: `task-3f9a runs on vm, so nothing changed: end it there with kanna --host vm task done task-3f9a`. Kanna doesn't forward it: a peer gets no way to end your tasks beyond the `--host` it already has.
 - **A move back** to a machine the task left works the same: the old copy there is Done, its worktree and branch were removed, and the permission comes at a newer epoch.
 
 **A branch or worktree the receiver has already** (from an earlier run of the task, or an earlier transfer) is checked before anything is written, and nothing of the receiver's is overwritten:

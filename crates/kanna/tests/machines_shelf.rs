@@ -137,6 +137,8 @@ fn two_machines_share_one_repo_s_shelf_and_each_task_runs_once_oldest_first() {
     assert!(listed.lines().any(|l| l.starts_with(&first[..9]) && l.contains("on vm")), "mbp lists the task vm runs: {listed}");
     within(10, "mbp to see that vm owns and started the first task", || record(&mbp, &first)["state"] == "started");
     assert_eq!(record(&mbp, &first)["owner"].as_str(), Some(key(&vm).as_str()));
+    let with_done = ask(&mbp, "tasks", json!({ "action": "list", "done": true }));
+    assert!(!with_done["done"].as_array().unwrap().iter().any(|t| t["id"] == first.as_str()), "a task granted away isn't done: {with_done}");
 
     within(30, "the first task's turn to end", || ask(&vm, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().any(|t| t["id"] == first.as_str() && t["running"] == false));
     vm.kanna(&["task", "done", &first, "--keep"]).ok();
