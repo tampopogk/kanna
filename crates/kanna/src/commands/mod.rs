@@ -17,6 +17,7 @@ pub mod screenshot;
 pub mod send;
 pub mod send_key;
 pub mod shared;
+pub mod stats;
 pub mod status;
 pub mod toast;
 pub mod window;
@@ -399,18 +400,7 @@ pub static COMMANDS: &[Command] = &[
     },
     crashes::COMMAND,
     quiz::COMMAND,
-    Command {
-        name: "stats",
-        group: "Information",
-        summary: "Print this project's numbers over the last 30 days, as the Desk view's Stats tab shows them.",
-        usage: "kanna stats",
-        options: &[],
-        notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality isn't measured yet. Each line is a number, its note and a sparkline of its 30 days, oldest first.",
-        examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them.")],
-        parse: parse_stats,
-        show: output::stats,
-        flow: Flow::PLAIN,
-    },
+    stats::COMMAND,
     Command {
         name: "projects",
         group: "Information",
@@ -668,11 +658,6 @@ fn parse_markup(args: &mut Argv) -> Result<Value, Failure> {
     }
     from_caller(&mut out);
     Ok(Value::Object(out))
-}
-
-fn parse_stats(_: &mut Argv) -> Result<Value, Failure> {
-    let repo = repo_here().map_err(|_| usage("stats", "stats are a git repo's: run this in one"))?;
-    Ok(json!({ "repo": repo }))
 }
 
 fn parse_schedule(args: &mut Argv) -> Result<Value, Failure> {
@@ -1480,44 +1465,6 @@ pub mod tests {
         assert_eq!(output::opened(&json!({ "frozen": true }), &opened), "opened p1 (agent) docked left, frozen, in ws-1 (on the Desk): running");
         let moved = json!({ "window": null, "workspace": { "id": "ws-1" }, "dock": { "pane": "agent", "edge": "right", "width": "1/3" } });
         assert_eq!(output::moved(&moved), "agent is docked right in ws-1 (width 1/3)");
-    }
-
-    #[test]
-    fn stats_print_a_line_a_tile_with_its_sparkline() {
-        let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
-        assert_eq!(parse("kanna stats").unwrap().1, json!({ "repo": repo }));
-        let reply = json!({ "project": "/r", "days": [], "sections": [
-            { "id": "quiz", "title": "Quiz", "tiles": [
-                { "id": "right", "label": "Answers right", "value": 79.0, "unit": "%", "note": "of 95 answers", "chart": { "kind": "line", "max": 100, "values": [null, 50.0, 100.0] } },
-                { "id": "kinds", "label": "By kind", "value": null, "note": "", "chart": { "kind": "ranked", "rows": [{ "label": "why", "value": 91.7, "note": "11/12" }] } },
-            ] },
-            { "id": "tasks", "title": "Tasks", "tiles": [
-                { "id": "open", "label": "Open", "value": 2.0, "note": "+2 in 30 days", "chart": { "kind": "flow", "values": [0.0, 1.0, 2.0], "made": [0.0, 1.0, 3.0], "done": [0.0, 0.0, 2.0] } },
-                { "id": "lead", "label": "Made to done", "value": 12780.0, "unit": "s", "note": "median of 3", "chart": { "kind": "dots", "points": [], "line": [null, 3600.0, 7200.0] } },
-            ] },
-            { "id": "code", "title": "Code quality", "tiles": [
-                { "id": "erosion", "label": "Erosion", "value": 48.5, "unit": "%", "note": "up 1.2 points in 30 days", "chart": { "kind": "line", "max": 100, "values": [47.3, 48.5] } },
-                { "id": "worst", "label": "Worst functions", "value": null, "note": "", "chart": { "kind": "list", "rows": [{ "label": "run", "detail": "crates/kanna-daemon/src/main.rs:215", "figure": "CC 154", "note": "677 lines", "open": { "path": "crates/kanna-daemon/src/main.rs", "line": 215 } }] } },
-                { "id": "causes", "label": "Landings that needed the most fixes", "value": null, "note": "", "chart": { "kind": "list", "rows": [], "empty": "No fix traced back to a landing in 30 days." } },
-            ] },
-            { "id": "empty", "title": "Later", "empty": "Not measured yet.", "tiles": [] },
-        ] });
-        let text = output::stats(&json!({}), &reply);
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], "/r · main · last 30 days");
-        assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers              ▅█");
-        assert_eq!(lines[2], "              By kind");
-        assert_eq!(lines[3], "                why             92%  11/12");
-        assert_eq!(lines[4], "Tasks         Open                2  +2 in 30 days             ▁▅█");
-        assert_eq!(lines[5], "              Made to done   3h 33m  median of 3                ▅█");
-        assert_eq!(lines[6], "Code quality  Erosion           49%  up 1.2 points in 30 days  ▄▄");
-        assert_eq!(lines[7], "              Worst functions");
-        assert_eq!(lines[8], "                run          CC 154                            crates/kanna-daemon/src/main.rs:215 · 677 lines");
-        assert_eq!(lines[10], "                No fix traced back to a landing in 30 days.");
-        assert_eq!(lines[11], "Later         Not measured yet.");
-        assert_eq!(output::duration(59.0 * 60.0), "59m");
-        assert_eq!(output::duration(3.0 * 3600.0), "3h");
-        assert_eq!(output::duration(50.0 * 3600.0), "2d");
     }
 
     #[test]
