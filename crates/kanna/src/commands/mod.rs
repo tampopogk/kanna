@@ -7,6 +7,7 @@ pub mod comment;
 pub mod crashes;
 pub mod diagrams;
 pub mod focus;
+pub mod guests;
 pub mod machine;
 pub mod markup;
 pub mod r#move;
