@@ -47,6 +47,7 @@ mod screenshot;
 mod serial;
 mod store;
 mod stacks;
+mod task_events;
 mod task_scripts;
 mod terminals;
 mod transfer;

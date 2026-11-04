@@ -995,6 +995,14 @@ impl Db {
         Ok(())
     }
 
+    pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn put_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert into meta (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value", [key, value]).map(|_| ())
+    }
+
     pub fn seed_once(&self, key: &str, schedule: &Schedule) -> rusqlite::Result<bool> {
         let tx = self.conn.unchecked_transaction()?;
         if tx.query_row("select 1 from meta where key = ?1", [key], |_| Ok(())).optional()?.is_some() {
