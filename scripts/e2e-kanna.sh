@@ -1084,8 +1084,8 @@ r = json.load(sys.stdin)
 p = {k: (x, y, x + w, y + h) for k, (x, y, w, h) in r["box_parts"].items()}
 box, f = p["box"], p["field"]
 inside = lambda a: a[0] >= box[0] and a[1] >= box[1] and a[2] <= box[2] and a[3] <= box[3]
-assert f[3] - f[1] == 160, ("the field should grow to its cap", r["box_parts"])
-assert p["text"][3] - p["text"][1] > 160, ("past its cap the text should scroll inside the field", r["box_parts"])
+assert f[3] - f[1] == 128, ("the field should grow to its cap of 8 lines", r["box_parts"])
+assert p["text"][3] - p["text"][1] > 128, ("past its cap the text should scroll inside the field", r["box_parts"])
 for k in ("box", "field", "hint", "post"):
     if k in p: assert inside(p[k]), (k, "is outside the box", r["box_parts"])
 for k in ("hint", "post"):
@@ -1107,6 +1107,7 @@ for p in panes:
     assert p["ink"] > 0 and m.get("found") and m["inked"] == m["glyphs"] > 0, p' "$1" "$2"
 }
 redrawn() { rm -f "$KANNA_STATE_DIR/$2.png"; shot="$(snap "$1" "$2")"; drawn "$shot" "$3"; }
+drew() { check wait_for 10 redrawn "$1" "$2" "$3" || { echo "$shot"; return 1; }; }
 click_tab() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"tab\":\"$1\",\"clicks\":${2:-1}}}" >/dev/null; sleep 0.3; }
 drag() { last_drag="$1 → $(raw "{\"id\":1,\"cmd\":\"debug.drag\",\"args\":$1}")"; sleep 0.3; }
 
@@ -1128,17 +1129,16 @@ windows_tabs_ui() {
   key "cmd+["; check test "$(win win-1 zoomed)" == term-2 || return 1
   check test "$(win win-1 focused)" == term-2 || return 1
   key "cmd+]"; check test "$(win win-1 zoomed)" == term-3 || return 1
-  shot="$(snap win-1 windows_tabs_ui-zoom-term-3)"
-  check drawn "$shot" 1 || return 1
+  drew win-1 windows_tabs_ui-zoom-term-3 1 || return 1
   check test "$(field tabBar.shown <<<"$shot")" == True || { echo "the tab bar should show while a pane is zoomed"; return 1; }
   key "cmd+]"; check test "$(win win-1 zoomed)" == k1 || return 1
-  check drawn "$(snap win-1 windows_tabs_ui-zoom-k1)" 1 || return 1
+  drew win-1 windows_tabs_ui-zoom-k1 1 || return 1
   key cmd+shift+return; check test "$(win win-1 zoomed)" == None || return 1
   key "cmd+["; check test "$(win win-1 focused)" == term-3 || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"pane":"k1"}}' >/dev/null; sleep 0.3
   check test "$(win win-1 focused)" == k1 || return 1
   sleep 1
-  check drawn "$(snap win-1 windows_tabs_ui-splits)" 3 || return 1
+  drew win-1 windows_tabs_ui-splits 3 || return 1
   printf '# windows_tabs_ui DOC\n\nclick me\n' >"$KANNA_STATE_DIR/windows_tabs_ui.md"
   kanna open --window win-1 md --name doc --split right "$KANNA_STATE_DIR/windows_tabs_ui.md" >/dev/null || return 1
   key "cmd+["; check test "$(win win-1 focused)" != doc || return 1
@@ -1186,7 +1186,7 @@ windows_tabs_ui() {
   check test "$(raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-2"}}' | field desk)" == False || return 1
   check test "$(dwin win-2 key)" == True || return 1
   sleep 1
-  check drawn "$(snap win-2 windows_tabs_ui-second-window)" 1 || return 1
+  drew win-2 windows_tabs_ui-second-window 1 || return 1
   key 'cmd+`'; check test "$(dwin win-1 key)" == True || return 1
   minimized() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"win-2\"${1:-}}}" | field minimized; }
   minimized ',"minimize":true' >/dev/null; check wait_for 5 eval '[[ "$(minimized)" == True ]]' || return 1
@@ -1320,7 +1320,7 @@ resize_arrange() {
   key cmd+0
   check test "$(size db)" == "$before" || return 1
   sleep 1
-  check drawn "$(snap win-1 resize_arrange-resized)" 4 || return 1
+  drew win-1 resize_arrange-resized 4 || return 1
   kanna open --window win-1 --name ended --cmd 'exit 3' --tab >/dev/null || return 1
   check wait_for 5 is ended state exited || return 1
   sleep 0.5
@@ -1406,7 +1406,7 @@ drag_panes_tabs() {
   sleep 1
   local w
   for w in $(state | python3 -c 'import json, sys; print(" ".join(w["id"] for w in json.load(sys.stdin)["windows"]))'); do
-    check drawn "$(snap "$w" "drag_panes_tabs-$w")" 1 || return 1
+    drew "$w" "drag_panes_tabs-$w" 1 || return 1
   done
 }
 
@@ -1704,7 +1704,7 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check test "$(md_comments_md | field active)" == c1 || return 1
   sleep 0.3; md_comments_shot md_comments-thread
   raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"Thanks"}}' >/dev/null
-  key return
+  key cmd+return
   check wait_for 5 eval '[[ "$(md_comments_thread c1 messages)" == 3 ]]' || return 1
   check wait_for 5 eval 'kanna read agent | sed "s/^IN //" | tr -d "\\n " | grep -qF "Thanks^[201~"' || return 1
   key escape; check test "$(md_comments_md | field box)" == None || return 1
@@ -1767,7 +1767,7 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"pane\":\"notes\",\"at\":[$(echo "$xy" | field x),$(echo "$xy" | field y)]}}" >/dev/null
   check test "$(md_comments_md | field box)" == c1 || return 1
   raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"While you slept"}}' >/dev/null
-  key return
+  key cmd+return
   check wait_for 5 eval '[[ "$(md_comments_thread c1 status)" == waiting ]]' || { md_comments_md; return 1; }
   key escape
   check wait_for 20 eval '[[ "$(comment_held "$comment_task")" == term-* ]]' || { echo "a comment should wake the stopped Shelf task"; comment_held "$comment_task"; return 1; }
@@ -1831,12 +1831,12 @@ docked_pane() {
   kanna task activate agent >/dev/null || return 1
   check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$agent" ]]' || { app_view; return 1; }
   sleep 1
-  check drawn "$(snap d1 docked_pane-docked)" 2 || return 1
+  drew d1 docked_pane-docked 2 || return 1
   key "cmd+shift+["
   check test "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" || return 1
   check test "$(dwin d1 dock.pane)" == "$agent" || return 1
   sleep 0.5
-  check drawn "$(snap d1 docked_pane-first-tab)" 2 || return 1
+  drew d1 docked_pane-first-tab 2 || return 1
   key "cmd+shift+]"; check test "$(dwin d1 tab)" == "$(dwin d1 tabs.1.id)" || return 1
   refused="$(kanna close agent 2>&1)" && { echo "close on the docked pane should fail"; return 1; }
   [[ "$refused" == *"docked: it closes with its window"* ]] || { echo "close on the docked pane should say why: $refused"; return 1; }
@@ -1864,8 +1864,7 @@ docked_pane() {
   check test "$(dwin d1 focused)" == "$dt3" || return 1
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == "$dt3" || return 1
   sleep 0.5
-  shot="$(snap d1 docked_pane-tab-zoomed)"
-  check drawn "$shot" 1 || return 1
+  drew d1 docked_pane-tab-zoomed 1 || return 1
   check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["panes"][0]["width"] == s["width"] == s["tabBar"]["width"] and s["tabBar"]["shown"], s' "$shot" || return 1
   click_tab "$(dwin d1 tabs.0.id)"
   check test "$(dwin d1 tab):$(dwin d1 zoomed)" == "$(dwin d1 tabs.0.id):$dt1" || { echo "clicking a tab while zoomed should show its pane zoomed"; return 1; }
@@ -1874,7 +1873,7 @@ docked_pane() {
   check test "$(dwin d1 tab):$(dwin d1 zoomed)" == "$(dwin d1 tabs.1.id):$dt3" || return 1
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == None || return 1
   sleep 0.5
-  check drawn "$(snap d1 docked_pane-tab-unzoomed)" 3 || return 1
+  drew d1 docked_pane-tab-unzoomed 3 || return 1
   kanna close dt3 >/dev/null || return 1
   refused="$(kanna move agent --dock right 2>&1)" && { echo "moving a task's agent should fail"; return 1; }
   [[ "$refused" == *"frozen: agent ("*") is frozen in its dock and doesn't move"* ]] || { echo "moving a task's agent should say why: $refused"; return 1; }
@@ -1886,7 +1885,7 @@ docked_pane() {
   check test "$(dwin d1 dock.width)" == 0.5 || return 1
   drag '{"divider":"agent","at":0.34}'
   sleep 0.5
-  check drawn "$(snap d1 docked_pane-resized)" 2 || return 1
+  drew d1 docked_pane-resized 2 || return 1
   first="$(dwin d1 tabs.0.id)"
   kanna move-tab "$first" --window new >/dev/null || return 1
   check test "$(dwin d1 dock.pane)" == "$agent" || return 1
@@ -1924,8 +1923,7 @@ docked_pane() {
   kanna focus agent >/dev/null || return 1
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == "$agent" || return 1
   sleep 0.5
-  shot="$(snap d1 docked_pane-only-dock-zoomed)"
-  check drawn "$shot" 1 || return 1
+  drew d1 docked_pane-only-dock-zoomed 1 || return 1
   check test "$(field tabBar.shown <<<"$shot")" == False || return 1
   check python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["panes"][0]["width"] == s["width"], s' "$shot" || return 1
   key cmd+shift+return; check test "$(dwin d1 zoomed)" == None || return 1
@@ -1952,7 +1950,7 @@ assert lone["dock"]["edge"] == "left" and lone["tabs"] == [], lone' "$KANNA_STAT
   check test "$after" == "$before" || { echo "before: $before"; echo "after:  $after"; return 1; }
   check wait_for 5 app_text back "DOCK BACK" || return 1
   sleep 0.5
-  check drawn "$(snap d1 docked_pane-restored)" 2
+  drew d1 docked_pane-restored 2
 }
 
 scenario markup_reuse M4
@@ -2149,7 +2147,7 @@ print(len(t) if isinstance(t, list) else t)' "$1" "$2"; }
   check test "$(page_comments_web | field active)" == c1 || return 1
   sleep 0.3; page_comments_shot page_comments-thread
   raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"Thanks"}}' >/dev/null
-  key return
+  key cmd+return
   check wait_for 5 eval '[[ "$(page_comments_thread c1 messages)" == 2 ]]' || return 1
   key escape; check wait_for 5 eval '[[ "$(page_comments_web | field box)" == None ]]' || return 1
   page_comments_click "\"at\":$xy"
@@ -2458,7 +2456,7 @@ desk_tasks() {
   check test "$(pane notes state)" == running || return 1
   expected="$(sid 1) is active on d1"; says kanna task activate term-1 || return 1
   check wait_for 5 eval '[[ "$(dwin d1 tabs.0.panes.0)" == "$(pane notes id)" ]]' || return 1
-  sleep 0.5; check drawn "$(snap d1 desk_tasks-desk)" 2 || return 1
+  sleep 0.5; drew d1 desk_tasks-desk 2 || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"deskView":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk empty)" == True ]]' || return 1
   raw '{"id":1,"cmd":"debug.click","args":{"task":"term-1","window":"d1"}}' >/dev/null
@@ -4401,7 +4399,7 @@ desk_zoom() {
   check test "$(dwin d1 zoomed)" == "$planner" || { echo "desk_zoom: the Shelf's zoom didn't survive a relaunch"; kanna workspace list --all; return 1; }
   kanna zoom "$planner" >/dev/null || { echo "desk_zoom line $LINENO"; return 1; }
   check test "$(dwin d1 zoomed)" == None || { echo "desk_zoom: kanna zoom didn't turn the Shelf's zoom off"; return 1; }
-  sleep 0.5; check drawn "$(snap d1 desk_zoom-shelf)" 1 || return 1
+  sleep 0.5; drew d1 desk_zoom-shelf 1 || return 1
   key "cmd+."
   check wait_for 5 eval '[[ "$(dwin d1 zoomed)" == "$log" ]]' || { echo "desk_zoom: the task lost its zoom to the Shelf's"; kanna workspace list --all; return 1; }
   stop_agents
