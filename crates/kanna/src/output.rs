@@ -174,56 +174,6 @@ fn sized(text: String, node: &Value) -> String {
     }
 }
 
-pub fn agents(args: &Value, reply: &Value) -> String {
-    let lines = |key: &str, label: &str| reply[key].as_array().filter(|a| !a.is_empty()).map(|a| format!("{label}:\n{}", a.iter().filter_map(Value::as_str).map(|p| format!("  {}", tilde(p))).collect::<Vec<_>>().join("\n")));
-    let changes = changed_skills(reply).map(|c| format!("{c}\n"));
-    let conflicts = reply["conflicts"].as_array().filter(|a| !a.is_empty()).map(|a| format!("your changes conflict with Kanna's, so these are as you left them (kanna agents update to merge them):\n{}", a.iter().filter_map(|c| c["path"].as_str()).map(|p| format!("  {}", tilde(p))).collect::<Vec<_>>().join("\n")));
-    match args["action"].as_str() {
-        Some("setup") => [
-            Some("Kanna's skills are installed; Kanna asks before it updates them".to_string()),
-            changes.map(|c| c.trim_end().to_string()),
-            lines("kept", "left alone (yours; kanna agents update --force puts Kanna's back)"),
-            conflicts,
-            (reply["settings"] != true).then(|| "~/.claude/settings.json isn't JSON, so Claude's hook and sandbox entry weren't added".to_string()),
-        ].into_iter().flatten().collect::<Vec<_>>().join("\n"),
-        Some("update") => [
-            Some(if changes.is_some() { "updated Kanna's skills".to_string() } else { "Kanna's skills are up to date".to_string() }),
-            changes.map(|c| c.trim_end().to_string()),
-            lines("kept", "left alone (yours; --force puts Kanna's back)"),
-            conflicts,
-        ].into_iter().flatten().collect::<Vec<_>>().join("\n"),
-        Some("remove") => [
-            Some("took Kanna's skills and sandbox entry back out; Kanna won't ask again (kanna agents setup to set them up again)".to_string()),
-            lines("kept", "left alone (changed since Kanna installed them)"),
-        ].into_iter().flatten().collect::<Vec<_>>().join("\n"),
-        _ => {
-            let skills = reply["skills"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-            let state = match reply["setup"].as_str() {
-                Some("yes") => match changed_skills(reply) {
-                    Some(changes) => format!("set up; this Kanna has newer skills (kanna agents update):\n{changes}"),
-                    None => "set up, and up to date".to_string(),
-                },
-                Some("no") => "not set up (you said no), so agents don't name their tasks, plan or answer comments: kanna agents setup".to_string(),
-                _ => "not set up yet, so agents don't name their tasks, plan or answer comments; Kanna's planning terminal asks, or: kanna agents setup".to_string(),
-            };
-            format!("{state}\nskills: {}", if skills.is_empty() { "none in this Kanna".into() } else { skills })
-        }
-    }
-}
-
-pub fn changed_skills(reply: &Value) -> Option<String> {
-    let changes = reply["changes"].as_object().filter(|c| !c.is_empty())?;
-    let width = changes.keys().map(|k| k.chars().count()).max().unwrap_or(0);
-    Some(changes.iter().map(|(skill, change)| {
-        let change = match change.as_str().unwrap_or("") {
-            "merged" => "updated, merged with your changes",
-            "conflict" => "updated; your changes conflict, kept yours",
-            other => other,
-        };
-        format!("  {skill:width$}  {change}")
-    }).collect::<Vec<_>>().join("\n"))
-}
-
 pub fn home_relative(path: &str) -> String {
     match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
         Some(rest) if rest.starts_with('/') => format!("~{rest}"),

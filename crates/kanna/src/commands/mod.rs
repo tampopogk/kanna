@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod agents;
 pub mod arrange;
 pub mod capabilities;
 pub mod close;
@@ -38,10 +39,9 @@ pub mod workspace;
 pub mod zoom;
 
 use crate::args::Argv;
-use crate::output;
 use crate::target::{Env, Session, Target};
 use kanna_client::{exit, fail, Failure};
-use serde_json::{json, Value};
+use serde_json::Value;
 pub use shared::*;
 
 pub struct Command {
@@ -131,47 +131,11 @@ pub static COMMANDS: &[Command] = &[
     project::COMMAND,
     machine::COMMAND,
     accounts::COMMAND,
-    Command {
-        name: "agents",
-        group: "Information",
-        summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna but not read its device keys.",
-        usage: "kanna agents [status]\n       kanna agents setup [--ask]\n       kanna agents update [--ask] [--force]\n       kanna agents remove",
-        options: &[
-            ("--ask", "Say what it would do and ask first; says nothing if there's nothing to ask (the planning terminal runs it)."),
-            ("--force", "update: put Kanna's version over files you've changed."),
-        ],
-        notes: "setup copies Kanna's skills (kanna-tasks, kanna-planning, kanna-new-project, kanna-markup, kanna-explain, kanna-quiz) to ~/.agents/skills, where Codex reads them, links each from ~/.claude/skills for Claude, adds Kanna's socket to sandbox.network.allowUnixSockets in ~/.claude/settings.json, and denies reading every instance's device.key there (sandbox.filesystem.denyRead and a Read rule in permissions.deny). update brings the skills up to this Kanna's: a file you've changed is merged with Kanna's changes, and where they conflict it offers your merge editor (git's merge.tool, else opendiff). remove takes back what Kanna put there. Setup and update also take out the SessionStart hooks earlier Kannas added; Kanna tells the agents it starts that they're in Kanna in their first message. Kanna's planning terminal asks before setting up and before each update; nothing is written until you agree.",
-        examples: &[
-            ("kanna agents", "Whether your agents are set up, and whether this Kanna has newer skills."),
-            ("kanna agents setup", "Install Kanna's skills, the hook and the sandbox entry."),
-            ("kanna agents update", "Bring the skills up to this Kanna's, merging your changes."),
-            ("kanna agents remove", "Take them back out."),
-        ],
-        parse: parse_agents,
-        show: output::agents,
-        flow: Flow { online: Some(agents_online), ..Flow::PLAIN },
-    },
+    agents::COMMAND,
     markup::COMMAND,
     comment::COMMAND,
     tour::COMMAND,
 ];
-
-fn parse_agents(args: &mut Argv) -> Result<Value, Failure> {
-    let force = args.flag("--force");
-    let ask = args.flag("--ask");
-    let action = args.positional();
-    let request = match action.as_deref() {
-        None | Some("status") => json!({ "action": "status" }),
-        Some("setup") => json!({ "action": "setup", "ask": ask }),
-        Some("update") => json!({ "action": "update", "ask": ask, "force": force }),
-        Some("remove") => json!({ "action": "remove" }),
-        Some(other) => return Err(usage("agents", &format!("unknown action \"{other}\" (status, setup, update or remove)"))),
-    };
-    if force && request["action"] != "update" || ask && !matches!(action.as_deref(), Some("setup" | "update")) {
-        return Err(usage("agents", "--ask goes with setup or update, --force with update"));
-    }
-    Ok(request)
-}
 
 pub fn find(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name == name)
@@ -204,18 +168,6 @@ pub fn sent_as(name: &str) -> &str {
         "workspace" => "list",
         name => name,
     }
-}
-
-fn agents_online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
-    if json_output || !matches!(request["action"].as_str(), Some("setup" | "update")) {
-        return None;
-    }
-    let tool = crate::agents::merge_tool();
-    let mut call = |args: Value| mux.call("agents", args);
-    let mut merge = |path: &std::path::Path, base: &std::path::Path, new: &std::path::Path| crate::agents::merge_in_editor(path, base, new, &tool);
-    let stdin = std::io::stdin();
-    let mut io = crate::agents::Io { call: &mut call, input: &mut stdin.lock(), out: &mut std::io::stdout(), merge: &mut merge, tool: tool.clone() };
-    Some(crate::agents::run(request, &mut io))
 }
 
 pub fn lookup(name: &str) -> Result<&'static Command, Failure> {
