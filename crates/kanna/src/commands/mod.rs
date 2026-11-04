@@ -1,4 +1,5 @@
 pub mod shared;
+pub mod zoom;
 
 use crate::args::Argv;
 use crate::output;
@@ -121,18 +122,7 @@ pub static COMMANDS: &[Command] = &[
         show: output::focused,
         flow: Flow::PLAIN,
     },
-    Command {
-        name: "zoom",
-        group: "Panes",
-        summary: "Toggle zoom: the pane fills its tab until you zoom again or focus another pane.",
-        usage: "kanna zoom PANE",
-        options: &[],
-        notes: "The pane doesn't need to be focused first: zooming focuses it, switching tab or window if needed.",
-        examples: &[("kanna zoom logs", "Zoom the logs pane (run again to unzoom).")],
-        parse: |args| Ok(json!({ "pane": pane(args, "zoom")? })),
-        show: output::zoomed,
-        flow: Flow::PLAIN,
-    },
+    zoom::COMMAND,
     Command {
         name: "restart",
         group: "Panes",
