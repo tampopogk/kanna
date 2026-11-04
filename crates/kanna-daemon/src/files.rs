@@ -96,7 +96,7 @@ impl Watch {
 }
 
 pub struct Files {
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     watches: RefCell<HashMap<String, Watch>>,
     pub on_file: RefCell<Option<Box<dyn Fn(&[String], &Value)>>>,
 }
@@ -131,7 +131,7 @@ pub fn absolute(path: &str) -> String {
 }
 
 impl Files {
-    pub fn new(events: Sender<Event>) -> Files {
+    pub fn new(events: crate::runtime::Events) -> Files {
         Files { events, watches: RefCell::new(HashMap::new()), on_file: RefCell::new(None) }
     }
 
@@ -356,7 +356,7 @@ impl Place {
     }
 }
 
-fn work(id: String, doc: PathBuf, kind: Kind, diff: Option<String>, inbox: Receiver<Control>, changes: Sender<Control>, events: Sender<Event>) {
+fn work(id: String, doc: PathBuf, kind: Kind, diff: Option<String>, inbox: Receiver<Control>, changes: Sender<Control>, events: crate::runtime::Events) {
     let path = if kind == Kind::Threads { kanna_threads::store_path(&doc) } else { doc.clone() };
     let checks_base = diff.as_deref().is_some_and(|d| range(d).is_none());
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
@@ -431,8 +431,8 @@ fn work(id: String, doc: PathBuf, kind: Kind, diff: Option<String>, inbox: Recei
 mod tests {
     use super::*;
 
-    fn files() -> (Files, Receiver<Event>) {
-        let (events, inbox) = mpsc::channel();
+    fn files() -> (Files, crate::runtime::Inbox) {
+        let (events, inbox) = crate::runtime::channel();
         (Files::new(events), inbox)
     }
 
@@ -512,15 +512,15 @@ mod tests {
 
     #[test]
     fn the_watcher_follows_a_file_through_a_symlinked_folder_deleted_and_made_again() {
-        let (files, inbox) = files();
+        let (files, mut inbox) = files();
         let dir = PathBuf::from(format!("/tmp/kanna-files-{}-watch", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.rs");
         std::fs::write(&file, "one").unwrap();
         files.subscribe("app1:v1", &json!({ "path": file, "kind": "code" })).unwrap();
-        let next = || loop {
-            match inbox.recv_timeout(Duration::from_secs(5)) {
+        let mut next = || loop {
+            match crate::runtime::next(&mut inbox, Duration::from_secs(5)) {
                 Ok(Event::File { read, .. }) => return read,
                 Ok(_) => continue,
                 Err(_) => panic!("no file event"),
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn a_docs_threads_are_watched_beside_it_and_follow_every_writer() {
-        let (threads, inbox) = files();
+        let (threads, mut inbox) = files();
         let dir = std::fs::canonicalize(scratch("threads")).unwrap();
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         let doc = dir.join("docs/spec.md");
@@ -548,8 +548,8 @@ mod tests {
         std::fs::write(&doc, "# Spec\n").unwrap();
         let reply = threads.subscribe("app1:v1", &json!({ "path": doc, "kind": "threads" })).unwrap();
         assert_eq!(reply["content"], json!(file_id(&doc.to_string_lossy(), Kind::Threads, None)));
-        let next = || loop {
-            match inbox.recv_timeout(Duration::from_secs(5)) {
+        let mut next = || loop {
+            match crate::runtime::next(&mut inbox, Duration::from_secs(5)) {
                 Ok(Event::File { read: Read::Shown(fields), .. }) => return fields,
                 Ok(_) => continue,
                 Err(_) => panic!("no threads event"),
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn a_moved_base_is_seen_while_the_folder_keeps_changing() {
-        let (files, inbox) = files();
+        let (files, mut inbox) = files();
         let dir = std::fs::canonicalize(scratch("busy")).unwrap();
         let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&dir).args(["-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false"]).args(args).output().unwrap().status.success(), "{args:?}");
         git(&["init", "-q", "-b", "main"]);
@@ -600,8 +600,8 @@ mod tests {
         std::fs::write(&doc, "new\n").unwrap();
         git(&["commit", "-qam", "b"]);
         files.subscribe("app1:v1", &json!({ "path": doc, "kind": "md", "diff": "base" })).unwrap();
-        let base = || loop {
-            match inbox.recv_timeout(Duration::from_secs(8)) {
+        let mut base = || loop {
+            match crate::runtime::next(&mut inbox, Duration::from_secs(8)) {
                 Ok(Event::File { read: Read::Shown(fields), .. }) => return fields["base"]["text"].clone(),
                 Ok(_) => continue,
                 Err(_) => panic!("no base"),

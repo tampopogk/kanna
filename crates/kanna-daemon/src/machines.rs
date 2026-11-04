@@ -6,7 +6,6 @@ use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
 use kanna_net::{Config, Failure, Host, Node};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -26,7 +25,7 @@ pub struct Machines {
     withdraw: std::sync::OnceLock<Withdraw>,
 }
 
-struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>, PathBuf, PathBuf);
+struct DaemonHost(Mutex<crate::runtime::Events>, std::sync::Arc<crate::wire::Wire>, PathBuf, PathBuf);
 
 impl Host for DaemonHost {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
@@ -130,7 +129,7 @@ fn port() -> Option<u16> {
 }
 
 impl Machines {
-    pub fn start(state_dir: &Path, db: &Db, events: Sender<Event>, wire: std::sync::Arc<crate::wire::Wire>) -> Result<Machines, String> {
+    pub fn start(state_dir: &Path, db: &Db, events: crate::runtime::Events, wire: std::sync::Arc<crate::wire::Wire>) -> Result<Machines, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("kanna.machines").enable_all().build().map_err(|e| format!("can't start the machines' runtime: {e}"))?;
         let node = kanna_net::read_key(&state_dir.join(KEY)).and_then(|secret| {
             let saved = db.machines().unwrap_or_else(|_| json!({}));

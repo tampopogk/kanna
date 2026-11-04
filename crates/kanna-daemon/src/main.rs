@@ -26,10 +26,12 @@ mod project_import;
 mod projects;
 mod quiz;
 mod replica;
+mod stamped;
 mod stats;
 mod quality;
 mod coverage;
 mod reader;
+mod runtime;
 mod runs;
 mod schedule;
 mod settings;
@@ -61,7 +63,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use pty::Spawner;
@@ -88,7 +89,6 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 const LISTEN_FD: &str = "KANNA_LISTEN_FD";
 
 const STOP_GRACE: libc::c_uint = 5;
-const SLOW_REQUEST: Duration = Duration::from_millis(50);
 
 const SHUTDOWN_MARKER: &str = "daemon.shutdown";
 
@@ -104,18 +104,13 @@ enum Shutdown {
 
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
-    Wake,
     Output { terminal: String, serial: u64 },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
-    Worktree { token: u64, result: Result<stacks::Made, String> },
     Stacks { seen: Vec<stacks::Seen> },
     Heads,
-    Branch { token: u64, branch: String },
     Turn { token: u64 },
-    Posted { token: u64, result: Result<(), String> },
-    Finished { task: String, changes: Vec<db::Change> },
     Merged { task: String, merge: desk_news::Merge },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
@@ -145,12 +140,11 @@ impl Event {
     fn kind(&self) -> &'static str {
         match self {
             Event::Request(..) => "loop.request",
-            Event::Wake => "loop.wake",
             Event::Output { .. } => "loop.output",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
-            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } | Event::Merged { .. } => "loop.tasks",
+            Event::Stacks { .. } | Event::Heads | Event::Turn { .. } | Event::Merged { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::Log { .. } => "loop.log",
             Event::File { .. } => "loop.file",
@@ -253,7 +247,7 @@ fn run() -> Result<(), String> {
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
     }
 
-    let (events, inbox) = mpsc::channel::<Event>();
+    let (events, mut inbox) = runtime::channel();
     let db = Rc::new(db::Db::open(&state_dir));
     content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
@@ -262,10 +256,8 @@ fn run() -> Result<(), String> {
     core.use_content_ids();
     let instance = instance_name(&socket);
     core.set_instance(Instance::with_socket(&instance, Some(socket_path.clone())));
-    let wake = events.clone();
-    core.set_wakeup(Some(Arc::new(move || {
-        let _ = wake.send(Event::Wake);
-    })));
+    let _on_the_loop = core.enter();
+    core.set_timing(Some(Rc::new(runtime::timed)));
 
     let mut server = SocketServer::new(
         &socket_path,
@@ -509,6 +501,16 @@ fn run() -> Result<(), String> {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
     }
+    let (found_tasks, found_app) = (Rc::downgrade(&tasks), Rc::downgrade(&app));
+    projects::on_found(Rc::new(move || {
+        if let Some(tasks) = found_tasks.upgrade() {
+            tasks.mark_changed();
+        }
+        if let Some(app) = found_app.upgrade() {
+            app.project_found();
+        }
+    }));
+    tasks.prime_projects();
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -605,7 +607,11 @@ fn run() -> Result<(), String> {
                     if let Err(error) = projects::desk_here(folder) {
                         return responder.reply(Err(error));
                     }
-                    args["place"] = projects::place(folder);
+                    let folder = folder.to_string();
+                    return runtime::spawn("the Desk's place", async move {
+                        args["place"] = projects::place_now(&folder).await;
+                        app.forward("desk", args, responder);
+                    });
                 }
                 return app.forward("desk", args, responder);
             };
@@ -666,7 +672,8 @@ fn run() -> Result<(), String> {
         crashes.stopping();
         app.quit();
     };
-    loop {
+    core.block_on(async { loop {
+        tokio::task::yield_now().await;
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
@@ -710,20 +717,25 @@ fn run() -> Result<(), String> {
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
-        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
+        let deadline = [app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
         perf::since("loop.chores", chores);
+        runtime::check("the loop's chores", chores.elapsed());
         let event = match deadline {
-            Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => match tokio::time::timeout_at(at.into(), inbox.recv()).await {
+                Ok(event) => event,
+                Err(_) => continue,
+            },
+            None => inbox.recv().await,
         };
-        let event = match event {
-            Ok(event) => event,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
+        let Some(event) = event else { break };
         let (kind, handling) = (event.kind(), Instant::now());
+        let asked = match &event {
+            Event::Request(request, _) => Some(format!("{} from a client", request_name(request))),
+            Event::AppMessage { message, .. } => Some(format!("{} from the app", request_name(message))),
+            _ => None,
+        };
         match event {
-            Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
+            Event::Request(request, reply) => match request.get("cmd").and_then(Value::as_str) {
                 Some("shutdown") => {
                     begin("asked to", &mut shutdown);
                     reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": true, "stopping": true, "pid": std::process::id() }))
@@ -743,8 +755,7 @@ fn run() -> Result<(), String> {
                     })
                 }
                 _ => core.handle(request, reply),
-            }),
-            Event::Wake => {}
+            },
             Event::Output { terminal, serial } => {
                 let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
                 if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
@@ -778,13 +789,9 @@ fn run() -> Result<(), String> {
                     }
                 }
             }
-            Event::Worktree { token, result } => tasks.worktree_made(token, result),
             Event::Stacks { seen } => tasks.watched(seen),
             Event::Heads => tasks.heads_moved(),
-            Event::Branch { token, branch } => tasks.branch_found(token, branch),
             Event::Turn { token } => tasks.next_turn(token),
-            Event::Posted { token, result } => tasks.posted(token, result),
-            Event::Finished { task, changes } => tasks.finished(&task, changes),
             Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
@@ -851,12 +858,10 @@ fn run() -> Result<(), String> {
                         continue;
                     }
                     let link = Rc::downgrade(&app);
-                    timed(request_name(&request), "the app", || {
-                        core.handle(request, move |reply| {
-                            if let Some(link) = link.upgrade() {
-                                link.answer_app(conn, reply);
-                            }
-                        })
+                    core.handle(request, move |reply| {
+                        if let Some(link) = link.upgrade() {
+                            link.answer_app(conn, reply);
+                        }
                     });
                 }
             }
@@ -899,7 +904,9 @@ fn run() -> Result<(), String> {
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
         perf::since(kind, handling);
-    }
+        runtime::check(asked.as_deref().unwrap_or(kind), handling.elapsed());
+    } });
+    core.turn();
 
     let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();
@@ -921,15 +928,6 @@ fn run() -> Result<(), String> {
     match failure {
         Some(reason) => Err(format!("{reason}; stopping")),
         None => Ok(()),
-    }
-}
-
-fn timed(name: String, from: &str, handle: impl FnOnce()) {
-    let started = Instant::now();
-    handle();
-    let took = started.elapsed();
-    if took > SLOW_REQUEST {
-        log!("kanna-daemon: {name} from {from} took {}ms", took.as_millis());
     }
 }
 

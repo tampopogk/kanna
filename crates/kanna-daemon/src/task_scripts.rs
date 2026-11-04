@@ -1,5 +1,6 @@
 use crate::desk_news::Merge;
 use crate::tasks::git;
+use crate::stamped::Stamped;
 use std::fs;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -51,21 +52,38 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
-    let root = worktree.ancestors().find(|dir| dir.join(".git").exists())?;
-    let marker = root.join(".git");
+thread_local! {
+    static DIRS: Stamped<Option<PathBuf>> = Stamped::default();
+    static HEADS: Stamped<Option<String>> = Stamped::default();
+    static SETUPS: Stamped<Option<Setup>> = Stamped::default();
+    static TEARDOWNS: Stamped<Option<i32>> = Stamped::default();
+}
+
+fn marked_dir(root: &Path, marker: &Path) -> Option<PathBuf> {
     if marker.is_dir() {
-        return Some(marker);
+        return Some(marker.to_path_buf());
     }
-    let text = fs::metadata(&marker).ok().filter(|m| m.len() <= 4096).and_then(|_| fs::read_to_string(&marker).ok())?;
-    let dir = root.join(text.lines().next()?.strip_prefix("gitdir:")?.trim());
+    let text = fs::metadata(marker).ok().filter(|m| m.len() <= 4096).and_then(|_| fs::read_to_string(marker).ok())?;
+    Some(root.join(text.lines().next()?.strip_prefix("gitdir:")?.trim()))
+}
+
+pub fn own_dir(worktree: &Path) -> Option<PathBuf> {
+    let marker = worktree.join(".git");
+    let dir = DIRS.with(|dirs| dirs.get(&marker, || marked_dir(worktree, &marker)))?;
     dir.is_dir().then_some(dir)
 }
 
+pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
+    own_dir(worktree).or_else(|| own_dir(worktree.ancestors().skip(1).find(|dir| dir.join(".git").exists())?))
+}
+
+pub fn branch_in(dir: &Path) -> Option<String> {
+    let head = dir.join("HEAD");
+    HEADS.with(|heads| heads.get(&head, || fs::read_to_string(&head).ok()?.trim().strip_prefix("ref: refs/heads/").map(String::from)))
+}
+
 pub fn is_linked(worktree: &Path) -> bool {
-    let common = git(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().and_then(|d| fs::canonicalize(d).ok());
-    let own = git_dir(worktree).and_then(|d| fs::canonicalize(d).ok());
-    common.is_some() && own.is_some() && common != own
+    git_dir(worktree).is_some_and(|own| own.join("commondir").is_file())
 }
 
 pub fn record_base(worktree: &Path) {
@@ -107,7 +125,8 @@ pub fn setup_record(worktree: &Path) -> Option<PathBuf> {
 }
 
 pub fn setup(worktree: &Path) -> Option<Setup> {
-    read_setup(&setup_record(worktree)?)
+    let record = setup_record(worktree)?;
+    SETUPS.with(|setups| setups.get(&record, || read_setup(&record)))
 }
 
 pub fn read_setup(record: &Path) -> Option<Setup> {
@@ -141,7 +160,8 @@ pub fn teardown_record(worktree: &Path) -> Option<PathBuf> {
 }
 
 pub fn torn_down(worktree: &Path) -> Option<i32> {
-    fs::read_to_string(teardown_record(worktree)?).ok()?.trim().parse().ok()
+    let record = teardown_record(worktree)?;
+    TEARDOWNS.with(|teardowns| teardowns.get(&record, || fs::read_to_string(&record).ok()?.trim().parse().ok()))
 }
 
 pub fn forget_teardown(worktree: &Path) {
