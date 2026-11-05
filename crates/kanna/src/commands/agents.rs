@@ -1,10 +1,112 @@
-use crate::output;
+use super::{usage, Flow};
+use crate::args::Argv;
+use crate::target::Session;
 use kanna_client::Failure;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+pub const COMMAND: super::Command = super::Command {
+    name: "agents",
+    group: "Information",
+    summary: "Set up your agents for Kanna: Kanna's skills for Claude and Codex, a hook that tells them they're in Kanna, and Claude's sandbox letting them reach Kanna but not read its device keys.",
+    usage: "kanna agents [status]\n       kanna agents setup [--ask]\n       kanna agents update [--ask] [--force]\n       kanna agents remove",
+    options: &[
+        ("--ask", "Say what it would do and ask first; says nothing if there's nothing to ask (the planning terminal runs it)."),
+        ("--force", "update: put Kanna's version over files you've changed."),
+    ],
+    notes: "setup copies Kanna's skills (kanna-tasks, kanna-planning, kanna-new-project, kanna-markup, kanna-explain, kanna-quiz) to ~/.agents/skills, where Codex reads them, links each from ~/.claude/skills for Claude, adds Kanna's socket to sandbox.network.allowUnixSockets in ~/.claude/settings.json, and denies reading every instance's device.key there (sandbox.filesystem.denyRead and a Read rule in permissions.deny). update brings the skills up to this Kanna's: a file you've changed is merged with Kanna's changes, and where they conflict it offers your merge editor (git's merge.tool, else opendiff). remove takes back what Kanna put there. Setup and update also take out the SessionStart hooks earlier Kannas added; Kanna tells the agents it starts that they're in Kanna in their first message. Kanna's planning terminal asks before setting up and before each update; nothing is written until you agree.",
+    examples: &[
+        ("kanna agents", "Whether your agents are set up, and whether this Kanna has newer skills."),
+        ("kanna agents setup", "Install Kanna's skills, the hook and the sandbox entry."),
+        ("kanna agents update", "Bring the skills up to this Kanna's, merging your changes."),
+        ("kanna agents remove", "Take them back out."),
+    ],
+    parse,
+    show,
+    flow: Flow { online: Some(online), ..Flow::PLAIN },
+};
+
+fn online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
+    if json_output || !matches!(request["action"].as_str(), Some("setup" | "update")) {
+        return None;
+    }
+    let tool = merge_tool();
+    let mut call = |args: Value| mux.call("agents", args);
+    let mut merge = |path: &std::path::Path, base: &std::path::Path, new: &std::path::Path| merge_in_editor(path, base, new, &tool);
+    let stdin = std::io::stdin();
+    let mut io = Io { call: &mut call, input: &mut stdin.lock(), out: &mut std::io::stdout(), merge: &mut merge, tool: tool.clone() };
+    Some(run(request, &mut io))
+}
+
+fn parse(args: &mut Argv) -> Result<Value, Failure> {
+    let force = args.flag("--force");
+    let ask = args.flag("--ask");
+    let action = args.positional();
+    let request = match action.as_deref() {
+        None | Some("status") => json!({ "action": "status" }),
+        Some("setup") => json!({ "action": "setup", "ask": ask }),
+        Some("update") => json!({ "action": "update", "ask": ask, "force": force }),
+        Some("remove") => json!({ "action": "remove" }),
+        Some(other) => return Err(usage("agents", &format!("unknown action \"{other}\" (status, setup, update or remove)"))),
+    };
+    if force && request["action"] != "update" || ask && !matches!(action.as_deref(), Some("setup" | "update")) {
+        return Err(usage("agents", "--ask goes with setup or update, --force with update"));
+    }
+    Ok(request)
+}
+
+pub fn changed_skills(reply: &Value) -> Option<String> {
+    let changes = reply["changes"].as_object().filter(|c| !c.is_empty())?;
+    let width = changes.keys().map(|k| k.chars().count()).max().unwrap_or(0);
+    Some(changes.iter().map(|(skill, change)| {
+        let change = match change.as_str().unwrap_or("") {
+            "merged" => "updated, merged with your changes",
+            "conflict" => "updated; your changes conflict, kept yours",
+            other => other,
+        };
+        format!("  {skill:width$}  {change}")
+    }).collect::<Vec<_>>().join("\n"))
+}
+
+pub fn show(args: &Value, reply: &Value) -> String {
+    let lines = |key: &str, label: &str| reply[key].as_array().filter(|a| !a.is_empty()).map(|a| format!("{label}:\n{}", a.iter().filter_map(Value::as_str).map(|p| format!("  {}", tilde(p))).collect::<Vec<_>>().join("\n")));
+    let changes = changed_skills(reply).map(|c| format!("{c}\n"));
+    let conflicts = reply["conflicts"].as_array().filter(|a| !a.is_empty()).map(|a| format!("your changes conflict with Kanna's, so these are as you left them (kanna agents update to merge them):\n{}", a.iter().filter_map(|c| c["path"].as_str()).map(|p| format!("  {}", tilde(p))).collect::<Vec<_>>().join("\n")));
+    match args["action"].as_str() {
+        Some("setup") => [
+            Some("Kanna's skills are installed; Kanna asks before it updates them".to_string()),
+            changes.map(|c| c.trim_end().to_string()),
+            lines("kept", "left alone (yours; kanna agents update --force puts Kanna's back)"),
+            conflicts,
+            (reply["settings"] != true).then(|| "~/.claude/settings.json isn't JSON, so Claude's hook and sandbox entry weren't added".to_string()),
+        ].into_iter().flatten().collect::<Vec<_>>().join("\n"),
+        Some("update") => [
+            Some(if changes.is_some() { "updated Kanna's skills".to_string() } else { "Kanna's skills are up to date".to_string() }),
+            changes.map(|c| c.trim_end().to_string()),
+            lines("kept", "left alone (yours; --force puts Kanna's back)"),
+            conflicts,
+        ].into_iter().flatten().collect::<Vec<_>>().join("\n"),
+        Some("remove") => [
+            Some("took Kanna's skills and sandbox entry back out; Kanna won't ask again (kanna agents setup to set them up again)".to_string()),
+            lines("kept", "left alone (changed since Kanna installed them)"),
+        ].into_iter().flatten().collect::<Vec<_>>().join("\n"),
+        _ => {
+            let skills = reply["skills"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let state = match reply["setup"].as_str() {
+                Some("yes") => match changed_skills(reply) {
+                    Some(changes) => format!("set up; this Kanna has newer skills (kanna agents update):\n{changes}"),
+                    None => "set up, and up to date".to_string(),
+                },
+                Some("no") => "not set up (you said no), so agents don't name their tasks, plan or answer comments: kanna agents setup".to_string(),
+                _ => "not set up yet, so agents don't name their tasks, plan or answer comments; Kanna's planning terminal asks, or: kanna agents setup".to_string(),
+            };
+            format!("{state}\nskills: {}", if skills.is_empty() { "none in this Kanna".into() } else { skills })
+        }
+    }
+}
 
 pub const SETUP: &str = "Kanna needs its skills installed to work properly: they're how Claude and
 Codex, in any repo, know to name their task, plan with you and answer your
@@ -51,7 +153,7 @@ pub fn run(request: &Value, io: &mut Io) -> Result<(), Failure> {
             if reply["ask"] != true {
                 return Ok(());
             }
-            say(io, &format!("This Kanna has newer skills.\n\n{}\n\n", output::changed_skills(&reply).unwrap_or_default()));
+            say(io, &format!("This Kanna has newer skills.\n\n{}\n\n", changed_skills(&reply).unwrap_or_default()));
             match answer(io, "Update Kanna's skills? [Y]es, [n]ot now, [s]kip this version: ", &["y", "n", "s"]) {
                 Some("y") => finish(request, io),
                 Some("s") => {
@@ -86,7 +188,7 @@ fn finish(request: &Value, io: &mut Io) -> Result<(), Failure> {
     }
     let mut shown = reply.clone();
     shown["conflicts"] = Value::Array(unmerged);
-    let text = output::agents(&args, &shown);
+    let text = show(&args, &shown);
     say(io, &format!("{text}\n{}", if request["ask"] == true { "\n" } else { "" }));
     Ok(())
 }

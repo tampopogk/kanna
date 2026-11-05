@@ -11,16 +11,17 @@
 3. [Reaching Kanna](#3-reaching-kanna)
 4. [With the app closed](#4-with-the-app-closed)
 5. [Output, errors and exit codes](#5-output-errors-and-exit-codes)
-6. [Checked by](#6-checked-by)
+6. [Where a command lives](#6-where-a-command-lives)
+7. [Checked by](#7-checked-by)
 
 ## 1. A port of kmux's CLI
 
-kmux's CLI is one table of commands (name, group, summary, usage, options, notes, examples, how its arguments become a request, how its reply prints); help, `commands --json`, parsing and output all come from it. `kanna` has the same table, ported into `crates/kanna/src/commands.rs` (with `output.rs`, and `lib.rs` for help, `commands`, `instances`, `raw` and errors; provenance in NOTICE), and `crates/kanna/tests/kmux_reference.rs` compiles kmux's own `commands.rs` and `output.rs`, unchanged, beside it and checks one against the other.
+kmux's CLI is one table of commands (name, group, summary, usage, options, notes, examples, how its arguments become a request, how its reply prints); help, `commands --json`, parsing and output all come from it. `kanna` has the same table, ported and spread by command ([where a command lives](#6-where-a-command-lives); provenance in NOTICE), and `crates/kanna/tests/kmux_reference.rs` compiles kmux's own `commands.rs` and `output.rs`, unchanged, beside it and checks one against the other.
 
 ```mermaid
 flowchart LR
     KSRC["kmux's CLI source<br/>commands.rs · output.rs<br/>(unchanged, references/kmux)"] -->|"compiled into"| REF["kmux_reference.rs<br/>(conformance test)"]
-    TABLE["kanna's command table<br/>crates/kanna/src/commands.rs"] --> REF
+    TABLE["kanna's command table<br/>crates/kanna/src/commands/"] --> REF
     TABLE --> HELP["help · commands --json"]
     TABLE --> PARSE["arguments → request"]
     TABLE --> OUT["reply → text"]
@@ -140,6 +141,44 @@ sequenceDiagram
 | `KANNA_SOCKET` is set and nothing answers there | Exits 3. kanna never starts an app for a socket it was pointed at. |
 | A command that needs Kanna.app and it isn't attached | kanna starts Kanna.app and retries; with `KANNA_SOCKET` set, exits 6 (`no_app`). |
 
-## 6. Checked by
+## 6. Where a command lives
+
+Every command is one file, `crates/kanna/src/commands/<command>.rs` (`send-key` is `send_key.rs`): its help, its parsing, how its reply prints, its own tests and anything only it uses. Adding or changing a command edits that file, so two tasks working on different commands don't meet.
+
+```mermaid
+flowchart LR
+    LIB["lib.rs<br/>main, run: the steps every command goes through"] --> TABLE["commands/mod.rs<br/>Command, Flow, COMMANDS"]
+    TABLE --> CMD["commands/&lt;command&gt;.rs<br/>COMMAND, parse, show, its Flow"]
+    CMD --> SHARED["commands/shared.rs<br/>Argv helpers, usage, git helpers, paths"]
+    CMD --> OUT["output.rs<br/>printers two or more commands use"]
+    classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
+    class LIB,TABLE,CMD,SHARED,OUT kmux
+```
+
+| File | Holds |
+|---|---|
+| `commands/<command>.rs` | `pub const COMMAND: Command`, the row of the table, with `parse`, `show` and whatever only this command uses |
+| `commands/mod.rs` | `Command`, `Flow`, `COMMANDS` (one line per command: the order help prints), lookup, and the tests that span commands (kmux's `requests`, `usage_errors_say_what_to_do`, every documented example parses) |
+| `commands/shared.rs` | what several commands' parsing uses: `usage`, `pane`, `target`, `caller`, `repo_here`, `absolute`, `file_line` |
+| `output.rs` | what several commands' printing uses: `join`, `label`, `state`, `whose`, `moved`, `tilde`, `ago`, `expression`, task ID shortening |
+| `commands/help.rs`, `config.rs`, `completions.rs`, `instances.rs`, `raw.rs`, `build.rs`, `builds.rs`, `guests.rs` | commands outside the table, which `lib.rs` or `main` calls by name |
+| `threads.rs`, `complete.rs`, `target.rs`, `args.rs` | not one command's: comment threads, tab completion, reaching a Kanna, argument words |
+
+Something moves to `shared.rs` or `output.rs` when a second command needs it, and back when only one does.
+
+**`run` has no branch on a command's name.** A command that does more than send its request and print the reply says so in its row's `flow`, which `lib.rs` runs in this order. Each is optional; `Flow::PLAIN` is none of them.
+
+| `Flow` field | When | Used by |
+|---|---|---|
+| `offline` | before connecting; returning a result ends the command | `workspace`'s refusal, `diagrams`, `pipeline`, `accounts` sign-in, `markup`'s thread actions |
+| `unplaced` | before connecting: what to add when run outside a Kanna terminal | `open`, `markup`, `comment`, `arrange`, `screenshot` |
+| `online` | connected; returning a result ends the command | `serial`, `machine offer`, `agents` setup, `comment` on a doc |
+| `wire` | which control-protocol command the request is sent as, when it isn't the command's name | `task`, `markup`, `workspace` |
+| `before` | before the request goes out; its `Call` carries through to `after` and the printing | `task` |
+| `after` | once the reply is in, before it prints | `task`, `workspace`, `open` |
+
+To add a command: write `commands/<command>.rs`, then add one `pub mod` line and one `COMMANDS` line in `commands/mod.rs`, and its completions in `complete.rs` if it takes more than the table says.
+
+## 7. Checked by
 
 `crates/kanna/tests/kmux_reference.rs` (against kmux's source), the unit tests in `crates/kanna/src` (kmux's CLI tests, ported; target and instance resolution; the app started), `crates/kanna/tests/cli.rs` (every command through a real daemon with a test app answering through `LayoutOwner`, and without it; help, marks and `commands --json`; errors and exit codes; instances; the kmux backend), `crates/kanna/tests/no_launch.rs` (nothing starts with `KANNA_SOCKET`; a missing app is exit 3), `crates/kanna-daemon/tests/app_link.rs` (`debug.*` and `capabilities`), and `cli_commands` (every command against the real app), `cli_without_app`, `instances` and `screenshot` of `scripts/e2e-kanna.sh`.
