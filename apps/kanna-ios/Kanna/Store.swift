@@ -288,7 +288,8 @@ final class Store {
         let lines = item.doc.lines ?? []
         let file = item.doc.file ?? ""
         let first = item.doc.line ?? 1
-        let hot = Set(item.doc.hot ?? [])
+        let marked = item.doc.hot ?? []
+        let hot = marked.count == 2 && marked[0] <= marked[1] ? marked[0]...marked[1] : 0...0
         var offset = 0
         var coded: [CodeLine] = []
         let spans = backendSpans(file, lines.joined(separator: "\n"))
@@ -298,7 +299,7 @@ final class Store {
             coded.append(CodeLine(first + index, text, hot: hot.contains(first + index), spans: inside))
             offset += length + 1
         }
-        let made = Snippet(id: key, file: file, lines: coded, commit: item.doc.commit ?? "")
+        let made = Snippet(id: key, file: file, lines: coded, commit: String((item.doc.commit ?? "").prefix(7)))
         snippets[key] = made
         return made
     }

@@ -10,7 +10,9 @@ struct KannaApp: App {
             Root()
                 .environment(store)
                 .tint(K.accent)
-                .onChange(of: phase, initial: true) { store.foreground(phase == .active) }
+                .onChange(of: phase, initial: true) {
+                    if phase != .inactive { store.foreground(phase == .active) }
+                }
         }
     }
 }

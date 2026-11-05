@@ -57,7 +57,7 @@ final class FixtureBackend: Backend {
         try? await Task.sleep(for: .seconds(seconds))
     }
 
-    private static let code = Doc(file: "crates/kanna-daemon/src/agents.rs", line: 160, commit: "270bf73", hot: [161], lines: ["fn agent_for(name: &str) -> Option<Agent> {", "    let kind = kinds().get(name)?;", "    Some(Agent::new(kind, \"codex\"))", "}"])
+    private static let code = Doc(file: "crates/kanna-daemon/src/agents.rs", line: 160, commit: "270bf73", hot: [161, 161], lines: ["fn agent_for(name: &str) -> Option<Agent> {", "    let kind = kinds().get(name)?;", "    Some(Agent::new(kind, \"codex\"))", "}"])
 
     func send(repo: String, id: String, text: String) async throws -> Item {
         let item = put(repo, "me", Doc(text: text), client: id)
