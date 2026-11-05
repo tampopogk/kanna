@@ -1,0 +1,446 @@
+use crate::db::{self, Db, PhoneItem};
+use crate::machines::Caller;
+use crate::messages::{KANNA, PHONE, PLANNER};
+use crate::runtime::Events;
+use crate::tasks::Tasks;
+use crate::Event;
+use kanna_mux::json::{json, num, string, Map, Value};
+use kanna_mux::{CoreHandle, KmuxError, Responder};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::rc::{Rc, Weak};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const COMMAND: &str = "phone";
+
+const TICK: Duration = Duration::from_secs(1);
+
+const START_LIMIT: f64 = 60.0;
+
+const IDLE_LIMIT: f64 = 3600.0;
+
+const SETTLE: f64 = 3.0;
+
+const CODE_LINES: u64 = 200;
+
+const NUDGE: &str = "The phone is waiting: answer with kanna phone say";
+
+static STREAMS: Mutex<Vec<UnixStream>> = Mutex::new(Vec::new());
+
+fn now() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+fn bad(message: impl Into<String>) -> KmuxError {
+    KmuxError::new("bad_request", message)
+}
+
+fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
+    log!("kanna-daemon: couldn't {what} in {}: {error}", db::FILE);
+    KmuxError::new("failed", format!("couldn't {what}: {error}"))
+}
+
+fn fields(value: Value) -> Map {
+    match value {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    }
+}
+
+fn notify(notice: &Value) {
+    let line = format!("{notice}\n");
+    let mut streams = STREAMS.lock().unwrap_or_else(|p| p.into_inner());
+    streams.retain_mut(|stream| stream.write_all(line.as_bytes()).is_ok());
+}
+
+pub fn serve(events: Events, stream: UnixStream, from: String) {
+    let Ok(reader) = stream.try_clone() else { return };
+    let Ok(writer) = stream.try_clone() else { return };
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    STREAMS.lock().unwrap_or_else(|p| p.into_inner()).push(writer);
+    let replies = Mutex::new(stream);
+    let replies = std::sync::Arc::new(replies);
+    for line in BufReader::new(reader).lines().map_while(Result::ok) {
+        let Ok(request) = serde_json::from_str::<Value>(&line) else { continue };
+        let mut args = request.get("args").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
+        args["request"] = request.get("cmd").cloned().unwrap_or(Value::Null);
+        args["phone"] = json!(from);
+        let wrapped = json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "cmd": COMMAND, "args": args });
+        let replies = replies.clone();
+        let reply = Box::new(move |reply: Value| {
+            let _ = writeln!(replies.lock().unwrap_or_else(|p| p.into_inner()), "{reply}");
+        });
+        if events.send(Event::Request(wrapped, reply)).is_err() {
+            break;
+        }
+    }
+}
+
+#[derive(Default)]
+struct Watch {
+    told: Option<(String, f64)>,
+    starting: Option<f64>,
+    answering: Option<f64>,
+    nudged: bool,
+    worked: bool,
+    since: f64,
+    idle: Option<f64>,
+    windowless: bool,
+}
+
+pub struct Phone {
+    db: Rc<Db>,
+    tasks: Rc<Tasks>,
+    core: CoreHandle,
+    caller: Option<Caller>,
+    repos: RefCell<BTreeMap<String, String>>,
+    watches: RefCell<BTreeMap<String, Watch>>,
+}
+
+fn item_value(item: &PhoneItem, read: Option<f64>) -> Value {
+    json!({ "seq": item.seq, "at": num(item.at), "kind": item.kind, "client": item.client, "read": read.map(num), "doc": item.doc })
+}
+
+impl Phone {
+    pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, caller: Option<Caller>) -> Rc<Phone> {
+        let phone = Rc::new(Phone { db, tasks, core: core.clone(), caller, repos: RefCell::default(), watches: RefCell::default() });
+        let this = Rc::downgrade(&phone);
+        core.add_command(
+            COMMAND,
+            Rc::new(move |args, responder| match this.upgrade() {
+                Some(phone) => phone.handle(args, responder),
+                None => responder.reply(Err(KmuxError::new("stopping", "the daemon is stopping"))),
+            }),
+        );
+        Phone::ticking(Rc::downgrade(&phone));
+        phone
+    }
+
+    fn ticking(this: Weak<Phone>) {
+        crate::runtime::spawn("the phone's watch", async move {
+            loop {
+                tokio::time::sleep(TICK).await;
+                let Some(phone) = this.upgrade() else { return };
+                phone.tick();
+            }
+        });
+    }
+
+    fn handle(self: &Rc<Self>, args: Value, responder: Responder) {
+        let request = string(&args, "request").or_else(|| string(&args, "action")).unwrap_or_default().to_string();
+        match request.as_str() {
+            "hello" => self.hello(responder),
+            "offer" => responder.reply(self.offer()),
+            "wait" => self.wait(responder),
+            "chat.read" => responder.reply(self.read(&args)),
+            "chat.send" => responder.reply(self.send(&args)),
+            "chat.choose" => responder.reply(self.choose(&args)),
+            "say" | "ask" | "show" => responder.reply(self.answer(&request, &args)),
+            "history" => responder.reply(self.history(&args)),
+            other => responder.reply(Err(bad(format!("no phone request \"{other}\"")))),
+        }
+    }
+
+    fn offer(&self) -> Result<Map, KmuxError> {
+        let caller = self.caller.as_ref().ok_or_else(|| KmuxError::new("unavailable", "this daemon has no endpoint"))?;
+        caller.phone_offer().map(fields)
+    }
+
+    fn wait(&self, responder: Responder) {
+        match self.caller.clone() {
+            Some(caller) => caller.phone_wait(responder),
+            None => responder.reply(Err(KmuxError::new("unavailable", "this daemon has no endpoint"))),
+        }
+    }
+
+    fn hello(self: &Rc<Self>, responder: Responder) {
+        let this = Rc::downgrade(self);
+        self.core.handle(json!({ "cmd": "projects", "args": { "action": "list" } }), move |listed| {
+            let paths: Vec<(String, String)> = listed["projects"].as_array().into_iter().flatten().filter_map(|p| Some((p["path"].as_str()?.to_string(), p["label"].as_str().unwrap_or_default().to_string()))).collect();
+            crate::runtime::spawn("the phone's hello", async move {
+                let found = crate::runtime::off_loop(move || paths.into_iter().filter_map(|(path, label)| Some((crate::projects::identity_off_loop(Path::new(&path))?, path, label))).collect::<Vec<_>>()).await.unwrap_or_default();
+                let Some(this) = this.upgrade() else { return };
+                this.hello_with(found, responder);
+            });
+        });
+    }
+
+    fn hello_with(&self, found: Vec<(String, String, String)>, responder: Responder) {
+        let machine = self.caller.as_ref().map(Caller::status).unwrap_or_default();
+        let mut projects = vec![];
+        for (repo, path, label) in found {
+            let name = Path::new(&path).file_name().map_or(label.clone(), |n| n.to_string_lossy().into_owned());
+            self.repos.borrow_mut().insert(repo.clone(), path.clone());
+            let (status, since) = self.status(&path);
+            projects.push(json!({ "repo": repo, "name": name, "label": label, "planner": machine["name"], "status": status, "since": num(since) }));
+        }
+        let log = self.caller.as_ref().and_then(Caller::log);
+        responder.reply(Ok(Map::from_iter([("name".to_string(), machine["name"].clone()), ("key".to_string(), machine["key"].clone()), ("addrs".to_string(), machine["addrs"].clone()), ("projects".to_string(), Value::Array(projects)), ("log".to_string(), log.unwrap_or(Value::Null))])));
+    }
+
+    fn path_of(&self, args: &Value) -> Result<String, KmuxError> {
+        let repo = string(args, "repo").ok_or_else(|| bad("say which repo"))?;
+        self.repos.borrow().get(repo).cloned().ok_or_else(|| KmuxError::new("unknown_repo", format!("{repo} isn't a project on this machine")))
+    }
+
+    fn identity_of(&self, path: &str) -> Option<String> {
+        self.repos.borrow().iter().find(|(_, p)| p.as_str() == path).map(|(repo, _)| repo.clone())
+    }
+
+    fn value(&self, item: &PhoneItem) -> Value {
+        let read = item.message.and_then(|id| self.db.message(id).ok().flatten()).and_then(|m| m.delivered);
+        item_value(item, read)
+    }
+
+    fn tell(&self, path: &str, item: &PhoneItem) {
+        if let Some(repo) = self.identity_of(path) {
+            notify(&json!({ "notice": "chat", "repo": repo, "item": self.value(item) }));
+        }
+    }
+
+    fn put(&self, path: &str, kind: &str, client: Option<&str>, message: Option<i64>, doc: Value) -> Result<PhoneItem, KmuxError> {
+        let item = self.db.put_phone_item(path, kind, client, message, &doc).map_err(|e| failed("keep the phone's message", e))?;
+        self.tell(path, &item);
+        Ok(item)
+    }
+
+    fn read(&self, args: &Value) -> Result<Map, KmuxError> {
+        let path = self.path_of(args)?;
+        let after = args.get("after").and_then(Value::as_i64).unwrap_or(0);
+        let items = self.db.phone_items(&path, after).map_err(|e| failed("read the phone's chat", e))?;
+        let (status, since) = self.status(&path);
+        Ok(Map::from_iter([("items".to_string(), Value::Array(items.iter().map(|i| self.value(i)).collect())), ("status".to_string(), json!(status)), ("since".to_string(), num(since))]))
+    }
+
+    fn send(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let path = self.path_of(args)?;
+        let client = string(args, "id").ok_or_else(|| bad("a message from the phone carries its id"))?;
+        if let Some(item) = self.db.phone_item_of(&path, client).map_err(|e| failed("look up the phone's message", e))? {
+            return Ok(Map::from_iter([("item".to_string(), self.value(&item))]));
+        }
+        let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what"))?;
+        self.message(&path, client, text, json!({ "text": text }))
+    }
+
+    fn choose(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let path = self.path_of(args)?;
+        let client = string(args, "id").ok_or_else(|| bad("a choice from the phone carries its id"))?;
+        if let Some(item) = self.db.phone_item_of(&path, client).map_err(|e| failed("look up the phone's choice", e))? {
+            return Ok(Map::from_iter([("item".to_string(), self.value(&item))]));
+        }
+        let seq = args.get("seq").and_then(Value::as_i64).ok_or_else(|| bad("say which question"))?;
+        let mut asked = self.db.phone_item(&path, seq).map_err(|e| failed("read the question", e))?.filter(|i| i.kind == "ask").ok_or_else(|| bad("no such question"))?;
+        let choice = string(args, "choice").ok_or_else(|| bad("say which choice"))?.to_string();
+        asked.doc["chosen"] = json!(choice);
+        self.db.set_phone_doc(&path, seq, &asked.doc).map_err(|e| failed("keep the choice", e))?;
+        self.tell(&path, &asked);
+        self.message(&path, client, &format!("I chose: {choice}"), json!({ "text": choice, "choice": seq }))
+    }
+
+    fn message(self: &Rc<Self>, path: &str, client: &str, text: &str, doc: Value) -> Result<Map, KmuxError> {
+        let message = self.tasks.queue(PLANNER, path, PHONE, text, None, None)?;
+        let item = self.put(path, "me", Some(client), Some(message.id), doc)?;
+        self.watches.borrow_mut().entry(path.to_string()).or_default();
+        if self.tasks.planner_pane(path).is_none() {
+            self.start(path);
+        } else {
+            self.tick_repo(path);
+        }
+        Ok(Map::from_iter([("item".to_string(), self.value(&item))]))
+    }
+
+    fn machine(&self) -> String {
+        self.caller.as_ref().map(Caller::status).and_then(|s| s["name"].as_str().map(String::from)).unwrap_or_else(|| "this machine".into())
+    }
+
+    fn label(path: &str) -> String {
+        Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
+    }
+
+    fn start(self: &Rc<Self>, path: &str) {
+        if self.watches.borrow().get(path).is_some_and(|w| w.starting.is_some()) {
+            return;
+        }
+        let (label, machine) = (Phone::label(path), self.machine());
+        match self.tasks.start_windowless(path) {
+            Ok(()) => {
+                let mut watches = self.watches.borrow_mut();
+                let watch = watches.entry(path.to_string()).or_default();
+                watch.starting = Some(now());
+                watch.windowless = true;
+                drop(watches);
+                let _ = self.put(path, "sys", None, None, json!({ "text": format!("No planner was running for {label}, so one is starting on {machine}") }));
+            }
+            Err(error) => {
+                let _ = self.put(path, "sys", None, None, json!({ "text": format!("The planner couldn't start on {machine}: {}", error.message) }));
+            }
+        }
+        self.tick_repo(path);
+    }
+
+    fn answer(&self, kind: &str, args: &Value) -> Result<Map, KmuxError> {
+        let path = string(args, "repo").ok_or_else(|| bad("run it in the repo"))?;
+        let pane = string(args, "pane");
+        if !pane.is_some_and(|pane| self.tasks.is_planner(path, pane)) {
+            return Err(KmuxError::new("not_planner", "only this repo's planner talks to the phone: leave it a message with kanna task send planner"));
+        }
+        let doc = match kind {
+            "say" => json!({ "text": string(args, "text").filter(|t| !t.trim().is_empty()).ok_or_else(|| bad("say what"))? }),
+            "ask" => {
+                let choices = args.get("choices").and_then(Value::as_array).filter(|c| !c.is_empty()).ok_or_else(|| bad("a question has choices: --choice 'LABEL|WHY'"))?;
+                json!({ "text": string(args, "text").filter(|t| !t.trim().is_empty()).ok_or_else(|| bad("ask what"))?, "choices": choices })
+            }
+            _ => {
+                let lines = args.get("lines").and_then(Value::as_array).filter(|l| !l.is_empty()).ok_or_else(|| bad("a code card has lines"))?;
+                if lines.len() as u64 > CODE_LINES {
+                    return Err(bad(format!("a code card holds at most {CODE_LINES} lines")));
+                }
+                json!({ "file": args.get("file"), "line": args.get("line"), "commit": args.get("commit"), "hot": args.get("hot"), "lines": lines })
+            }
+        };
+        let item = self.put(path, kind, None, None, doc)?;
+        if let Some(watch) = self.watches.borrow_mut().get_mut(path) {
+            watch.answering = None;
+            watch.nudged = false;
+        }
+        Ok(Map::from_iter([("seq".to_string(), json!(item.seq))]))
+    }
+
+    fn history(&self, args: &Value) -> Result<Map, KmuxError> {
+        let path = string(args, "repo").ok_or_else(|| bad("run it in the repo"))?;
+        let items = self.db.phone_items(path, 0).map_err(|e| failed("read the phone's chat", e))?;
+        let last = args.get("last").and_then(Value::as_u64).unwrap_or(items.len() as u64) as usize;
+        let from = items.len().saturating_sub(last);
+        Ok(Map::from_iter([("items".to_string(), Value::Array(items[from..].iter().map(|i| self.value(i)).collect()))]))
+    }
+
+    fn status(&self, path: &str) -> (String, f64) {
+        let watches = self.watches.borrow();
+        let watch = watches.get(path);
+        let waiting = self.db.phone_waiting(path).unwrap_or(false);
+        let told = watch.and_then(|w| w.told.as_ref()).map(|(_, since)| *since);
+        let last = self.db.phone_items(path, 0).ok().and_then(|items| items.last().cloned());
+        let Some(pane) = self.tasks.planner_pane(path) else {
+            let starting = watch.and_then(|w| w.starting);
+            return match starting {
+                Some(at) => ("starting".into(), at),
+                None => ("not_running".into(), told.unwrap_or(0.0)),
+            };
+        };
+        let state = self.tasks.pane_status(&pane);
+        let (status, since) = match state.as_deref() {
+            None if watch.is_some_and(|w| w.starting.is_some()) => ("starting", watch.and_then(|w| w.starting).unwrap_or(0.0)),
+            Some("working") if waiting => ("elsewhere", watch.map_or(0.0, |w| w.since)),
+            Some("working") => ("working", watch.map_or(0.0, |w| w.since)),
+            Some("blocked") => ("blocked", watch.map_or(0.0, |w| w.since)),
+            _ if last.as_ref().is_some_and(|i| i.kind == "ask" && i.doc.get("chosen").is_none()) => ("asks", told.unwrap_or(0.0)),
+            _ => ("idle", told.unwrap_or(0.0)),
+        };
+        (status.to_string(), since)
+    }
+
+    fn tick(self: &Rc<Self>) {
+        let repos: Vec<String> = self.watches.borrow().keys().cloned().collect();
+        for path in repos {
+            self.tick_repo(&path);
+        }
+    }
+
+    fn tick_repo(self: &Rc<Self>, path: &str) {
+        let time = now();
+        let pane = self.tasks.planner_pane(path);
+        let state = pane.as_deref().and_then(|p| self.tasks.pane_status(p));
+        let working = state.as_deref() == Some("working");
+        let mut retell = vec![];
+        let mut sys = None;
+        let mut nudge = false;
+        let mut quit = None;
+        {
+            let mut watches = self.watches.borrow_mut();
+            let watch = watches.entry(path.to_string()).or_default();
+            if working && !watch.worked {
+                watch.since = time;
+            }
+            watch.worked = working;
+            if state.is_some() {
+                watch.starting = None;
+            }
+            if let Some(at) = watch.starting.filter(|at| time - at > START_LIMIT) {
+                let _ = at;
+                watch.starting = None;
+                sys = Some(format!("The planner couldn't start on {}; open the repo there once", self.machine()));
+            }
+            for item in self.db.phone_unread(path).unwrap_or_default() {
+                if let Some(delivered) = item.message.and_then(|id| self.db.message(id).ok().flatten()).and_then(|m| m.delivered) {
+                    let _ = self.db.set_phone_read(path, item.seq);
+                    retell.push(item);
+                    watch.answering = Some(delivered);
+                    watch.nudged = false;
+                }
+            }
+            if let Some(delivered) = watch.answering.filter(|at| state.as_deref() == Some("idle") && time - at > SETTLE) {
+                let _ = delivered;
+                match watch.nudged {
+                    false => {
+                        nudge = true;
+                        watch.nudged = true;
+                        watch.answering = None;
+                    }
+                    true => {
+                        watch.answering = None;
+                        watch.nudged = false;
+                        sys = Some("The planner finished without answering".into());
+                    }
+                }
+            }
+            match state.as_deref() {
+                Some("idle") if watch.windowless => {
+                    let since = *watch.idle.get_or_insert(time);
+                    if time - since > IDLE_LIMIT {
+                        quit = pane.clone();
+                        watch.idle = None;
+                    }
+                }
+                _ => watch.idle = None,
+            }
+        }
+        for item in retell {
+            self.tell(path, &item);
+        }
+        if nudge {
+            if let Ok(message) = self.tasks.queue(PLANNER, path, KANNA, NUDGE, None, None) {
+                log!("kanna-daemon: told the planner of {path} the phone waits (message {})", message.id);
+                let mut watches = self.watches.borrow_mut();
+                if let Some(watch) = watches.get_mut(path) {
+                    watch.answering = Some(time + SETTLE);
+                    watch.nudged = true;
+                }
+            }
+        }
+        if let Some(text) = sys {
+            let _ = self.put(path, "sys", None, None, json!({ "text": text }));
+        }
+        if let Some(pane) = quit {
+            self.tasks.quit_windowless(path, &pane);
+        }
+        let (status, since) = self.status(path);
+        let changed = {
+            let mut watches = self.watches.borrow_mut();
+            let watch = watches.entry(path.to_string()).or_default();
+            let changed = watch.told.as_ref().is_none_or(|(old, _)| *old != status);
+            if changed {
+                watch.told = Some((status.clone(), if since > 0.0 { since } else { time }));
+            }
+            changed
+        };
+        if changed {
+            if let Some(repo) = self.identity_of(path) {
+                notify(&json!({ "notice": "planner", "repo": repo, "status": status, "since": num(since) }));
+            }
+        }
+    }
+}

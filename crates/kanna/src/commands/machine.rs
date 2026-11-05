@@ -124,6 +124,13 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 let runs = if runs.is_empty() { String::new() } else { format!("  Kanna {runs}") };
                 out.push(format!("  {:<14} {:<14} {}  {}{runs}", peer["name"].as_str().unwrap_or("?"), state, short_key(&peer["key"]), join(&peer["addrs"])));
             }
+            let phones: Vec<&Value> = reply["phones"].as_array().map(|p| p.iter().collect()).unwrap_or_default();
+            if !phones.is_empty() {
+                out.push("phones:".into());
+            }
+            for phone in phones {
+                out.push(format!("  {:<14} {:<14} {}", phone["name"].as_str().unwrap_or("?"), if phone["revoked"] == true { "revoked" } else { "paired" }, short_key(&phone["key"])));
+            }
             for nearby in reply["nearby"].as_array().into_iter().flatten().filter(|n| n["pairing"] == true) {
                 out.push(format!("waiting to pair on this LAN: {}  {}", short_key(&nearby["key"]), join(&nearby["addrs"])));
             }

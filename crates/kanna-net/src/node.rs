@@ -329,6 +329,10 @@ impl Node {
         Ok(json!({ "name": name }))
     }
 
+    pub fn log(&self) -> Option<Value> {
+        self.state().log.as_ref().map(PeerLog::export)
+    }
+
     pub fn relay_token(&self) -> Option<String> {
         self.state().relay.as_ref().and_then(|r| r.token.clone())
     }
@@ -366,7 +370,7 @@ impl Node {
         self.usable()?;
         let addrs: Vec<String> = self.0.endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
         let offer = Offer::for_phone(Instant::now());
-        let shown = json!({ "code": offer.code, "key": self.key(), "addrs": addrs, "expires_in": crate::pair::OFFER_LIFETIME.as_secs() });
+        let shown = json!({ "code": offer.code, "key": self.key(), "addrs": addrs, "port": self.port(), "expires_in": crate::pair::OFFER_LIFETIME.as_secs() });
         self.state().phone_offer = Some(offer);
         self.0.outcome.send_replace(None);
         Ok(shown)

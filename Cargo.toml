@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kanna", "crates/kanna-build", "crates/kanna-calltree", "crates/kanna-client", "crates/kanna-cloud", "crates/kanna-crash", "crates/kanna-daemon", "crates/kanna-detect", "crates/kanna-diff", "crates/kanna-guest", "crates/kanna-ffi", "crates/kanna-ios-ffi", "crates/kanna-keeper", "crates/kanna-layout", "crates/kanna-log", "crates/kanna-merman", "crates/kanna-mux", "crates/kanna-net", "crates/kanna-pipe", "crates/kanna-quality", "crates/kanna-syntax", "crates/kanna-threads", "crates/kanna-vt"]
+members = ["crates/kanna", "crates/kanna-build", "crates/kanna-calltree", "crates/kanna-client", "crates/kanna-cloud", "crates/kanna-crash", "crates/kanna-daemon", "crates/kanna-detect", "crates/kanna-diff", "crates/kanna-guest", "crates/kanna-ffi", "crates/kanna-ios-ffi", "crates/kanna-keeper", "crates/kanna-layout", "crates/kanna-log", "crates/kanna-merman", "crates/kanna-mux", "crates/kanna-net", "crates/kanna-pipe", "crates/kanna-quality", "crates/kanna-syntax", "crates/kanna-threads", "crates/kanna-vt", "tools/phone-client"]
 exclude = ["references", "vendor"]
 resolver = "2"
 

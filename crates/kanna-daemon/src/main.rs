@@ -19,6 +19,7 @@ mod crashes;
 mod layout;
 mod lifeline;
 mod perf;
+mod phone;
 mod pty;
 mod codex_remote;
 mod messages;
@@ -397,6 +398,7 @@ fn run() -> Result<(), String> {
             None
         }
     };
+    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), machines.as_ref().and_then(|m| m.caller()));
     let accounts = accounts::Service::start(&state_dir, machines.as_ref().and_then(|m| m.caller()));
     let broken = events.clone();
     accounts.on_broken(Box::new(move |account| {

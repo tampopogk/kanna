@@ -209,7 +209,14 @@ def inbound(text):
 
 def peer(text):
     out("\x1b[J\r\n" + "\r\n".join(f"peer: {l}" for l in text.splitlines()) + "\r\n")
-    work(1)
+    reported("working")
+    orders = re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M)
+    if orders:
+        for order in orders:
+            answering(order)
+    else:
+        work(1)
+    reported("idle")
     composer()
 
 
