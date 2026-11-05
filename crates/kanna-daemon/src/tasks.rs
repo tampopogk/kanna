@@ -833,6 +833,9 @@ struct Quitting {
     by: Instant,
     quit: Option<Quit>,
     hung_up: bool,
+    fallback: Vec<String>,
+    look: Option<Instant>,
+    looked_by: Instant,
     keys: Vec<String>,
     next: Option<Instant>,
     then: Vec<Box<dyn FnOnce(Option<String>)>>,
@@ -858,6 +861,10 @@ const SETUP_EVERY: Duration = Duration::from_secs(1);
 const QUIT_WAIT: Duration = Duration::from_secs(5);
 
 const KEY_WAIT: Duration = Duration::from_millis(500);
+
+const LOOK_EVERY: Duration = Duration::from_millis(100);
+
+const LOOK_WAIT: Duration = Duration::from_secs(1);
 
 const FILL_EVERY: Duration = Duration::from_secs(2);
 
@@ -2040,13 +2047,29 @@ impl Tasks {
                 }
             }
         }
-        let late: Vec<(String, String)> = self.quitting.borrow_mut().iter_mut().filter(|(_, q)| q.by <= now && !q.hung_up).map(|(pane, q)| {
-            q.hung_up = true;
-            (pane.clone(), q.agent.clone())
+        let late: Vec<(String, String, bool)> = self.quitting.borrow_mut().iter_mut().filter(|(_, q)| q.by <= now && !q.hung_up).map(|(pane, q)| {
+            let keys = std::mem::take(&mut q.fallback);
+            let hang_up = keys.is_empty();
+            q.hung_up = hang_up;
+            q.look = None;
+            if !hang_up {
+                q.keys = keys;
+                q.next = Some(now);
+                q.by = now + QUIT_WAIT;
+            }
+            (pane.clone(), q.agent.clone(), hang_up)
         }).collect();
-        for (pane, agent) in late {
-            log!("kanna-daemon: {agent} in {pane} didn't quit in {}s, so it's hung up", QUIT_WAIT.as_secs());
-            core.end(&pane, |_| {});
+        for (pane, agent, hang_up) in late {
+            if hang_up {
+                log!("kanna-daemon: {agent} in {pane} didn't quit in {}s, so it's hung up", QUIT_WAIT.as_secs());
+                core.end(&pane, |_| {});
+            } else {
+                log!("kanna-daemon: {agent} in {pane} didn't exit in {}s, so it gets its quit keys", QUIT_WAIT.as_secs());
+            }
+        }
+        let looking: Vec<String> = self.quitting.borrow().iter().filter(|(_, q)| !q.hung_up && q.look.is_some_and(|at| at <= now)).map(|(pane, _)| pane.clone()).collect();
+        for pane in looking {
+            self.look(&pane);
         }
         let pressing: Vec<String> = self.quitting.borrow().iter().filter(|(_, q)| !q.hung_up && q.next.is_some_and(|at| at <= now)).map(|(pane, _)| pane.clone()).collect();
         for pane in pressing {
@@ -2085,7 +2108,7 @@ impl Tasks {
             self.sync_all();
         }
         let turns = self.turns.borrow().values().filter_map(|t| if t.waiting() { Some(now + BACKGROUND_EVERY) } else { t.due() }).min();
-        let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next]).flatten().min();
+        let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next, q.look]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         let news = self.tell_planners(now);
         [turns, quits, setups, self.fill_at.get(), mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
@@ -2162,16 +2185,60 @@ impl Tasks {
         let keys = quit.as_ref().map_or(vec![], |q| q.keys.clone());
         let agent = known.unwrap_or(program(agent)).to_string();
         let none = keys.is_empty();
-        self.quitting.borrow_mut().insert(pane.to_string(), Quitting { agent: agent.clone(), by: Instant::now() + QUIT_WAIT, quit, hung_up: none, keys, next: None, then: vec![Box::new(then)] });
+        let idle = core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse) == Some(Status::Idle);
+        let exit = quit.as_ref().and_then(|q| q.exit.as_ref()).filter(|_| idle && !none).map(|exit| exit.text.clone());
+        let (keys, fallback) = if exit.is_some() { (vec![], keys) } else { (keys, vec![]) };
+        let now = Instant::now();
+        let look = exit.is_some().then_some(now + LOOK_EVERY);
+        self.quitting.borrow_mut().insert(pane.to_string(), Quitting { agent: agent.clone(), by: now + QUIT_WAIT, quit, hung_up: none, fallback, look, looked_by: now + LOOK_WAIT, keys, next: None, then: vec![Box::new(then)] });
         if none {
             log!("kanna-daemon: {agent} in {pane} has no quit keys, so it's hung up");
             return core.end(pane, |_| {});
         }
-        self.press(pane);
+        match exit {
+            Some(text) => self.type_quit(pane, &agent, "send", json!({ "pane": pane, "text": text, "enter": false })),
+            None => self.press(pane),
+        }
+    }
+
+    fn look(self: &Rc<Self>, pane: &str) {
+        let Some(core) = self.core.upgrade() else { return };
+        if let Some(q) = self.quitting.borrow_mut().get_mut(pane) {
+            q.look = Some(Instant::now() + LOOK_EVERY);
+        }
+        let (this, pane) = (Rc::downgrade(self), pane.to_string());
+        core.handle(json!({ "cmd": "read", "args": { "pane": pane } }), move |reply| {
+            if let Some(this) = this.upgrade() {
+                this.looked(&pane, string(&reply, "text").unwrap_or_default());
+            }
+        });
+    }
+
+    fn looked(&self, pane: &str, screen: &str) {
+        let now = Instant::now();
+        let (only_exit, agent) = {
+            let mut quitting = self.quitting.borrow_mut();
+            let Some(q) = quitting.get_mut(pane).filter(|q| q.look.is_some()) else { return };
+            let only_exit = q.quit.as_ref().and_then(|quit| quit.exit.as_ref()).is_some_and(|exit| exit.shown.is_match(screen));
+            if !only_exit && now < q.looked_by {
+                return;
+            }
+            q.look = None;
+            q.by = now + QUIT_WAIT;
+            if !only_exit {
+                q.keys = std::mem::take(&mut q.fallback);
+            }
+            (only_exit, q.agent.clone())
+        };
+        if only_exit {
+            self.type_quit(pane, &agent, "send-key", json!({ "pane": pane, "keys": ["return"] }));
+        } else {
+            log!("kanna-daemon: {agent}'s box in {pane} holds more than its exit command, so it isn't sent and it gets its quit keys");
+            self.press(pane);
+        }
     }
 
     fn press(&self, pane: &str) {
-        let Some(core) = self.core.upgrade() else { return };
         let (key, agent) = {
             let mut quitting = self.quitting.borrow_mut();
             let Some(q) = quitting.get_mut(pane) else { return };
@@ -2183,8 +2250,13 @@ impl Tasks {
             q.next = (!q.keys.is_empty()).then(|| Instant::now() + KEY_WAIT);
             (key, q.agent.clone())
         };
-        let (weak, pane) = (core.weak(), pane.to_string());
-        core.handle(json!({ "cmd": "send-key", "args": { "pane": pane, "keys": [key] } }), move |sent| {
+        self.type_quit(pane, &agent, "send-key", json!({ "pane": pane, "keys": [key] }));
+    }
+
+    fn type_quit(&self, pane: &str, agent: &str, cmd: &str, args: Value) {
+        let Some(core) = self.core.upgrade() else { return };
+        let (weak, pane, agent) = (core.weak(), pane.to_string(), agent.to_string());
+        core.handle(json!({ "cmd": cmd, "args": args }), move |sent| {
             let (Some(error), Some(core)) = (failed(&sent), weak.upgrade()) else { return };
             if alive(&core, &pane) {
                 log!("kanna-daemon: couldn't type {agent}'s quit keys in {pane} ({}), so it's hung up", error.message);
@@ -6224,6 +6296,8 @@ mod tests {
         core: RefCell<Option<WeakCore>>,
         tasks: RefCell<Weak<Tasks>>,
         deaf: Cell<bool>,
+        ignores_exit: Cell<bool>,
+        draft: Cell<bool>,
         slow: Cell<bool>,
         starting: RefCell<Vec<String>>,
         typed: RefCell<Vec<String>>,
@@ -6258,12 +6332,21 @@ mod tests {
         fn send(&self, _: &Pane, _: &str, done: Responder) {
             done.reply(Ok(Map::new()));
         }
+        fn paste(&self, pane: &Pane, text: &str, done: Responder) {
+            self.typed.borrow_mut().push(format!("{}: paste {text}", pane.id));
+            let shown = if self.draft.get() { format!("\n\n› my draft{text}\n\n") } else { format!("\n\n› {text}\n\n") };
+            let rule = "─".repeat(20);
+            let shown = if program(pane.command.as_deref().unwrap_or_default()) == "claude" { shown.replace("\n\n› ", &format!("{rule}\n❯ ")).replace("\n\n", &format!("\n{rule}\n")) } else { shown };
+            self.screens.borrow_mut().insert(pane.id.clone(), shown);
+            done.reply(Ok(Map::new()));
+        }
         fn send_keys(&self, pane: &Pane, keys: Vec<String>, done: Responder) {
             self.typed.borrow_mut().push(format!("{}: {}", pane.id, keys.join(" ")));
             done.reply(Ok(Map::new()));
             let program = program(pane.command.as_deref().unwrap_or_default()).to_string();
-            let presses = self.typed.borrow().iter().filter(|k| k.starts_with(&format!("{}: ", pane.id))).count();
-            if !self.deaf.get() && presses == if program == "claude" { 2 } else { 1 } {
+            let presses = self.typed.borrow().iter().filter(|k| k.starts_with(&format!("{}: ctrl+c", pane.id))).count();
+            let entered = keys == ["return"] && !self.ignores_exit.get();
+            if !self.deaf.get() && (entered || presses == if program == "claude" { 2 } else { 1 }) {
                 let line = if program == "claude" { format!("Resume this session with:\nclaude --resume {SAID}\n") } else { format!("To continue this session, run: {program} resume {SAID}\n") };
                 self.screens.borrow_mut().insert(pane.id.clone(), line);
                 self.exit(pane);
@@ -6321,6 +6404,10 @@ mod tests {
                 place => self.tasks.running.borrow_mut().push(Running { pane: pane.clone(), entry: entry.clone(), place }),
             }
             (pane, entry)
+        }
+
+        fn status(&self, pane: &str, status: &str) {
+            self.core.with_pane_mut(pane, |p| p.status = Some(status.into()));
         }
 
         fn settle(&self, done: impl Fn() -> bool) {
@@ -6471,6 +6558,58 @@ mod tests {
         assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "claude asks for a second ctrl+c");
         assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
         assert!(t.tasks.entries.borrow().is_empty(), "it's done");
+    }
+
+    #[test]
+    fn an_idle_agent_is_told_to_exit_and_the_session_it_says_is_kept() {
+        let t = Stopping::new("exit");
+        let (pane, entry) = t.agent_with("codex", Place::Desk, None);
+        t.status(&pane, "idle");
+        t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: paste /exit"), format!("{pane}: return")], "no ctrl+c");
+        assert!(t.agents.hung_up.borrow().is_empty());
+        assert_eq!(t.session(&pane).as_deref(), Some(SAID));
+    }
+
+    #[test]
+    fn an_agent_that_isnt_idle_gets_its_keys_since_exit_could_land_as_an_answer() {
+        for status in ["working", "needs-you"] {
+            let t = Stopping::new(status);
+            let (pane, entry) = t.agent("claude", Place::Shelf);
+            t.status(&pane, status);
+            t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
+            assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "{status}");
+        }
+    }
+
+    #[test]
+    fn a_draft_in_the_box_is_never_sent() {
+        let t = Stopping::new("draft");
+        t.agents.draft.set(true);
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        t.status(&pane, "idle");
+        t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: paste /exit"), format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "enter is never pressed");
+        assert!(t.agents.hung_up.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_agent_that_doesnt_exit_gets_its_keys_and_then_the_hang_up() {
+        let t = Stopping::new("noexit");
+        t.agents.ignores_exit.set(true);
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        t.status(&pane, "idle");
+        t.tasks.quit(&pane, &entry, Status::Idle);
+        t.settle(|| t.agents.typed.borrow().len() == 2);
+        assert_eq!(t.agents.typed.borrow()[1], format!("{pane}: return"));
+        t.agents.deaf.set(true);
+        t.tasks.quitting.borrow_mut().get_mut(&pane).unwrap().by = Instant::now();
+        t.settle(|| t.agents.typed.borrow().len() == 4);
+        assert_eq!(t.agents.typed.borrow()[2..], [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")]);
+        assert!(t.agents.hung_up.borrow().is_empty(), "the keys have 5s of their own");
+        t.tasks.quitting.borrow_mut().get_mut(&pane).unwrap().by = Instant::now();
+        t.settle(|| !t.agents.hung_up.borrow().is_empty());
+        assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
     }
 
     #[test]
