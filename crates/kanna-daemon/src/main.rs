@@ -123,6 +123,7 @@ pub enum Event {
     KeeperReadable,
     KeeperHeard,
     KeeperLost(String),
+    SessionLeft(i32),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppBehind { conn: u64, queued: usize },
@@ -152,7 +153,7 @@ impl Event {
             Event::Serial(_) => "loop.serial",
             Event::Sampled(_) => "loop.stats",
             Event::Covered(_) => "loop.coverage",
-            Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
+            Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) | Event::SessionLeft(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
@@ -832,6 +833,7 @@ fn run() -> Result<(), String> {
                     }
                 }
             }
+            Event::SessionLeft(session) => terminals.session_left(session),
             Event::KeeperLost(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
                 log!("kanna-daemon: the keeper stopped");
                 break;

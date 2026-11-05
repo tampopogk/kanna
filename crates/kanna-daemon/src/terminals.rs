@@ -1,6 +1,7 @@
 use crate::pty::{self, Adopted, Heard, Spawned, Spawner, Spec};
 use crate::reader::{Feed, Noticed, Reader, Replayed, Typing};
 use crate::wire::Wire;
+use crate::Event;
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
@@ -17,7 +18,7 @@ use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub type OnStart = Box<dyn Fn(&str)>;
 
@@ -25,6 +26,8 @@ pub struct Attach {
     pub snapshot: Result<(), kanna_vt::Error>,
     pub exit_code: Option<i32>,
 }
+
+const LEAVING: Duration = Duration::from_secs(6);
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
@@ -60,6 +63,11 @@ impl Terminal {
     }
 }
 
+struct Leaving {
+    session: i32,
+    start: bool,
+}
+
 struct Starting {
     id: String,
     pane: String,
@@ -87,6 +95,7 @@ pub struct Terminals {
     env: Vec<(String, String)>,
     live: RefCell<HashMap<String, Terminal>>,
     starting: RefCell<HashMap<u64, Starting>>,
+    leaving: RefCell<HashMap<String, Leaving>>,
     serial: Cell<u64>,
     sizes: RefCell<HashMap<String, (u16, u16)>>,
     changed: Cell<bool>,
@@ -108,6 +117,7 @@ impl Terminals {
             env,
             live: RefCell::default(),
             starting: RefCell::default(),
+            leaving: RefCell::default(),
             serial: Cell::new(0),
             sizes: RefCell::default(),
             changed: Cell::new(false),
@@ -145,6 +155,36 @@ impl Terminals {
         let size = self.sizes.borrow_mut().remove(from);
         if let Some(size) = size {
             self.sizes.borrow_mut().insert(to.into(), size);
+        }
+        let leaving = self.leaving.borrow_mut().remove(from);
+        if let Some(leaving) = leaving {
+            self.leaving.borrow_mut().insert(to.into(), leaving);
+        }
+    }
+
+    fn watch_leaving(&self, pane: &str, session: i32) {
+        self.leaving.borrow_mut().insert(pane.into(), Leaving { session, start: false });
+        let events = self.events.clone();
+        let watching = std::thread::Builder::new().name("kanna.session-leaving".into()).spawn(move || {
+            let by = Instant::now() + LEAVING;
+            while kanna_keeper::session::alive(session) && Instant::now() < by {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let _ = events.send(Event::SessionLeft(session));
+        });
+        if let Err(error) = watching {
+            log!("kanna-daemon: couldn't watch session {session} leave: {error}");
+            self.leaving.borrow_mut().remove(pane);
+        }
+    }
+
+    pub fn session_left(&self, session: i32) {
+        let pane = self.leaving.borrow().iter().find(|(_, leaving)| leaving.session == session).map(|(pane, _)| pane.clone());
+        let Some(pane) = pane else { return };
+        let start = self.leaving.borrow_mut().remove(&pane).is_some_and(|leaving| leaving.start);
+        let core = self.core.borrow().as_ref().and_then(WeakCore::upgrade);
+        if let (true, Some(pane)) = (start, core.and_then(|core| core.pane(&pane))) {
+            self.start(&pane);
         }
     }
 
@@ -655,6 +695,10 @@ impl Terminals {
 
 impl PaneHost for Terminals {
     fn start(&self, pane: &Pane) {
+        if let Some(leaving) = self.leaving.borrow_mut().get_mut(&pane.id) {
+            leaving.start = true;
+            return;
+        }
         let Some(id) = pane.terminal.clone() else {
             return self.report(&pane.id, PaneState::Failed, None, Some("no terminal ID to start".into()));
         };
@@ -675,6 +719,9 @@ impl PaneHost for Terminals {
 
     fn stop(&self, pane: &Pane) {
         let id = Self::of(pane);
+        if let Some(leaving) = self.leaving.borrow_mut().get_mut(&pane.id) {
+            leaving.start = false;
+        }
         for start in self.starting.borrow_mut().values_mut().filter(|s| s.id == id) {
             start.stopped = true;
         }
@@ -689,6 +736,9 @@ impl PaneHost for Terminals {
             }
             self.store.forget(id);
             self.changed.set(true);
+            if terminal.pid > 0 {
+                self.watch_leaving(&pane.id, terminal.pid);
+            }
         }
         let restarting = self.core.borrow().as_ref().and_then(WeakCore::upgrade).is_some_and(|core| core.pane(&pane.id).is_some());
         if !restarting {
@@ -874,7 +924,7 @@ mod tests {
     use std::path::Path;
     use std::time::Instant;
 
-    fn fake_keeper(listener: UnixListener, spawns: Sender<u64>, release: mpsc::Receiver<()>) -> std::thread::JoinHandle<()> {
+    fn fake_keeper(listener: UnixListener, pid: i32, spawns: Sender<u64>, release: mpsc::Receiver<()>) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut lines = BufReader::new(stream.try_clone().unwrap());
@@ -894,7 +944,7 @@ mod tests {
                         release.recv().unwrap();
                         let (mut master, mut child) = (0, 0);
                         assert_eq!(unsafe { libc::openpty(&mut master, &mut child, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
-                        send(json!({"ok": true, "id": req["id"], "pid": 4243, "cmd": ["sleep"], "fds": 1, "req": tag}), &[master]);
+                        send(json!({"ok": true, "id": req["id"], "pid": pid, "cmd": ["sleep"], "fds": 1, "req": tag}), &[master]);
                         unsafe { libc::close(master) };
                         std::mem::forget(unsafe { OwnedFd::from_raw_fd(child) });
                     }
@@ -911,7 +961,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (spawns, spawned) = mpsc::channel();
         let (release, released) = mpsc::channel();
-        let fake = fake_keeper(UnixListener::bind(dir.join("keeper.sock")).unwrap(), spawns, released);
+        let fake = fake_keeper(UnixListener::bind(dir.join("keeper.sock")).unwrap(), 4243, spawns, released);
         let (events, _inbox) = crate::runtime::channel();
         let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
         let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
@@ -944,5 +994,88 @@ mod tests {
         drop((terminals, keeper));
         drop(fake);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn held_restart(name: &str, then: impl FnOnce(&kanna_mux::Core, &str), comes_back: bool) {
+        use std::os::unix::process::CommandExt;
+        let dir = std::env::temp_dir().join(format!("kdh{name}{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = std::process::Command::new("sleep");
+        session.arg("30");
+        unsafe {
+            session.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            })
+        };
+        let mut session = session.spawn().unwrap();
+        let pid = session.id() as i32;
+        let by = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::getsid(pid) } != pid {
+            assert!(Instant::now() < by, "the session never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (spawns, spawned) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let fake = fake_keeper(UnixListener::bind(dir.join("keeper.sock")).unwrap(), pid, spawns, released);
+        let (events, mut inbox) = crate::runtime::channel();
+        let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
+        let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
+        let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
+        let core = kanna_mux::Core::default();
+        *terminals.core.borrow_mut() = Some(core.weak());
+        core.set_host(Some(Rc::new(Host::new(terminals.clone(), serial))));
+        core.handle(json!({"cmd": "open", "args": {"type": "term", "cmd": "sleep 30", "wait": false}}), |_| {});
+        core.turn();
+        spawned.recv_timeout(Duration::from_secs(5)).expect("the first spawn");
+        release.send(()).unwrap();
+        let by = Instant::now() + Duration::from_secs(5);
+        let id = loop {
+            assert!(Instant::now() < by, "the terminal never ran");
+            terminals.heard(keeper.take().unwrap());
+            core.turn();
+            let listed = core.handle_blocking(json!({"cmd": "list"}));
+            let pane = &listed["panes"][0];
+            if pane["state"] == "running" {
+                break pane["id"].as_str().unwrap().to_string();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        core.handle(json!({"cmd": "restart", "args": {"pane": id, "wait": false}}), |_| {});
+        core.turn();
+        assert!(spawned.recv_timeout(Duration::from_millis(200)).is_err(), "the old session is still there, so the new one waits");
+        assert_eq!(core.pane(&id).map(|p| p.state), Some(PaneState::Starting));
+        then(&core, &id);
+        core.turn();
+        session.kill().unwrap();
+        session.wait().unwrap();
+        let by = Instant::now() + Duration::from_secs(5);
+        let left = loop {
+            assert!(Instant::now() < by, "never heard the session leave");
+            match inbox.try_recv() {
+                Ok(Event::SessionLeft(left)) => break left,
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        };
+        assert_eq!(left, pid);
+        terminals.session_left(left);
+        core.turn();
+        assert_eq!(spawned.recv_timeout(Duration::from_millis(comes_back.then_some(5000).unwrap_or(200))).is_ok(), comes_back);
+        drop(release);
+        drop((terminals, keeper));
+        drop(fake);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_restart_starts_once_the_old_session_is_gone() {
+        held_restart("a", |_, _| {}, true);
+    }
+
+    #[test]
+    fn a_pane_closed_while_it_waits_for_its_old_session_doesnt_start() {
+        held_restart("b", |core, id| core.handle(json!({"cmd": "close", "args": {"pane": id}}), |_| {}), false);
     }
 }
