@@ -89,6 +89,6 @@ What the user sees follows the [model](../../references/mockups/fleet.html) ([De
 ## 8. Limits
 
 - **macOS Local Network privacy** blocks an unsigned or not-yet-allowed binary from sending to LAN addresses (`sendto` gives "No route to host"; loopback is exempt). The dev daemon and app hit it when run from an agent's shell, so the Linux check went through a loopback UDP relay. The app's `Info.plist` declares the use (`NSLocalNetworkUsageDescription`, `_kanna._udp`); the user still has to allow Kanna under Privacy & Security → Local Network before machines on a LAN can reach each other.
-- One app per daemon, as before: a remote app and the local one can't both attach; the local one wins.
+- One app per daemon, as before: a remote app and the local one can't both attach; the local one wins. A phone isn't an app here: it has [a stream of its own](mobile-link.md#3-the-phone-stream).
 - A remote checkout's branch reaches the app only with its folder notices.
 - Screenshots of the product couldn't be made where Machines 3 was built (the agent's display renders blank); the pictures here are the model's, which still labels the tab Fleet.
