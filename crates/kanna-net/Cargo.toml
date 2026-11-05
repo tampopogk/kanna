@@ -16,9 +16,13 @@ hmac = "0.12"
 sha2 = "0.10"
 getrandom = "0.2"
 n0-future = "0.3"
+data-encoding = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 iroh = { version = "=1.4.1", default-features = false, features = ["fast-apple-datapath"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mdns-sd = "=0.21.7"
 
 [dev-dependencies]
 base64 = "0.22"

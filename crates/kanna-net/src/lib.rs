@@ -1,10 +1,13 @@
+mod bonjour;
 mod client;
 pub mod log;
 mod node;
 pub mod pair;
+pub mod phone;
 pub mod protocol;
 
 pub use iroh::SecretKey;
+pub use bonjour::SERVICE as BONJOUR_SERVICE;
 pub use client::{Client, LineRecv, LineSend};
 pub use node::{Config, Failure, Host, Node, DEFAULT_PORT, PEER};
 

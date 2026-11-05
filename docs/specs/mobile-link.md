@@ -63,7 +63,7 @@ Mockup of the Mac's side: `#pair-mac` in [`mobile.html`](../../references/mockup
 
 ## 3. The phone stream
 
-A new stream kind, `phone`, added to `KINDS`, opened by a key with the `phone` role. A phone's key may open no other kind, and a machine's or app's key may not open this one. That check is at the stream's header, like `sync`'s, and matters because a phone has no certificate, the mark that today tells an app from a daemon.
+A new stream kind, `phone`, opened by a key with the `phone` role. It stays out of `KINDS`, which `machine ping` opens on every machine. A phone's key may open no other kind, and a machine's or app's key may not open this one. That check is at the stream's header, like `sync`'s, and matters because a phone has no certificate, the mark that today tells an app from a daemon.
 
 - **Why its own kind:** the phone needs a dozen requests, not the app link's terminals, layouts and `send`. A second app link would also meet `app_attached` and would have to lift the one-app limit, which the phone no longer needs.
 - **Its bytes** are JSON lines: `{id, cmd, args}` answered by `{id, ok, …}`, and notices with no `id` that the daemon pushes while the stream is open.
