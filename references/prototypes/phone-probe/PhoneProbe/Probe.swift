@@ -61,7 +61,7 @@ final class Lookup {
     private let queue = DispatchQueue(label: "probe.lookup")
 
     func find(_ instance: String, seconds: Double = 45, seen: @escaping ([String]) -> Void, done: @escaping (String?, [String]) -> Void) {
-        let browser = NWBrowser(for: .bonjour(type: "_kanna._udp", domain: "local."), using: NWParameters())
+        let browser = NWBrowser(for: .bonjour(type: "_kanna-phone._udp", domain: "local."), using: NWParameters())
         self.browser = browser
         connections = []
         var finished = false

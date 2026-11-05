@@ -50,7 +50,7 @@ targets:
       path: PhoneProbe/Info.plist
       properties:
         CFBundleDisplayName: Kanna Probe
-        NSBonjourServices: ["_kanna._udp", "_raop._tcp", "_airplay._tcp", "_companion-link._tcp"]
+        NSBonjourServices: ["_kanna._udp", "_kanna-phone._udp"]
         NSLocalNetworkUsageDescription: Finds your Macs on this network.
         NSCameraUsageDescription: Scans the code the Mac shows.
         UILaunchScreen: {}

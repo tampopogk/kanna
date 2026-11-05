@@ -97,12 +97,12 @@ D1 to D13 are the mockup's; the [prototype's README](../../references/prototypes
 
 ## 5. What depends on a real iPhone
 
-Nobody has run the prototype on a real iPhone yet, and it has no networking at all. Slice 1 starts with these, and a failure in the first three changes the design.
+Nobody has run the prototype on a real iPhone, and it has no networking at all. Slice 1 started with these, on [a probe](../../references/prototypes/phone-probe/README.md#results): iroh runs on an iPhone (with `fast-apple-datapath` off there, since it calls a private API), the app comes back in under 100 ms, the camera scans, and the LAN is reached with a [Bonjour service of our own](mobile-link.md#4-the-path), because iroh's records don't resolve.
 
 | Depends on a phone | Why the Simulator can't say | If it fails |
 |---|---|---|
 | iroh and `kanna-net` built for `aarch64-apple-ios` | The Simulator is a Mac process with a Mac network stack. `fast-apple-datapath` has only run on Macs here | Drop that feature; then a thin native transport |
-| Reaching the LAN without multicast | Raw multicast on iOS takes an entitlement Apple must grant, and iroh's mDNS uses raw multicast. The design uses addresses plus `NWBrowser` ([link §4](mobile-link.md#4-the-path)), and whether `NWBrowser` reads iroh's records is untested | Publish a plain Bonjour service from the daemon beside iroh's |
+| Reaching the LAN without multicast | Raw multicast on iOS takes an entitlement Apple must grant, and iroh's mDNS uses raw multicast. The design uses addresses plus `NWBrowser` on a service the daemon publishes ([link §4](mobile-link.md#4-the-path)). Publishing with `mdns-sd` from Linux is untested | Addresses only, until the relay |
 | Coming back from the background | iOS suspends the app and its sockets. The target is a usable link within a second on the LAN | A longer visible reconnect; the chat still reads from cache |
 | Hole punching from cellular | [fleet-net](../../references/prototypes/fleet-net/README.md#results-and-slice-contract) measured a laptop. Carrier NAT may leave a phone always relayed | Relayed is the normal path away; put a relay near you ([remote terminals §5](remote-terminals.md#5-local-echo)) |
 | The Local Network prompt | Only shows on a device, and a refusal has to leave relay working | Say so on the chip, and offer Settings |

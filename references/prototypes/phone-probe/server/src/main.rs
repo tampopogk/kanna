@@ -4,6 +4,7 @@ use iroh_mdns_address_lookup::MdnsAddressLookup;
 use qrcode::render::unicode;
 use qrcode::QrCode;
 use serde_json::{json, Value};
+use std::ffi::{c_char, c_void, CString};
 use std::net::SocketAddr;
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -20,6 +21,19 @@ fn secret(path: &Path) -> SecretKey {
     let text: String = key.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
     std::fs::write(path, text).unwrap();
     key
+}
+
+#[link(name = "System")]
+extern "C" {
+    fn DNSServiceRegister(reference: *mut *mut c_void, flags: u32, interface: u32, name: *const c_char, kind: *const c_char, domain: *const c_char, host: *const c_char, port: u16, txt_len: u16, txt: *const c_void, callback: *const c_void, context: *mut c_void) -> i32;
+}
+
+fn register(name: &str, port: u16) -> *mut c_void {
+    let (name, kind) = (CString::new(name).unwrap(), CString::new("_kanna-phone._udp").unwrap());
+    let mut reference = std::ptr::null_mut();
+    let code = unsafe { DNSServiceRegister(&mut reference, 0, 0, name.as_ptr(), kind.as_ptr(), std::ptr::null(), std::ptr::null(), port.to_be(), 0, std::ptr::null(), std::ptr::null(), std::ptr::null_mut()) };
+    assert_eq!(code, 0);
+    reference
 }
 
 fn log(value: Value) {
@@ -82,6 +96,7 @@ async fn main() {
     let key = endpoint.id().to_string();
     let instance = data_encoding::BASE32_NOPAD.encode(endpoint.id().as_bytes()).to_ascii_lowercase();
     let payload = json!({ "key": key, "addrs": addrs, "instance": instance }).to_string();
+    let _service = register(&instance, PORT);
     let qr = QrCode::new(payload.as_bytes()).unwrap();
     println!("{}", qr.render::<unicode::Dense1x2>().dark_color(unicode::Dense1x2::Light).light_color(unicode::Dense1x2::Dark).quiet_zone(true).build());
     log(json!({ "event": "listening", "key": key, "addrs": addrs, "instance": instance }));

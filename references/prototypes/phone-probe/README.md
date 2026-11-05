@@ -12,7 +12,7 @@ xcodegen generate
 xcodebuild -project PhoneProbe.xcodeproj -scheme PhoneProbe -destination 'id=DEVICE' -allowProvisioningUpdates test
 ```
 
-The tests take the target as `TEST_RUNNER_PROBE_TARGET`, JSON with `key`, `addrs` and `instance` (and `daemonKey`, `daemonInstance`), except `testScan`, which scans. A `dns-sd -R PhoneProbePlain _kanna._udp local. 7479` beside the server gives the plain service to compare.
+The tests take the target as `TEST_RUNNER_PROBE_TARGET`, JSON with `key`, `addrs` and `instance` (and `daemonKey`, `daemonInstance`), except `testScan`, which scans. The server publishes `_kanna-phone._udp` through the system's Bonjour, as a daemon does on macOS.
 
 ## Results
 
@@ -23,7 +23,8 @@ November 6, 2026: iPhone 15 Pro, iOS 27.0.1, on the same LAN as a MacBook Pro.
 | iroh and `kanna-net` on `aarch64-apple-ios` | **Pass.** Binds in 30–34 ms; dials direct in 20–58 ms; RTT 8–23 ms |
 | Reaching the LAN by a known address | **Pass.** No multicast entitlement, once Local Network is allowed |
 | `NWBrowser` reading iroh's records | **Fail.** `.bonjour` lists the names; `.bonjourWithTXTRecord` doesn't. A listed record never resolves: `NWConnection` stays `preparing` for 30 s |
-| A plain Bonjour service | **Pass.** Browsed, resolved and dialed with no other address: 24 ms |
+| A plain Bonjour service | **Pass** through the system's `DNSServiceRegister`, from `dns-sd -R` or from Rust. Browsed, resolved and dialed with no other address: 22–24 ms |
+| The same service from `mdns-sd` on macOS | **Fail.** Not seen by the phone, nor by the same Mac's `dns-sd` |
 | Back from the background | **Pass.** 57, 78 and 67 ms from `active` to an echo, after 9, 9 and 89 s away, against a 1 s target |
 | Scanning | **Pass** with the real camera, on a terminal's QR |
 
