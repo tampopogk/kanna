@@ -520,32 +520,6 @@ impl Panes {
         Some(terminal)
     }
 
-    pub fn renew_terminal(&mut self, id: &str) -> Option<String> {
-        self.panes.get(id).filter(|p| self.content && p.kind == PaneType::Term && p.terminal.is_some())?;
-        self.terminals += 1;
-        let to = format!("term-{}", self.terminals);
-        self.rekey(id, &to);
-        if let Some(pane) = self.panes.get_mut(&to) {
-            pane.terminal = None;
-        }
-        Some(to)
-    }
-
-    pub fn rekey(&mut self, from: &str, to: &str) -> bool {
-        let Some(mut pane) = self.panes.remove(from) else { return false };
-        pane.id = to.into();
-        self.panes.insert(to.into(), pane);
-        for id in self.order.iter_mut().filter(|id| *id == from) {
-            *id = to.into();
-        }
-        for pane in self.panes.values_mut() {
-            if pane.agent.as_deref() == Some(from) {
-                pane.agent = Some(to.into());
-            }
-        }
-        true
-    }
-
     pub fn note_numbers(&mut self, numbers: &HashMap<String, usize>) {
         for (prefix, n) in numbers {
             if let Some(prefix) = ["file", "page", "ios", "diff", "log", "serial"].into_iter().find(|p| p == prefix) {
@@ -570,6 +544,23 @@ impl Panes {
         self.panes = panes.into_iter().map(|p| (p.id.clone(), p)).collect();
         self.counter = self.counter.max(counter);
         self.terminals = self.terminals.max(terminals).max(used);
+    }
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    #[test]
+    fn a_pane_keeps_its_id_and_each_run_gets_a_terminal_of_its_own() {
+        let mut panes = Panes::default();
+        panes.use_content_ids();
+        let id = panes.make(PaneType::Term, None).id.clone();
+        assert_eq!(panes.new_terminal(&id).as_deref(), Some("term-1"), "its first run has its ID");
+        assert_eq!(panes.new_terminal(&id).as_deref(), Some("term-2"));
+        assert_eq!((panes.get(&id).unwrap().id.as_str(), panes.get(&id).unwrap().terminal.as_deref()), ("term-1", Some("term-2")));
+        assert_eq!(panes.pane("term-2").map(|p| p.id.as_str()), Some("term-1"), "a run finds its pane");
+        assert_eq!(panes.make(PaneType::Term, None).id, "term-3", "no later pane takes a run's ID");
     }
 }
 

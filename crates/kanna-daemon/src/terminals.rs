@@ -135,17 +135,10 @@ impl Terminals {
     fn spec(&self, pane: &Pane, terminal: &str) -> Spec {
         let mut env: Vec<(String, Option<String>)> = vec![("KANNA_INSTANCE".into(), None), ("KANNA_PANE".into(), None)];
         env.extend(self.env.iter().map(|(k, v)| (k.clone(), Some(v.clone()))));
-        env.push(("KANNA_TERMINAL".into(), Some(terminal.to_string())));
+        env.push(("KANNA_TERMINAL".into(), Some(pane.id.clone())));
         let (cols, rows) = self.sizes.borrow().get(&pane.id).copied().unwrap_or((COLS, ROWS));
         let command = pane.command.clone().filter(|c| !c.is_empty());
         Spec { id: terminal.to_string(), command, cwd: pane.cwd.clone(), env, cols, rows }
-    }
-
-    pub fn renamed(&self, from: &str, to: &str) {
-        let size = self.sizes.borrow_mut().remove(from);
-        if let Some(size) = size {
-            self.sizes.borrow_mut().insert(to.into(), size);
-        }
     }
 
     pub fn unshown(&self, pane: &Pane) {

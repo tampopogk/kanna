@@ -124,7 +124,7 @@ struct Inner {
     front: RefCell<Option<CommandHandler>>,
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
-    renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
+    new_run: RefCell<Vec<Rc<dyn Fn(&str)>>>,
     ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
 }
 
@@ -174,7 +174,7 @@ impl Core {
             front: RefCell::new(None),
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
-            renamed: RefCell::new(vec![]),
+            new_run: RefCell::new(vec![]),
             ended: RefCell::new(vec![]),
         })))
     }
@@ -253,8 +253,8 @@ impl CoreHandle {
         self.state().panes.use_content_ids();
     }
 
-    pub fn on_renamed(&self, renamed: Rc<dyn Fn(&str, &str)>) {
-        self.0.renamed.borrow_mut().push(renamed);
+    pub fn on_new_run(&self, new_run: Rc<dyn Fn(&str)>) {
+        self.0.new_run.borrow_mut().push(new_run);
     }
 
     pub fn on_ended(&self, ended: Rc<dyn Fn(&str)>) {
@@ -430,6 +430,19 @@ impl CoreHandle {
         };
         if edited {
             self.changed();
+        }
+    }
+
+    pub fn set_agent(&self, id: &str, agent: &str) {
+        let updated = self.with_pane_mut(id, |pane| {
+            pane.agent = Some(agent.to_string());
+            pane.clone()
+        });
+        if let Some(pane) = updated {
+            self.changed();
+            if let Some(host) = self.host() {
+                host.update(&pane);
+            }
         }
     }
 
@@ -1331,18 +1344,12 @@ impl CoreHandle {
         if let Some(host) = self.host() {
             host.stop(&pane);
         }
-        let renamed = self.state().panes.renew_terminal(id);
-        let id = match &renamed {
-            Some(to) => {
-                let _ = self.layout(json!({ "op": "rename", "from": id, "to": to })).await;
-                let hooks: Vec<Rc<dyn Fn(&str, &str)>> = self.0.renamed.borrow().clone();
-                for hook in hooks {
-                    hook(id, to);
-                }
-                to.as_str()
+        if pane.terminal.is_some() {
+            let hooks: Vec<Rc<dyn Fn(&str)>> = self.0.new_run.borrow().clone();
+            for hook in hooks {
+                hook(id);
             }
-            None => id,
-        };
+        }
         if let Some(pane) = self.state().panes.get_mut(id) {
             pane.state = PaneState::Starting;
             pane.pid = None;

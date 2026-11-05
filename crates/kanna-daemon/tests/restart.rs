@@ -129,11 +129,37 @@ fn terminal_ids_never_repeat_across_restarts() {
     assert_eq!(instance.open("four", None), "term-4");
     assert_eq!(instance.pane("four")["id"], "term-4");
     let restarted = instance.call("restart", json!({"pane": "four"}));
-    assert_eq!(restarted["pane"]["id"], "term-5", "a restart is a new terminal: {restarted}");
-    assert_eq!((instance.pane("four")["id"].clone(), instance.pane("four")["terminal"].clone()), (json!("term-5"), json!("term-5")));
+    assert_eq!(restarted["pane"]["id"], "term-4", "a restart keeps the pane: {restarted}");
+    assert_eq!((instance.pane("four")["id"].clone(), instance.pane("four")["terminal"].clone()), (json!("term-4"), json!("term-5")), "and runs a new terminal behind it");
     let list = instance.call("list", json!({}));
-    assert_eq!(list["windows"][0]["tabs"][0]["layout"], json!({"pane": "four"}), "the layout shows the new terminal: {list}");
+    assert_eq!(list["windows"][0]["tabs"][0]["layout"], json!({"pane": "four"}), "the layout still shows the pane: {list}");
     assert_eq!(list["panes"].as_array().map(Vec::len), Some(1), "{list}");
+    assert_eq!(instance.open("five", None), "term-6", "and no new pane takes the run's ID");
+}
+
+#[test]
+fn a_pane_keeps_its_id_and_its_new_run_across_a_daemon_restart() {
+    let mut instance = Instance::start();
+    let pane = instance.open("durable", Some("echo first-$((6*7)) $KANNA_TERMINAL; exec cat"));
+    wait_for("the first run", || shows(&instance, &pane, &format!("first-42 {pane}")));
+    instance.call("restart", json!({"pane": "durable"}));
+    let run = instance.pane("durable")["terminal"].as_str().unwrap().to_string();
+    assert_ne!(run, pane, "a new run");
+    wait_for("the new run", || instance.pane("durable")["state"] == "running");
+    assert_eq!(instance.pane("durable")["id"], json!(pane));
+    wait_for("the second run's screen", || shows(&instance, &run, &format!("first-42 {pane}")));
+    assert_eq!(instance.screen(&run).matches("first-42").count(), 1, "the old run's screen isn't kept");
+    let pid = instance.pane("durable")["pid"].as_i64().unwrap();
+
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        wait_for("the record of the new run", || saved(&instance)["terminals"][0]["id"] == json!(run));
+        instance.restart(signal);
+        let durable = instance.pane("durable");
+        assert_eq!((durable["id"].as_str(), durable["terminal"].as_str(), durable["pid"].as_i64(), durable["state"].as_str()), (Some(pane.as_str()), Some(run.as_str()), Some(pid), Some("running")), "{durable}");
+        assert_eq!(saved(&instance)["terminals"][0]["pane"], json!(pane));
+        instance.call("send", json!({"pane": pane, "text": "still-$((6*7))"}));
+        wait_for("the keeper's run to take text under the pane's ID", || shows(&instance, &run, "still-$((6*7))"));
+    }
 }
 
 #[test]

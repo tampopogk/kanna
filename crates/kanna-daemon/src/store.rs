@@ -89,7 +89,8 @@ impl Record {
             2 => (text("id").filter(|id| terminal_number(id).is_some())?, text("pane").filter(|pane| pane_number(pane).is_some())?),
             _ => {
                 let id = text("id").filter(|id| terminal_number(id).is_some())?;
-                (id.clone(), id)
+                let pane = text("pane").filter(|pane| terminal_number(pane).is_some()).unwrap_or_else(|| id.clone());
+                (id, pane)
             }
         };
         Some(Record {
@@ -450,6 +451,16 @@ mod tests {
         assert!(!store.dir().join("p4.snap").exists());
         store.stop();
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pane_comes_back_with_its_own_id_behind_a_later_run() {
+        let dir = folder("runs");
+        let store = Store::open(&dir).unwrap();
+        let record = Record { id: "term-9".into(), pane: "term-4".into(), name: None, cmd: None, cwd: None, state: PaneState::Running, exit_code: None, pid: 7, keeper: "term-9".into(), size: None, hung_up: false };
+        store.save(&Saved { counter: 0, terminals: 9, records: vec![record.clone()] }).unwrap();
+        assert_eq!(store.load().records, [record]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

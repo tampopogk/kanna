@@ -322,7 +322,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert!(daemon.kanna(&["read", "a", "--lines", "3"]).ok().lines().count() <= 3);
     daemon.kanna(&["send", "a", "--", "--json"]).ok();
     wait_for("--json typed", || daemon.kanna(&["read", "a"]).ok().contains("--json"));
-    assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "term-5 (a) (exec /bin/sh) is running");
+    assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "term-1 (a) (exec /bin/sh) is running");
 
     assert_eq!(daemon.kanna(&["focus", "b"]).ok(), "focused b in win-1");
     let page = daemon.dir.join("page.html");
@@ -340,7 +340,7 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][5].get("markup").is_none());
     assert_eq!(daemon.kanna(&["markup", "doc"]).ok(), "comments on in file-1 (doc)");
     assert_eq!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"][5]["markup"], json!(true));
-    assert_eq!(daemon.kanna(&["markup", "doc", "--to", "term-5"]).ok(), "comments on in file-1 (doc), sent to term-5");
+    assert_eq!(daemon.kanna(&["markup", "doc", "--to", "term-1"]).ok(), "comments on in file-1 (doc), sent to term-1");
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
@@ -353,9 +353,9 @@ commands: accounts, agents, arrange, capabilities, close, comment, crashes, desk
     daemon.kanna(&["toast", "About nothing", "--pane", "nope"]).fails(4, "no pane \"nope\"");
     daemon.kanna(&["toast"]).fails(2, "toast: missing TITLE");
     let raw = daemon.kanna(&["raw", r#"{"cmd":"debug.anything","args":{"pane":"a"}}"#]).json();
-    assert_eq!(raw, json!({ "cmd": "debug.anything", "args": { "pane": "term-5" } }));
+    assert_eq!(raw, json!({ "cmd": "debug.anything", "args": { "pane": "term-1" } }));
     let shot = daemon.kanna(&["screenshot", "a", "-o", "shot.png", "--force", "--json"]).json();
-    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-5" }, "window": "win-1", "path": daemon.dir.join("shot.png").to_string_lossy() }));
+    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-1" }, "window": "win-1", "path": daemon.dir.join("shot.png").to_string_lossy() }));
     assert_eq!(std::fs::read(daemon.dir.join("shot.png")).unwrap(), b"\x89PNG\r\n\x1a\n");
     let window = daemon.kanna(&["screenshot", "--window", "win-1", "--json"]).json();
     assert_eq!(window["args"], json!({ "window": "win-1" }));
@@ -364,7 +364,7 @@ commands: accounts, agents, arrange, capabilities, close, comment, crashes, desk
     let _ = std::fs::remove_file(written);
     daemon.kanna(&["screenshot", "a", "--window", "win-1"]).fails(2, "give PANE or --window WINDOW, not both");
     daemon.kanna(&["screenshot"]).fails(2, "screenshot: outside a Kanna terminal there's no window of yours: say PANE or --window WINDOW");
-    assert_eq!(daemon.kanna_as("term-5", &["screenshot", "--json"]).json()["args"]["from"], json!("term-5"));
+    assert_eq!(daemon.kanna_as("term-1", &["screenshot", "--json"]).json()["args"]["from"], json!("term-1"));
     assert_eq!(daemon.kanna(&["raw", r#"{"cmd":"list"}"#]).json()["panes"].as_array().unwrap().len(), 6);
 
     assert_eq!(daemon.kanna(&["close", "--window", "win-3"]).ok(), "closed win-3 (panes term-3)");
@@ -572,7 +572,7 @@ fn without_the_app_terminals_and_the_layout_work_and_debug_needs_it() {
     assert_eq!(daemon.kanna(&["workspace", "list", "--all"]).ok(), "Windows\n win-1  free\n\nFree windows\nwin-1\n  focus: a\n  *tab-1 \"a\"  a");
     daemon.kanna(&["send", "a", "echo", "ALONE"]).ok();
     wait_for("the sent line", || daemon.kanna(&["read", "a"]).ok().contains("ALONE"));
-    assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "term-2 (a) is running");
+    assert_eq!(daemon.kanna(&["restart", "a"]).ok(), "term-1 (a) is running");
     assert!(daemon.kanna(&["capabilities"]).ok().ends_with("Kanna.app: not attached (terminals and the layout work without it; the CLI starts it for commands that need it)"));
     daemon.kanna(&["open", "--window", "win-1", "--name", "b", "--split", "right"]).ok();
     for args in [
