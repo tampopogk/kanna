@@ -19,6 +19,7 @@ use std::process::Command;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod comment_targets;
 mod moving;
 
 const WORKTREES: &str = ".kanna-worktrees";
@@ -2514,53 +2515,11 @@ impl Tasks {
         }
     }
 
-    fn renamed(&self, from: &str, to: &str) {
-        fn rekey<T>(map: &RefCell<HashMap<String, T>>, from: &str, to: &str) {
-            let moved = map.borrow_mut().remove(from);
-            if let Some(value) = moved {
-                map.borrow_mut().insert(to.into(), value);
-            }
-        }
-        rekey(&self.turns, from, to);
-        rekey(&self.quitting, from, to);
-        rekey(&self.setting_up, from, to);
-        rekey(&self.tearing_down, from, to);
-        rekey(&self.warned, from, to);
-        self.ready.borrow_mut().remove(from);
-        if self.delivering.borrow_mut().remove(from) {
-            self.delivering.borrow_mut().insert(to.into());
-        }
-        for (pane, _) in self.posting.borrow_mut().values_mut().filter(|(pane, _)| pane == from) {
-            *pane = to.into();
-        }
-        if self.stopping.borrow_mut().remove(from) {
-            self.stopping.borrow_mut().insert(to.into());
-        }
-        let moved: Vec<(Entry, Place)> = self.running.borrow_mut().iter_mut().filter(|r| r.pane == from).map(|r| {
-            r.pane = to.into();
-            (r.entry.clone(), r.place)
-        }).collect();
-        for (entry, place) in moved {
-            if let Err(error) = self.db.put(&entry.row(place, Some(to)), None) {
-                log!("kanna-daemon: couldn't save {}'s new terminal {to}: {error}", entry.id);
-            }
-        }
-        let held: Vec<Entry> = self.entries.borrow_mut().iter_mut().filter(|e| e.held.as_deref() == Some(from)).map(|e| {
-            e.held = Some(to.into());
-            e.clone()
-        }).collect();
-        for entry in held {
-            if let Err(error) = self.db.put(&entry.row(Place::Shelf, Some(to)), None) {
-                log!("kanna-daemon: couldn't save {}'s new terminal {to}: {error}", entry.id);
-            }
-        }
-    }
-
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
         let this = Rc::downgrade(self);
-        core.on_renamed(Rc::new(move |from, to| {
+        core.on_new_run(Rc::new(move |pane| {
             if let Some(this) = this.upgrade() {
-                this.renamed(from, to);
+                this.ready.borrow_mut().remove(pane);
             }
         }));
         core.set_tasks(Rc::new(Book(Rc::downgrade(self))));
@@ -2908,7 +2867,9 @@ impl Tasks {
         let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none());
         if let Some(id) = self.task_of(pane).filter(|id| self.is_open(id)) {
             let entry = self.known(&id)?;
-            let takes = if alive(&core, pane) { door(pane) } else { messages::AGENTS.contains(&program(&entry.agent)) };
+            let knocks = messages::AGENTS.contains(&program(&entry.agent));
+            let starting = self.channel(pane).is_none() || core.pane(pane).is_some_and(|p| p.status.is_none());
+            let takes = door(pane) || (knocks && (!alive(&core, pane) || starting));
             return takes.then_some((id, entry.repo));
         }
         if !self.planners().iter().any(|p| p == pane) || !door(pane) {
@@ -5761,7 +5722,7 @@ mod tests {
         let mut agent = Pane::new("term-7", None, kanna_mux::PaneType::Term);
         agent.state = PaneState::Running;
         agent.status = Some("idle".into());
-        core.install_panes(vec![agent], 0, 7);
+        core.install_panes(vec![agent], 0, 7, 0);
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
         let entry = Entry { id: "task-1dfb12c2".into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some("term-7".into()), ..Default::default() };
         tasks.entries.borrow_mut().push(entry);
@@ -5787,7 +5748,7 @@ mod tests {
         let core = kanna_mux::Core::default();
         let mut alive = Pane::new("term-7", None, kanna_mux::PaneType::Term);
         alive.state = PaneState::Running;
-        core.install_panes(vec![alive], 0, 7);
+        core.install_panes(vec![alive], 0, 7, 0);
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
         let task = |id: &str, made_at: f64, folder: Option<&str>| Entry { id: id.into(), repo: "/r".into(), agent: "codex".into(), made_at, folder: folder.map(String::from), ..Default::default() };
         let running = Entry { held: Some("term-7".into()), ..task("task-running", 0.0, Some("/r/0")) };
@@ -5835,7 +5796,7 @@ mod tests {
             pane.status = Some(status.into());
             panes.push(pane);
         }
-        core.install_panes(panes, 0, 8);
+        core.install_panes(panes, 0, 8, 0);
         let (events, _inbox) = crate::runtime::channel();
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
         tasks.install(&core);
@@ -5877,6 +5838,73 @@ mod tests {
         assert!(tasks.waiting.borrow().is_empty() && tasks.db.messages(Some("task-2e0c34bb")).unwrap().is_empty(), "and not queued");
         let _ = fs::remove_file(&socket);
         fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_comment_waits_for_an_agent_still_starting_and_is_typed_once_it_has_no_door() {
+        let state = std::env::temp_dir().join(format!("kanna-starting-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        fs::create_dir_all(state.join(".git")).unwrap();
+        fs::write(state.join(".kanna/config.json"), r#"{"shelf": {"runners": 0}}"#).unwrap();
+        let doc = state.join("a.md");
+        fs::write(&doc, "# A\n\nThe strip scrolls.\n").unwrap();
+        kanna_threads::update(&doc, |d| -> Result<(), String> {
+            d["threads"] = json!([{ "id": "c1", "quote": "The strip scrolls.", "line": 3, "state": "open", "status": "waiting", "messages": [] }]);
+            Ok(())
+        }, |why| why).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut panes = vec![];
+        for (id, status) in [("term-7", None), ("term-8", None), ("term-9", Some("idle"))] {
+            let mut pane = Pane::new(id, None, kanna_mux::PaneType::Term);
+            pane.state = PaneState::Running;
+            pane.status = status.map(String::from);
+            panes.push(pane);
+        }
+        core.install_panes(panes, 0, 9, 0);
+        let (events, _inbox) = crate::runtime::channel();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
+        tasks.install(&core);
+        *tasks.channel.borrow_mut() = Some(Box::new(|pane| (pane != "term-7").then(|| Channel::Claude(Err("no socket".into())))));
+        for (id, pane) in [("task-1dfb12c2", "term-7"), ("task-2e0c34bb", "term-8"), ("task-3f1d56cc", "term-9")] {
+            tasks.entries.borrow_mut().push(Entry { id: id.into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some(pane.into()), ..Default::default() });
+        }
+        let comment = |pane: &str| core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": pane, "text": "[kanna comment c1 · a.md:3]\nHello", "doc": doc, "thread": "c1" } }));
+        assert_eq!(comment("term-7")["state"], json!("waiting"), "its program isn't known yet");
+        assert_eq!(comment("term-8")["state"], json!("waiting"), "its socket isn't up yet");
+        let typed = comment("term-9");
+        assert_ne!(typed["state"], json!("waiting"), "started, reporting, and no door: {typed}");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn docs_pointing_at_a_dead_pane_of_a_task_go_to_its_current_pane_once() {
+        let t = Stopping::new("repair");
+        let (pane, _) = t.agent("claude", Place::Shelf);
+        let worktree = t.state.join("worktree");
+        let doc = worktree.join("a.md");
+        fs::create_dir_all(worktree.join(".git")).unwrap();
+        fs::write(&doc, "# A\n").unwrap();
+        t.tasks.entries.borrow_mut()[0].folder = Some(worktree.to_string_lossy().into_owned());
+        kanna_threads::add_agent_thread(&doc, 1, "Here.", Some("term-900")).unwrap();
+        let open = |path: &Path| t.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "md", "path": path, "markup": true, "agent": pane, "window": "new" } }))["pane"]["id"].as_str().unwrap().to_string();
+        let page = open(&doc);
+        t.core.with_pane_mut(&page, |p| p.agent = Some("term-900".into()));
+        let other = open(&t.state.join("elsewhere.md"));
+        t.core.with_pane_mut(&other, |p| p.agent = Some("term-901".into()));
+
+        t.tasks.repair_comment_targets();
+        t.settle(|| t.tasks.db.meta(comment_targets::REPAIRED).unwrap().is_some());
+        assert_eq!(t.core.pane(&page).unwrap().agent.as_deref(), Some(pane.as_str()), "the task's doc takes its pane");
+        assert_eq!(kanna_threads::read(&doc)["agent"], json!(pane), "and so do its threads");
+        assert_eq!(t.core.pane(&other).unwrap().agent.as_deref(), Some("term-901"), "a doc that's no task's stays as it was");
+
+        t.core.with_pane_mut(&page, |p| p.agent = Some("term-902".into()));
+        t.tasks.repair_comment_targets();
+        for _ in 0..20 {
+            t.pump();
+        }
+        assert_eq!(t.core.pane(&page).unwrap().agent.as_deref(), Some("term-902"), "the repair runs once");
     }
 
     #[test]

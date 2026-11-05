@@ -91,11 +91,7 @@ fn docs_in(root: &Path) -> Vec<Value> {
 
 pub fn offline(request: &Value, invocation: &Invocation) -> Option<Result<(), Failure>> {
     request.get("local")?;
-    let mut callers: Vec<String> = caller().into_iter().collect();
-    let terminal = callers.first().cloned();
-    let listed = terminal.as_ref().and_then(|_| Session::connect(invocation.target, invocation.env).ok()?.call("list", json!({})).ok());
-    let pane = listed.as_ref().and_then(|l| l["panes"].as_array()?.iter().find(|p| p["terminal"].as_str() == terminal.as_deref())?["id"].as_str().map(String::from));
-    callers.extend(pane);
+    let callers: Vec<String> = caller().into_iter().collect();
     Some(run(request, invocation.json_output, &callers))
 }
 
