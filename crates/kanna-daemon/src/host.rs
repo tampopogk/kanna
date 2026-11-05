@@ -77,6 +77,10 @@ impl PaneHost for Host {
         self.terminals.send(pane, text, done);
     }
 
+    fn paste(&self, pane: &Pane, text: &str, done: Responder) {
+        self.terminals.paste(pane, text, done);
+    }
+
     fn send_keys(&self, pane: &Pane, keys: Vec<String>, done: Responder) {
         self.terminals.send_keys(pane, keys, done);
     }
