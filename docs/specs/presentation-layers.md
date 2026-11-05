@@ -108,7 +108,7 @@ flowchart LR
 
 - **A restart keeps the pane's ID.** `restart term-41` (or a task starting again) runs a new `pty-N` behind `term-41`, which the pane's record names, and an app sees that change and makes a new surface instead of reusing the exited one ([durable panes](durable-panes.md)).
 - **A task keys on its agent's pane ID and its workspace ID,** both in its record, and neither changes when the task starts again.
-- **Upgrading:** the first daemon with content IDs renames the old `pN` once, at start: a terminal's pane takes its terminal's ID (`term-N`), and other content takes the next ID of its kind (`file-1`, `page-1`, …), in `terminals.json`, the saved layout and the tasks' `terminal` column alike.
+- **Upgrading:** the first daemon with content IDs renames the old `pN` once, at start: a terminal's pane takes its terminal's ID (`term-N`), and other content takes the next ID of its kind (`file-1`, `page-1`, …), in the terminal records, the saved layout and the tasks' `terminal` column alike.
 - **`KANNA_TERMINAL`** replaces `KANNA_PANE` in a terminal's environment: the pane ID of the caller a command acts for. `kanna` finds the caller's task and workspace from it.
 - **Content commands take content IDs:** `send`, `read`, `send-key` and `restart` take a terminal ID (or its name); pane IDs are no longer accepted. **Layout commands** (`open`, `close`, `focus`, `rename-tab`, `move`, `move-tab`) act on logical presentation and take workspace, tab and content IDs.
 

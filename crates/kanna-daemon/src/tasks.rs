@@ -5499,7 +5499,7 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let waits: Vec<u64> = (0..7).map(|_| {
             tasks.went_away("mbp".into());
             tasks.away.borrow()["mbp"].wait.as_secs()
@@ -5521,7 +5521,7 @@ mod tests {
         fs::create_dir_all(&state).unwrap();
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let ids: HashSet<String> = (0..50).map(|_| tasks.mint(&json!({ "repo": state.to_str().unwrap() }), None, None).unwrap().id).collect();
         assert_eq!(ids.len(), 50);
         assert!(ids.iter().all(|id| db::is_task_id(id)), "{ids:?}");
@@ -5540,7 +5540,7 @@ mod tests {
             assert!(Command::new("git").arg("-C").arg(repo).args(["init", "-q"]).status().unwrap().success());
         }
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         *tasks.repos.borrow_mut() = Some(state.join("repos"));
         let refused = tasks.add(&json!({ "repo": outside.to_str().unwrap(), "name": "Out" })).unwrap_err();
         assert_eq!(refused.code, "outside");
@@ -5565,7 +5565,7 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let task = |id: &str, name: &str| Entry { id: id.into(), name: Some(name.into()), repo: "/r".into(), agent: "claude".into(), ..Default::default() };
         for (id, name) in [("task-1dfb12c2", "One"), ("task-1d0e44aa", "Two")] {
             tasks.store(&task(id, name), Place::Shelf, None, None).unwrap();
@@ -5594,7 +5594,7 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let task = |id: &str, made_at: f64| Entry { id: id.into(), repo: "/r".into(), agent: "claude".into(), made_at, ..Default::default() };
         tasks.entries.borrow_mut().push(task("task-0000aaaa", 1.0));
         for (id, made_at) in [("task-0000dddd", 20.0), ("task-0000bbbb", 30.0), ("task-0000cccc", 20.0)] {
@@ -5616,7 +5616,7 @@ mod tests {
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let task = |id: &str, name: &str| Entry { id: id.into(), name: Some(name.into()), repo: "/r".into(), agent: "claude".into(), ..Default::default() };
         tasks.store(&task("task-1dfb12c2", "Waiting"), Place::Shelf, None, None).unwrap();
         tasks.entries.borrow_mut().push(task("task-1dfb12c2", "Waiting"));
@@ -5632,7 +5632,7 @@ mod tests {
         assert_eq!(tasks.task_in("ws-3"), Some(("task-c0ffee00".into(), Some("Out".into()))));
         assert_eq!(tasks.task_in("ws-4"), None, "a workspace with no task's agent docked has no task");
         assert_eq!(of("task-1dfb"), Some(Err(("not_started".into(), "task-1dfb hasn't started, so it has no workspace yet".into()))));
-        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let again = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         assert_eq!(again.task_in("ws-3"), Some(("task-c0ffee00".into(), Some("Out".into()))), "the task's workspace survives a restart");
         fs::remove_dir_all(&state).unwrap();
     }
@@ -5649,7 +5649,7 @@ mod tests {
         agent.state = PaneState::Running;
         agent.status = Some("idle".into());
         core.install_panes(vec![agent], 0, 7, 0);
-        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0));
         let entry = Entry { id: "task-1dfb12c2".into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some("term-7".into()), ..Default::default() };
         tasks.entries.borrow_mut().push(entry);
         tasks.turns.borrow_mut().insert("term-7".into(), Turn::underway());
@@ -5675,7 +5675,7 @@ mod tests {
         let mut alive = Pane::new("term-7", None, kanna_mux::PaneType::Term);
         alive.state = PaneState::Running;
         core.install_panes(vec![alive], 0, 7, 0);
-        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0));
         let task = |id: &str, made_at: f64, folder: Option<&str>| Entry { id: id.into(), repo: "/r".into(), agent: "codex".into(), made_at, folder: folder.map(String::from), ..Default::default() };
         let running = Entry { held: Some("term-7".into()), ..task("task-running", 0.0, Some("/r/0")) };
         let stopped_old = task("task-stopped-old", 1.0, Some("/r/1"));
@@ -5724,7 +5724,7 @@ mod tests {
         }
         core.install_panes(panes, 0, 8, 0);
         let (events, _inbox) = crate::runtime::channel();
-        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), events));
         tasks.install(&core);
         let at = socket.clone();
         *tasks.permissions.borrow_mut() = Some(Box::new(|_| Some(messages::BYPASS)));
@@ -5804,10 +5804,10 @@ mod tests {
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
         let args = json!({ "repo": state.to_str().unwrap() });
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let ran = Entry { id: "task-00000009".into(), name: Some("Ran".into()), message: None, repo: "/r".into(), by: None, made_at: 0.0, agent: "claude".into(), folder: Some("/r/w".into()), session: Some("s".into()), held: None, ..Default::default() };
         tasks.store(&ran, Place::Desk, Some("p4"), Some(Change::new("picked"))).unwrap();
-        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let again = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         assert_eq!(*again.running.borrow(), vec![Running { pane: "p4".into(), entry: ran, place: Place::Desk }], "a running task's way back survives a restart");
         let ids: HashSet<String> = (0..20).map(|_| again.mint(&args, None, None).unwrap().id).collect();
         assert!(!ids.contains("task-00000009"), "and its ID isn't handed out again");
@@ -5821,7 +5821,7 @@ mod tests {
         fs::create_dir_all(&state).unwrap();
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
-        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0));
         let repo = state.to_str().unwrap();
         let mut made = vec![];
         for (at, name) in [(3.0, "Newest"), (1.0, "Oldest"), (2.0, "Middle")] {
@@ -5844,7 +5844,7 @@ mod tests {
         let shelved = core.block_on(answer).unwrap();
         assert_eq!(shelved["pane"], pane, "{shelved:?}");
         assert_eq!(listed(&tasks), made, "the oldest task is listed first again");
-        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let again = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         assert_eq!(listed(&again), made, "and after a restart");
         fs::remove_dir_all(&state).unwrap();
     }
@@ -5856,7 +5856,7 @@ mod tests {
         fs::create_dir_all(&state).unwrap();
         assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let repo = state.to_str().unwrap();
         let made = |args: Value| tasks.add(&args).map(|m| string(&m["task"], "id").unwrap().to_string());
         let first = made(json!({ "repo": repo, "name": "First" })).unwrap();
@@ -5873,7 +5873,7 @@ mod tests {
         tasks.edit(&json!({ "task": third, "after": [] })).unwrap();
         assert!(entry(&third).after.is_empty());
         assert!(tasks.startable(&entry(&third)).is_ok(), "a task with its blockers taken off can start");
-        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let again = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         assert_eq!(again.entries.borrow().iter().find(|e| e.id == second).unwrap().after, vec![first.clone()], "blockers survive a restart");
         fs::remove_dir_all(&state).unwrap();
     }
@@ -5890,7 +5890,7 @@ mod tests {
         };
         sh(&state, "git init -q -b main && git config user.name e && git config user.email e@e && git commit -q --allow-empty -m first");
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let repo = state.to_str().unwrap();
         let made = |args: Value| tasks.add(&args).map(|m| string(&m["task"], "id").unwrap().to_string()).unwrap();
         let a = made(json!({ "repo": repo, "name": "A" }));
@@ -5963,7 +5963,7 @@ mod tests {
         assert!(entry(&b).bases.is_empty(), "A is in main, so B is an ordinary task again");
         assert_eq!(mail(&b), 2, "and is told to merge main");
         assert_eq!(entry(&c).bases.len(), 1, "C still merges after B");
-        let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let again = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         let kept = again.entries.borrow().iter().find(|e| e.id == c).cloned().unwrap();
         assert_eq!((kept.bases, kept.ready), (entry(&c).bases, None), "the stack survives a restart");
         let events = tasks.db.events(&b).unwrap().into_iter().map(|e| e.what).collect::<Vec<_>>();
@@ -5978,7 +5978,7 @@ mod tests {
         let state = fs::canonicalize(&state).unwrap();
         rig_sh(&state, &format!("git init -q -b main && git config user.name e && git config user.email e@e && for f in {tracked}; do echo base >$f; done && git add . && git commit -q -m first"));
         let core = kanna_mux::Core::default();
-        let tasks = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
         (state, core, tasks)
     }
 
@@ -6170,7 +6170,7 @@ mod tests {
         let sh = |dir: &Path, script: &str| assert!(Command::new("/bin/sh").arg("-c").arg(script).current_dir(dir).env("GIT_AUTHOR_NAME", "e").env("GIT_AUTHOR_EMAIL", "e@e").env("GIT_COMMITTER_NAME", "e").env("GIT_COMMITTER_EMAIL", "e@e").status().unwrap().success());
         sh(&state, "git init -q -b main && git config user.name e && git config user.email e@e && git commit -q --allow-empty -m first");
         let core = kanna_mux::Core::default();
-        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0));
         let repo = state.to_str().unwrap();
         let made = |args: Value| tasks.add(&args).map(|m| string(&m["task"], "id").unwrap().to_string()).unwrap();
         let (x, y) = (made(json!({ "repo": repo, "name": "X" })), made(json!({ "repo": repo, "name": "Y" })));
@@ -6302,7 +6302,7 @@ mod tests {
             *agents.core.borrow_mut() = Some(core.weak());
             core.set_host(Some(agents.clone()));
             let (sender, events) = crate::runtime::channel();
-            let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), sender));
+            let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), sender));
             *agents.tasks.borrow_mut() = Rc::downgrade(&tasks);
             Stopping { state, core, agents, tasks, events: RefCell::new(events) }
         }

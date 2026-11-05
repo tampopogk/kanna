@@ -183,7 +183,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kanna-quiz-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        (Quiz::new(Rc::new(Db::open(&dir)), None), dir)
+        (Quiz::new(Rc::new(Db::open(&dir).unwrap()), None), dir)
     }
 
     fn ok(quiz: &Quiz, args: Value) -> Value {

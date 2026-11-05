@@ -649,7 +649,7 @@ pub mod tests {
         let state = std::env::temp_dir().join(format!("kanna-stats-open-{}", std::process::id()));
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
-        let db = Db::open(&state);
+        let db = Db::open(&state).unwrap();
         let today = local_day(now());
         let at = |day: i64, hours: f64| noon(today - day) + hours * 3600.0;
         let mut sql = String::new();
@@ -770,7 +770,7 @@ pub mod tests {
         let state = std::env::temp_dir().join(format!("kanna-stats-state-{}", std::process::id()));
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
-        let db = Rc::new(Db::open(&state));
+        let db = Rc::new(Db::open(&state).unwrap());
         let (sender, mut events) = crate::runtime::channel();
         let stats = Stats::new(db.clone(), sender, &state);
         let path = repo.to_string_lossy().to_string();

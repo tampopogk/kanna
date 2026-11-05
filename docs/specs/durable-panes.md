@@ -44,12 +44,12 @@ stateDiagram-v2
 | Layout, tasks, messages, statuses, doc targets, `sizes`, the CLI | pane ID | tabs, focus, a task's `terminal` column, `pane.agent`, a thread file's `agent` |
 | `$KANNA_TERMINAL` | pane ID | the caller a command acts for, so an agent's own ID outlasts its run |
 | Keeper | pty ID | each pty, as its session `id` |
-| Daemon's terminals, detector, screens | pty ID | `live`, `watches`, `<pty>.snap`, `terminals.json`'s `id` |
+| Daemon's terminals, detector, screens | pty ID | `live`, `watches`, `<pty>.snap`, the `terminals` table's `id` |
 | App link | pty ID | `attach`, `input`, `output`, `resize`, `snapshot`, `grid`, `exited` |
 | App | pane ID for its views, and a map from pane to pty | `PaneViews.running`, `terminalIDs` |
 
 - **Between them:** a pane's `terminal` field goes from pane to pty, `Terminal.pane` from pty to pane. The tasks' lookups of an agent's program go through that field to reach the detector.
-- **On disk:** each record in `terminals.json` keeps both, so a daemon restart takes the keeper's pty back behind its pane. Losing `terminals.json` loses that link: the keeper's ptys come back as new panes.
+- **On disk:** each row of `kanna.db`'s `terminals` table keeps both, so a daemon restart takes the keeper's pty back behind its pane ([terminal records](terminal-records.md)). A `kanna.db.bak` restore is only as new as the last daemon start, so ptys started since then lose that link and come back as new panes ([recovery](terminal-records.md#5-recovery)).
 
 ## 3. A new pty
 

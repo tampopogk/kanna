@@ -249,7 +249,7 @@ fn run() -> Result<(), String> {
     }
 
     let (events, mut inbox) = runtime::channel();
-    let db = Rc::new(db::Db::open(&state_dir));
+    let db = Rc::new(db::Db::open(&state_dir).map_err(|error| format!("can't keep the records in {}: {error}", state_dir.display()))?);
     content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
     let core = Core::with_link(layout.clone());
@@ -289,7 +289,7 @@ fn run() -> Result<(), String> {
         }
     };
     log!("kanna-daemon: using the keeper of {} (pid {})", state_dir.display(), keeper.pid());
-    let store = match Store::open(&state_dir) {
+    let store = match Store::open(&state_dir, db.clone()) {
         Ok(store) => store,
         Err(error) => {
             server.stop();

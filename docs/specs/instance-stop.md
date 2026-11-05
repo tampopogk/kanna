@@ -42,7 +42,7 @@ sequenceDiagram
     D->>A: quit (notice)
     A->>A: stops reconnecting and starting daemons, saves app-state.json, exits
     A--xD: the link closes (or 5 s pass)
-    D->>D: marks every running terminal exited (129) and hung up, saves terminals.json
+    D->>D: marks every running terminal exited (129) and hung up, saves the records
     D->>K: stop
     K->>K: unlinks keeper.sock, refuses spawns
     K->>P: SIGHUP to every process group, SIGKILL after the grace (1 s)
