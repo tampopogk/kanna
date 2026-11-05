@@ -629,14 +629,25 @@ extension AppController {
         var steps = [0.1, 0.1, 0.1, 0.1, 0.1]
         if case .array(let list)? = args["steps"] { steps = list.compactMap(\.number) }
         let area = view.visibleRect.intersection(view.bounds)
-        let point = view.convert(NSPoint(x: area.midX, y: area.midY), to: nil)
+        var point = view.convert(NSPoint(x: area.midX, y: area.midY), to: nil)
+        if case .array(let list)? = args["at"] {
+            let at = list.compactMap(\.number).map { CGFloat($0) }
+            guard at.count == 2 else { throw KannaError("bad_request", "at is [x, y]") }
+            point = view.convert(NSPoint(x: at[0], y: view.isFlipped ? at[1] : view.bounds.height - at[1]), to: nil)
+        }
+        var drift = NSPoint.zero
+        if case .array(let list)? = args["drift"] {
+            let by = list.compactMap(\.number).map { CGFloat($0) }
+            guard by.count == 2 else { throw KannaError("bad_request", "drift is [x, y]") }
+            drift = NSPoint(x: by[0], y: -by[1])
+        }
         let height = NSScreen.screens.first?.frame.height ?? 0
         let gesture = CGEventType(rawValue: 29)!
         let gestureKind = CGEventField(rawValue: 110)!
         let magnification = CGEventField(rawValue: 113)!
         let phaseField = CGEventField(rawValue: 132)!
         let zoomGesture: Int64 = 8
-        var zooms: [JSON] = [], renders: [JSON] = [], tops: [JSON] = [], widths: [JSON] = []
+        var zooms: [JSON] = [], renders: [JSON] = [], tops: [JSON] = [], widths: [JSON] = [], spots: [JSON] = []
         let phases = [(1, 0.0)] + steps.map { (2, $0) } + [(4, 0.0)]
         for (phase, value) in phases {
             guard let cg = CGEvent(source: nil) else { continue }
@@ -647,6 +658,7 @@ extension AppController {
             cg.setIntegerValueField(phaseField, value: Int64(phase))
             guard let event = NSEvent(cgEvent: cg) else { continue }
             window.sendEvent(event)
+            point = NSPoint(x: point.x + drift.x, y: point.y + drift.y)
             try await Task.sleep(for: .milliseconds(40))
             if phase == 2, let markdown = contents.markdown(id) {
                 zooms.append(.number(Double(markdown.zoom)))
@@ -655,9 +667,12 @@ extension AppController {
                 widths.append(.number(Double(markdown.layoutWidth)))
             } else if phase == 2, let web = contents.web(id) {
                 zooms.append(.number(Double(web.zoom)))
+                if let spot = try? await web.webView.evaluateJavaScript("[visualViewport.pageLeft, visualViewport.pageTop, visualViewport.scale]") as? [Double] {
+                    spots.append(.array(spot.map { .number($0) }))
+                }
             }
         }
-        return ["zooms": .array(zooms), "render_ms": .array(renders), "top_lines": .array(tops), "layout_widths": .array(widths)]
+        return ["zooms": .array(zooms), "render_ms": .array(renders), "top_lines": .array(tops), "layout_widths": .array(widths), "spots": .array(spots)]
     }
 }
 
