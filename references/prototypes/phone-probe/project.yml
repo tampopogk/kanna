@@ -7,9 +7,27 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: EA4J68749Z
     TARGETED_DEVICE_FAMILY: "1"
     GENERATE_INFOPLIST_FILE: "YES"
+schemes:
+  PhoneProbe:
+    build:
+      targets:
+        PhoneProbe: all
+    test:
+      targets:
+        - PhoneProbeUITests
 targets:
+  PhoneProbeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [PhoneProbeUITests]
+    dependencies:
+      - target: PhoneProbe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.probe.phone.uitests
   PhoneProbe:
     type: application
     platform: iOS
@@ -32,7 +50,7 @@ targets:
       path: PhoneProbe/Info.plist
       properties:
         CFBundleDisplayName: Kanna Probe
-        NSBonjourServices: ["_kanna._udp"]
+        NSBonjourServices: ["_kanna._udp", "_raop._tcp", "_airplay._tcp", "_companion-link._tcp"]
         NSLocalNetworkUsageDescription: Finds your Macs on this network.
         NSCameraUsageDescription: Scans the code the Mac shows.
         UILaunchScreen: {}

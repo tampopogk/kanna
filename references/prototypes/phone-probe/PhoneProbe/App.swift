@@ -20,6 +20,9 @@ struct ContentView: View {
                     Button("Scan the code on the Mac") { scanning = true }
                         .disabled(probe.running)
                     if probe.running { ProgressView() }
+                    Text(probe.stage).font(.caption.monospaced()).accessibilityIdentifier("stage")
+                    Text("finished \(probe.finished)").font(.caption.monospaced()).accessibilityIdentifier("finished")
+                    Text("backs \(probe.backs.count + probe.failedBacks)").font(.caption.monospaced()).accessibilityIdentifier("backs")
                 }
                 Section("Checks") {
                     ForEach(probe.checks) { check in
@@ -45,6 +48,10 @@ struct ContentView: View {
                 Task { await probe.run(target) }
             }
             .ignoresSafeArea()
+        }
+        .task {
+            guard let text = ProcessInfo.processInfo.environment["PROBE_TARGET"], let target = try? JSONDecoder().decode(Target.self, from: Data(text.utf8)) else { return }
+            await probe.run(target)
         }
         .onChange(of: phase) { _, now in
             switch now {

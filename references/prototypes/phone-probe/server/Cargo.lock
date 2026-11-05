@@ -2057,13 +2057,13 @@ dependencies = [
 name = "phone-probe-server"
 version = "0.0.0"
 dependencies = [
+ "data-encoding",
  "iroh",
  "iroh-mdns-address-lookup",
  "n0-future",
  "qrcode",
  "serde_json",
  "tokio",
- "z32",
 ]
 
 [[package]]
@@ -3792,12 +3792,6 @@ dependencies = [
  "syn 3.0.9",
  "synstructure",
 ]
-
-[[package]]
-name = "z32"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2164e798d9e3d84ee2c91139ace54638059a3b23e361f5c11781c2c6459bde0f"
 
 [[package]]
 name = "zerocopy"

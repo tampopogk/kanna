@@ -7,6 +7,8 @@ struct Target: Codable {
     let key: String
     let addrs: [String]
     let instance: String
+    var daemonKey: String?
+    var daemonInstance: String?
 }
 
 struct Check: Identifiable {
@@ -58,9 +60,10 @@ final class Lookup {
     private var connections: [NWConnection] = []
     private let queue = DispatchQueue(label: "probe.lookup")
 
-    func find(_ instance: String, seen: @escaping ([String]) -> Void, done: @escaping (String?, [String]) -> Void) {
-        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: "_kanna._udp", domain: "local."), using: .udp)
+    func find(_ instance: String, seconds: Double = 45, seen: @escaping ([String]) -> Void, done: @escaping (String?, [String]) -> Void) {
+        let browser = NWBrowser(for: .bonjour(type: "_kanna._udp", domain: "local."), using: NWParameters())
         self.browser = browser
+        connections = []
         var finished = false
         var names: [String] = []
         let finish: (String?) -> Void = { [weak self] address in
@@ -71,6 +74,7 @@ final class Lookup {
             done(address, names)
         }
         browser.browseResultsChangedHandler = { [weak self] results, _ in
+            guard self?.connections.isEmpty ?? true else { return }
             names = results.compactMap {
                 if case let .service(name, _, _, _) = $0.endpoint { return name }
                 return nil
@@ -80,23 +84,33 @@ final class Lookup {
                 if case let .service(name, _, _, _) = $0.endpoint { return name == instance }
                 return false
             }) else { return }
-            let connection = NWConnection(to: match.endpoint, using: .udp)
-            connection.stateUpdateHandler = { state in
-                if case .ready = state, case let .hostPort(host, port)? = connection.currentPath?.remoteEndpoint {
-                    var text = "\(host)"
-                    if let percent = text.firstIndex(of: "%") { text = String(text[..<percent]) }
-                    finish(text.contains(":") ? "[\(text)]:\(port)" : "\(text):\(port)")
+            names = ["matched \(instance)"]
+            let v4 = NWParameters.udp
+            (v4.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options)?.version = .v4
+            for parameters in [v4, NWParameters.udp] {
+                let connection = NWConnection(to: match.endpoint, using: parameters)
+                connection.stateUpdateHandler = { state in
+                    names.append("resolve \(state)")
+                    if case .ready = state, case let .hostPort(host, port)? = connection.currentPath?.remoteEndpoint {
+                        var text = "\(host)"
+                        if let percent = text.firstIndex(of: "%") {
+                            let scope = if_nametoindex(String(text[text.index(after: percent)...]))
+                            let bare = String(text[..<percent])
+                            text = bare.contains(":") && scope > 0 ? "\(bare)%\(scope)" : bare
+                        }
+                        finish(text.contains(":") ? "[\(text)]:\(port)" : "\(text):\(port)")
+                    }
                 }
+                self.connections.append(connection)
+                connection.start(queue: self.queue)
             }
-            self.connections.append(connection)
-            connection.start(queue: self.queue)
         }
         browser.stateUpdateHandler = { state in
             if case let .failed(error) = state { names.append("browser failed: \(error)"); finish(nil) }
             if case let .waiting(error) = state { names.append("browser waiting: \(error)") }
         }
         browser.start(queue: queue)
-        queue.asyncAfter(deadline: .now() + 12) { finish(nil) }
+        queue.asyncAfter(deadline: .now() + seconds) { finish(nil) }
     }
 }
 
@@ -105,6 +119,9 @@ final class Probe: ObservableObject {
     @Published var checks: [Check] = []
     @Published var running = false
     @Published var backs: [Int] = []
+    @Published var stage = "idle"
+    @Published var finished = 0
+    @Published var failedBacks = 0
     private(set) var target: Target?
     private var secret: String?
     private var good: String?
@@ -112,14 +129,24 @@ final class Probe: ObservableObject {
     private var leftAt: Date?
     private let lookup = Lookup()
 
-    private func note(_ name: String, _ result: String, _ good: Bool = true) {
+    private func note(_ name: String, _ result: String, _ good: Bool = true) async {
+        print("[probe] \(good ? "ok" : "FAILED") \(name): \(result)")
         checks.append(Check(name: name, result: result, good: good))
-        report(["check": name, "result": result, "good": good])
+        await report(["check": name, "result": result, "good": good])
     }
 
-    private func report(_ line: [String: Any]) {
+    private func report(_ line: [String: Any]) async {
         guard let stream else { return }
-        Task.detached { _ = Rust.echo(stream, line) }
+        let text = Rust.text(line)
+        await off {
+            let parsed = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
+            _ = Rust.echo(stream, parsed)
+        }
+    }
+
+    private func step(_ text: String) {
+        stage = text
+        print("[probe] \(Date().timeIntervalSince1970) \(text)")
     }
 
     private func off<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
@@ -130,13 +157,13 @@ final class Probe: ObservableObject {
         let opened = await off { Rust.open(key, addrs, ["kind": "probe", "phone": 1]) as NSDictionary }
         let reply = opened as? [String: Any] ?? [:]
         if let error = Rust.failed(reply) {
-            note(name, "failed: \(error)", false)
+            await note(name, "failed: \(error)", false)
             return false
         }
         stream = (reply["stream"] as? NSNumber)?.uint64Value
         let path = await off { Rust.path(key) as NSDictionary }
         let ms = Int((reply["ms"] as? Double) ?? 0)
-        note(name, "\(ms) ms · \(Rust.text(path))")
+        await note(name, "\(ms) ms · \(Rust.text(path))")
         return true
     }
 
@@ -144,44 +171,64 @@ final class Probe: ObservableObject {
         self.target = target
         running = true
         checks = []
-        defer { running = false }
+        defer {
+            running = false
+            finished += 1
+        }
         let started = await off { Rust.start(nil) as NSDictionary }
         let reply = started as? [String: Any] ?? [:]
         if let error = Rust.failed(reply) {
-            note("Endpoint", "failed: \(error)", false)
+            await note("Endpoint", "failed: \(error)", false)
             return
         }
         secret = reply["secret"] as? String
         let bound = Int((reply["ms"] as? Double) ?? 0)
         guard await dial("By address", target.key, target.addrs) else {
-            note("Endpoint", "bound in \(bound) ms, but no dial worked", false)
+            await note("Endpoint", "bound in \(bound) ms, but no dial worked", false)
             return
         }
         good = target.addrs.first
-        note("Endpoint", "bound in \(bound) ms")
-        report(["device": UIDevice.current.model, "system": UIDevice.current.systemVersion])
-        await off { kanna_phone_stop() }
-        let restarted = await off { Rust.start(self.secretCopy()) as NSDictionary }
-        if let error = Rust.failed(restarted as? [String: Any] ?? [:]) {
-            note("Restart", "failed: \(error)", false)
-            return
+        await note("Endpoint", "bound in \(bound) ms")
+        await report(["device": UIDevice.current.model, "system": UIDevice.current.systemVersion])
+        await browse("Browse: probe server", target, key: target.key, instance: target.instance)
+        if let key = target.daemonKey, let instance = target.daemonInstance {
+            await browse("Browse: this Mac's daemon", target, key: key, instance: instance)
         }
+        step("done")
+    }
+
+    private func restart() async {
+        stream = nil
+        let saved = secret
+        await off { kanna_phone_stop() }
+        _ = await off { Rust.start(saved) as NSDictionary }
+    }
+
+    private func browse(_ name: String, _ target: Target, key: String, instance: String) async {
+        await restart()
+        step("browsing \(instance)")
         let found: (String?, [String]) = await withCheckedContinuation { continuation in
-            lookup.find(target.instance, seen: { _ in }) { address, names in
+            lookup.find(instance, seconds: 30, seen: { _ in }) { address, names in
                 continuation.resume(returning: (address, names))
             }
         }
-        guard let address = found.0 else {
-            _ = await dial("Reconnect for the report", target.key, target.addrs)
-            note("NWBrowser", "didn't find it; saw \(found.1.count): \(found.1.prefix(6).joined(separator: ", "))", false)
-            return
+        var result = "not found; saw \(found.1)"
+        var good = false
+        if let address = found.0 {
+            await restart()
+            let opened = await off { Rust.open(key, [address], ["kind": "probe", "phone": 1]) as NSDictionary }
+            let reply = opened as? [String: Any] ?? [:]
+            if let error = Rust.failed(reply) {
+                good = error.contains("no stream kind")
+                result = "\(address) answered: \(error)"
+            } else {
+                good = true
+                result = "\(address) opened in \(Int((reply["ms"] as? Double) ?? 0)) ms"
+            }
         }
-        guard await dial("From NWBrowser alone", target.key, [address]) else { return }
-        note("NWBrowser", "saw \(found.1.count) services, this one at \(address)")
-    }
-
-    nonisolated private func secretCopy() -> String? {
-        MainActor.assumeIsolated { self.secret }
+        await restart()
+        _ = await dial("Reporting", target.key, target.addrs)
+        await note(name, result, good)
     }
 
     func left() {
@@ -204,7 +251,8 @@ final class Probe: ObservableObject {
         let secret = self.secret
         let started = await off { Rust.start(secret) as NSDictionary }
         if let error = Rust.failed(started as? [String: Any] ?? [:]) {
-            note("Back", "failed to bind: \(error)", false)
+            await note("Back", "failed to bind: \(error)", false)
+            failedBacks += 1
             return
         }
         let addrs = [good].compactMap { $0 } + target.addrs
@@ -212,7 +260,8 @@ final class Probe: ObservableObject {
         let opened = await off { Rust.open(key, addrs, ["kind": "probe", "phone": 1]) as NSDictionary }
         let reply = opened as? [String: Any] ?? [:]
         if let error = Rust.failed(reply) {
-            note("Back", "failed after \(away)s away: \(error)", false)
+            await note("Back", "failed after \(away)s away: \(error)", false)
+            failedBacks += 1
             return
         }
         guard let stream = (reply["stream"] as? NSNumber)?.uint64Value else { return }
@@ -221,6 +270,6 @@ final class Probe: ObservableObject {
         self.stream = stream
         let path = await off { Rust.path(key) as NSDictionary }
         backs.append(ms)
-        note("Back after \(away)s", Rust.failed(echoed as? [String: Any] ?? [:]).map { "failed: \($0)" } ?? "\(ms) ms · \(Rust.text(path))", ms < 1000)
+        await note("Back after \(away)s", Rust.failed(echoed as? [String: Any] ?? [:]).map { "failed: \($0)" } ?? "\(ms) ms · \(Rust.text(path))", ms < 1000)
     }
 }

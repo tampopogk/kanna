@@ -66,8 +66,10 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dir = args.get(1).map_or(".", String::as_str);
     let key = secret(&Path::new(dir).join("probe.key"));
+    let mdns = MdnsAddressLookup::builder().service_name("kanna").build(key.public()).unwrap();
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(key)
+        .address_lookup(mdns)
         .alpns(vec![ALPN.to_vec()])
         .relay_mode(RelayMode::Custom(RelayMap::empty()))
         .bind_addr(SocketAddr::from(([0, 0, 0, 0], PORT)))
@@ -75,12 +77,10 @@ async fn main() {
         .bind()
         .await
         .unwrap();
-    let mdns = MdnsAddressLookup::builder().service_name("kanna").build(endpoint.id()).unwrap();
-    endpoint.address_lookup().unwrap().add(mdns.clone());
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     let addrs: Vec<String> = endpoint.addr().ip_addrs().filter(|a| a.is_ipv4() && !a.ip().is_loopback()).map(|a| a.to_string()).collect();
     let key = endpoint.id().to_string();
-    let instance = z32::encode(endpoint.id().as_bytes());
+    let instance = data_encoding::BASE32_NOPAD.encode(endpoint.id().as_bytes()).to_ascii_lowercase();
     let payload = json!({ "key": key, "addrs": addrs, "instance": instance }).to_string();
     let qr = QrCode::new(payload.as_bytes()).unwrap();
     println!("{}", qr.render::<unicode::Dense1x2>().dark_color(unicode::Dense1x2::Light).light_color(unicode::Dense1x2::Dark).quiet_zone(true).build());

@@ -23,6 +23,9 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_kanna._udp</string>
+		<string>_raop._tcp</string>
+		<string>_airplay._tcp</string>
+		<string>_companion-link._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Scans the code the Mac shows.</string>
