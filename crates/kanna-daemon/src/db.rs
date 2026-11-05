@@ -480,11 +480,11 @@ impl Drop for Checkpoints {
 
 const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn checkpointing(path: PathBuf) -> Option<Checkpoints> {
+fn checkpointing(path: &Path) -> Option<Checkpoints> {
+    let conn = Connection::open(path).ok()?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
     let (stop, stopping) = std::sync::mpsc::channel::<()>();
     let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
-        let Ok(conn) = Connection::open(&path) else { return };
-        let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
         while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopping.recv_timeout(CHECKPOINT_EVERY) {
             let started = std::time::Instant::now();
             let _ = conn.query_row("pragma wal_checkpoint(passive)", [], |_| Ok(()));
@@ -607,7 +607,7 @@ impl Db {
             let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
         }
         if db.conn.path().is_some_and(|file| !file.is_empty()) && db.conn.pragma_update(None, "wal_autocheckpoint", 0).is_ok() {
-            db.checkpoints = checkpointing(path);
+            db.checkpoints = checkpointing(&path);
         }
         db
     }
