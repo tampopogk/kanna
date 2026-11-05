@@ -109,7 +109,7 @@ struct MachineDetail: View {
                     .padding(.vertical, 14)
                     GroupHead(title: "\(store.repo.id) here").padding(.top, -12)
                     if isPlanner {
-                        Row(title: "Planner", sub: "this repo's planner") { Dot(status: .idle) } trail: { EmptyView() }
+                        Row(title: "Planner", sub: "idle · this repo's planner") { Dot(status: .idle) } trail: { EmptyView() }
                     }
                     ForEach(store.repo.tasks.filter { $0.machine == name || $0.desk == name }) { TaskLink(item: $0, onDesk: $0.desk == name) }
                     if store.repo.machines.count > 1 && !isPlanner {

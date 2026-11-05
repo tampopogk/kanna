@@ -53,6 +53,7 @@ final class Store {
         if let m = d.string(forKey: "score"), let v = ScoreMode(rawValue: m) { s.score = v }
         s.hold = d.bool(forKey: "hold")
         s.slowWriter = d.bool(forKey: "slowWriter")
+        if d.double(forKey: "speed") > 0 { s.speed = d.double(forKey: "speed") }
         if let scene = d.string(forKey: "scene") { s.apply(scene: scene) }
         if !s.hold { s.startBackground() }
         return s

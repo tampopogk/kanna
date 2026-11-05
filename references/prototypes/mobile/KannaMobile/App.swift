@@ -63,6 +63,19 @@ struct MainTabs: View {
                 }
             }
         }
+        .overlay {
+            if store.showChipPop {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.001).onTapGesture { store.showChipPop = false }
+                    ConnectionPop()
+                        .padding(.leading, 56)
+                        .padding(.trailing, 12)
+                        .padding(.top, 52)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.snappy, value: store.showChipPop)
         .sheet(isPresented: $s.showRepos) { RepoSheet() }
         .fullScreenCover(item: $s.fullCode) { FullCodeView(snippet: $0) }
         .fullScreenCover(isPresented: $s.roundOpen) { RoundView() }

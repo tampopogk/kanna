@@ -85,7 +85,7 @@ extension Store {
         case "chat-quiz": repo.chat = Chats.quiz
         case "repos-sheet": repo.chat = Chats.switcher; showRepos = true
         case "conn-direct": repo.chat = Chats.pathOnly; net = .internet
-        case "conn-relay": repo.chat = Chats.pathOnly; net = .relay; showChipPop = true
+        case "conn-relay": repo.chat = Chats.pathOnly; net = .relay; after(0.8) { [self] in showChipPop = true }
         case "conn-offline": repo.chat = Chats.offline; net = .machineDown
         case "conn-shelf": tab = .shelf; net = .machineDown
         case "shelf-list": tab = .shelf

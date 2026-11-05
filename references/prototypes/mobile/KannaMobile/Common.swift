@@ -74,13 +74,9 @@ struct ChipButton: View {
     @Environment(Store.self) private var store
 
     var body: some View {
-        @Bindable var s = store
         Button { store.showChipPop.toggle() } label: { Chip(path: store.plannerPath, on: store.showChipPop) }
             .buttonStyle(.plain)
             .accessibilityIdentifier("chip")
-            .popover(isPresented: $s.showChipPop, arrowEdge: .top) {
-                ConnectionPop().presentationCompactAdaptation(.popover)
-            }
     }
 }
 
@@ -116,8 +112,12 @@ struct ConnectionPop: View {
                 KeyValue(key: "Direct path", value: store.plannerPath == .relay ? "Trying" : "In use")
             }
         }
-        .padding(13)
-        .frame(width: 322, alignment: .leading)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(K.card, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(K.line))
+        .shadow(color: .black.opacity(0.35), radius: 14, y: 12)
     }
 }
 
@@ -197,6 +197,12 @@ struct RepoNav<Sub: View>: ViewModifier {
 extension View {
     func repoNav<Sub: View>(@ViewBuilder sub: @escaping () -> Sub) -> some View { modifier(RepoNav(sub: sub)) }
     func repoNav() -> some View { modifier(RepoNav { EmptyView() }) }
+
+    func tapDismissesKeyboard() -> some View {
+        contentShape(Rectangle()).simultaneousGesture(TapGesture().onEnded {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        })
+    }
 
     func solidBar() -> some View {
         toolbarBackground(K.bg, for: .navigationBar)

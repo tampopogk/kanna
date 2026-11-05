@@ -2,8 +2,7 @@ import SwiftUI
 
 struct ChatView: View {
     @Environment(Store.self) private var store
-
-    private var last: UUID? { store.repo.chat.last?.id }
+    @State private var viewport: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +20,10 @@ struct ChatView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
                     .padding(.bottom, 8)
+                    .frame(minHeight: viewport, alignment: .bottom)
+                    .tapDismissesKeyboard()
                 }
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { viewport = $0 }
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: store.repo.chat.count) {

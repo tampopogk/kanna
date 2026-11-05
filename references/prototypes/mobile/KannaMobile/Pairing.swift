@@ -100,6 +100,7 @@ struct PairScan: View {
             }
         }
         .foregroundStyle(.white)
+        .statusBarHidden()
     }
 }
 

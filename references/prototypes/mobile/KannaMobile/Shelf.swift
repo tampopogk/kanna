@@ -106,6 +106,7 @@ struct DoneList: View {
 struct TaskDetail: View {
     var id: UUID
     @Environment(Store.self) private var store
+    @State private var viewport: CGFloat = 0
 
     private var item: WorkItem? { store.task(id) }
 
@@ -171,8 +172,10 @@ struct TaskDetail: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: viewport, alignment: t.thread.isEmpty ? .topLeading : .bottomLeading)
+                    .tapDismissesKeyboard()
                 }
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { viewport = $0 }
                 .defaultScrollAnchor(t.thread.isEmpty ? .top : .bottom)
                 .scrollDismissesKeyboard(.interactively)
             }
