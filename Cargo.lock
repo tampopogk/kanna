@@ -2103,6 +2103,7 @@ name = "kanna-ios-ffi"
 version = "0.1.0"
 dependencies = [
  "kanna-net",
+ "kanna-syntax",
  "serde_json",
  "tokio",
 ]

@@ -16,6 +16,7 @@ struct Stream {
 #[derive(Default)]
 struct Phone {
     client: Option<Client>,
+    secret: Option<SecretKey>,
     streams: HashMap<u64, Arc<Stream>>,
 }
 
@@ -62,6 +63,7 @@ fn start(secret: *const c_char) -> Result<Value, Value> {
     let client = runtime.block_on(Client::start(secret.clone())).map_err(|reason| failure("unavailable", reason))?;
     let key = client.key();
     let mut phone = phone();
+    phone.secret = Some(secret.clone());
     if let Some(old) = phone.client.replace(client) {
         runtime.block_on(old.close());
     }
@@ -80,6 +82,17 @@ fn open(request: *const c_char) -> Result<Value, Value> {
     let stream = NEXT.fetch_add(1, Ordering::Relaxed);
     phone().streams.insert(stream, Arc::new(Stream { send: AsyncMutex::new(send), recv: AsyncMutex::new(recv) }));
     Ok(json!({ "stream": stream, "ack": ack, "ms": began.elapsed().as_secs_f64() * 1000.0, "path": client.path(&key) }))
+}
+
+fn join(offer: *const c_char) -> Result<Value, Value> {
+    let runtime = runtime()?;
+    let offer: Value = text(offer).and_then(|t| serde_json::from_str(&t).ok()).ok_or_else(|| failure("bad_request", "that isn't a pairing code"))?;
+    let (client, secret) = {
+        let phone = phone();
+        (phone.client.clone(), phone.secret.clone())
+    };
+    let (client, secret) = client.zip(secret).ok_or_else(|| failure("unavailable", "the endpoint isn't started"))?;
+    runtime.block_on(kanna_net::phone::join(&client, &secret, &offer)).map_err(|f| failure(&f.code, f.message))
 }
 
 fn stream(id: u64) -> Result<Arc<Stream>, Value> {
@@ -110,6 +123,21 @@ pub extern "C" fn kanna_phone_start(secret: *const c_char) -> *mut c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn kanna_phone_join(offer: *const c_char) -> *mut c_char {
+    answer(join(offer))
+}
+
+#[no_mangle]
+pub extern "C" fn kanna_phone_instance(key: *const c_char) -> *mut c_char {
+    answer(text(key).and_then(|key| kanna_net::phone::instance_of(&key)).map(|instance| json!({ "instance": instance })).ok_or_else(|| failure("bad_request", "that isn't a key")))
+}
+
+#[no_mangle]
+pub extern "C" fn kanna_phone_key(secret: *const c_char) -> *mut c_char {
+    answer(secret_of(text(secret)).map(|secret| json!({ "key": secret.public().to_string() })))
+}
+
+#[no_mangle]
 pub extern "C" fn kanna_phone_open(request: *const c_char) -> *mut c_char {
     answer(open(request))
 }
@@ -135,10 +163,20 @@ pub extern "C" fn kanna_phone_path(key: *const c_char) -> *mut c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn kanna_phone_highlight(file: *const c_char, source: *const c_char) -> *mut c_char {
+    let (file, source) = (text(file).unwrap_or_default(), text(source).unwrap_or_default());
+    let first = source.lines().next().unwrap_or_default();
+    let found = kanna_syntax::language_for(&file, first).and_then(|language| kanna_syntax::highlight(language, &source)).unwrap_or_default();
+    let spans: Vec<Value> = found.spans.iter().map(|s| json!({ "start": s.start, "end": s.end, "capture": kanna_syntax::CAPTURES.get(s.capture as usize) })).collect();
+    give(json!({ "spans": spans }))
+}
+
+#[no_mangle]
 pub extern "C" fn kanna_phone_stop() {
     let client = {
         let mut phone = phone();
         phone.streams.clear();
+        phone.secret = None;
         phone.client.take()
     };
     if let (Some(client), Ok(runtime)) = (client, runtime()) {
