@@ -24,6 +24,10 @@ pub trait PaneHost {
     fn start(&self, pane: &Pane);
     fn stop(&self, pane: &Pane);
     fn send(&self, pane: &Pane, text: &str, done: Responder);
+    fn paste(&self, pane: &Pane, text: &str, done: Responder) {
+        let _ = text;
+        done.reply(Err(KmuxError::new("unsupported", format!("{} can't take a paste here", pane.label()))));
+    }
     fn send_keys(&self, pane: &Pane, keys: Vec<String>, done: Responder) {
         let _ = keys;
         done.reply(Err(KmuxError::new("unsupported", format!("{} can't take keys here", pane.label()))));
@@ -1383,7 +1387,12 @@ impl CoreHandle {
         }
         let Some(host) = self.host() else { return Ok(Map::new()) };
         let (responder, answer) = responder();
-        host.send(&pane, string(args, "text").unwrap_or(""), responder);
+        let text = string(args, "text").unwrap_or("");
+        if args.get("enter").and_then(Value::as_bool) == Some(false) {
+            host.paste(&pane, text, responder);
+        } else {
+            host.send(&pane, text, responder);
+        }
         answer.await
     }
 

@@ -719,19 +719,11 @@ impl PaneHost for Terminals {
     }
 
     fn send(&self, pane: &Pane, text: &str, done: Responder) {
-        let line = {
-            let live = self.live.borrow();
-            live.get(Self::of(pane)).and_then(|terminal| {
-                let pty = terminal.running()?;
-                let feed = Feed::lock(&terminal.feed);
-                Some(Line { label: pane.label(), text: feed.paste(text), enter: feed.enter(), input: pty.input.clone() })
-            })
-        };
-        let Some(line) = line else { return done.reply(Err(KmuxError::new("bad_request", format!("{} has no running terminal", pane.label())))) };
-        let sent = std::thread::Builder::new().name(format!("kanna.send.{}", pane.id)).spawn(move || line.type_in(done));
-        if let Err(error) = sent {
-            log!("kanna-daemon: couldn't start sending text: {error}");
-        }
+        self.line(pane, text, true, done);
+    }
+
+    fn paste(&self, pane: &Pane, text: &str, done: Responder) {
+        self.line(pane, text, false, done);
     }
 
     fn send_keys(&self, pane: &Pane, names: Vec<String>, done: Responder) {
@@ -764,7 +756,7 @@ struct Presses {
 struct Line {
     label: String,
     text: Vec<u8>,
-    enter: Vec<u8>,
+    enter: Option<Vec<u8>>,
     input: Sender<Vec<u8>>,
 }
 
@@ -774,9 +766,12 @@ impl Line {
             if self.input.send(self.text).is_err() {
                 return done.reply(Err(KmuxError::new("bad_request", format!("{} ended before the text was sent", self.label))));
             }
-            std::thread::sleep(ENTER_GAP);
+            if self.enter.is_some() {
+                std::thread::sleep(ENTER_GAP);
+            }
         }
-        if self.input.send(self.enter).is_err() {
+        let Some(enter) = self.enter else { return done.reply(Ok(Map::new())) };
+        if self.input.send(enter).is_err() {
             return done.reply(Err(KmuxError::new("bad_request", format!("{} ended before Return was pressed", self.label))));
         }
         done.reply(Ok(Map::new()));
@@ -797,6 +792,22 @@ impl Presses {
 }
 
 impl Terminals {
+    fn line(&self, pane: &Pane, text: &str, enter: bool, done: Responder) {
+        let line = {
+            let live = self.live.borrow();
+            live.get(Self::of(pane)).and_then(|terminal| {
+                let pty = terminal.running()?;
+                let feed = Feed::lock(&terminal.feed);
+                Some(Line { label: pane.label(), text: feed.paste(text), enter: enter.then(|| feed.enter()), input: pty.input.clone() })
+            })
+        };
+        let Some(line) = line else { return done.reply(Err(KmuxError::new("bad_request", format!("{} has no running terminal", pane.label())))) };
+        let sent = std::thread::Builder::new().name(format!("kanna.send.{}", pane.id)).spawn(move || line.type_in(done));
+        if let Err(error) = sent {
+            log!("kanna-daemon: couldn't start sending text: {error}");
+        }
+    }
+
     fn presses(&self, pane: &Pane, names: &[String]) -> Result<Presses, KmuxError> {
         let keys = names.iter().map(|name| name.parse::<Key>()).collect::<Result<Vec<Key>, KeyError>>().map_err(|error| {
             let message = match error {

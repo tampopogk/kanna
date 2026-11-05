@@ -91,6 +91,8 @@ flowchart LR
 
 ## Quiz results
 
+The phone adds `phone_chat` ([chat §5](mobile-chat.md#5-store-and-tests)), `last_words` ([Shelf §3](mobile-shelf.md#3-last-words)), and `quiz_ready`, `quiz_map` and `quiz_notes` ([quiz](mobile-quiz.md)), all planned.
+
 **Built.** Every [quiz](quiz.md) round and answer is kept, so misses can come back in a later round and a round can cover what's new since the last one.
 
 ```mermaid

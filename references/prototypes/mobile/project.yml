@@ -1,0 +1,41 @@
+name: KannaMobile
+options:
+  bundleIdPrefix: dev.kanna.prototype
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGNING_ALLOWED: "NO"
+    TARGETED_DEVICE_FAMILY: "1"
+    GENERATE_INFOPLIST_FILE: "YES"
+targets:
+  KannaMobile:
+    type: application
+    platform: iOS
+    sources: [KannaMobile]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.prototype.mobile
+        INFOPLIST_KEY_CFBundleDisplayName: Kanna Proto
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+  KannaMobileUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [KannaMobileUITests]
+    dependencies:
+      - target: KannaMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.prototype.mobile.uitests
+schemes:
+  KannaMobile:
+    build:
+      targets:
+        KannaMobile: all
+    test:
+      targets:
+        - KannaMobileUITests

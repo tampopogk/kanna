@@ -51,7 +51,7 @@ flowchart TB
 ## 2. Rules
 
 - **A task is out when an app claims it.** Move to Desk claims it for that app (`kanna task pick`, for the CLI's instance's app); Move to Shelf (`kanna task shelve`) drops the claim. An app's Desk tasks are the tasks it claims; every other running or stopped task is on the Shelf.
-- **An app's Desk holds three per project,** the active task included. Another app has its own three. A claim past three is refused.
+- **An app's Desk holds three per project,** the active task included. Another app has its own three. A claim past three is refused. Planned: counted across machines, from a replicated `claim` field, and a phone can claim for a closed app ([phone Shelf §2](mobile-shelf.md#2-pick)).
 - **[Shelf runners](shelf-runners.md) leave a claimed task alone:** they start and stop only tasks no app has out.
 - **The active task and the Desk view are the app's.** Making a task active, showing the Desk view, and which Desk shows what never reach the daemon, so two apps can show the same task on their Desks, each its own way. The CLI's `task activate`, `task park` and `kanna PATH` are relayed to the CLI's instance's app, which the CLI starts if none is running.
 - **A task's windows show in an app while its task is on one of that app's Desks,** and are hidden there otherwise; free windows show in every app.
