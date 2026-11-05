@@ -191,6 +191,15 @@ extension AppController {
                     "keyboard": Self.paneHolding(controller.window.firstResponder).map { .string($0) } ?? .null,
                     "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow)]
         }
+        commands["debug.pairPhone"] = { [weak self] args in
+            guard let self else { return [:] }
+            if args["cancel"]?.bool == true {
+                PhonePairing.shown?.cancelled()
+            } else if PhonePairing.shown == nil {
+                controllers.values.first?.machinesPage.pair?()
+            }
+            return ["sheet": .bool(PhonePairing.shown?.attached == true), "code": PhonePairing.shown?.scanned.map { .string($0) } ?? .null]
+        }
         commands["debug.web"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let web = contents.web(id) else { throw KannaError("wrong_type", "not a web pane") }
             if let script = args["js"]?.string {

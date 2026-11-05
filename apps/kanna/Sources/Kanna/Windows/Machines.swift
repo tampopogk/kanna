@@ -5,6 +5,16 @@ import KannaMachines
 @MainActor
 final class PhonePairing {
     private let panel: NSPanel
+    private let image: NSImageView
+    private(set) static var shown: PhonePairing?
+
+    var attached: Bool { panel.sheetParent != nil || panel.isVisible }
+
+    var scanned: String? {
+        guard let data = image.image?.tiffRepresentation, let picture = CIImage(data: data),
+              let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: nil) else { return nil }
+        return (detector.features(in: picture).first as? CIQRCodeFeature)?.messageString
+    }
 
     init(code: String) {
         let side: CGFloat = 320
@@ -15,7 +25,7 @@ final class PhonePairing {
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         let title = NSTextField(labelWithString: "Scan this in Kanna on your phone")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
-        let image = NSImageView(image: Self.qr(code, side: side))
+        image = NSImageView(image: Self.qr(code, side: side))
         image.imageScaling = .scaleNone
         let note = NSTextField(labelWithString: "It works once, for 5 minutes.")
         note.textColor = .secondaryLabelColor
@@ -47,19 +57,17 @@ final class PhonePairing {
     }
 
     func show(over window: NSWindow?) {
-        kept = self
+        Self.shown = self
         if let window { window.beginSheet(panel) } else { panel.makeKeyAndOrderFront(nil) }
     }
 
     func close() {
         panel.sheetParent?.endSheet(panel)
         panel.orderOut(nil)
-        kept = nil
+        if Self.shown === self { Self.shown = nil }
     }
 
-    private var kept: PhonePairing?
-
-    @objc private func cancelled() { close() }
+    @objc func cancelled() { close() }
 }
 
 extension AppController {
@@ -126,8 +134,9 @@ extension AppController {
             let sheet = PhonePairing(code: String(decoding: body, as: UTF8.self))
             sheet.show(over: window)
             request("phone", ["action": "wait"]) { [weak self] reply in
+                let waiting = PhonePairing.shown === sheet
                 sheet.close()
-                if reply["ok"]?.bool != true, reply["error"]?["code"]?.string != "no_offer" {
+                if waiting, reply["ok"]?.bool != true {
                     PhonePairing.failed(reply["error"]?["message"]?.string ?? "The phone wasn't added.", over: window)
                 }
                 self?.links?.refresh()
