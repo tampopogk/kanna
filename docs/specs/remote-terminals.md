@@ -58,7 +58,7 @@ sequenceDiagram
 - **Peers are dialed with the relay set now and the one in their peer-log entry,** so moving every machine to a new relay works without pairing again.
 - **The app's endpoint** gets the relay from the local daemon's peer list and adds it before dialing; port tunnels use it too.
 - **Only your machines use it:** the relay admits clients that present its shared token (iroh-relay's `access.shared_token`), a 256-bit secret, rather than a list of keys that would need editing for every machine and app. A relay forwards only ciphertext and can't add a device; the token keeps strangers from using its bandwidth.
-- **The token is local:** it's kept with the relay setting in kanna.db and sent to the relay by the daemon's endpoint, the app's and every tunnel. It never goes in the peer log; `kanna machine list` says only whether one is set; the app asks for it with `machine.relay_token`, which the daemon answers only on its own socket, never on a remote app's link or for `kanna --host`.
+- **The token is local:** it's kept with the relay setting in kanna.db and sent to the relay by the daemon's endpoint, the app's and every tunnel. It never goes in the peer log; `kanna machine list` says only whether one is set; the app asks for it with `machine.relay_token`, which the daemon answers only on its own socket, never on a remote app's link or for `kanna --host`. A phone is the one exception: it gets the token sealed at pairing and in its `hello` ([phone link §1](mobile-link.md#1-a-phone-in-the-peer-log)).
 
 **Setting one up:** `sudo scripts/machines/relay-setup.sh --cert FILE --key FILE` on any Linux server with a stable address and a TLS certificate:
 

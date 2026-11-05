@@ -18,6 +18,7 @@ Every one of your daemons holds every task's record, synced peer to peer over ir
 | Part | Consistency |
 |---|---|
 | A task's record: project, name, first message, agent, `after`, `on`, state, owner, and a `run.DEVICE` field for each machine that ran it | eventual: last writer wins per field, ordered by a hybrid logical clock ("oldest first") |
+| A project's planner machine, and a task's `claim` and `notes` (planned: [chat §1](mobile-chat.md#1-the-planner-machine), [Shelf §2, §4](mobile-shelf.md#2-pick)) | eventual, as the record |
 | Who may start or grant it: the **authority** | one machine; changes by a grant from the machine that holds it, or by a takeover when that machine has been away 2 minutes (§2) |
 
 - **The record is a log of field writes** in `kanna.db`: `record_ops (device, ms, n, task, birth, field, value)`, one row per write, never changed. A field's value is its write with the largest `(ms, n, device)`, so every daemon that has the same rows shows the same record, whatever order they came in. `device` is the daemon's endpoint key.
