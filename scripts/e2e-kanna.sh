@@ -17,6 +17,7 @@ usage: scripts/e2e-kanna.sh [--through M0|M1|M2|M3|M4] [NAME …]
   NAME…        only these scenarios (e.g. cli_terminal desk_zoom)
 
 A scenario that runs longer than $KANNA_E2E_TIMEOUT seconds (600) fails.
+Waits and speed bounds stretch by $KANNA_E2E_SLOW (load per core, 1 to 6).
 Every run stops what it started however it ends, and first stops what runs
 it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
 unsandboxed: it needs ps, signals, Unix sockets and /tmp.
@@ -43,6 +44,8 @@ rust_dir="$(. "$repo_root/scripts/env.sh" && kanna_rust_dir "$repo_root")"
 out="$repo_root/target/e2e-kanna"
 mkdir -p "$out"
 
+slowness() { python3 -c 'import math, os; print(max(1, min(6, math.ceil(os.getloadavg()[0] / os.cpu_count()))))'; }
+slow="${KANNA_E2E_SLOW:-$(slowness)}"
 scenarios=()
 scenario() { scenarios+=("$1:$2"); }
 due() {
@@ -88,7 +91,7 @@ daemon_pid="" app_pid="" scenario_pid=""
 
 need() { [[ -x "$1" ]] || { echo "not built: ${1#$repo_root/}"; return 1; }; }
 wait_for() {
-  local tries=$(($1 * 10)); shift
+  local tries=$(($1 * 10 * slow)); shift
   for _ in $(seq "$tries"); do
     kill -0 "$KANNA_E2E_OWNER" 2>/dev/null || exit 1
     "$@" 2>/dev/null && return 0; sleep 0.1
@@ -2321,12 +2324,13 @@ zsh_completion() {
   kanna open --window win-1 --name notes --tab md "$dir/alpha-notes.md" >/dev/null || return 1
   kanna focus zsh_completion >/dev/null || return 1
   sleep 1
-  kanna send zsh_completion "PATH='$bin':\$PATH; stty cols 120; source <(kanna completions zsh); clear" || return 1
-  sleep 1
+  kanna send zsh_completion "PATH='$bin':\$PATH; stty cols 120; source <(kanna completions zsh); clear; print READY\$((1 + 1))" || return 1
+  check wait_for 10 shows zsh_completion READY2 || return 1
   zsh_completion_tab() {
     raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$1\"}}" >/dev/null
-    sleep 0.3; key tab; [[ -n "$2" ]] && key tab; sleep 0.7
-    zsh_completion_screen=$(kanna read zsh_completion)
+    sleep 0.3; key tab; [[ -n "$2" ]] && key tab
+    local want="$3"
+    wait_for 3 eval 'zsh_completion_screen=$(kanna read zsh_completion); printf "%s\n" "$zsh_completion_screen" | grep -qE -- "$want"'
     [[ -n "${4:-}" ]] && { raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$4.png\"}}" >/dev/null; cp "$KANNA_STATE_DIR/$4.png" "$out/$4.png" 2>/dev/null; }
     key ctrl+c; sleep 0.3
     printf "%s\n" "$zsh_completion_screen" | grep -qE -- "$3" || { echo "kanna $1⇥ didn't show $3:"; printf "%s\n" "$zsh_completion_screen" | tail -8; return 1; }
@@ -2696,6 +2700,7 @@ desk_by_path() {
   check wait_for 10 eval '[[ "$(desk lead d1)" == term-* ]]' || { echo "desk_by_path: no planning terminal"; kanna workspace list --all; return 1; }
   local planner; planner="$(desk lead d1)"
   check test "$(cd "$(pane "$planner" cwd)" && pwd -P)" == "$repo" || { echo "desk_by_path: Kanna started in a folder should plan there"; kanna workspace list --all --json; return 1; }
+  check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
   kanna send "$planner" 'echo "context=$CLAUDE_CODE_AUTO_COMPACT_WINDOW"' >/dev/null || { echo "desk_by_path line $LINENO"; return 1; }
   check wait_for 5 shows "$planner" "context=400000" || { echo "desk_by_path: the repo's .kanna/config.json didn't set the context"; kanna read "$planner"; return 1; }
   (cd "$repo" && kanna task new "Waiting" "hello" --agent "$agent") >/dev/null || { echo "desk_by_path line $LINENO"; return 1; }
@@ -3838,7 +3843,7 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)")"
   took="${seen%% *}" card="${seen#* }"
   [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_at_once: the task never reached the Shelf"; desk tasks; desk note; return 1; }
   echo "pick_at_once: on the Shelf ${took}ms after the click"
-  (( took <= 200 )) || { echo "pick_at_once: the task took ${took}ms to reach the Shelf"; return 1; }
+  (( took <= 200 * slow )) || { echo "pick_at_once: the task took ${took}ms to reach the Shelf"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$card"'","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$(pane "Line tables" id)" ]]' || { echo "pick_at_once: pulling it at once didn't put it on the Desk"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
   check wait_for 5 shows "Line tables" "--resume" || { echo "pick_at_once: its agent didn't come back"; kanna read "Line tables"; return 1; }
@@ -3882,7 +3887,7 @@ print(" ".join(words[(n + k) % len(words)] for k in range(450)))' "$i")") >/dev/
     || { echo "perf_intervals: the click's intervals weren't recorded"; perf click.pick.shown; return 1; }
   echo "perf_intervals: $(perf click.pick.wait click.pick.sent click.pick.shown | tr '\n' ' ')"
   shown="$(perf click.pick.shown | awk '{print $2}')"
-  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 100)' "$shown" || { echo "perf_intervals: with 50 tasks on the Shelf the card showed ${shown}ms after the click"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
+  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 100 * int(sys.argv[2]))' "$shown" "$slow" || { echo "perf_intervals: with 50 tasks on the Shelf the card showed ${shown}ms after the click"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
   card="$(desk tasks.0.task)"
   raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$card"'","window":"d1"}}' >/dev/null
   check wait_for 5 perf click.activate.shown >/dev/null || { echo "perf_intervals: pulling it wasn't timed"; perf click.activate.shown; return 1; }
@@ -3945,8 +3950,8 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)" "$bin/kanna" "$repo")"
   took="${seen%% *}" listed="${seen#* }"
   [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_keeper_paused: with the keeper paused, the task never reached the Desk"; desk tasks; desk note; return 1; }
   echo "pick_keeper_paused: on the Desk ${took}ms after the click, the keeper paused; task list (ms, row): $listed"
-  (( took <= 200 )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
-  [[ "$listed" =~ ^([0-9]+)\ Desk\ .*Line\ tables ]] && (( BASH_REMATCH[1] <= 200 )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
+  (( took <= 200 * slow )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
+  [[ "$listed" =~ ^([0-9]+)\ Desk\ .*Line\ tables ]] && (( BASH_REMATCH[1] <= 200 * slow )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
   check wait_for 5 shows "Line tables" "--resume" || { echo "pick_keeper_paused: its agent didn't come back once the keeper went on"; kanna read "Line tables"; return 1; }
   check wait_for 5 is lines state running || { echo "pick_keeper_paused: its tab didn't run again"; kanna workspace list --all; return 1; }
   check test "$(desk note)" == "" || { echo "pick_keeper_paused: $(desk note)"; return 1; }
@@ -3973,7 +3978,7 @@ task_list_speed() {
 r = json.load(sys.stdin); r = r.get("result", r)
 i = {i["name"]: i for i in r["intervals"]}
 print("loop.async max %sms, tasks.list p50 %sms max %sms" % (i.get("loop.async", {}).get("max"), i.get("tasks.list", {}).get("p50"), i.get("tasks.list", {}).get("max")))')"
-  (( worst < 300 )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
+  (( worst < 300 * slow )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
 }
 
 scenario loop_latency M4
@@ -4031,7 +4036,7 @@ print("worst", 100 * held["over"] / max(held["holds"], 1))')"
 scenario typing_latency M4
 typing_latency() {
   local keys="${KANNA_LATENCY_KEYS:-60}" floods="${KANNA_LATENCY_FLOODS:-1}" hidden="${KANNA_LATENCY_HIDDEN:-4}" agents="${KANNA_LATENCY_AGENTS:-0}" burners="${KANNA_LATENCY_CPU:-0}"
-  local bound="${KANNA_LATENCY_BOUND:-100}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
+  local bound="${KANNA_LATENCY_BOUND:-$((100 * slow))}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
   local agent="exec python3 $KANNA_STATE_DIR/redraw.py"
   cat >"$KANNA_STATE_DIR/redraw.py" <<'PY'
 import random, sys, time
@@ -5423,6 +5428,14 @@ md="\$("$bin/kanna" open md notes.md | tee "$KANNA_STATE_DIR/opened" | sed -E 's
 "$bin/kanna" comment notes.md:3 "Why it changed." >/dev/null
 long="\$("$bin/kanna" open --tab --cmd 'echo LONG_RUNNING; exec sleep 600' | sed -E 's/^opened ([a-z]+-[0-9]+).*/\1/')"
 short="\$("$bin/kanna" open --tab --cmd 'echo SHORT_DONE' | sed -E 's/^opened ([a-z]+-[0-9]+).*/\1/')"
+until "$bin/kanna" workspace list --all --json | python3 -c 'import json, sys
+def panes(v):
+    if isinstance(v, dict):
+        if v.get("id") == sys.argv[1]: yield v
+        for x in v.values(): yield from panes(x)
+    elif isinstance(v, list):
+        for x in v: yield from panes(x)
+sys.exit(not any(p.get("state") == "exited" for p in panes(json.load(sys.stdin))))' "\$short"; do sleep 0.1; done
 "$bin/kanna" focus "\$md" >"$KANNA_STATE_DIR/focused"
 "$bin/kanna" zoom "\$md" >/dev/null
 echo "\$md \$long \$short" >"$KANNA_STATE_DIR/presented"
@@ -6598,6 +6611,7 @@ for s in "${run[@]}"; do
   if [[ "$m" > "$through" ]]; then printf '%-20s --   not due (%s)\n' "$s" "$m"; continue; fi
   cleanup
   new_state_dir
+  slow="${KANNA_E2E_SLOW:-$(slowness)}"
   run_scenario "$s" >"$out/$s.log" 2>&1 &
   scenario_pid=$! ends=$((SECONDS + limit))
   echo "$scenario_pid" >"$KANNA_STATE_DIR/e2e-scenario.pid"
