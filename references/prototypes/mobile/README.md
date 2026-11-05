@@ -35,7 +35,7 @@ Or open `references/prototypes/mobile/KannaMobile.xcodeproj` in Xcode, pick an i
 
 | Switch | Options | Why |
 |---|---|---|
-| Quiz score (D10) | Streak (default), Points, Both, Neither | The real choice the mockup left. Neither is added because D10's case is that the map is already the score |
+| Quiz score (D10) | Neither (default), Streak, Points, Both | Neither is the decision. The others stay so the choice can be revisited |
 | Wrap by default (D9) | On (default), off | Off, code cards scroll sideways |
 | Quiz agent is slow (D12) | Off (default), on | Shows the quiet *Writing your next round* button |
 | Several Macs, mbp is closed (D4) | | One Mac skips the sheet. A closed Mac still takes the pick |
@@ -44,7 +44,7 @@ Or open `references/prototypes/mobile/KannaMobile.xcodeproj` in Xcode, pick an i
 
 ## The decisions, for the spec task
 
-No spec was changed here. *Confirmed* means the mockup's recommendation is built and holds together in the flows. Fixtures can't test anything on the Mac's side, so D2, D4, D5, D8, D11, D12 and D13 still need proving in the real daemon. How it feels on a phone is the user's call. Nobody has tried this on a real iPhone yet.
+No spec was changed here. *Confirmed* means the mockup's recommendation is built and holds together in the flows. Fixtures can't test anything on the Mac's side, so D2, D4, D5, D8, D12 and D13 still need proving in the real daemon. How it feels on a phone is the user's call. Nobody has tried this on a real iPhone yet.
 
 | | Decision | Result |
 |---|---|---|
@@ -57,8 +57,8 @@ No spec was changed here. *Confirmed* means the mockup's recommendation is built
 | D7 | Queue offline for a day, then ask again | Confirmed. **Added:** the asking is *A day old, not sent* with Discard and Keep waiting. Messages to tasks queue too, and *No network* is its own banner |
 | D8 | Subsystems and mastery | Unchanged and still open. The map reads well, but the numbers are invented. Shades here are at 40, 60 and 80% |
 | D9 | Wrap by default, with a toggle | Confirmed. Lines break at spaces first, and inside a word only when they must |
-| D10 | Streak or points | **Your call:** switchable, on the recommended streak. Try all four |
-| D11 | When a streak breaks | Part built: one round a day adds a day. Mac rounds and skipped days can't be simulated |
+| D10 | Streak or points | **Changed: neither.** The mockup recommended a streak, but people are meant to take weekends off, and a daily streak punishes that. The map is the score. The Quiz tab and a round show no streak, no points and no *2 in a row*, on a miss or a right answer |
+| D11 | When a streak breaks | **Falls away with D10:** with no streak there's nothing to break, so the Mac skill can keep its "no score to protect". Mac rounds still count towards the map. The streak behind the prototype's switch adds one a day |
 | D12 | Rounds written ahead | Confirmed. **Added:** *Another round* reads *Writing…* until the next one is in. The lag is visible: a miss returns one round later, as D12 expected |
 | D13 | A phone in the peer log, and the Mac shows the code | Confirmed as a flow: nothing to type, and a refused camera sends you to Settings. The protocol change is untested |
 
@@ -68,6 +68,7 @@ Screens are in `screenshots/`, mockup on the left of each pair, app on the right
 
 - **iOS 26's own controls:** the tab bar floats, and the back button is a chevron without *Shelf*. These stay native, so swiping back and the keyboard behave as a real app's would. The real app gets the same unless it opts out.
 - **Icons:** SF Symbols, not the mockup's drawn set.
+- **Score:** the mockup draws the streak and points, and D10 removes them. The comparison sheets are shot with both on, to compare like with like (`scripts/shots.sh` defaults to `SCORE=both`).
 - **Header:** set solid, since iOS 26's translucent bar lets text show through under the repo name.
 - **The chip's card:** custom, as drawn. The native popover covered the chip.
 - **Mockup slips, fixed here:** mbp's Desk says 3 of 3 but lists one task, so all three show. *Schedule history page* is asked about in Chat but missing from the Shelf, so the Shelf is 7, not 6. A machine's page lists its Desk's tasks as well as those running on it. kmux has a hollow dot, because its planner isn't running.
@@ -81,7 +82,7 @@ Screens are in `screenshots/`, mockup on the left of each pair, app on the right
 
 ## Checks
 
-`KannaMobileUITests/FlowTests.swift` plays 16 flows by tapping:
+`KannaMobileUITests/FlowTests.swift` plays 17 flows by tapping:
 
 ```sh
 cd references/prototypes/mobile

@@ -388,7 +388,7 @@ struct QuestionView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(right ? "Right." : "Not quite.").fontWeight(.semibold).foregroundStyle(right ? K.ok : K.bad)
                 if right && store.score.showsPoints { Text("+20").font(.system(size: 13, weight: .bold)).foregroundStyle(K.ok) }
-                if right && play.run > 1 { Text("\(play.run) in a row").font(.system(size: 13)).foregroundStyle(K.muted) }
+                if right && play.run > 1 && store.score != .neither { Text("\(play.run) in a row").font(.system(size: 13)).foregroundStyle(K.muted) }
             }
             Text(rich(q.why)).font(.system(size: 14.5)).fixedSize(horizontal: false, vertical: true)
             if missed, let code = q.code { CodeCard(snippet: code) }

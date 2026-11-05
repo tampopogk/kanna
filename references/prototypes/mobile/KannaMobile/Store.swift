@@ -25,7 +25,7 @@ final class Store {
     var fullLine: Int?
     var roundOpen = false
     var play: RoundPlay?
-    var score = ScoreMode.streak
+    var score = ScoreMode.neither
     var wrapByDefault = true
     var severalMacs = true
     var slowWriter = false {

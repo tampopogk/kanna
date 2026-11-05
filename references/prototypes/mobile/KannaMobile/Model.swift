@@ -204,7 +204,7 @@ struct RoundPlay {
 }
 
 enum ScoreMode: String, CaseIterable, Identifiable {
-    case streak, points, both, neither
+    case neither, streak, points, both
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
     var showsStreak: Bool { self == .streak || self == .both }

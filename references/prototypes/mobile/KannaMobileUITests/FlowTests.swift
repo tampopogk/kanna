@@ -241,6 +241,36 @@ final class FlowTests: XCTestCase {
         see("Sends when studio is back")
     }
 
+    func testNoScoreByDefault() {
+        app.launchArguments = ["-paired", "YES"]
+        app.launch()
+        tabBar("Quiz")
+        XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["1,240"].exists)
+        XCTAssertFalse(app.staticTexts["6"].exists)
+        shot("no-score-home")
+        app.buttons["next-round"].tap()
+        tap("B")
+        see("Right.")
+        XCTAssertFalse(app.staticTexts["+20"].exists)
+        app.buttons["next-question"].tap()
+        tap("With --no-daemon")
+        see("Right.")
+        XCTAssertFalse(app.staticTexts["2 in a row"].exists)
+        shot("no-score-right")
+        app.buttons["next-question"].tap()
+        tap("In the daemon")
+        app.buttons["next-question"].tap()
+        tap("The app")
+        app.buttons["next-question"].tap()
+        tap("526")
+        app.buttons["next-question"].tap()
+        see("5 of 5")
+        XCTAssertFalse(app.staticTexts["7 days"].exists)
+        XCTAssertFalse(app.staticTexts["+105"].exists)
+        shot("no-score-end")
+    }
+
     func testScoreModes() {
         app.launchArguments = ["-paired", "YES", "-score", "streak"]
         app.launch()
