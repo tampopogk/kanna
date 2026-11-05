@@ -34,7 +34,7 @@ The first milestone: your own machines, LAN first, your own relay or a fixed add
 | 11 | Machines 11: Task transfer | **Built** ([task transfer](task-transfer.md)): `kanna task move TASK MACHINE` between any daemons; a git bundle over a `transfer` stream, not a push; no `/kanna/repos`; the handoff lists the tabs that were open, none reopened (2026-11-03); durable on both ends. Tested with two daemons with different home folders (mock claude and codex, a receiver gone before it answers, a move back). **Changed:** the agent carries on from a handoff its predecessor wrote, not by resuming its session (decided with the user, 2026-11-02), so done is a stopped claude task and a stopped codex task each carrying on their work on another machine: done with real agents from a MacBook Pro to a Mac Studio (2026-11-03). | 10 |
 | S1 | Machines: agent sign-in | **Built** ([agent sign-in](agent-sign-in.md)): accounts added on the Mac (`kanna accounts`, the Kanna menu), kept in the Keychain; tokens and keys supplied by version on adding and joining; the Codex holder through each Codex's own app-server, which the terminal command uses; `kanna accounts sign-in` as the fallback; removal everywhere, revocation taking back what a machine was given. Split out of slice 9. | 3 |
 
-**After the first milestone, not yet tasks:** more than one app per daemon, then the phone on the LAN.
+**After the first milestone, not yet tasks:** the phone on the LAN. More than one app per daemon is built ([links §2](machine-links.md#2-the-hello)).
 
 ## Kanna Cloud
 

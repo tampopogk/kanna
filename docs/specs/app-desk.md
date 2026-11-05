@@ -2,7 +2,7 @@
 
 **Status:** built · **Changes:** [presentation layers](presentation-layers.md), [Desk](desk.md), [tasks](tasks.md), [planning terminal](planning-agent.md), [database](database.md), [workspaces](workspaces.md) · **Builds on:** [presentation layers](presentation-layers.md)
 
-Each app has its own **Desks**, and the tasks on them. The **Shelf** is the daemon's, every app's: today one Mac app's, later shared. A task an app moves to its Desk is that app's **claim**: the daemon records which app has the task out, and the app decides where it shows it, and which task is active.
+Each app has its own **Desks**, and the tasks on them. The **Shelf** is the daemon's, shared by every app attached to it, this machine's own and remote ones alike. A task an app moves to its Desk is that app's **claim**: the daemon records which app has the task out, and the app decides where it shows it, and which task is active.
 
 A claim is `where: {"desk": app}` on the task's workspace, the Shelf `where: "shelf"`, and `kanna.db` stores `desk` and `shelf` ([internal names](internal-names.md)); `leftAt` is when a task was last active, and the `desk` command's `park` and `activate` show the Desk view and make a task active.
 
@@ -68,7 +68,7 @@ flowchart TB
 |---|---|
 | `tasks pick {task, app?}` | Claim a task for an app (default: the instance's Mac app, `mac`), starting it if it's stopped: `kanna task pick` |
 | `tasks shelve {task}` | Drop its claim: it's on the Shelf again, running or stopped: `kanna task shelve` |
-| `task activate {task}`, `task park {task?}`, `task desk {project, new?}` | Relayed to the attached app as `desk {action, …}`, the daemon first turning a task's ID, workspace or any of its panes into its agent's pane; `no_app` without one (the CLI starts it) |
+| `task activate {task}`, `task park {task?}`, `task desk {project, new?}` | Relayed to the target app, on this machine its own and never a remote one ([app link §3](app-link.md#3-rules)), as `desk {action, …}`, the daemon first turning a task's ID, workspace or any of its panes into its agent's pane; `no_app` without one (the CLI starts it) |
 | `open {dock, claim?}`, `open {dock, shelf: true}` | A task's agent in a new workspace, claimed by an app (default `mac`) or on the Shelf; a docked pane never goes in a window |
 | `open {planner: true, claim?}` | A Desk's planner: a terminal in a workspace with no task |
 | `open {workspace: ws-N}` | Into that workspace's tabs, a planner's too; how the app opens into a Desk |

@@ -5924,6 +5924,72 @@ PY
   check test "$(machines links.0.machine) $(machines links.0.daemon.machine) $(machines links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
 }
 
+scenario machine_two_apps M4
+machine_two_apps() {
+  local vm vm_pid vm_app
+  machine_vm machine_two_apps || return 1
+  KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$app" --bg >>"$out/app-vm.log" 2>&1 &
+  vm_app=$!
+  vapp() { vraw '{"id":1,"cmd":"debug.app"}' | field "$1"; }
+  check wait_for 20 eval '[[ "$(vapp pid)" == "$vm_app" ]]' || { echo "machine_two_apps: vm's own app didn't attach beside this Mac's"; vraw '{"id":1,"cmd":"debug.app"}'; return 1; }
+  check test "$(machines links.0.attached)" == True || { echo "machine_two_apps: vm's own app took this Mac's link"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
+
+  local toasts='import json, sys; print(" ".join(t["title"] for t in json.load(sys.stdin)["toasts"]))'
+  vmk toast "from vm" >/dev/null || { echo "machine_two_apps line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(vraw "{\"id\":1,\"cmd\":\"debug.toasts\"}" | python3 -c "$toasts")" == "from vm" ]]' || { echo "machine_two_apps: kanna toast on vm didn't reach vm's app"; return 1; }
+  check test -z "$(raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c "$toasts")" || { echo "machine_two_apps: kanna toast on vm reached this Mac's app"; return 1; }
+
+  local opened term window
+  opened="$(vmk open --window new --json)" || { echo "machine_two_apps: $opened"; return 1; }
+  term="$(echo "$opened" | field pane.id)" window="$(echo "$opened" | field window)"
+  local focused; focused="$(vmk focus "$term" --json | field front)"
+  [[ "$focused" == "$window" ]] || { echo "machine_two_apps: a focus on vm wasn't brought forward by vm's app: $focused"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/shared"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/shared.git || { echo "machine_two_apps line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  local desk; desk="$(cd / && vmk "$repo")" && [[ "$desk" == "opened d"* ]] || { echo "machine_two_apps: kanna PATH on vm: $desk"; return 1; }
+  desk="${desk#opened }" desk="${desk%% *}"
+  check wait_for 5 eval '[[ "$(vraw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$desk\"}}" | field ok)" == True ]]' || { echo "machine_two_apps: kanna PATH on vm said $desk but vm's app has no such Desk"; vraw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$desk\"}}"; vraw '{"id":1,"cmd":"debug.app"}'; return 1; }
+  local there; there="$(raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$desk\"}}")"
+  [[ "$(echo "$there" | field ok)" == False ]] || { echo "machine_two_apps: kanna PATH on vm opened a Desk in this Mac's app: $there"; return 1; }
+  vterm() { KANNA_SOCKET="$vm/kanna.sock" terminal grid.0 "{\"pane\":\"$term\"}"; }
+  mterm() { terminal grid.0 "{\"pane\":\"$term@vm\"}"; }
+  check wait_for 10 eval '[[ "$(mterm 2>/dev/null)" =~ ^[0-9]+$ && "$(vterm 2>/dev/null)" =~ ^[0-9]+$ ]]' || { echo "machine_two_apps: both apps don't show vm's terminal"; return 1; }
+  vraw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$window\",\"size\":[1100,700]}}" >/dev/null
+  raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$window@vm\",\"size\":[600,400]}}" >/dev/null
+
+  vtype() { vraw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"pane\":\"$term\",\"text\":\"$1\"}}" >/dev/null; }
+  mtype() { raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"pane\":\"$term@vm\",\"text\":\"$1\"}}" >/dev/null; }
+  sizes() { [[ "$(vterm) $(mterm)" == "$1 $1" ]]; }
+  vtype 'echo from-vm-app\n'
+  check wait_for 5 eval '[[ "$(vmk read "$term")" == *"from-vm-app"$'"'"'\n'"'"'*"from-vm-app"* ]]' || { echo "machine_two_apps: vm's app didn't type"; vmk read "$term"; return 1; }
+  local wide narrow
+  check wait_for 5 eval '[[ "$(vterm)" == "$(mterm)" ]]' || { echo "machine_two_apps: the apps draw different sizes after vm's app typed: $(vterm) $(mterm)"; return 1; }
+  wide="$(vterm)"
+  mtype 'echo from-mac-app\n'
+  check wait_for 5 eval '[[ "$(vmk read "$term")" == *"from-mac-app"$'"'"'\n'"'"'*"from-mac-app"* ]]' || { echo "machine_two_apps: this Mac's app didn't type"; vmk read "$term"; return 1; }
+  check wait_for 5 eval '[[ "$(mterm)" -lt "$wide" ]]' || { echo "machine_two_apps: the size didn't follow this Mac's app: $(mterm) of $wide"; return 1; }
+  check wait_for 5 eval '[[ "$(vterm)" == "$(mterm)" ]]' || { echo "machine_two_apps: vm's app doesn't draw this Mac's size: $(vterm) $(mterm)"; return 1; }
+  narrow="$(mterm)"
+  mtype 'stty size\n'
+  check wait_for 5 eval '[[ "$(vmk read "$term")" == *" $narrow"$'"'"'\n'"'"'* ]]' || { echo "machine_two_apps: the pty isn't $narrow wide"; vmk read "$term"; return 1; }
+  vraw "{\"id\":1,\"cmd\":\"debug.terminal\",\"args\":{\"pane\":\"$term\",\"scroll\":1}}" >/dev/null
+  check wait_for 5 sizes "$wide" || { echo "machine_two_apps: scrolling in vm's app didn't take the size: $(vterm) $(mterm)"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.terminal\",\"args\":{\"pane\":\"$term@vm\",\"scroll\":1}}" >/dev/null
+  check wait_for 5 sizes "$narrow" || { echo "machine_two_apps: scrolling in this Mac's app didn't take the size: $(vterm) $(mterm)"; return 1; }
+  vtype ':\n'
+  check wait_for 5 sizes "$wide" || { echo "machine_two_apps: typing in vm's app didn't take the size back: $(vterm) $(mterm)"; return 1; }
+
+  stop_pid "$vm_app"
+  check wait_for 5 eval '[[ "$(vraw "{\"id\":1,\"cmd\":\"debug.app\"}" | field error.code)" == no_app ]]' || { echo "machine_two_apps: a request from vm reached this Mac's app"; vraw '{"id":1,"cmd":"debug.app"}'; return 1; }
+  check test "$(machines links.0.attached)" == True || { echo "machine_two_apps: this Mac's link went with vm's app"; return 1; }
+  focused="$(vmk focus "$term" --json | field front)"
+  [[ "$focused" == None ]] || { echo "machine_two_apps: a focus on vm went to this Mac's app: $focused"; return 1; }
+  check wait_for 5 eval '[[ "$(mterm)" == "$narrow" ]]' || { echo "machine_two_apps: this Mac's app didn't get the size when vm's went: $(mterm)"; return 1; }
+  mtype 'echo after-vm-app\n'
+  check wait_for 5 eval '[[ "$(vmk read "$term")" == *"after-vm-app"$'"'"'\n'"'"'*"after-vm-app"* ]]' || { echo "machine_two_apps: this Mac's app stopped typing"; return 1; }
+}
+
 scenario machine_remote_task M4
 machine_remote_task() {
   local vm vm_pid
