@@ -61,14 +61,14 @@ stateDiagram-v2
 - **A plain terminal runs anything,** any version of an agent included, with no status unless what runs there reports. A task's agent in your own config may still be any command (`tasks.agent`); one that isn't an agent has no status, so a Shelf runner can't tell its turn's end.
 - **Opencode was checked by hand** (2.2.5, November 2026): run against the [mock model](../../tools/agent-harness/README.md) in a terminal that answers the probe as Kanna's does, it reported `idle` at its prompt, `working` through each turn, `blocked:kind=permission` at a bash approval and `idle` after it.
 - **Trust prompts aren't reported:** claude 2.1.316 and codex 0.163.0 send no report while they ask whether to trust a folder, so the task shows no status there until you answer.
-- **A Codex background terminal is work:** codex 0.163.0 reports `working` while its turn runs *and* while any background terminal it started is still running (a server, a watcher), so a task whose turn ended with one open stays working, and a Shelf runner doesn't see its turn end, until the terminal exits or you close it (`/stop`, or `/ps` to pick one). Its screen says so: `1 background terminal running · /ps to view · /stop to close`. Claude Code doesn't: its background shells don't keep it working once its turn is over. Kanna takes each at its word.
+- **A Codex background terminal is work:** codex 0.163.0 reports `working` while its turn runs *and* while any background terminal it started is still running (a server, a watcher), so a task whose turn ended with one open stays working, and a Shelf runner doesn't see its turn end, until the terminal exits or you close it (`/stop`, or `/ps` to pick one). Its screen says so: `1 background terminal running · /ps to view · /stop to close`. Claude Code doesn't: its background shells don't keep it working once its turn is over, so the status shows idle. The status takes each at its word; a [Shelf runner](shelf-runners.md#background-work) also looks at claude's process tree before it ends a turn.
 - **Copilot is no longer an agent:** 1.0.98 doesn't send OSC 7501. It runs in a plain terminal like anything else.
 
 ```mermaid
 flowchart LR
     F["an agent becomes the<br/>terminal's foreground program"] --> V{"its --version<br/>new enough?"}
     V -->|yes| R["its reports are its status"]
-    V -->|"no, in a task, planner<br/>or stage terminal"| Q["quit with its keys,<br/>toast why"]
+    V -->|"no, in a task, planner<br/>or stage terminal"| Q["quit it,<br/>toast why"]
     Q --> S["task stopped as too-old;<br/>a run stops"]
     V -->|"no, in a plain terminal"| R
 ```
@@ -105,7 +105,7 @@ flowchart LR
 
 - **In the daemon**, which already keeps every terminal's screen ([app link](app-link.md#3-rules)), so status works with the app closed and `list` reads it directly. `crates/kanna-vt` parses the reports and keeps the records; `crates/kanna-detect` knows the agents, their minimum versions, the foreground program, the [quit files](shelf-runners.md#2-how-its-built) and a turn's end; `crates/kanna-daemon/src/status.rs` turns the root record into each pane's status and says when an agent is too old (`Event::TooOld`), which `Tasks::too_old` and `Runs::too_old` act on.
 - **The app** gets a `status {pane, status}` notice on every change, and one per pane after `app.hello`, and keeps status and unread in its state (`debug.status`).
-- **Tested:** `cargo test -p kanna-vt` (the probe, records, turns), `-p kanna-detect` (the agents and their minimum versions), `-p kanna-daemon` (a refused task is stopped and not run again; a plain terminal isn't refused), `crates/kanna-daemon/tests/status.rs` (reports to status; an agent that doesn't report has none); e2e `agent_status` (the mock agent's reports to dots), `real_agent_program_status` (real claude and codex against the mock model; codex stays working after a turn that leaves a background terminal, and is idle once `/stop` closes it), `agent_too_old` (a mock claude claiming 2.1.290 is refused as a Shelf task with a toast saying why, isn't run again, and runs in a plain terminal).
+- **Tested:** `cargo test -p kanna-vt` (the probe, records, turns), `-p kanna-detect` (the agents and their minimum versions), `-p kanna-daemon` (a refused task is stopped and not run again; a plain terminal isn't refused), `crates/kanna-daemon/tests/status.rs` (reports to status; an agent that doesn't report has none); e2e `agent_status` (the mock agent's reports to dots), `real_agent_program_status` (real claude and codex against the mock model; claude is idle while a shell it started in the background runs, and working within 10s once it ends; codex stays working after a turn that leaves a background terminal, and is idle once `/stop` closes it), `agent_too_old` (a mock claude claiming 2.1.290 is refused as a Shelf task with a toast saying why, isn't run again, and runs in a plain terminal).
 
 ## 6. Glossary
 

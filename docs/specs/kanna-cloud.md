@@ -39,7 +39,7 @@ It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the sam
 - **Trust still comes from the customer's devices.** Cloud can withhold but never forge; adding a machine to theirs takes a signature from one of their own devices and a gesture in the app.
 - **Nothing Kanna runs joins the customer's machines.** A Cloud VM is never in their peer log; their Kanna reaches it through its link to Kanna Cloud, which vouches for it for one task only (§6).
 - **Tenants are isolated by VMs,** Linux and macOS alike, with the network enforced on the host. Host accounts are never the boundary.
-- **Cloud covers only what needs servers:** Cloud tasks, the directory and relays, build Macs, and later the phone away from the LAN, push and an always-on Shelf copy. Everything else is the customer's own machines', and free.
+- **Cloud covers only what needs servers:** Cloud tasks, the directory and relays, build Macs, and later push and an always-on Shelf copy. The phone away from the LAN works through your own relay ([phone link §4](mobile-link.md#4-the-path)). Everything else is the customer's own machines', and free.
 
 ## 2. What a customer gets
 
@@ -176,7 +176,7 @@ sequenceDiagram
 
 - **The directory** holds each account's published peer log (signed by the customer's devices, so it can withhold but not forge), each peer's relay URL and last addresses, and relays the PAKE for machines not on one LAN.
 - **Relays** are `iroh-relay`, as for a relay a customer runs; Kanna's are run for all tenants.
-- **Later, on the directory:** push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
+- **Later, on the directory:** push notifications, and a Kanna relay for a phone whose owner runs none. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
 - **A scheduler** can own every waiting task of a user's VMs and assign them centrally instead of runners asking ([tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **Placement by capability.** Each machine advertises its capabilities (OS, architecture, cores, RAM, Xcode versions, display) in its peer log entry ([identity §3](machine-identity.md#3-the-peer-log)). A task's `needs:` (`needs: xcode`, `needs: linux`) is matched against them, by a runner before it asks or by the scheduler, so a task goes only where it can run. It's Cloud's infrastructure: the app doesn't show capabilities ([links §5](machine-links.md#5-paths-the-machines-tab-and-offline)).
 

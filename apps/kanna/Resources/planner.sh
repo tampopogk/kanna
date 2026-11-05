@@ -1,11 +1,12 @@
 #!/bin/sh
 
-kanna= zsh= repos="$HOME/.kanna-v4/repos"
+kanna= zsh= repos="$HOME/.kanna-v4/repos" mine="$HOME/.kanna-v4/config.json"
 while [ $# -gt 0 ]; do
   case $1 in
     --kanna) kanna=$2; shift 2 ;;
     --zsh) zsh=$2; shift 2 ;;
     --repos) repos=$2; shift 2 ;;
+    --config) mine=$2; shift 2 ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -278,8 +279,6 @@ where() {
   echo
   moved
 }
-
-mine="${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
 
 current() {
   [ -f "$1" ] || return 1

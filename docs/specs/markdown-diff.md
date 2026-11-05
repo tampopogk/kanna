@@ -77,7 +77,7 @@ flowchart LR
 
 | Part | Where |
 |---|---|
-| `--diff`: a bare one resolves to main or master | `crates/kanna/src/commands.rs` |
+| `--diff`: a bare one resolves to main or master | `crates/kanna/src/commands/open.rs` |
 | `diff` in the pane's record, saved in `layout.json` | `crates/kanna-mux/src/pane.rs`, `state.rs`, `core.rs` |
 | The old text, block and word diff | `apps/kanna/Sources/KannaMarkdown/MarkdownDiff.swift` |
 | Rendering both versions into one doc, the marks | `MarkdownRenderer.swift`; the bars in `MarkdownLayoutManager.swift` |

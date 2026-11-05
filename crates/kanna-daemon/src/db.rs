@@ -240,9 +240,25 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     alter table samples add column revision integer not null default 0;
 "), Step::Sql("
     alter table messages add column comment text check (comment is null or json_valid(comment));
+"), Step::Sql("
+    alter table schedules add column paused real;
+    create table schedule_firings (
+        id integer primary key,
+        schedule integer not null references schedules (id) on delete cascade,
+        at real not null,
+        how text not null check (how in ('rule', 'run')),
+        state text not null check (state in ('left', 'skipped', 'failed')),
+        message integer references messages (id),
+        detail text,
+        reply text,
+        replied_at real
+    );
+    create index schedule_firings_by_schedule on schedule_firings (schedule, id);
 ")];
 
 pub const RECENT: usize = 10;
+
+pub const FIRINGS_KEPT: i64 = 20;
 
 pub fn version() -> i64 {
     MIGRATIONS.len() as i64
@@ -383,7 +399,44 @@ pub struct Schedule {
     pub next: f64,
     pub message: Option<i64>,
     pub made_at: f64,
+    pub paused: Option<f64>,
     pub doc: Value,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum How {
+    Rule,
+    Run,
+}
+
+impl How {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            How::Rule => "rule",
+            How::Run => "run",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Left {
+    Message(i64),
+    Skipped,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Firing {
+    pub id: i64,
+    pub schedule: i64,
+    pub at: f64,
+    pub how: String,
+    pub state: String,
+    pub message: Option<i64>,
+    pub delivered: Option<f64>,
+    pub detail: Option<String>,
+    pub reply: Option<String>,
+    pub replied_at: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -892,16 +945,23 @@ impl Db {
 
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
         let mut statement = self.conn.prepare(
-            "select t.id, coalesce(json_extract(t.doc, '$.name'), t.id),
-                    coalesce((select min(at) from task_events where task = t.id and what = 'made'), t.made_at),
-                    (select min(at) from task_events where task = t.id and what = 'started'),
-                    (select min(at) from task_events where task = t.id and what = 'done')
-             from tasks t
-             where t.repo = ?1 and (t.made_at >= ?2 or exists (select 1 from task_events e where e.task = t.id and e.at >= ?2 and e.what in ('made', 'started', 'done')))
-             order by t.made_at, t.id",
+            "select id, name, made, started, done from (
+                 select t.id, coalesce(json_extract(t.doc, '$.name'), t.id) as name, t.made_at,
+                        coalesce((select min(at) from task_events where task = t.id and what = 'made'), t.made_at) as made,
+                        (select min(at) from task_events where task = t.id and what = 'started') as started,
+                        coalesce((select min(at) from task_events where task = t.id and what = 'done'),
+                                 case when t.place = 'done' then coalesce((select max(at) from task_events where task = t.id), t.made_at) end) as done
+                 from tasks t where t.repo = ?1)
+             where made >= ?2 or started >= ?2 or done is null or done >= ?2
+             order by made_at, id",
         )?;
         let rows = statement.query_map(params![repo, since], |r| Ok(Life { task: r.get(0)?, name: r.get(1)?, made: r.get(2)?, started: r.get(3)?, done: r.get(4)? }))?;
         rows.collect()
+    }
+
+    #[cfg(test)]
+    pub fn run(&self, sql: &str) {
+        self.conn.execute_batch(sql).unwrap();
     }
 
     pub fn touch_project(&self, path: &str) -> rusqlite::Result<()> {
@@ -979,9 +1039,9 @@ impl Db {
     }
 
     pub fn schedules(&self) -> rusqlite::Result<Vec<Schedule>> {
-        let mut statement = self.conn.prepare("select id, repo, name, target, rule, prompt, next, message, made_at, doc from schedules order by id")?;
+        let mut statement = self.conn.prepare("select id, repo, name, target, rule, prompt, next, message, made_at, paused, doc from schedules order by id")?;
         let rows = statement.query_map([], |r| {
-            Ok(Schedule { id: r.get(0)?, repo: r.get(1)?, name: r.get(2)?, target: r.get(3)?, rule: r.get(4)?, prompt: r.get(5)?, next: r.get(6)?, message: r.get(7)?, made_at: r.get(8)?, doc: doc_of(r.get(9)?) })
+            Ok(Schedule { id: r.get(0)?, repo: r.get(1)?, name: r.get(2)?, target: r.get(3)?, rule: r.get(4)?, prompt: r.get(5)?, next: r.get(6)?, message: r.get(7)?, made_at: r.get(8)?, paused: r.get(9)?, doc: doc_of(r.get(10)?) })
         })?;
         rows.collect()
     }
@@ -990,9 +1050,46 @@ impl Db {
         Ok(self.conn.execute("delete from schedules where id = ?1", [id])? == 1)
     }
 
-    pub fn schedule_fired(&self, id: i64, next: f64, message: Option<i64>) -> rusqlite::Result<()> {
-        self.conn.execute("update schedules set next = ?2, message = coalesce(?3, message) where id = ?1", params![id, next, message])?;
+    pub fn schedule_fired(&self, id: i64, at: f64, how: How, left: &Left, next: f64) -> rusqlite::Result<()> {
+        let (state, message, detail) = match left {
+            Left::Message(message) => ("left", Some(*message), None),
+            Left::Skipped => ("skipped", None, None),
+            Left::Failed(why) => ("failed", None, Some(why.as_str())),
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("update schedules set next = ?2, message = coalesce(?3, message) where id = ?1", params![id, next, message])?;
+        tx.execute("insert into schedule_firings (schedule, at, how, state, message, detail) values (?1, ?2, ?3, ?4, ?5, ?6)", params![id, at, how.as_str(), state, message, detail])?;
+        tx.execute("delete from schedule_firings where schedule = ?1 and id not in (select id from schedule_firings where schedule = ?1 order by id desc limit ?2)", params![id, FIRINGS_KEPT])?;
+        tx.commit()
+    }
+
+    pub fn schedule_paused(&self, id: i64, paused: Option<f64>) -> rusqlite::Result<()> {
+        self.conn.execute("update schedules set paused = ?2 where id = ?1", params![id, paused])?;
         Ok(())
+    }
+
+    pub fn firings(&self, schedule: i64, limit: i64) -> rusqlite::Result<Vec<Firing>> {
+        let mut statement = self.conn.prepare(
+            "select f.id, f.schedule, f.at, f.how, f.state, f.message, m.delivered, f.detail, f.reply, f.replied_at
+             from schedule_firings f left join messages m on m.id = f.message where f.schedule = ?1 order by f.id desc limit ?2",
+        )?;
+        let rows = statement.query_map(params![schedule, limit], |r| {
+            Ok(Firing { id: r.get(0)?, schedule: r.get(1)?, at: r.get(2)?, how: r.get(3)?, state: r.get(4)?, message: r.get(5)?, delivered: r.get(6)?, detail: r.get(7)?, reply: r.get(8)?, replied_at: r.get(9)? })
+        })?;
+        rows.collect()
+    }
+
+    pub fn firing_reply(&self, firing: i64, text: &str, at: f64) -> rusqlite::Result<()> {
+        self.conn.execute("update schedule_firings set reply = ?2, replied_at = ?3 where id = ?1", params![firing, text, at])?;
+        Ok(())
+    }
+
+    pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn put_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert into meta (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value", [key, value]).map(|_| ())
     }
 
     pub fn seed_once(&self, key: &str, schedule: &Schedule) -> rusqlite::Result<bool> {
@@ -1211,8 +1308,8 @@ pub fn put_row(conn: &Connection, row: &Row, change: Option<&Change>) -> rusqlit
 
 fn insert_schedule(conn: &Connection, schedule: &Schedule) -> rusqlite::Result<i64> {
     conn.execute(
-        "insert into schedules (repo, name, target, rule, prompt, next, message, made_at, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, json_patch('{}', ?9))",
-        params![schedule.repo, schedule.name, schedule.target, schedule.rule, schedule.prompt, schedule.next, schedule.message, schedule.made_at, schedule.doc.to_string()],
+        "insert into schedules (repo, name, target, rule, prompt, next, message, made_at, paused, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, json_patch('{}', ?10))",
+        params![schedule.repo, schedule.name, schedule.target, schedule.rule, schedule.prompt, schedule.next, schedule.message, schedule.made_at, schedule.paused, schedule.doc.to_string()],
     )?;
     Ok(conn.last_insert_rowid())
 }

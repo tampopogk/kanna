@@ -48,7 +48,7 @@ flowchart LR
 | `id` | integer, key | |
 | `task` | text → `tasks.id` | |
 | `at` | real | when |
-| `what` | text | `made`, `started`, `stopped`, `exited`, `picked`, `shelved`, `activated`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
+| `what` | text | `made`, `started`, `waiting` (a Shelf turn's end held by [background work](shelf-runners.md#background-work)), `stopped`, `exited`, `picked`, `shelved`, `activated`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
 | `from_place`, `to_place` | text | where it was and went, for a move |
 | `by` | text | a pane, `user`, or `daemon` |
 | `doc` | JSON | window, exit code, old name, … |
@@ -87,6 +87,8 @@ flowchart LR
 **runs, run_revisions, run_stages, run_events**: the software factory's runs, one row per run, revision, stage visit and event ([software factory §6](software-factory.md#6-how-its-built)).
 
 ## Quiz results
+
+The phone adds `phone_chat` ([chat §5](mobile-chat.md#5-store-and-tests)), `last_words` ([Shelf §3](mobile-shelf.md#3-last-words)), and `quiz_ready`, `quiz_map` and `quiz_notes` ([quiz](mobile-quiz.md)), all planned.
 
 **Built.** Every [quiz](quiz.md) round and answer is kept, so misses can come back in a later round and a round can cover what's new since the last one.
 
@@ -158,7 +160,7 @@ sequenceDiagram
 
 ## Schedules
 
-**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, and a JSON `doc` (who made it). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
+**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, `paused` (migration 22), and a JSON `doc` (who made it). `schedule_firings` (migration 22) logs each firing ([Schedules tab](schedules-tab.md#7-how-its-built)). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
 
 ## Planners
 

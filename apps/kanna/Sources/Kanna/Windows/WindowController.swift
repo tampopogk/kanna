@@ -19,8 +19,11 @@ final class WindowController: NSObject, NSWindowDelegate {
     let deskView = DeskView()
     let machinesPage = MachinesPage()
     let statsPage = StatsPage()
-    static let pages = ["Desk", "Machines", "Stats"]
+    let schedulesPage = SchedulesPage()
+    static let pages = ["Desk", "Machines", "Stats", "Schedules"]
     var stats: StatsReport?
+    var schedules: [ScheduleRow]?
+    var schedulesRepo: String?
     var page: String?
     var machines: [MachineRow] = []
     var stale: String?
@@ -83,12 +86,14 @@ final class WindowController: NSObject, NSWindowDelegate {
         content.addSubview(deskView)
         content.addSubview(machinesPage)
         content.addSubview(statsPage)
+        content.addSubview(schedulesPage)
         content.addSubview(deskStage)
         deskStage.isHidden = true
         deskStrip.isHidden = true
         deskView.isHidden = true
         machinesPage.isHidden = true
         statsPage.isHidden = true
+        schedulesPage.isHidden = true
         window.contentView = content
         if let previous {
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: previous.frame.minX, y: previous.frame.maxY)))
@@ -206,6 +211,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         }
         machinesPage.isHidden = pageShown != Self.pages[1]
         statsPage.isHidden = pageShown != Self.pages[2]
+        schedulesPage.isHidden = pageShown != Self.pages[3]
         if deskStrip.isHidden == (desk && !taskless) { deskStrip.isHidden = !desk || taskless }
         if taskless {
         } else if desk {
@@ -247,6 +253,9 @@ final class WindowController: NSObject, NSWindowDelegate {
         } else if pageShown == Self.pages[2] {
             statsPage.frame = below
             statsPage.show(stats, project: project)
+        } else if pageShown == Self.pages[3] {
+            schedulesPage.frame = below
+            schedulesPage.show(schedules, here: schedulesRepo)
         }
         stage.isHidden = side.isEmpty || pageShown != nil
         stage.frame = below
