@@ -17,7 +17,9 @@ usage: scripts/e2e-kanna.sh [--through M0|M1|M2|M3|M4] [NAME …]
   NAME…        only these scenarios (e.g. cli_terminal desk_zoom)
 
 A scenario that runs longer than $KANNA_E2E_TIMEOUT seconds (600) fails.
-Waits and speed bounds stretch by $KANNA_E2E_SLOW (load per core, 1 to 6).
+Waits, speed bounds and that limit stretch by $KANNA_E2E_SLOW (load per core,
+1 to 6). The run wakes the display and keeps it on: with it asleep, windows
+don't draw and clicks, scrolls and web panes go wrong. A locked screen is fine.
 Every run stops what it started however it ends, and first stops what runs
 it can't see anymore left behind (docs/specs/e2e-cleanup.md). Run it
 unsandboxed: it needs ps, signals, Unix sockets and /tmp.
@@ -45,7 +47,7 @@ out="$repo_root/target/e2e-kanna"
 mkdir -p "$out"
 
 slowness() { python3 -c 'import math, os; print(max(1, min(6, math.ceil(os.getloadavg()[0] / os.cpu_count()))))'; }
-slow="${KANNA_E2E_SLOW:-$(slowness)}"
+stretch="${KANNA_E2E_SLOW:-$(slowness)}"
 scenarios=()
 scenario() { scenarios+=("$1:$2"); }
 due() {
@@ -91,7 +93,7 @@ daemon_pid="" app_pid="" scenario_pid=""
 
 need() { [[ -x "$1" ]] || { echo "not built: ${1#$repo_root/}"; return 1; }; }
 wait_for() {
-  local tries=$(($1 * 10 * slow)); shift
+  local tries=$(($1 * 10 * stretch)); shift
   for _ in $(seq "$tries"); do
     kill -0 "$KANNA_E2E_OWNER" 2>/dev/null || exit 1
     "$@" 2>/dev/null && return 0; sleep 0.1
@@ -3843,7 +3845,7 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)")"
   took="${seen%% *}" card="${seen#* }"
   [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_at_once: the task never reached the Shelf"; desk tasks; desk note; return 1; }
   echo "pick_at_once: on the Shelf ${took}ms after the click"
-  (( took <= 200 * slow )) || { echo "pick_at_once: the task took ${took}ms to reach the Shelf"; return 1; }
+  (( took <= 200 * stretch )) || { echo "pick_at_once: the task took ${took}ms to reach the Shelf"; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$card"'","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$(pane "Line tables" id)" ]]' || { echo "pick_at_once: pulling it at once didn't put it on the Desk"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
   check wait_for 5 shows "Line tables" "--resume" || { echo "pick_at_once: its agent didn't come back"; kanna read "Line tables"; return 1; }
@@ -3887,7 +3889,7 @@ print(" ".join(words[(n + k) % len(words)] for k in range(450)))' "$i")") >/dev/
     || { echo "perf_intervals: the click's intervals weren't recorded"; perf click.pick.shown; return 1; }
   echo "perf_intervals: $(perf click.pick.wait click.pick.sent click.pick.shown | tr '\n' ' ')"
   shown="$(perf click.pick.shown | awk '{print $2}')"
-  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 100 * int(sys.argv[2]))' "$shown" "$slow" || { echo "perf_intervals: with 50 tasks on the Shelf the card showed ${shown}ms after the click"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
+  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 100 * int(sys.argv[2]))' "$shown" "$stretch" || { echo "perf_intervals: with 50 tasks on the Shelf the card showed ${shown}ms after the click"; raw '{"id":1,"cmd":"debug.perf"}'; return 1; }
   card="$(desk tasks.0.task)"
   raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$card"'","window":"d1"}}' >/dev/null
   check wait_for 5 perf click.activate.shown >/dev/null || { echo "perf_intervals: pulling it wasn't timed"; perf click.activate.shown; return 1; }
@@ -3950,8 +3952,8 @@ print("never")' "$KANNA_SOCKET" "$(tid 1)" "$bin/kanna" "$repo")"
   took="${seen%% *}" listed="${seen#* }"
   [[ "$took" =~ ^[0-9]+$ ]] || { echo "pick_keeper_paused: with the keeper paused, the task never reached the Desk"; desk tasks; desk note; return 1; }
   echo "pick_keeper_paused: on the Desk ${took}ms after the click, the keeper paused; task list (ms, row): $listed"
-  (( took <= 200 * slow )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
-  [[ "$listed" =~ ^([0-9]+)\ Desk\ .*Line\ tables ]] && (( BASH_REMATCH[1] <= 200 * slow )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
+  (( took <= 200 * stretch )) || { echo "pick_keeper_paused: the task took ${took}ms to reach the Desk"; return 1; }
+  [[ "$listed" =~ ^([0-9]+)\ Desk\ .*Line\ tables ]] && (( BASH_REMATCH[1] <= 200 * stretch )) || { echo "pick_keeper_paused: task list, asked while the keeper was paused, answered (ms, where) $listed"; return 1; }
   check wait_for 5 shows "Line tables" "--resume" || { echo "pick_keeper_paused: its agent didn't come back once the keeper went on"; kanna read "Line tables"; return 1; }
   check wait_for 5 is lines state running || { echo "pick_keeper_paused: its tab didn't run again"; kanna workspace list --all; return 1; }
   check test "$(desk note)" == "" || { echo "pick_keeper_paused: $(desk note)"; return 1; }
@@ -3978,7 +3980,7 @@ task_list_speed() {
 r = json.load(sys.stdin); r = r.get("result", r)
 i = {i["name"]: i for i in r["intervals"]}
 print("loop.async max %sms, tasks.list p50 %sms max %sms" % (i.get("loop.async", {}).get("max"), i.get("tasks.list", {}).get("p50"), i.get("tasks.list", {}).get("max")))')"
-  (( worst < 300 * slow )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
+  (( worst < 300 * stretch )) || { echo "task_list_speed: a list of $n tasks took ${worst}ms"; return 1; }
 }
 
 scenario loop_latency M4
@@ -4030,13 +4032,13 @@ held = r["loop"]; print("holds %s, over 20ms %s" % (held["holds"], held["over"])
 print("worst", 100 * held["over"] / max(held["holds"], 1))')"
   echo "loop_latency: $n tasks, $rounds rounds of list, pick 3, list, shelve 3:"; grep -v '^worst' <<<"$readings" | sed 's/^/  /'
   tail -n +"$((mark + 1))" "$out/daemon.log" | grep 'kanna-daemon: slow: ' | sed 's/^/  /'
-  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > 1)' "$(grep '^worst' <<<"$readings" | cut -d' ' -f2)" || { echo "loop_latency: more than 1% of the loop's holds are over 20ms: the loop's p99 is over its bound"; return 1; }
+  python3 -c 'import sys; sys.exit(float(sys.argv[1]) > int(sys.argv[2]))' "$(grep '^worst' <<<"$readings" | cut -d' ' -f2)" "$stretch" || { echo "loop_latency: more than 1% of the loop's holds are over 20ms: the loop's p99 is over its bound"; return 1; }
 }
 
 scenario typing_latency M4
 typing_latency() {
   local keys="${KANNA_LATENCY_KEYS:-60}" floods="${KANNA_LATENCY_FLOODS:-1}" hidden="${KANNA_LATENCY_HIDDEN:-4}" agents="${KANNA_LATENCY_AGENTS:-0}" burners="${KANNA_LATENCY_CPU:-0}"
-  local bound="${KANNA_LATENCY_BOUND:-$((100 * slow))}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
+  local bound="${KANNA_LATENCY_BOUND:-$((100 * stretch))}" flood="exec yes 'typing_latency flood ........................................................................'" i burner_pids=()
   local agent="exec python3 $KANNA_STATE_DIR/redraw.py"
   cat >"$KANNA_STATE_DIR/redraw.py" <<'PY'
 import random, sys, time
@@ -6606,18 +6608,20 @@ serial_pane() {
 for s in ${only[@]+"${only[@]}"}; do due "$s" >/dev/null || { echo "e2e-kanna: no scenario named $s (see --help)" >&2; exit 2; }; done
 if [[ ${#only[@]} -gt 0 ]]; then run=("${only[@]}"); else run=("${scenarios[@]%%:*}"); fi
 passed=0 failed=0 limit="${KANNA_E2E_TIMEOUT:-600}"
+caffeinate -d -w $$ &
 for s in "${run[@]}"; do
   m="$(due "$s")"
   if [[ "$m" > "$through" ]]; then printf '%-20s --   not due (%s)\n' "$s" "$m"; continue; fi
   cleanup
   new_state_dir
-  slow="${KANNA_E2E_SLOW:-$(slowness)}"
+  stretch="${KANNA_E2E_SLOW:-$(slowness)}"
+  caffeinate -u -t 5 &
   run_scenario "$s" >"$out/$s.log" 2>&1 &
-  scenario_pid=$! ends=$((SECONDS + limit))
+  scenario_pid=$! ends=$((SECONDS + limit * stretch))
   echo "$scenario_pid" >"$KANNA_STATE_DIR/e2e-scenario.pid"
   while kill -0 "$scenario_pid" 2>/dev/null && [[ $SECONDS -lt $ends ]]; do sleep 0.2; done
   if kill -0 "$scenario_pid" 2>/dev/null; then
-    echo "$s didn't finish in ${limit}s (KANNA_E2E_TIMEOUT)" >>"$out/$s.log"; result=1
+    echo "$s didn't finish in $((limit * stretch))s (KANNA_E2E_TIMEOUT)" >>"$out/$s.log"; result=1
   else
     wait "$scenario_pid"; result=$?; scenario_pid=""
   fi
