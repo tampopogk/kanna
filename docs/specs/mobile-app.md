@@ -1,6 +1,6 @@
 # Kanna on the Phone
 
-**Status:** planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
+**Status:** slice 1 built, the rest planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
 
 A native SwiftUI iPhone app that lets you steer a repo from your pocket by talking to its planning agent. You chat with **the repo's planner, one repo at a time**, and it answers through the `kanna` CLI, so there is one agent and never a second cook in the kitchen. You see only what it chooses to tell you: no tool calls, no terminal, no noise.
 
@@ -154,6 +154,18 @@ Each slice is one task, is usable alone, and leaves `main` releasable. Each goes
 | A | **Away from the LAN** | The relay, its token, `NWPathMonitor`, the queue's day limit | Everything already built works from a café and from cellular, and the chip tells the truth | 1, and [Relay: run ours on the e2-micro](remote-terminals.md#3-your-relay) |
 
 Slice A can land any time after slice 1; the rest go in order.
+
+**Building the app:**
+
+```sh
+scripts/build-ios-ffi.sh
+cd apps/kanna-ios && xcodegen generate
+xcodebuild test -project Kanna.xcodeproj -scheme Kanna -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
+- **`FlowTests`** run the prototype's flows against `FixtureBackend`, with `-fixture YES`.
+- **`DeviceTests`** run on a real iPhone against a real daemon, and skip without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`. The answer must be words the question doesn't contain, or the test finds its own bubble.
+- **`Store`** holds what the views read, over a `Backend`: `LiveBackend` on the Rust library, `FixtureBackend` for tests. SwiftData keeps the chat and the queue.
 
 **Where the code goes:**
 

@@ -1,6 +1,6 @@
 # Phone: Link and Pairing
 
-**Status:** planned · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
+**Status:** LAN built ([slice 1](mobile-app.md#9-build-order)); the relay and more than one machine aren't · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
 
 How a phone becomes yours and reaches your machines. It pairs once, with any one machine, and from then on can reach any of them, though it holds one link at a time, to the current repo's planner machine: on the LAN directly, away through your relay, moving to a direct path when one opens. This holds no account and needs no server of Kanna's, as for [your machines](machines.md#1-rules).
 
@@ -57,6 +57,7 @@ sequenceDiagram
 - **Who opens the stream** is now separate from who speaks first: with `joining`, the dialer is B. The code is 128 random bits, since nobody types it.
 - **`kanna phone pair`** shows the same QR in a terminal, for a Linux machine you're logged in to. Adding still takes a gesture in a Kanna.app, so a machine with no app refuses (`gesture_required`).
 - **The gesture stays on the Mac.** The phone waits on *Confirm on the Mac*.
+- **Pair with another machine,** at the foot of the repo sheet, forgets this machine, its chat and the key, and goes back to pairing. Revoking from the Mac does the same to a phone when it next dials.
 - **One log per install:** dev, staging and production Kannas are separate logs, so the phone app has a build per channel ([build channels](build-channels.md)).
 
 Mockup of the Mac's side: `#pair-mac` in [`mobile.html`](../../references/mockups/mobile.html).

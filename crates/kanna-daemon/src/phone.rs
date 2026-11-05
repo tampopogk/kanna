@@ -89,7 +89,6 @@ struct Watch {
     worked: bool,
     since: f64,
     idle: Option<f64>,
-    windowless: bool,
 }
 
 pub struct Phone {
@@ -271,7 +270,6 @@ impl Phone {
                 let mut watches = self.watches.borrow_mut();
                 let watch = watches.entry(path.to_string()).or_default();
                 watch.starting = Some(now());
-                watch.windowless = true;
                 drop(watches);
                 let _ = self.put(path, "sys", None, None, json!({ "text": format!("No planner was running for {label}, so one is starting on {machine}") }));
             }
@@ -369,8 +367,7 @@ impl Phone {
             if state.is_some() {
                 watch.starting = None;
             }
-            if let Some(at) = watch.starting.filter(|at| time - at > START_LIMIT) {
-                let _ = at;
+            if watch.starting.is_some_and(|at| time - at > START_LIMIT) {
                 watch.starting = None;
                 sys = Some(format!("The planner couldn't start on {}; open the repo there once", self.machine()));
             }
@@ -398,7 +395,7 @@ impl Phone {
                 }
             }
             match state.as_deref() {
-                Some("idle") if watch.windowless => {
+                Some("idle") if self.tasks.windowless_pane(path).is_some() => {
                     let since = *watch.idle.get_or_insert(time);
                     if time - since > IDLE_LIMIT {
                         quit = pane.clone();

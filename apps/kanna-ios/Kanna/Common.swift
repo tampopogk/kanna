@@ -463,6 +463,11 @@ struct RepoSheet: View {
                     .buttonStyle(.plain)
             }
             Spacer(minLength: 0)
+            Button("Pair with another machine") { store.showRepos = false; store.forgetPairing() }
+                .font(.system(size: 15))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .accessibilityIdentifier("pair-again")
         }
         .presentationDetents([.height(372)])
         .presentationDragIndicator(.visible)

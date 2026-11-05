@@ -47,6 +47,7 @@ final class Links: TerminalLink {
     private var dials: [String: Dial] = [:]
     private(set) var ports: [String: [Int: Int]] = [:]
     private(set) var peers: [JSON] = []
+    private(set) var phones: [JSON] = []
     private(set) var name: String?
     var configure: ((DaemonLink) -> Void)?
     var onPeers: (() -> Void)?
@@ -120,6 +121,7 @@ final class Links: TerminalLink {
         guard status["ok"]?.bool == true else { return }
         name = status["name"]?.string
         peers = (status["peers"]?.array ?? []).filter { $0["me"]?.bool != true }
+        phones = status["phones"]?.array ?? []
         if status["relay_token"]?.bool == true {
             local.request("machine.relay_token", [:]) { [weak self] reply in
                 guard let self, reply["ok"]?.bool == true, let token = reply["token"], token != relayToken else { return }

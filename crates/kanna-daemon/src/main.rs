@@ -328,6 +328,13 @@ fn run() -> Result<(), String> {
         let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
         workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
     }));
+    let planners = Rc::downgrade(&layout);
+    *tasks.windowless.borrow_mut() = Some(Box::new(move || {
+        let Some(layout) = planners.upgrade() else { return vec![] };
+        let view = layout.view();
+        let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
+        workspaces.iter().filter(|w| w["where"]["planner"] == tasks::WINDOWLESS).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+    }));
     let programs = Rc::downgrade(&detector);
     *tasks.channel.borrow_mut() = Some(Box::new(move |pane| {
         let detector = programs.upgrade()?;

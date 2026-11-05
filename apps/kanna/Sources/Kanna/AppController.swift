@@ -634,6 +634,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
             controller.machines = rows
+            controller.phones = phoneNames
             controller.stale = staleText(docked ?? lead)
             controller.headerTip = (docked ?? lead).map(placeText)
             controller.render(window, panes)
@@ -665,6 +666,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let frame = NSRect(x: x, y: y, width: w, height: h)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { controller.window.setFrame(frame, display: false) }
         }
+        controller.machinesPage.pair = { [weak self, weak controller] in self?.pairPhone(over: controller?.window) }
+        controller.machinesPage.revoke = { [weak self, weak controller] name in self?.revokePhone(name, over: controller?.window) }
         controller.onFrameChange = { [weak self] in
             self?.recordFrame(id)
         }

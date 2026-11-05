@@ -1,4 +1,4 @@
-use super::{caller, file_lines, git_line, repo_here, usage, Command, Flow};
+use super::{caller, file_lines, git_line, repo_here, usage, Call, Command, Flow};
 use crate::args::Argv;
 use crate::target::Session;
 use kanna_client::Failure;
@@ -28,8 +28,22 @@ pub const COMMAND: Command = Command {
     ],
     parse,
     show,
-    flow: Flow { online: Some(online), ..Flow::PLAIN },
+    flow: Flow { online: Some(online), before: Some(before), ..Flow::PLAIN },
 };
+
+fn before(request: &mut Value, _: &mut Session) -> Result<Call, Failure> {
+    if request["action"] == "show" {
+        let (repo, file, line, commit) = (request["repo"].as_str().unwrap_or_default().to_string(), request["file"].as_str().unwrap_or_default().to_string(), request["line"].as_u64().unwrap_or(1), request["commit"].as_str().unwrap_or("main").to_string());
+        let end = request["end"].as_u64().unwrap_or(line);
+        let full = git_line(&repo, &["rev-parse", "--verify", &format!("{commit}^{{commit}}")]).ok_or_else(|| usage("phone", &format!("no commit {commit}")))?;
+        request["lines"] = json!(lines_of(&repo, &file, &full, line, end)?);
+        request["commit"] = json!(full);
+        if let Some(fields) = request.as_object_mut() {
+            fields.remove("end");
+        }
+    }
+    Ok(Call::default())
+}
 
 fn online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
     (request["action"] == "offer").then(|| pair(mux, json_output))
@@ -110,13 +124,10 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
             if end < line || end - line >= MAX_LINES {
                 return Err(usage("phone", &format!("a code card holds 1 to {MAX_LINES} lines")));
             }
-            let commit = commit.unwrap_or_else(|| "main".into());
-            let full = git_line(&repo, &["rev-parse", "--verify", &format!("{commit}^{{commit}}")]).ok_or_else(|| usage("phone", &format!("no commit {commit}")))?;
-            let file = crate::commands::quiz::in_repo(&file);
-            out["lines"] = json!(lines_of(&repo, &file, &full, line, end)?);
-            out["file"] = json!(file);
+            out["commit"] = json!(commit.unwrap_or_else(|| "main".into()));
+            out["file"] = json!(crate::commands::quiz::in_repo(&file));
             out["line"] = json!(line);
-            out["commit"] = json!(full);
+            out["end"] = json!(end);
             if let Some(hot) = hot {
                 let (first, last) = range(&hot).ok_or_else(|| usage("phone", "--hot takes N-M"))?;
                 out["hot"] = json!([first, last]);

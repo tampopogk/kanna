@@ -27,7 +27,6 @@ final class Store {
     var showChipPop = false
     var wrapByDefault = true
     var fullLine: Int?
-    var fullCode: FullCode?
     var plannerPath = LinkPath.off
     var noNetwork = false
     var roundTrip = 0
@@ -292,7 +291,7 @@ final class Store {
         let hot = marked.count == 2 && marked[0] <= marked[1] ? marked[0]...marked[1] : 0...0
         var offset = 0
         var coded: [CodeLine] = []
-        let spans = backendSpans(file, lines.joined(separator: "\n"))
+        let spans = backend.highlight(file: file, text: lines.joined(separator: "\n"))
         for (index, text) in lines.enumerated() {
             let length = text.utf8.count
             let inside = spans.filter { $0.start < offset + length && $0.end > offset }.map { TextSpan(start: max($0.start, offset) - offset, end: min($0.end, offset + length) - offset, capture: $0.capture) }
@@ -302,10 +301,6 @@ final class Store {
         let made = Snippet(id: key, file: file, lines: coded, commit: String((item.doc.commit ?? "").prefix(7)))
         snippets[key] = made
         return made
-    }
-
-    private func backendSpans(_ file: String, _ text: String) -> [TextSpan] {
-        backend.highlight(file: file, text: text)
     }
 
     func selectRepo(_ id: String) {
