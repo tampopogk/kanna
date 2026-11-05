@@ -103,7 +103,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 | `debug.drag {pane, to}`, `{tab, to}`, `{divider: pane, at}` | kmux's: a drag replayed along scripted points, with no hint shown; `to` is `{pane, x, y}` (fractions from the top left), `{tab}`, `{plus: window}` or `{outside: true}`; `divider` is the divider after that pane, moved to `at` of the pair |
 | `debug.menu` | every menu item: `{menu, item, shortcut}` |
 | `debug.view` | the view the app draws: the daemon's `layout` with the app's physical state laid over it ([2](#2-what-the-app-keeps)) |
-| `debug.pinch {pane, steps?}` | a trackpad pinch over a markdown or web pane; the zoom after each step, and a markdown pane's top line and laid-out width |
+| `debug.pinch {pane, steps?, at?, drift?}` | a trackpad pinch over a markdown or web pane, at the middle or `at`, the fingers moving by `drift` each event; the zoom after each step, a markdown pane's top line and laid-out width, and a web pane's position |
 | `debug.drop {pane, files \| image \| text}` | a drop on a terminal: file paths, a PNG or TIFF file's data, or text, as a drag would bring them |
 | `debug.stats` | the app's pid and memory footprint |
 | `debug.app {keyview: true}` | from then on, each new window that still has no first responder after the run-loop pass that made it gets its first key view, as AppKit does when an active app's window becomes key (`--bg` apps are never active) |
