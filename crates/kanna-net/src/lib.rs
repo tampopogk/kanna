@@ -5,7 +5,7 @@ pub mod pair;
 pub mod protocol;
 
 pub use iroh::SecretKey;
-pub use client::Client;
+pub use client::{Client, LineRecv, LineSend};
 pub use node::{Config, Failure, Host, Node, DEFAULT_PORT, PEER};
 
 use serde_json::{Map, Value};
