@@ -95,7 +95,7 @@ Derived from kmux:
       DividerView in apps/kmux/Sources/Kmux/Dragging.swift. The docked
       pane follows apps/kmux/Sources/KmuxCore (Model.swift, Core.swift,
       Core+Layout.swift, State.swift) at a759abd.
-  crates/kanna/src/commands.rs, crates/kanna/src/output.rs and
+  crates/kanna/src/commands/, crates/kanna/src/output.rs and
   crates/kanna/src/lib.rs
       A port of kmux's CLI, crates/kmux/src/commands.rs, output.rs and
       main.rs (the command table, parsing, help, `commands --json`,
