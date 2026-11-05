@@ -397,6 +397,7 @@ pub struct Panes {
     order: Vec<String>,
     counter: usize,
     terminals: usize,
+    ptys: usize,
     content: bool,
     numbers: HashMap<&'static str, usize>,
 }
@@ -427,6 +428,11 @@ pub fn terminal_number(id: &str) -> Option<usize> {
     (n > 0 && n < 1_000_000_000 && format!("term-{n}") == id).then_some(n)
 }
 
+pub fn pty_number(id: &str) -> Option<usize> {
+    let n: usize = id.strip_prefix("pty-")?.parse().ok()?;
+    (n > 0 && n < 1_000_000_000 && format!("pty-{n}") == id).then_some(n)
+}
+
 impl Panes {
     pub fn get(&self, id: &str) -> Option<&Pane> {
         self.panes.get(id)
@@ -437,7 +443,7 @@ impl Panes {
     }
 
     pub fn pane(&self, reference: &str) -> Option<&Pane> {
-        self.panes.get(reference).or_else(|| self.iter().find(|p| p.name.as_deref() == Some(reference) || p.terminal.as_deref() == Some(reference)))
+        self.panes.get(reference).or_else(|| self.iter().find(|p| p.name.as_deref() == Some(reference)))
     }
 
     pub fn need(&self, reference: Option<&str>) -> Result<&Pane, KmuxError> {
@@ -503,19 +509,18 @@ impl Panes {
         self.terminals
     }
 
+    pub fn ptys(&self) -> usize {
+        self.ptys
+    }
+
     pub fn numbers(&self) -> HashMap<String, usize> {
         self.numbers.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
     pub fn new_terminal(&mut self, id: &str) -> Option<String> {
-        let content = self.content;
         let pane = self.panes.get_mut(id).filter(|p| p.kind == PaneType::Term)?;
-        if content && pane.terminal.is_none() {
-            pane.terminal = Some(id.into());
-            return Some(id.into());
-        }
-        self.terminals += 1;
-        let terminal = format!("term-{}", self.terminals);
+        self.ptys += 1;
+        let terminal = format!("pty-{}", self.ptys);
         pane.terminal = Some(terminal.clone());
         Some(terminal)
     }
@@ -529,7 +534,7 @@ impl Panes {
         }
     }
 
-    pub fn install(&mut self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+    pub fn install(&mut self, panes: Vec<Pane>, counter: usize, terminals: usize, ptys: usize) {
         for (prefix, n) in panes.iter().filter_map(|p| content_number(&p.id)) {
             match prefix {
                 "term" => self.terminals = self.terminals.max(n),
@@ -540,10 +545,12 @@ impl Panes {
             }
         }
         let used = panes.iter().filter_map(|p| p.terminal.as_deref().and_then(terminal_number)).max().unwrap_or(0);
+        let running = panes.iter().filter_map(|p| p.terminal.as_deref().and_then(pty_number)).max().unwrap_or(0);
         self.order = panes.iter().map(|p| p.id.clone()).collect();
         self.panes = panes.into_iter().map(|p| (p.id.clone(), p)).collect();
         self.counter = self.counter.max(counter);
         self.terminals = self.terminals.max(terminals).max(used);
+        self.ptys = self.ptys.max(ptys).max(running);
     }
 }
 
@@ -556,11 +563,11 @@ mod run_tests {
         let mut panes = Panes::default();
         panes.use_content_ids();
         let id = panes.make(PaneType::Term, None).id.clone();
-        assert_eq!(panes.new_terminal(&id).as_deref(), Some("term-1"), "its first run has its ID");
-        assert_eq!(panes.new_terminal(&id).as_deref(), Some("term-2"));
-        assert_eq!((panes.get(&id).unwrap().id.as_str(), panes.get(&id).unwrap().terminal.as_deref()), ("term-1", Some("term-2")));
-        assert_eq!(panes.pane("term-2").map(|p| p.id.as_str()), Some("term-1"), "a run finds its pane");
-        assert_eq!(panes.make(PaneType::Term, None).id, "term-3", "no later pane takes a run's ID");
+        assert_eq!(panes.new_terminal(&id).as_deref(), Some("pty-1"));
+        assert_eq!(panes.new_terminal(&id).as_deref(), Some("pty-2"));
+        assert_eq!((panes.get(&id).unwrap().id.as_str(), panes.get(&id).unwrap().terminal.as_deref()), ("term-1", Some("pty-2")));
+        assert!(panes.pane("pty-2").is_none(), "a pty is no way to name a pane");
+        assert_eq!(panes.make(PaneType::Term, None).id, "term-2", "panes count on their own");
     }
 }
 

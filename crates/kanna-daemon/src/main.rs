@@ -493,7 +493,7 @@ fn run() -> Result<(), String> {
         );
     }
     core.note_numbers(&layout.content_numbers());
-    core.install_panes(layout.saved_panes(), 0, 0);
+    core.install_panes(layout.saved_panes(), 0, 0, 0);
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     tasks.repair_comment_targets();

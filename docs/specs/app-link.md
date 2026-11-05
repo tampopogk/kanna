@@ -28,14 +28,14 @@ sequenceDiagram
     A->>D: app.hello
     D->>A: ok, panes term-1 term-2, the layout
     Note over A: draw the layout's windows
-    A->>D: attach term-1
-    D->>A: snapshot term-1 (the screen, GHOSTSNP)
-    D->>A: grid term-1 80×24
-    A->>D: resize term-1 to fit the view
-    D->>A: grid term-1 (the size it now has)
+    A->>D: attach pty-1
+    D->>A: snapshot pty-1 (the screen, GHOSTSNP)
+    D->>A: grid pty-1 80×24
+    A->>D: resize pty-1 to fit the view
+    D->>A: grid pty-1 (the size it now has)
     Note over A,D: from now on, both ways
-    A->>D: input term-1 (keystrokes)
-    D->>A: output term-1 (what the program wrote)
+    A->>D: input pty-1 (keystrokes)
+    D->>A: output pty-1 (what the program wrote)
     C->>D: open --split right
     D->>C: ok, term-3 in win-1
     D->>A: layout (win-1 now splits term-1 | term-3)
@@ -52,7 +52,7 @@ sequenceDiagram
 | `app.hello {pid, build, protocol, commit, client, relaunch, keepsSocket}` | app | I'm the app, of this build (and, on this Mac, I keep the socket); the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout, and the listener when this Mac's app keeps the socket and is accepted or refused for another build ([daemon socket](daemon-socket.md)); over the network `build` and `relaunch` are left out ([links §2](machine-links.md#2-the-hello)); `relaunch {path, args, env}` is how to start this app again after a crash ([crashes](crashes.md#3-detect-and-relaunch)) |
 | `app.goodbye` | app | I'm quitting on purpose; sent and written before the link closes, so an app gone without it crashed or was killed ([crashes](crashes.md#3-detect-and-relaunch)) |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
-| `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
+| `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its pty ID (`pty-52`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
 | `grid {terminal, cols, rows}` | daemon | the terminal's size, after a snapshot or a resize |
 | `output {terminal, data}` | daemon | bytes the program wrote since the snapshot, at most 64 KiB, and the terminal's next waits for the app's `taken` ([input latency](input-latency.md)) |

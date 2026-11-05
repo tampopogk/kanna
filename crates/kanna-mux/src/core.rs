@@ -590,7 +590,7 @@ impl CoreHandle {
         self.state().panes.note_numbers(numbers);
     }
 
-    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize, ptys: usize) {
         {
             let mut s = self.state();
             let mut all: Vec<Pane> = s.panes.iter().cloned().collect();
@@ -598,7 +598,7 @@ impl CoreHandle {
                 known.tour = panes.iter().find(|p| p.id == known.id).and_then(|p| p.tour.clone());
             }
             all.extend(panes.into_iter().filter(|p| s.panes.get(&p.id).is_none()));
-            s.panes.install(all, counter, terminals);
+            s.panes.install(all, counter, terminals, ptys);
         }
         self.changed();
     }
@@ -1607,7 +1607,7 @@ impl CoreHandle {
             let mut s = self.state();
             let restored: Vec<Pane> = panes.into_iter().filter(|p| placed.contains(p.id.as_str())).collect();
             let ids = restored.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0));
+            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0), 0);
             s.panes.note_numbers(&numbers);
             ids
         };

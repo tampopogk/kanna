@@ -5,7 +5,7 @@ use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
 use kanna_mux::json::{json, Map, Value};
-use kanna_mux::{terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
+use kanna_mux::{pty_number, terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kanna_vt::{Key, KeyError};
@@ -420,6 +420,7 @@ impl Terminals {
         Some(core.with_panes(|panes| Saved {
             counter: panes.counter(),
             terminals: panes.terminals(),
+            ptys: panes.ptys(),
             records: panes
                 .iter()
                 .filter(|pane| pane.kind == PaneType::Term)
@@ -488,10 +489,11 @@ impl Terminals {
 
     pub fn restore(&self, adopted: Vec<Adopted>) -> Restored {
         let saved = self.store.load();
-        let (mut counter, mut terminals) = (saved.counter, saved.terminals);
+        let (mut counter, mut terminals, mut numbered) = (saved.counter, saved.terminals, saved.ptys);
         for id in saved.records.iter().flat_map(|r| [&r.id, &r.pane, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
             counter = counter.max(pane_number(id).unwrap_or(0));
             terminals = terminals.max(terminal_number(id).unwrap_or(0));
+            numbered = numbered.max(pty_number(id).unwrap_or(0));
         }
         let mut ptys: HashMap<String, Adopted> = adopted.into_iter().map(|pty| (pty.id.clone(), pty)).collect();
         let mut restored = Restored::default();
@@ -532,16 +534,24 @@ impl Terminals {
             }
         }
         let mut unknown: Vec<Adopted> = ptys.into_values().collect();
-        unknown.sort_by_key(|pty| (terminal_number(&pty.id).or(pane_number(&pty.id)).unwrap_or(usize::MAX), pty.id.clone()));
+        unknown.sort_by_key(|pty| (terminal_number(&pty.id).or(pty_number(&pty.id)).or(pane_number(&pty.id)).unwrap_or(usize::MAX), pty.id.clone()));
         for pty in unknown {
-            let id = match terminal_number(&pty.id) {
-                Some(_) if !self.live.borrow().contains_key(&pty.id) => pty.id.clone(),
+            let free = !self.live.borrow().contains_key(&pty.id);
+            let id = match (terminal_number(&pty.id), pty_number(&pty.id)) {
+                (Some(_), _) | (_, Some(_)) if free => pty.id.clone(),
                 _ => {
+                    numbered += 1;
+                    format!("pty-{numbered}")
+                }
+            };
+            let pane_id = match terminal_number(&id) {
+                Some(_) => id.clone(),
+                None => {
                     terminals += 1;
                     format!("term-{terminals}")
                 }
             };
-            let mut pane = Pane::new(&id, None, PaneType::Term);
+            let mut pane = Pane::new(&pane_id, None, PaneType::Term);
             pane.terminal = Some(id.clone());
             pane.command = match pty.cmd.as_slice() {
                 [_, flags @ .., c, command] if c == "-c" && flags.first().is_some_and(|l| l == "-l") && flags.iter().all(|f| ["-l", "-i", "+m"].contains(&f.as_str())) => Some(command.clone()),
@@ -554,7 +564,7 @@ impl Terminals {
             pane.state = PaneState::Running;
             let keeper = pty.id.clone();
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
-            match self.adopt(&id, &id, &keeper, pty, None) {
+            match self.adopt(&id, &pane_id, &keeper, pty, None) {
                 Ok(terminal) => {
                     log!("kanna-daemon: took back the keeper's {keeper} as {id}, which the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
@@ -568,7 +578,7 @@ impl Terminals {
             }
         }
         if let Some(core) = self.core.borrow().as_ref().and_then(WeakCore::upgrade) {
-            core.install_panes(panes, counter, terminals);
+            core.install_panes(panes, counter, terminals, numbered);
         }
         let keep: Vec<String> = self.live.borrow().keys().cloned().collect();
         self.store.prune(&keep);
