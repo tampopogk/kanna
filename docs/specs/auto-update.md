@@ -163,7 +163,7 @@ sequenceDiagram
 ```
 
 - **Nothing new in the daemon or keeper:** this is the path a relaunch of a rebuilt app already takes ([daemon build](daemon-build.md#2-hello-from-another-build), [keeper upgrade](keeper-upgrade.md#6-who-triggers-it)). The differences a real update adds, each checked in [Testing](#10-testing), are that the helpers' files vanish under the running daemon and keeper, and that Sparkle relaunches through Launch Services.
-- **While the bundle swaps,** a `kanna` command in a terminal may fail once with file not found. Sparkle swaps the bundle atomically where the disk allows, so the gap is brief.
+- **While the bundle swaps,** a `kanna` command in a terminal gets the old or the new one: Sparkle swaps the two in one rename (`RENAME_SWAP`) on APFS.
 - **After the relaunch** the window layout comes back as it does at any launch ([layout](layout.md#3-saving-and-restoring)).
 
 ## 9. A machine left behind
