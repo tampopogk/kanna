@@ -42,6 +42,7 @@ targets:
         GENERATE_INFOPLIST_FILE: "NO"
         ENABLE_USER_SCRIPT_SANDBOXING: "NO"
         PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.phone
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   KannaUITests:
     type: bundle.ui-testing
     platform: iOS
