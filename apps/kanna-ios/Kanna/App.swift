@@ -17,6 +17,39 @@ struct KannaApp: App {
     }
 }
 
+struct MainTabs: View {
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        @Bindable var s = store
+        TabView(selection: $s.tab) {
+            Tab("Chat", systemImage: "bubble.left", value: AppTab.chat) {
+                NavigationStack { ChatView() }
+            }
+            Tab("Shelf", systemImage: "tray", value: AppTab.shelf) {
+                NavigationStack(path: $s.shelfPath) {
+                    ShelfView().navigationDestination(for: String.self) { TaskDetail(id: $0) }
+                }
+            }
+        }
+        .overlay {
+            if store.showChipPop {
+                ZStack(alignment: .top) {
+                    Color.black.opacity(0.001).onTapGesture { store.showChipPop = false }
+                    ConnectionPop()
+                        .padding(.leading, 56)
+                        .padding(.trailing, 12)
+                        .padding(.top, 52)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.snappy, value: store.showChipPop)
+        .sheet(isPresented: $s.showRepos) { RepoSheet() }
+        .onChange(of: store.tab) { if store.tab == .shelf { store.refreshShelf() } }
+    }
+}
+
 struct Root: View {
     @Environment(Store.self) private var store
 
@@ -24,21 +57,7 @@ struct Root: View {
         @Bindable var s = store
         Group {
             if store.paired {
-                NavigationStack { ChatView() }
-                    .overlay {
-                        if store.showChipPop {
-                            ZStack(alignment: .top) {
-                                Color.black.opacity(0.001).onTapGesture { store.showChipPop = false }
-                                ConnectionPop()
-                                    .padding(.leading, 56)
-                                    .padding(.trailing, 12)
-                                    .padding(.top, 52)
-                            }
-                            .transition(.opacity)
-                        }
-                    }
-                    .animation(.snappy, value: store.showChipPop)
-                    .sheet(isPresented: $s.showRepos) { RepoSheet() }
+                MainTabs()
             } else {
                 PairingFlow()
             }

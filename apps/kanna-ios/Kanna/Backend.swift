@@ -55,9 +55,62 @@ struct Paired: Codable {
     var good: String?
 }
 
+struct Named: Codable, Equatable {
+    var id: String
+    var name: String?
+}
+
+struct ShelfTask: Codable, Equatable {
+    var id: String
+    var name: String
+    var status: String
+    var since: Double
+    var desk: String?
+    var machine: String?
+    var agent: String?
+    var branch: String?
+    var after: [Named]?
+    var message: String?
+    var unreachable: Bool?
+}
+
+struct Desk: Codable, Equatable, Identifiable {
+    var id: String { machine }
+    var machine: String
+    var open: Bool
+}
+
+struct ShelfPage: Codable, Equatable {
+    var tasks: [ShelfTask]
+    var desks: [Desk]
+    var done: [String]
+}
+
+struct ThreadLine: Codable, Equatable {
+    var at: Double
+    var from: String
+    var you: Bool
+    var text: String
+    var read: Double?
+    var client: String?
+}
+
+struct LastWords: Codable, Equatable {
+    var at: Double
+    var asking: Bool
+    var text: String
+}
+
+struct TaskPage: Codable, Equatable {
+    var task: ShelfTask
+    var thread: [ThreadLine]
+    var last: LastWords?
+}
+
 enum Notice {
     case chat(repo: String, item: Item)
     case planner(repo: String, status: String, since: Double)
+    case tasks(repo: String)
 }
 
 struct Link {
@@ -82,6 +135,10 @@ protocol Backend: AnyObject {
     func read(repo: String, after: Int) async throws -> Page
     func send(repo: String, id: String, text: String) async throws -> Item
     func choose(repo: String, id: String, seq: Int, choice: String) async throws -> Item
+    func tasks(repo: String) async throws -> ShelfPage
+    func task(_ id: String) async throws -> TaskPage
+    func tell(task: String, id: String, text: String) async throws
+    func pick(task: String, desk: String, room: String?) async throws
     func close()
     func forget()
     func link() async -> Link

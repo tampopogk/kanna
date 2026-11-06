@@ -40,12 +40,25 @@ final class Queued {
     var repo: String
     var text: String
     var at: Date
+    var task: String?
 
-    init(id: String, repo: String, text: String, at: Date) {
+    init(id: String, repo: String, text: String, at: Date, task: String? = nil) {
         self.id = id
         self.repo = repo
         self.text = text
         self.at = at
+        self.task = task
+    }
+}
+
+@Model
+final class KeptPage {
+    @Attribute(.unique) var key: String
+    var body: Data
+
+    init(key: String, body: Data) {
+        self.key = key
+        self.body = body
     }
 }
 
@@ -54,7 +67,7 @@ final class Keep {
     let context: ModelContext
 
     init(memory: Bool) {
-        let schema = Schema([KeptRepo.self, KeptItem.self, Queued.self])
+        let schema = Schema([KeptRepo.self, KeptItem.self, Queued.self, KeptPage.self])
         let container = try! ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: memory))
         context = ModelContext(container)
     }
@@ -77,6 +90,22 @@ final class Keep {
         context.insert(KeptItem(repo: repo, seq: item.seq, body: body))
     }
 
+    func page<T: Decodable>(_ key: String) -> T? {
+        let fetch = FetchDescriptor<KeptPage>(predicate: #Predicate { $0.key == key })
+        return ((try? context.fetch(fetch)) ?? []).first.flatMap { try? JSONDecoder().decode(T.self, from: $0.body) }
+    }
+
+    func put<T: Encodable>(page: T, key: String) {
+        guard let body = try? JSONEncoder().encode(page) else { return }
+        let fetch = FetchDescriptor<KeptPage>(predicate: #Predicate { $0.key == key })
+        if let kept = ((try? context.fetch(fetch)) ?? []).first {
+            kept.body = body
+        } else {
+            context.insert(KeptPage(key: key, body: body))
+        }
+        save()
+    }
+
     func save() {
         try? context.save()
     }
@@ -85,6 +114,7 @@ final class Keep {
         try? context.delete(model: KeptRepo.self)
         try? context.delete(model: KeptItem.self)
         try? context.delete(model: Queued.self)
+        try? context.delete(model: KeptPage.self)
         save()
     }
 }

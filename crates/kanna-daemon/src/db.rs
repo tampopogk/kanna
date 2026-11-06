@@ -267,9 +267,25 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         primary key (repo, seq)
     );
     create unique index phone_chat_once on phone_chat (repo, client) where client is not null;
+"), Step::Sql("
+    alter table messages add column client text;
+    create unique index messages_once on messages (recipient, client) where client is not null;
+    create table last_words (
+        who text primary key,
+        at real not null,
+        asking integer not null default 0,
+        text text not null
+    );
 ")];
 
 pub const RECENT: usize = 10;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LastWords {
+    pub at: f64,
+    pub asking: bool,
+    pub text: String,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhoneItem {
@@ -874,6 +890,22 @@ impl Db {
             Some(to) => self.select_messages(&format!("select {MESSAGE} from messages where recipient = ?1 or sender = ?1 order by at, id"), [to]),
             None => self.select_messages(&format!("select {MESSAGE} from messages order by at, id"), []),
         }
+    }
+
+    pub fn set_message_client(&self, id: i64, client: &str) -> rusqlite::Result<()> {
+        self.conn.execute("update messages set client = ?2 where id = ?1", params![id, client]).map(|_| ())
+    }
+
+    pub fn message_of(&self, client: &str) -> rusqlite::Result<Option<Message>> {
+        Ok(self.select_messages(&format!("select {MESSAGE} from messages where client = ?1"), [client])?.into_iter().next())
+    }
+
+    pub fn put_last_words(&self, who: &str, text: &str, asking: bool) -> rusqlite::Result<()> {
+        self.conn.execute("insert into last_words (who, at, asking, text) values (?1, ?2, ?3, ?4) on conflict (who) do update set at = excluded.at, asking = excluded.asking, text = excluded.text where text != excluded.text or asking != excluded.asking", params![who, now(), asking, text]).map(|_| ())
+    }
+
+    pub fn last_words(&self, who: &str) -> rusqlite::Result<Option<LastWords>> {
+        self.conn.query_row("select at, asking, text from last_words where who = ?1", [who], |r| Ok(LastWords { at: r.get(0)?, asking: r.get(1)?, text: r.get(2)? })).optional()
     }
 
     pub fn message(&self, id: i64) -> rusqlite::Result<Option<Message>> {

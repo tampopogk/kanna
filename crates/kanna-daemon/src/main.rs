@@ -407,7 +407,6 @@ fn run() -> Result<(), String> {
             None
         }
     };
-    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), machines.as_ref().and_then(|m| m.caller()));
     let accounts = accounts::Service::start(&state_dir, machines.as_ref().and_then(|m| m.caller()));
     let broken = events.clone();
     accounts.on_broken(Box::new(move |account| {
@@ -516,6 +515,7 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
