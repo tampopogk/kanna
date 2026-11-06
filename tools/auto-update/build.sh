@@ -32,7 +32,7 @@ for helper in kanna-daemon kanna-keeper; do
 done
 note "DMG of B"
 stage="$T/stage"
-mkdir -p "$stage"
+rm -rf "$stage"; mkdir -p "$stage"
 ditto "$T/B/Kanna.app" "$stage/Kanna.app"
 ln -s /Applications "$stage/Applications"
 hdiutil create -quiet -volname Kanna -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$served/Kanna-B.dmg"

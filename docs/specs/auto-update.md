@@ -1,6 +1,6 @@
 # Auto Update
 
-**Status:** draft for review · **Mockup:** [`references/mockups/auto-update.html`](../../references/mockups/auto-update.html) · **Builds on:** [release](release.md), [build channels](build-channels.md), [upgrading the keeper](keeper-upgrade.md), [restarting the daemon](daemon-restart.md), [versions across machines](machine-versions.md), [toasts](toasts.md)
+**Status:** built, first release pending · **Mockup:** [`references/mockups/auto-update.html`](../../references/mockups/auto-update.html) · **Builds on:** [release](release.md), [build channels](build-channels.md), [upgrading the keeper](keeper-upgrade.md), [restarting the daemon](daemon-restart.md), [versions across machines](machine-versions.md), [toasts](toasts.md)
 
 Kanna on macOS has no updater: every new version is a DMG you download by hand. This adds one, built on [Sparkle](https://sparkle-project.org) 2.10.1. Kanna checks by itself and asks. Nothing installs without your yes, at quit included. Installing relaunches the app, and every terminal and running agent carries on.
 
@@ -93,7 +93,8 @@ Quit in any state before Installing installs nothing, because no installer is ru
 
 - **Dependency:** the SwiftPM package `sparkle-project/Sparkle`, exact 2.10.1, a prebuilt `Sparkle.framework`. `build-kanna-app.sh` copies it to `Contents/Frameworks`, without its XPC services, which only sandboxed apps need. All channels link it. It is added to `NOTICE`.
 - **Own interface:** `SPUUpdater` with a custom `SPUUserDriver`, so prompts are Kanna's toasts. The driver answers Sparkle's found prompt with install only after your yes, and answers its ready prompt with install at once, since you already said yes.
-- **Pure logic apart:** the toast and menu states live in a `KannaUpdates` target with unit tests. Sparkle stays in a thin layer in `Kanna`.
+- **Pure logic apart:** the toast and menu states live in a `KannaUpdates` target with unit tests. Sparkle stays in a thin layer, `Kanna/Updates/Updates.swift`.
+- **Waiting survives a relaunch:** an offer you put off is kept in `UserDefaults`, so the menu item is there at launch and Kanna checks at once to ask again. A feed that no longer offers it clears it.
 - **Only the default instance** of production or staging runs the updater. The menu items don't exist elsewhere.
 
 | Info.plist key | Value | Why |
@@ -172,17 +173,28 @@ sequenceDiagram
 
 An update may raise `kanna_build::PROTOCOL`. Nothing translates between protocols ([versions](machine-versions.md#2-protocols)), so a paired machine left on the older one goes Incompatible: the Machines tab says which side to update, its tasks keep their places on the Desk, and it comes back once updated. Nothing is lost on either side.
 
-So that this isn't a surprise, each feed item carries `<kanna:protocol>N</kanna:protocol>`. When N differs from this build's, the toast names the paired machines that will fall behind, and you can still answer Later:
+So that this isn't a surprise, each feed item carries `<kanna:protocol>N</kanna:protocol>`. When N differs from this build's, the toast names the paired machines that will fall behind, and you can still answer Later. A check can finish before the machines have linked, so the line is worked out again whenever they change while the toast is up:
 
 ![The toast with a line: linux-1 will show Incompatible until you update it](auto-update-protocol.png)
 
 ## 10. Testing
 
-- **Real update, by hand once and as e2e `auto_update` where it can run:** build A and build B of this worktree's dev channel, so the state folder is this worktree's own and never the user's, each signed with the Developer ID and hardened runtime, with a throwaway key and a feed on `127.0.0.1` baked in at build time. A claude agent working, a shell, a Desk task not active and a Shelf task run on A. Then accept in the toast, and check for B: the same pids, the keeper's pid kept with a new build, the screens, output written meanwhile, the agent carrying on, `exit 7` reporting 7.
-- **Ask first:** quit, Later, a crash and `kill -9` at Found, Waiting and Downloading each leave A in place with no installer running.
-- **Bad updates refused, A left running:** wrong signature, wrong size, a feed signed by another key, a truncated DMG.
-- **Machine left behind:** A and a peer daemon on A's protocol, then B with the protocol raised: the peer shows Incompatible, its tasks keep their places, updating the peer brings it back.
-- **Unit:** `KannaUpdates` states, `swift test --filter KannaUpdatesTests`. **Release:** `release.sh --dry-run` feeds pass `sign_update --verify`.
+`tools/auto-update/` runs a real update, from one Developer ID build to the next, by hand: it needs the signing identity, opens real windows, and takes minutes. Sparkle relaunches through Launch Services, so the environment doesn't cross; the builds are therefore this worktree's dev channel, whose folder is its own and never the user's, with a throwaway key and a feed on `127.0.0.1` baked in by `KANNA_UPDATE_FEED` and `KANNA_UPDATE_PUBLIC_KEY`.
+
+```sh
+tools/auto-update/build.sh DIR                  # builds A and B, and B's DMG
+tools/auto-update/build-next-protocol.sh DIR    # builds C, of the next protocol
+tools/auto-update/run.sh DIR ask_first bad_updates real_update machine_left_behind
+```
+
+| Phase | Proves |
+|---|---|
+| `ask_first` | SIGKILL and SIGTERM at Found, after Later and mid-download each leave A in place with no installer running |
+| `bad_updates` | a truncated DMG, a DMG signed by another key and a feed signed by another key are refused, and A stays |
+| `real_update` | a claude agent, a Desk task, a Shelf task, a shell and a running program on A; yes in the toast; on B the same pids under the same keeper, now of B's build, the screens, a longest pause of 1 s in the running program, claude carrying on its conversation, `exit 7` reporting 7 |
+| `machine_left_behind` | A paired with a daemon of its protocol; the toast names it; on C it shows `other_protocol`, its program runs on, and updating it brings it back with the program still running |
+
+`swift test --filter KannaUpdatesTests` covers the states and the warning line. `release.sh --dry-run` signs the real feeds and checks them with `sign_update --verify`.
 
 ## 11. Rejected
 

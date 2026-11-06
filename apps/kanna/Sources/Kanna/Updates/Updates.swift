@@ -19,6 +19,7 @@ final class Updates: NSObject, SPUUserDriver, SPUUpdaterDelegate, NSMenuItemVali
     private var received: UInt64 = 0
     private var total: UInt64 = 0
     private var stale = false
+    private var warned: String?
 
     static var enabled: Bool {
         Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil && AppController.instanceName == KannaBuild.defaultInstance
@@ -101,9 +102,15 @@ final class Updates: NSObject, SPUUserDriver, SPUUpdaterDelegate, NSMenuItemVali
         return UpdateText.fallsBehind(UpdateText.machinesBehind(speaks: offer.speaks, mine: Protocols.mine, machines: machines))
     }
 
+    func machinesChanged() {
+        guard case .asking(let offer) = state.phase, machinesBehind(offer) != warned else { return }
+        ask(offer)
+    }
+
     private func ask(_ offer: UpdateOffer) {
+        warned = machinesBehind(offer)
         show(Toast(id: Self.toastID, title: UpdateText.available(offer.version, app: KannaBuild.name), detail: UpdateText.keepsRunning, symbol: "arrow.up.circle", tint: .controlAccentColor, sticky: true,
-                   warning: machinesBehind(offer), link: notesLink(offer), actions: [
+                   warning: warned, link: notesLink(offer), actions: [
                        ToastAction(title: "Later") { [weak self] in self?.later() },
                        ToastAction(title: "Install and Relaunch", primary: true) { [weak self] in self?.accept() },
                    ]))

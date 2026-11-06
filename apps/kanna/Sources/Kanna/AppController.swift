@@ -363,6 +363,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func peersChanged() {
         refresh()
+        updates?.machinesChanged()
     }
 
     func claimName(_ machine: String?) -> String {

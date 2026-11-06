@@ -66,7 +66,7 @@ wait_for 120 eval '[[ "$(installed_build)" == "$build_b" ]]' || fail "C never in
 newapp() { pgrep -f "^$install/Contents/MacOS/Kanna" | grep -vx "$app_pid" | head -1; }
 wait_for 60 eval '[[ -n "$(newapp)" ]]' || fail "C wasn't relaunched"
 new="$(newapp)"
-wait_for 60 eval '"$install/Contents/Helpers/kanna" list >/dev/null 2>&1' || fail "no daemon after the relaunch"
+wait_for 60 eval '"$install/Contents/Helpers/kanna" workspace list --all --json >/dev/null 2>&1' || fail "no daemon after the relaunch"
 note "C relaunched as pid $new, keeper $keeper -> $(cat "$state/keeper.pid")"
 kill -TERM "$new"; wait_for 20 eval '! ps -p $new >/dev/null' || fail "C didn't quit"
 app_pid=0
