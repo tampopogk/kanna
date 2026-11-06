@@ -24,6 +24,10 @@ pub trait PaneHost {
     fn start(&self, pane: &Pane);
     fn stop(&self, pane: &Pane);
     fn send(&self, pane: &Pane, text: &str, done: Responder);
+    fn paste(&self, pane: &Pane, text: &str, done: Responder) {
+        let _ = text;
+        done.reply(Err(KmuxError::new("unsupported", format!("{} can't take a paste here", pane.label()))));
+    }
     fn send_keys(&self, pane: &Pane, keys: Vec<String>, done: Responder) {
         let _ = keys;
         done.reply(Err(KmuxError::new("unsupported", format!("{} can't take keys here", pane.label()))));
@@ -124,7 +128,7 @@ struct Inner {
     front: RefCell<Option<CommandHandler>>,
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
-    renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
+    new_run: RefCell<Vec<Rc<dyn Fn(&str)>>>,
     ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
 }
 
@@ -174,7 +178,7 @@ impl Core {
             front: RefCell::new(None),
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
-            renamed: RefCell::new(vec![]),
+            new_run: RefCell::new(vec![]),
             ended: RefCell::new(vec![]),
         })))
     }
@@ -253,8 +257,8 @@ impl CoreHandle {
         self.state().panes.use_content_ids();
     }
 
-    pub fn on_renamed(&self, renamed: Rc<dyn Fn(&str, &str)>) {
-        self.0.renamed.borrow_mut().push(renamed);
+    pub fn on_new_run(&self, new_run: Rc<dyn Fn(&str)>) {
+        self.0.new_run.borrow_mut().push(new_run);
     }
 
     pub fn on_ended(&self, ended: Rc<dyn Fn(&str)>) {
@@ -433,6 +437,19 @@ impl CoreHandle {
         }
     }
 
+    pub fn set_agent(&self, id: &str, agent: &str) {
+        let updated = self.with_pane_mut(id, |pane| {
+            pane.agent = Some(agent.to_string());
+            pane.clone()
+        });
+        if let Some(pane) = updated {
+            self.changed();
+            if let Some(host) = self.host() {
+                host.update(&pane);
+            }
+        }
+    }
+
     pub fn set_command(&self, id: &str, command: String) {
         if self.with_pane_mut(id, |pane| pane.command = Some(command)).is_some() {
             self.changed();
@@ -577,7 +594,7 @@ impl CoreHandle {
         self.state().panes.note_numbers(numbers);
     }
 
-    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize, ptys: usize) {
         {
             let mut s = self.state();
             let mut all: Vec<Pane> = s.panes.iter().cloned().collect();
@@ -585,7 +602,7 @@ impl CoreHandle {
                 known.tour = panes.iter().find(|p| p.id == known.id).and_then(|p| p.tour.clone());
             }
             all.extend(panes.into_iter().filter(|p| s.panes.get(&p.id).is_none()));
-            s.panes.install(all, counter, terminals);
+            s.panes.install(all, counter, terminals, ptys);
         }
         self.changed();
     }
@@ -1331,18 +1348,12 @@ impl CoreHandle {
         if let Some(host) = self.host() {
             host.stop(&pane);
         }
-        let renamed = self.state().panes.renew_terminal(id);
-        let id = match &renamed {
-            Some(to) => {
-                let _ = self.layout(json!({ "op": "rename", "from": id, "to": to })).await;
-                let hooks: Vec<Rc<dyn Fn(&str, &str)>> = self.0.renamed.borrow().clone();
-                for hook in hooks {
-                    hook(id, to);
-                }
-                to.as_str()
+        if pane.terminal.is_some() {
+            let hooks: Vec<Rc<dyn Fn(&str)>> = self.0.new_run.borrow().clone();
+            for hook in hooks {
+                hook(id);
             }
-            None => id,
-        };
+        }
         if let Some(pane) = self.state().panes.get_mut(id) {
             pane.state = PaneState::Starting;
             pane.pid = None;
@@ -1376,7 +1387,12 @@ impl CoreHandle {
         }
         let Some(host) = self.host() else { return Ok(Map::new()) };
         let (responder, answer) = responder();
-        host.send(&pane, string(args, "text").unwrap_or(""), responder);
+        let text = string(args, "text").unwrap_or("");
+        if args.get("enter").and_then(Value::as_bool) == Some(false) {
+            host.paste(&pane, text, responder);
+        } else {
+            host.send(&pane, text, responder);
+        }
         answer.await
     }
 
@@ -1600,7 +1616,7 @@ impl CoreHandle {
             let mut s = self.state();
             let restored: Vec<Pane> = panes.into_iter().filter(|p| placed.contains(p.id.as_str())).collect();
             let ids = restored.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0));
+            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0), 0);
             s.panes.note_numbers(&numbers);
             ids
         };

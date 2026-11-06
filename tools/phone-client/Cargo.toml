@@ -1,0 +1,12 @@
+[package]
+name = "phone-client"
+version.workspace = true
+edition.workspace = true
+license = "FSL-1.1-MIT"
+description = "A headless phone: a small client of the phone stream, for e2e."
+publish = false
+
+[dependencies]
+kanna-net = { path = "../../crates/kanna-net" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

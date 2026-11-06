@@ -69,7 +69,7 @@ stateDiagram-v2
 flowchart LR
     F["an agent becomes the<br/>terminal's foreground program"] --> V{"its --version<br/>new enough?"}
     V -->|yes| R["its reports are its status"]
-    V -->|"no, in a task, planner<br/>or stage terminal"| Q["quit with its keys,<br/>toast why"]
+    V -->|"no, in a task, planner<br/>or stage terminal"| Q["quit it,<br/>toast why"]
     Q --> S["task stopped as too-old;<br/>a run stops"]
     V -->|"no, in a plain terminal"| R
 ```

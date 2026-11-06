@@ -15,8 +15,12 @@ pub const RUN: &str = "run-";
 
 pub const DESK: &str = "desk";
 
+pub const PHONE: &str = "phone";
+
+pub const KANNA: &str = "kanna";
+
 pub fn yours(sender: &str) -> bool {
-    sender == USER || sender == DESK || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
+    sender == USER || sender == DESK || sender == PHONE || sender == KANNA || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
 }
 
 pub const PICKUP: Duration = Duration::from_secs(5);
@@ -188,7 +192,7 @@ impl Rpc {
             return Err(format!("codex's app-server refused the connection: {}", String::from_utf8_lossy(&head).lines().next().unwrap_or("")));
         }
         let mut rpc = Rpc { stream, next: 0 };
-        let mut hello = json!({ "clientInfo": { "name": "kanna", "version": env!("CARGO_PKG_VERSION") } });
+        let mut hello = json!({ "clientInfo": { "name": "kanna", "version": kanna_build::VERSION } });
         if let Some(capabilities) = capabilities {
             hello["capabilities"] = capabilities;
         }
