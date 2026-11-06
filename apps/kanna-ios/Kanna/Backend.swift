@@ -15,6 +15,9 @@ struct Doc: Codable, Equatable {
     var commit: String?
     var hot: [Int]?
     var lines: [String]?
+    var round: String?
+    var title: String?
+    var about: String?
 }
 
 struct Item: Codable, Equatable {
@@ -203,6 +206,7 @@ enum Notice {
     case chat(repo: String, item: Item)
     case planner(repo: String, status: String, since: Double)
     case tasks(repo: String)
+    case quiz(repo: String)
     case projects
 }
 
@@ -234,6 +238,10 @@ protocol Backend: AnyObject {
     func tell(task: String, id: String, text: String) async throws
     func choose(task: String, id: String, seq: Int, choice: String) async throws
     func pick(task: String, desk: String, room: String?) async throws
+    func quizMap(repo: String) async throws -> MapPage
+    func quizRounds(repo: String) async throws -> RoundsPage
+    func quizAnswer(round: String, n: Int, pick: Int, again: String?) async throws
+    func quizAhead(repo: String, about: String?, again: Bool) async throws
     func machines(repo: String) async throws -> MachinesPage
     func stats(repo: String) async throws -> StatsPage
     func move(repo: String, machine: String) async throws -> Moved
@@ -241,4 +249,5 @@ protocol Backend: AnyObject {
     func forget()
     func link() async -> Link
     func highlight(file: String, text: String) -> [TextSpan]
+    func drawing(_ source: String) -> DrawingScene?
 }

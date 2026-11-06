@@ -215,6 +215,8 @@ final class LiveBackend: Backend {
             onNotice?(.planner(repo: repo, status: line["status"] as? String ?? "", since: line["since"] as? Double ?? 0))
         case "tasks":
             onNotice?(.tasks(repo: repo))
+        case "quiz":
+            onNotice?(.quiz(repo: repo))
         default: break
         }
     }
@@ -286,6 +288,26 @@ final class LiveBackend: Backend {
         let _: Done = try await call("task.pick", args)
     }
 
+    func quizMap(repo: String) async throws -> MapPage {
+        try await call("quiz.map", ["repo": repo])
+    }
+
+    func quizRounds(repo: String) async throws -> RoundsPage {
+        try await call("quiz.rounds", ["repo": repo])
+    }
+
+    func quizAnswer(round: String, n: Int, pick: Int, again: String?) async throws {
+        var args: [String: Any] = ["round": round, "n": n, "pick": pick]
+        if let again { args["again"] = again }
+        let _: Done = try await call("quiz.answer", args)
+    }
+
+    func quizAhead(repo: String, about: String?, again: Bool) async throws {
+        var args: [String: Any] = ["repo": repo, "again": again]
+        if let about { args["about"] = about }
+        let _: Done = try await call("quiz.ahead", args)
+    }
+
     func machines(repo: String) async throws -> MachinesPage {
         try await call("machines", ["repo": repo])
     }
@@ -333,4 +355,6 @@ final class LiveBackend: Backend {
     }
 
     func highlight(file: String, text: String) -> [TextSpan] { Rust.highlight(file: file, text: text) }
+
+    func drawing(_ source: String) -> DrawingScene? { Rust.drawing(source) }
 }

@@ -2,6 +2,8 @@ use crate::app_link::AppLink;
 use crate::db::{self, Db, PhoneItem};
 use crate::machines::Caller;
 use crate::messages::{KANNA, PHONE, PLANNER};
+use crate::quiz::Quiz;
+use crate::quiz_writer::Written;
 use crate::runtime::Events;
 use crate::tasks::{failed as refusal, ProjectRecord, Tasks};
 use crate::Event;
@@ -110,6 +112,7 @@ struct Watch {
 pub struct Phone {
     db: Rc<Db>,
     tasks: Rc<Tasks>,
+    quiz: Rc<Quiz>,
     core: CoreHandle,
     caller: Option<Caller>,
     app: Rc<AppLink>,
@@ -127,8 +130,8 @@ fn item_value(item: &PhoneItem, read: Option<f64>) -> Value {
 }
 
 impl Phone {
-    pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, caller: Option<Caller>, app: Rc<AppLink>) -> Rc<Phone> {
-        let phone = Rc::new(Phone { db, tasks, core: core.clone(), caller, app, told: std::cell::Cell::new(0), repos: RefCell::default(), watches: RefCell::default(), records: RefCell::default(), seen: RefCell::default(), ticks: std::cell::Cell::new(0), known: std::cell::Cell::new(0) });
+    pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, quiz: Rc<Quiz>, caller: Option<Caller>, app: Rc<AppLink>) -> Rc<Phone> {
+        let phone = Rc::new(Phone { db, tasks, quiz, core: core.clone(), caller, app, told: std::cell::Cell::new(0), repos: RefCell::default(), watches: RefCell::default(), records: RefCell::default(), seen: RefCell::default(), ticks: std::cell::Cell::new(0), known: std::cell::Cell::new(0) });
         let this = Rc::downgrade(&phone);
         core.add_command(
             COMMAND,
@@ -137,6 +140,14 @@ impl Phone {
                 None => responder.reply(Err(KmuxError::new("stopping", "the daemon is stopping"))),
             }),
         );
+        if let Some(writers) = phone.quiz.writers() {
+            let this = Rc::downgrade(&phone);
+            *writers.on_change.borrow_mut() = Some(Box::new(move |path, written| {
+                if let Some(phone) = this.upgrade() {
+                    phone.quiz_changed(path, written);
+                }
+            }));
+        }
         Phone::ticking(Rc::downgrade(&phone));
         phone
     }
@@ -174,8 +185,32 @@ impl Phone {
             "task.send" => self.task_send(&args, responder),
             "task.pick" => self.task_pick(&args, responder),
             "here.shelf" => responder.reply(self.here_shelf(&args)),
+            "quiz.map" => match self.path_of(&args) {
+                Ok(path) => self.quiz.map(&path, responder),
+                Err(error) => responder.reply(Err(error)),
+            },
+            "quiz.rounds" => responder.reply(self.path_of(&args).and_then(|path| self.quiz.rounds(&path))),
+            "quiz.answer" => responder.reply(self.quiz.phone_answer(&args)),
+            "quiz.ahead" => responder.reply(self.quiz_ahead(&args)),
             "here.read" => responder.reply(string(&args, "task").ok_or_else(|| bad("say which task")).and_then(|task| self.read_here(task))),
             other => responder.reply(Err(bad(format!("no phone request \"{other}\"")))),
+        }
+    }
+
+    fn quiz_ahead(&self, args: &Value) -> Result<Map, KmuxError> {
+        let path = self.path_of(args)?;
+        let mut asked = args.clone();
+        asked["repo"] = json!(path);
+        self.quiz.ahead(&asked)
+    }
+
+    fn quiz_changed(&self, path: &str, written: Option<Written>) {
+        let ready = written.as_ref().map(|w| format!("r{}", w.round));
+        if let Some(Written { round, title, about: Some(about) }) = written {
+            let _ = self.put(path, "round", None, None, json!({ "round": format!("r{round}"), "title": title, "about": about }));
+        }
+        if let Some(repo) = self.identity_of(path) {
+            notify(&json!({ "notice": "quiz", "repo": repo, "ready": ready }));
         }
     }
 

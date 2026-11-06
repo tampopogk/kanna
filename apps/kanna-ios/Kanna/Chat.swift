@@ -120,7 +120,28 @@ struct ChatRow: View {
                 .padding(.vertical, 7)
                 .background(K.panel, in: RoundedRectangle(cornerRadius: 12))
                 .frame(maxWidth: .infinity)
+        case .round(let round, let title):
+            RoundCard(round: round, title: title)
         }
+    }
+}
+
+struct RoundCard: View {
+    var round: String
+    var title: String
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        let result = store.result(round)
+        Button {
+            guard result == nil else { return }
+            store.start(roundID: round)
+        } label: {
+            StartBanner(title: result.map { "\($0) of 5: \(title)" } ?? "Round ready: \(title)",
+                        detail: result == nil ? "5 questions · about 2 minutes" : "Played", calm: result != nil, chevron: result == nil)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("round-card")
     }
 }
 
