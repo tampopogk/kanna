@@ -208,7 +208,7 @@ linux="$dist/$dmg_prefix-$version-linux-x86_64.tar.gz"
 dmgs+=("$linux")
 
 step "Update feeds"
-update_tools="$(dirname "$(find "$repo_root/target" -path '*/artifacts/sparkle/Sparkle/bin/sign_update' -print -quit)")"
+update_tools="$(dirname "$(find "$repo_root/target/" -path '*/artifacts/sparkle/Sparkle/bin/sign_update' -print -quit)")"
 [[ -x "$update_tools/sign_update" ]] || fail "the build left no Sparkle sign_update under target/"
 update_protocol="$(tar -xzOf "$linux" kanna/release.json | jq -r .protocol)"
 [[ "$update_protocol" =~ ^[0-9]+$ ]] || fail "$(basename "$linux") names no protocol"
