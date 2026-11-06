@@ -778,7 +778,12 @@ impl Node {
             return self.settle(Err(failure));
         }
         self.save();
-        if write_line(send, &json!({ "ok": true, "handoff": party.seal(&staged.export()) })).await.is_err() {
+        let mut handoff = staged.export();
+        if let Some(relay) = self.state().relay.as_ref() {
+            handoff["relay"] = json!(relay.url.to_string());
+            handoff["relay_token"] = json!(relay.token);
+        }
+        if write_line(send, &json!({ "ok": true, "handoff": party.seal(&handoff) })).await.is_err() {
             return self.settle(Err(Failure::new("unreachable", "lost the phone")));
         }
         let _ = read_line(recv, MAX_LINE).await;
@@ -1117,13 +1122,14 @@ impl Node {
         if key == self.key() {
             return Err(Failure::new("bad_request", "this machine can't revoke itself: revoke it from another of your machines"));
         }
-        let name = {
+        let (name, is_phone) = {
             let mut state = self.state();
             let Some(log) = state.log.as_mut() else { return Err(Failure::new("unpaired", "this machine isn't paired")) };
             let name = log.view().name_of(&key).ok_or_else(|| Failure::new("not_found", format!("{host} isn't one of your machines")))?;
+            let is_phone = log.view().is_phone(&key);
             let entry = log.entry(&self.0.secret, "revoke", json!({ "key": key }), None, unix_time());
             log.merge(&[entry])?;
-            name
+            (name, is_phone)
         };
         self.drop_revoked();
         self.save();
@@ -1134,7 +1140,8 @@ impl Node {
                 told.push(self.name_of(&other));
             }
         }
-        Ok(json!({ "name": name, "key": key, "told": told }))
+        let relay_token = is_phone && self.relay_token().is_some();
+        Ok(json!({ "name": name, "key": key, "told": told, "relay_token": relay_token }))
     }
 
     async fn pairing_targets(&self, peer: Option<&str>) -> Result<Vec<EndpointAddr>, Failure> {

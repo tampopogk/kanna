@@ -127,7 +127,8 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 Some(false) => "\nit couldn't be told to drop the agent accounts it was given: rotate them (kanna accounts)",
                 None => "",
             };
-            format!("revoked {} for good; {told}{accounts}", reply["name"].as_str().unwrap_or("?"))
+            let relay = if reply["relay_token"] == true { "\nit holds your relay's token: if it may be in someone else's hands, rotate that too (kanna machine relay URL --token-file FILE, on each machine)" } else { "" };
+            format!("revoked {} for good; {told}{accounts}{relay}", reply["name"].as_str().unwrap_or("?"))
         }
         Some("ping") => {
             let streams = reply["streams"].as_object().map(|s| s.iter().map(|(kind, r)| format!("{kind} {}", if r["ok"] == true { "ok".to_string() } else { r["error"]["code"].as_str().unwrap_or("failed").to_string() })).collect::<Vec<_>>().join(", ")).unwrap_or_default();

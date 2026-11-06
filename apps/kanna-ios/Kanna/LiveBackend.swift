@@ -112,14 +112,20 @@ final class LiveBackend: Backend {
         pairing = secret.flatMap(Rust.key)
         try await started()
         let joined = try await Task.detached { try Rust.join(scanned) }.value
-        let result = Paired(name: joined["name"] as? String ?? "", machine: joined["machine"] as? String ?? "", key: joined["key"] as? String ?? "", addrs: joined["addrs"] as? [String] ?? [], good: nil)
+        let result = Paired(name: joined["name"] as? String ?? "", machine: joined["machine"] as? String ?? "", key: joined["key"] as? String ?? "", addrs: joined["addrs"] as? [String] ?? [], good: nil, relay: joined["relay"] as? String)
         paired = result
+        Keychain.keepRelayToken(joined["relay_token"] as? String)
         save()
         return result
     }
 
-    private func open(_ key: String, _ addrs: [String]) async throws -> UInt64 {
-        let text = Rust.text(["key": key, "addrs": addrs, "header": ["kind": "phone", "phone": 1]])
+    private func open(_ key: String, _ addrs: [String], relayed: Bool) async throws -> UInt64 {
+        var request: [String: Any] = ["key": key, "addrs": addrs, "header": ["kind": "phone", "phone": 1]]
+        if relayed, let relay = paired?.relay {
+            request["relay"] = relay
+            request["relay_token"] = Keychain.read("relay")
+        }
+        let text = Rust.text(request)
         return try await Task.detached { () -> UInt64 in
             guard let stream = (try Rust.open(text)["stream"] as? NSNumber)?.uint64Value else { throw Refused(code: "failed", message: "no stream") }
             return stream
@@ -135,10 +141,10 @@ final class LiveBackend: Backend {
         let (key, lookup) = (machine.key, self.lookup)
         var refused: Refused?
         let opened: UInt64? = await withTaskGroup(of: Result<UInt64, Error>.self) { group in
-            group.addTask { @MainActor in await Result(catching: { try await self.open(key, known) }) }
+            group.addTask { @MainActor in await Result(catching: { try await self.open(key, known, relayed: true) }) }
             group.addTask { @MainActor in
                 guard let instance, let found = await lookup.find(instance, seconds: 8) else { return .failure(Refused(code: "unreachable", message: "not found")) }
-                return await Result(catching: { try await self.open(key, [found]) })
+                return await Result(catching: { try await self.open(key, [found], relayed: false) })
             }
             for await result in group {
                 switch result {
@@ -158,6 +164,10 @@ final class LiveBackend: Backend {
         listen(opened)
         let hello = try await hello()
         let good = (await Task.detached { Rust.path(key) }.value)["remote"] as? String
+        if let relay = hello.relay {
+            saved.relay = relay
+            Keychain.keepRelayToken(hello.relay_token)
+        }
         if key == saved.key {
             saved.addrs = hello.addrs
             saved.good = good ?? saved.good
@@ -170,6 +180,10 @@ final class LiveBackend: Backend {
         paired = saved
         save()
         return hello
+    }
+
+    func networkChanged() {
+        Task.detached { Rust.networkChanged() }
     }
 
     func hello() async throws -> Hello {

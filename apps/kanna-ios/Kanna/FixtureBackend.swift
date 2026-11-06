@@ -18,11 +18,13 @@ final class FixtureBackend: Backend {
     private let writerFails: Bool
     private var missed = false
     private var written = 0
+    private var paths: [LinkPath]
 
     private static let machine = Paired(name: "iphone-fix1", machine: "studio", key: "fixture", addrs: [])
 
-    init(paired: Bool, planner: String) {
+    init(paired: Bool, planner: String, paths: String? = nil) {
         self.paired = paired ? Self.machine : nil
+        self.paths = (paths ?? "").split(separator: ",").compactMap { ["lan": LinkPath.lan, "net": .net, "relay": .relay][String($0)] }
         self.paired?.known = Self.names.map(Self.reach)
         busy = planner == "busy"
         statuses = ["kanna": planner == "busy" ? "elsewhere" : "idle", "kmux": "not_running"]
@@ -429,10 +431,16 @@ final class FixtureBackend: Backend {
 
     func close() {}
 
+    func networkChanged() {}
+
     func forget() { paired = nil }
 
     func link() async -> Link {
         if down { return Link(path: .off, milliseconds: 0) }
+        if let path = paths.first {
+            if paths.count > 1 { paths.removeFirst() }
+            return Link(path: path, milliseconds: path == .lan ? 9 : path == .net ? 41 : 184)
+        }
         return Link(path: linked == "dev-1" ? .relay : .lan, milliseconds: linked == "dev-1" ? 184 : 9)
     }
 

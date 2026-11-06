@@ -67,7 +67,10 @@ final class Store {
     static func launch() -> Store {
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "fixture") {
-            return Store(backend: FixtureBackend(paired: defaults.bool(forKey: "paired"), planner: defaults.string(forKey: "planner") ?? "idle"), fixture: true)
+            let store = Store(backend: FixtureBackend(paired: defaults.bool(forKey: "paired"), planner: defaults.string(forKey: "planner") ?? "idle", paths: defaults.string(forKey: "link")), fixture: true)
+            if defaults.bool(forKey: "noNetwork") { store.noNetwork = true }
+            if let repo = defaults.string(forKey: "dayOld") { store.ageMessage(repo: repo, task: defaults.string(forKey: "dayOldTask")) }
+            return store
         }
         return Store(backend: LiveBackend(), fixture: false)
     }
@@ -162,17 +165,31 @@ final class Store {
     private func watchNetwork() {
         guard monitor == nil, !fixture else { return }
         let monitor = NWPathMonitor()
+        var first = true
         monitor.pathUpdateHandler = { [weak self] path in
             let up = path.status == .satisfied
+            let changed = !first
+            first = false
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    self?.noNetwork = !up
-                    if up { self?.wake() }
+                    self?.network(up: up, changed: changed)
                 }
             }
         }
         monitor.start(queue: .global(qos: .utility))
         self.monitor = monitor
+    }
+
+    private func network(up: Bool, changed: Bool) {
+        noNetwork = !up
+        if changed { backend.networkChanged() }
+        if !up {
+            plannerPath = .off
+            linkPath = .off
+        } else if linked != nil {
+            Task { await measure() }
+        }
+        wake()
     }
 
     private func wake() {
@@ -258,7 +275,7 @@ final class Store {
 
     private func measure() async {
         let link = await backend.link()
-        guard link.path != .off else { return }
+        guard link.path != .off, !noNetwork else { return }
         linkPath = link.path
         if linked?.key == repo.plannerKey || repo.plannerKey.isEmpty {
             plannerPath = link.path
@@ -745,6 +762,13 @@ final class Store {
         guard nextRound != nil else { return }
         play = nil
         startNext()
+    }
+
+    func ageMessage(repo: String, task: String?) {
+        let message = Queued(id: UUID().uuidString, repo: repo, text: "Written yesterday", at: Date().addingTimeInterval(-90000), task: task)
+        queued.append(message)
+        keep.context.insert(message)
+        keep.save()
     }
 
     func flipFixtureLink() {
