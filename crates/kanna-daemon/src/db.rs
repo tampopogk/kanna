@@ -287,6 +287,29 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     create index said_by_who on said (who, id);
     insert into said (who, at, asking, text) select who, at, asking, text from last_words;
     drop table last_words;
+"), Step::Sql("
+    alter table quiz_answers add column n integer;
+    create unique index quiz_answers_by_question on quiz_answers (round, n) where n is not null;
+    create table quiz_ready (
+        round integer primary key references quiz_rounds (id),
+        repo text not null,
+        written real not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        taken real
+    );
+    create index quiz_ready_by_repo on quiz_ready (repo, taken);
+    create table quiz_map (
+        repo text primary key,
+        at real not null,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create table quiz_notes (
+        repo text not null,
+        subsystem text not null,
+        at real not null,
+        text text not null,
+        primary key (repo, subsystem)
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -425,6 +448,16 @@ pub struct Round {
     pub at: f64,
     pub head: String,
     pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ready {
+    pub round: i64,
+    pub repo: String,
+    pub head: String,
+    pub written: f64,
+    pub doc: Value,
+    pub taken: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1011,6 +1044,69 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
+    pub fn answer_question(&self, round: i64, n: i64, kind: &str, file: &str, right: bool, again: Option<i64>, doc: &Value) -> rusqlite::Result<(i64, bool)> {
+        let added = self.conn.execute(
+            "insert into quiz_answers (round, at, kind, file, right, again, doc, n) values (?1, ?2, ?3, ?4, ?5, ?6, json_patch('{}', ?7), ?8) on conflict (round, n) where n is not null do nothing",
+            params![round, now(), kind, file, right, again, doc.to_string(), n],
+        )?;
+        let id = self.conn.query_row("select id from quiz_answers where round = ?1 and n = ?2", params![round, n], |r| r.get(0))?;
+        Ok((id, added > 0))
+    }
+
+    pub fn put_ready(&self, repo: &str, head: &str, round_doc: &Value, doc: &Value) -> rusqlite::Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        let written = now();
+        tx.execute("insert into quiz_rounds (repo, at, head, doc) values (?1, ?2, ?3, json_patch('{}', ?4))", params![repo, written, head, round_doc.to_string()])?;
+        let round = tx.last_insert_rowid();
+        tx.execute("insert into quiz_ready (round, repo, written, doc) values (?1, ?2, ?3, ?4)", params![round, repo, written, doc.to_string()])?;
+        tx.commit()?;
+        Ok(round)
+    }
+
+    pub fn ready(&self, round: i64) -> rusqlite::Result<Option<Ready>> {
+        self.conn.query_row(&format!("{READY} where q.round = ?1"), [round], ready_row).optional()
+    }
+
+    pub fn open_rounds(&self, repo: &str) -> rusqlite::Result<Vec<Ready>> {
+        let mut statement = self.conn.prepare(&format!("{READY} where q.repo = ?1 and (q.taken is null or (select count(*) from quiz_answers a where a.round = q.round and a.n is not null) < json_array_length(q.doc, '$.questions')) order by q.round"))?;
+        let rows = statement.query_map([repo], ready_row)?;
+        rows.collect()
+    }
+
+    pub fn round_waits(&self, repo: &str) -> rusqlite::Result<bool> {
+        self.conn.prepare("select 1 from quiz_ready where repo = ?1 and taken is null and json_type(doc, '$.about') is not 'text'")?.exists([repo])
+    }
+
+    pub fn take_ready(&self, round: i64) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute("update quiz_ready set taken = ?2 where round = ?1 and taken is null", params![round, now()])? > 0)
+    }
+
+    pub fn picks(&self, round: i64) -> rusqlite::Result<Vec<(i64, i64)>> {
+        let mut statement = self.conn.prepare("select n, coalesce(json_extract(doc, '$.pick'), 0) from quiz_answers where round = ?1 and n is not null order by n")?;
+        let rows = statement.query_map([round], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn quiz_map(&self, repo: &str) -> rusqlite::Result<Option<Value>> {
+        self.conn.query_row("select doc from quiz_map where repo = ?1", [repo], |r| Ok(doc_of(r.get(0)?))).optional()
+    }
+
+    pub fn set_quiz_map(&self, repo: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into quiz_map (repo, at, doc) values (?1, ?2, ?3) on conflict (repo) do update set at = excluded.at, doc = excluded.doc", params![repo, now(), doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn quiz_notes(&self, repo: &str) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut statement = self.conn.prepare("select subsystem, text from quiz_notes where repo = ?1 order by subsystem")?;
+        let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn set_quiz_note(&self, repo: &str, subsystem: &str, text: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert into quiz_notes (repo, subsystem, at, text) values (?1, ?2, ?3, ?4) on conflict (repo, subsystem) do update set at = excluded.at, text = excluded.text", params![repo, subsystem, now(), text])?;
+        Ok(())
+    }
+
     pub fn find_answer(&self, id: i64) -> rusqlite::Result<Option<(Answer, String)>> {
         self.conn
             .query_row(&format!("select {ANSWER}, r.repo from quiz_answers a join quiz_rounds r on r.id = a.round where a.id = ?1"), [id], |r| Ok((answer_row(r)?, r.get(8)?)))
@@ -1146,7 +1242,7 @@ impl Db {
         let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
         let tx = self.conn.unchecked_transaction()?;
         let mut count = 0;
-        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("phone_chat", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("quiz_ready", "repo", "update"), ("quiz_map", "repo", "update or replace"), ("quiz_notes", "repo", "update or replace"), ("phone_chat", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
             count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
         }
         let folder = "json_extract(doc, '$.folder')";
@@ -1406,6 +1502,8 @@ impl Db {
     }
 }
 
+const READY: &str = "select q.round, q.repo, r.head, q.written, q.doc, q.taken from quiz_ready q join quiz_rounds r on r.id = q.round";
+
 const ANSWER: &str = "a.id, a.round, a.at, a.kind, a.file, a.right, a.again, a.doc";
 
 fn doc_of(text: String) -> Value {
@@ -1414,6 +1512,10 @@ fn doc_of(text: String) -> Value {
 
 fn round_row(r: &rusqlite::Row) -> rusqlite::Result<Round> {
     Ok(Round { id: r.get(0)?, repo: r.get(1)?, at: r.get(2)?, head: r.get(3)?, doc: doc_of(r.get(4)?) })
+}
+
+fn ready_row(r: &rusqlite::Row) -> rusqlite::Result<Ready> {
+    Ok(Ready { round: r.get(0)?, repo: r.get(1)?, head: r.get(2)?, written: r.get(3)?, doc: doc_of(r.get(4)?), taken: r.get(5)? })
 }
 
 fn answer_row(r: &rusqlite::Row) -> rusqlite::Result<Answer> {

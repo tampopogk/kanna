@@ -26,6 +26,9 @@ mod messages;
 mod project_import;
 mod projects;
 mod quiz;
+mod quiz_map;
+mod quiz_round;
+mod quiz_writer;
 mod replica;
 mod stamped;
 mod stats;
@@ -381,7 +384,15 @@ fn run() -> Result<(), String> {
             runs.task_closed(task);
         }
     }));
-    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
+    let writers = {
+        let layout = Rc::downgrade(&layout);
+        quiz_writer::Writers::install(db.clone(), tasks.clone(), &core, Box::new(move || {
+            let Some(layout) = layout.upgrade() else { return vec![] };
+            let view = layout.view();
+            view["workspaces"].as_array().into_iter().flatten().filter(|w| w["where"]["quiz"] == tasks::WINDOWLESS).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+        }))
+    };
+    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak()), Some(writers)));
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
@@ -515,7 +526,7 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
-    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
