@@ -66,7 +66,7 @@ flowchart LR
 ```
 
 - **The first release is explicit:** with no `v*` tag yet, a bump flag is an error; `scripts/release.sh 4.0.0` cut Kanna's first.
-- **Into the build:** release.sh sets `KANNA_VERSION`; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part.
+- **Into the build:** release.sh sets `KANNA_VERSION`; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part, and `KannaVersion` is all of it, which the About panel shows.
 - **The build number** (`CFBundleVersion`) is `git rev-list --count HEAD`, in every build.
 - **Without `KANNA_VERSION`** a build is the workspace's version, 0.1.0, as before.
 - **Re-running after a failed publish:** if the tag is already on origin at HEAD, release.sh carries on with that tag's release; at another commit it stops.

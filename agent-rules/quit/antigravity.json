@@ -1,5 +1,6 @@
 {
   "agent": "antigravity",
+  "exit": {"text": "/exit", "box": "(?m)^─+\\n>[ \\x{a0}]/exit *\\n─+$"},
   "keys": ["ctrl+c", "ctrl+c"],
   "session": "agy --conversation=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
 }

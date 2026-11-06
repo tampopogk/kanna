@@ -95,7 +95,7 @@ flowchart TB
 |---|---|
 | [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [drag to the Shelf](specs/desk-row-shelve.md) · [Shelf row status](specs/shelf-row-status.md) · [internal names](specs/internal-names.md) · [new Desk](specs/new-desk.md) · [a Desk's project](specs/desk-project.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
 | [Project folder](specs/project-folder.md) | Every project lives in `~/.kanna-v4/repos/OWNER/NAME`; `kanna project import` copies one there |
-| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [stacked tasks](specs/stacked-tasks.md) · [task IDs](specs/task-ids.md) · [task list](specs/task-list.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) · [Desk news for the planner](specs/desk-news.md) | One agent in one worktree; the Shelf |
+| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [stacked tasks](specs/stacked-tasks.md) · [task IDs](specs/task-ids.md) · [task list](specs/task-list.md) · [task scripts](specs/task-scripts.md) · [durable panes](specs/durable-panes.md) · [agent messaging](specs/agent-messaging.md) · [Desk news for the planner](specs/desk-news.md) | One agent in one worktree; the Shelf |
 | [Software factory](specs/software-factory.md) · [Kojo](specs/kojo.md) · [build order](specs/software-factory-build-order.md) | Any task's agent builds a change through a pipeline of stages (agents, commands, your approval, merges), driven by the daemon in workers whose terminals are the task's background terminals, with every run measured |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Toasts](specs/toasts.md) | Notices the daemon raises in the app, such as messages that wait |
@@ -103,6 +103,7 @@ flowchart TB
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
 | [Codex's app-server](specs/codex-app-server.md) | Every Codex runs attached to a server of its own, Kanna's door for messages |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |
+| [Kanna on the phone](specs/mobile-app.md) | A native iPhone app: chat with the repo's planner, the Shelf, Stats, Machines, and a quiz map |
 | [Stats](specs/stats.md) | The project's numbers over 30 days: quiz, main, tasks |
 | [Schedules tab](specs/schedules-tab.md) | Every repo's schedules, their firings, and pause, run and remove |
 | [The database](specs/database.md) | Tasks and their history in `kanna.db` |

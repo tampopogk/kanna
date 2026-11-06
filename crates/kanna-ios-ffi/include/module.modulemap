@@ -1,0 +1,4 @@
+module KannaIOS {
+    header "kanna_ios.h"
+    export *
+}

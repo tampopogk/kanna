@@ -286,6 +286,11 @@ final class DaemonLink: TerminalLink {
         return true
     }
 
+    func used(_ terminal: ExternalTerminal) {
+        guard attached else { return }
+        send("used", ["terminal": .string(terminal.id)])
+    }
+
     func input(_ bytes: Data, from terminal: ExternalTerminal) {
         let sent = terminal.view?.takeTyped().flatMap { Keys.typed(terminal.id, at: $0) }
         connection.send(outbound(["cmd": "input", "args": ["terminal": .string(terminal.id), "data": .string(bytes.base64EncodedString())]]), sent: sent)

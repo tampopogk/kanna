@@ -82,10 +82,12 @@ impl Toasts {
 
     pub fn attached(&self) {
         let now = Instant::now();
-        let held: Vec<Value> = self.held.borrow_mut().drain(..).filter(|(at, _)| now.duration_since(*at) < HELD_FOR).map(|(_, record)| record).collect();
+        let held: Vec<(Instant, Value)> = self.held.borrow_mut().drain(..).filter(|(at, _)| now.duration_since(*at) < HELD_FOR).collect();
         let Some(show) = self.on_toast.borrow_mut().take() else { return };
-        for record in held {
-            show(&record);
+        for (at, record) in held {
+            if !show(&record) {
+                self.held.borrow_mut().push_back((at, record));
+            }
         }
         *self.on_toast.borrow_mut() = Some(show);
     }

@@ -62,7 +62,7 @@ sequenceDiagram
 
 - **The planning agent offers, the quiz agent asks.** Every morning Kanna's built-in `quiz` [schedule](scheduler.md#6-the-quiz-schedule) (`daily 09:00`, removable like any other) leaves the planning agent a message, which it gets at its turn's end however long its session has been open; it offers a round if anything has landed on main since the last round, and says nothing if nothing has. It never asks the questions itself.
 - **The Quiz window** is laid out like a Desk: the quiz agent docked on the left, running in the repo's own folder on main, and what it opens (`kanna comment`, `kanna open md`) as tabs on the right, wherever you are. **The docked agent isn't a task,** like the [planning terminal](planning-agent.md#2-what-it-is): it's not on the Desk or the Shelf or in `kanna task list`, takes none of the Desk's three places, and can't be made active, shelved or moved; nothing docks in its place. It's the window's **lead**, as the planning terminal is a Desk's ([how it's built](planning-agent.md#5-how-its-built)), and it closes with its window. There's no worktree, since a quiz changes nothing. **One per repo:** `kanna quiz open` brings the repo's Quiz window forward when one is open, instead of opening another.
-- **Written when you start,** by the quiz agent, from what's on main: no background agent, nothing runs between quizzes. It asks the first question as soon as it's written, and writes each next one while you read the explanation.
+- **Written when you start,** by the quiz agent, from what's on main: no background agent, nothing runs between quizzes. Rounds played on the phone are [written ahead](mobile-quiz.md#1-rounds-written-ahead), each by the playing of the last. It asks the first question as soon as it's written, and writes each next one while you read the explanation.
 - **A round is five questions, one at a time,** about two minutes once started. The quiz agent asks each with its multiple-choice tool: Claude's question tool, or a numbered list for an agent without one.
 - **Every answer gets a short explanation** and an offer to open the code. **A miss opens it straight away:** `kanna comment FILE:LINE "why"`, so the code shows beside the agent with the explanation on its lines ([code tour](code-tour.md)). A comment on the same file reuses that tab; the tabs stay until the round ends, so you can still read one when the next question comes.
 - **Pausing is leaving.** Close the window or go back to your Desk.
@@ -131,7 +131,7 @@ flowchart LR
 - **Scope:** work out which parts of the codebase you're responsible for (asked once, then from what you review and merge).
 - **A round a day**, across those parts, at every level from the architecture down to a line's detail, so code literacy doesn't fade.
 - **Remember answers:** built ([quiz results](database.md#quiz-results)). Every answer is kept with its kind and file, so misses come back in a later round (asked fresh, choices shuffled) and a quiz covers what's new since the last one.
-- **Measure** how well you know each part at each level, from those answers.
+- **Measure** how well you know each part at each level, from those answers. Per subsystem, it's the [phone's map](mobile-quiz.md#3-subsystems-and-mastery).
 - **Adapt:** steer towards blind spots and parts you keep missing, while keeping breadth, and aiming for the higher levels first.
 
 ## 6. Rejected
@@ -143,7 +143,7 @@ flowchart LR
 - **A quiz-only mark on the dock** (a docked pane flagged as not a task, or a Quiz window kind): every rule that keeps a pane out of the task rules (the Desk, the Shelf, the list, the three, ⌘., making active, moving) would need a second check for it. The planning terminal already was a window's agent outside those rules, so it became the window's lead, for any window: a Desk's is its planning terminal, a plain window's is its quiz agent.
 - **Stepping aside when a task needs you:** the Desk already shows it; the quiz never interrupts.
 - **Offering once per session, when it starts** (before): a planning agent left open for days never offered again. The [scheduler](scheduler.md) prompts it each morning instead.
-- **Preparing questions in the background after main moves:** it costs agent runs for quizzes you never take, and needs something watching every repo.
+- **Preparing questions in the background after main moves:** it costs agent runs for quizzes you never take, and needs something watching every repo. The phone writes ahead only when a round has just been played ([phone quiz](mobile-quiz.md#1-rounds-written-ahead)).
 - **A question writer in the daemon,** writing rounds ahead for `kanna quiz` to hand out: the quiz agent writes better questions from what it just read, and answers follow questions. `kanna quiz` only keeps rounds and answers, which the agent writes; it was rejected at first, when nothing read them back, and came back once misses had to return ([quiz results](database.md#quiz-results)).
 
 ## 7. Glossary
