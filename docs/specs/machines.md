@@ -159,7 +159,7 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 
 ## 11. Open questions
 
-- **The user's GCP e2-micro** runs the relay slice 8 measures through. **Proposed:** it is the user's own relay, the example of "your own relay"; Kanna Cloud's relays are a separate deployment.
+- **The user's GCP e2-micro** is the user's own relay, the example of "your own relay" ([deployed](remote-terminals.md#3-your-relay)). **Proposed:** Kanna Cloud's relays are a separate deployment.
 
 ## 12. Rejected
 
