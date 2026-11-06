@@ -714,7 +714,7 @@ impl Phone {
             None if watch.is_some_and(|w| w.starting.is_some()) => ("starting", watch.and_then(|w| w.starting).unwrap_or(0.0)),
             Some("working") if waiting => ("elsewhere", watch.map_or(0.0, |w| w.since)),
             Some("working") => ("working", watch.map_or(0.0, |w| w.since)),
-            Some("blocked" | "needs-you") => ("blocked", watch.map_or(0.0, |w| w.since)),
+            Some("needs-you") => ("blocked", watch.map_or(0.0, |w| w.since)),
             _ if last.as_ref().is_some_and(|i| i.kind == "ask" && i.doc.get("chosen").is_none()) => ("asks", told.unwrap_or(0.0)),
             _ => ("idle", told.unwrap_or(0.0)),
         };
