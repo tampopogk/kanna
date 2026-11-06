@@ -276,6 +276,7 @@ impl Node {
                         "name": name,
                         "key": key,
                         "me": *key == me,
+                        "capabilities": view.descriptors.get(key).map(|d| d["capabilities"].clone()).unwrap_or(Value::Null),
                         "trusted": view.trusted().contains(key),
                         "revoked": view.revoked.contains(key),
                         "conflict": keys.len() > 1,

@@ -21,6 +21,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod comment_targets;
 mod moving;
+mod phone;
+
+pub use phone::Note;
 
 const WORKTREES: &str = ".kanna-worktrees";
 
@@ -52,6 +55,8 @@ pub struct Entry {
     pub conflict: Option<Conflict>,
     pub hears: Hears,
     pub sent: Vec<Sent>,
+    pub notes: Vec<Note>,
+    pub claim: Option<String>,
 }
 
 impl Entry {
@@ -103,6 +108,8 @@ impl Entry {
                 "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
                 "hears": self.hears.to_value(),
                 "sent": Value::Array(self.sent.iter().map(Sent::to_value).collect()),
+                "notes": Note::values(&self.notes),
+                "claim": opt(self.claim.as_deref()),
             }),
         }
     }
@@ -131,6 +138,8 @@ impl Entry {
             conflict: Conflict::from_value(row.doc.get("conflict")),
             hears: Hears::from_value(row.doc.get("hears")),
             sent: Sent::list(row.doc.get("sent")),
+            notes: Note::list(row.doc.get("notes")),
+            claim: text("claim"),
         }
     }
 
@@ -141,7 +150,7 @@ impl Entry {
     fn command_with(&self, session: Option<&str>, prompts: Prompts) -> String {
         let command = in_its_terminal(&asking(&self.agent, prompts));
         let agent = agent(&self.agent);
-        let told = told_task(self.message.as_deref());
+        let told = told_task(self.brief().as_deref());
         let first = |command: String| match agent.and_then(|a| a.prompt) {
             Some(flag) => format!("{command} {flag} {told}"),
             None => format!("{command} {told}"),
@@ -156,6 +165,15 @@ impl Entry {
             (None, None, Some((new, flag)), _) => first(format!("{command} {flag} {new}")),
             _ => first(command),
         }
+    }
+
+    fn brief(&self) -> Option<String> {
+        if self.notes.is_empty() {
+            return self.message.clone();
+        }
+        let mut parts: Vec<(Option<String>, String)> = self.message.clone().map(|m| (None, m)).into_iter().collect();
+        parts.extend(self.notes.iter().map(|note| (Some(note.from.clone()), note.text.clone())));
+        Some(messages::prompt(&parts))
     }
 
     fn looks_for_session(&self) -> bool {
@@ -691,7 +709,7 @@ fn not_found(id: &str) -> KmuxError {
     KmuxError::new("not_found", format!("no task \"{id}\" on the Shelf"))
 }
 
-fn failed(value: &Value) -> Option<KmuxError> {
+pub(crate) fn failed(value: &Value) -> Option<KmuxError> {
     if value.get("ok") == Some(&Value::Bool(true)) {
         return None;
     }
@@ -943,6 +961,8 @@ pub struct Tasks {
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
     pub claimant: RefCell<String>,
+    revision: Cell<u64>,
+    statuses: RefCell<HashMap<String, (String, f64)>>,
     replica: RefCell<Replica>,
     pub roster: RefCell<Option<Box<dyn Fn() -> Roster>>>,
     pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
@@ -1093,6 +1113,8 @@ impl Tasks {
             turns_away: RefCell::default(),
             next: Cell::new(0),
             claimant: RefCell::new(MAC_APP.into()),
+            revision: Cell::new(0),
+            statuses: RefCell::default(),
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
@@ -1186,11 +1208,15 @@ impl Tasks {
 
     fn sync_workspaces(&self, workspaces: &[Value]) {
         let of = |pane: &str| workspaces.iter().find(|w| w["dock"]["id"] == pane).and_then(|w| string(w, "id")).map(String::from);
+        let claim = |pane: &str| workspaces.iter().find(|w| w["dock"]["id"] == pane).and_then(|w| w["where"]["desk"].as_str()).map(|app| self.desk_of(app));
         let mut moved = vec![];
         if let Ok(mut running) = self.running.try_borrow_mut() {
             for r in running.iter_mut() {
-                if let Some(ws) = of(&r.pane).filter(|ws| r.entry.workspace.as_ref() != Some(ws)) {
-                    r.entry.workspace = Some(ws);
+                let ws = of(&r.pane).filter(|ws| r.entry.workspace.as_ref() != Some(ws));
+                let desk = claim(&r.pane).filter(|desk| r.entry.claim.as_ref() != Some(desk));
+                if ws.is_some() || desk.is_some() {
+                    r.entry.workspace = ws.or(r.entry.workspace.take());
+                    r.entry.claim = desk.or(r.entry.claim.take());
                     moved.push((r.entry.clone(), r.place, r.pane.clone()));
                 }
             }
@@ -1542,7 +1568,15 @@ impl Tasks {
             ("state", json!(state)),
             ("owner", json!(me)),
         ];
-        let ops = replica.stage(&entry.id, &birth, &fields);
+        let mut ops = replica.stage(&entry.id, &birth, &fields);
+        let known = replica.record(&entry.id, &birth).cloned();
+        let blank = |value: &Value| value.is_null() || value == &json!([]);
+        let moved = |field: &str, value: &Value| {
+            let was = known.as_ref().map_or(&Value::Null, |record| record.get(field));
+            was != value && !(blank(was) && blank(value))
+        };
+        let extra: Vec<(&str, Value)> = [("notes", Note::values(&entry.notes)), ("claim", opt(entry.claim.as_deref()))].into_iter().filter(|(field, value)| moved(field, value)).collect();
+        ops.extend(replica.stage(&entry.id, &birth, &extra));
         Some((birth, ops, permit))
     }
 
@@ -1590,6 +1624,7 @@ impl Tasks {
                 after: record.list("after"),
                 on: record.list("on"),
                 birth: Some(birth),
+                notes: Note::list(Some(record.get("notes"))),
                 ..Default::default()
             };
             let me = self.replica.borrow().me().to_string();
@@ -1620,7 +1655,7 @@ impl Tasks {
         }
     }
 
-    fn is_away(&self, peer: &str, now: Instant) -> bool {
+    pub(crate) fn is_away(&self, peer: &str, now: Instant) -> bool {
         self.away.borrow().get(peer).is_some_and(|away| away.until > now)
     }
 
@@ -1739,7 +1774,7 @@ impl Tasks {
         }
         match self.replica.borrow_mut().apply(&self.db, &ops) {
             Ok(0) => return,
-            Ok(_) => {}
+            Ok(_) => self.revised(),
             Err(error) => return log!("kanna-daemon: couldn't save other machines' tasks in {}: {error}", db::FILE),
         }
         self.refresh();
@@ -1757,7 +1792,7 @@ impl Tasks {
             .filter(|e| e.folder.is_none() && e.held.is_none())
             .filter_map(|e| {
                 let record = replica.record(&e.id, e.birth.as_deref()?)?;
-                let newer = Entry { name: record.text("name").map(String::from).or(e.name.clone()), after: record.list("after"), on: record.list("on"), ..e.clone() };
+                let newer = Entry { name: record.text("name").map(String::from).or(e.name.clone()), after: record.list("after"), on: record.list("on"), notes: Note::list(Some(record.get("notes"))), ..e.clone() };
                 (newer != *e).then_some(newer)
             })
             .collect();
@@ -1925,7 +1960,8 @@ impl Tasks {
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
     }
 
-    fn changed(&self) {
+    pub(crate) fn changed(&self) {
+        self.revised();
         self.follow();
         if let Some(on_change) = self.on_change.borrow().as_ref() {
             on_change(self.view());
@@ -1968,6 +2004,7 @@ impl Tasks {
         let status = status.and_then(Status::parse);
         let mut ready = self.ready.borrow_mut();
         let ready = ready.entry(pane.to_string()).or_insert_with(|| Ready::new(now));
+        let turn_over = ended || (ready.status() == Some(Status::Working) && status.is_some_and(|s| s != Status::Working));
         if ended && status == Some(Status::Idle) {
             ready.see(Some(Status::Working), now);
         }
@@ -1979,6 +2016,10 @@ impl Tasks {
             turn.see(status, now);
         }
         self.find_session(pane);
+        self.saw_status(pane, status);
+        if turn_over || status == Some(Status::NeedsYou) {
+            self.keep_last_words(pane);
+        }
     }
 
     fn find_session(self: &Rc<Self>, pane: &str) {
@@ -2818,6 +2859,10 @@ impl Tasks {
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what: kanna task send TASK TEXT"))?;
         let (from, here) = self.sender(args);
         let here = here.or_else(|| string(args, "repo").map(String::from));
+        let client = string(args, "id");
+        if let Some(sent) = client.and_then(|client| self.sent_already(client)) {
+            return Ok(sent);
+        }
         let (recipient, repo, agent) = if to == PLANNER {
             let repo = here.ok_or_else(|| bad("which repo's planner? run it in the repo"))?;
             (PLANNER.to_string(), repo, None)
@@ -2829,8 +2874,14 @@ impl Tasks {
             }
             (id, entry.repo, Some(program(&entry.agent).to_string()))
         };
+        if self.unstarted(&recipient) {
+            return self.note_for(&recipient, &from, text, client);
+        }
         let mode = if from == USER { None } else { who(args).and_then(|pane| self.permissions(pane)) };
         let message = self.queue(&recipient, &repo, &from, text, mode, None)?;
+        if let Some(client) = client {
+            self.db.set_message_client(message.id, client).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
+        }
         let pane = self.recipient_pane(&message, &self.planners());
         let state = match &pane {
             Some(pane) => self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
@@ -2967,10 +3018,12 @@ impl Tasks {
         let named = |who: &str| if db::is_task_id(who) { json!({ "id": who, "short": self.short(who) }) } else { json!(who) };
         let planners = self.planners();
         let warning = |m: &Message| m.delivered.is_none().then(|| self.recipient_pane(m, &planners)).flatten().and_then(|pane| self.warned.borrow().get(&pane).cloned());
-        let list = list
+        let notes = task.as_deref().and_then(|id| self.entry(id)).filter(|e| !e.notes.is_empty()).map(|e| self.notes_listed(&e, &named));
+        let mut list: Vec<Value> = list
             .iter()
             .map(|m| json!({ "id": m.id, "at": num(m.at), "from": named(&m.sender), "to": named(&m.recipient), "repo": m.repo, "delivered": m.delivered.map(num), "warning": warning(m), "text": m.text }))
             .collect();
+        list.extend(notes.into_iter().flatten());
         Ok(Map::from_iter([("task".to_string(), opt(task.as_deref())), ("messages".to_string(), Value::Array(list))]))
     }
 
@@ -3724,7 +3777,7 @@ impl Tasks {
         if let Err(error) = self.startable(&entry) {
             return responder.reply(Err(error));
         }
-        let app = string(args, "app").map_or_else(|| self.claimant.borrow().clone(), String::from);
+        let app = string(args, "desk").map(|desk| self.app_of(desk)).or_else(|| string(args, "app").map(String::from)).unwrap_or_else(|| self.claimant.borrow().clone());
         self.room(entry, app, who(args).map(String::from), Answer::To(responder));
     }
 
@@ -4191,7 +4244,7 @@ impl Tasks {
                 let ids: Vec<String> = reply.get("tasks").and_then(Value::as_array).map_or(vec![], |l| l.iter().filter_map(|t| string(t, "id").map(String::from)).collect());
                 core.with_panes(|panes| ids.iter().filter_map(|id| panes.get(id)).filter(|p| project(p.cwd.as_deref()) == here).count())
             });
-            if running >= TASKS_PER_PROJECT {
+            if running + this.claims_elsewhere(&entry, &app) >= TASKS_PER_PROJECT {
                 return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Desk: move one to the Shelf with `kanna task shelve TASK` first", entry.repo))));
             }
             this.prepare(entry, Some(app), by, responder);
@@ -4290,7 +4343,7 @@ impl Tasks {
                 return responder.reply(Err(error));
             }
             this.running.borrow_mut().retain(|r| r.pane != id);
-            let entry = Entry { held: Some(id.clone()), ..entry };
+            let entry = Entry { held: Some(id.clone()), claim: None, ..entry };
             let change = Change { from: Some(from), to: Some(Place::Shelf), ..Change::new("shelved") }.by(by.as_deref());
             let saved = this.store(&entry, Place::Shelf, Some(&id), Some(change));
             this.tell_planner(&entry, What::Shelved, by.as_deref());
@@ -4454,7 +4507,7 @@ impl Tasks {
         self.take(&ran.id);
         self.turns.borrow_mut().remove(pane);
         self.quitting.borrow_mut().remove(pane);
-        let ran = Entry { stopped: None, ..ran };
+        let ran = Entry { stopped: None, claim: Some(self.desk_of(app)), ..ran };
         let saved = self.store(&ran, Place::Desk, Some(pane), Some(Change::new("picked").moved(Place::Shelf, Place::Desk).by(by).with("app", json!(app))));
         self.tell_planner(&ran, What::Picked, by);
         self.record(pane, ran, Place::Desk);
