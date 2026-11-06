@@ -163,6 +163,7 @@ cd apps/kanna-ios && xcodegen generate
 xcodebuild test -project Kanna.xcodeproj -scheme Kanna -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 
+- **The version** is [the last tag's](release.md#versions): a build phase, `scripts/ios-version.sh`, writes `CFBundleShortVersionString` (`X.Y.Z`), `CFBundleVersion` (the commit count) and `KannaVersion` (all of it, `X.Y.Z-dev`) into the built Info.plist on every build, so `project.yml` sets none. With no tag to read, the build fails and says why.
 - **`FlowTests`** run the prototype's flows against `FixtureBackend`, with `-fixture YES`.
 - **`DeviceTests`** run on a real iPhone against a real daemon. `testScanAskAnswer` skips without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`; the answer must be words the question doesn't contain, or the test finds its own bubble. `testShelf` skips without `TEST_RUNNER_KANNA_TASK` and `TEST_RUNNER_KANNA_REPO`, and with `TEST_RUNNER_KANNA_TELL` and `TEST_RUNNER_KANNA_DESK` also messages and picks that task.
 - **The icon** is drawn in [iPhone app icon](ios-app-icon.md).

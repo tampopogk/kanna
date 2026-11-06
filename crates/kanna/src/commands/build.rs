@@ -93,9 +93,14 @@ pub fn run(socket: PathBuf, options: Options) -> Result<i32, Failure> {
     let here = std::env::current_dir().map_err(|e| fail(exit::FAILED, format!("build: no current folder: {e}")))?;
     let worktree = client::worktree(&here).map_err(|e| fail(exit::FAILED, format!("build: {e}")))?;
     let mut env = BTreeMap::new();
-    for name in ["KANNA_CHANNEL", "CI", "RUST_BACKTRACE", "CARGO_TERM_COLOR", "NSUnbufferedIO", "DEVELOPER_DIR"] {
+    for name in ["KANNA_CHANNEL", "KANNA_VERSION", "CI", "RUST_BACKTRACE", "CARGO_TERM_COLOR", "NSUnbufferedIO", "DEVELOPER_DIR"] {
         if let Ok(value) = std::env::var(name) {
             env.insert(name.to_string(), value);
+        }
+    }
+    if !env.contains_key("KANNA_VERSION") {
+        if let Some(version) = kanna_build::tags::dev_version(&worktree.root) {
+            env.insert("KANNA_VERSION".to_string(), version);
         }
     }
     let request = Request { root: worktree.root.clone(), cwd: worktree.cwd.clone(), argv: options.argv, env, fetch: options.fetch, ui: options.ui, job: client::new_job() };
