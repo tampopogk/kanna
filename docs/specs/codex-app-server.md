@@ -46,7 +46,7 @@ sequenceDiagram
 | Deliver | `turn/start` with the message as text input |
 
 - **Kanna finds the socket** from the arguments of the pane's Codex: the `--remote unix://SOCKET` its TUI was started with.
-- **Only at its prompt:** Kanna starts the turn once the agent is idle, as for any message.
+- **Only at its prompt:** Kanna starts the turn once the agent is idle: on a busy Codex, `turn/start` [drops the answer it's streaming](agent-messaging.md#2-delivery).
 
 ## 3. Costs
 

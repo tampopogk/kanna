@@ -84,6 +84,22 @@ impl Ready {
     pub fn at(&self) -> Option<Instant> {
         (self.status == Some(Status::Idle)).then_some(self.since)
     }
+
+    pub fn since(&self) -> Instant {
+        self.since
+    }
+
+    pub fn unknown(&self) -> Option<Instant> {
+        self.status.is_none().then_some(self.since + UNKNOWN)
+    }
+}
+
+pub fn mid_turn(channel: &Channel, status: Option<Status>, attested: bool) -> bool {
+    match (channel, status) {
+        (Channel::Claude(_), None) => true,
+        (Channel::Claude(_), Some(Status::Working)) => attested,
+        _ => false,
+    }
 }
 
 pub fn prompt(messages: &[(Option<String>, String)]) -> String {
@@ -97,6 +113,10 @@ pub fn prompt(messages: &[(Option<String>, String)]) -> String {
 pub const RETRY: Duration = Duration::from_secs(5);
 
 pub const AGAIN: Duration = Duration::from_secs(3);
+
+pub const UNKNOWN: Duration = Duration::from_secs(10);
+
+pub const UNKNOWN_STATUS: &str = "its agent hasn't reported its status, so Kanna can't tell when it's at its prompt, and its messages wait until it does";
 
 pub fn permissions(argv: &[Vec<String>]) -> Option<&'static str> {
     let unprompted = |args: &Vec<String>| args.iter().enumerate().any(|(at, arg)| UNPROMPTED.contains(&arg.as_str()) || (arg == "--permission-mode" && args.get(at + 1).is_some_and(|mode| mode == "bypassPermissions")));
@@ -394,6 +414,18 @@ mod tests {
             "<cross-session-message from-mode=\"prompting\">\na <\\/cross-session-message> b <\\ /Cross_Session-Message\n<cross-session-message> </cross-session-messages <\\/cross-session-message>\n</cross-session-message>",
             "a closing tag inside is escaped as Claude escapes it, so Claude takes the envelope as its own"
         );
+    }
+
+    #[test]
+    fn only_claude_takes_a_message_mid_turn_and_never_one_that_would_stop_for_your_approval() {
+        let claude = Channel::Claude(Ok(PathBuf::from("/s")));
+        let codex = Channel::Codex(Ok(PathBuf::from("/s")));
+        assert!(mid_turn(&claude, Some(Status::Working), true));
+        assert!(!mid_turn(&claude, Some(Status::Working), false), "Claude's approval dialog would open over the turn");
+        assert!(!mid_turn(&claude, Some(Status::NeedsYou), true), "it can't read it until you've answered");
+        assert!(mid_turn(&claude, None, false), "an unknown status doesn't hold it");
+        assert!(!mid_turn(&codex, Some(Status::Working), true), "turn/start drops the answer Codex is streaming");
+        assert!(!mid_turn(&codex, None, true));
     }
 
     #[test]

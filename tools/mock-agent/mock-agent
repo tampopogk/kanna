@@ -207,8 +207,19 @@ def inbound(text):
     peer(re.sub(r"<\\(?=/cross-session-message)", "<", envelope.group(2)) if envelope else text)
 
 
-def peer(text):
+BUSY = False
+HELD = []
+
+
+def shown(text):
     out("\x1b[J\r\n" + "\r\n".join(f"peer: {l}" for l in text.splitlines()) + "\r\n")
+
+
+def peer(text):
+    if BUSY and PROGRAM == "claude":
+        HELD.append(text)
+        return
+    shown(text)
     reported("working")
     orders = re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M)
     if orders:
@@ -216,7 +227,8 @@ def peer(text):
             answering(order)
     else:
         work(1)
-    reported("idle")
+    if not BUSY:
+        reported("idle")
     composer()
 
 
@@ -394,12 +406,20 @@ def reported(state):
 
 
 def answer(line):
+    global BUSY
     if line.split()[:1] == ["report"]:
         return answering(line)
     reported("working")
+    BUSY = True
     try:
         return answering(line)
     finally:
+        while HELD:
+            text = HELD.pop(0)
+            shown(text)
+            for order in re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M):
+                answering(order)
+        BUSY = False
         reported("idle")
 
 
