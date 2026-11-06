@@ -39,7 +39,7 @@ sequenceDiagram
     D2->>A: ok, daemon {pid, build: B2}, panes (the same IDs)
 ```
 
-- **Only with no app attached.** A second app gets `app_attached` as before, whatever its build, so two running apps of different builds can't take turns stopping each other's daemon.
+- **Only with no app of this machine attached.** A second app of this machine gets `app_attached` as before, whatever its build, so two running apps of different builds can't take turns stopping each other's daemon. Remote apps don't count: they're never asked their build, and when the daemon stops they redial the one that follows.
 - **A hello without `build`** (an older app, the test apps) is accepted, as before.
 - **The app** answers `other_build` by retrying at once rather than backing off, and starts its daemon at once on the socket the refusal handed it ([daemon socket](daemon-socket.md)); at most one start every 10 s still holds, so an app whose bundle changed under it can't loop.
 

@@ -112,7 +112,7 @@ sequenceDiagram
 | Transport | unix socket | iroh, through `kanna-net` in `kanna-ffi` for the app |
 | Version check | binary hash; another build is replaced ([daemon build](daemon-build.md)) | the same protocol; `other_protocol` when it isn't |
 | Who starts it | the app; on a Mac that serves your other machines, launchd | systemd (Linux), launchd (Macs) |
-| Apps | one (`app_attached`) | one; a phone has [a stream of its own](mobile-link.md#3-the-phone-stream) and doesn't count |
+| Apps | any number: its own and any remote ([links §2](machine-links.md#2-the-hello)) | any number; a phone has [a stream of its own](mobile-link.md#3-the-phone-stream) and doesn't count |
 
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `machine call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.

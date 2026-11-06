@@ -37,6 +37,7 @@ mod runs;
 mod schedule;
 mod settings;
 mod shell;
+mod sizes;
 mod status;
 mod status_command;
 mod diffs;
@@ -127,6 +128,7 @@ pub enum Event {
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppBehind { conn: u64, queued: usize },
+    AppUsed { conn: u64, terminal: String },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
@@ -154,7 +156,7 @@ impl Event {
             Event::Sampled(_) => "loop.stats",
             Event::Covered(_) => "loop.coverage",
             Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
-            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
+            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppUsed { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
             Event::PeerRequest { .. } | Event::AccountBroken(_) => "loop.accounts",
@@ -610,7 +612,7 @@ fn run() -> Result<(), String> {
         }),
     );
     let front = link.clone();
-    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.attached()) {
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers()) {
         Some(app) => app.forward("app.front", args, responder),
         None => responder.reply(Ok(Map::new())),
     }));
@@ -697,8 +699,8 @@ fn run() -> Result<(), String> {
             break;
         }
         if let Some(Shutdown::App(by)) = shutdown {
-            if !app.attached() || Instant::now() >= by {
-                if app.attached() {
+            if !app.attached_here() || Instant::now() >= by {
+                if app.attached_here() {
                     log!("kanna-daemon: the app didn't quit in {}s; going on without it", APP_QUIT_WAIT.as_secs());
                     app.close();
                 }
@@ -728,7 +730,7 @@ fn run() -> Result<(), String> {
         terminals.save_if_changed();
         layout.flush();
         let ticks = if shutdown.is_none() {
-            crashes.tick(Instant::now(), app.attached());
+            crashes.tick(Instant::now(), app.attached_here());
             tasks.sweep();
             [tasks.tick(), scheduler.tick(), runs.tick()].into_iter().flatten().min()
         } else {
@@ -761,7 +763,7 @@ fn run() -> Result<(), String> {
                     reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "stopping", "message": "this Kanna is stopping" } }))
                 }
                 Some("capabilities") => {
-                    let attached = app.attached();
+                    let attached = app.answers();
                     let build = build_id.clone();
                     core.handle(request, move |mut answer| {
                         if answer.get("ok") == Some(&Value::Bool(true)) {
@@ -778,8 +780,8 @@ fn run() -> Result<(), String> {
                 if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
                     app.folder(&pane, &cwd);
                 }
-                if noticed.overflowed {
-                    app.resync(&terminal);
+                for conn in noticed.overflowed {
+                    app.resync(conn, &terminal);
                 }
             }
             Event::Drained { terminal, serial } => {
@@ -870,7 +872,7 @@ fn run() -> Result<(), String> {
                             args.remove(kanna_net::PEER);
                         }
                     }
-                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.is_here(conn)) {
                         app.answer_app(conn, refused);
                         continue;
                     }
@@ -892,9 +894,10 @@ fn run() -> Result<(), String> {
             Event::AppCaughtUp { conn } => app.caught_up(conn),
             Event::AppBehind { conn, queued } => {
                 if app.is_current(conn) {
-                    app.fell_behind(queued);
+                    app.fell_behind(conn, queued);
                 }
             }
+            Event::AppUsed { conn, terminal } => app.used(conn, &terminal),
             Event::MachineConfirm { question, answer } => match &machines {
                 Some(machines) => machines.confirm(&app, question, answer),
                 None => answer(Err("this daemon has no endpoint".into())),

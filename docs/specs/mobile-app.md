@@ -121,7 +121,7 @@ Signing needs a team set in Xcode and `CODE_SIGNING_ALLOWED` removed ([README](.
 
 ## 7. Rejected
 
-- **The app link on the phone:** it carries terminals and layouts the phone never shows, it's one app per daemon, and it would give a phone `send`.
+- **The app link on the phone:** it carries terminals and layouts the phone never shows, and it would give a phone `send`.
 - **A second agent for the phone:** two agents would disagree about the repo, which is the problem this app's one-agent rule exists to avoid.
 - **Showing the planner's terminal or transcript:** that's the noise. The planner says what matters.
 - **An app key certified by one machine** (the stopgap for D13): it needs pairing with each machine, and dies with that machine.

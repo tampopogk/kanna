@@ -1,6 +1,6 @@
 # Pane sizes
 
-**Status:** built · **Tested:** e2e `pane_sizes`, `cargo test -p kanna-daemon --test restart` (a terminal started again after a restart keeps its size without its screen) · **Builds on:** [app link](app-link.md), [restarting the daemon](daemon-restart.md), [desk](desk.md)
+**Status:** built · **Tested:** e2e `pane_sizes`, `machine_two_apps`, `sizes.rs` unit tests, `cargo test -p kanna-daemon --test restart` (a terminal started again after a restart keeps its size without its screen) · **Builds on:** [app link](app-link.md), [restarting the daemon](daemon-restart.md), [desk](desk.md)
 
 A terminal's program always sees the size of the view it's shown in, or would be shown in: across a relaunch of the app, a restart of the daemon, and for an agent you haven't looked at yet. A full-screen program such as Claude lays out what it prints at the size it has when it prints it, so a wrong size, even for a moment, stays in its scrollback.
 
@@ -22,3 +22,14 @@ flowchart LR
 ## 2. What still starts at 80×24
 
 A terminal the daemon has never had a size for (a new pane, a Shelf task's first start) starts at 80×24 and takes its view's size as soon as the app has made the view, a few milliseconds later; with no app attached, when it attaches. A pane in a tab that hasn't been shown since launch keeps whatever size its pty has.
+
+## 3. Several apps
+
+Each app showing a terminal asks for the size of its own view. The pty has one size: that of the app that **last used** the terminal, by typing into it or scrolling it. The other apps take that `grid` and draw the terminal at that size.
+
+- **What counts as use:** keys, paste and mouse (`input`, noted on the link's reader thread, in order with the bytes) and the start of a scroll gesture (`used`). A focus report doesn't: clicking from one window to another isn't working in a terminal.
+- **Before anyone has used it,** this machine's app sets the size, else the app that linked first.
+- **Resizing a view** only keeps that app's wanted size, unless that app set the size last: a window dragged on one machine doesn't reflow what's being worked on from another. It takes effect when that app next uses the terminal.
+- **An app that goes,** or stops showing the terminal, hands the size to the one left that used it last.
+
+`crates/kanna-daemon/src/sizes.rs` holds the rule.
