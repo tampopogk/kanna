@@ -264,14 +264,14 @@ impl Terminals {
         Some(code)
     }
 
-    pub fn resize(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
+    pub fn resize(&self, conn: u64, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
         let mut live = self.live.borrow_mut();
         let Some(terminal) = live.get_mut(id) else { return self.resize_starting(id, cols, rows, width, height) };
         let mut feed = Feed::lock(&terminal.feed);
         if cols > MAX_SIDE || rows > MAX_SIDE {
             log!("kanna-daemon: refused to make {id} {cols}×{rows}: at most {MAX_SIDE} cells a side");
             let grid = grid(id, feed.cols, feed.rows);
-            self.wire.after_output(id, &mut feed, &grid);
+            self.wire.after_output(conn, id, &mut feed, &grid);
             return Some((feed.cols, feed.rows));
         }
         let (cols, rows) = (cols.max(1), rows.max(1));
@@ -286,8 +286,21 @@ impl Terminals {
                 let _ = pty.input.send(replies);
             }
         }
-        self.wire.after_output(id, &mut feed, &grid(id, cols, rows));
+        let grid = grid(id, cols, rows);
+        let viewers: Vec<u64> = feed.viewers.keys().copied().filter(|viewer| *viewer != conn).collect();
+        self.wire.after_output(conn, id, &mut feed, &grid);
+        for viewer in viewers {
+            self.wire.after_output(viewer, id, &mut feed, &grid);
+        }
         Some((cols, rows))
+    }
+
+    pub fn tell_grid(&self, conn: u64, id: &str) {
+        if let Some(terminal) = self.live.borrow().get(id) {
+            let mut feed = Feed::lock(&terminal.feed);
+            let grid = grid(id, feed.cols, feed.rows);
+            self.wire.after_output(conn, id, &mut feed, &grid);
+        }
     }
 
     fn resize_starting(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
@@ -350,7 +363,7 @@ impl Terminals {
         }
     }
 
-    pub fn attach(&self, id: &str, shown: bool, history: Option<usize>, from: Option<u64>) -> Option<Attach> {
+    pub fn attach(&self, conn: u64, id: &str, shown: bool, history: Option<usize>, from: Option<u64>) -> Option<Attach> {
         let live = self.live.borrow();
         let t = live.get(id)?;
         let mut feed = Feed::lock(&t.feed);
@@ -368,37 +381,32 @@ impl Terminals {
                     grid(id, feed.cols, feed.rows),
                 ],
                 Err(error) => {
-                    feed.shown = false;
-                    feed.discard();
+                    feed.hide(conn);
                     return Some(Attach { snapshot: Err(error), exit_code: None });
                 }
             },
         };
         if shown {
-            self.wire.shown(id, &mut feed, &messages);
+            self.wire.shown(conn, id, &mut feed, &messages);
         }
         Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
     }
 
-    pub fn hide(&self, id: &str) {
+    pub fn hide(&self, conn: u64, id: &str) {
         if let Some(terminal) = self.live.borrow().get(id) {
-            let mut feed = Feed::lock(&terminal.feed);
-            feed.shown = false;
-            feed.discard();
+            Feed::lock(&terminal.feed).hide(conn);
         }
     }
 
-    pub fn hide_all(&self) {
+    pub fn hide_all(&self, conn: u64) {
         for terminal in self.live.borrow().values() {
-            let mut feed = Feed::lock(&terminal.feed);
-            feed.shown = false;
-            feed.discard();
+            Feed::lock(&terminal.feed).hide(conn);
         }
     }
 
-    pub fn after_output(&self, id: &str, message: &Value) {
+    pub fn after_output(&self, conn: u64, id: &str, message: &Value) {
         if let Some(terminal) = self.live.borrow().get(id) {
-            self.wire.after_output(id, &mut Feed::lock(&terminal.feed), message);
+            self.wire.after_output(conn, id, &mut Feed::lock(&terminal.feed), message);
         }
     }
 
@@ -940,7 +948,7 @@ mod tests {
         let reply = opened.borrow_mut().take().unwrap();
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(core.pane(&pane).map(|p| (p.state, p.pid)), Some((PaneState::Running, Some(4243))));
-        assert!(terminals.attach(core.pane(&pane).unwrap().terminal.as_deref().unwrap(), false, None, None).is_some());
+        assert!(terminals.attach(1, core.pane(&pane).unwrap().terminal.as_deref().unwrap(), false, None, None).is_some());
         drop((terminals, keeper));
         drop(fake);
         let _ = std::fs::remove_dir_all(&dir);
