@@ -34,6 +34,93 @@ final class FlowTests: XCTestCase {
         app.buttons["send"].tap()
     }
 
+    private func tabBar(_ name: String) {
+        app.tabBars.buttons[name].tap()
+    }
+
+    private func shelf() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
+        app.launch()
+        tabBar("Shelf")
+    }
+
+    func testShelfListsTheRepoSTasks() {
+        shelf()
+        see("studio's Desk")
+        see("2 of 3")
+        see("Review build output")
+        see("needs you")
+        app.swipeUp()
+        see("blocked by Restore task tabs")
+        see("not started")
+        see("5 done lately")
+        shot("shelf")
+    }
+
+    func testPickThroughAFullDesk() {
+        shelf()
+        app.swipeUp()
+        tap("Native diff viewer")
+        app.buttons["pick"].tap()
+        tap("mbp")
+        see("mbp's Desk is full")
+        shot("full")
+        tap("Restore task tabs")
+        see("On mbp's Desk", 8)
+        see("shows when it next opens")
+        see("Working")
+        shot("picked")
+    }
+
+    func testPickShowsOnlyForShelfTasks() {
+        shelf()
+        tap("Keep terminal output")
+        see("On studio's Desk")
+        XCTAssertFalse(app.buttons["pick"].exists)
+        see("Merged, and the test passes")
+    }
+
+    func testAnsweringATaskStartsIt() {
+        shelf()
+        tap("Review build output")
+        see("It said,")
+        say("Drop them and restyle the crash page")
+        see("Got it. Carrying on", 12)
+        see("Working")
+        XCTAssertTrue(app.descendants(matching: .any)["last-words"].exists, "sending hides nothing")
+        shot("answered-task")
+    }
+
+    func testEveryReplyStaysInTheThread() {
+        shelf()
+        tap("Review build output")
+        let said = app.descendants(matching: .any).matching(identifier: "last-words")
+        func replies(_ count: Int) -> Bool {
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == %d", count), object: said)], timeout: 12) == .completed
+        }
+        see("It said,")
+        XCTAssertTrue(replies(1))
+        say("First")
+        XCTAssertTrue(replies(2))
+        say("Second")
+        XCTAssertTrue(replies(3), "a reply replaces none before it")
+    }
+
+    func testAMessageToATaskThatHasnTStartedGoesWithItsFirstMessage() {
+        shelf()
+        app.swipeUp()
+        tap("Schedule history page")
+        say("Add an export too")
+        see("Waits until it starts")
+        see("First message")
+        see("A page with every schedule's firings")
+        shot("waits")
+        app.buttons["pick"].tap()
+        tap("studio")
+        see("Read", 8)
+        see("Working")
+    }
+
     func testPairingThenChat() {
         app.launchArguments = ["-fixture", "YES", "-paired", "NO"]
         app.launch()

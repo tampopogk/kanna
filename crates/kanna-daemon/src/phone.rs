@@ -1,19 +1,20 @@
+use crate::app_link::AppLink;
 use crate::db::{self, Db, PhoneItem};
 use crate::machines::Caller;
 use crate::messages::{KANNA, PHONE, PLANNER};
 use crate::runtime::Events;
-use crate::tasks::Tasks;
+use crate::tasks::{failed as refusal, Tasks};
 use crate::Event;
 use kanna_mux::json::{json, num, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::rc::{Rc, Weak};
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const COMMAND: &str = "phone";
 
@@ -26,6 +27,10 @@ const IDLE_LIMIT: f64 = 3600.0;
 const SETTLE: f64 = 3.0;
 
 const CODE_LINES: u64 = 200;
+
+const PEER_WAIT: Duration = Duration::from_secs(3);
+
+const ACT_WAIT: Duration = Duration::from_secs(20);
 
 const NUDGE: &str = "The phone is waiting: answer with kanna phone say";
 
@@ -96,6 +101,8 @@ pub struct Phone {
     tasks: Rc<Tasks>,
     core: CoreHandle,
     caller: Option<Caller>,
+    app: Rc<AppLink>,
+    told: std::cell::Cell<u64>,
     repos: RefCell<BTreeMap<String, String>>,
     watches: RefCell<BTreeMap<String, Watch>>,
 }
@@ -105,8 +112,8 @@ fn item_value(item: &PhoneItem, read: Option<f64>) -> Value {
 }
 
 impl Phone {
-    pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, caller: Option<Caller>) -> Rc<Phone> {
-        let phone = Rc::new(Phone { db, tasks, core: core.clone(), caller, repos: RefCell::default(), watches: RefCell::default() });
+    pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, caller: Option<Caller>, app: Rc<AppLink>) -> Rc<Phone> {
+        let phone = Rc::new(Phone { db, tasks, core: core.clone(), caller, app, told: std::cell::Cell::new(0), repos: RefCell::default(), watches: RefCell::default() });
         let this = Rc::downgrade(&phone);
         core.add_command(
             COMMAND,
@@ -140,6 +147,12 @@ impl Phone {
             "chat.choose" => responder.reply(self.choose(&args)),
             "say" | "ask" | "show" => responder.reply(self.answer(&request, &args)),
             "history" => responder.reply(self.history(&args)),
+            "tasks.list" => self.tasks_list(&args, responder),
+            "task.read" => self.task_read(&args, responder),
+            "task.send" => self.task_send(&args, responder),
+            "task.pick" => self.task_pick(&args, responder),
+            "here.shelf" => responder.reply(self.here_shelf(&args)),
+            "here.read" => responder.reply(string(&args, "task").ok_or_else(|| bad("say which task")).and_then(|task| self.read_here(task))),
             other => responder.reply(Err(bad(format!("no phone request \"{other}\"")))),
         }
     }
@@ -316,6 +329,137 @@ impl Phone {
         Ok(Map::from_iter([("items".to_string(), Value::Array(items[from..].iter().map(|i| self.value(i)).collect()))]))
     }
 
+    fn peers(&self) -> Vec<Value> {
+        let status = self.caller.as_ref().map(Caller::status).unwrap_or_default();
+        status["peers"].as_array().cloned().unwrap_or_default().into_iter().filter(|p| p["me"] != true && p["trusted"] == true && p["revoked"] != true).collect()
+    }
+
+    fn here_shelf(&self, args: &Value) -> Result<Map, KmuxError> {
+        let project = string(args, "project").ok_or_else(|| bad("say which project"))?;
+        Ok(Map::from_iter([("tasks".to_string(), Value::Array(self.tasks.shelf_here(project))), ("open".to_string(), json!(self.app.attached_here()))]))
+    }
+
+    fn ask(&self, host: Option<&str>, cmd: &str, args: Value, wait: Duration, then: impl FnOnce(Result<Value, KmuxError>) + 'static) {
+        let request = match host {
+            Some(host) => json!({ "cmd": "machine", "args": { "action": "call", "host": host, "cmd": cmd, "args": args } }),
+            None => json!({ "cmd": cmd, "args": args }),
+        };
+        let (sender, answer) = tokio::sync::oneshot::channel();
+        self.core.handle(request, move |reply| {
+            let _ = sender.send(reply);
+        });
+        let name = host.unwrap_or("this machine").to_string();
+        crate::runtime::spawn("a phone request to a machine", async move {
+            then(match tokio::time::timeout(wait, answer).await {
+                Ok(Ok(reply)) => match refusal(&reply) {
+                    Some(error) => Err(error),
+                    None => Ok(reply),
+                },
+                _ => Err(KmuxError::new("unreachable", format!("{name} didn't answer"))),
+            });
+        });
+    }
+
+    fn tasks_list(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let project = match self.path_of(args) {
+            Ok(_) => string(args, "repo").unwrap_or_default().to_string(),
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let mine = self.machine();
+        let tasks = Rc::new(RefCell::new(self.tasks.shelf_here(&project)));
+        let desks = Rc::new(RefCell::new(cfg!(target_os = "macos").then(|| json!({ "machine": mine, "open": self.app.attached_here() })).into_iter().collect::<Vec<_>>()));
+        let now = Instant::now();
+        let peers = self.peers();
+        let left = Rc::new(std::cell::Cell::new(peers.len()));
+        let answer = Rc::new(RefCell::new(Some(responder)));
+        let this = Rc::downgrade(self);
+        let finish = {
+            let (tasks, desks, project) = (tasks.clone(), desks.clone(), project.clone());
+            Rc::new(move || {
+                let (Some(this), Some(responder)) = (this.upgrade(), answer.borrow_mut().take()) else { return };
+                let mut tasks = tasks.take();
+                let shown: HashSet<String> = tasks.iter().filter_map(|t| t["id"].as_str().map(String::from)).collect();
+                tasks.extend(this.tasks.shelf_records(&project, &shown));
+                responder.reply(Ok(Map::from_iter([("tasks".to_string(), Value::Array(tasks)), ("desks".to_string(), Value::Array(desks.take())), ("done".to_string(), Value::Array(this.tasks.done_lately(&project)))])));
+            })
+        };
+        if peers.is_empty() {
+            return finish();
+        }
+        for peer in peers {
+            let name = peer["name"].as_str().unwrap_or_default().to_string();
+            let mac = peer["capabilities"]["os"] == "macos";
+            let (tasks, desks, left, finish) = (tasks.clone(), desks.clone(), left.clone(), finish.clone());
+            let done = move |reply: Option<Value>| {
+                if let Some(reply) = &reply {
+                    tasks.borrow_mut().extend(reply["tasks"].as_array().cloned().unwrap_or_default());
+                }
+                if mac {
+                    desks.borrow_mut().push(json!({ "machine": name, "open": reply.is_some_and(|r| r["open"] == true) }));
+                }
+                left.set(left.get() - 1);
+                if left.get() == 0 {
+                    finish();
+                }
+            };
+            if self.tasks.is_away(peer["key"].as_str().unwrap_or_default(), now) {
+                done(None);
+                continue;
+            }
+            self.ask(peer["name"].as_str(), COMMAND, json!({ "request": "here.shelf", "project": project }), PEER_WAIT, move |reply| done(reply.ok()));
+        }
+    }
+
+    fn read_here(self: &Rc<Self>, task: &str) -> Result<Map, KmuxError> {
+        let read = self.tasks.task_here(task)?;
+        if let Some(id) = read["task"]["id"].as_str() {
+            self.tasks.fill_last_words(id);
+        }
+        Ok(read)
+    }
+
+    fn task_read(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let Some(task) = string(args, "task").map(String::from) else { return responder.reply(Err(bad("say which task"))) };
+        match self.tasks.owner_of(&task) {
+            None => responder.reply(Err(KmuxError::new("not_found", format!("no task {task}")))),
+            Some(None) => responder.reply(self.read_here(&task)),
+            Some(Some(owner)) => {
+                let tasks = self.tasks.clone();
+                self.ask(Some(&owner), COMMAND, json!({ "request": "here.read", "task": task }), PEER_WAIT, move |reply| match reply {
+                    Ok(reply) => responder.reply(Ok(fields(reply))),
+                    Err(error) => responder.reply(tasks.task_record(&task).ok_or(error)),
+                });
+            }
+        }
+    }
+
+    fn task_send(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let (Some(task), Some(id)) = (string(args, "task"), string(args, "id")) else { return responder.reply(Err(bad("a message from the phone carries its task and id"))) };
+        let Some(text) = string(args, "text").map(str::trim).filter(|t| !t.is_empty()) else { return responder.reply(Err(bad("say what"))) };
+        let Some(owner) = self.tasks.owner_of(task) else { return responder.reply(Err(KmuxError::new("not_found", format!("no task {task}")))) };
+        let request = json!({ "action": "send", "to": task, "text": text, "id": id });
+        self.ask(owner.as_deref(), "tasks", request, ACT_WAIT, move |reply| responder.reply(reply.map(fields)));
+    }
+
+    fn task_pick(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let (Some(task), Some(desk)) = (string(args, "task").map(String::from), string(args, "desk").map(String::from)) else { return responder.reply(Err(bad("say which task and which Desk"))) };
+        let Some(owner) = self.tasks.owner_of(&task) else { return responder.reply(Err(KmuxError::new("not_found", format!("no task {task}")))) };
+        let this = Rc::downgrade(self);
+        let room = string(args, "room").map(String::from);
+        let freed = room.clone();
+        let pick = move |responder: Responder| {
+            let Some(this) = this.upgrade() else { return };
+            let request = json!({ "action": "pick", "task": task, "desk": desk, "room": freed });
+            this.ask(owner.as_deref(), "tasks", request, ACT_WAIT, move |reply| responder.reply(reply.map(fields)));
+        };
+        let Some(room) = room.as_deref() else { return pick(responder) };
+        let Some(holder) = self.tasks.owner_of(room) else { return responder.reply(Err(KmuxError::new("not_found", format!("no task {room}")))) };
+        self.ask(holder.as_deref(), "tasks", json!({ "action": "shelve", "task": room }), ACT_WAIT, move |reply| match reply {
+            Ok(_) => pick(responder),
+            Err(error) => responder.reply(Err(error)),
+        });
+    }
+
     fn status(&self, path: &str) -> (String, f64) {
         let watches = self.watches.borrow();
         let watch = watches.get(path);
@@ -342,6 +486,12 @@ impl Phone {
     }
 
     fn tick(self: &Rc<Self>) {
+        let revision = self.tasks.revision();
+        if revision != self.told.replace(revision) {
+            for repo in self.repos.borrow().keys() {
+                notify(&json!({ "notice": "tasks", "repo": repo }));
+            }
+        }
         let repos: Vec<String> = self.watches.borrow().keys().cloned().collect();
         for path in repos {
             self.tick_repo(&path);

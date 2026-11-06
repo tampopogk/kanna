@@ -92,7 +92,7 @@ flowchart TD
 - **A running Shelf task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message when its turn in the queue comes.
 - **A task stopped on the Desk stays stopped:** you stopped it. It gets its messages when you start it.
 - **Only a task whose agent takes messages runs for one:** a stopped task started as another agent isn't woken for a message it couldn't take.
-- **A task that hasn't started isn't woken:** planned: the message goes with its first message, in a `notes` field of its replicated record ([phone Shelf §4](mobile-shelf.md#4-a-message-to-a-task-that-hasnt-started)). Today it's delivered at the end of its first turn.
+- **A task that hasn't started isn't woken:** the message goes with its first message, in a `notes` field of its replicated record ([phone Shelf §4](mobile-shelf.md#4-a-message-to-a-task-that-hasnt-started)), and `kanna task send` says so.
 
 ## 4. CLI
 

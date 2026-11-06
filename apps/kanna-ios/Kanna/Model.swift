@@ -24,7 +24,7 @@ enum Planner: Equatable {
 
 enum Receipt: Equatable {
     case none, sent, read
-    case waitingTurn, waitingPlanner, dayOld
+    case waitingTurn, waitingPlanner, waitingStart, dayOld
     case waitingMachine(String)
 }
 
@@ -89,7 +89,49 @@ struct ChatItem: Identifiable {
 
 enum Status {
     case working, needs, idle, ready, stale, stopped, waiting, blocked
+
+    init(wire: String) {
+        switch wire {
+        case "working": self = .working
+        case "needs": self = .needs
+        case "idle": self = .idle
+        case "ready": self = .ready
+        case "stale": self = .stale
+        case "waiting": self = .waiting
+        case "blocked": self = .blocked
+        default: self = .stopped
+        }
+    }
 }
+
+struct Message: Identifiable {
+    let id: String
+    let from: String
+    let time: String
+    let text: String
+    var you = false
+    var receipt: Receipt = .none
+    var at = 0.0
+    var said = false
+}
+
+struct WorkItem: Identifiable {
+    let id: String
+    var name: String
+    var status: Status
+    var desk: String?
+    var machine: String?
+    var agent = "claude"
+    var age = ""
+    var after = ""
+    var branch: String?
+    var firstMessage: String?
+    var thread: [Message] = []
+    var unreachable = false
+    var picking = false
+}
+
+enum AppTab { case chat, shelf }
 
 enum PairStep { case start, scan, refused, confirm, done }
 
@@ -100,6 +142,9 @@ struct Repo: Identifiable {
     var planner: Planner
     var lastLine = ""
     var chat: [ChatItem] = []
+    var tasks: [WorkItem] = []
+    var desks: [Desk] = []
+    var done: [String] = []
     var down = false
     var lastSeen = ""
 }

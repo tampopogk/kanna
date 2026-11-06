@@ -16,6 +16,10 @@ final class Store {
     @ObservationIgnored private var waking = false
     @ObservationIgnored private var flushing = false
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var shelves: [String: ShelfPage] = [:]
+    @ObservationIgnored private var pages: [String: TaskPage] = [:]
+    @ObservationIgnored private var listing = false
+    @ObservationIgnored private var relist = false
 
     let fixture: Bool
     var paired: Bool
@@ -31,6 +35,13 @@ final class Store {
     var noNetwork = false
     var roundTrip = 0
     var lastSeen: Date?
+    var tab = AppTab.chat
+    var shelfPath: [String] = []
+    var pendingPick: String?
+    var pickFull: String?
+    var fullFor: String?
+    var pickError: String?
+    var picking: Set<String> = []
 
     static func launch() -> Store {
         let defaults = UserDefaults.standard
@@ -50,6 +61,8 @@ final class Store {
         queued = keep.queued()
         for kept in keep.repos() {
             items[kept.id] = keep.items(kept.id)
+            shelves[kept.id] = keep.page("shelf/\(kept.id)")
+            for task in shelves[kept.id]?.tasks ?? [] { pages[task.id] = keep.page("task/\(task.id)") }
             repos.append(Repo(id: kept.id, name: kept.name, plannerMachine: kept.machine, planner: Planner(status: kept.status, since: kept.since)))
             rebuild(kept.id)
         }
@@ -140,6 +153,7 @@ final class Store {
                 try? await Task.sleep(for: .seconds(5))
                 guard mine == generation else { return }
                 await measure()
+                if tab == .shelf { refreshShelf() }
             }
         }
     }
@@ -190,6 +204,7 @@ final class Store {
         let page = try await backend.read(repo: id, after: after)
         merge(page.items, repo: id)
         change(id) { $0.planner = Planner(status: page.status, since: page.since) }
+        await list(id)
     }
 
     private func merge(_ fresh: [Item], repo id: String) {
@@ -218,6 +233,7 @@ final class Store {
         switch notice {
         case .chat(let repo, let item): merge([item], repo: repo)
         case .planner(let repo, let status, let since): change(repo) { $0.planner = Planner(status: status, since: since) }
+        case .tasks(let repo): if repo == currentID { refreshShelf() }
         }
     }
 
@@ -255,12 +271,102 @@ final class Store {
             default: break
             }
         }
-        for message in queued where message.repo == id {
+        for message in queued where message.repo == id && message.task == nil {
             let old = Date().timeIntervalSince(message.at) > 86400
             chat.append(ChatItem(id: message.id, kind: .me(message.text, old ? .dayOld : offline ? .waitingMachine(machine) : .sent)))
         }
         repos[index].chat = chat
         repos[index].lastLine = last
+        rebuildShelf(index)
+    }
+
+    private func rebuildShelf(_ index: Int) {
+        let id = repos[index].id
+        let shelf = shelves[id]
+        repos[index].desks = shelf?.desks ?? []
+        repos[index].done = shelf?.done ?? []
+        repos[index].tasks = (shelf?.tasks ?? []).map { work($0, repo: id, machine: repos[index].plannerMachine) }
+    }
+
+    private func work(_ task: ShelfTask, repo: String, machine: String) -> WorkItem {
+        let page = pages[task.id]
+        let status = Status(wire: task.status)
+        var item = WorkItem(id: task.id, name: task.name, status: status, desk: task.desk, machine: task.machine)
+        item.agent = task.agent ?? "claude"
+        item.age = Self.age(task.since)
+        item.after = (task.after ?? []).map { $0.name ?? $0.id }.joined(separator: ", ")
+        item.branch = task.branch
+        item.firstMessage = page?.task.message ?? task.message
+        item.unreachable = task.unreachable == true
+        item.picking = picking.contains(task.id)
+        var thread: [Message] = (page?.thread ?? []).enumerated().map { index, line in
+            let time = Self.clock.string(from: Date(timeIntervalSince1970: line.at))
+            return Message(id: "\(task.id)/\(index)", from: line.from, time: time, text: line.text, you: line.you, receipt: line.you ? Self.receipt(line, status) : .none, at: line.at)
+        }
+        for words in page?.said ?? [] {
+            let said = Message(id: "\(task.id)/said/\(words.at)", from: task.name, time: Self.clock.string(from: Date(timeIntervalSince1970: words.at)), text: words.text, at: words.at, said: true)
+            thread.insert(said, at: thread.firstIndex { $0.at > words.at } ?? thread.count)
+        }
+        let sent = Set((page?.thread ?? []).compactMap(\.client))
+        for message in queued where message.task == task.id && !sent.contains(message.id) {
+            let old = Date().timeIntervalSince(message.at) > 86400
+            thread.append(Message(id: message.id, from: "you", time: Self.clock.string(from: message.at), text: message.text, you: true, receipt: old ? .dayOld : offline ? .waitingMachine(machine) : .sent))
+        }
+        item.thread = thread
+        return item
+    }
+
+    private static func receipt(_ line: ThreadLine, _ status: Status) -> Receipt {
+        if line.read != nil { return .read }
+        switch status {
+        case .waiting, .blocked: return .waitingStart
+        case .working, .needs: return .waitingTurn
+        default: return .sent
+        }
+    }
+
+    private static func age(_ since: Double) -> String {
+        let seconds = Int(Date().timeIntervalSince1970 - since)
+        if seconds < 60 { return "just now" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        if seconds < 86400 { return "\(seconds / 3600)h" }
+        return seconds < 172800 ? "yesterday" : "\(seconds / 86400)d"
+    }
+
+    private func applyShelf(_ page: ShelfPage, repo id: String) {
+        shelves[id] = page
+        keep.put(page: page, key: "shelf/\(id)")
+        guard let index = repos.firstIndex(where: { $0.id == id }) else { return }
+        rebuildShelf(index)
+    }
+
+    private func list(_ id: String) async {
+        guard !id.isEmpty else { return }
+        if let page = try? await backend.tasks(repo: id) { applyShelf(page, repo: id) }
+    }
+
+    func refreshShelf() {
+        guard !offline else { return }
+        guard !listing else {
+            relist = true
+            return
+        }
+        listing = true
+        Task {
+            defer { listing = false }
+            repeat {
+                relist = false
+                await list(currentID)
+                if let open = shelfPath.last { await read(open) }
+            } while relist
+        }
+    }
+
+    func read(_ id: String) async {
+        guard let page = try? await backend.task(id) else { return }
+        pages[id] = page
+        keep.put(page: page, key: "task/\(id)")
+        rebuild(currentID)
     }
 
     private func receipt(_ item: Item, _ planner: Planner) -> Receipt {
@@ -301,6 +407,70 @@ final class Store {
         let made = Snippet(id: key, file: file, lines: coded, commit: String((item.doc.commit ?? "").prefix(7)))
         snippets[key] = made
         return made
+    }
+
+    func task(_ id: String) -> WorkItem? { repo.tasks.first { $0.id == id } }
+
+    func deskCount(_ machine: String) -> Int { repo.tasks.filter { $0.desk == machine }.count }
+
+    func pick(_ id: String) {
+        guard !offline else { return }
+        if repo.desks.count > 1 {
+            pendingPick = id
+        } else if let desk = repo.desks.first {
+            choose(desk: desk.machine, for: id)
+        } else {
+            pickError = "None of your machines is a Mac, so there's no Desk to pick it for."
+        }
+    }
+
+    func choose(desk: String, for id: String) {
+        pendingPick = nil
+        if deskCount(desk) >= 3 {
+            pickFull = desk
+            fullFor = id
+            return
+        }
+        landPick(id, desk: desk, room: nil)
+    }
+
+    func shelve(_ moved: String) {
+        guard let id = fullFor, let desk = pickFull else { return }
+        pickFull = nil
+        fullFor = nil
+        landPick(id, desk: desk, room: moved)
+    }
+
+    private func landPick(_ id: String, desk: String, room: String?) {
+        let index = repos.firstIndex { $0.id == currentID }
+        picking.insert(id)
+        if let index { rebuildShelf(index) }
+        Task {
+            defer {
+                picking.remove(id)
+                if let index, index < repos.count { rebuildShelf(index) }
+            }
+            do {
+                try await backend.pick(task: id, desk: desk, room: room)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } catch let refused as Refused where refused.code == "task_limit" {
+                pickFull = desk
+                fullFor = id
+            } catch {
+                pickError = error.localizedDescription
+            }
+            await list(currentID)
+            await read(id)
+        }
+    }
+
+    func message(task id: String, text: String) {
+        let message = Queued(id: UUID().uuidString, repo: currentID, text: text, at: Date(), task: id)
+        queued.append(message)
+        keep.context.insert(message)
+        keep.save()
+        rebuild(currentID)
+        flush()
     }
 
     func selectRepo(_ id: String) {
@@ -355,6 +525,8 @@ final class Store {
         keep.wipe()
         items = [:]
         queued = []
+        shelves = [:]
+        pages = [:]
         repos = []
         currentID = ""
         paired = false
@@ -378,10 +550,20 @@ final class Store {
             defer { flushing = false }
             while !offline, let next = queued.first(where: { Date().timeIntervalSince($0.at) <= 86400 }) {
                 do {
+                    if let task = next.task {
+                        try await backend.tell(task: task, id: next.id, text: next.text)
+                        await read(task)
+                        drop(next.id)
+                        continue
+                    }
                     let item = try await backend.send(repo: next.repo, id: next.id, text: next.text)
                     merge([item], repo: next.repo)
                 } catch let refused as Refused where refused.code != "unreachable" {
                     drop(next.id)
+                    if next.task != nil {
+                        pickError = "Couldn't send that: \(refused.message)"
+                        continue
+                    }
                     let repo = next.repo
                     let warning = Item(seq: (items[repo]?.last?.seq ?? 0), at: Date().timeIntervalSince1970, kind: "sys", doc: Doc(text: "Couldn't send that: \(refused.message)"))
                     merge([warning], repo: repo)

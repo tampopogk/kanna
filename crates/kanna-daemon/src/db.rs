@@ -267,9 +267,37 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         primary key (repo, seq)
     );
     create unique index phone_chat_once on phone_chat (repo, client) where client is not null;
+"), Step::Sql("
+    alter table messages add column client text;
+    create unique index messages_once on messages (recipient, client) where client is not null;
+    create table last_words (
+        who text primary key,
+        at real not null,
+        asking integer not null default 0,
+        text text not null
+    );
+"), Step::Sql("
+    create table said (
+        id integer primary key,
+        who text not null,
+        at real not null,
+        asking integer not null default 0,
+        text text not null
+    );
+    create index said_by_who on said (who, id);
+    insert into said (who, at, asking, text) select who, at, asking, text from last_words;
+    drop table last_words;
 ")];
 
 pub const RECENT: usize = 10;
+pub const SAID_KEPT: i64 = 100;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Said {
+    pub at: f64,
+    pub asking: bool,
+    pub text: String,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhoneItem {
@@ -874,6 +902,30 @@ impl Db {
             Some(to) => self.select_messages(&format!("select {MESSAGE} from messages where recipient = ?1 or sender = ?1 order by at, id"), [to]),
             None => self.select_messages(&format!("select {MESSAGE} from messages order by at, id"), []),
         }
+    }
+
+    pub fn set_message_client(&self, id: i64, client: &str) -> rusqlite::Result<()> {
+        self.conn.execute("update messages set client = ?2 where id = ?1", params![id, client]).map(|_| ())
+    }
+
+    pub fn message_of(&self, client: &str) -> rusqlite::Result<Option<Message>> {
+        Ok(self.select_messages(&format!("select {MESSAGE} from messages where client = ?1"), [client])?.into_iter().next())
+    }
+
+    pub fn put_said(&self, who: &str, text: &str, asking: bool) -> rusqlite::Result<()> {
+        let newest = self.conn.query_row("select id, asking, text from said where who = ?1 order by id desc limit 1", [who], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?, r.get::<_, String>(2)?))).optional()?;
+        match newest {
+            Some((_, was, same)) if same == text && was == asking => Ok(()),
+            Some((id, _, same)) if same == text => self.conn.execute("update said set at = ?2, asking = ?3 where id = ?1", params![id, now(), asking]).map(|_| ()),
+            _ => {
+                self.conn.execute("insert into said (who, at, asking, text) values (?1, ?2, ?3, ?4)", params![who, now(), asking, text])?;
+                self.conn.execute("delete from said where who = ?1 and id not in (select id from said where who = ?1 order by id desc limit ?2)", params![who, SAID_KEPT]).map(|_| ())
+            }
+        }
+    }
+
+    pub fn said(&self, who: &str) -> rusqlite::Result<Vec<Said>> {
+        self.conn.prepare("select at, asking, text from said where who = ?1 order by id")?.query_map([who], |r| Ok(Said { at: r.get(0)?, asking: r.get(1)?, text: r.get(2)? }))?.collect()
     }
 
     pub fn message(&self, id: i64) -> rusqlite::Result<Option<Message>> {
@@ -1947,6 +1999,29 @@ mod tests {
         let fleet: i64 = db.conn.query_row("select count(*) from sqlite_master where name = 'fleet'", [], |r| r.get(0)).unwrap();
         assert_eq!(fleet, 0);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_reply_is_kept_and_a_second_read_of_one_adds_nothing() {
+        let dir = std::env::temp_dir().join(format!("kanna-said-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir);
+        db.put_said("task-a", "one", false).unwrap();
+        db.put_said("task-a", "one", false).unwrap();
+        db.put_said("task-a", "two", false).unwrap();
+        db.put_said("task-a", "two", true).unwrap();
+        db.put_said("task-b", "other", false).unwrap();
+        let said = db.said("task-a").unwrap();
+        assert_eq!(said.iter().map(|w| (w.text.as_str(), w.asking)).collect::<Vec<_>>(), [("one", false), ("two", true)]);
+        for reply in 0..SAID_KEPT {
+            db.put_said("task-a", &format!("reply {reply}"), false).unwrap();
+        }
+        let said = db.said("task-a").unwrap();
+        assert_eq!(said.len() as i64, SAID_KEPT);
+        assert_eq!(said[0].text, "reply 0");
+        assert_eq!(db.said("task-b").unwrap().len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn usage() -> ! {
-    eprintln!("usage: phone-client DIR pair OFFER-JSON\n       phone-client DIR hello\n       phone-client DIR read REPO [AFTER]\n       phone-client DIR send REPO ID TEXT\n       phone-client DIR choose REPO ID SEQ CHOICE\n       phone-client DIR wait REPO KIND SECONDS [AFTER]\n       phone-client DIR status REPO STATUS SECONDS\n       phone-client DIR listen SECONDS");
+    eprintln!("usage: phone-client DIR pair OFFER-JSON\n       phone-client DIR hello\n       phone-client DIR read REPO [AFTER]\n       phone-client DIR send REPO ID TEXT\n       phone-client DIR choose REPO ID SEQ CHOICE\n       phone-client DIR wait REPO KIND SECONDS [AFTER]\n       phone-client DIR status REPO STATUS SECONDS\n       phone-client DIR listen SECONDS\n       phone-client DIR tasks REPO\n       phone-client DIR task TASK\n       phone-client DIR tell TASK ID TEXT\n       phone-client DIR pick TASK DESK [ROOM]");
     std::process::exit(2)
 }
 
@@ -123,6 +123,10 @@ async fn main() {
             }
             fail(format!("status stayed {}", last["status"]))
         }
+        ("tasks", [repo]) => println!("{}", link.call("tasks.list", json!({ "repo": repo_of(&hello, repo) })).await),
+        ("task", [task]) => println!("{}", link.call("task.read", json!({ "task": task })).await),
+        ("tell", [task, id, text]) => println!("{}", link.call("task.send", json!({ "task": task, "id": id, "text": text })).await),
+        ("pick", [task, desk, room @ ..]) => println!("{}", link.call("task.pick", json!({ "task": task, "desk": desk, "room": room.first() })).await),
         ("listen", [seconds]) => {
             let end = std::time::Instant::now() + Duration::from_secs(seconds.parse().unwrap_or(10));
             while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
