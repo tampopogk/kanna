@@ -1,6 +1,6 @@
 # Phone: Link and Pairing
 
-**Status:** planned · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
+**Status:** LAN built ([slice 1](mobile-app.md#9-build-order)); the relay and more than one machine aren't · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
 
 How a phone becomes yours and reaches your machines. It pairs once, with any one machine, and from then on can reach any of them, though it holds one link at a time, to the current repo's planner machine: on the LAN directly, away through your relay, moving to a direct path when one opens. This holds no account and needs no server of Kanna's, as for [your machines](machines.md#1-rules).
 
@@ -57,13 +57,14 @@ sequenceDiagram
 - **Who opens the stream** is now separate from who speaks first: with `joining`, the dialer is B. The code is 128 random bits, since nobody types it.
 - **`kanna phone pair`** shows the same QR in a terminal, for a Linux machine you're logged in to. Adding still takes a gesture in a Kanna.app, so a machine with no app refuses (`gesture_required`).
 - **The gesture stays on the Mac.** The phone waits on *Confirm on the Mac*.
+- **Pair with another machine,** at the foot of the repo sheet, forgets this machine, its chat and the key, and goes back to pairing. Revoking from the Mac does the same to a phone when it next dials.
 - **One log per install:** dev, staging and production Kannas are separate logs, so the phone app has a build per channel ([build channels](build-channels.md)).
 
 Mockup of the Mac's side: `#pair-mac` in [`mobile.html`](../../references/mockups/mobile.html).
 
 ## 3. The phone stream
 
-A new stream kind, `phone`, added to `KINDS`, opened by a key with the `phone` role. A phone's key may open no other kind, and a machine's or app's key may not open this one. That check is at the stream's header, like `sync`'s, and matters because a phone has no certificate, the mark that today tells an app from a daemon.
+A new stream kind, `phone`, opened by a key with the `phone` role. It stays out of `KINDS`, which `machine ping` opens on every machine. A phone's key may open no other kind, and a machine's or app's key may not open this one. That check is at the stream's header, like `sync`'s, and matters because a phone has no certificate, the mark that today tells an app from a daemon.
 
 - **Why its own kind:** the phone needs a dozen requests, not the app link's terminals, layouts and `send`. A second app link would also meet `app_attached` and would have to lift the one-app limit, which the phone no longer needs.
 - **Its bytes** are JSON lines: `{id, cmd, args}` answered by `{id, ok, …}`, and notices with no `id` that the daemon pushes while the stream is open.
@@ -97,7 +98,8 @@ flowchart TD
 
 - **One link, to the planner machine.** `hello` lists your projects and each one's planner machine, from the replica. Switching to a repo on another planner machine moves the link. If it can't be reached, the phone dials the other machines in the log only for the Machines tab, so you can *Run the planner here* ([chat §1](mobile-chat.md#1-the-planner-machine)).
 - **Foreground only.** Going to the background closes the links and the endpoint. Coming back opens them, reads from the last `seq`, and shows the cache until then. This is what iOS allows without push.
-- **LAN first, with no multicast.** Raw multicast takes an Apple entitlement, so the phone uses iroh's `AddressLookup` fed from the last good address, the log's `addrs` and `NWBrowser` on `_kanna._udp`, under `NSBonjourServices` and `NSLocalNetworkUsageDescription` ([a real iPhone](mobile-app.md#5-what-depends-on-a-real-iphone)).
+- **LAN first, with no multicast.** Raw multicast takes an Apple entitlement, so the phone dials the last good address, the log's `addrs` and what `NWBrowser` finds, under `NSBonjourServices` and `NSLocalNetworkUsageDescription`.
+- **A Bonjour service of our own.** Each daemon publishes `_kanna-phone._udp`, its port and, as the instance name, its key in lowercase base32. iroh's `_kanna._udp` records can be listed but [never resolve](../../references/prototypes/phone-probe/README.md#results), on an iPhone or a Mac. On macOS the daemon registers with the system's `DNSServiceRegister`: a responder of its own, as `mdns-sd` runs, isn't seen even by the same Mac. On Linux, where no responder can be counted on, it uses `mdns-sd`. Bonjour only finds the address; the link is iroh's.
 - **Relay second.** The endpoint uses the relay in the log, with an empty relay map otherwise, as every Kanna endpoint does. A phone reaches `https://relay.kanna.build:8444` like any machine ([remote terminals §3](remote-terminals.md#3-your-relay)); nothing on the relay changes. A chat message is small enough that a relay's 320 ms from Japan doesn't matter, so the phone never needs a relay of its own.
 - **Direct whenever it can.** iroh moves a connection to a direct path by itself; `NWPathMonitor` tells it the network changed.
 - **The chip** reads `path(key)` for the planner machine ([links §5](machine-links.md#5-paths-the-machines-tab-and-offline)), and `NWPathMonitor` tells *no network* from *machine asleep*.

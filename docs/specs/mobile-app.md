@@ -1,6 +1,6 @@
 # Kanna on the Phone
 
-**Status:** planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
+**Status:** slice 1 built, the rest planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
 
 A native SwiftUI iPhone app that lets you steer a repo from your pocket by talking to its planning agent. You chat with **the repo's planner, one repo at a time**, and it answers through the `kanna` CLI, so there is one agent and never a second cook in the kitchen. You see only what it chooses to tell you: no tool calls, no terminal, no noise.
 
@@ -97,12 +97,12 @@ D1 to D13 are the mockup's; the [prototype's README](../../references/prototypes
 
 ## 5. What depends on a real iPhone
 
-Nobody has run the prototype on a real iPhone yet, and it has no networking at all. Slice 1 starts with these, and a failure in the first three changes the design.
+Nobody has run the prototype on a real iPhone, and it has no networking at all. Slice 1 started with these, on [a probe](../../references/prototypes/phone-probe/README.md#results): iroh runs on an iPhone (with `fast-apple-datapath` off there, since it calls a private API), the app comes back in under 100 ms, the camera scans, and the LAN is reached with a [Bonjour service of our own](mobile-link.md#4-the-path), because iroh's records don't resolve.
 
 | Depends on a phone | Why the Simulator can't say | If it fails |
 |---|---|---|
 | iroh and `kanna-net` built for `aarch64-apple-ios` | The Simulator is a Mac process with a Mac network stack. `fast-apple-datapath` has only run on Macs here | Drop that feature; then a thin native transport |
-| Reaching the LAN without multicast | Raw multicast on iOS takes an entitlement Apple must grant, and iroh's mDNS uses raw multicast. The design uses addresses plus `NWBrowser` ([link §4](mobile-link.md#4-the-path)), and whether `NWBrowser` reads iroh's records is untested | Publish a plain Bonjour service from the daemon beside iroh's |
+| Reaching the LAN without multicast | Raw multicast on iOS takes an entitlement Apple must grant, and iroh's mDNS uses raw multicast. The design uses addresses plus `NWBrowser` on a service the daemon publishes ([link §4](mobile-link.md#4-the-path)). Publishing with `mdns-sd` from Linux is untested | Addresses only, until the relay |
 | Coming back from the background | iOS suspends the app and its sockets. The target is a usable link within a second on the LAN | A longer visible reconnect; the chat still reads from cache |
 | Hole punching from cellular | [fleet-net](../../references/prototypes/fleet-net/README.md#results-and-slice-contract) measured a laptop. Carrier NAT may leave a phone always relayed | Relayed is the normal path away; put a relay near you ([remote terminals §5](remote-terminals.md#5-local-echo)) |
 | The Local Network prompt | Only shows on a device, and a refusal has to leave relay working | Say so on the chip, and offer Settings |
@@ -154,6 +154,18 @@ Each slice is one task, is usable alone, and leaves `main` releasable. Each goes
 | A | **Away from the LAN** | The relay, its token, `NWPathMonitor`, the queue's day limit | Everything already built works from a café and from cellular, and the chip tells the truth | 1, and [Relay: run ours on the e2-micro](remote-terminals.md#3-your-relay) |
 
 Slice A can land any time after slice 1; the rest go in order.
+
+**Building the app:**
+
+```sh
+scripts/build-ios-ffi.sh
+cd apps/kanna-ios && xcodegen generate
+xcodebuild test -project Kanna.xcodeproj -scheme Kanna -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
+- **`FlowTests`** run the prototype's flows against `FixtureBackend`, with `-fixture YES`.
+- **`DeviceTests`** run on a real iPhone against a real daemon, and skip without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`. The answer must be words the question doesn't contain, or the test finds its own bubble.
+- **`Store`** holds what the views read, over a `Backend`: `LiveBackend` on the Rust library, `FixtureBackend` for tests. SwiftData keeps the chat and the queue.
 
 **Where the code goes:**
 

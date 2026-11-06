@@ -847,6 +847,9 @@ mod tests {
         assert_eq!(command(&mut owner, "task", json!({ "action": "list" }))["tasks"], json!([]), "a planner isn't a task");
         assert_eq!(command(&mut owner, "task", json!({ "action": "hold", "task": "p1" }))["error"]["code"], "not_found");
         assert_eq!(command(&mut owner, "task", json!({ "action": "claim", "task": "ws-1", "app": "mac" }))["error"]["code"], "not_found");
+        assert_eq!(command(&mut owner, "task", json!({ "action": "planner", "task": "ws-1", "app": "daemon" }))["was"], json!({ "planner": "mac" }));
+        assert_eq!(owner.view()["workspaces"][0]["where"], json!({ "planner": "daemon" }));
+        assert_eq!(command(&mut owner, "task", json!({ "action": "planner", "task": "ws-1", "app": "mac" }))["was"], json!({ "planner": "daemon" }));
         assert_eq!(command(&mut owner, "move", json!({ "pane": "p1", "dock": "right" }))["error"]["code"], "not_a_task");
 
         let from = serve_place(&mut owner, "p2", json!({ "from": "p1", "tab": true }));

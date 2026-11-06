@@ -310,6 +310,13 @@ pub fn coverage_settings(home: &Path, repo: &Path) -> Option<CoverageSettings> {
 }
 
 /// The planning agent's first message, which tells it it's the planner.
+pub const WINDOWLESS: &str = "daemon";
+
+fn setting_agent(folder: &Path) -> Option<String> {
+    let files = config_files(folder);
+    configured(&files, "planning", "agent", |v: &Value| v.as_str().map(String::from), "an agent's name").or_else(|| configured(&files, "tasks", "agent", |v: &Value| v.as_str().map(String::from), "an agent's name"))
+}
+
 pub const PLANNER_ROLE: &str = "You are the Kanna planning agent.";
 
 /// A task's agent's first message, as a shell word: who it is (its terminal from `$KANNA_TERMINAL` as it starts), then its task.
@@ -923,6 +930,7 @@ pub struct Tasks {
     waiting: RefCell<Vec<Message>>,
     ready: RefCell<HashMap<String, Ready>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
+    pub windowless: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
@@ -1097,6 +1105,7 @@ impl Tasks {
             waiting: RefCell::new(waiting),
             ready: RefCell::default(),
             planners: RefCell::default(),
+            windowless: RefCell::default(),
             channel: RefCell::default(),
             permissions: RefCell::default(),
             line_mode: RefCell::default(),
@@ -2561,6 +2570,7 @@ impl Tasks {
                     Some("shelve") => this.shelve(&args, responder),
                     Some("move") => this.move_task(&args, responder),
                     Some("plan") => this.plan(&args, responder),
+                    Some("let-go") => this.let_go(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
                     Some("activated") => responder.reply(this.activated(&args)),
@@ -2904,7 +2914,7 @@ impl Tasks {
         }
     }
 
-    fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> Result<Message, KmuxError> {
+    pub fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> Result<Message, KmuxError> {
         let message = self.db.put_message(recipient, repo, from, text, mode, comment).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
         log!("kanna-daemon: a message from {from} waits for {recipient}");
         self.waiting.borrow_mut().push(message.clone());
@@ -3501,12 +3511,84 @@ impl Tasks {
         self.take_off(entry, tearing.by, Answer::Then(Box::new(|_| {})));
     }
 
+    pub fn planner_pane(&self, repo: &str) -> Option<String> {
+        self.planner_of(repo, &self.planners())
+    }
+
+    pub fn is_planner(&self, repo: &str, pane: &str) -> bool {
+        self.planner_pane(repo).is_some_and(|planner| self.core.upgrade().and_then(|core| core.pane(pane)).is_some_and(|p| p.id == planner))
+    }
+
+    pub fn pane_status(&self, pane: &str) -> Option<String> {
+        self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).map(|status| status.to_string())
+    }
+
+    pub fn windowless_pane(&self, repo: &str) -> Option<String> {
+        let panes = self.windowless.borrow().as_ref().map_or(vec![], |panes| panes());
+        self.planner_of(repo, &panes)
+    }
+
+    fn adopt_windowless(&self, folder: &str, app: &str, responder: Responder) -> Result<(), Responder> {
+        let (Some(core), Some(pane)) = (self.core.upgrade(), self.windowless_pane(folder)) else { return Err(responder) };
+        log!("kanna-daemon: {app} adopts the windowless planner of {folder}");
+        core.handle(json!({ "cmd": "task", "args": { "action": "planner", "task": pane, "app": app } }), move |reply| match failed(&reply) {
+            Some(error) => responder.reply(Err(error)),
+            None => responder.reply(Ok(Map::from_iter([("pane".to_string(), reply.get("task").cloned().unwrap_or(Value::Null)), ("workspace".to_string(), reply.get("workspace").cloned().unwrap_or(Value::Null))]))),
+        });
+        Ok(())
+    }
+
+    fn let_go(&self, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let Some(pane) = string(args, "task") else { return responder.reply(Err(bad("say which planning terminal"))) };
+        let folder = core.pane(pane).and_then(|p| project(p.cwd.as_deref()));
+        let phone_here = folder.as_deref().and_then(Path::to_str).is_some_and(|repo| self.db.phone_items(repo, 0).is_ok_and(|items| !items.is_empty()));
+        let next = match phone_here {
+            true => json!({ "cmd": "task", "args": { "action": "planner", "task": pane, "app": WINDOWLESS } }),
+            false => json!({ "cmd": "close", "args": { "task": pane } }),
+        };
+        core.handle(next, move |reply| match failed(&reply) {
+            Some(error) => responder.reply(Err(error)),
+            None => responder.reply(Ok(Map::from_iter([("windowless".to_string(), json!(phone_here))]))),
+        });
+    }
+
+    pub fn start_windowless(&self, repo: &str) -> Result<(), KmuxError> {
+        let core = self.core.upgrade().ok_or_else(gone)?;
+        let folder = Path::new(repo);
+        if !folder.is_dir() {
+            return Err(KmuxError::new("not_found", format!("{repo} isn't on this machine")));
+        }
+        let context = planning_context(&config_files(folder));
+        let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
+        let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)).into_iter().flat_map(|dir| [dir.join("planner.sh"), dir.join("../Resources/planner.sh")]).find(|s| s.is_file());
+        let kept = crate::agents::home().join(".kanna-v4");
+        let agents = planner_agents(context);
+        let chosen = self.db.planner(repo).ok().flatten().and_then(|k| string(&k, "agent").map(String::from)).or_else(|| setting_agent(folder)).filter(|name| agents.iter().any(|(n, _, _, _)| n == name)).or_else(|| agents.first().map(|(name, ..)| name.clone())).ok_or_else(|| KmuxError::new("no_agent", "no agent is installed here"))?;
+        let cmd = planner_command(beside.as_deref().and_then(Path::to_str), context, zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &kept, &agents);
+        let cmd = format!("export KANNA_PLANNER_AGENT={}; {cmd}", quote(&chosen));
+        let open = json!({ "type": "term", "planner": true, "claim": WINDOWLESS, "cwd": repo, "cmd": cmd, "wait": false });
+        core.handle(json!({ "cmd": "open", "args": open }), |reply| {
+            if let Some(error) = failed(&reply) {
+                log!("kanna-daemon: couldn't start a windowless planner: {}", error.message);
+            }
+        });
+        Ok(())
+    }
+
+    pub fn quit_windowless(self: &Rc<Self>, repo: &str, pane: &str) {
+        let agent = self.db.planner(repo).ok().flatten().and_then(|k| string(&k, "agent").map(String::from)).unwrap_or_default();
+        log!("kanna-daemon: the windowless planner of {repo} has been idle for an hour, so it quits");
+        self.end_agent(pane, &agent, |_| {});
+    }
+
     fn plan(&self, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let claimant = self.claimant.borrow().clone();
         let app = string(args, "app").unwrap_or(&claimant);
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         let folder = string(args, "folder").filter(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).unwrap_or(&home);
+        let Err(responder) = self.adopt_windowless(folder, app, responder) else { return };
         let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
         let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("planner.sh"))).filter(|s| s.is_file());
         let script = string(args, "script").filter(|s| Path::new(s).is_file()).or(beside.as_deref().and_then(Path::to_str));

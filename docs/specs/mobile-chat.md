@@ -1,6 +1,6 @@
 # Phone: Chat and the Planner
 
-**Status:** planned · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md), [planner resume](planner-resume.md), [replicated Shelf](machine-tasks.md)
+**Status:** chat on the LAN built ([slice 1](mobile-app.md#9-build-order)); the replicated planner machine (§1) and moving it aren't · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md), [planner resume](planner-resume.md), [replicated Shelf](machine-tasks.md)
 
 The phone's chat is a relay to the repo's planning agent. A message from the phone reaches the planner through [agent messaging](agent-messaging.md) at its turn's end, and the planner answers with `kanna phone`. Those answers are all the phone shows, and the daemon keeps them, so a phone that was away reads what it missed.
 
@@ -35,6 +35,8 @@ sequenceDiagram
 ## 1. The planner machine
 
 A repo has one planner machine for the phone. It holds the chat, the quiz and Stats for that repo.
+
+**Built so far:** the machine the phone paired with is the planner machine for every repo it reports. The record and move below need more than one reachable machine, and come with the Machines slice.
 
 - **Kept** as a field of a project's record in the [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), task `project:IDENTITY`, field `planner`, last writer wins. It's replicated because a second phone must meet the same planner, and there's [one planner per project](kanna-cloud.md#the-shelf-in-the-cloud) on any account.
 - **Chosen by the first message:** the machine running a planner on the repo, else the one that last ran one, else the first reachable with a clone. The chat says where (*No planner was running for kanna, so one is starting on studio*).
@@ -99,7 +101,7 @@ stateDiagram-v2
 - **Started by the daemon** as a workspace with no task, `where: {"planner": "daemon"}`, through the same `planner.sh` and [`comeback`](planner-resume.md#3-how-its-built), in the repo's main checkout. The script takes the agent from `KANNA_PLANNER_AGENT` instead of asking: the project's kept one, else `planning.agent`, else `tasks.agent`. Status, delivery and `kanna task` work as for a Shelf task, which runs with no app already.
 - **It resumes the project's conversation,** which is why the phone's planner knows what you did at the Desk.
 - **A Desk adopts it:** `tasks plan` from the app finds the repo's windowless planner, claims it for that app and shows it, instead of [starting a second conversation](planner-resume.md#1-when-it-resumes).
-- **Closing a window** on the repo's planner machine leaves its planner windowless. Elsewhere it ends, as before.
+- **Closing a window** on the repo's planner machine leaves its planner windowless (`tasks let-go`, which the app sends in place of `close`). Elsewhere it ends, as before. A machine is the planner machine for a repo once a phone has talked to it there: it has `phone_chat` rows.
 - **An hour idle with no app,** Kanna ends it with [its quit keys](shelf-runners.md#2-how-its-built). The next message starts it again from the conversation.
 - **Starting can fail silently:** an agent reports no status while it [asks to trust a folder](agent-status.md#2-kannas-agents). With no report 60 s after starting, the chat says *The planner couldn't start on studio; open the repo there once*.
 - **No daemon, no planner:** a Mac's daemon outlives the app but not a restart, so a Mac that serves your phone runs it from launchd, with [`kanna machine serve`](machines.md#5-the-app-link-over-the-network), which isn't built yet and comes in [slice 1](mobile-app.md#9-build-order).
@@ -118,7 +120,7 @@ stateDiagram-v2
 | `message` | → `messages.id`, for `me` |
 | `doc` | The text, choices and the choice made, or the card's lines and commit |
 
-**Tests:** `tasks.rs` and `phone.rs` units for each row of §3's status and the rules. e2e `phone_chat` on a private instance with the mock agent as claude and as codex: a headless phone sends with the planner busy, idle and absent; the reply arrives through `kanna phone`; a resend delivers once; a task agent is refused; a silent turn is nudged once; a windowless planner is adopted by a Desk and goes windowless again.
+**Tests:** e2e `phone_chat` on a private instance with the mock agent as claude and as codex: a headless phone sends with the planner busy, idle and absent; the reply arrives through `kanna phone`; a resend delivers once; a task agent is refused; a silent turn is nudged once; a windowless planner is adopted by a Desk and goes windowless again.
 
 ## 6. Rejected
 

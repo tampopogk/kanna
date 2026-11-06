@@ -19,6 +19,7 @@ mod crashes;
 mod layout;
 mod lifeline;
 mod perf;
+mod phone;
 mod pty;
 mod codex_remote;
 mod messages;
@@ -321,6 +322,13 @@ fn run() -> Result<(), String> {
         let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
         workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
     }));
+    let planners = Rc::downgrade(&layout);
+    *tasks.windowless.borrow_mut() = Some(Box::new(move || {
+        let Some(layout) = planners.upgrade() else { return vec![] };
+        let view = layout.view();
+        let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
+        workspaces.iter().filter(|w| w["where"]["planner"] == tasks::WINDOWLESS).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+    }));
     let run_of = {
         let core = core.weak();
         Rc::new(move |pane: &str| core.upgrade()?.pane(pane)?.terminal)
@@ -397,6 +405,7 @@ fn run() -> Result<(), String> {
             None
         }
     };
+    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), machines.as_ref().and_then(|m| m.caller()));
     let accounts = accounts::Service::start(&state_dir, machines.as_ref().and_then(|m| m.caller()));
     let broken = events.clone();
     accounts.on_broken(Box::new(move |account| {

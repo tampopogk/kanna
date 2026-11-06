@@ -6320,6 +6320,117 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
 }
 
+phone_rig() {
+  export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
+  phone_repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" phone_fake="$KANNA_STATE_DIR/agents" phone_dir="$KANNA_STATE_DIR/phone"
+  mkdir -p "$phone_repo/src" "$phone_fake/bin" || return 1
+  printf 'one\ntwo\nthree\n' >"$phone_repo/src/a.txt"
+  git -C "$phone_repo" init -q -b main && git -C "$phone_repo" add . && git -C "$phone_repo" -c user.email=e@e -c user.name=e commit -q -m first || return 1
+  phone_repo="$(cd "$phone_repo" && pwd -P)"
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$phone_fake/bin/$1" || return 1
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$phone_fake/bin/$1" >"$phone_fake/$1" && chmod +x "$phone_fake/$1" || return 1
+  KANNA_PLANNING_AGENTS="$phone_fake/$1" start_daemon || return 1
+  raw "{\"id\":1,\"cmd\":\"projects\",\"args\":{\"action\":\"touch\",\"folder\":\"$phone_repo\"}}" >/dev/null || return 1
+  python3 - "$KANNA_SOCKET" "$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")" <<'PY' &
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
+f.write(json.dumps({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocol": int(sys.argv[2])}}) + "\n"); f.flush()
+for line in f:
+    m = json.loads(line)
+    if m.get("cmd") == "app.machine.confirm":
+        f.write(json.dumps({"id": m["id"], "ok": True, "confirmed": True}) + "\n"); f.flush()
+        break
+PY
+  local confirmer=$!
+  kanna phone pair --json >"$KANNA_STATE_DIR/offer" &
+  local waiting=$!
+  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || return 1
+  local offer; offer="$(head -1 "$KANNA_STATE_DIR/offer" | python3 -c 'import json, sys; o = json.load(sys.stdin); o["addrs"] = ["127.0.0.1:%s" % o["port"]]; print(json.dumps(o))')"
+  phone pair "$offer" >/dev/null || return 1
+  wait "$waiting" "$confirmer"
+}
+phone() { "$rust_dir/phone-client" "$phone_dir" "$@"; }
+phone_place() { kanna workspace list --all --json | python3 -c 'import json, sys
+w = [w for w in json.load(sys.stdin)["workspaces"] if (w.get("where") or {}).get("planner")]
+print(w[0]["where"]["planner"] if w else "")'; }
+phone_planner() { kanna workspace list --all --json | python3 -c 'import json, sys
+w = [w for w in json.load(sys.stdin)["workspaces"] if (w.get("where") or {}).get("planner")]
+print(w[0]["dock"]["pane"] if w else "")'; }
+
+scenario phone_chat M4
+phone_chat() {
+  phone_chat_with claude
+}
+
+scenario phone_pair_page M4
+phone_pair_page() {
+  export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
+  start_daemon || return 1
+  start_app || return 1
+  kanna open --window new --name pair_page >/dev/null || { echo "phone_pair_page line $LINENO"; return 1; }
+  sleep 1
+  local key; key="$(kanna machine list --json | field key)"
+  raw '{"id":1,"cmd":"debug.pairPhone"}' >/dev/null || { echo "phone_pair_page line $LINENO"; return 1; }
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.pairPhone\"}" | field sheet | grep -q True' || { echo "phone_pair_page: no sheet"; return 1; }
+  local code; code="$(raw '{"id":1,"cmd":"debug.pairPhone"}' | field code)"
+  check test "$(printf '%s' "$code" | field key)" == "$key" || { echo "phone_pair_page: the QR reads $code, not this machine's key $key"; return 1; }
+  check test "$(printf '%s' "$code" | field code | wc -c | tr -d ' ')" == 33 || { echo "phone_pair_page: the QR's code: $code"; return 1; }
+  raw '{"id":1,"cmd":"debug.pairPhone","args":{"cancel":true}}' >/dev/null || { echo "phone_pair_page line $LINENO"; return 1; }
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.pairPhone\",\"args\":{\"cancel\":true}}" | field sheet | grep -q False' || { echo "phone_pair_page: Cancel left the sheet up"; return 1; }
+}
+
+scenario phone_chat_codex M4
+phone_chat_codex() {
+  phone_chat_with codex
+}
+
+phone_chat_with() {
+  phone_rig "$1" || { echo "phone_chat line $LINENO"; return 1; }
+  local me="$bin/kanna"
+  check test "$(kanna machine list --json | field phones.0.name | cut -c1-7)" == iphone- || { echo "phone_chat: the phone isn't listed"; kanna machine list; return 1; }
+  check test "$(phone hello | python3 -c 'import json, sys; print(json.load(sys.stdin)["projects"][0]["status"])')" == not_running || { echo "phone_chat: a planner shows before any started: $(phone hello 2>&1 | cut -c1-700)"; return 1; }
+  phone send repo m1 "mock: run $me phone say hello from the planner" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check test "$(phone wait repo sys 5 | field doc.text | cut -c1-30)" == "No planner was running for rep" || { echo "phone_chat: the chat didn't say a planner is starting"; phone read repo; return 1; }
+  check phone wait repo say 30 >/dev/null || { local p; p="$(phone_planner)"; echo "phone_chat: no answer from the windowless planner in [$p]: $(kanna read "$p" 2>&1 | tail -12 | tr '\n' '~' | cut -c1-800)"; return 1; }
+  check test "$(phone wait repo say 1 | field doc.text)" == "hello from the planner" || { phone read repo; return 1; }
+  local planner; planner="$(phone_planner)"
+  [[ -n "$planner" ]] || { echo "phone_chat: no planner pane"; kanna workspace list --all; return 1; }
+  shows "$planner" "peer: \[message from phone\]" || { echo "phone_chat: the message wasn't from phone"; kanna read "$planner"; return 1; }
+  check test "$(kanna workspace list --all --json | python3 -c 'import json, sys
+print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon || { echo "phone_chat: the planner isn't windowless"; return 1; }
+  check phone status repo idle 10 >/dev/null || { echo "phone_chat: the status didn't come back to idle"; return 1; }
+  local seq; seq="$(phone send repo m1 "again" | field item.seq)"
+  check test "$seq" == 1 || { echo "phone_chat: a resend made a new item ($seq)"; phone read repo; return 1; }
+  check test "$(kanna read "$planner" | grep -c "peer: \[message from phone\]")" == 1 || { echo "phone_chat: a resend delivered twice"; kanna read "$planner"; return 1; }
+  local refused; refused="$(cd "$phone_repo" && kanna phone say nope 2>&1)" && { echo "phone_chat: a stranger spoke on the phone"; return 1; }
+  [[ "$refused" == *not_planner* ]] || { echo "phone_chat: refused with: $refused"; return 1; }
+  phone send repo m2 "mock: run $me phone show src/a.txt:2-3 --hot 2-2" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  local card; card="$(phone wait repo show 20)" || { echo "phone_chat: no code card"; kanna read "$planner"; return 1; }
+  check test "$(field doc.lines.1 <<<"$card")" == three && check test "$(field doc.file <<<"$card")" == src/a.txt || { echo "phone_chat: the card was $card"; return 1; }
+  phone send repo m3 "mock: run $me phone ask Merge? --choice Yes --choice No" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  local asked; asked="$(phone wait repo ask 20 | field seq)" || { echo "phone_chat: no question"; kanna read "$planner"; return 1; }
+  check phone status repo asks 10 >/dev/null || { echo "phone_chat: an open question isn't Asks you"; return 1; }
+  phone choose repo m4 "$asked" Yes >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check wait_for 15 shows "$planner" "peer: \[message from phone\] I chose: Yes" || { echo "phone_chat: the tap didn't reach the planner"; kanna read "$planner"; return 1; }
+  kanna send "$planner" "work 6" >/dev/null && kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check wait_for 10 is "$planner" status working || { echo "phone_chat: the planner didn't get busy"; return 1; }
+  phone send repo m5 "mock: run $me phone say after the busy turn" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check phone status repo elsewhere 5 >/dev/null || { echo "phone_chat: a busy planner isn't Working on something else"; phone read repo 1000; return 1; }
+  ! shows "$planner" "after the busy turn" || { echo "phone_chat: the phone interrupted the turn"; return 1; }
+  check wait_for 3 eval 'sleep 8; phone read repo | grep -q "\"text\":\"after the busy turn"' || { echo "phone_chat: the waiting message never got its answer"; kanna read "$planner"; return 1; }
+  phone send repo m6 "mock: work 0" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check wait_for 25 shows "$planner" "peer: \[message from kanna\] The phone is waiting" || { echo "phone_chat: a silent turn wasn't nudged"; kanna read "$planner"; return 1; }
+  check wait_for 25 eval 'phone read repo | grep -q "The planner finished without answering"' || { echo "phone_chat: a second silent turn wasn't told"; phone read repo; return 1; }
+  check test "$(cd "$phone_repo" && KANNA_TERMINAL="$planner" kanna phone history --last 1 | cut -c1-3)" == sys || { echo "phone_chat: history was wrong"; return 1; }
+  check test "$(phone_place)" == daemon || { echo "phone_chat: the planner isn't windowless: $(phone_place)"; return 1; }
+  local adopted; adopted="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"plan\",\"app\":\"mac\",\"folder\":\"$phone_repo\"}}")"
+  check test "$(printf '%s' "$adopted" | field pane)" == "$planner" || { echo "phone_chat: a Desk didn't adopt the windowless planner: $adopted"; return 1; }
+  check test "$(phone_place)" == mac || { echo "phone_chat: the adopted planner is still $(phone_place)"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"let-go\",\"task\":\"$planner\"}}" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check test "$(phone_place)" == daemon || { echo "phone_chat: closing the Desk ended the planner: $(phone_place)"; return 1; }
+  check test "$(phone_planner)" == "$planner" || { echo "phone_chat: the planner changed when its window closed"; return 1; }
+}
+
 machine_vm() {
   export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
   start_daemon || { echo "$1 line $LINENO"; return 1; }

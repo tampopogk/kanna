@@ -254,9 +254,32 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         replied_at real
     );
     create index schedule_firings_by_schedule on schedule_firings (schedule, id);
+"), Step::Sql("
+    create table phone_chat (
+        repo text not null,
+        seq integer not null,
+        at real not null,
+        kind text not null check (kind in ('me', 'say', 'ask', 'show', 'round', 'sys')),
+        client text,
+        message integer references messages (id),
+        read integer not null default 0,
+        doc text not null default '{}' check (json_valid(doc)),
+        primary key (repo, seq)
+    );
+    create unique index phone_chat_once on phone_chat (repo, client) where client is not null;
 ")];
 
 pub const RECENT: usize = 10;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneItem {
+    pub seq: i64,
+    pub at: f64,
+    pub kind: String,
+    pub client: Option<String>,
+    pub message: Option<i64>,
+    pub doc: Value,
+}
 
 pub const FIRINGS_KEPT: i64 = 20;
 
@@ -853,6 +876,53 @@ impl Db {
         }
     }
 
+    pub fn message(&self, id: i64) -> rusqlite::Result<Option<Message>> {
+        Ok(self.select_messages(&format!("select {MESSAGE} from messages where id = ?1"), [id])?.into_iter().next())
+    }
+
+    fn phone_item_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PhoneItem> {
+        let doc: String = r.get(5)?;
+        Ok(PhoneItem { seq: r.get(0)?, at: r.get(1)?, kind: r.get(2)?, client: r.get(3)?, message: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+    }
+
+    pub fn put_phone_item(&self, repo: &str, kind: &str, client: Option<&str>, message: Option<i64>, doc: &Value) -> rusqlite::Result<PhoneItem> {
+        let at = now();
+        let seq: i64 = self.conn.query_row("insert into phone_chat (repo, seq, at, kind, client, message, doc) values (?1, (select coalesce(max(seq), 0) + 1 from phone_chat where repo = ?1), ?2, ?3, ?4, ?5, ?6) returning seq", params![repo, at, kind, client, message, doc.to_string()], |r| r.get(0))?;
+        Ok(PhoneItem { seq, at, kind: kind.to_string(), client: client.map(String::from), message, doc: doc.clone() })
+    }
+
+    pub fn phone_items(&self, repo: &str, after: i64) -> rusqlite::Result<Vec<PhoneItem>> {
+        let mut statement = self.conn.prepare("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and seq > ?2 order by seq")?;
+        let rows = statement.query_map(params![repo, after], Self::phone_item_row)?;
+        rows.collect()
+    }
+
+    pub fn phone_item(&self, repo: &str, seq: i64) -> rusqlite::Result<Option<PhoneItem>> {
+        self.conn.query_row("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and seq = ?2", params![repo, seq], Self::phone_item_row).optional()
+    }
+
+    pub fn phone_item_of(&self, repo: &str, client: &str) -> rusqlite::Result<Option<PhoneItem>> {
+        self.conn.query_row("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and client = ?2", params![repo, client], Self::phone_item_row).optional()
+    }
+
+    pub fn set_phone_doc(&self, repo: &str, seq: i64, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update phone_chat set doc = ?3 where repo = ?1 and seq = ?2", params![repo, seq, doc.to_string()]).map(|_| ())
+    }
+
+    pub fn phone_unread(&self, repo: &str) -> rusqlite::Result<Vec<PhoneItem>> {
+        let mut statement = self.conn.prepare("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and kind = 'me' and read = 0 order by seq")?;
+        let rows = statement.query_map([repo], Self::phone_item_row)?;
+        rows.collect()
+    }
+
+    pub fn phone_waiting(&self, repo: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row("select exists (select 1 from phone_chat p join messages m on m.id = p.message where p.repo = ?1 and m.delivered is null)", [repo], |r| r.get(0))
+    }
+
+    pub fn set_phone_read(&self, repo: &str, seq: i64) -> rusqlite::Result<()> {
+        self.conn.execute("update phone_chat set read = 1 where repo = ?1 and seq = ?2", params![repo, seq]).map(|_| ())
+    }
+
     pub fn delivered(&self, ids: &[i64]) -> rusqlite::Result<()> {
         let at = now();
         let tx = self.conn.unchecked_transaction()?;
@@ -1020,7 +1090,7 @@ impl Db {
         let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
         let tx = self.conn.unchecked_transaction()?;
         let mut count = 0;
-        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("phone_chat", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
             count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
         }
         let folder = "json_extract(doc, '$.folder')";
