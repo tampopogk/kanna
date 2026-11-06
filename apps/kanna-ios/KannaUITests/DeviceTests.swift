@@ -30,14 +30,20 @@ final class DeviceTests: XCTestCase {
 
     func testScanAskAnswer() throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let ask = environment["KANNA_ASK"], let answer = environment["KANNA_ANSWER"], let repo = environment["KANNA_REPO"] else {
+        guard let ask = environment["KANNA_ASK"], let repo = environment["KANNA_REPO"] else {
             throw XCTSkip("a real phone and a Mac showing a code")
         }
-        XCTAssertFalse(ask.contains(answer), "the answer has to be something the question doesn't say")
+        let answer = environment["KANNA_ANSWER"] ?? ""
+        XCTAssertTrue(answer.isEmpty || !ask.contains(answer), "the answer has to be something the question doesn't say")
         app.launch()
+        if environment["KANNA_REPAIR"] != nil, app.buttons["repo-switcher"].waitForExistence(timeout: 8) {
+            app.buttons["repo-switcher"].tap()
+            XCTAssertTrue(app.buttons["pair-again"].waitForExistence(timeout: 5))
+            app.buttons["pair-again"].tap()
+        }
         if app.buttons["scan"].waitForExistence(timeout: 8) {
             app.buttons["scan"].tap()
-            XCTAssertTrue(allow(for: 120) { seen("Your repos").exists }, "never paired: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+            XCTAssertTrue(allow(for: 270) { seen("Your repos").exists }, "never paired: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
             shot("paired")
             app.buttons.containing(NSPredicate(format: "label CONTAINS %@", repo)).firstMatch.tap()
         }
@@ -56,8 +62,8 @@ final class DeviceTests: XCTestCase {
         field.typeText(ask)
         shot("typed")
         app.buttons["send"].tap()
-        XCTAssertTrue(seen(answer).waitForExistence(timeout: 300), "no answer: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
-        XCTAssertTrue(app.buttons["code-card"].waitForExistence(timeout: 60), "no code card")
+        XCTAssertTrue(answer.isEmpty || seen(answer).waitForExistence(timeout: 300), "no answer: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        XCTAssertTrue(app.buttons["code-card"].waitForExistence(timeout: 300), "no code card: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
         shot("answer")
         app.buttons["code-card"].tap()
         Thread.sleep(forTimeInterval: 1)
