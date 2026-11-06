@@ -31,6 +31,19 @@ struct MainTabs: View {
                     ShelfView().navigationDestination(for: String.self) { TaskDetail(id: $0) }
                 }
             }
+            Tab("Stats", systemImage: "chart.bar", value: AppTab.stats) {
+                NavigationStack { StatsView() }
+            }
+            Tab("Machines", systemImage: "desktopcomputer", value: AppTab.machines) {
+                NavigationStack {
+                    MachinesView().navigationDestination(for: MachineRoute.self) { route in
+                        switch route {
+                        case .machine(let name): MachineDetail(name: name)
+                        case .without: WithoutRepoView()
+                        }
+                    }
+                }
+            }
         }
         .overlay {
             if store.showChipPop {
@@ -46,7 +59,12 @@ struct MainTabs: View {
         }
         .animation(.snappy, value: store.showChipPop)
         .sheet(isPresented: $s.showRepos) { RepoSheet() }
-        .onChange(of: store.tab) { if store.tab == .shelf { store.refreshShelf() } }
+        .alert("Couldn't do that", isPresented: Binding(get: { store.pickError != nil }, set: { if !$0 { store.pickError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.pickError ?? "")
+        }
+        .onChange(of: store.tab) { store.afterTabChange() }
     }
 }
 
