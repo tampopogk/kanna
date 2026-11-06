@@ -696,7 +696,7 @@ fn refresh_in(folder: &Path, login: &str, program: &str) -> Result<String, Strin
             }
         });
         let mut send = |message: Value| writeln!(input, "{message}").map_err(|e| format!("lost Codex: {e}"));
-        send(json!({ "id": 1, "method": "initialize", "params": { "clientInfo": { "name": "kanna_holder", "version": env!("CARGO_PKG_VERSION") } } }))?;
+        send(json!({ "id": 1, "method": "initialize", "params": { "clientInfo": { "name": "kanna_holder", "version": kanna_build::VERSION } } }))?;
         wait_for(&replies, 1)?;
         send(json!({ "method": "initialized", "params": {} }))?;
         send(json!({ "id": 2, "method": "account/read", "params": { "refreshToken": true } }))?;
