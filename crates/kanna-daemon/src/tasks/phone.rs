@@ -110,10 +110,10 @@ impl Tasks {
         if desk == self.me() { MAC_APP.to_string() } else { desk.to_string() }
     }
 
-    pub(super) fn claims_elsewhere(&self, entry: &Entry, app: &str) -> usize {
+    pub(super) fn claims_elsewhere(&self, entry: &Entry, app: &str, freed: Option<&str>) -> usize {
         let (desk, project) = (self.desk_of(app), identity(&entry.repo));
         let replica = self.replica.borrow();
-        replica.records().filter(|r| r.task != entry.id && r.text("state") == Some("started") && r.text("owner").is_some_and(|o| o != replica.me()) && r.text("claim") == Some(desk.as_str()) && project.is_some() && r.text("project") == project.as_deref()).count()
+        replica.records().filter(|r| r.task != entry.id && Some(r.task.as_str()) != freed && r.text("state") == Some("started") && r.text("owner").is_some_and(|o| o != replica.me()) && r.text("claim") == Some(desk.as_str()) && project.is_some() && r.text("project") == project.as_deref()).count()
     }
 
     pub(super) fn saw_status(&self, pane: &str, status: Option<Status>) {

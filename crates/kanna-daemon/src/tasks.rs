@@ -3778,7 +3778,8 @@ impl Tasks {
             return responder.reply(Err(error));
         }
         let app = string(args, "desk").map(|desk| self.app_of(desk)).or_else(|| string(args, "app").map(String::from)).unwrap_or_else(|| self.claimant.borrow().clone());
-        self.room(entry, app, who(args).map(String::from), Answer::To(responder));
+        let freed = string(args, "room").map(String::from);
+        self.room(entry, app, who(args).map(String::from), freed, Answer::To(responder));
     }
 
     fn start(self: &Rc<Self>, args: &Value, responder: Responder) {
@@ -4230,7 +4231,7 @@ impl Tasks {
         });
     }
 
-    fn room(self: &Rc<Self>, entry: Entry, app: String, by: Option<String>, responder: Answer) {
+    fn room(self: &Rc<Self>, entry: Entry, app: String, by: Option<String>, freed: Option<String>, responder: Answer) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let this = Rc::downgrade(self);
         let weak = self.core.clone();
@@ -4244,7 +4245,7 @@ impl Tasks {
                 let ids: Vec<String> = reply.get("tasks").and_then(Value::as_array).map_or(vec![], |l| l.iter().filter_map(|t| string(t, "id").map(String::from)).collect());
                 core.with_panes(|panes| ids.iter().filter_map(|id| panes.get(id)).filter(|p| project(p.cwd.as_deref()) == here).count())
             });
-            if running + this.claims_elsewhere(&entry, &app) >= TASKS_PER_PROJECT {
+            if running + this.claims_elsewhere(&entry, &app, freed.as_deref()) >= TASKS_PER_PROJECT {
                 return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Desk: move one to the Shelf with `kanna task shelve TASK` first", entry.repo))));
             }
             this.prepare(entry, Some(app), by, responder);

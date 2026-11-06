@@ -437,12 +437,14 @@ impl Phone {
         let (Some(task), Some(desk)) = (string(args, "task").map(String::from), string(args, "desk").map(String::from)) else { return responder.reply(Err(bad("say which task and which Desk"))) };
         let Some(owner) = self.tasks.owner_of(&task) else { return responder.reply(Err(KmuxError::new("not_found", format!("no task {task}")))) };
         let this = Rc::downgrade(self);
+        let room = string(args, "room").map(String::from);
+        let freed = room.clone();
         let pick = move |responder: Responder| {
             let Some(this) = this.upgrade() else { return };
-            let request = json!({ "action": "pick", "task": task, "desk": desk });
+            let request = json!({ "action": "pick", "task": task, "desk": desk, "room": freed });
             this.ask(owner.as_deref(), "tasks", request, ACT_WAIT, move |reply| responder.reply(reply.map(fields)));
         };
-        let Some(room) = string(args, "room") else { return pick(responder) };
+        let Some(room) = room.as_deref() else { return pick(responder) };
         let Some(holder) = self.tasks.owner_of(room) else { return responder.reply(Err(KmuxError::new("not_found", format!("no task {room}")))) };
         self.ask(holder.as_deref(), "tasks", json!({ "action": "shelve", "task": room }), ACT_WAIT, move |reply| match reply {
             Ok(_) => pick(responder),
