@@ -117,7 +117,7 @@ Quit in any state before Installing installs nothing, because no installer is ru
 
 ## 6. The update key
 
-- **Private half:** in two places on the release Mac. `sign_update` reads the login keychain, item "Private key for signing Sparkle updates", account `kanna` (open Keychain Access to see it). A copy is at `~/.kanna/secrets/kanna-update-ed25519.key`, mode 0600, beside the other release keys, and `generate_keys --account kanna -f FILE` restores it on another Mac. It never goes in the repo, in a log or in a test.
+- **Private half:** `~/.kanna/secrets/kanna-update-ed25519.key` on the release Mac, mode 0600, beside the other release keys. release.sh signs with it directly, because reading a keychain item stops at a dialog. A copy is in the login keychain, item "Private key for signing Sparkle updates", account `kanna`. It never goes in the repo, in a log or in a test. To use it on another Mac, copy the file.
 - **Public half:** `KANNA_UPDATE_PUBLIC_KEY` in `scripts/env.sh`, the same for both channels.
 - **Lost key:** a new key can ship inside a release signed with the same Developer ID, since Sparkle accepts a change of either one, never both.
 - **Tests** generate a throwaway key and never touch the keychain item.
@@ -128,7 +128,7 @@ release.sh gains these steps. The feed moves last, so it never names a DMG that 
 
 ```mermaid
 flowchart LR
-    D["DMGs signed, notarized, stapled"] --> S["sign_update --account kanna<br/>each DMG"]
+    D["DMGs signed, notarized, stapled"] --> S["sign_update each DMG"]
     S --> R["GitHub Release"]
     R --> C["curl each DMG URL:<br/>size and SHA-256 match"]
     C --> F["write the feeds, sign them with sign_update"]
@@ -136,7 +136,8 @@ flowchart LR
     W --> P["wait until kanna.build serves them"]
 ```
 
-- **Preflight adds:** `sign_update` can reach the key, the signature it makes verifies against `KANNA_UPDATE_PUBLIC_KEY`, push access to `kanna-web`, and a build number above the one in the published feed.
+- **Preflight adds:** the key file exists at mode 0600 and matches `KANNA_UPDATE_PUBLIC_KEY`, push access to `kanna-web`, and a build number above the one in the published feed.
+- **If publishing stops after the GitHub Release,** `scripts/publish-appcast.sh target/release-dmg/vX.Y.Z/feeds BUILD` finishes it.
 - **`--dry-run`** writes and signs the feeds in `target/release-dmg/vX.Y.Z/feeds/` and pushes nothing.
 - **`latest.json`:** nobody installed Kanna v2, so its rule and both checks leave [release](release.md) and release.sh.
 

@@ -71,6 +71,10 @@ real_update() {
   . "$(dirname "$0")/real.sh"
 }
 
+machine_left_behind() {
+  . "$(dirname "$0")/machine.sh"
+}
+
 for phase in "$@"; do
   note "phase $phase"
   "$phase"

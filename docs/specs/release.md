@@ -47,7 +47,7 @@ Every check runs before any build, and each failure says what to do.
 | A Developer ID identity | `security find-identity -v -p codesigning` has a "Developer ID Application" identity; it signs by its hash |
 | The notary credential works | `~/.kanna/.env.release.local` (shared with Kanna v2) names `APPLE_KEYCHAIN_PROFILE` and `APPLE_KEYCHAIN_PATH`; `xcrun notarytool history` with them succeeds |
 | gh and claude | `gh auth status` succeeds; `claude` is on PATH |
-| The update key and feeds | the keychain has the update key (`security find-generic-password`, never its value); gh can push to `tampopogk/kanna-web`; the build number is above each published feed's |
+| The update key and feeds | the update key file is there and matches the public key in `scripts/env.sh`; gh can push to `tampopogk/kanna-web`; the build number is above each published feed's |
 
 - **`--dry-run` only warns** about the first two, so an unmerged branch can be dry-run.
 - **No secrets:** the env file is read for those two keys only, never sourced or printed; the credential stays in its keychain.

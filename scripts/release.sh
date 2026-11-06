@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo="tampopogk/kanna"
 feed_repo="tampopogk/kanna-web"
 release_env="$HOME/.kanna/.env.release.local"
+update_key="$HOME/.kanna/secrets/kanna-update-ed25519.key"
 archs=(arm64 x86_64)
 
 usage() { echo "usage: scripts/release.sh [--major|--minor|--patch | VERSION] [--staging] [--dry-run]" >&2; exit 2; }
@@ -64,8 +65,9 @@ xcrun notarytool history "${notary[@]}" >/dev/null 2>&1 ||
   fail "notarytool can't use profile \"$notary_profile\" in $notary_keychain: unlock that keychain, or save the credential again with xcrun notarytool store-credentials"
 echo "    notarizing with profile $notary_profile"
 
-security find-generic-password -a "$KANNA_UPDATE_KEY_ACCOUNT" -s https://sparkle-project.org >/dev/null 2>&1 ||
-  fail "the update key isn't in the keychain (account $KANNA_UPDATE_KEY_ACCOUNT): see docs/specs/auto-update.md#6-the-update-key"
+[[ -f "$update_key" ]] || fail "the update key $update_key is missing: see docs/specs/auto-update.md#6-the-update-key"
+[[ "$(stat -f %Lp "$update_key")" == 600 ]] || fail "$update_key must be mode 600"
+[[ "$(swift "$repo_root/scripts/update-public-key.swift" "$update_key")" == "$KANNA_UPDATE_PUBLIC_KEY" ]] || fail "$update_key doesn't match KANNA_UPDATE_PUBLIC_KEY in scripts/env.sh"
 
 gh_status="$(gh auth status --active 2>&1)" || fail "gh can't reach GitHub as a signed-in account (run gh auth login if it isn't signed in):
 $(grep -v -i token <<<"$gh_status")"
@@ -208,19 +210,18 @@ dmgs+=("$linux")
 step "Update feeds"
 update_tools="$(dirname "$(find "$repo_root/target" -path '*/artifacts/sparkle/Sparkle/bin/sign_update' -print -quit)")"
 [[ -x "$update_tools/sign_update" ]] || fail "the build left no Sparkle sign_update under target/"
-[[ "$("$update_tools/generate_keys" --account "$KANNA_UPDATE_KEY_ACCOUNT" -p)" == "$KANNA_UPDATE_PUBLIC_KEY" ]] || fail "the update key in the keychain doesn't match KANNA_UPDATE_PUBLIC_KEY in scripts/env.sh"
 update_protocol="$(tar -xzOf "$linux" kanna/release.json | jq -r .protocol)"
 [[ "$update_protocol" =~ ^[0-9]+$ ]] || fail "$(basename "$linux") names no protocol"
 macos_target="$(kanna_macos_target "$repo_root")"
 mkdir -p "$dist/feeds"
 for arch in "${archs[@]}"; do
   dmg="$dist/$dmg_prefix-$version-$arch.dmg"
-  signature="$("$update_tools/sign_update" --account "$KANNA_UPDATE_KEY_ACCOUNT" -p "$dmg")"
+  signature="$("$update_tools/sign_update" --ed-key-file "$update_key" -p "$dmg")"
   [[ -n "$signature" ]] || fail "sign_update gave no signature for $(basename "$dmg")"
   "$repo_root/scripts/write-appcast.sh" --title "$app_name" --version "$version" --build "$build_number" --minimum "$macos_target.0" --protocol "$update_protocol" \
     --url "https://github.com/$repo/releases/download/$tag/$(basename "$dmg")" --length "$(stat -f %z "$dmg")" --signature "$signature" >"$dist/feeds/$channel-$arch.xml"
-  "$update_tools/sign_update" --account "$KANNA_UPDATE_KEY_ACCOUNT" "$dist/feeds/$channel-$arch.xml"
-  "$update_tools/sign_update" --account "$KANNA_UPDATE_KEY_ACCOUNT" --verify "$dist/feeds/$channel-$arch.xml" || fail "$channel-$arch.xml didn't verify"
+  "$update_tools/sign_update" --ed-key-file "$update_key" "$dist/feeds/$channel-$arch.xml"
+  "$update_tools/sign_update" --ed-key-file "$update_key" --verify "$dist/feeds/$channel-$arch.xml" || fail "$channel-$arch.xml didn't verify"
 done
 
 step "Release notes"
