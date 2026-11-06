@@ -302,6 +302,7 @@ impl Tasks {
             "agent": entry.agent,
             "after": entry.after,
             "on": entry.on,
+            "hears": entry.hears.to_value(),
             "project": opt(identity(&entry.repo).as_deref()),
             "folder": opt(entry.folder.as_deref()),
             "to": peer.name,
@@ -595,6 +596,7 @@ impl Tasks {
             folder: text("folder"),
             after: strings(&doc, "after"),
             on: strings(&doc, "on"),
+            hears: Hears::from_value(doc.get("hears")),
             birth: Some(birth),
             ..Default::default()
         };

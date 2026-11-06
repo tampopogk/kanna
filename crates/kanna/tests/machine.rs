@@ -206,7 +206,7 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     vm.kanna(&["open", "--window", "new", "--name", "far", "--no-wait", "--cmd", "/bin/cat"]).ok();
     let (mut far, hello) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocol": kanna_build::PROTOCOL, "build": "another", "commit": "abc" }));
     assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(kanna_build::PROTOCOL), json!("vm")), "{hello}");
-    let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["id"].as_str().unwrap().to_string();
+    let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["terminal"].as_str().unwrap().to_string();
     far.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
     far.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
     far.send(json!({ "cmd": "input", "args": { "terminal": terminal, "data": "dHlwZWQgZmFyCg==" } }));
@@ -222,11 +222,69 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     here.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
     let mut here = Link { lines: BufReader::new(here.try_clone().unwrap()).lines(), stream: here };
     here.send(json!({ "id": 0, "cmd": "app.hello", "args": { "pid": 2, "protocol": kanna_build::PROTOCOL } }));
-    assert_eq!(here.next(|m| m["id"] == 0)["ok"], true);
-    assert!(far.lines.by_ref().all(|line| line.is_ok()), "the machine's own app takes over from the remote one");
+    assert_eq!(here.next(|m| m["id"] == 0)["ok"], true, "the machine's own app attaches beside the remote one");
     here.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
     here.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
+
+    let (mut second, reply) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 3, "client": "studio", "protocol": kanna_build::PROTOCOL }));
+    assert_eq!(reply["ok"], true, "any number of remote apps: {reply}");
+    second.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
+    second.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
+
+    let typed = |data: &str| json!({ "cmd": "input", "args": { "terminal": terminal, "data": data } });
+    let output = |m: &Value| m["cmd"] == "output" && m["args"]["terminal"] == terminal.as_str();
+    let taken = json!({ "cmd": "taken", "args": { "terminal": terminal } });
+    far.send(taken.clone());
+    far.send(typed("ZnJvbSBmYXIK"));
+    wait_for("the remote app's line on vm", || vm.kanna(&["read", "far"]).ok().contains("from far"));
+    for app in [&mut here, &mut far, &mut second] {
+        app.next(&output);
+        app.send(taken.clone());
+    }
+    here.send(typed("ZnJvbSBoZXJlCg=="));
+    wait_for("the local app's line on vm", || vm.kanna(&["read", "far"]).ok().contains("from here"));
+    for app in [&mut here, &mut far, &mut second] {
+        app.next(&output);
+        app.send(taken.clone());
+    }
+
+    let grid = |m: &Value, cols: u64, rows: u64| m["cmd"] == "grid" && m["args"]["cols"] == cols && m["args"]["rows"] == rows;
+    let size = |cols: u64, rows: u64| json!({ "cmd": "resize", "args": { "terminal": terminal, "cols": cols, "rows": rows, "width": cols * 10, "height": rows * 20 } });
+    here.send(size(60, 20));
+    here.next(|m| grid(m, 60, 20));
+    far.send(size(100, 30));
+    far.next(|m| grid(m, 60, 20));
+    far.send(typed("Cg=="));
+    for app in [&mut here, &mut far, &mut second] {
+        app.next(|m| grid(m, 100, 30));
+    }
+    here.send(json!({ "cmd": "used", "args": { "terminal": terminal } }));
+    for app in [&mut here, &mut far, &mut second] {
+        app.next(|m| grid(m, 60, 20));
+    }
+
+    let socket = vm.socket();
+    let asking = std::thread::spawn(move || {
+        let stream = UnixStream::connect(socket).unwrap();
+        writeln!(&stream, "{}", json!({ "id": 1, "cmd": "debug.app", "args": {} })).unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    });
+    let asked = here.next(|m| m["cmd"] == "debug.app");
+    here.send(json!({ "id": asked["id"], "ok": true, "answered": "here" }));
+    assert_eq!(asking.join().unwrap()["answered"], "here", "a request from vm's CLI goes to vm's own app");
+    far.send(json!({ "id": 7, "cmd": "capabilities", "args": {} }));
+    far.next(|m| {
+        assert_ne!(m["cmd"], "debug.app", "a remote app never gets a request from vm's CLI");
+        m["id"] == 7
+    });
+
     drop(here);
+    far.next(|m| grid(m, 100, 30));
+    far.send(typed("c3RpbGwgZmFyCg=="));
+    wait_for("the remote app's line after the local one left", || vm.kanna(&["read", "far"]).ok().contains("still far"));
+    assert_eq!(ask(&vm, "debug.app", json!({}))["error"]["code"], "no_app", "with vm's own app gone, the CLI starts it again; a remote app doesn't stand in");
 
     let stranger = runtime.block_on(kanna_net::Client::start(kanna_net::SecretKey::generate())).unwrap();
     let unpaired = runtime.block_on(stranger.link(&vm_key, &[format!("127.0.0.1:{port}")], None, &cert)).unwrap_err();
