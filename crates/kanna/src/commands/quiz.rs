@@ -42,7 +42,10 @@ fn read_json(file: &str) -> Result<Value, Failure> {
 fn drawable(round: &Value) -> Result<(), Failure> {
     for (at, question) in round["questions"].as_array().into_iter().flatten().enumerate() {
         for (letter, source) in ["A", "B", "C"].iter().zip(question["drawings"].as_array().into_iter().flatten()) {
-            kanna_merman::flowchart(source.as_str().unwrap_or_default()).map_err(|error| usage("quiz", &format!("question {}, drawing {letter}: {error}", at + 1)))?;
+            let drawn = kanna_merman::flowchart(source.as_str().unwrap_or_default()).map_err(|error| usage("quiz", &format!("question {}, drawing {letter}: {error}", at + 1)))?;
+            if drawn["width"].as_f64().unwrap_or(0.0) > kanna_merman::PHONE_WIDTH {
+                return Err(usage("quiz", &format!("question {}, drawing {letter} is too wide to read on a phone: fewer boxes side by side, shorter labels", at + 1)));
+            }
         }
     }
     Ok(())

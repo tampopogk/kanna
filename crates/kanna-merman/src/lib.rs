@@ -162,9 +162,21 @@ fn scene_layout(source: &str, measure: Option<MeasureFn>, context: *mut c_void) 
     Ok(value)
 }
 
+pub const PHONE_WIDTH: f64 = 560.0;
+
+fn upright(source: &str) -> String {
+    let mut lines = source.trim_start().lines();
+    let first = lines.next().unwrap_or_default();
+    let words: Vec<&str> = first.split_whitespace().collect();
+    match words.as_slice() {
+        [kind @ ("flowchart" | "graph"), "LR" | "RL"] => std::iter::once(format!("{kind} TD")).chain(lines.map(String::from)).collect::<Vec<_>>().join("\n"),
+        _ => source.to_string(),
+    }
+}
+
 pub fn flowchart(source: &str) -> Result<serde_json::Value, String> {
     use serde_json::{json, Value};
-    let drawn = layout(source)?;
+    let drawn = layout(&upright(source))?;
     if drawn["scene"] != "flowchart" {
         return Err("only a flowchart draws on the phone".into());
     }
@@ -298,6 +310,8 @@ mod tests {
         assert_eq!((edges[1]["label"].as_str(), edges[1]["dashed"].as_bool()), (Some("bytes"), Some(false)));
         assert_eq!(edges[2]["dashed"], true);
         assert!(flowchart("sequenceDiagram\n  A->>B: hi\n").unwrap_err().contains("only a flowchart"));
+        let (wide, tall) = (flowchart("flowchart LR\n  A --> B\n  B --> C\n").unwrap(), flowchart("flowchart TD\n  A --> B\n  B --> C\n").unwrap());
+        assert_eq!(wide, tall, "a phone is taller than it's wide");
     }
 
     const DOC: &str = "# Plan\n\n```mermaid\nflowchart LR\n    A[Start] --> B{Ok?}\n    B -->|yes| C[Done]\n```\n\nText.\n\n```mermaid\nsequenceDiagram\n    participant C as CLI\n    C->>D: open\n    D-->>C: ok\n```\n\n```rust\nfn main() {}\n```\n\n- A list:\n\n  ```mermaid\n  flowchart TD\n      A --> B --> --> C[\n  ```\n\n~~~ Mermaid\nerDiagram\n    CUSTOMER ||--o{ ORDER : places\n~~~\n";

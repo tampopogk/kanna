@@ -110,7 +110,7 @@ You're the Kanna quiz writer: told so in your first message, with a subject if t
 
    - `kind` is one of the table's; `answer` is the right one's index from 0; `topic` is a few words for the end of the round; `source` is a short hash or a spec's path; `again` only on a miss brought back, with its `answer` ID. `why` in a choice is a short line under it that mustn't give the answer away; leave it out if you've nothing to add.
    - **Spot the bug:** no `choices`; `"lines": [{"n": 521, "text": "…"}, …]`, four lines with their numbers, exactly one changed to put a bug in.
-   - **Pick the drawing:** no `choices`; `"drawings": ["flowchart LR\n  A[daemon] --> B[keeper]", …]`, three short flowcharts of up to six boxes: a phone screen is small. Only `flowchart` draws on the phone.
+   - **Pick the drawing:** no `choices`; `"drawings": ["flowchart LR\n  A[daemon] --> B[keeper]", …]`, three short flowcharts of up to six boxes, with labels of one to three words and few arrow labels: a phone screen is small. They draw top to bottom whatever you write, so no more than two boxes side by side. Only `flowchart` draws on the phone, and `kanna quiz ready` refuses one too wide to read.
 
 5. **Your notes:** `kanna quiz notes FILE` with `{"notes": {"Machines": "A few plain lines: where they're strong, where they slip."}}`, for the subsystems the new answers in the history tell you about. Facts from their answers, no praise.
 6. **Hand it in, last:** `kanna quiz ready FILE`. It prints the round's ID, or everything wrong with it: fix those and run it again. With nothing left to do, end your turn.

@@ -1,6 +1,6 @@
 # Kanna on the Phone
 
-**Status:** slices 1 to 3 built, the rest planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [Machines and Stats](mobile-machines.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
+**Status:** slices 1 to 4 built, the rest planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [Machines and Stats](mobile-machines.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
 
 A native SwiftUI iPhone app that lets you steer a repo from your pocket by talking to its planning agent. You chat with **the repo's planner, one repo at a time**, and it answers through the `kanna` CLI, so there is one agent and never a second cook in the kitchen. You see only what it chooses to tell you: no tool calls, no terminal, no noise.
 
@@ -115,7 +115,7 @@ Signing needs a team set in Xcode and `CODE_SIGNING_ALLOWED` removed ([README](.
 ## 6. Risks
 
 - **A phone can instruct an agent that skips permission prompts.** The stream is narrow, but a message to the planner is as strong as typing at it. So the device key needs the phone unlocked, and any machine can revoke it ([link §1](mobile-link.md#1-a-phone-in-the-peer-log)).
-- **Agent usage:** each round the phone plays costs an agent run to write the next one, on your account ([quiz §1](mobile-quiz.md#1-rounds-written-ahead)).
+- **Agent usage:** each round the phone plays costs an agent run to write the next one, on your account: about $1 at API rates ([quiz §4](mobile-quiz.md#4-what-a-round-costs)).
 - **Session files:** last words read a format each agent owns and can change ([Shelf §3](mobile-shelf.md#3-last-words)).
 - **A sleeping planner machine:** the phone connects to nothing else for that repo, so it shows what's cached and queues, even with your other machines awake. A machine that stays awake is the better planner machine, and *Run the planner here* moves it.
 
@@ -165,7 +165,7 @@ xcodebuild test -project Kanna.xcodeproj -scheme Kanna -destination 'platform=iO
 
 - **The version** is [the last tag's](release.md#versions): a build phase, `scripts/ios-version.sh`, writes `CFBundleShortVersionString` (`X.Y.Z`), `CFBundleVersion` (the commit count) and `KannaVersion` (all of it, `X.Y.Z-dev`) into the built Info.plist on every build, so `project.yml` sets none. With no tag to read, the build fails and says why.
 - **`FlowTests`** run the prototype's flows against `FixtureBackend`, with `-fixture YES`.
-- **`DeviceTests`** run on a real iPhone against a real daemon. `testScanAskAnswer` skips without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`; the answer must be words the question doesn't contain, or the test finds its own bubble. `testShelf` skips without `TEST_RUNNER_KANNA_TASK` and `TEST_RUNNER_KANNA_REPO`, and with `TEST_RUNNER_KANNA_TELL` and `TEST_RUNNER_KANNA_DESK` also messages and picks that task. `testMachinesAndStats` skips without `TEST_RUNNER_KANNA_REPO` and `TEST_RUNNER_KANNA_MACHINE`, and with `TEST_RUNNER_KANNA_MOVE_TO` also moves the planner.
+- **`DeviceTests`** run on a real iPhone against a real daemon. `testScanAskAnswer` skips without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`; the answer must be words the question doesn't contain, or the test finds its own bubble. `testQuizRound` skips without `TEST_RUNNER_KANNA_QUIZ_REPO`, and plays a round that's ready to the end. `testShelf` skips without `TEST_RUNNER_KANNA_TASK` and `TEST_RUNNER_KANNA_REPO`, and with `TEST_RUNNER_KANNA_TELL` and `TEST_RUNNER_KANNA_DESK` also messages and picks that task. `testMachinesAndStats` skips without `TEST_RUNNER_KANNA_REPO` and `TEST_RUNNER_KANNA_MACHINE`, and with `TEST_RUNNER_KANNA_MOVE_TO` also moves the planner.
 - **The icon** is drawn in [iPhone app icon](ios-app-icon.md).
 - **`Store`** holds what the views read, over a `Backend`: `LiveBackend` on the Rust library, `FixtureBackend` for tests. SwiftData keeps the chat and the queue.
 

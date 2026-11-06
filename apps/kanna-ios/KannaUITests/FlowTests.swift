@@ -145,6 +145,7 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 8))
         app.buttons["next-round"].tap()
         see("1 of 5")
+        shot("drawing")
         app.buttons["drawing-1"].tap()
         see("Right.")
         app.buttons["next-question"].tap()

@@ -500,7 +500,7 @@ struct DrawingRow: View {
                 }
                 .frame(width: 24, height: 24)
                 .padding(.leading, 4)
-                Drawing(scene: store.backend.drawing(source)).frame(height: 128).scaleEffect(pinch)
+                Drawing(scene: store.backend.drawing(source)).scaleEffect(pinch)
             }
             .padding(6)
             .contentShape(Rectangle())
@@ -540,18 +540,27 @@ struct Drawing: View {
                 head.addLine(to: CGPoint(x: end.x - 7 * cos(angle + 0.45), y: end.y - 7 * sin(angle + 0.45)))
                 head.closeSubpath()
                 context.fill(head, with: .color(K.muted))
-                if let at = edge.at {
-                    context.draw(Text(edge.label).font(.system(size: 10)).foregroundColor(K.muted), at: p(at.x, at.y))
-                }
+            }
+            for edge in scene.edges {
+                guard let at = edge.at else { continue }
+                let text = context.resolve(Text(edge.label).font(.system(size: 14 * scale)).foregroundColor(K.muted))
+                let room = text.measure(in: size)
+                let spot = p(at.x, at.y)
+                context.fill(Path(CGRect(x: spot.x - room.width / 2 - 2, y: spot.y - room.height / 2, width: room.width + 4, height: room.height)), with: .color(K.panel))
+                context.draw(text, at: spot)
             }
             for node in scene.nodes {
                 let rect = CGRect(origin: p(node.x, node.y), size: CGSize(width: node.width * scale, height: node.height * scale))
                 let shape = Path(roundedRect: rect, cornerRadius: 6)
                 context.fill(shape, with: .color(K.card))
                 context.stroke(shape, with: .color(K.axis))
-                context.draw(Text(node.label).font(.system(size: 12)).foregroundColor(K.text), at: CGPoint(x: rect.midX, y: rect.midY))
+                let text = context.resolve(Text(node.label).font(.system(size: 16 * scale)).foregroundColor(K.text))
+                let room = text.measure(in: rect.insetBy(dx: 5, dy: 2).size)
+                context.draw(text, in: CGRect(x: rect.midX - room.width / 2, y: rect.midY - room.height / 2, width: room.width, height: room.height))
             }
         }
+        .frame(maxWidth: .infinity)
+        .frame(height: scene.map { min(280, CGFloat($0.height) * min(1, 300 / CGFloat(max($0.width, 1)))) } ?? 128)
     }
 }
 
