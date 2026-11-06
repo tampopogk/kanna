@@ -6947,13 +6947,15 @@ scenario about_panel M4
 about_panel() {
   start_daemon && start_app || return 1
   local plist="${KANNA_E2E_APP:-$repo_root/target/Kanna.app}/Contents/Info.plist"
-  local name version commit channel
+  local name version commit channel label
   name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist")"
-  version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+  version="$(/usr/libexec/PlistBuddy -c 'Print :KannaVersion' "$plist")"
   commit="$(/usr/libexec/PlistBuddy -c 'Print :KannaCommit' "$plist")"
   channel="$(/usr/libexec/PlistBuddy -c 'Print :KannaChannel' "$plist")"
+  label="${commit:0:12}"
+  [[ "$channel" == production ]] || label="$channel $label"
   raw "{\"id\":1,\"cmd\":\"debug.menu\",\"args\":{\"item\":\"About $name\"}}" | grep -q '"ok":true' || { echo "about_panel: About $name didn't run"; return 1; }
-  check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.about\"}" | field lines)" == *"Version $version ($channel ${commit:0:12})"* ]]' || { echo "about_panel: $(raw '{"id":1,"cmd":"debug.about"}')"; return 1; }
+  check wait_for 5 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.about\"}" | field lines)" == *"Version $version ($label)"* ]]' || { echo "about_panel: $(raw '{"id":1,"cmd":"debug.about"}')"; return 1; }
 }
 
 scenario serial_pane M4

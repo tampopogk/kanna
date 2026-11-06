@@ -422,7 +422,7 @@ extension AppController {
     }
 
     @objc func showAbout() {
-        NSApp.orderFrontStandardAboutPanel(options: [.applicationVersion: KannaBuild.version, .version: "\(KannaBuild.channel) \(KannaBuild.shortCommit)"])
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationVersion: KannaBuild.version, .version: KannaBuild.buildLabel])
     }
 
     @objc func showAccounts() { accountsTerminal("kanna accounts; exec \"${SHELL:-/bin/sh}\" -l") }

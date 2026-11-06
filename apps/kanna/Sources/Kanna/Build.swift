@@ -16,9 +16,12 @@ enum KannaBuild {
 
     static var commit: String { info["KannaCommit"] as? String ?? "unknown" }
 
-    static var shortCommit: String { String(commit.prefix(12)) }
+    static var version: String { info["KannaVersion"] as? String ?? "unknown" }
 
-    static var version: String { info["CFBundleShortVersionString"] as? String ?? "unknown" }
+    static var buildLabel: String {
+        let short = String(commit.prefix(12))
+        return channel == "production" ? short : "\(channel) \(short)"
+    }
 
     static let daemonBuild: String? = buildID(of: DaemonStarter.helpers.appendingPathComponent("kanna-daemon"))
 
