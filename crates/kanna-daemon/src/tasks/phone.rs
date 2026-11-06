@@ -8,6 +8,32 @@ const DONE_LATELY: usize = 5;
 
 const WORDS_AGAIN: [Duration; 2] = [Duration::ZERO, Duration::from_secs(2)];
 
+const PROJECT: &str = "project:";
+
+const PROJECT_BIRTH: &str = "project";
+
+const CLONE: &str = "clone:";
+
+const RAN: &str = "ran:";
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProjectRecord {
+    pub repo: String,
+    pub name: String,
+    pub planner: Option<String>,
+    pub clones: Vec<String>,
+    pub ran: Vec<String>,
+}
+
+impl ProjectRecord {
+    pub fn planner_machine(&self, me: &str, live: &dyn Fn(&str) -> bool) -> Option<String> {
+        let clones: Vec<&str> = self.clones.iter().map(String::as_str).filter(|k| live(k)).collect();
+        let ran: Vec<&str> = self.ran.iter().map(String::as_str).filter(|k| clones.contains(k)).collect();
+        let chosen = self.planner.as_deref().filter(|k| live(k)).or_else(|| ran.iter().copied().find(|k| *k == me)).or_else(|| ran.first().copied()).or_else(|| clones.iter().copied().find(|k| *k == me)).or_else(|| clones.first().copied());
+        chosen.map(String::from)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
     pub id: Option<String>,
@@ -291,6 +317,55 @@ impl Tasks {
                 json!({ "id": r.task, "name": r.text("name").unwrap_or(&r.task), "status": status, "since": num(r.born().ms as f64 / 1000.0), "desk": opt(r.text("claim")), "machine": machines.name_of(r.text("owner").unwrap_or_default()), "agent": program(r.text("agent").unwrap_or(DEFAULT_AGENT)).rsplit('/').next().unwrap_or_default(), "branch": Value::Null, "after": [], "madeAt": num(r.born().ms as f64 / 1000.0), "unreachable": true })
             })
             .collect()
+    }
+
+    pub fn project_records(&self) -> Vec<ProjectRecord> {
+        let replica = self.replica.borrow();
+        replica
+            .records()
+            .filter_map(|r| {
+                let repo = r.task.strip_prefix(PROJECT)?.to_string();
+                let strings = |keys: Vec<&str>| keys.into_iter().map(String::from).collect();
+                Some(ProjectRecord { repo, name: r.text("name").unwrap_or_default().to_string(), planner: r.text("planner").map(String::from), clones: strings(r.keys_after(CLONE)), ran: strings(r.keys_after(RAN)) })
+            })
+            .collect()
+    }
+
+    pub fn project_record(&self, repo: &str) -> Option<ProjectRecord> {
+        self.project_records().into_iter().find(|r| r.repo == repo)
+    }
+
+    fn write_project(&self, repo: &str, fields: &[(&str, Value)]) {
+        let task = format!("{PROJECT}{repo}");
+        match self.replica.borrow_mut().write(&self.db, &task, PROJECT_BIRTH, fields) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(error) => return log!("kanna-daemon: couldn't keep project {repo} in {}: {error}", db::FILE),
+        }
+        self.revised();
+        self.sync_at.set(Instant::now());
+    }
+
+    pub fn publish_projects(&self, mine: &[(String, String, bool)]) {
+        let me = self.machines().me.key;
+        if me.is_empty() {
+            return;
+        }
+        let (clone, ran) = (format!("{CLONE}{me}"), format!("{RAN}{me}"));
+        for (repo, name, planned) in mine {
+            let mut fields = vec![(clone.as_str(), json!(true)), ("name", json!(name))];
+            if *planned {
+                fields.push((ran.as_str(), json!(true)));
+            }
+            self.write_project(repo, &fields);
+        }
+        for gone in self.project_records().into_iter().filter(|r| r.clones.contains(&me) && !mine.iter().any(|(repo, _, _)| *repo == r.repo)) {
+            self.write_project(&gone.repo, &[(clone.as_str(), Value::Null)]);
+        }
+    }
+
+    pub fn set_planner(&self, repo: &str, key: &str) {
+        self.write_project(repo, &[("planner", json!(key))]);
     }
 
     pub fn done_lately(&self, project: &str) -> Vec<Value> {

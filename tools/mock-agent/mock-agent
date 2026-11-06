@@ -409,7 +409,7 @@ def reported(state):
 
 
 def answer(line):
-    if line.split()[:1] == ["report"]:
+    if line.split()[:1] in (["report"], ["later"]):
         return answering(line)
     reported("working")
     try:
@@ -458,6 +458,9 @@ def answering(line):
             out("TURN_DONE\r\n")
         else:
             out("Declined.\r\n")
+    elif words[:1] == ["later"] and len(words) > 2:
+        threading.Timer(float(words[1]), out, [f"\x1b]7501;{words[2]}\x1b\\"]).start()
+        out(f"later: {words[2]}\r\n")
     elif words[:1] == ["background"] and len(words) > 1:
         child = subprocess.Popen(["sleep", words[1]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
         wake = float(words[3]) if words[2:3] == ["wake"] and len(words) > 3 else None

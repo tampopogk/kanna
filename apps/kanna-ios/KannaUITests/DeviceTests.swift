@@ -28,6 +28,71 @@ final class DeviceTests: XCTestCase {
         app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
+    private func repo(_ name: String) {
+        XCTAssertTrue(app.buttons["repo-switcher"].waitForExistence(timeout: 15))
+        XCTAssertTrue(allow(for: 20) { !seen("Can't reach").exists }, "no link")
+        app.buttons["repo-switcher"].tap()
+        let row = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "no repo \(name)")
+        row.tap()
+    }
+
+    func testMachinesAndStats() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let name = environment["KANNA_REPO"], let machine = environment["KANNA_MACHINE"] else {
+            throw XCTSkip("a real phone paired with a real daemon, and the machine that has the repo")
+        }
+        app.launch()
+        repo(name)
+        app.tabBars.buttons["Stats"].tap()
+        XCTAssertTrue(seen("Commits").waitForExistence(timeout: 60), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("stats")
+        app.tabBars.buttons["Machines"].tap()
+        XCTAssertTrue(seen("Have \(name)").waitForExistence(timeout: 15))
+        XCTAssertTrue(seen(machine).waitForExistence(timeout: 15), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("machines")
+        guard let target = environment["KANNA_MOVE_TO"] else { return }
+        app.staticTexts[target].firstMatch.tap()
+        let run = app.buttons["run-here"]
+        XCTAssertTrue(run.waitForExistence(timeout: 10))
+        run.tap()
+        app.tabBars.buttons["Chat"].tap()
+        XCTAssertTrue(seen("The planner is on \(target) now").waitForExistence(timeout: 30), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("moved")
+    }
+
+    func testQuizRound() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let repo = environment["KANNA_QUIZ_REPO"] else {
+            throw XCTSkip("a real phone paired with a real daemon, and a round ready in that repo")
+        }
+        app.launch()
+        XCTAssertTrue(app.buttons["repo-switcher"].waitForExistence(timeout: 15))
+        XCTAssertTrue(allow(for: 20) { !seen("Can't reach").exists }, "no link")
+        app.buttons["repo-switcher"].tap()
+        let row = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", repo)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "no repo \(repo)")
+        row.tap()
+        app.tabBars.buttons["Quiz"].tap()
+        XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 300), "no round: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("map")
+        let started = Date()
+        app.buttons["next-round"].tap()
+        XCTAssertTrue(seen("1 of 5").waitForExistence(timeout: 3), "a round starts with no wait")
+        print("round started in \(Date().timeIntervalSince(started)) s")
+        for _ in 0..<5 {
+            let first = [app.buttons["drawing-0"], app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", "1")).firstMatch, app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", "A")).firstMatch].first { $0.waitForExistence(timeout: 2) }
+            XCTAssertNotNil(first, app.buttons.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+            first?.tap()
+            XCTAssertTrue(app.buttons["next-question"].waitForExistence(timeout: 5))
+            shot("answered")
+            app.buttons["next-question"].tap()
+        }
+        XCTAssertTrue(seen(" of 5").waitForExistence(timeout: 5))
+        XCTAssertTrue(seen("The map moved").waitForExistence(timeout: 20), "the map didn't move: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("end")
+    }
+
     func testShelf() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let task = environment["KANNA_TASK"], let repo = environment["KANNA_REPO"] else {

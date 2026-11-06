@@ -111,6 +111,11 @@ struct ConnectionPop: View {
                 KeyValue(key: "Round trip", value: "\(store.milliseconds(machine)) ms")
                 KeyValue(key: "Direct path", value: store.plannerPath == .relay ? "Trying" : "In use")
             }
+            if store.fixture {
+                Button(store.offline ? "Bring the link back" : "Drop the link") { store.flipFixtureLink() }
+                    .font(.system(size: 13))
+                    .accessibilityIdentifier("fixture-link")
+            }
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 11)
@@ -437,6 +442,28 @@ struct PrimaryButton: View {
         }
         .buttonStyle(.plain)
         .disabled(off)
+    }
+}
+
+struct StartBanner: View {
+    var title: String
+    var detail: String
+    var calm = false
+    var chevron = true
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.system(size: 16, weight: .bold))
+                Text(detail).font(.system(size: 13)).opacity(calm ? 1 : 0.85).foregroundStyle(calm ? K.muted : K.onAccent)
+            }
+            Spacer(minLength: 0)
+            if chevron { Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)) }
+        }
+        .foregroundStyle(calm ? K.text : K.onAccent)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(calm ? K.panel : K.accent, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 

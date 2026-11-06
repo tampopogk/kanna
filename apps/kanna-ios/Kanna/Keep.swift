@@ -6,14 +6,16 @@ final class KeptRepo {
     @Attribute(.unique) var id: String
     var name: String
     var machine: String
+    var key: String = ""
     var status: String
     var since: Double
     var order: Int
 
-    init(id: String, name: String, machine: String, status: String, since: Double, order: Int) {
+    init(id: String, name: String, machine: String, key: String, status: String, since: Double, order: Int) {
         self.id = id
         self.name = name
         self.machine = machine
+        self.key = key
         self.status = status
         self.since = since
         self.order = order
@@ -76,9 +78,17 @@ final class Keep {
         (try? context.fetch(FetchDescriptor<KeptRepo>(sortBy: [SortDescriptor(\.order)]))) ?? []
     }
 
-    func items(_ repo: String) -> [Item] {
-        let fetch = FetchDescriptor<KeptItem>(predicate: #Predicate { $0.repo == repo }, sortBy: [SortDescriptor(\.seq)])
-        return ((try? context.fetch(fetch)) ?? []).compactMap { try? JSONDecoder().decode(Item.self, from: $0.body) }
+    func items(_ repo: String, machine: String) -> [Item] {
+        let era = repo + "\n"
+        let fetch = FetchDescriptor<KeptItem>(sortBy: [SortDescriptor(\.seq)])
+        let kept = ((try? context.fetch(fetch)) ?? []).filter { $0.repo == repo || $0.repo.hasPrefix(era) }
+        var seen: [String: Item] = [:]
+        for row in kept {
+            guard var item = try? JSONDecoder().decode(Item.self, from: row.body) else { continue }
+            item.machine = item.machine ?? machine
+            seen["\(item.machine ?? "")/\(item.seq)"] = item
+        }
+        return seen.values.sorted { ($0.at, $0.seq) < ($1.at, $1.seq) }
     }
 
     func queued() -> [Queued] {
@@ -87,7 +97,7 @@ final class Keep {
 
     func put(_ item: Item, repo: String) {
         guard let body = try? JSONEncoder().encode(item) else { return }
-        context.insert(KeptItem(repo: repo, seq: item.seq, body: body))
+        context.insert(KeptItem(repo: repo + "\n" + (item.machine ?? ""), seq: item.seq, body: body))
     }
 
     func page<T: Decodable>(_ key: String) -> T? {

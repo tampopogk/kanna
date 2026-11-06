@@ -67,6 +67,11 @@ kanna_rust_dir() {
   echo "$(kanna_arch_dir "$1" "${2:-$(kanna_host_triple)}")/$profile"
 }
 
+kanna_version() {
+  kanna_version_shell="$(CARGO_TARGET_DIR="$1/target/kanna-version" cargo run -q --manifest-path "$1/Cargo.toml" -p kanna-build)" || return 1
+  printf '%s\n' "$kanna_version_shell" | sed -n 's/^version=//p'
+}
+
 kanna_cargo_stamp() {
   cargo_triple="${3:-$(kanna_host_triple)}"
   cargo_dir="$(kanna_rust_dir "$1" "$cargo_triple")" || return 1

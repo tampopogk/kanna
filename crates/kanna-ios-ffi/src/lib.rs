@@ -172,6 +172,14 @@ pub extern "C" fn kanna_phone_highlight(file: *const c_char, source: *const c_ch
 }
 
 #[no_mangle]
+pub extern "C" fn kanna_phone_drawing(source: *const c_char) -> *mut c_char {
+    match kanna_merman::flowchart(&text(source).unwrap_or_default()) {
+        Ok(drawn) => give(json!({ "drawing": drawn })),
+        Err(message) => give(json!({ "drawing": null, "problem": message })),
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn kanna_phone_stop() {
     let client = {
         let mut phone = phone();

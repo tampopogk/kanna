@@ -295,6 +295,20 @@ impl Feed {
         }
     }
 
+    pub fn restore_statuses(&mut self, owner: Option<i32>, records: Vec<ProgramStatus>) {
+        self.screen.restore_program_records(records);
+        self.statuses_serial = self.screen.program_status_serial();
+        self.statuses_owner = owner;
+    }
+
+    pub fn statuses_serial(&self) -> u64 {
+        self.screen.program_status_serial()
+    }
+
+    pub fn kept_statuses(&self) -> (Option<i32>, Vec<ProgramStatus>) {
+        (self.statuses_owner, self.screen.program_records())
+    }
+
     pub fn reported(&self, group: Option<i32>) -> Option<ProgramStatus> {
         self.screen.program_status().filter(|_| group.is_some() && self.statuses_owner == group)
     }

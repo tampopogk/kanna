@@ -1,6 +1,6 @@
 # Phone: Link and Pairing
 
-**Status:** LAN built ([slice 1](mobile-app.md#9-build-order)); the relay and more than one machine aren't · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
+**Status:** LAN built ([slice 1](mobile-app.md#9-build-order)), with more than one machine ([slice 3](mobile-machines.md#3-the-link-moves)); the relay isn't · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
 
 How a phone becomes yours and reaches your machines. It pairs once, with any one machine, and from then on can reach any of them, though it holds one link at a time, to the current repo's planner machine: on the LAN directly, away through your relay, moving to a direct path when one opens. This holds no account and needs no server of Kanna's, as for [your machines](machines.md#1-rules).
 
@@ -72,14 +72,15 @@ A new stream kind, `phone`, opened by a key with the `phone` role. It stays out 
 
 | Request | Does | Spec |
 |---|---|---|
-| `hello` | The machine's name and capabilities, its projects, the log, the relay and token | |
+| `hello` | The machine's name, every project with its planner machine, your machines' keys and addresses, the log | [Machines and Stats §3](mobile-machines.md#3-the-link-moves) |
 | `chat.read {repo, after}`, `chat.send`, `chat.choose` | The conversation | [chat §3](mobile-chat.md#3-the-conversation) |
-| `planner.move {repo, machine}` | Sets the planner machine | [chat §1](mobile-chat.md#1-the-planner-machine) |
+| `machines {repo}` | The repo's machines | [Machines and Stats §6](mobile-machines.md#6-machines) |
+| `planner.move {repo, machine}` | Sets the planner machine | [Machines and Stats §4](mobile-machines.md#4-moving-the-planner) |
 | `tasks.list {repo}`, `task.read {task}`, `task.send {task, id, text}`, `task.pick {task, desk, room?}` | The Shelf | [Shelf](mobile-shelf.md) |
 | `stats {repo}` | The [same reply](stats.md#4-adding-a-metric) as `kanna stats --json` | |
 | `quiz.map`, `quiz.rounds`, `quiz.answer`, `quiz.ahead` | The Quiz tab | [quiz §2](mobile-quiz.md#2-the-stream) |
 
-Notices: `chat {repo, item}`, `planner {repo, status, since}`, `tasks {repo}`, `quiz {repo}`.
+Notices: `chat {repo, item}`, `planner {repo, status, since}`, `tasks {repo}`, `projects`, `quiz {repo}`.
 
 - **`repo` is a project's identity** (`url:host/path`, [links §4](machine-links.md#4-projects-desks-and-claims)); each daemon turns it into its own clone's path.
 
@@ -96,7 +97,7 @@ flowchart TD
     D & I & R -->|"network changes"| L
 ```
 
-- **One link, to the planner machine.** `hello` lists your projects and each one's planner machine, from the replica. Switching to a repo on another planner machine moves the link. If it can't be reached, the phone dials the other machines in the log only for the Machines tab, so you can *Run the planner here* ([chat §1](mobile-chat.md#1-the-planner-machine)).
+- **One link, to the planner machine.** `hello` lists your projects and each one's planner machine, from the [project records](mobile-machines.md#1-the-project-record). Switching to a repo on another planner machine moves the link. If it can't be reached, the phone dials the other machines in the log only for the Machines tab, so you can *Run the planner here* ([chat §1](mobile-chat.md#1-the-planner-machine)).
 - **Foreground only.** Going to the background closes the links and the endpoint. Coming back opens them, reads from the last `seq`, and shows the cache until then. This is what iOS allows without push.
 - **LAN first, with no multicast.** Raw multicast takes an Apple entitlement, so the phone dials the last good address, the log's `addrs` and what `NWBrowser` finds, under `NSBonjourServices` and `NSLocalNetworkUsageDescription`.
 - **A Bonjour service of our own.** Each daemon publishes `_kanna-phone._udp`, its port and, as the instance name, its key in lowercase base32. iroh's `_kanna._udp` records can be listed but [never resolve](../../references/prototypes/phone-probe/README.md#results), on an iPhone or a Mac. On macOS the daemon registers with the system's `DNSServiceRegister`: a responder of its own, as `mdns-sd` runs, isn't seen even by the same Mac. On Linux, where no responder can be counted on, it uses `mdns-sd`. Bonjour only finds the address; the link is iroh's.
