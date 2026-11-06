@@ -156,7 +156,7 @@ struct TaskDetail: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        if !t.lastWords.isEmpty && t.status == .needs {
+                        if !t.lastWords.isEmpty && t.status != .working {
                             Label2("It said, \(t.lastAt)")
                             Card {
                                 VStack(alignment: .leading, spacing: 8) {

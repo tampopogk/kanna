@@ -6,6 +6,8 @@ use std::io::{Read, Seek, SeekFrom};
 
 const DONE_LATELY: usize = 5;
 
+const WORDS_AGAIN: [Duration; 2] = [Duration::ZERO, Duration::from_secs(2)];
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
     pub id: Option<String>,
@@ -131,14 +133,19 @@ impl Tasks {
         let this = Rc::downgrade(self);
         crate::runtime::spawn("a task's last words", async move {
             let id = entry.id.clone();
-            let read = crate::runtime::off_loop(move || read_words(&entry)).await.flatten();
-            let Some(this) = this.upgrade() else { return };
-            match read {
-                Some(words) => match this.db.put_last_words(&id, &words.text, words.asking) {
-                    Ok(()) => this.revised(),
-                    Err(error) => log!("kanna-daemon: couldn't keep {id}'s last words in {}: {error}", db::FILE),
-                },
-                None => log!("kanna-daemon: found no last words for {id} in its agent's session"),
+            for pause in WORDS_AGAIN {
+                tokio::time::sleep(pause).await;
+                let reading = entry.clone();
+                let read = crate::runtime::off_loop(move || read_words(&reading)).await.flatten();
+                let Some(this) = this.upgrade() else { return };
+                match read {
+                    Some(words) => match this.db.put_last_words(&id, &words.text, words.asking) {
+                        Ok(()) => this.revised(),
+                        Err(error) => log!("kanna-daemon: couldn't keep {id}'s last words in {}: {error}", db::FILE),
+                    },
+                    None if pause == WORDS_AGAIN[1] => log!("kanna-daemon: found no last words for {id} in its agent's session"),
+                    None => {}
+                }
             }
         });
     }

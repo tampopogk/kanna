@@ -65,6 +65,9 @@ func rich(_ source: String, code: CGFloat = 13) -> AttributedString {
         out[run.range].font = .mono(code)
         out[run.range].foregroundColor = K.accent
     }
+    for run in out.runs where run.link != nil {
+        out[run.range].link = nil
+    }
     return out
 }
 

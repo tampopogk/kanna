@@ -75,7 +75,7 @@ A new stream kind, `phone`, opened by a key with the `phone` role. It stays out 
 | `hello` | The machine's name and capabilities, its projects, the log, the relay and token | |
 | `chat.read {repo, after}`, `chat.send`, `chat.choose` | The conversation | [chat §3](mobile-chat.md#3-the-conversation) |
 | `planner.move {repo, machine}` | Sets the planner machine | [chat §1](mobile-chat.md#1-the-planner-machine) |
-| `tasks.list {repo}`, `task.read`, `task.send`, `task.pick` | The Shelf | [Shelf](mobile-shelf.md) |
+| `tasks.list {repo}`, `task.read {task}`, `task.send {task, id, text}`, `task.pick {task, desk, room?}` | The Shelf | [Shelf](mobile-shelf.md) |
 | `stats {repo}` | The [same reply](stats.md#4-adding-a-metric) as `kanna stats --json` | |
 | `quiz.map`, `quiz.rounds`, `quiz.answer`, `quiz.ahead` | The Quiz tab | [quiz §2](mobile-quiz.md#2-the-stream) |
 

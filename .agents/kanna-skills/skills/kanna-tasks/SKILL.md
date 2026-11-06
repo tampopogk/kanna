@@ -91,7 +91,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 
 ## Messages
 
-`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent once their turn is over, as a prompt `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped Shelf task runs for it. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
+`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent once their turn is over, as a prompt `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, a stopped Shelf task runs for it, and one that hasn't started gets it with its first message. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
 
 - **Send one only when the user asks you to.** When you're done or need the user, say so in your chat and end your turn: the Desk shows them the task is done or needs them, and they read your summary there.
 - **A message you get** starts with `[message from SENDER]`: answer it once, briefly, with `kanna task send SENDER "..."` (or `planner`), since the sender can't see your chat. A message from `user` came from the user: answer in the chat as usual.
