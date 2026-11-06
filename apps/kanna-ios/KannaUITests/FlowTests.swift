@@ -87,7 +87,7 @@ final class FlowTests: XCTestCase {
         say("Drop them and restyle the crash page")
         see("Got it. Carrying on", 12)
         see("Working")
-        XCTAssertFalse(app.descendants(matching: .any)["last-words"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["last-words"].exists, "sending hides nothing")
         shot("answered-task")
     }
 
@@ -98,6 +98,7 @@ final class FlowTests: XCTestCase {
         say("Add an export too")
         see("Waits until it starts")
         see("First message")
+        see("A page with every schedule's firings")
         shot("waits")
         app.buttons["pick"].tap()
         tap("studio")

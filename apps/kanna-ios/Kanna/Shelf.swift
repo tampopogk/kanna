@@ -158,16 +158,11 @@ struct TaskDetail: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        if t.thread.isEmpty || t.status == .blocked || t.status == .waiting, let first = t.firstMessage {
+                        if let first = t.firstMessage {
                             Label2("First message")
                             Card { Text(rich(first)).font(.system(size: 15)) }
                         }
                         ForEach(t.thread) { ThreadRow(message: $0) }
-                        if !t.lastWords.isEmpty && t.status != .working {
-                            Label2("It said, \(t.lastAt)")
-                            Card { Text(verbatim: t.lastWords).font(.system(size: 15)) }
-                                .accessibilityIdentifier("last-words")
-                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
@@ -221,7 +216,13 @@ struct ThreadRow: View {
     var message: Message
 
     var body: some View {
-        if message.you {
+        if message.said {
+            VStack(alignment: .leading, spacing: 12) {
+                Label2("It said, \(message.time)")
+                Card { Text(verbatim: message.text).font(.system(size: 15)) }
+                    .accessibilityIdentifier("last-words")
+            }
+        } else if message.you {
             VStack(alignment: .trailing, spacing: 2) {
                 Text("you · \(message.time)").font(.system(size: 12)).foregroundStyle(K.muted)
                 MyBubble(text: message.text)

@@ -111,6 +111,8 @@ struct Message: Identifiable {
     let text: String
     var you = false
     var receipt: Receipt = .none
+    var at = 0.0
+    var said = false
 }
 
 struct WorkItem: Identifiable {
@@ -124,8 +126,6 @@ struct WorkItem: Identifiable {
     var after = ""
     var branch: String?
     var firstMessage: String?
-    var lastWords = ""
-    var lastAt = ""
     var thread: [Message] = []
     var unreachable = false
     var picking = false

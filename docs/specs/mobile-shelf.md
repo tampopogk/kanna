@@ -75,7 +75,7 @@ sequenceDiagram
 - **Kept** in `last_words` in `kanna.db`: who, when, whether it's a question, text, the last 8 KB. One row per task, replaced each turn, and it lives as long as the task.
 - **For a planner too (not built):** the row is keyed by `who`, so a planner's can sit beside the tasks' and *Needs you at studio* can have words.
 - **Best effort:** a reader that fails (a new session format, say) logs it and keeps the last row. The phone then shows the status alone. e2e `real_agent_last_words` runs real claude and codex against the mock model, so a format change fails a test.
-- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone shows them after the thread, where a long thread opens, unless the task is working.
+- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone shows them in the thread, by when they were said, under the first message, which stays at the top: sending a message hides nothing.
 
 ## 4. A message to a task that hasn't started
 
