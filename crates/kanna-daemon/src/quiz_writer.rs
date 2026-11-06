@@ -12,6 +12,8 @@ const TICK: Duration = Duration::from_secs(1);
 
 const TIME_LIMIT: f64 = 1200.0;
 
+const START_LIMIT: f64 = 180.0;
+
 const IDLE_LIMIT: f64 = 90.0;
 
 const BLOCKED_LIMIT: f64 = 60.0;
@@ -43,6 +45,7 @@ struct Running {
     written: Option<f64>,
     idle: Option<f64>,
     blocked: Option<f64>,
+    worked: bool,
     quitting: bool,
     why: Option<String>,
 }
@@ -184,7 +187,7 @@ impl Writers {
         let agent = task_agent(&files);
         let cmd = started_as(&agent, &role(about.as_deref()), None, prompts(&files));
         let open = json!({ "type": "term", "quiz": true, "claim": WINDOWLESS, "cwd": repo, "cmd": cmd, "wait": false });
-        let running = Running { pane: None, agent, about, since: now(), written: None, idle: None, blocked: None, quitting: false, why: None };
+        let running = Running { pane: None, agent, about, since: now(), written: None, idle: None, blocked: None, worked: false, quitting: false, why: None };
         self.repos.borrow_mut().entry(repo.to_string()).or_default().running = Some(running);
         log!("kanna-daemon: a quiz writer starts in {repo}");
         let (this, path) = (Rc::downgrade(self), repo.to_string());
@@ -224,7 +227,7 @@ impl Writers {
             let state = repos.entry(repo).or_default();
             if state.running.is_none() {
                 let files = config_files(Path::new(found.cwd.as_deref().unwrap_or("/")));
-                state.running = Some(Running { pane: Some(pane), agent: task_agent(&files), about: None, since: now(), written: None, idle: None, blocked: None, quitting: false, why: None });
+                state.running = Some(Running { pane: Some(pane), agent: task_agent(&files), about: None, since: now(), written: None, idle: None, blocked: None, worked: false, quitting: false, why: None });
             }
         }
     }
@@ -257,12 +260,14 @@ impl Writers {
                 gone = Some(pane);
             } else if !running.quitting {
                 let status = self.tasks.pane_status(&pane);
+                running.worked |= status.as_deref() == Some("working");
                 running.idle = (status.as_deref() == Some("idle")).then(|| running.idle.unwrap_or(time));
                 running.blocked = (status.as_deref() == Some("blocked")).then(|| running.blocked.unwrap_or(time));
                 let why = match running.written {
                     Some(at) if status.as_deref() == Some("idle") || time - at > QUIT_WAIT => Some(None),
                     Some(_) => None,
                     None if time - running.since > TIME_LIMIT => Some(Some("The quiz writer ran out of time without writing a round")),
+                    None if !running.worked && time - running.since > START_LIMIT => Some(Some("The quiz writer never got going: run the agent once by hand in this repo, to answer what it asks there")),
                     None if running.blocked.is_some_and(|at| time - at > BLOCKED_LIMIT) => Some(Some("The quiz writer stopped to ask permission, and nobody can answer it there: set agents.prompts to skip in ~/.kanna-v4/config.json")),
                     None if running.idle.is_some_and(|at| time - at > IDLE_LIMIT) => Some(Some("The quiz writer finished without writing a round")),
                     None => None,

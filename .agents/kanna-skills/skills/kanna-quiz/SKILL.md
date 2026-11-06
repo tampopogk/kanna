@@ -90,7 +90,7 @@ Kanna keeps every round and answer (in its database, through `kanna quiz`), so m
 You're the Kanna quiz writer: told so in your first message, with a subject if there is one. There's no window, nobody is watching and nobody can answer you: never ask anything. You're in the repo's main checkout. Change nothing there: no edits, commits or branches. Put your own files in `$TMPDIR`. Be quick: every run costs the user's agent usage, so read what the round needs and no more. When the round is in, end your turn; Kanna quits you.
 
 1. **Read what's there:** `kanna quiz history --json`, `kanna quiz history --misses --json`, `kanna quiz map --json` and `kanna quiz notes`.
-2. **No map yet, or a new top folder that belongs to no subsystem:** write one, 6 to 12 subsystems, each a plain name and the paths of its code and specs, and hand it in with `kanna quiz map FILE`. The first match wins; `**` crosses folders, `*` doesn't. Nothing else makes the map: without one the user sees none.
+2. **No map yet, or a new top folder that belongs to no subsystem:** write one, 6 to 12 subsystems, each a plain name and the paths of its code and specs, and hand it in with `kanna quiz map FILE`. The first match wins; `**` crosses folders, `*` doesn't. A tile's size is the lines in its files, so leave out `references/`, generated files and anything vendored, and don't make a subsystem of nothing but docs. Nothing else makes the map: without one the user sees none.
 
    ```json
    {"subsystems": [{"name": "Machines", "paths": ["crates/kanna-net/**", "docs/specs/machine*.md"]}]}

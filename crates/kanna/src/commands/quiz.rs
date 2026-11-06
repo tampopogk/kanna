@@ -1,6 +1,7 @@
-use super::{absolute, caller, file_lines, git_line, repo_here, usage, Command, Flow};
+use super::{absolute, caller, file_lines, git_line, repo_here, usage, Call, Command, Flow};
 use crate::args::Argv;
 use crate::output::ago;
+use crate::target::Session;
 use kanna_client::Failure;
 use serde_json::{json, Value};
 
@@ -31,12 +32,26 @@ pub const COMMAND: Command = Command {
     ],
     parse,
     show,
-    flow: Flow::PLAIN,
+    flow: Flow { before: Some(before), ..Flow::PLAIN },
 };
 
 fn read_json(file: &str) -> Result<Value, Failure> {
     let text = std::fs::read_to_string(file).map_err(|error| usage("quiz", &format!("can't read {file}: {error}")))?;
     serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).ok_or_else(|| usage("quiz", &format!("{file} isn't a JSON object")))
+}
+
+fn before(request: &mut Value, _: &mut Session) -> Result<Call, Failure> {
+    if !matches!(request["action"].as_str(), Some("ready" | "map" | "notes")) {
+        return Ok(Call::default());
+    }
+    if let Some(file) = request.as_object_mut().and_then(|fields| fields.remove("file")) {
+        let doc = read_json(file.as_str().unwrap_or_default())?;
+        if request["action"] == "ready" {
+            drawable(&doc)?;
+        }
+        request["doc"] = doc;
+    }
+    Ok(Call::default())
 }
 
 fn drawable(round: &Value) -> Result<(), Failure> {
@@ -122,17 +137,14 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
             }
         }
         "ready" => {
-            let file = args.positional().ok_or_else(|| usage("quiz", "ready needs a FILE: the round, as JSON"))?;
-            let round = read_json(&file)?;
-            drawable(&round)?;
-            out["doc"] = round;
+            out["file"] = json!(args.positional().ok_or_else(|| usage("quiz", "ready needs a FILE: the round, as JSON"))?);
             if let Some(by) = caller() {
                 out["by"] = json!(by);
             }
         }
         "map" | "notes" => {
             if let Some(file) = args.positional() {
-                out["doc"] = read_json(&file)?;
+                out["file"] = json!(file);
             }
         }
         "ahead" => {
@@ -233,7 +245,7 @@ mod tests {
         assert_eq!(parse("kanna quiz ahead --about 'the relay'").unwrap().1, json!({ "action": "ahead", "repo": repo.trim_end_matches("/.git"), "about": "the relay" }));
         assert!(refused("kanna quiz start --about x").contains("--about is for quiz ahead"));
         assert!(refused("kanna quiz ready").contains("needs a FILE"));
-        assert!(refused("kanna quiz ready /no/such/round.json").contains("can't read"));
+        assert_eq!(parse("kanna quiz ready round.json").unwrap().1["file"], "round.json");
         assert_eq!(parse("kanna quiz open --agent codex").unwrap().1, json!({ "action": "open", "repo": repo.trim_end_matches("/.git"), "agent": "codex" }));
         assert_eq!(parse("kanna quiz open").unwrap().1, json!({ "action": "open", "repo": repo.trim_end_matches("/.git") }));
         assert!(refused("kanna quiz start --agent codex").contains("--agent is for quiz open"));
