@@ -110,6 +110,88 @@ final class FixtureBackend: Backend {
         return item
     }
 
+    private static func task(_ name: String, _ status: String, desk: String? = nil, machine: String? = nil, agent: String = "claude", ago: Double = 0, branch: String? = nil, after: String? = nil, message: String? = nil) -> ShelfTask {
+        ShelfTask(id: name, name: name, status: status, since: Date().timeIntervalSince1970 - ago * 60, desk: desk, machine: machine, agent: agent, branch: branch, after: after.map { [Named(id: $0, name: $0)] } ?? [], message: message)
+    }
+
+    private var shelf = ShelfPage(tasks: [
+        task("Keep terminal output", "working", desk: "studio", machine: "dev-1", ago: 12, branch: "terminal-output", message: "Keep each terminal's scrollback through a daemon restart, up to the 10,000 line limit."),
+        task("Review build output", "needs", desk: "studio", machine: "tests-1", agent: "codex", ago: 40),
+        task("Restore task tabs", "idle", desk: "mbp", machine: "mbp", ago: 120, message: "Bring a task's tabs back in their order after a relaunch."),
+        task("Fix the page_comments pinch", "idle", desk: "mbp", machine: "mbp", ago: 180, message: "A pinch over a comment shouldn't zoom the page's comments away."),
+        task("Shelf trailing edge", "working", desk: "mbp", machine: "mbp", ago: 1, message: "The Shelf's last row is cut off at some widths."),
+        task("Polish project search", "working", machine: "studio", ago: 4, branch: "project-search", message: "Rank a project's exact name above a fuzzy match."),
+        task("Agent prompts setting", "ready", machine: "dev-1", after: "Task events", message: "Let a project set the prompts its agents start with."),
+        task("Pane titles in tooltips", "stale", machine: "dev-1", after: "Restore task tabs", message: "Show a pane's whole title in its tab's tooltip."),
+        task("Document reconnect behavior", "stopped", machine: "dev-1", ago: 1500, message: "Write down what the app does while the daemon restarts."),
+        task("Native diff viewer", "waiting", message: "Show a task's branch diff in a tab, side by side, with comments like doc markup."),
+        task("Check tab restoration", "blocked", agent: "codex", after: "Restore task tabs", message: "Reopen a project after a crash and check every tab comes back in its place, with its scroll and zoom."),
+        task("Schedule history page", "waiting", message: "A page with every schedule's firings and replies, and an export of them."),
+    ], desks: [Desk(machine: "studio", open: true), Desk(machine: "mbp", open: false)], done: ["Schedules tab", "Task events", "Stats headings", "Fix pinch anchor", "CLI split by command"])
+
+    private var threads: [String: [ThreadLine]] = [
+        "Keep terminal output": [
+            ThreadLine(at: Date().timeIntervalSince1970 - 2400, from: "planner", you: false, text: "The scrollback test on main changed. Merge it before you touch vt_buffer.rs."),
+            ThreadLine(at: Date().timeIntervalSince1970 - 1560, from: "Keep terminal output", you: false, text: "Merged, and the test passes. Moving on to the restore path."),
+        ],
+    ]
+
+    private var words: [String: LastWords] = [
+        "Review build output": LastWords(at: Date().timeIntervalSince1970 - 2400, asking: true, text: "Keep the old colours as a fallback, or drop them and restyle the crash page here too?"),
+    ]
+
+    func tasks(repo: String) async throws -> ShelfPage {
+        repo == "kanna" ? shelf : ShelfPage(tasks: [], desks: shelf.desks, done: [])
+    }
+
+    func task(_ id: String) async throws -> TaskPage {
+        guard let task = shelf.tasks.first(where: { $0.id == id }) else { throw Refused(code: "not_found", message: "no task \(id)") }
+        return TaskPage(task: task, thread: threads[id] ?? [], last: words[id])
+    }
+
+    private func changed() {
+        onNotice?(.tasks(repo: "kanna"))
+    }
+
+    private func set(_ id: String, _ apply: (inout ShelfTask) -> Void) {
+        guard let index = shelf.tasks.firstIndex(where: { $0.id == id }) else { return }
+        apply(&shelf.tasks[index])
+        changed()
+    }
+
+    private func status(of id: String) -> String { shelf.tasks.first { $0.id == id }?.status ?? "" }
+
+    func tell(task: String, id: String, text: String) async throws {
+        let unstarted = ["waiting", "blocked"].contains(status(of: task))
+        threads[task, default: []].append(ThreadLine(at: Date().timeIntervalSince1970, from: "you", you: true, text: text, client: id))
+        guard !unstarted else { return }
+        Task {
+            await wait(0.6)
+            set(task) { $0.status = "working"; $0.since = Date().timeIntervalSince1970 }
+            await wait(0.4)
+            if let index = threads[task]?.lastIndex(where: { $0.you }) { threads[task]?[index].read = Date().timeIntervalSince1970 }
+            changed()
+            await wait(1)
+            threads[task, default: []].append(ThreadLine(at: Date().timeIntervalSince1970, from: task, you: false, text: "Got it. Carrying on with that."))
+            changed()
+        }
+    }
+
+    func pick(task: String, desk: String, room: String?) async throws {
+        await wait(0.9)
+        if let room { set(room) { $0.desk = nil } }
+        guard shelf.tasks.filter({ $0.desk == desk }).count < 3 else { throw Refused(code: "task_limit", message: "\(desk)'s Desk is full") }
+        threads[task] = threads[task]?.map { var line = $0; line.read = line.read ?? Date().timeIntervalSince1970; return line }
+        set(task) { t in
+            t.desk = desk
+            t.machine = t.machine ?? desk
+            if t.status == "waiting" || t.status == "stopped" {
+                t.status = "working"
+                t.since = Date().timeIntervalSince1970
+            }
+        }
+    }
+
     func close() {}
 
     func forget() { paired = nil }

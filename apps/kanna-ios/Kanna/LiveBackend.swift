@@ -184,6 +184,8 @@ final class LiveBackend: Backend {
             }
         case "planner":
             onNotice?(.planner(repo: repo, status: line["status"] as? String ?? "", since: line["since"] as? Double ?? 0))
+        case "tasks":
+            onNotice?(.tasks(repo: repo))
         default: break
         }
     }
@@ -229,6 +231,26 @@ final class LiveBackend: Backend {
     func choose(repo: String, id: String, seq: Int, choice: String) async throws -> Item {
         let sent: Sent = try await call("chat.choose", ["repo": repo, "id": id, "seq": seq, "choice": choice])
         return sent.item
+    }
+
+    private struct Done: Decodable {}
+
+    func tasks(repo: String) async throws -> ShelfPage {
+        try await call("tasks.list", ["repo": repo])
+    }
+
+    func task(_ id: String) async throws -> TaskPage {
+        try await call("task.read", ["task": id])
+    }
+
+    func tell(task: String, id: String, text: String) async throws {
+        let _: Done = try await call("task.send", ["task": task, "id": id, "text": text])
+    }
+
+    func pick(task: String, desk: String, room: String?) async throws {
+        var args = ["task": task, "desk": desk]
+        if let room { args["room"] = room }
+        let _: Done = try await call("task.pick", args)
     }
 
     func close() {
