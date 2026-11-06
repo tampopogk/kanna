@@ -15,10 +15,12 @@ pub const RUN: &str = "run-";
 
 pub const DESK: &str = "desk";
 
-pub const CRASHES: &str = "crashes";
+pub const PHONE: &str = "phone";
+
+pub const KANNA: &str = "kanna";
 
 pub fn yours(sender: &str) -> bool {
-    sender == USER || sender == DESK || sender == CRASHES || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
+    sender == USER || sender == DESK || sender == PHONE || sender == KANNA || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
 }
 
 pub const PICKUP: Duration = Duration::from_secs(5);
@@ -385,10 +387,10 @@ mod tests {
 
     #[test]
     fn messages_from_you_and_kanna_for_you_take_the_recipients_class() {
-        for sender in [USER, DESK, CRASHES, "schedule quiz", "run-3"] {
+        for sender in [USER, DESK, PHONE, KANNA, "schedule quiz", "run-3"] {
             assert!(yours(sender), "{sender}");
         }
-        for sender in [PLANNER, "task-5e2c", crate::stacks::KANNA] {
+        for sender in [PLANNER, "task-5e2c"] {
             assert!(!yours(sender), "{sender}");
         }
     }

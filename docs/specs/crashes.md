@@ -134,11 +134,9 @@ stateDiagram-v2
 
 ## 5. Report
 
-**Dev and staging builds tell the repo's planning agent** about each new signature, once for the instance's life: a message from `crashes` to `planner` in the build's checkout's repo (`Build::checkout`, as `kanna task send planner` from there), held until a planner runs ([agent messaging](agent-messaging.md)). It says the process, reason, build, record and `.ips` paths, the signature and the top 15 frames. What the planner does with it: the `kanna-planning` skill.
+**Dev and staging builds tell the repo's planning agent** about each new signature, once for the instance's life: a message from `kanna` to `planner` in the build's checkout's repo (`Build::checkout`, as `kanna task send planner` from there), held until a planner runs ([agent messaging](agent-messaging.md)). It says the process, reason, build, record and `.ips` paths, the signature and the top 15 frames. What the planner does with it: the `kanna-planning` skill.
 
-**In the envelope, as the planner's own:** a crash report is Kanna telling you about itself, so it goes out in agent messaging's envelope with `from-mode` the planner's own class, as a message from you, your schedules or the [Desk news](desk-news.md) does ([agent messaging §2](agent-messaging.md#2-delivery)). Without it, a Claude planner that bypasses prompts holds the report for your approval. `crashes` is one of `messages::yours`, so `Tasks::hand_over` gives it the planner's class; `main.rs` wires `Crashes::post` to `Tasks::post` with `messages::CRASHES`.
-
-**`crashes`, not `kanna`:** `kanna` is also the sender of the catch-up messages a stale task gets ([stacked tasks](stacked-tasks.md)), which `Tasks::tell` stores as `prompting` on purpose, and `hand_over` ignores a stored mode for a sender in `messages::yours`. A sender of its own keeps the two apart.
+**In the envelope, as the planner's own:** a crash report is Kanna telling you about itself, so it goes out in agent messaging's envelope with `from-mode` the planner's own class, as a message from you, your schedules or the [Desk news](desk-news.md) does ([agent messaging §2](agent-messaging.md#2-delivery)). Without it, a Claude planner that bypasses prompts holds the report for your approval. `kanna` is one of `messages::yours`, so `Tasks::hand_over` gives it the planner's class; `main.rs` wires `Crashes::post` to `Tasks::post` with `messages::KANNA`.
 
 **Release builds keep records locally only** and send nothing: what may leave the Mac, to whom and with what consent is not decided. A policy comes before any sending.
 

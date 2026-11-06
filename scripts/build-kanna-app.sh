@@ -102,6 +102,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>KannaChannel</key><string>$channel</string>
 <key>KannaInstance</key><string>$instance</string>
 <key>KannaCommit</key><string>$commit</string>
+<key>KannaVersion</key><string>$version</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>${version%%-*}</string>
 <key>CFBundleVersion</key><string>$build_number</string>

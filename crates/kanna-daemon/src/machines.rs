@@ -6,7 +6,6 @@ use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
 use kanna_net::{Config, Failure, Host, Node};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -26,7 +25,7 @@ pub struct Machines {
     withdraw: std::sync::OnceLock<Withdraw>,
 }
 
-struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>, PathBuf, PathBuf);
+struct DaemonHost(Mutex<crate::runtime::Events>, std::sync::Arc<crate::wire::Wire>, PathBuf, PathBuf);
 
 impl Host for DaemonHost {
     fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
@@ -59,6 +58,11 @@ impl Host for DaemonHost {
         Some(self.2.clone())
     }
 
+    fn phone(&self, from: String, _key: String, stream: std::os::unix::net::UnixStream) {
+        let events = self.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let _ = std::thread::Builder::new().name("kanna.phone.read".into()).spawn(move || crate::phone::serve(events, stream, from));
+    }
+
     fn job(&self, from: String, stream: std::os::unix::net::UnixStream) {
         let state_dir = self.3.clone();
         let _ = std::thread::Builder::new().name("kanna.build.relay".into()).spawn(move || crate::builds::relay(&state_dir, &from, stream));
@@ -80,6 +84,19 @@ impl Caller {
 
     pub fn status(&self) -> Value {
         self.node.status()
+    }
+
+    pub fn log(&self) -> Option<Value> {
+        self.node.log()
+    }
+
+    pub fn phone_offer(&self) -> Result<Value, KmuxError> {
+        self.node.offer_phone().map_err(error)
+    }
+
+    pub fn phone_wait(&self, responder: Responder) {
+        let node = self.node.clone();
+        self.handle.spawn(async move { responder.reply(node.wait_phone().await.map_err(error).and_then(object)) });
     }
 
     pub fn call(&self, host: &str, cmd: &str, args: Value) -> Result<Value, KmuxError> {
@@ -130,7 +147,7 @@ fn port() -> Option<u16> {
 }
 
 impl Machines {
-    pub fn start(state_dir: &Path, db: &Db, events: Sender<Event>, wire: std::sync::Arc<crate::wire::Wire>) -> Result<Machines, String> {
+    pub fn start(state_dir: &Path, db: &Db, events: crate::runtime::Events, wire: std::sync::Arc<crate::wire::Wire>) -> Result<Machines, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("kanna.machines").enable_all().build().map_err(|e| format!("can't start the machines' runtime: {e}"))?;
         let node = kanna_net::read_key(&state_dir.join(KEY)).and_then(|secret| {
             let saved = db.machines().unwrap_or_else(|_| json!({}));

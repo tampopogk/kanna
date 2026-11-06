@@ -66,7 +66,7 @@ flowchart LR
 ```
 
 - **The first release is explicit:** with no `v*` tag yet, a bump flag is an error; `scripts/release.sh 4.0.0` cut Kanna's first.
-- **Into the build:** release.sh sets `KANNA_VERSION`; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part.
+- **Into the build:** release.sh sets `KANNA_VERSION`; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part, and `KannaVersion` is all of it, which the About panel shows.
 - **The build number** (`CFBundleVersion`) is `git rev-list --count HEAD`, in every build.
 - **Without `KANNA_VERSION`** a build is the workspace's version, 0.1.0, as before.
 - **Re-running after a failed publish:** if the tag is already on origin at HEAD, release.sh carries on with that tag's release; at another commit it stops.
@@ -79,7 +79,7 @@ The workspace's release profile keeps line tables (`debug = "line-tables-only"`,
 |---|---|
 | `dsymutil BINARY -o dSYMs/ARCH/<path in Contents>.dSYM` | file:line for that exact build, not in the DMG |
 | `strip -S BINARY` | drops the debug map; the symbol table stays, so crash reports name functions as before; a failure stops the release with strip's message |
-| `dsymutil -s` has no `N_OSO` | or the release stops |
+| `dsymutil -s` lists no entry of stab type `N_OSO` | or the release stops; the check reads the `n_type` column, since a C++ symbol name can contain the letters `N_OSO` |
 
 Each architecture's dSYMs are zipped as `Kanna-X.Y.Z-ARCH-dSYMs.zip` and attached to the GitHub Release beside its DMG, so a crash report can be symbolicated after `target/` is gone. They add line numbers only: the shipped binaries already carry the symbol names.
 

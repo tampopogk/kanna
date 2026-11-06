@@ -33,6 +33,7 @@ final class DaemonLink: TerminalLink {
     var onFile: ((String, JSON) -> Void)?
     var onMarkup: ((String, JSON) -> Void)?
     var onSerial: ((String, JSON) -> Void)?
+    var onSchedules: (() -> Void)?
     var onLost: (() -> Void)?
     private var requests = 0
     private var replies: [Int: (JSON) -> Void] = [:]
@@ -227,6 +228,8 @@ final class DaemonLink: TerminalLink {
             if let content = args["content"]?.string { onMarkup?(content, args) }
         case "serial":
             if let content = args["content"]?.string { onSerial?(content, args) }
+        case "schedules":
+            onSchedules?()
         case "tasks":
             if case .array(let tasks)? = args["shelf"] { onShelf?(tasks, args["desk"]?.array ?? []) }
         case "toast":
@@ -281,6 +284,11 @@ final class DaemonLink: TerminalLink {
         guard attached, more.remove(terminal.id) != nil else { return false }
         send("scrollback", ["terminal": .string(terminal.id)])
         return true
+    }
+
+    func used(_ terminal: ExternalTerminal) {
+        guard attached else { return }
+        send("used", ["terminal": .string(terminal.id)])
     }
 
     func input(_ bytes: Data, from terminal: ExternalTerminal) {
