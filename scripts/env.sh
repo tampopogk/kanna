@@ -3,6 +3,9 @@ KANNA_GHOSTTY_FORK="${KANNA_GHOSTTY_FORK:-https://github.com/jemdiggity/ghostty.
 KANNA_GHOSTTY_BRANCH="kanna4"
 KANNA_GHOSTTY_COMMIT="4e28443e32fe8b0f88934d6a1159c42561f1931a"
 
+KANNA_UPDATE_FEEDS="https://kanna.build/appcast"
+KANNA_UPDATE_PUBLIC_KEY="${KANNA_UPDATE_PUBLIC_KEY:-hjHTuszAUmqmKN6ANvmQQhTlzLs3Tm15WPEudwaMwgU=}"
+
 KANNA_ZIG_VERSION="0.17.0"
 KANNA_ZIG_SHA256_aarch64_macos="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
 KANNA_ZIG_SHA256_x86_64_macos="4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6"
@@ -62,6 +65,11 @@ kanna_cargo_profile() {
 kanna_rust_dir() {
   profile="$(kanna_rust_profile "$1")" || return 1
   echo "$(kanna_arch_dir "$1" "${2:-$(kanna_host_triple)}")/$profile"
+}
+
+kanna_version() {
+  kanna_version_shell="$(CARGO_TARGET_DIR="$1/target/kanna-version" cargo run -q --manifest-path "$1/Cargo.toml" -p kanna-build)" || return 1
+  printf '%s\n' "$kanna_version_shell" | sed -n 's/^version=//p'
 }
 
 kanna_cargo_stamp() {
@@ -317,5 +325,11 @@ kanna_sign_app() {
     file -b "$sign_file" | grep -q Mach-O || continue
     kanna_sign_helper "$sign_bundle_id" "$sign_identity" "$sign_file" "$@" || return 1
   done
+  sign_sparkle="$sign_app/Contents/Frameworks/Sparkle.framework"
+  if [ -d "$sign_sparkle" ]; then
+    for sign_file in "$sign_sparkle/Versions/B/Autoupdate" "$sign_sparkle/Versions/B/Updater.app" "$sign_sparkle"; do
+      codesign --force --sign "$sign_identity" "$@" "$sign_file" || return 1
+    done
+  fi
   codesign --force --sign "$sign_identity" --identifier "$sign_bundle_id" "$@" --entitlements "$sign_root/apps/kanna/Resources/Kanna.entitlements" "$sign_app"
 }

@@ -180,7 +180,7 @@ extension AppController {
         if let planner = desk.planner {
             closingPlanners.insert(planner)
             let pane = published["workspaces"]?.array?.first { $0["id"]?.string == planner }?["dock"]?["pane"]?.string
-            if let pane { request("close", ["task": .string(pane)]) { [weak self] _ in self?.closingPlanners.remove(planner) } }
+            if let pane { request("tasks", ["action": "let-go", "task": .string(pane)]) { [weak self] _ in self?.closingPlanners.remove(planner) } }
         }
         restate()
         refresh()

@@ -1,5 +1,8 @@
 Kanna includes code derived from the following projects.
 
+The macOS app also embeds Sparkle 2.10.1 (https://sparkle-project.org), MIT
+License, unmodified, as Contents/Frameworks/Sparkle.framework.
+
 ================================================================================
 kmux
 https://github.com/tampopogk/kmux
@@ -280,3 +283,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+================================================================================
+netdev and netwatch
+https://github.com/shellrow/netdev (MIT License)
+https://github.com/n0-computer/net-tools (MIT or Apache-2.0)
+================================================================================
+
+  vendor/netdev
+      netdev 0.46.3, with its 0.47 gate on the IPv6 address flags so that it
+      compiles for iOS.
+
+  vendor/netwatch
+      netwatch 0.19.3, with src/route.rs giving iOS the Darwin net/route.h
+      constants that libc declares only for macOS.

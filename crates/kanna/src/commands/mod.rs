@@ -22,6 +22,7 @@ pub mod open;
 pub mod pipeline;
 pub mod project;
 pub mod projects;
+pub mod phone;
 pub mod quiz;
 pub mod raw;
 pub mod read;
@@ -131,6 +132,7 @@ pub static COMMANDS: &[Command] = &[
     toast::COMMAND,
     serial::COMMAND,
     crashes::COMMAND,
+    phone::COMMAND,
     quiz::COMMAND,
     stats::COMMAND,
     projects::COMMAND,

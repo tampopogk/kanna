@@ -1,16 +1,18 @@
-use super::{absolute, caller, file_lines, git_line, repo_here, usage, Command, Flow};
+use super::{absolute, caller, file_lines, git_line, repo_here, usage, Call, Command, Flow};
 use crate::args::Argv;
 use crate::output::ago;
+use crate::target::Session;
 use kanna_client::Failure;
 use serde_json::{json, Value};
 
 pub const COMMAND: Command = Command {
     name: "quiz",
     group: "Information",
-    summary: "Open this repo's Quiz window, and keep a quiz's rounds and answers, so misses come back in a later round and a round can cover what's new since the last.",
-    usage: "kanna quiz open [--agent CMD]\n       kanna quiz start [--json DOC]\n       kanna quiz answer ROUND --kind KIND --file FILE:LINE[-LAST] --right|--wrong [--again ANSWER] [--json DOC]\n       kanna quiz history [--misses]",
+    summary: "Open this repo's Quiz window, keep a quiz's rounds and answers so misses come back and a round covers what's new, and write rounds ahead for the phone.",
+    usage: "kanna quiz open [--agent CMD]\n       kanna quiz start [--json DOC]\n       kanna quiz answer ROUND --kind KIND --file FILE:LINE[-LAST] --right|--wrong [--again ANSWER] [--json DOC]\n       kanna quiz history [--misses]\n       kanna quiz ready FILE\n       kanna quiz map [FILE]\n       kanna quiz notes [FILE]\n       kanna quiz ahead [--about TEXT]",
     options: &[
         ("--agent CMD", "open: the quiz agent to start (default: claude)."),
+        ("--about TEXT", "ahead: what the round is to be about."),
         ("--kind KIND", "answer: architecture, drawing, behaviour, where, why or bug."),
         ("--file FILE:LINE[-LAST]", "answer: the lines the question is about, kept relative to the repo."),
         ("--right, --wrong", "answer: whether the user picked the right choice."),
@@ -18,18 +20,51 @@ pub const COMMAND: Command = Command {
         ("--json DOC", "start, answer: a JSON object kept with the round (commits covered, agent) or the answer (question, choices, the pick, the right choice, explanation)."),
         ("--misses", "history: only the misses not asked again since."),
     ],
-    notes: "For the kanna-quiz skill's agents, run in the repo. open, for the planning agent, brings the repo's Quiz window forward, or opens one: a window with the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it; it isn't a task. start begins a round on this repo at main's commit and prints its ID (r12); answer records one answer to it and prints the answer's ID (a7); history lists this repo's rounds, newest first, each with its commit and answers. history is for picking the next round's questions; your totals over time are on the Desk view's Stats tab (kanna stats).",
+    notes: "For the kanna-quiz skill's agents, run in the repo. open, for the planning agent, brings the repo's Quiz window forward, or opens one: a window with the quiz agent docked on the left, in the repo's main checkout, told it's the quiz agent, and what it opens as tabs beside it; it isn't a task. start begins a round on this repo at main's commit and prints its ID (r12); answer records one answer to it and prints the answer's ID (a7); history lists this repo's rounds, newest first, each with its commit and answers. history is for picking the next round's questions; your totals over time are on the Desk view's Stats tab (kanna stats). ready, map and notes are for the quiz writer: ready hands in a round written ahead for the phone, as JSON, and prints its ID, or everything wrong with it; map keeps the subsystems, and with no FILE prints each one's numbers; notes keeps a few lines on what you know of each, and with no FILE prints them. ahead queues a writer, for the planning agent when you ask for a quiz from the phone: a round card comes into the phone's chat when it's in.",
     examples: &[
         ("kanna quiz open --agent codex", "Open the Quiz window with Codex as the quiz agent, or bring it forward."),
         ("kanna quiz start --json '{\"commits\": [\"67b287c\"]}'", "Start a round on main's commit; prints its ID, e.g. r12."),
         ("kanna quiz answer r12 --kind why --file docs/specs/database.md:40 --wrong --json '{\"question\": \"Why one SQLite file?\", \"pick\": 2, \"answer\": 1}'", "Record a miss in round r12."),
         ("kanna quiz answer r13 --kind why --file docs/specs/database.md:40 --right --again a7", "Ask miss a7 again, and record that it was right this time."),
         ("kanna quiz history --misses --json", "The misses to bring back, as JSON."),
+        ("kanna quiz ready .kanna/tmp/round.json", "Hand in the next round."),
+        ("kanna quiz ahead --about \"the relay\"", "Queue a writer for a round on the relay."),
     ],
     parse,
     show,
-    flow: Flow::PLAIN,
+    flow: Flow { before: Some(before), ..Flow::PLAIN },
 };
+
+fn read_json(file: &str) -> Result<Value, Failure> {
+    let text = std::fs::read_to_string(file).map_err(|error| usage("quiz", &format!("can't read {file}: {error}")))?;
+    serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).ok_or_else(|| usage("quiz", &format!("{file} isn't a JSON object")))
+}
+
+fn before(request: &mut Value, _: &mut Session) -> Result<Call, Failure> {
+    if !matches!(request["action"].as_str(), Some("ready" | "map" | "notes")) {
+        return Ok(Call::default());
+    }
+    if let Some(file) = request.as_object_mut().and_then(|fields| fields.remove("file")) {
+        let doc = read_json(file.as_str().unwrap_or_default())?;
+        if request["action"] == "ready" {
+            drawable(&doc)?;
+        }
+        request["doc"] = doc;
+    }
+    Ok(Call::default())
+}
+
+fn drawable(round: &Value) -> Result<(), Failure> {
+    for (at, question) in round["questions"].as_array().into_iter().flatten().enumerate() {
+        for (letter, source) in ["A", "B", "C"].iter().zip(question["drawings"].as_array().into_iter().flatten()) {
+            let drawn = kanna_merman::flowchart(source.as_str().unwrap_or_default()).map_err(|error| usage("quiz", &format!("question {}, drawing {letter}: {error}", at + 1)))?;
+            if drawn["width"].as_f64().unwrap_or(0.0) > kanna_merman::PHONE_WIDTH {
+                return Err(usage("quiz", &format!("question {}, drawing {letter} is too wide to read on a phone: fewer boxes side by side, shorter labels", at + 1)));
+            }
+        }
+    }
+    Ok(())
+}
 
 fn parse(args: &mut Argv) -> Result<Value, Failure> {
     let misses = args.flag("--misses");
@@ -38,11 +73,12 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
     let file = args.option("--file")?;
     let again = args.option("--again")?;
     let agent = args.option("--agent")?;
+    let about = args.option("--about")?;
     let doc = match args.doc() {
         Some(text) => Some(serde_json::from_str::<Value>(&text).ok().filter(Value::is_object).ok_or_else(|| usage("quiz", "--json takes a JSON object"))?),
         None => None,
     };
-    let action = args.positional().ok_or_else(|| usage("quiz", "say what: open, start, answer or history"))?;
+    let action = args.positional().ok_or_else(|| usage("quiz", "say what: open, start, answer, history, ready, map, notes or ahead"))?;
     let only = |given: bool, flag: &str, action: &str| if given { Err(usage("quiz", &format!("{flag} is for quiz {action}"))) } else { Ok(()) };
     if action != "answer" {
         for (given, flag) in [(kind.is_some(), "--kind"), (file.is_some(), "--file"), (right || wrong, "--right and --wrong"), (again.is_some(), "--again")] {
@@ -54,6 +90,9 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
     }
     if action != "open" {
         only(agent.is_some(), "--agent", "open")?;
+    }
+    if action != "ahead" {
+        only(about.is_some(), "--about", "ahead")?;
     }
     let repo = repo_here().map_err(|_| usage("quiz", "a quiz is about a git repo: run this in one"))?;
     let mut out = json!({ "action": action, "repo": repo });
@@ -97,7 +136,23 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
                 return Err(usage("quiz", "--json DOC is for start and answer; history --json prints JSON"));
             }
         }
-        other => return Err(usage("quiz", &format!("unknown action \"{other}\" (open, start, answer or history)"))),
+        "ready" => {
+            out["file"] = json!(args.positional().ok_or_else(|| usage("quiz", "ready needs a FILE: the round, as JSON"))?);
+            if let Some(by) = caller() {
+                out["by"] = json!(by);
+            }
+        }
+        "map" | "notes" => {
+            if let Some(file) = args.positional() {
+                out["file"] = json!(file);
+            }
+        }
+        "ahead" => {
+            if let Some(about) = about {
+                out["about"] = json!(about);
+            }
+        }
+        other => return Err(usage("quiz", &format!("unknown action \"{other}\" (open, start, answer, history, ready, map, notes or ahead)"))),
     }
     if let Some(doc) = doc {
         out["doc"] = doc;
@@ -110,6 +165,21 @@ pub fn show(request: &Value, reply: &Value) -> String {
         Some("open") => format!("{} {} in {}", if reply["opened"] == true { "opened" } else { "brought forward" }, reply["pane"].as_str().unwrap_or("?"), reply["window"].as_str().unwrap_or("?")),
         Some("start") => reply["round"].as_str().unwrap_or("?").to_string(),
         Some("answer") => format!("{} in {}", reply["answer"].as_str().unwrap_or("?"), reply["round"].as_str().unwrap_or("?")),
+        Some("ready") => reply["round"].as_str().unwrap_or("?").to_string(),
+        Some("ahead") => match (&reply["writing"], reply["failed"].as_str()) {
+            (Value::Null, Some(failed)) => failed.to_string(),
+            (Value::Null, None) => "a round is ready already".to_string(),
+            _ => "writing".to_string(),
+        },
+        Some("notes") => reply["notes"].as_object().into_iter().flatten().map(|(subsystem, text)| format!("{subsystem}: {}", text.as_str().unwrap_or_default())).collect::<Vec<_>>().join("\n"),
+        Some("map") if reply["subsystems"].is_number() => format!("{} subsystems", reply["subsystems"]),
+        Some("map") => {
+            let tiles = reply["subsystems"].as_array().cloned().unwrap_or_default();
+            if tiles.is_empty() {
+                return "no map in this repo yet".into();
+            }
+            tiles.iter().map(|tile| format!("{:<16} {:>4}  {:>6} lines  {} moved", tile["name"].as_str().unwrap_or("?"), tile["mastery"].as_u64().map_or("-".to_string(), |m| format!("{m}%")), tile["lines"], tile["moved"])).collect::<Vec<_>>().join("\n")
+        }
         _ => {
             let rounds = reply["rounds"].as_array().cloned().unwrap_or_default();
             if rounds.is_empty() {
@@ -172,6 +242,10 @@ mod tests {
         assert!(refused("kanna quiz start --right").contains("for quiz answer"));
         assert!(refused("kanna quiz start --json '{oops'").contains("JSON object"));
         assert!(refused("kanna quiz score").contains("unknown action"));
+        assert_eq!(parse("kanna quiz ahead --about 'the relay'").unwrap().1, json!({ "action": "ahead", "repo": repo.trim_end_matches("/.git"), "about": "the relay" }));
+        assert!(refused("kanna quiz start --about x").contains("--about is for quiz ahead"));
+        assert!(refused("kanna quiz ready").contains("needs a FILE"));
+        assert_eq!(parse("kanna quiz ready round.json").unwrap().1["file"], "round.json");
         assert_eq!(parse("kanna quiz open --agent codex").unwrap().1, json!({ "action": "open", "repo": repo.trim_end_matches("/.git"), "agent": "codex" }));
         assert_eq!(parse("kanna quiz open").unwrap().1, json!({ "action": "open", "repo": repo.trim_end_matches("/.git") }));
         assert!(refused("kanna quiz start --agent codex").contains("--agent is for quiz open"));

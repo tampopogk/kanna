@@ -836,6 +836,20 @@ mod tests {
     }
 
     #[test]
+    fn a_quiz_writer_is_a_workspace_with_no_task_and_keeps_its_place_through_a_restart() {
+        let dir = folder("quiz-writer");
+        let file = StateFile::new(&dir.join("layout.json").to_string_lossy());
+        let (mut owner, _) = LayoutOwner::open(Some(file.clone()), false);
+        owner.handle(&json!({ "call": "attach", "panes": [] }));
+        let placed = serve_place(&mut owner, "p1", json!({ "quiz": true, "app": "daemon" }));
+        assert_eq!(placed["workspace"], json!({ "id": "ws-1", "where": { "quiz": "daemon" } }), "{placed}");
+        assert_eq!(command(&mut owner, "task", json!({ "action": "list" }))["tasks"], json!([]), "a writer isn't a task");
+        let saved = owner.view();
+        let read = crate::Where::read(saved["workspaces"][0].get("where"));
+        assert_eq!(read, Some(crate::Where::Quiz("daemon".into())));
+    }
+
+    #[test]
     fn a_planner_is_a_workspace_with_no_task_whose_opens_are_its_own_tabs() {
         let dir = folder("planner");
         let file = StateFile::new(&dir.join("layout.json").to_string_lossy());
@@ -847,6 +861,9 @@ mod tests {
         assert_eq!(command(&mut owner, "task", json!({ "action": "list" }))["tasks"], json!([]), "a planner isn't a task");
         assert_eq!(command(&mut owner, "task", json!({ "action": "hold", "task": "p1" }))["error"]["code"], "not_found");
         assert_eq!(command(&mut owner, "task", json!({ "action": "claim", "task": "ws-1", "app": "mac" }))["error"]["code"], "not_found");
+        assert_eq!(command(&mut owner, "task", json!({ "action": "planner", "task": "ws-1", "app": "daemon" }))["was"], json!({ "planner": "mac" }));
+        assert_eq!(owner.view()["workspaces"][0]["where"], json!({ "planner": "daemon" }));
+        assert_eq!(command(&mut owner, "task", json!({ "action": "planner", "task": "ws-1", "app": "mac" }))["was"], json!({ "planner": "daemon" }));
         assert_eq!(command(&mut owner, "move", json!({ "pane": "p1", "dock": "right" }))["error"]["code"], "not_a_task");
 
         let from = serve_place(&mut owner, "p2", json!({ "from": "p1", "tab": true }));

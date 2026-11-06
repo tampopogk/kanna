@@ -30,7 +30,7 @@ flowchart LR
 - **The user starts them:** the skills tell agents to send a message only when the user asks. A task that's done or needs you says so in its own chat, and the Desk view and strip show it; the planner never asks a task to report back or sends tasks to talk to each other.
 - **Answering:** a task answers a message once, briefly, with another `kanna task send`, since the sender can't see its chat, and a message from `user` in the chat. The planner tells you in its chat what a task's message means for you, without a back-and-forth with the task. Nobody waits on an answer: it comes as a turn of its own.
 - **A done task takes none:** `kanna task send` says it's done.
-- **From the phone:** a message to the planner is from `phone`, and a task's from `user` ([phone chat](mobile-chat.md#3-the-conversation)). Both carry the recipient's permission class, as yours do.
+- **From the phone:** a message to the planner or a task is from `phone`, and it answers with `kanna phone` ([phone chat](mobile-chat.md#3-the-conversation), [Shelf §3](mobile-shelf.md#3-what-a-task-says)). Both carry the recipient's permission class, as yours do.
 
 ## 2. Delivery
 
@@ -68,7 +68,7 @@ sequenceDiagram
 - **`from-mode` is Claude's check, not Kanna's boundary:** Kanna passes it on so Claude doesn't hold every message, and enforces nothing with it. A Codex turn carries no mode, and the sender is the `by` the client names (`$KANNA_TERMINAL`), not one Kanna checks against the connection. Neither gives anyone more than they had: whatever can reach `kanna.sock` can already type into any agent's prompt (`kanna send`) and answer its approval menu (`kanna send-key`), and any process of yours can write to Claude's messaging socket or Codex's app-server directly. The boundary is who can reach `kanna.sock`. An agent whose permission rules allow `kanna task send` but not `kanna send` can still get a `--yolo` Codex to act for it.
 - **Codex takes it through its app-server:** Kanna starts every Codex with an app-server of its own ([Codex's app-server](codex-app-server.md)), and a message is a `turn/start` on its session. The TUI shows it as a prompt.
 - **Your prompt is left alone:** neither touches what's in the agent's input, so a draft you left there, or the agent's suggested next prompt, stays as it is, and a message doesn't wait on your typing.
-- **Comments to an agent with no door are typed:** a doc's comment goes into a messages queue only when its pane is a task's agent, or the planner, with a door (or a stopped task whose agent has one). For any other pane it's typed at once, as [doc markup](doc-markup.md#3-reaching-the-agent) always did, so markup keeps working with every agent.
+- **Comments to an agent with no door are typed:** a doc's comment goes into a messages queue only when its pane is a task's agent, or the planner, with a door (or a stopped or just-started task whose agent has one). For any other pane it's typed at once, as [doc markup](doc-markup.md#3-reaching-the-agent) always did, so markup keeps working with every agent.
 - **Never typed:** a message with no door (a Claude without a socket, a Codex started some other way, or any other agent) waits and Kanna warns: `kanna task send` and `kanna task messages` say why, and the daemon logs it. Kanna has no toasts yet.
 - **Once:** marked delivered when the agent took it; one that fails is tried again 3s later if the agent is still idle, and one with no door every 5s. A waiting message outlives a restart of the daemon.
 - **Kanna's own messages to the planner:** from `kanna` (a crash, [crashes](crashes.md)) and from `desk` (a Desk change it didn't make, [Desk news](desk-news.md)).
@@ -88,11 +88,11 @@ flowchart TD
     E -->|yes| X["its next turn's end stops it, as before"]
 ```
 
-- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md): it joins the one queue of Shelf tasks and takes its turn by when it was made, so an older task that hasn't started goes first and a newer one goes after. The planner's merge nudges message many tasks at once, and they shouldn't jump new work. With `shelf.runners` 0 it waits.
+- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md). One from you, on the Mac or the phone, runs it at once, past the limit. Any other joins the one queue of Shelf tasks and takes its turn by when it was made, so an older task that hasn't started goes first and a newer one goes after. The planner's merge nudges message many tasks at once, and they shouldn't jump new work. With `shelf.runners` 0 it waits.
 - **A running Shelf task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message when its turn in the queue comes.
 - **A task stopped on the Desk stays stopped:** you stopped it. It gets its messages when you start it.
 - **Only a task whose agent takes messages runs for one:** a stopped task started as another agent isn't woken for a message it couldn't take.
-- **A task that hasn't started isn't woken:** planned: the message goes with its first message, in a `notes` field of its replicated record ([phone Shelf §4](mobile-shelf.md#4-a-message-to-a-task-that-hasnt-started)). Today it's delivered at the end of its first turn.
+- **A task that hasn't started isn't woken:** the message goes with its first message, in a `notes` field of its replicated record ([phone Shelf §4](mobile-shelf.md#4-a-message-to-a-task-that-hasnt-started)), and `kanna task send` says so.
 
 ## 4. CLI
 

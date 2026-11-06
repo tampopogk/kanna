@@ -1,4 +1,4 @@
-use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER};
+use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER, MAX_LINE};
 use crate::{relay_mode, Failure, Relay, ALPN, DEFAULT_PORT};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
@@ -24,6 +24,22 @@ struct Port {
     target: Arc<Mutex<Target>>,
     accepting: tokio::task::JoinHandle<()>,
     _open: tokio::sync::watch::Sender<()>,
+}
+
+pub struct LineSend(SendStream);
+
+pub struct LineRecv(BufReader<RecvStream>);
+
+impl LineSend {
+    pub async fn write(&mut self, line: &Value) -> Result<(), Failure> {
+        write_line(&mut self.0, line).await.map_err(|e| Failure::new("unreachable", format!("lost it: {e}")))
+    }
+}
+
+impl LineRecv {
+    pub async fn read(&mut self) -> Result<Value, Failure> {
+        read_line(&mut self.0, MAX_LINE).await.map_err(|e| Failure::new("unreachable", format!("lost it: {e}")))
+    }
 }
 
 impl Client {
@@ -88,6 +104,11 @@ impl Client {
                 }
             }
         }
+    }
+
+    pub async fn lines(&self, key: &str, addrs: &[String], relay: Option<&Relay>, header: Value) -> Result<(LineSend, LineRecv, Value), Failure> {
+        let (send, recv, ack) = self.open(key, addrs, relay, header).await?;
+        Ok((LineSend(send), LineRecv(recv), ack))
     }
 
     pub async fn link(&self, key: &str, addrs: &[String], relay: Option<&Relay>, cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
@@ -215,7 +236,7 @@ async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     found
 }
 
-fn local(ip: IpAddr) -> bool {
+pub(crate) fn local(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])),
         IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,

@@ -18,7 +18,7 @@ A record is the only link from a pty to its pane, which makes it lasting state l
 
 ## 1. The table
 
-**terminals** (migration 23): one row per terminal the daemon keeps.
+**terminals** (migration 28): one row per terminal the daemon keeps.
 
 | Column | Type | Holds |
 |---|---|---|
@@ -83,6 +83,6 @@ An older daemon doesn't read `terminals`, and a db with a higher version isn't t
 
 ## 7. Tested by
 
-- `crates/kanna-daemon/tests/restart.rs`: `a_terminals_json_is_imported_with_its_ptys_running_in_the_keeper`, a version 22 db and a `terminals.json` with a restarted pane, a side pane and an exited one: pane IDs, pty IDs, pids, screen and exit code unchanged, counters continue, a file found later isn't read. The rest of that file and `shutdown.rs` read their records from `kanna.db`.
+- `crates/kanna-daemon/tests/restart.rs`: `a_terminals_json_is_imported_with_its_ptys_running_in_the_keeper`, a db with no records and a `terminals.json` with a restarted pane, a side pane and an exited one: pane IDs, pty IDs, pids, screen and exit code unchanged, counters continue, a file found later isn't read. The rest of that file and `shutdown.rs` read their records from `kanna.db`.
 - `store.rs`: versions 1 to 3, a bad file, once per db, only changed rows and unknown keys kept, a db lost and a db restored skipping IDs. `db.rs`: a db that can't be made is refused.
 - e2e `daemon_restart`, `task_pane_keeps_comments`, `task_history` (a corrupt db at restart).

@@ -216,7 +216,7 @@ fn a_terminals_json_is_imported_with_its_ptys_running_in_the_keeper() {
     std::fs::write(&file, json!({ "kanna": "terminals", "version": 3, "counters": { "pane": 0, "terminal": terminals, "pty": ptys }, "terminals": records }).to_string()).unwrap();
     instance
         .records(rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-        .execute_batch("drop table terminals; delete from meta where key in ('terminal_counters', 'terminals_imported'); pragma user_version = 22;")
+        .execute_batch("delete from terminals; delete from meta where key in ('terminal_counters', 'terminals_imported');")
         .unwrap();
     instance.start_again();
 
@@ -286,6 +286,15 @@ fn a_task_keeps_the_folder_it_opened_in_across_a_restart() {
     let beside = beside["pane"]["id"].as_str().unwrap_or_else(|| panic!("{beside}")).to_string();
     wait_for("the task's folder", || instance.screen(&beside).lines().any(|line| line == folder.to_string_lossy()));
     std::fs::remove_dir_all(&folder).unwrap();
+}
+
+#[test]
+fn an_app_of_another_build_and_another_protocol_replaces_this_macs_daemon() {
+    let instance = Instance::start();
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "build": "0000", "protocol": kanna_build::PROTOCOL + 1, "panes": []}}));
+    let reply = app.next().unwrap();
+    assert_eq!(reply["error"]["code"], "other_build", "{reply}");
 }
 
 #[test]

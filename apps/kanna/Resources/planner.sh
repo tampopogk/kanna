@@ -318,12 +318,14 @@ while [ $# -ge 4 ]; do
   shift 4
 done
 
-if [ -n "$kanna" ]; then
+if [ -n "$kanna" ] && [ -z "$KANNA_PLANNER_AGENT" ]; then
   "$kanna" agents setup --ask
   "$kanna" agents update --ask
 fi
 
-if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+if [ -n "$KANNA_PLANNER_AGENT" ]; then
+  :
+elif [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
   where
 elif misplaced .; then
   if project asked | jq -e '.never == true' >/dev/null 2>&1; then
@@ -342,7 +344,7 @@ fi
 count=$(printf '%s' "$installed" | grep -c .)
 chosen=
 top=$(git rev-parse --show-toplevel 2>/dev/null)
-wanted=$(setting planning.agent ${top:+"$top/.kanna/config.json"} "$mine")
+wanted=${KANNA_PLANNER_AGENT:-$(setting planning.agent ${top:+"$top/.kanna/config.json"} "$mine")}
 if [ -n "$wanted" ]; then
   chosen=$(printf '%s' "$installed" | awk -F '\t' -v n="$wanted" '$1 == n { print; exit }')
   [ -n "$chosen" ] || say "planning.agent is $wanted, which isn't installed."
@@ -377,6 +379,9 @@ if [ -z "$chosen" ]; then
 fi
 
 prompts=$(setting agents.prompts "$mine")
+if [ -n "$KANNA_PLANNER_AGENT" ] && [ "$prompts" != skip ]; then
+  prompts=ask
+fi
 case $prompts in
   ask|skip) ;;
   *)

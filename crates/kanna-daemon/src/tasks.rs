@@ -1,6 +1,6 @@
 use crate::db::{self, Change, Comment, Db, Message, Place, Row};
 use crate::desk_news::{self, Merge, News, What};
-use crate::messages::{self, Channel, Ready, PLANNER, USER};
+use crate::messages::{self, Channel, Ready, PHONE, PLANNER, USER};
 use crate::replica::{self, Grant, Hlc, Permit, Replica, Roster};
 use crate::project_import;
 use crate::stacks::{self, Base, Conflict, Made, Mark, Step, Where, KANNA};
@@ -21,6 +21,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod comment_targets;
 mod moving;
+mod phone;
+
+pub use phone::{Note, ProjectRecord};
 
 const WORKTREES: &str = ".kanna-worktrees";
 
@@ -52,6 +55,8 @@ pub struct Entry {
     pub conflict: Option<Conflict>,
     pub hears: Hears,
     pub sent: Vec<Sent>,
+    pub notes: Vec<Note>,
+    pub claim: Option<String>,
 }
 
 impl Entry {
@@ -103,6 +108,8 @@ impl Entry {
                 "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
                 "hears": self.hears.to_value(),
                 "sent": Value::Array(self.sent.iter().map(Sent::to_value).collect()),
+                "notes": Note::values(&self.notes),
+                "claim": opt(self.claim.as_deref()),
             }),
         }
     }
@@ -131,6 +138,8 @@ impl Entry {
             conflict: Conflict::from_value(row.doc.get("conflict")),
             hears: Hears::from_value(row.doc.get("hears")),
             sent: Sent::list(row.doc.get("sent")),
+            notes: Note::list(row.doc.get("notes")),
+            claim: text("claim"),
         }
     }
 
@@ -141,7 +150,7 @@ impl Entry {
     fn command_with(&self, session: Option<&str>, prompts: Prompts) -> String {
         let command = in_its_terminal(&asking(&self.agent, prompts));
         let agent = agent(&self.agent);
-        let told = told_task(self.message.as_deref());
+        let told = told_task(self.brief().as_deref());
         let first = |command: String| match agent.and_then(|a| a.prompt) {
             Some(flag) => format!("{command} {flag} {told}"),
             None => format!("{command} {told}"),
@@ -156,6 +165,15 @@ impl Entry {
             (None, None, Some((new, flag)), _) => first(format!("{command} {flag} {new}")),
             _ => first(command),
         }
+    }
+
+    fn brief(&self) -> Option<String> {
+        if self.notes.is_empty() {
+            return self.message.clone();
+        }
+        let mut parts: Vec<(Option<String>, String)> = self.message.clone().map(|m| (None, m)).into_iter().collect();
+        parts.extend(self.notes.iter().map(|note| (Some(note.from.clone()), note.text.clone())));
+        Some(messages::prompt(&parts))
     }
 
     fn looks_for_session(&self) -> bool {
@@ -310,6 +328,13 @@ pub fn coverage_settings(home: &Path, repo: &Path) -> Option<CoverageSettings> {
 }
 
 /// The planning agent's first message, which tells it it's the planner.
+pub const WINDOWLESS: &str = "daemon";
+
+fn setting_agent(folder: &Path) -> Option<String> {
+    let files = config_files(folder);
+    configured(&files, "planning", "agent", |v: &Value| v.as_str().map(String::from), "an agent's name").or_else(|| configured(&files, "tasks", "agent", |v: &Value| v.as_str().map(String::from), "an agent's name"))
+}
+
 pub const PLANNER_ROLE: &str = "You are the Kanna planning agent.";
 
 /// A task's agent's first message, as a shell word: who it is (its terminal from `$KANNA_TERMINAL` as it starts), then its task.
@@ -322,6 +347,8 @@ fn told_task(message: Option<&str>) -> String {
 }
 
 pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on what landed on main.";
+
+pub const WRITER_ROLE: &str = "You are the Kanna quiz writer, on main: write the next round ahead, as the kanna-quiz skill's Writing ahead says, then end your turn.";
 
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
 pub fn started_as(program: &str, role: &str, context: Option<u64>, prompts: Prompts) -> String {
@@ -684,7 +711,7 @@ fn not_found(id: &str) -> KmuxError {
     KmuxError::new("not_found", format!("no task \"{id}\" on the Shelf"))
 }
 
-fn failed(value: &Value) -> Option<KmuxError> {
+pub(crate) fn failed(value: &Value) -> Option<KmuxError> {
     if value.get("ok") == Some(&Value::Bool(true)) {
         return None;
     }
@@ -923,6 +950,7 @@ pub struct Tasks {
     waiting: RefCell<Vec<Message>>,
     ready: RefCell<HashMap<String, Ready>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
+    pub windowless: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
@@ -935,6 +963,9 @@ pub struct Tasks {
     posting: RefCell<HashMap<u64, (String, Vec<Message>)>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
     pub claimant: RefCell<String>,
+    revision: Cell<u64>,
+    statuses: RefCell<HashMap<String, (String, f64)>>,
+    spoke: RefCell<HashSet<String>>,
     replica: RefCell<Replica>,
     pub roster: RefCell<Option<Box<dyn Fn() -> Roster>>>,
     pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
@@ -1085,6 +1116,9 @@ impl Tasks {
             turns_away: RefCell::default(),
             next: Cell::new(0),
             claimant: RefCell::new(MAC_APP.into()),
+            revision: Cell::new(0),
+            statuses: RefCell::default(),
+            spoke: RefCell::default(),
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
@@ -1097,6 +1131,7 @@ impl Tasks {
             waiting: RefCell::new(waiting),
             ready: RefCell::default(),
             planners: RefCell::default(),
+            windowless: RefCell::default(),
             channel: RefCell::default(),
             permissions: RefCell::default(),
             line_mode: RefCell::default(),
@@ -1177,11 +1212,15 @@ impl Tasks {
 
     fn sync_workspaces(&self, workspaces: &[Value]) {
         let of = |pane: &str| workspaces.iter().find(|w| w["dock"]["id"] == pane).and_then(|w| string(w, "id")).map(String::from);
+        let claim = |pane: &str| workspaces.iter().find(|w| w["dock"]["id"] == pane).and_then(|w| w["where"]["desk"].as_str()).map(|app| self.desk_of(app));
         let mut moved = vec![];
         if let Ok(mut running) = self.running.try_borrow_mut() {
             for r in running.iter_mut() {
-                if let Some(ws) = of(&r.pane).filter(|ws| r.entry.workspace.as_ref() != Some(ws)) {
-                    r.entry.workspace = Some(ws);
+                let ws = of(&r.pane).filter(|ws| r.entry.workspace.as_ref() != Some(ws));
+                let desk = claim(&r.pane).filter(|desk| r.entry.claim.as_ref() != Some(desk));
+                if ws.is_some() || desk.is_some() {
+                    r.entry.workspace = ws.or(r.entry.workspace.take());
+                    r.entry.claim = desk.or(r.entry.claim.take());
                     moved.push((r.entry.clone(), r.place, r.pane.clone()));
                 }
             }
@@ -1204,7 +1243,7 @@ impl Tasks {
         self.entries.borrow().iter().cloned().chain(self.running.borrow().iter().map(|r| r.entry.clone())).collect()
     }
 
-    fn resolve(&self, reference: &str) -> Result<Option<String>, KmuxError> {
+    pub fn resolve(&self, reference: &str) -> Result<Option<String>, KmuxError> {
         if self.is_open(reference) {
             return Ok(Some(reference.to_string()));
         }
@@ -1481,7 +1520,7 @@ impl Tasks {
         Ok(())
     }
 
-    fn machines(&self) -> Roster {
+    pub(crate) fn machines(&self) -> Roster {
         self.roster.borrow().as_ref().map(|roster| roster()).unwrap_or_default()
     }
 
@@ -1533,7 +1572,15 @@ impl Tasks {
             ("state", json!(state)),
             ("owner", json!(me)),
         ];
-        let ops = replica.stage(&entry.id, &birth, &fields);
+        let mut ops = replica.stage(&entry.id, &birth, &fields);
+        let known = replica.record(&entry.id, &birth).cloned();
+        let blank = |value: &Value| value.is_null() || value == &json!([]);
+        let moved = |field: &str, value: &Value| {
+            let was = known.as_ref().map_or(&Value::Null, |record| record.get(field));
+            was != value && !(blank(was) && blank(value))
+        };
+        let extra: Vec<(&str, Value)> = [("notes", Note::values(&entry.notes)), ("claim", opt(entry.claim.as_deref()))].into_iter().filter(|(field, value)| moved(field, value)).collect();
+        ops.extend(replica.stage(&entry.id, &birth, &extra));
         Some((birth, ops, permit))
     }
 
@@ -1581,6 +1628,7 @@ impl Tasks {
                 after: record.list("after"),
                 on: record.list("on"),
                 birth: Some(birth),
+                notes: Note::list(Some(record.get("notes"))),
                 ..Default::default()
             };
             let me = self.replica.borrow().me().to_string();
@@ -1611,7 +1659,7 @@ impl Tasks {
         }
     }
 
-    fn is_away(&self, peer: &str, now: Instant) -> bool {
+    pub(crate) fn is_away(&self, peer: &str, now: Instant) -> bool {
         self.away.borrow().get(peer).is_some_and(|away| away.until > now)
     }
 
@@ -1730,7 +1778,7 @@ impl Tasks {
         }
         match self.replica.borrow_mut().apply(&self.db, &ops) {
             Ok(0) => return,
-            Ok(_) => {}
+            Ok(_) => self.revised(),
             Err(error) => return log!("kanna-daemon: couldn't save other machines' tasks in {}: {error}", db::FILE),
         }
         self.refresh();
@@ -1748,7 +1796,7 @@ impl Tasks {
             .filter(|e| e.folder.is_none() && e.held.is_none())
             .filter_map(|e| {
                 let record = replica.record(&e.id, e.birth.as_deref()?)?;
-                let newer = Entry { name: record.text("name").map(String::from).or(e.name.clone()), after: record.list("after"), on: record.list("on"), ..e.clone() };
+                let newer = Entry { name: record.text("name").map(String::from).or(e.name.clone()), after: record.list("after"), on: record.list("on"), notes: Note::list(Some(record.get("notes"))), ..e.clone() };
                 (newer != *e).then_some(newer)
             })
             .collect();
@@ -1916,7 +1964,8 @@ impl Tasks {
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
     }
 
-    fn changed(&self) {
+    pub(crate) fn changed(&self) {
+        self.revised();
         self.follow();
         if let Some(on_change) = self.on_change.borrow().as_ref() {
             on_change(self.view());
@@ -1959,6 +2008,7 @@ impl Tasks {
         let status = status.and_then(Status::parse);
         let mut ready = self.ready.borrow_mut();
         let ready = ready.entry(pane.to_string()).or_insert_with(|| Ready::new(now));
+        let turn_over = ended || (ready.status() == Some(Status::Working) && status.is_some_and(|s| s != Status::Working));
         if ended && status == Some(Status::Idle) {
             ready.see(Some(Status::Working), now);
         }
@@ -1970,6 +2020,10 @@ impl Tasks {
             turn.see(status, now);
         }
         self.find_session(pane);
+        self.saw_status(pane, status);
+        if turn_over || status == Some(Status::NeedsYou) {
+            self.keep_last_words(pane);
+        }
     }
 
     fn find_session(self: &Rc<Self>, pane: &str) {
@@ -2342,8 +2396,8 @@ impl Tasks {
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
             for candidate in self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now) {
-                if busy >= slots {
-                    break;
+                if busy >= slots && !self.told_by_you(&candidate) {
+                    continue;
                 }
                 busy += 1;
                 match candidate {
@@ -2431,6 +2485,11 @@ impl Tasks {
         }
         waiting.sort_by(|a, b| a.0.cmp(&b.0));
         waiting.into_iter().map(|(_, candidate)| candidate).collect()
+    }
+
+    fn told_by_you(&self, candidate: &Candidate) -> bool {
+        let Candidate::Wake(entry) = candidate else { return false };
+        self.waiting.borrow().iter().any(|m| m.recipient == entry.id && (m.sender == USER || m.sender == PHONE))
     }
 
     fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
@@ -2561,6 +2620,7 @@ impl Tasks {
                     Some("shelve") => this.shelve(&args, responder),
                     Some("move") => this.move_task(&args, responder),
                     Some("plan") => this.plan(&args, responder),
+                    Some("let-go") => this.let_go(&args, responder),
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
                     Some("activated") => responder.reply(this.activated(&args)),
@@ -2807,7 +2867,12 @@ impl Tasks {
         let to = string(args, "to").ok_or_else(|| bad("say who to: a task, or planner"))?;
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what: kanna task send TASK TEXT"))?;
         let (from, here) = self.sender(args);
+        let from = if args["from_phone"] == true { PHONE.to_string() } else { from };
         let here = here.or_else(|| string(args, "repo").map(String::from));
+        let client = string(args, "id");
+        if let Some(sent) = client.and_then(|client| self.sent_already(client)) {
+            return Ok(sent);
+        }
         let (recipient, repo, agent) = if to == PLANNER {
             let repo = here.ok_or_else(|| bad("which repo's planner? run it in the repo"))?;
             (PLANNER.to_string(), repo, None)
@@ -2819,8 +2884,14 @@ impl Tasks {
             }
             (id, entry.repo, Some(program(&entry.agent).to_string()))
         };
+        if self.unstarted(&recipient) {
+            return self.note_for(&recipient, &from, text, client);
+        }
         let mode = if from == USER { None } else { who(args).and_then(|pane| self.permissions(pane)) };
         let message = self.queue(&recipient, &repo, &from, text, mode, None)?;
+        if let Some(client) = client {
+            self.db.set_message_client(message.id, client).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
+        }
         let pane = self.recipient_pane(&message, &self.planners());
         let state = match &pane {
             Some(pane) => self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).unwrap_or_else(|| "running".into()),
@@ -2867,7 +2938,9 @@ impl Tasks {
         let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none());
         if let Some(id) = self.task_of(pane).filter(|id| self.is_open(id)) {
             let entry = self.known(&id)?;
-            let takes = if alive(&core, pane) { door(pane) } else { messages::AGENTS.contains(&program(&entry.agent)) };
+            let knocks = messages::AGENTS.contains(&program(&entry.agent));
+            let starting = self.channel(pane).is_none() || core.pane(pane).is_some_and(|p| p.status.is_none());
+            let takes = door(pane) || (knocks && (!alive(&core, pane) || starting));
             return takes.then_some((id, entry.repo));
         }
         if !self.planners().iter().any(|p| p == pane) || !door(pane) {
@@ -2902,7 +2975,7 @@ impl Tasks {
         }
     }
 
-    fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> Result<Message, KmuxError> {
+    pub fn queue(&self, recipient: &str, repo: &str, from: &str, text: &str, mode: Option<&str>, comment: Option<&Comment>) -> Result<Message, KmuxError> {
         let message = self.db.put_message(recipient, repo, from, text, mode, comment).map_err(|error| KmuxError::new("failed", format!("couldn't save the message in {}: {error}", db::FILE)))?;
         log!("kanna-daemon: a message from {from} waits for {recipient}");
         self.waiting.borrow_mut().push(message.clone());
@@ -2955,10 +3028,12 @@ impl Tasks {
         let named = |who: &str| if db::is_task_id(who) { json!({ "id": who, "short": self.short(who) }) } else { json!(who) };
         let planners = self.planners();
         let warning = |m: &Message| m.delivered.is_none().then(|| self.recipient_pane(m, &planners)).flatten().and_then(|pane| self.warned.borrow().get(&pane).cloned());
-        let list = list
+        let notes = task.as_deref().and_then(|id| self.entry(id)).filter(|e| !e.notes.is_empty()).map(|e| self.notes_listed(&e, &named));
+        let mut list: Vec<Value> = list
             .iter()
             .map(|m| json!({ "id": m.id, "at": num(m.at), "from": named(&m.sender), "to": named(&m.recipient), "repo": m.repo, "delivered": m.delivered.map(num), "warning": warning(m), "text": m.text }))
             .collect();
+        list.extend(notes.into_iter().flatten());
         Ok(Map::from_iter([("task".to_string(), opt(task.as_deref())), ("messages".to_string(), Value::Array(list))]))
     }
 
@@ -3499,12 +3574,84 @@ impl Tasks {
         self.take_off(entry, tearing.by, Answer::Then(Box::new(|_| {})));
     }
 
+    pub fn planner_pane(&self, repo: &str) -> Option<String> {
+        self.planner_of(repo, &self.planners())
+    }
+
+    pub fn is_planner(&self, repo: &str, pane: &str) -> bool {
+        self.planner_pane(repo).is_some_and(|planner| self.core.upgrade().and_then(|core| core.pane(pane)).is_some_and(|p| p.id == planner))
+    }
+
+    pub fn pane_status(&self, pane: &str) -> Option<String> {
+        self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.status).map(|status| status.to_string())
+    }
+
+    pub fn windowless_pane(&self, repo: &str) -> Option<String> {
+        let panes = self.windowless.borrow().as_ref().map_or(vec![], |panes| panes());
+        self.planner_of(repo, &panes)
+    }
+
+    fn adopt_windowless(&self, folder: &str, app: &str, responder: Responder) -> Result<(), Responder> {
+        let (Some(core), Some(pane)) = (self.core.upgrade(), self.windowless_pane(folder)) else { return Err(responder) };
+        log!("kanna-daemon: {app} adopts the windowless planner of {folder}");
+        core.handle(json!({ "cmd": "task", "args": { "action": "planner", "task": pane, "app": app } }), move |reply| match failed(&reply) {
+            Some(error) => responder.reply(Err(error)),
+            None => responder.reply(Ok(Map::from_iter([("pane".to_string(), reply.get("task").cloned().unwrap_or(Value::Null)), ("workspace".to_string(), reply.get("workspace").cloned().unwrap_or(Value::Null))]))),
+        });
+        Ok(())
+    }
+
+    fn let_go(&self, args: &Value, responder: Responder) {
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(gone())) };
+        let Some(pane) = string(args, "task") else { return responder.reply(Err(bad("say which planning terminal"))) };
+        let folder = core.pane(pane).and_then(|p| project(p.cwd.as_deref()));
+        let phone_here = folder.as_deref().and_then(Path::to_str).is_some_and(|repo| self.db.phone_items(repo, 0).is_ok_and(|items| !items.is_empty()));
+        let next = match phone_here {
+            true => json!({ "cmd": "task", "args": { "action": "planner", "task": pane, "app": WINDOWLESS } }),
+            false => json!({ "cmd": "close", "args": { "task": pane } }),
+        };
+        core.handle(next, move |reply| match failed(&reply) {
+            Some(error) => responder.reply(Err(error)),
+            None => responder.reply(Ok(Map::from_iter([("windowless".to_string(), json!(phone_here))]))),
+        });
+    }
+
+    pub fn start_windowless(&self, repo: &str) -> Result<(), KmuxError> {
+        let core = self.core.upgrade().ok_or_else(gone)?;
+        let folder = Path::new(repo);
+        if !folder.is_dir() {
+            return Err(KmuxError::new("not_found", format!("{repo} isn't on this machine")));
+        }
+        let context = planning_context(&config_files(folder));
+        let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
+        let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)).into_iter().flat_map(|dir| [dir.join("planner.sh"), dir.join("../Resources/planner.sh")]).find(|s| s.is_file());
+        let kept = crate::agents::home().join(".kanna-v4");
+        let agents = planner_agents(context);
+        let chosen = self.db.planner(repo).ok().flatten().and_then(|k| string(&k, "agent").map(String::from)).or_else(|| setting_agent(folder)).filter(|name| agents.iter().any(|(n, _, _, _)| n == name)).or_else(|| agents.first().map(|(name, ..)| name.clone())).ok_or_else(|| KmuxError::new("no_agent", "no agent is installed here"))?;
+        let cmd = planner_command(beside.as_deref().and_then(Path::to_str), context, zsh.as_deref().and_then(Path::to_str), cli().as_deref().and_then(Path::to_str), &kept, &agents);
+        let cmd = format!("export KANNA_PLANNER_AGENT={}; {cmd}", quote(&chosen));
+        let open = json!({ "type": "term", "planner": true, "claim": WINDOWLESS, "cwd": repo, "cmd": cmd, "wait": false });
+        core.handle(json!({ "cmd": "open", "args": open }), |reply| {
+            if let Some(error) = failed(&reply) {
+                log!("kanna-daemon: couldn't start a windowless planner: {}", error.message);
+            }
+        });
+        Ok(())
+    }
+
+    pub fn quit_windowless(self: &Rc<Self>, repo: &str, pane: &str) {
+        let agent = self.db.planner(repo).ok().flatten().and_then(|k| string(&k, "agent").map(String::from)).unwrap_or_default();
+        log!("kanna-daemon: the windowless planner of {repo} has been idle for an hour, so it quits");
+        self.end_agent(pane, &agent, |_| {});
+    }
+
     fn plan(&self, args: &Value, responder: Responder) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let claimant = self.claimant.borrow().clone();
         let app = string(args, "app").unwrap_or(&claimant);
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         let folder = string(args, "folder").filter(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).unwrap_or(&home);
+        let Err(responder) = self.adopt_windowless(folder, app, responder) else { return };
         let zsh = Some(self.state.join("shell/zsh")).filter(|dir| dir.join(".zshenv").is_file());
         let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("planner.sh"))).filter(|s| s.is_file());
         let script = string(args, "script").filter(|s| Path::new(s).is_file()).or(beside.as_deref().and_then(Path::to_str));
@@ -3640,8 +3787,9 @@ impl Tasks {
         if let Err(error) = self.startable(&entry) {
             return responder.reply(Err(error));
         }
-        let app = string(args, "app").map_or_else(|| self.claimant.borrow().clone(), String::from);
-        self.room(entry, app, who(args).map(String::from), Answer::To(responder));
+        let app = string(args, "desk").map(|desk| self.app_of(desk)).or_else(|| string(args, "app").map(String::from)).unwrap_or_else(|| self.claimant.borrow().clone());
+        let freed = string(args, "room").map(String::from);
+        self.room(entry, app, who(args).map(String::from), freed, Answer::To(responder));
     }
 
     fn start(self: &Rc<Self>, args: &Value, responder: Responder) {
@@ -4093,7 +4241,7 @@ impl Tasks {
         });
     }
 
-    fn room(self: &Rc<Self>, entry: Entry, app: String, by: Option<String>, responder: Answer) {
+    fn room(self: &Rc<Self>, entry: Entry, app: String, by: Option<String>, freed: Option<String>, responder: Answer) {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let this = Rc::downgrade(self);
         let weak = self.core.clone();
@@ -4107,7 +4255,7 @@ impl Tasks {
                 let ids: Vec<String> = reply.get("tasks").and_then(Value::as_array).map_or(vec![], |l| l.iter().filter_map(|t| string(t, "id").map(String::from)).collect());
                 core.with_panes(|panes| ids.iter().filter_map(|id| panes.get(id)).filter(|p| project(p.cwd.as_deref()) == here).count())
             });
-            if running >= TASKS_PER_PROJECT {
+            if running + this.claims_elsewhere(&entry, &app, freed.as_deref()) >= TASKS_PER_PROJECT {
                 return responder.reply(Err(KmuxError::new("task_limit", format!("{} has {TASKS_PER_PROJECT} tasks on the Desk: move one to the Shelf with `kanna task shelve TASK` first", entry.repo))));
             }
             this.prepare(entry, Some(app), by, responder);
@@ -4206,7 +4354,7 @@ impl Tasks {
                 return responder.reply(Err(error));
             }
             this.running.borrow_mut().retain(|r| r.pane != id);
-            let entry = Entry { held: Some(id.clone()), ..entry };
+            let entry = Entry { held: Some(id.clone()), claim: None, ..entry };
             let change = Change { from: Some(from), to: Some(Place::Shelf), ..Change::new("shelved") }.by(by.as_deref());
             let saved = this.store(&entry, Place::Shelf, Some(&id), Some(change));
             this.tell_planner(&entry, What::Shelved, by.as_deref());
@@ -4370,7 +4518,7 @@ impl Tasks {
         self.take(&ran.id);
         self.turns.borrow_mut().remove(pane);
         self.quitting.borrow_mut().remove(pane);
-        let ran = Entry { stopped: None, ..ran };
+        let ran = Entry { stopped: None, claim: Some(self.desk_of(app)), ..ran };
         let saved = self.store(&ran, Place::Desk, Some(pane), Some(Change::new("picked").moved(Place::Shelf, Place::Desk).by(by).with("app", json!(app))));
         self.tell_planner(&ran, What::Picked, by);
         self.record(pane, ran, Place::Desk);
@@ -5522,7 +5670,7 @@ mod tests {
 
     #[test]
     fn entries_round_trip_through_the_db() {
-        let entry = Entry { id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, ready: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }] };
+        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, ready: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }] };
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).held, None, "a task on the Shelf isn't held");
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the Shelf");
@@ -5766,6 +5914,11 @@ mod tests {
             Candidate::Here(entry) => format!("start {}", entry.id),
             Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
         }).collect();
+        let wake = |id: &str| Candidate::Wake(task(id, 0.0, Some("/r/9")));
+        assert!(tasks.told_by_you(&wake("task-stopped-new")), "what you typed passes the runners' limit");
+        tasks.waiting.borrow_mut().push(Message { id: 5, recipient: "task-quiet".into(), repo: "/r".into(), sender: "task-other".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
+        assert!(!tasks.told_by_you(&wake("task-quiet")), "a task's message takes its turn");
+        assert!(!tasks.told_by_you(&Candidate::Here(task("task-new-old", 0.0, None))));
         assert_eq!(queue, ["wake task-stopped-old", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, and a running or quiet stopped task isn't in it");
         fs::remove_dir_all(&state).unwrap();
     }
@@ -5835,6 +5988,43 @@ mod tests {
         assert_ne!(typed["state"], json!("waiting"), "a copilot has no door, so it's typed: {typed}");
         assert!(tasks.waiting.borrow().is_empty() && tasks.db.messages(Some("task-2e0c34bb")).unwrap().is_empty(), "and not queued");
         let _ = fs::remove_file(&socket);
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_comment_waits_for_an_agent_still_starting_and_is_typed_once_it_has_no_door() {
+        let state = std::env::temp_dir().join(format!("kanna-starting-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        fs::create_dir_all(state.join(".git")).unwrap();
+        fs::write(state.join(".kanna/config.json"), r#"{"shelf": {"runners": 0}}"#).unwrap();
+        let doc = state.join("a.md");
+        fs::write(&doc, "# A\n\nThe strip scrolls.\n").unwrap();
+        kanna_threads::update(&doc, |d| -> Result<(), String> {
+            d["threads"] = json!([{ "id": "c1", "quote": "The strip scrolls.", "line": 3, "state": "open", "status": "waiting", "messages": [] }]);
+            Ok(())
+        }, |why| why).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut panes = vec![];
+        for (id, status) in [("term-7", None), ("term-8", None), ("term-9", Some("idle"))] {
+            let mut pane = Pane::new(id, None, kanna_mux::PaneType::Term);
+            pane.state = PaneState::Running;
+            pane.status = status.map(String::from);
+            panes.push(pane);
+        }
+        core.install_panes(panes, 0, 9, 0);
+        let (events, _inbox) = crate::runtime::channel();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), events));
+        tasks.install(&core);
+        *tasks.channel.borrow_mut() = Some(Box::new(|pane| (pane != "term-7").then(|| Channel::Claude(Err("no socket".into())))));
+        for (id, pane) in [("task-1dfb12c2", "term-7"), ("task-2e0c34bb", "term-8"), ("task-3f1d56cc", "term-9")] {
+            tasks.entries.borrow_mut().push(Entry { id: id.into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some(pane.into()), ..Default::default() });
+        }
+        let comment = |pane: &str| core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": pane, "text": "[kanna comment c1 · a.md:3]\nHello", "doc": doc, "thread": "c1" } }));
+        assert_eq!(comment("term-7")["state"], json!("waiting"), "its program isn't known yet");
+        assert_eq!(comment("term-8")["state"], json!("waiting"), "its socket isn't up yet");
+        let typed = comment("term-9");
+        assert_ne!(typed["state"], json!("waiting"), "started, reporting, and no door: {typed}");
         fs::remove_dir_all(&state).unwrap();
     }
 
