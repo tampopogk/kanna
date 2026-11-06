@@ -101,6 +101,10 @@ impl Writers {
         json!({ "writing": writing, "queued": queued, "failed": state.failed.as_ref().map(|(_, why)| why.as_str()) })
     }
 
+    pub fn subject(&self, repo: &str) -> Option<String> {
+        self.repos.borrow().get(repo)?.running.as_ref()?.about.clone()
+    }
+
     pub fn played(self: &Rc<Self>, repo: &str) {
         self.ahead(repo, None, false);
     }

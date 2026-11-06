@@ -191,7 +191,7 @@ impl Quiz {
             _ => return responder.reply(Err(bad("a round is a JSON object: {\"head\", \"questions\": [...]}"))),
         };
         let Some(head) = string(&doc, "head").filter(|h| !h.is_empty()).map(String::from) else { return responder.reply(Err(bad("say which commit of main the round asks about: \"head\""))) };
-        let about = string(&doc, "about").filter(|a| !a.trim().is_empty()).map(String::from);
+        let about = self.writers.as_ref().and_then(|w| w.subject(&repo)).or_else(|| string(&doc, "about").filter(|a| !a.trim().is_empty()).map(String::from));
         if about.is_none() && self.db.round_waits(&repo).unwrap_or(false) {
             return responder.reply(Err(KmuxError::new("already_ready", "a round is ready and not played yet, so this one isn't needed")));
         }
