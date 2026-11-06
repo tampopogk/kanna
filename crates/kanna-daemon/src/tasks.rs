@@ -2394,8 +2394,8 @@ impl Tasks {
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
             for candidate in self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now) {
-                if busy >= slots {
-                    break;
+                if busy >= slots && !self.told_by_you(&candidate) {
+                    continue;
                 }
                 busy += 1;
                 match candidate {
@@ -2483,6 +2483,11 @@ impl Tasks {
         }
         waiting.sort_by(|a, b| a.0.cmp(&b.0));
         waiting.into_iter().map(|(_, candidate)| candidate).collect()
+    }
+
+    fn told_by_you(&self, candidate: &Candidate) -> bool {
+        let Candidate::Wake(entry) = candidate else { return false };
+        self.waiting.borrow().iter().any(|m| m.recipient == entry.id && (m.sender == USER || m.sender == PHONE))
     }
 
     fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
@@ -5907,6 +5912,11 @@ mod tests {
             Candidate::Here(entry) => format!("start {}", entry.id),
             Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
         }).collect();
+        let wake = |id: &str| Candidate::Wake(task(id, 0.0, Some("/r/9")));
+        assert!(tasks.told_by_you(&wake("task-stopped-new")), "what you typed passes the runners' limit");
+        tasks.waiting.borrow_mut().push(Message { id: 5, recipient: "task-quiet".into(), repo: "/r".into(), sender: "task-other".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
+        assert!(!tasks.told_by_you(&wake("task-quiet")), "a task's message takes its turn");
+        assert!(!tasks.told_by_you(&Candidate::Here(task("task-new-old", 0.0, None))));
         assert_eq!(queue, ["wake task-stopped-old", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, and a running or quiet stopped task isn't in it");
         fs::remove_dir_all(&state).unwrap();
     }

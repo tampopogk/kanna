@@ -343,7 +343,7 @@ final class Store {
     private static func receipt(_ line: ThreadLine, _ status: Status) -> Receipt {
         if line.read != nil { return .read }
         switch status {
-        case .waiting, .blocked: return .waitingStart
+        case .waiting, .blocked, .stopped, .ready, .stale: return .waitingStart
         case .working, .needs: return .waitingTurn
         default: return .sent
         }

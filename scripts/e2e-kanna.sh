@@ -5721,7 +5721,7 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
     in_repo task stop $t >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
     check wait_for 15 eval '[[ "$(of $t 2)" == stopped:* ]]' || { echo "shelf_runners: $t didn't stop"; shelf; return 1; }
   done
-  in_repo task send $(tid 11) "your turn, newer" >/dev/null && in_repo task send $(tid 9) "your turn, older" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  (cd "$repo" && KANNA_TERMINAL="$(of $(tid 9) 3)" kanna task send $(tid 11) "your turn, newer" >/dev/null && KANNA_TERMINAL="$(of $(tid 11) 3)" kanna task send $(tid 9) "your turn, older" >/dev/null) || { echo "shelf_runners line $LINENO"; return 1; }
   runners 1
   seen="" most=0
   for _ in $(seq 900); do
@@ -5759,6 +5759,35 @@ print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"]
   local wakes; wakes="$(of $(tid 14) 3)"
   check wait_for 30 eval '[[ "$(of $(tid 14) 2)" == stopped:finished ]]' || { echo "shelf_runners: the task woken by its background command didn't stop"; shelf; kanna read "$wakes"; return 1; }
   shows "$wakes" WOKE_DONE || { echo "shelf_runners: the task that worked again within the grace was stopped mid-turn"; kanna read "$wakes"; return 1; }
+}
+
+scenario message_past_the_limit M4
+message_past_the_limit() {
+  start_daemon && start_app || { echo "message_past_the_limit line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "message_past_the_limit line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
+  in_repo task new "Short" "work 1" --agent "$fake/codex" >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  local short; short="$(tid 1)"
+  check wait_for 15 eval '[[ "$(task_state $short)" == stopped* ]]' || { echo "message_past_the_limit: the task didn't run and stop"; return 1; }
+  in_repo task new "Long" "work 30" --agent "$fake/codex" >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  local long; long="$(tid 2)"
+  check wait_for 15 eval '[[ "$(task_state $long)" == running* ]]' || { echo "message_past_the_limit: the runner didn't take the long task"; return 1; }
+  local term; term="$(task_state $long | cut -d' ' -f2)"
+  (cd "$repo" && KANNA_TERMINAL="$term" kanna task send "$short" "from a task") >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  sleep 4
+  check test "$(task_state $short | cut -d' ' -f1)" == stopped || { echo "message_past_the_limit: a task's message passed the limit"; return 1; }
+  in_repo task send "$short" "from you" >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(task_state $short)" == running* ]]' || { echo "message_past_the_limit: what you typed waited for a runner"; task_state "$short"; return 1; }
+  check test "$(task_state $long | cut -d' ' -f1)" == running || { echo "message_past_the_limit: the long task stopped"; return 1; }
+  term="$(task_state $short | cut -d' ' -f2)"
+  check wait_for 15 shows "$term" "peer: \[message from user\] from you" || { echo "message_past_the_limit: the task didn't get it"; kanna read "$term"; return 1; }
 }
 
 scenario agent_messaging M4

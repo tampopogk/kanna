@@ -88,7 +88,7 @@ flowchart TD
     E -->|yes| X["its next turn's end stops it, as before"]
 ```
 
-- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md): it joins the one queue of Shelf tasks and takes its turn by when it was made, so an older task that hasn't started goes first and a newer one goes after. The planner's merge nudges message many tasks at once, and they shouldn't jump new work. With `shelf.runners` 0 it waits.
+- **A stopped Shelf task runs for a message,** resuming its session, as a [runner](shelf-runners.md). One from you, on the Mac or the phone, runs it at once, past the limit. Any other joins the one queue of Shelf tasks and takes its turn by when it was made, so an older task that hasn't started goes first and a newer one goes after. The planner's merge nudges message many tasks at once, and they shouldn't jump new work. With `shelf.runners` 0 it waits.
 - **A running Shelf task with a message waiting isn't stopped** at its turn's end: it gets the message, and the turn that starts ends it as usual (Kanna gives the agent 5s to start on it). One whose turn ends asking you is stopped as before, and runs again for the message when its turn in the queue comes.
 - **A task stopped on the Desk stays stopped:** you stopped it. It gets its messages when you start it.
 - **Only a task whose agent takes messages runs for one:** a stopped task started as another agent isn't woken for a message it couldn't take.
