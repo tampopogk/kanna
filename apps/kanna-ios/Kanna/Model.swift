@@ -134,7 +134,7 @@ struct WorkItem: Identifiable {
     var picking = false
 }
 
-enum AppTab { case chat, shelf, quiz }
+enum AppTab { case chat, shelf, quiz, stats, machines }
 
 enum PairStep { case start, scan, refused, confirm, done }
 
@@ -142,6 +142,7 @@ struct Repo: Identifiable {
     let id: String
     var name: String
     var plannerMachine: String
+    var plannerKey = ""
     var planner: Planner
     var lastLine = ""
     var chat: [ChatItem] = []
@@ -150,7 +151,7 @@ struct Repo: Identifiable {
     var done: [String] = []
     var down = false
     var lastSeen = ""
-    var map: [Tile] = []
+    var map: [SubsystemTile] = []
     var rounds: [QuizRound] = []
     var writing: Writing?
     var queued: [String] = []

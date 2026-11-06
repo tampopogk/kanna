@@ -23,7 +23,7 @@ mod comment_targets;
 mod moving;
 mod phone;
 
-pub use phone::Note;
+pub use phone::{Note, ProjectRecord};
 
 const WORKTREES: &str = ".kanna-worktrees";
 
@@ -1520,7 +1520,7 @@ impl Tasks {
         Ok(())
     }
 
-    fn machines(&self) -> Roster {
+    pub(crate) fn machines(&self) -> Roster {
         self.roster.borrow().as_ref().map(|roster| roster()).unwrap_or_default()
     }
 

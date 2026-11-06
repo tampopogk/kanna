@@ -6370,17 +6370,27 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   check wait_for 2 eval '[[ "$(toasted)" == "d1 " ]]' || { echo "toasts: × didn't close it"; return 1; }
 }
 
+phone_agent() {
+  phone_fake="$KANNA_STATE_DIR/agents" phone_dir="$KANNA_STATE_DIR/phone"
+  mkdir -p "$phone_fake/bin" || return 1
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$phone_fake/bin/$1" || return 1
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$phone_fake/bin/$1" >"$phone_fake/$1" && chmod +x "$phone_fake/$1"
+}
+
 phone_rig() {
   export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
-  phone_repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" phone_fake="$KANNA_STATE_DIR/agents" phone_dir="$KANNA_STATE_DIR/phone"
-  mkdir -p "$phone_repo/src" "$phone_fake/bin" || return 1
+  phone_agent "$1" || return 1
+  phone_repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
+  mkdir -p "$phone_repo/src" || return 1
   printf 'one\ntwo\nthree\n' >"$phone_repo/src/a.txt"
   git -C "$phone_repo" init -q -b main && git -C "$phone_repo" add . && git -C "$phone_repo" -c user.email=e@e -c user.name=e commit -q -m first || return 1
   phone_repo="$(cd "$phone_repo" && pwd -P)"
-  ln -s "$repo_root/tools/mock-agent/mock-agent" "$phone_fake/bin/$1" || return 1
-  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$phone_fake/bin/$1" >"$phone_fake/$1" && chmod +x "$phone_fake/$1" || return 1
   KANNA_PLANNING_AGENTS="$phone_fake/$1" start_daemon || return 1
   raw "{\"id\":1,\"cmd\":\"projects\",\"args\":{\"action\":\"touch\",\"folder\":\"$phone_repo\"}}" >/dev/null || return 1
+  phone_pair
+}
+
+phone_pair() {
   python3 - "$KANNA_SOCKET" "$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")" <<'PY' &
 import json, socket, sys
 s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
@@ -6410,6 +6420,74 @@ print(w[0]["dock"]["pane"] if w else "")'; }
 scenario phone_chat M4
 phone_chat() {
   phone_chat_with claude
+}
+
+scenario phone_machines M4
+phone_machines() {
+  local vm vm_pid
+  phone_agent claude || { echo "phone_machines line $LINENO"; return 1; }
+  export KANNA_PLANNING_AGENTS="$phone_fake/claude"
+  local vm_home; vm_home="$(mktemp -d "$KANNA_STATE_DIR/vm-home.XXXX")"
+  machine_paired_vm phone_machines "$vm_home" || return 1
+  local here="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/notes" there="$vm_home/.kanna-v4/repos/team/notes" alone="$vm_home/.kanna-v4/repos/team/alone" me; me="$bin/kanna"
+  local spot
+  for spot in "$here" "$there" "$alone"; do
+    mkdir -p "$spot" && git -C "$spot" init -q -b main && git -C "$spot" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "phone_machines line $LINENO"; return 1; }
+  done
+  git -C "$here" remote add origin https://example.com/team/notes.git && git -C "$there" remote add origin https://example.com/team/notes.git && git -C "$alone" remote add origin https://example.com/team/alone.git || { echo "phone_machines line $LINENO"; return 1; }
+  here="$(cd "$here" && pwd -P)" there="$(cd "$there" && pwd -P)" alone="$(cd "$alone" && pwd -P)"
+  raw "{\"id\":1,\"cmd\":\"projects\",\"args\":{\"action\":\"touch\",\"folder\":\"$here\"}}" >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
+  vraw "{\"id\":1,\"cmd\":\"projects\",\"args\":{\"action\":\"touch\",\"folder\":\"$there\"}}" >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
+  vraw "{\"id\":1,\"cmd\":\"projects\",\"args\":{\"action\":\"touch\",\"folder\":\"$alone\"}}" >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
+  phone_pair || { echo "phone_machines: no phone"; return 1; }
+  rows() { python3 -c 'import json, sys
+rows = json.load(sys.stdin)
+for key in sys.argv[1].split("."): rows = rows[int(key)] if key.isdigit() else rows[key]
+print(next((r.get(sys.argv[3]) for r in rows if r.get("name") == sys.argv[2]), "absent"))' "$@"; }
+  listed() { phone hello | rows projects "$1" "$2"; }
+  on() { phone machines notes | rows machines "$1" "$2"; }
+  check wait_for 20 eval '[[ "$(listed alone planner)" == vm && "$(listed notes planner)" == mbp ]]' || { echo "phone_machines: two machines don't read as one list: $(phone hello)"; return 1; }
+  check test "$(phone hello | python3 -c 'import json, sys; print(sum(p["name"] == "notes" for p in json.load(sys.stdin)["projects"]))')" == 1 || { echo "phone_machines: notes shows twice: $(phone hello)"; return 1; }
+
+  check wait_for 15 eval '[[ "$(on vm has)" == True && "$(on vm up)" == True ]]' || { echo "phone_machines: vm's clone isn't on the Machines tab: $(phone machines notes)"; return 1; }
+  check test "$(on vm path)" == direct && check test "$(on vm planner)" == False && check test "$(on mbp planner)" == True && check test "$(on mbp me)" == True || { echo "phone_machines: the machines: $(phone machines notes)"; return 1; }
+  check test "$(phone machines notes | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r["from"], [m for m in r["machines"] if m["name"] == "vm"][0]["version"] is not None)')" == "mbp True" || { echo "phone_machines: who answered: $(phone machines notes)"; return 1; }
+
+  local stats; stats="$(phone stats notes)" || { echo "phone_machines: no stats: $stats"; return 1; }
+  check test "$(field project <<<"$stats")" == "$here" && check test "$(field sections.1.id <<<"$stats")" == main || { echo "phone_machines: the stats: $stats"; return 1; }
+
+  phone send notes m1 "mock: run $me phone say first on mbp" >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
+  check wait_for 25 eval 'phone read notes | grep -q "first on mbp"' || { echo "phone_machines: no answer on mbp: $(phone read notes)"; return 1; }
+  check test "$(listed notes plannerKey)" == "$(kanna machine --json | field key)" || { echo "phone_machines: the first message didn't keep its planner machine"; return 1; }
+
+  local moved; moved="$(phone move notes vm)"
+  check test "$(field planner <<<"$moved")" == vm || { echo "phone_machines: the move: $moved"; return 1; }
+  check test "$(listed notes planner)" == vm || { echo "phone_machines: mbp still says $(listed notes planner)"; return 1; }
+  check test "$(listed alone planner)" == vm || { echo "phone_machines: another repo moved"; return 1; }
+  check wait_for 15 eval '[[ "$(KANNA_SOCKET=$vm/kanna.sock $bin/kanna workspace list --all --json | grep -c "\"planner\": *\"daemon\"\|\"planner\":\"daemon\"")" != 0 ]]' || { echo "phone_machines: no planner on vm"; vmk workspace list --all --json; return 1; }
+  local late; late="$(phone send notes m2 "for the old planner" 2>&1)"
+  grep -q '"code":"moved"' <<<"$late" || { echo "phone_machines: mbp took a message for vm's planner: $late"; return 1; }
+
+  export PHONE_MACHINE=vm
+  phone hello >/dev/null || { echo "phone_machines: the link didn't move to vm"; return 1; }
+  check test "$(listed notes planner)" == vm || { echo "phone_machines: vm doesn't say it's the planner machine: $(phone hello)"; return 1; }
+  phone read notes | grep -q "first on mbp" && { echo "phone_machines: mbp's chat went to vm"; return 1; }
+  phone read notes | grep -q "one is starting on vm" || { echo "phone_machines: no word of the start: $(phone read notes)"; return 1; }
+  phone send notes m3 "mock: run $me phone say first on vm" >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
+  check wait_for 30 eval 'phone read notes | grep -q "first on vm"' || { echo "phone_machines: no answer on vm: $(phone read notes)"; vmk workspace list --all; return 1; }
+  check test "$(field project <<<"$(phone stats notes)")" == "$there" || { echo "phone_machines: Stats didn't move with the planner"; return 1; }
+  unset PHONE_MACHINE
+
+  kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "phone_machines: vm's daemon didn't stop"; return 1; }
+  check test "$(listed notes planner)" == vm && check test "$(listed alone planner)" == vm || { echo "phone_machines: an asleep machine's repos left the list: $(phone hello)"; return 1; }
+  check wait_for 15 eval '[[ "$(on vm up)" == False ]]' || { echo "phone_machines: vm reads as up: $(phone machines notes)"; return 1; }
+  check test "$(on vm has)" == True || { echo "phone_machines: an asleep machine lost its clone"; return 1; }
+  local seen; seen="$(phone machines notes | rows machines vm seen)"
+  [[ "$seen" != None && "$seen" != absent ]] || { echo "phone_machines: no last seen"; return 1; }
+  moved="$(phone move notes mbp)"
+  check test "$(field planner <<<"$moved")" == mbp || { echo "phone_machines: moving back past a sleeping planner machine: $moved"; return 1; }
+  check test "$(listed notes planner)" == mbp || { echo "phone_machines: the move didn't stick"; return 1; }
+  kill "$(cat "$vm/state/keeper.pid")"
 }
 
 scenario phone_pair_page M4
@@ -6651,6 +6729,11 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   check wait_for 25 eval 'phone read repo | grep -q "The planner finished without answering"' || { echo "phone_chat: a second silent turn wasn't told"; phone read repo; return 1; }
   check test "$(cd "$phone_repo" && KANNA_TERMINAL="$planner" kanna phone history --last 1 | cut -c1-3)" == sys || { echo "phone_chat: history was wrong"; return 1; }
   check test "$(phone_place)" == daemon || { echo "phone_chat: the planner isn't windowless: $(phone_place)"; return 1; }
+  kanna send "$planner" ask >/dev/null && kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check wait_for 5 is "$planner" status needs-you || { echo "phone_chat: the mock didn't ask"; kanna read "$planner"; return 1; }
+  check phone status repo blocked 10 >/dev/null || { echo "phone_chat: a planner that needs you reads as $(phone read repo 1000)"; return 1; }
+  kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check wait_for 5 is "$planner" status idle || { echo "phone_chat: the question didn't end"; kanna read "$planner"; return 1; }
   local adopted; adopted="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"plan\",\"app\":\"mac\",\"folder\":\"$phone_repo\"}}")"
   check test "$(printf '%s' "$adopted" | field pane)" == "$planner" || { echo "phone_chat: a Desk didn't adopt the windowless planner: $adopted"; return 1; }
   check test "$(phone_place)" == mac || { echo "phone_chat: the adopted planner is still $(phone_place)"; return 1; }
@@ -6660,13 +6743,21 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
 }
 
 machine_vm() {
+  machine_paired_vm "$1" || return 1
+  start_app || { echo "$1 line $LINENO"; return 1; }
+  machines() { raw '{"id":1,"cmd":"debug.machines"}' | field "$1"; }
+  check wait_for 20 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "$1: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
+  check test "$(machines links.0.machine) $(machines links.0.daemon.machine) $(machines links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
+}
+
+machine_paired_vm() {
   export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
   start_daemon || { echo "$1 line $LINENO"; return 1; }
   vm="$KANNA_STATE_DIR/machine-vm"
   mkdir -p "$vm/state" && chmod 700 "$vm"
   vmk() { KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$bin/kanna" "$@"; }
   vraw() { KANNA_SOCKET="$vm/kanna.sock" raw "$@"; }
-  KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  KANNA_AGENTS_HOME="${2:-$KANNA_AGENTS_HOME}" KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
   vm_pid=$!
   wait_for 5 test -S "$vm/kanna.sock" || { echo "$1: the second daemon didn't open its socket"; return 1; }
   kanna machine name mbp >/dev/null && vmk machine name vm >/dev/null || { echo "$1 line $LINENO"; return 1; }
@@ -6691,10 +6782,6 @@ PY
   expected="added vm to your machines"; says kanna machine pair "$code" --peer "$peer" || return 1
   wait "$waiting" "$confirmer"
   check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "$1: the pairing wasn't confirmed in an app"; return 1; }
-  start_app || { echo "$1 line $LINENO"; return 1; }
-  machines() { raw '{"id":1,"cmd":"debug.machines"}' | field "$1"; }
-  check wait_for 20 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "$1: the app didn't link to vm"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
-  check test "$(machines links.0.machine) $(machines links.0.daemon.machine) $(machines links.0.path.path)" == "vm vm direct" || { raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
 }
 
 scenario machine_two_apps M4

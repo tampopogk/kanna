@@ -5,7 +5,7 @@ use crate::messages::{KANNA, PHONE, PLANNER};
 use crate::quiz::Quiz;
 use crate::quiz_writer::Written;
 use crate::runtime::Events;
-use crate::tasks::{failed as refusal, Tasks};
+use crate::tasks::{failed as refusal, ProjectRecord, Tasks};
 use crate::Event;
 use kanna_mux::json::{json, num, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
@@ -31,6 +31,10 @@ const SETTLE: f64 = 3.0;
 const CODE_LINES: u64 = 200;
 
 const PEER_WAIT: Duration = Duration::from_secs(3);
+
+const SCAN_EVERY: u64 = 60;
+
+const STATS_WAIT: Duration = Duration::from_secs(120);
 
 const ACT_WAIT: Duration = Duration::from_secs(20);
 
@@ -87,6 +91,13 @@ pub fn serve(events: Events, stream: UnixStream, from: String) {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct Seen {
+    since: f64,
+    last: f64,
+    up: bool,
+}
+
 #[derive(Default)]
 struct Watch {
     told: Option<(String, f64)>,
@@ -108,6 +119,10 @@ pub struct Phone {
     told: std::cell::Cell<u64>,
     repos: RefCell<BTreeMap<String, String>>,
     watches: RefCell<BTreeMap<String, Watch>>,
+    records: RefCell<Vec<ProjectRecord>>,
+    seen: RefCell<BTreeMap<String, Seen>>,
+    ticks: std::cell::Cell<u64>,
+    known: std::cell::Cell<usize>,
 }
 
 fn item_value(item: &PhoneItem, read: Option<f64>) -> Value {
@@ -116,7 +131,7 @@ fn item_value(item: &PhoneItem, read: Option<f64>) -> Value {
 
 impl Phone {
     pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, quiz: Rc<Quiz>, caller: Option<Caller>, app: Rc<AppLink>) -> Rc<Phone> {
-        let phone = Rc::new(Phone { db, tasks, quiz, core: core.clone(), caller, app, told: std::cell::Cell::new(0), repos: RefCell::default(), watches: RefCell::default() });
+        let phone = Rc::new(Phone { db, tasks, quiz, core: core.clone(), caller, app, told: std::cell::Cell::new(0), repos: RefCell::default(), watches: RefCell::default(), records: RefCell::default(), seen: RefCell::default(), ticks: std::cell::Cell::new(0), known: std::cell::Cell::new(0) });
         let this = Rc::downgrade(&phone);
         core.add_command(
             COMMAND,
@@ -160,6 +175,11 @@ impl Phone {
             "here.choose" => responder.reply(self.choose_here(&args)),
             "say" | "ask" | "show" => responder.reply(self.answer(&request, &args)),
             "history" => responder.reply(self.history(&args)),
+            "machines" => self.machines(&args, responder),
+            "planner.move" => self.planner_move(&args, responder),
+            "stats" => self.stats(&args, responder),
+            "here.machine" => responder.reply(Ok(self.here_machine())),
+            "here.plan" => responder.reply(self.plan_here(&args)),
             "tasks.list" => self.tasks_list(&args, responder),
             "task.read" => self.task_read(&args, responder),
             "task.send" => self.task_send(&args, responder),
@@ -206,29 +226,203 @@ impl Phone {
         }
     }
 
-    fn hello(self: &Rc<Self>, responder: Responder) {
+    fn scan(self: &Rc<Self>, then: impl FnOnce(&Rc<Phone>) + 'static) {
         let this = Rc::downgrade(self);
         self.core.handle(json!({ "cmd": "projects", "args": { "action": "list" } }), move |listed| {
-            let paths: Vec<(String, String)> = listed["projects"].as_array().into_iter().flatten().filter_map(|p| Some((p["path"].as_str()?.to_string(), p["label"].as_str().unwrap_or_default().to_string()))).collect();
-            crate::runtime::spawn("the phone's hello", async move {
-                let found = crate::runtime::off_loop(move || paths.into_iter().filter_map(|(path, label)| Some((crate::projects::identity_off_loop(Path::new(&path))?, path, label))).collect::<Vec<_>>()).await.unwrap_or_default();
+            let paths: Vec<String> = listed["projects"].as_array().into_iter().flatten().filter_map(|p| p["path"].as_str().map(String::from)).collect();
+            crate::runtime::spawn("the phone's look at the projects", async move {
+                let found = crate::runtime::off_loop(move || paths.into_iter().filter_map(|path| Some((crate::projects::identity_off_loop(Path::new(&path))?, path))).collect::<Vec<_>>()).await.unwrap_or_default();
                 let Some(this) = this.upgrade() else { return };
-                this.hello_with(found, responder);
+                this.found(found);
+                then(&this);
             });
         });
     }
 
-    fn hello_with(&self, found: Vec<(String, String, String)>, responder: Responder) {
+    fn found(&self, found: Vec<(String, String)>) {
+        let mine: Vec<(String, String, bool)> = found.iter().map(|(repo, path)| (repo.clone(), Phone::label(path), self.tasks.planner_pane(path).is_some() || self.db.planner(path).ok().flatten().is_some())).collect();
+        *self.repos.borrow_mut() = found.into_iter().collect();
+        self.tasks.publish_projects(&mine);
+    }
+
+    fn hello(self: &Rc<Self>, responder: Responder) {
+        self.scan(move |this| this.hello_with(responder));
+    }
+
+    fn roster(&self) -> (String, BTreeMap<String, String>, Vec<Value>) {
+        let status = self.caller.as_ref().map(Caller::status).unwrap_or_default();
+        let me = status["key"].as_str().unwrap_or_default().to_string();
+        let machines: Vec<Value> = status["peers"].as_array().cloned().unwrap_or_default().into_iter().filter(|p| p["trusted"] == true && p["revoked"] != true).collect();
+        let names = machines.iter().filter_map(|p| Some((p["key"].as_str()?.to_string(), p["name"].as_str()?.to_string()))).collect();
+        (me, names, machines)
+    }
+
+    fn hello_with(&self, responder: Responder) {
         let machine = self.caller.as_ref().map(Caller::status).unwrap_or_default();
+        let (me, names, machines) = self.roster();
         let mut projects = vec![];
-        for (repo, path, label) in found {
-            let name = Path::new(&path).file_name().map_or(label.clone(), |n| n.to_string_lossy().into_owned());
-            self.repos.borrow_mut().insert(repo.clone(), path.clone());
-            let (status, since) = self.status(&path);
-            projects.push(json!({ "repo": repo, "name": name, "label": label, "planner": machine["name"], "status": status, "since": num(since) }));
+        for record in self.tasks.project_records() {
+            let Some(planner) = record.planner_machine(&me, &|key| names.contains_key(key)) else { continue };
+            let mut project = json!({ "repo": record.repo, "name": record.name, "planner": names.get(&planner), "plannerKey": planner });
+            if planner == me {
+                if let Some(path) = self.repos.borrow().get(&record.repo).cloned() {
+                    let (status, since) = self.status(&path);
+                    project["status"] = json!(status);
+                    project["since"] = num(since);
+                }
+            }
+            projects.push(project);
         }
+        let reachable: Vec<Value> = machines.iter().map(|m| json!({ "name": m["name"], "key": m["key"], "addrs": if m["key"] == me.as_str() { machine["addrs"].clone() } else { m["addrs"].clone() } })).collect();
         let log = self.caller.as_ref().and_then(Caller::log);
-        responder.reply(Ok(Map::from_iter([("name".to_string(), machine["name"].clone()), ("key".to_string(), machine["key"].clone()), ("addrs".to_string(), machine["addrs"].clone()), ("projects".to_string(), Value::Array(projects)), ("log".to_string(), log.unwrap_or(Value::Null))])));
+        responder.reply(Ok(Map::from_iter([("name".to_string(), machine["name"].clone()), ("key".to_string(), machine["key"].clone()), ("addrs".to_string(), machine["addrs"].clone()), ("projects".to_string(), Value::Array(projects)), ("machines".to_string(), Value::Array(reachable)), ("log".to_string(), log.unwrap_or(Value::Null))])));
+    }
+
+    fn here_machine(&self) -> Map {
+        let release = crate::machines::release();
+        Map::from_iter([("version".to_string(), release["version"].clone())])
+    }
+
+    fn machines(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let Some(repo) = string(args, "repo").map(String::from) else { return responder.reply(Err(bad("say which repo"))) };
+        let now_at = Instant::now();
+        let peers = self.peers();
+        let left = Rc::new(std::cell::Cell::new(peers.len()));
+        let answer = Rc::new(RefCell::new(Some(responder)));
+        let versions: Rc<RefCell<BTreeMap<String, Value>>> = Rc::default();
+        let this = Rc::downgrade(self);
+        let finish = {
+            let versions = versions.clone();
+            Rc::new(move || {
+                let (Some(this), Some(responder)) = (this.upgrade(), answer.borrow_mut().take()) else { return };
+                responder.reply(Ok(this.machines_with(&repo, &versions.borrow())));
+            })
+        };
+        if peers.is_empty() {
+            return finish();
+        }
+        for peer in peers {
+            let key = peer["key"].as_str().unwrap_or_default().to_string();
+            let (left, finish, versions, this) = (left.clone(), finish.clone(), versions.clone(), Rc::downgrade(self));
+            let done = move |reply: Option<Value>| {
+                if let Some(this) = this.upgrade() {
+                    this.saw(&key, reply.is_some());
+                }
+                if let Some(reply) = reply {
+                    versions.borrow_mut().insert(key, reply["version"].clone());
+                }
+                left.set(left.get() - 1);
+                if left.get() == 0 {
+                    finish();
+                }
+            };
+            if self.tasks.is_away(peer["key"].as_str().unwrap_or_default(), now_at) {
+                done(None);
+                continue;
+            }
+            self.ask(peer["name"].as_str(), COMMAND, json!({ "request": "here.machine" }), PEER_WAIT, move |reply| done(reply.ok()));
+        }
+    }
+
+    fn saw(&self, key: &str, up: bool) {
+        let time = now();
+        let mut seen = self.seen.borrow_mut();
+        let entry = seen.entry(key.to_string()).or_default();
+        if up {
+            if !entry.up {
+                entry.since = time;
+            }
+            entry.last = time;
+        }
+        entry.up = up;
+    }
+
+    fn machines_with(&self, repo: &str, versions: &BTreeMap<String, Value>) -> Map {
+        let (me, names, machines) = self.roster();
+        let record = self.tasks.project_record(repo).unwrap_or_default();
+        let planner = record.planner_machine(&me, &|key| names.contains_key(key));
+        let seen = self.seen.borrow();
+        let version = crate::machines::release()["version"].clone();
+        let list: Vec<Value> = machines
+            .iter()
+            .map(|m| {
+                let key = m["key"].as_str().unwrap_or_default();
+                let mine = key == me;
+                let at = seen.get(key).copied().unwrap_or_default();
+                let up = mine || at.up;
+                let some = |value: f64| (value > 0.0).then(|| num(value));
+                json!({
+                    "name": m["name"],
+                    "key": key,
+                    "me": mine,
+                    "os": m["capabilities"]["os"],
+                    "arch": m["capabilities"]["arch"],
+                    "cores": m["capabilities"]["cores"],
+                    "version": if mine { version.clone() } else { versions.get(key).cloned().unwrap_or(Value::Null) },
+                    "has": record.clones.iter().any(|c| c == key),
+                    "planner": planner.as_deref() == Some(key),
+                    "up": up,
+                    "path": if up && !mine { m["path"].clone() } else { Value::Null },
+                    "lan": up && !mine && m["lan"] == true,
+                    "ms": if up && !mine { m["rtt_ms"].clone() } else { Value::Null },
+                    "since": if up && !mine { some(at.since) } else { None },
+                    "seen": if mine { None } else { some(at.last) },
+                })
+            })
+            .collect();
+        let from = names.get(&me).cloned().unwrap_or_else(|| self.machine());
+        Map::from_iter([("from".to_string(), json!(from)), ("machines".to_string(), Value::Array(list))])
+    }
+
+    fn planner_move(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let (Some(repo), Some(machine)) = (string(args, "repo").map(String::from), string(args, "machine").map(String::from)) else { return responder.reply(Err(bad("say which repo and which machine"))) };
+        let (me, names, _) = self.roster();
+        let Some(key) = names.iter().find(|(key, name)| **name == machine || **key == machine).map(|(key, _)| key.clone()) else { return responder.reply(Err(KmuxError::new("not_found", format!("no machine {machine}")))) };
+        if key == me {
+            return responder.reply(self.plan_here(args));
+        }
+        let this = Rc::downgrade(self);
+        self.ask(Some(&machine), COMMAND, json!({ "request": "here.plan", "repo": repo }), ACT_WAIT, move |reply| {
+            if let (Ok(_), Some(this)) = (&reply, this.upgrade()) {
+                this.tasks.set_planner(&repo, &key);
+            }
+            responder.reply(reply.map(fields));
+        });
+    }
+
+    fn plan_here(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let repo = string(args, "repo").ok_or_else(|| bad("say which repo"))?;
+        let Some(path) = self.repos.borrow().get(repo).cloned() else { return Err(KmuxError::new("no_clone", format!("{} has no clone of that repo", self.machine()))) };
+        let (me, names, _) = self.roster();
+        self.tasks.set_planner(repo, &me);
+        self.watches.borrow_mut().entry(path.clone()).or_default();
+        if self.tasks.planner_pane(&path).is_none() {
+            self.start(&path);
+        } else {
+            self.tick_repo(&path);
+        }
+        Ok(Map::from_iter([("planner".to_string(), json!(names.get(&me))), ("plannerKey".to_string(), json!(me))]))
+    }
+
+    fn stats(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let path = match self.path_of(args) {
+            Ok(path) => path,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        self.ask(None, "stats", json!({ "repo": path }), STATS_WAIT, move |reply| responder.reply(reply.map(fields)));
+    }
+
+    fn claim(&self, path: &str) -> Result<(), KmuxError> {
+        let Some(repo) = self.identity_of(path) else { return Ok(()) };
+        let (me, names, _) = self.roster();
+        match self.tasks.project_record(&repo).and_then(|r| r.planner).filter(|key| names.contains_key(key)) {
+            None => {
+                self.tasks.set_planner(&repo, &me);
+                Ok(())
+            }
+            Some(key) if key == me || me.is_empty() => Ok(()),
+            Some(key) => Err(KmuxError::new("moved", format!("the planner for this repo is on {} now", names.get(&key).cloned().unwrap_or(key)))),
+        }
     }
 
     fn path_of(&self, args: &Value) -> Result<String, KmuxError> {
@@ -272,6 +466,7 @@ impl Phone {
             return Ok(Map::from_iter([("item".to_string(), self.value(&item))]));
         }
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what"))?;
+        self.claim(&path)?;
         self.message(&path, client, text, json!({ "text": text }))
     }
 
@@ -281,6 +476,7 @@ impl Phone {
         if let Some(item) = self.db.phone_item_of(&path, client).map_err(|e| failed("look up the phone's choice", e))? {
             return Ok(Map::from_iter([("item".to_string(), self.value(&item))]));
         }
+        self.claim(&path)?;
         let seq = args.get("seq").and_then(Value::as_i64).ok_or_else(|| bad("say which question"))?;
         let mut asked = self.db.phone_item(&path, seq).map_err(|e| failed("read the question", e))?.filter(|i| i.kind == "ask").ok_or_else(|| bad("no such question"))?;
         let choice = string(args, "choice").ok_or_else(|| bad("say which choice"))?.to_string();
@@ -553,7 +749,7 @@ impl Phone {
             None if watch.is_some_and(|w| w.starting.is_some()) => ("starting", watch.and_then(|w| w.starting).unwrap_or(0.0)),
             Some("working") if waiting => ("elsewhere", watch.map_or(0.0, |w| w.since)),
             Some("working") => ("working", watch.map_or(0.0, |w| w.since)),
-            Some("blocked") => ("blocked", watch.map_or(0.0, |w| w.since)),
+            Some("needs-you") => ("blocked", watch.map_or(0.0, |w| w.since)),
             _ if last.as_ref().is_some_and(|i| i.kind == "ask" && i.doc.get("chosen").is_none()) => ("asks", told.unwrap_or(0.0)),
             _ => ("idle", told.unwrap_or(0.0)),
         };
@@ -566,6 +762,17 @@ impl Phone {
             for repo in self.repos.borrow().keys() {
                 notify(&json!({ "notice": "tasks", "repo": repo }));
             }
+            let records = self.tasks.project_records();
+            if *self.records.borrow() != records {
+                *self.records.borrow_mut() = records;
+                notify(&json!({ "notice": "projects" }));
+            }
+        }
+        let ticks = self.ticks.get();
+        self.ticks.set(ticks + 1);
+        let known = self.db.projects().map_or(0, |projects| projects.len());
+        if ticks % SCAN_EVERY == 0 || known != self.known.replace(known) {
+            self.scan(|_| {});
         }
         let repos: Vec<String> = self.watches.borrow().keys().cloned().collect();
         for path in repos {
@@ -664,5 +871,31 @@ impl Phone {
                 notify(&json!({ "notice": "planner", "repo": repo, "status": status, "since": num(since) }));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(planner: Option<&str>, clones: &[&str], ran: &[&str]) -> ProjectRecord {
+        ProjectRecord { repo: "r".into(), name: "r".into(), planner: planner.map(String::from), clones: clones.iter().map(|k| k.to_string()).collect(), ran: ran.iter().map(|k| k.to_string()).collect() }
+    }
+
+    #[test]
+    fn the_planner_machine_is_the_record_else_who_ran_one_else_a_clone() {
+        let all = |_: &str| true;
+        assert_eq!(record(Some("b"), &["a", "b"], &["a"]).planner_machine("a", &all).as_deref(), Some("b"));
+        assert_eq!(record(None, &["a", "b"], &["b"]).planner_machine("a", &all).as_deref(), Some("b"));
+        assert_eq!(record(None, &["a", "b"], &["a", "b"]).planner_machine("b", &all).as_deref(), Some("b"));
+        assert_eq!(record(None, &["a", "b"], &[]).planner_machine("b", &all).as_deref(), Some("b"));
+        assert_eq!(record(None, &["a", "b"], &[]).planner_machine("c", &all).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_revoked_machine_is_no_planner() {
+        let live = |key: &str| key != "gone";
+        assert_eq!(record(Some("gone"), &["gone", "a"], &["gone"]).planner_machine("a", &live).as_deref(), Some("a"));
+        assert_eq!(record(None, &["gone"], &[]).planner_machine("a", &live), None);
     }
 }

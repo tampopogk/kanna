@@ -126,7 +126,7 @@ struct MachineDetail: View {
         .pushedNav()
         .sheet(isPresented: $move) {
             VStack(spacing: 0) {
-                SheetHead(title: "Run the planner on", detail: "The chat carries on with it. The old one stops.")
+                SheetHead(title: "Run the planner on", detail: "The phone talks to that machine's planner. It won't know this conversation.")
                 ForEach(store.repo.machines.filter { $0 != name }, id: \.self) { m in
                     Button {
                         move = false

@@ -12,7 +12,7 @@ struct TileMiss: Codable, Equatable, Hashable {
     var file: String
 }
 
-struct Tile: Codable, Equatable, Identifiable {
+struct SubsystemTile: Codable, Equatable, Identifiable {
     var id: String { name }
     var name: String
     var paths: [String]
@@ -31,7 +31,7 @@ struct Tile: Codable, Equatable, Identifiable {
 }
 
 struct MapPage: Codable, Equatable {
-    var subsystems: [Tile]
+    var subsystems: [SubsystemTile]
 }
 
 struct PickLine: Codable, Equatable, Hashable {

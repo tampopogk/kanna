@@ -1,13 +1,13 @@
 import SwiftUI
 
 struct MapPlace {
-    let tile: Tile
+    let tile: SubsystemTile
     let span: (Int, Int)
     let col: Int
     let row: Int
 }
 
-private func span(_ tile: Tile, of total: Int, count: Int) -> (Int, Int) {
+private func span(_ tile: SubsystemTile, of total: Int, count: Int) -> (Int, Int) {
     let cells = total > 0 ? Double(tile.lines) / Double(total) * 36 : 36 / Double(max(count, 1))
     if cells >= 8 { return (3, 3) }
     if cells >= 5 { return (3, 2) }
@@ -16,7 +16,7 @@ private func span(_ tile: Tile, of total: Int, count: Int) -> (Int, Int) {
     return (1, 1)
 }
 
-func packMap(_ tiles: [Tile]) -> ([MapPlace], Int) {
+func packMap(_ tiles: [SubsystemTile]) -> ([MapPlace], Int) {
     let total = tiles.reduce(0) { $0 + $1.lines }
     var used = Set<[Int]>()
     var out: [MapPlace] = []
@@ -44,7 +44,7 @@ func packMap(_ tiles: [Tile]) -> ([MapPlace], Int) {
 }
 
 struct MapTile: View {
-    var tile: Tile
+    var tile: SubsystemTile
 
     private var fill: Color { [K.m0, K.m1, K.m2, K.m3, K.m4][min(tile.level, 4)] }
     private var strong: Bool { tile.level == 4 }
@@ -68,7 +68,7 @@ struct MapTile: View {
 }
 
 struct MasteryMap: View {
-    var tiles: [Tile]
+    var tiles: [SubsystemTile]
     private let cellHeight: CGFloat = 47
     private let gap: CGFloat = 2
 
@@ -144,7 +144,7 @@ struct MarkCircle: View {
 struct QuizHome: View {
     @Environment(Store.self) private var store
 
-    private var slipping: [Tile] { store.repo.map.filter(\.slipping).sorted { $0.moved > $1.moved } }
+    private var slipping: [SubsystemTile] { store.repo.map.filter(\.slipping).sorted { $0.moved > $1.moved } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -227,7 +227,7 @@ struct SubsystemView: View {
     var name: String
     @Environment(Store.self) private var store
 
-    private var tile: Tile? { store.repo.map.first { $0.name == name } }
+    private var tile: SubsystemTile? { store.repo.map.first { $0.name == name } }
 
     private var was: String {
         guard let t = tile, let was = t.was, let at = t.wasAt else { return "" }
