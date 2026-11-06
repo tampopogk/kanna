@@ -1,6 +1,6 @@
 # Kanna on the Phone
 
-**Status:** slice 1 built, the rest planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
+**Status:** slices 1 to 3 built, the rest planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [Machines and Stats](mobile-machines.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
 
 A native SwiftUI iPhone app that lets you steer a repo from your pocket by talking to its planning agent. You chat with **the repo's planner, one repo at a time**, and it answers through the `kanna` CLI, so there is one agent and never a second cook in the kitchen. You see only what it chooses to tell you: no tool calls, no terminal, no noise.
 
@@ -25,7 +25,7 @@ Pictures are the prototype's, on fixtures, in dark mode; `screenshots/` there co
 ## 1. Rules
 
 - **One agent.** The chat is with the repo's planner. Everything risky goes through it: it can say no, and the Mac's terminal shows the whole exchange.
-- **No noise.** Only what the planner sends with `kanna phone` shows in the chat.
+- **No noise.** Only what the planner sends with `kanna phone` shows in the chat, and a task's page shows what it sends the same way, or its last words.
 - **One repo at a time.** Every tab belongs to the repo named at the top.
 - **The phone runs nothing.** It's a device in your peer log with a narrow role: it holds no tasks and has no terminals.
 - **What's new shows when you open it.** No push notifications in the first version.
@@ -60,8 +60,8 @@ flowchart LR
 | Chat | The conversation, the planner's status, code cards, questions, round cards | [chat](mobile-chat.md) |
 | Shelf | The repo's tasks; a task's messages, last words and Pick | [Shelf](mobile-shelf.md) |
 | Quiz | The mastery map, subsystems, rounds | [quiz](mobile-quiz.md) |
-| Stats | The daemon's `stats` reply for the repo, redrawn for a thumb | [Stats §2](stats.md#2-the-numbers) |
-| Machines | The repo's machines, each one's path from the planner machine and what's on it; *Run the planner here* | [chat §1](mobile-chat.md#1-the-planner-machine) |
+| Stats | The daemon's `stats` reply for the repo, redrawn for a thumb | [Machines and Stats §7](mobile-machines.md#7-stats), [Stats §2](stats.md#2-the-numbers) |
+| Machines | The repo's machines, each one's path from the planner machine and what's on it; *Run the planner here* | [Machines and Stats](mobile-machines.md) |
 
 ![The Shelf: the list, a task to pick, a running task, a task that needs you, Pick](mobile-shelf.png)
 
@@ -163,8 +163,10 @@ cd apps/kanna-ios && xcodegen generate
 xcodebuild test -project Kanna.xcodeproj -scheme Kanna -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 
+- **The version** is [the last tag's](release.md#versions): a build phase, `scripts/ios-version.sh`, writes `CFBundleShortVersionString` (`X.Y.Z`), `CFBundleVersion` (the commit count) and `KannaVersion` (all of it, `X.Y.Z-dev`) into the built Info.plist on every build, so `project.yml` sets none. With no tag to read, the build fails and says why.
 - **`FlowTests`** run the prototype's flows against `FixtureBackend`, with `-fixture YES`.
-- **`DeviceTests`** run on a real iPhone against a real daemon, and skip without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`. The answer must be words the question doesn't contain, or the test finds its own bubble.
+- **`DeviceTests`** run on a real iPhone against a real daemon. `testScanAskAnswer` skips without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`; the answer must be words the question doesn't contain, or the test finds its own bubble. `testShelf` skips without `TEST_RUNNER_KANNA_TASK` and `TEST_RUNNER_KANNA_REPO`, and with `TEST_RUNNER_KANNA_TELL` and `TEST_RUNNER_KANNA_DESK` also messages and picks that task. `testMachinesAndStats` skips without `TEST_RUNNER_KANNA_REPO` and `TEST_RUNNER_KANNA_MACHINE`, and with `TEST_RUNNER_KANNA_MOVE_TO` also moves the planner.
+- **The icon** is drawn in [iPhone app icon](ios-app-icon.md).
 - **`Store`** holds what the views read, over a `Backend`: `LiveBackend` on the Rust library, `FixtureBackend` for tests. SwiftData keeps the chat and the queue.
 
 **Where the code goes:**

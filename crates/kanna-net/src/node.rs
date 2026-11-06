@@ -268,7 +268,8 @@ impl Node {
             for (name, keys) in &view.names {
                 for key in keys.iter().filter(|key| !view.is_phone(key)) {
                     let conn = state.conns.get(key).filter(|c| c.close_reason().is_none());
-                    let path = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| if p.is_ip() { "direct" } else { "relay" }));
+                    let selected = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| (p.is_ip(), p.rtt().as_secs_f64() * 1000.0, matches!(p.remote_addr(), iroh::TransportAddr::Ip(socket) if crate::client::local(socket.ip())))));
+                    let path = selected.map(|(ip, _, _)| if ip { "direct" } else { "relay" });
                     let mut addrs = strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default());
                     addrs.extend(state.addrs.get(key).cloned().unwrap_or_default());
                     let relay = state.relay.as_ref().map(|r| r.url.to_string()).or_else(|| view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)));
@@ -276,10 +277,13 @@ impl Node {
                         "name": name,
                         "key": key,
                         "me": *key == me,
+                        "capabilities": view.descriptors.get(key).map(|d| d["capabilities"].clone()).unwrap_or(Value::Null),
                         "trusted": view.trusted().contains(key),
                         "revoked": view.revoked.contains(key),
                         "conflict": keys.len() > 1,
                         "path": path,
+                        "lan": selected.is_some_and(|(ip, _, lan)| ip && lan),
+                        "rtt_ms": selected.map(|(_, rtt, _)| rtt),
                         "addrs": addrs,
                         "relay": relay,
                         "release": state.releases.get(key).cloned().unwrap_or(if *key == me { self.0.release.clone() } else { Value::Null }),

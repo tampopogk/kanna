@@ -28,6 +28,77 @@ final class DeviceTests: XCTestCase {
         app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
+    private func repo(_ name: String) {
+        XCTAssertTrue(app.buttons["repo-switcher"].waitForExistence(timeout: 15))
+        XCTAssertTrue(allow(for: 20) { !seen("Can't reach").exists }, "no link")
+        app.buttons["repo-switcher"].tap()
+        let row = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "no repo \(name)")
+        row.tap()
+    }
+
+    func testMachinesAndStats() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let name = environment["KANNA_REPO"], let machine = environment["KANNA_MACHINE"] else {
+            throw XCTSkip("a real phone paired with a real daemon, and the machine that has the repo")
+        }
+        app.launch()
+        repo(name)
+        app.tabBars.buttons["Stats"].tap()
+        XCTAssertTrue(seen("Commits").waitForExistence(timeout: 60), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("stats")
+        app.tabBars.buttons["Machines"].tap()
+        XCTAssertTrue(seen("Have \(name)").waitForExistence(timeout: 15))
+        XCTAssertTrue(seen(machine).waitForExistence(timeout: 15), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("machines")
+        guard let target = environment["KANNA_MOVE_TO"] else { return }
+        app.staticTexts[target].firstMatch.tap()
+        let run = app.buttons["run-here"]
+        XCTAssertTrue(run.waitForExistence(timeout: 10))
+        run.tap()
+        app.tabBars.buttons["Chat"].tap()
+        XCTAssertTrue(seen("The planner is on \(target) now").waitForExistence(timeout: 30), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("moved")
+    }
+
+    func testShelf() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let task = environment["KANNA_TASK"], let repo = environment["KANNA_REPO"] else {
+            throw XCTSkip("a real phone paired with a real daemon, and a task on its Shelf")
+        }
+        app.launch()
+        XCTAssertTrue(app.buttons["repo-switcher"].waitForExistence(timeout: 15))
+        XCTAssertTrue(allow(for: 20) { !seen("Can't reach").exists }, "no link")
+        app.buttons["repo-switcher"].tap()
+        let row = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", repo)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "no repo \(repo)")
+        row.tap()
+        app.tabBars.buttons["Shelf"].tap()
+        let listed = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", task)).firstMatch
+        XCTAssertTrue(listed.waitForExistence(timeout: 15), "not on the Shelf: \(task): " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("shelf")
+        listed.tap()
+        let composer = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        Thread.sleep(forTimeInterval: 2)
+        shot("task")
+        if let say = environment["KANNA_TELL"] {
+            let field = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
+            field.tap()
+            field.typeText(say)
+            app.buttons["send"].tap()
+            XCTAssertTrue(seen("Waits until it starts").waitForExistence(timeout: 15) || seen("Read").waitForExistence(timeout: 30))
+            shot("told")
+        }
+        if let desk = environment["KANNA_DESK"] {
+            app.buttons["pick"].tap()
+            let choice = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", desk)).firstMatch
+            if choice.waitForExistence(timeout: 3) { choice.tap() }
+            XCTAssertTrue(seen("On \(desk)'s Desk").waitForExistence(timeout: 30), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+            shot("picked")
+        }
+    }
+
     func testScanAskAnswer() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let ask = environment["KANNA_ASK"], let repo = environment["KANNA_REPO"] else {

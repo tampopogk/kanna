@@ -60,6 +60,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var agentMenu: (pane: String, choices: [AgentChoice])?
     var starting: Set<String> = []
     let toasts = ToastStack()
+    var updates: Updates?
     var toastShowing: (pane: String, desk: String?)?
     var statsTimer: Timer?
 
@@ -204,12 +205,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             signalSources.append(source)
         }
         watchOwner()
+        if !echo, Updates.enabled { updates = Updates(self) }
         installMenu()
         if echo {
             render(["windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
                                                "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
         }
         daemon?.start()
+        updates?.start()
     }
 
     private func watchOwner() {
@@ -360,6 +363,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func peersChanged() {
         refresh()
+        updates?.machinesChanged()
     }
 
     func claimName(_ machine: String?) -> String {
