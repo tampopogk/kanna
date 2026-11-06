@@ -287,6 +287,12 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     create index said_by_who on said (who, id);
     insert into said (who, at, asking, text) select who, at, asking, text from last_words;
     drop table last_words;
+"), Step::Sql("
+    create table status_reports (
+        terminal text primary key,
+        at real not null,
+        doc text not null check (json_valid(doc))
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -857,6 +863,36 @@ impl Db {
 
     pub fn put_planner(&self, path: &str, doc: &Value) -> rusqlite::Result<()> {
         self.conn.execute("insert into planners (path, doc) values (?1, ?2) on conflict (path) do update set doc = excluded.doc", params![path, doc.to_string()]).map(|_| ())
+    }
+
+    pub fn reports(&self) -> rusqlite::Result<Vec<(String, Value)>> {
+        let mut statement = self.conn.prepare("select terminal, doc from status_reports")?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, doc_of(r.get(1)?))))?;
+        rows.collect()
+    }
+
+    pub fn put_reports(&self, rows: &[(String, Option<Value>)]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (terminal, doc) in rows {
+            match doc {
+                Some(doc) => tx.execute("insert into status_reports (terminal, at, doc) values (?1, ?2, ?3) on conflict (terminal) do update set at = excluded.at, doc = excluded.doc", params![terminal, now(), doc.to_string()])?,
+                None => tx.execute("delete from status_reports where terminal = ?1", [terminal])?,
+            };
+        }
+        tx.commit()
+    }
+
+    pub fn keep_reports(&self, terminals: &[String]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let kept: Vec<String> = {
+            let mut statement = tx.prepare("select terminal from status_reports")?;
+            let rows = statement.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for terminal in kept.iter().filter(|t| !terminals.contains(t)) {
+            tx.execute("delete from status_reports where terminal = ?1", [terminal])?;
+        }
+        tx.commit()
     }
 
     pub fn log(&self, task: &str, change: &Change) -> rusqlite::Result<()> {

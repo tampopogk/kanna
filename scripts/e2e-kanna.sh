@@ -2429,6 +2429,26 @@ agent_status() {
   check wait_for 5 eval '[[ "$(agent_status_status status)" == exited ]]'
 }
 
+scenario agent_status_restart M4
+agent_status_restart() {
+  start_daemon || return 1
+  kanna open --window new --name agent_status_restart --cmd "$repo_root/tools/mock-agent/mock-agent" >/dev/null || return 1
+  check wait_for 5 is agent_status_restart status idle || return 1
+  sleep 1
+  stop_daemon
+  start_daemon || return 1
+  check wait_for 5 is agent_status_restart status idle || { kanna status explain agent_status_restart; return 1; }
+  kanna status explain agent_status_restart | grep -qF 'record: state=idle' || { kanna status explain agent_status_restart; return 1; }
+  kanna send agent_status_restart 'later 1.5 state=working' || return 1
+  check wait_for 5 shows agent_status_restart 'later: state=working' || return 1
+  stop_daemon
+  sleep 2.5
+  start_daemon || return 1
+  check wait_for 5 is agent_status_restart status working || { kanna status explain agent_status_restart; return 1; }
+  kanna send agent_status_restart 'report state=idle' || return 1
+  check wait_for 5 is agent_status_restart status idle
+}
+
 scenario zsh_completion M4
 zsh_completion() {
   PATH="$bin:$PATH" start_daemon && start_app || return 1
