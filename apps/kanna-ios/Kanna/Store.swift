@@ -2,6 +2,13 @@ import Foundation
 import Network
 import Observation
 import SwiftUI
+import os
+
+private let quizLog = Logger(subsystem: "dev.kanna.phone", category: "quiz")
+
+private func log(_ text: String) {
+    quizLog.error("\(text, privacy: .public)")
+}
 
 @MainActor
 @Observable
@@ -20,6 +27,10 @@ final class Store {
     @ObservationIgnored private var pages: [String: TaskPage] = [:]
     @ObservationIgnored private var listing = false
     @ObservationIgnored private var relist = false
+    @ObservationIgnored private var maps: [String: MapPage] = [:]
+    @ObservationIgnored private var roundPages: [String: RoundsPage] = [:]
+    @ObservationIgnored private var kept = QuizKept()
+    @ObservationIgnored private var syncing = false
 
     let fixture: Bool
     var paired: Bool
@@ -42,6 +53,9 @@ final class Store {
     var fullFor: String?
     var pickError: String?
     var picking: Set<String> = []
+    var quizPath: [String] = []
+    var roundOpen = false
+    var play: RoundPlay?
 
     static func launch() -> Store {
         let defaults = UserDefaults.standard
@@ -62,11 +76,15 @@ final class Store {
         for kept in keep.repos() {
             items[kept.id] = keep.items(kept.id)
             shelves[kept.id] = keep.page("shelf/\(kept.id)")
+            maps[kept.id] = keep.page("quiz/map/\(kept.id)")
+            roundPages[kept.id] = keep.page("quiz/rounds/\(kept.id)")
             for task in shelves[kept.id]?.tasks ?? [] { pages[task.id] = keep.page("task/\(task.id)") }
             repos.append(Repo(id: kept.id, name: kept.name, plannerMachine: kept.machine, planner: Planner(status: kept.status, since: kept.since)))
             rebuild(kept.id)
         }
         lastSeen = UserDefaults.standard.object(forKey: "seen") as? Date
+        kept = keep.page("quiz/kept") ?? QuizKept()
+        play = kept.play
     }
 
     var repo: Repo {
@@ -154,6 +172,7 @@ final class Store {
                 guard mine == generation else { return }
                 await measure()
                 if tab == .shelf { refreshShelf() }
+                if tab == .quiz { await syncQuiz(currentID) }
             }
         }
     }
@@ -205,6 +224,7 @@ final class Store {
         merge(page.items, repo: id)
         change(id) { $0.planner = Planner(status: page.status, since: page.since) }
         await list(id)
+        await syncQuiz(id)
     }
 
     private func merge(_ fresh: [Item], repo id: String) {
@@ -234,6 +254,7 @@ final class Store {
         case .chat(let repo, let item): merge([item], repo: repo)
         case .planner(let repo, let status, let since): change(repo) { $0.planner = Planner(status: status, since: since) }
         case .tasks(let repo): if repo == currentID { refreshShelf() }
+        case .quiz(let repo): Task { await readRounds(repo) }
         }
     }
 
@@ -268,6 +289,8 @@ final class Store {
                 chat.append(ChatItem(id: key, kind: .planner([.code(snippet(item, repo: id))]), seq: item.seq))
             case "sys":
                 chat.append(ChatItem(id: key, kind: .sys(item.doc.text ?? ""), seq: item.seq))
+            case "round":
+                if let round = item.doc.round { chat.append(ChatItem(id: key, kind: .round(round, item.doc.title ?? "Your round"), seq: item.seq)) }
             default: break
             }
         }
@@ -286,6 +309,12 @@ final class Store {
         repos[index].desks = shelf?.desks ?? []
         repos[index].done = shelf?.done ?? []
         repos[index].tasks = (shelf?.tasks ?? []).map { work($0, repo: id, machine: repos[index].plannerMachine) }
+        repos[index].map = maps[id]?.subsystems ?? []
+        let page = roundPages[id]
+        repos[index].rounds = page?.rounds ?? []
+        repos[index].writing = page?.writing
+        repos[index].queued = page?.queued ?? []
+        repos[index].failed = page?.failed
     }
 
     private func work(_ task: ShelfTask, repo: String, machine: String) -> WorkItem {
@@ -412,12 +441,15 @@ final class Store {
     }
 
     private func snippet(_ item: Item, repo: String, task: String? = nil) -> Snippet {
-        let key = "\(repo)/\(item.seq)"
+        snippet(item.doc, key: "\(repo)/\(item.seq)", task: task)
+    }
+
+    func snippet(_ doc: Doc, key: String, task: String? = nil) -> Snippet {
         if let kept = snippets[key] { return kept }
-        let lines = item.doc.lines ?? []
-        let file = item.doc.file ?? ""
-        let first = item.doc.line ?? 1
-        let marked = item.doc.hot ?? []
+        let lines = doc.lines ?? []
+        let file = doc.file ?? ""
+        let first = doc.line ?? 1
+        let marked = doc.hot ?? []
         let hot = marked.count == 2 && marked[0] <= marked[1] ? marked[0]...marked[1] : 0...0
         var offset = 0
         var coded: [CodeLine] = []
@@ -428,12 +460,182 @@ final class Store {
             coded.append(CodeLine(first + index, text, hot: hot.contains(first + index), spans: inside))
             offset += length + 1
         }
-        let made = Snippet(id: key, file: file, lines: coded, commit: String((item.doc.commit ?? "").prefix(7)), task: task)
+        let made = Snippet(id: key, file: file, lines: coded, commit: String((doc.commit ?? "").prefix(7)), task: task)
         snippets[key] = made
         return made
     }
 
     func task(_ id: String) -> WorkItem? { repo.tasks.first { $0.id == id } }
+
+    private func applyQuiz(_ id: String) {
+        guard let index = repos.firstIndex(where: { $0.id == id }) else { return }
+        rebuildShelf(index)
+    }
+
+    private func saveQuiz() {
+        kept.play = play
+        keep.put(page: kept, key: "quiz/kept")
+    }
+
+    private func readRounds(_ id: String) async {
+        guard !id.isEmpty, let page = try? await backend.quizRounds(repo: id) else { return }
+        roundPages[id] = page
+        keep.put(page: page, key: "quiz/rounds/\(id)")
+        applyQuiz(id)
+    }
+
+    private func readMap(_ id: String) async {
+        guard !id.isEmpty, let page = try? await backend.quizMap(repo: id) else { return }
+        maps[id] = page
+        keep.put(page: page, key: "quiz/map/\(id)")
+        applyQuiz(id)
+    }
+
+    private func syncQuiz(_ id: String) async {
+        await sendAnswers()
+        await readRounds(id)
+        await readMap(id)
+        moveMap()
+    }
+
+    func openQuiz() {
+        let id = currentID
+        guard !offline, !id.isEmpty else { return }
+        Task {
+            await syncQuiz(id)
+            guard id == currentID, repo.rounds.isEmpty, repo.writing == nil, repo.failed == nil, play == nil else { return }
+            try? await backend.quizAhead(repo: id, about: nil, again: false)
+            await readRounds(id)
+        }
+    }
+
+    func tryWritingAgain() {
+        let id = currentID
+        Task {
+            try? await backend.quizAhead(repo: id, about: nil, again: true)
+            await readRounds(id)
+        }
+    }
+
+    func quizMe(_ subsystem: String) {
+        let id = currentID
+        Task {
+            try? await backend.quizAhead(repo: id, about: subsystem, again: false)
+            await readRounds(id)
+        }
+    }
+
+    var waitingForAnswers: Bool { kept.pending.contains { $0.repo == currentID } }
+
+    private func playable(_ round: QuizRound) -> Bool {
+        round.id != play?.round.id && kept.results[round.id] == nil && !kept.pending.contains { $0.round == round.id } && round.answers.isEmpty
+    }
+
+    var nextRound: QuizRound? { repo.rounds.first { $0.about == nil && $0.taken == nil && playable($0) } }
+
+    var extraRound: QuizRound? { repo.rounds.first { $0.about != nil && $0.taken == nil && playable($0) } }
+
+    var unfinishedRound: QuizRound? { repo.rounds.first { !$0.answers.isEmpty && $0.id != play?.round.id && kept.results[$0.id] == nil } }
+
+    func result(_ round: String) -> Int? { kept.results[round] }
+
+    func subjectRound(_ name: String) -> QuizRound? { repo.rounds.first { $0.about == name && $0.taken == nil && playable($0) } }
+
+    func start(_ round: QuizRound) {
+        if let play, !play.finished {
+            if play.round.id == round.id { roundOpen = true }
+            return
+        }
+        var fresh = RoundPlay(repo: currentID, round: round)
+        for (name, tile) in repo.map.map({ ($0.name, $0.mastery) }) { if let tile { fresh.before[name] = tile } }
+        for answer in round.answers.sorted(by: { $0.n < $1.n }) { fresh.answers.append(answer.pick) }
+        fresh.index = min(fresh.answers.count, max(0, fresh.count - 1))
+        play = fresh
+        roundOpen = true
+        saveQuiz()
+    }
+
+    func start(roundID: String) {
+        if let round = repo.rounds.first(where: { $0.id == roundID }) { start(round) } else if play?.round.id == roundID { roundOpen = true }
+    }
+
+    func startNext() {
+        if let round = extraRound ?? nextRound { start(round) }
+    }
+
+    func answer(_ choice: Int) {
+        guard var current = play, !current.revealed else { return }
+        let question = current.current
+        current.answers.append(choice)
+        current.revealed = true
+        kept.pending.append(PendingAnswer(repo: current.repo, round: current.round.id, n: current.index, pick: choice, again: question.again))
+        UINotificationFeedbackGenerator().notificationOccurred(choice == question.answer ? .success : .warning)
+        withAnimation(.snappy) { play = current }
+        saveQuiz()
+        Task { await sendAnswers() }
+    }
+
+    func nextQuestion() {
+        guard var current = play else { return }
+        if current.index + 1 >= current.count {
+            current.finished = true
+            kept.results[current.round.id] = current.right
+        } else {
+            current.index += 1
+            current.revealed = false
+        }
+        withAnimation(.snappy) { play = current }
+        saveQuiz()
+        rebuild(current.repo)
+        if current.finished { Task { await syncQuiz(current.repo) } }
+    }
+
+    private func sendAnswers() async {
+        guard !syncing else { return }
+        syncing = true
+        defer { syncing = false }
+        while !offline, let next = kept.pending.first {
+            do {
+                try await backend.quizAnswer(round: next.round, n: next.n, pick: next.pick, again: next.again)
+            } catch let refused as Refused where refused.code != "unreachable" {
+                log("couldn't keep an answer: \(refused.message)")
+            } catch {
+                return
+            }
+            kept.pending.removeFirst()
+            saveQuiz()
+        }
+    }
+
+    private func moveMap() {
+        guard var current = play, current.finished, current.moves.isEmpty, !kept.pending.contains(where: { $0.round == current.round.id }) else { return }
+        let names = Set(current.round.questions.compactMap(\.subsystem))
+        let tiles = repos.first { $0.id == current.repo }?.map ?? []
+        current.moves = tiles.filter { names.contains($0.name) }.map { MapMove(name: $0.name, from: current.before[$0.name] ?? 0, to: $0.mastery ?? 0) }
+        play = current
+        saveQuiz()
+    }
+
+    func closeRound() {
+        roundOpen = false
+        if play?.finished == true {
+            play = nil
+            saveQuiz()
+        }
+    }
+
+    func anotherRound() {
+        guard nextRound != nil else { return }
+        play = nil
+        startNext()
+    }
+
+    func flipFixtureLink() {
+        guard let fixtures = backend as? FixtureBackend else { return }
+        fixtures.down.toggle()
+        showChipPop = false
+        if fixtures.down { lost() } else { wake() }
+    }
 
     func deskCount(_ machine: String) -> Int { repo.tasks.filter { $0.desk == machine }.count }
 
@@ -502,7 +704,10 @@ final class Store {
         UserDefaults.standard.set(id, forKey: "repo")
         showRepos = false
         guard !offline else { return }
-        Task { try? await catchUp(id) }
+        Task {
+            try? await catchUp(id)
+            if tab == .quiz { openQuiz() }
+        }
     }
 
     func beginScan() {
@@ -551,6 +756,10 @@ final class Store {
         queued = []
         shelves = [:]
         pages = [:]
+        maps = [:]
+        roundPages = [:]
+        kept = QuizKept()
+        play = nil
         repos = []
         currentID = ""
         paired = false

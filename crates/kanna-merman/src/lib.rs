@@ -162,6 +162,33 @@ fn scene_layout(source: &str, measure: Option<MeasureFn>, context: *mut c_void) 
     Ok(value)
 }
 
+pub fn flowchart(source: &str) -> Result<serde_json::Value, String> {
+    use serde_json::{json, Value};
+    let drawn = layout(source)?;
+    if drawn["scene"] != "flowchart" {
+        return Err("only a flowchart draws on the phone".into());
+    }
+    let shape = &drawn["layout"]["FlowchartV2"];
+    let bounds = &shape["bounds"];
+    let (left, top) = (bounds["min_x"].as_f64().unwrap_or(0.0), bounds["min_y"].as_f64().unwrap_or(0.0));
+    let number = |value: &Value| value.as_f64().unwrap_or(0.0);
+    let labels = drawn["semantic"]["nodes"].as_array().cloned().unwrap_or_default();
+    let label = |id: &Value| labels.iter().find(|node| node["id"] == *id).and_then(|node| node["label"].as_str()).unwrap_or_default().to_string();
+    let nodes: Vec<Value> = shape["nodes"].as_array().into_iter().flatten().filter(|node| node["is_cluster"] != true).map(|node| {
+        let (width, height) = (number(&node["width"]), number(&node["height"]));
+        json!({ "x": number(&node["x"]) - width / 2.0 - left, "y": number(&node["y"]) - height / 2.0 - top, "width": width, "height": height, "label": label(&node["id"]) })
+    }).collect();
+    let semantic = drawn["semantic"]["edges"].as_array().cloned().unwrap_or_default();
+    let edges: Vec<Value> = shape["edges"].as_array().into_iter().flatten().enumerate().map(|(at, edge)| {
+        let points: Vec<Value> = edge["points"].as_array().into_iter().flatten().map(|p| json!({ "x": number(&p["x"]) - left, "y": number(&p["y"]) - top })).collect();
+        let about = semantic.get(at).cloned().unwrap_or(Value::Null);
+        let text = about["label"].as_str().or(about["text"].as_str()).unwrap_or_default();
+        let at_label = (!text.is_empty() && edge["label"].is_object()).then(|| json!({ "x": number(&edge["label"]["x"]) - left, "y": number(&edge["label"]["y"]) - top }));
+        json!({ "points": points, "dashed": about["stroke"] == "dotted", "label": text, "at": at_label })
+    }).collect();
+    Ok(json!({ "width": number(&bounds["max_x"]) - left, "height": number(&bounds["max_y"]) - top, "nodes": nodes, "edges": edges }))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Checked {
     pub line: usize,
@@ -259,6 +286,19 @@ pub unsafe extern "C" fn kanna_merman_free(json: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flowchart_comes_out_as_boxes_and_arrows_from_the_top_left() {
+        let drawn = flowchart("flowchart LR\n  A[Kanna.app] --> B[daemon]\n  B -->|bytes| C[keeper]\n  C -.-> A\n").unwrap();
+        let nodes = drawn["nodes"].as_array().unwrap();
+        assert_eq!(nodes.iter().map(|n| n["label"].as_str().unwrap()).collect::<Vec<_>>(), ["Kanna.app", "daemon", "keeper"]);
+        assert!(nodes.iter().all(|n| n["x"].as_f64().unwrap() >= 0.0 && n["y"].as_f64().unwrap() >= 0.0), "{drawn}");
+        let edges = drawn["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 3);
+        assert_eq!((edges[1]["label"].as_str(), edges[1]["dashed"].as_bool()), (Some("bytes"), Some(false)));
+        assert_eq!(edges[2]["dashed"], true);
+        assert!(flowchart("sequenceDiagram\n  A->>B: hi\n").unwrap_err().contains("only a flowchart"));
+    }
 
     const DOC: &str = "# Plan\n\n```mermaid\nflowchart LR\n    A[Start] --> B{Ok?}\n    B -->|yes| C[Done]\n```\n\nText.\n\n```mermaid\nsequenceDiagram\n    participant C as CLI\n    C->>D: open\n    D-->>C: ok\n```\n\n```rust\nfn main() {}\n```\n\n- A list:\n\n  ```mermaid\n  flowchart TD\n      A --> B --> --> C[\n  ```\n\n~~~ Mermaid\nerDiagram\n    CUSTOMER ||--o{ ORDER : places\n~~~\n";
 

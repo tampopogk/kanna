@@ -42,11 +42,7 @@ fn read_json(file: &str) -> Result<Value, Failure> {
 fn drawable(round: &Value) -> Result<(), Failure> {
     for (at, question) in round["questions"].as_array().into_iter().flatten().enumerate() {
         for (letter, source) in ["A", "B", "C"].iter().zip(question["drawings"].as_array().into_iter().flatten()) {
-            let source = source.as_str().unwrap_or_default();
-            let drawn = kanna_merman::layout(source).map_err(|error| usage("quiz", &format!("question {}, drawing {letter}: {error}", at + 1)))?;
-            if !drawn["scene"].is_string() {
-                return Err(usage("quiz", &format!("question {}, drawing {letter}: the phone draws only {}", at + 1, kanna_merman::drawn_types())));
-            }
+            kanna_merman::flowchart(source.as_str().unwrap_or_default()).map_err(|error| usage("quiz", &format!("question {}, drawing {letter}: {error}", at + 1)))?;
         }
     }
     Ok(())

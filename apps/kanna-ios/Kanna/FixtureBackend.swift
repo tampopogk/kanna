@@ -9,6 +9,12 @@ final class FixtureBackend: Backend {
     private var chats: [String: [Item]] = [:]
     private var statuses: [String: String]
     let phoneName = "iphone-fix1"
+    var down = false
+    private let writerSeconds: Double?
+    private let emptyQuiz: Bool
+    private let writerFails: Bool
+    private var missed = false
+    private var written = 0
 
     private static let machine = Paired(name: "iphone-fix1", machine: "studio", key: "fixture", addrs: [])
 
@@ -16,6 +22,11 @@ final class FixtureBackend: Backend {
         self.paired = paired ? Self.machine : nil
         busy = planner == "busy"
         statuses = ["kanna": planner == "busy" ? "elsewhere" : "idle", "kmux": "not_running"]
+        let defaults = UserDefaults.standard
+        writerSeconds = defaults.bool(forKey: "slowWriter") ? nil : defaults.bool(forKey: "writerFails") ? 8 : 3
+        emptyQuiz = defaults.bool(forKey: "emptyQuiz")
+        writerFails = defaults.bool(forKey: "writerFails")
+        if !emptyQuiz { quizOpen = [Self.today] }
     }
 
     func pair(scanned: String) async throws -> Paired {
@@ -25,7 +36,8 @@ final class FixtureBackend: Backend {
     }
 
     func connect() async throws -> Hello {
-        Hello(name: "studio", key: "fixture", addrs: [], projects: ["kanna", "kmux"].map { Project(repo: $0, name: $0, planner: "studio", status: statuses[$0] ?? "idle", since: Date().timeIntervalSince1970) })
+        if down { throw Refused(code: "unreachable", message: "down") }
+        return Hello(name: "studio", key: "fixture", addrs: [], projects: ["kanna", "kmux"].map { Project(repo: $0, name: $0, planner: "studio", status: statuses[$0] ?? "idle", since: Date().timeIntervalSince1970) })
     }
 
     func read(repo: String, after: Int) async throws -> Page {
@@ -209,11 +221,134 @@ final class FixtureBackend: Backend {
         }
     }
 
+    private static func question(_ kind: String, _ source: String, _ text: String, _ file: String, _ line: Int, _ topic: String, _ subsystem: String, answer: Int, why: String, choices: [(String, String)]? = nil, lines: [PickLine]? = nil, drawings: [String]? = nil, code: Doc? = nil, again: String? = nil) -> Question {
+        Question(kind: kind, file: file, line: line, text: text, why: why, topic: topic, source: source, choices: choices?.map { Choice(label: $0.0, why: $0.1) }, lines: lines, drawings: drawings, answer: answer, again: again, subsystem: subsystem, code: code)
+    }
+
+    private static let mergeCode = Doc(file: "crates/kanna-daemon/src/agents.rs", line: 514, commit: "ad2317c", hot: [515, 515], lines: ["fn merge(mine: &str, base: &str, theirs: &str) -> Option<Vec<u8>> {", "    let out = Command::new(\"git\").args([\"merge-file\", \"-p\", \"-q\"]);", "}"])
+
+    private static let mergeBack = question("where", "ad2317c", "A new Kanna ships a skill you've changed. What runs `git merge-file` on it?", "crates/kanna-daemon/src/agents.rs", 514, "Merging your skill edits, again", "Daemon", answer: 2, why: "The daemon. It keeps each file as it installed it, so it has a base to merge against.", choices: [("The `kanna` CLI", "On the next command"), ("The agent", "On its first turn"), ("The daemon", "With the installed copy as the base"), ("Kanna.app", "When it relaunches")], code: mergeCode, again: "a3")
+
+    private static let today = QuizRound(round: "r1", title: "Next round", says: "about today's changes", written: 0, head: "ad2317c", questions: [
+        question("drawing", "docs/kanna-spec.md", "Which drawing shows how a terminal's bytes reach Kanna.app?", "docs/kanna-spec.md", 141, "Who reads a terminal", "Daemon", answer: 1, why: "The keeper only holds the pty so it outlives a restart. The daemon has the master, passed over `SCM_RIGHTS`, and reads the bytes on their way to the app.", drawings: ["flowchart LR\n  A[Kanna.app] --> B[pty]\n  C[daemon] --> A", "flowchart LR\n  P[pty] --> D[daemon]\n  K[keeper] -.-> P\n  D --> A[Kanna.app]", "flowchart LR\n  A[Kanna.app] --> K[keeper]\n  K --> P[pty]\n  P --> D[daemon]"]),
+        question("behaviour", "6dae46b", "When a Codex task starts, how does Kanna run `codex`?", "crates/kanna-daemon/src/agents.rs", 160, "Codex runs with --no-daemon", "Daemon", answer: 0, why: "Codex's shared server runs every session's hooks with the environment of whatever started it, so the hook would see the wrong pane.", choices: [("With `--no-daemon`", "Its session runs in the task's own terminal"), ("In Codex's shared background server", "One session per task"), ("As `codex exec`", "With the first message as its prompt"), ("With `resume`", "And the task's session ID, as Claude does")]),
+        question("where", "ad2317c", "You edited an installed skill, and Kanna ships a new version. Where are the two merged?", "crates/kanna-daemon/src/agents.rs", 514, "Merging your skill edits", "Daemon", answer: 1, why: "The daemon keeps each file as it installed it and runs `git merge-file` on yours, that base and the new one. Only a conflict brings in your editor.", choices: [("In the `kanna` CLI", "When you next run a command"), ("In the daemon", "With `git merge-file`"), ("In the app", "In a merge view you approve"), ("In the agent", "On its first turn after the update")], code: mergeCode),
+        question("why", "docs/specs/code-tour.md", "A comment on code snaps to the whole function. Who works out its lines?", "docs/specs/code-tour.md", 115, "The app snaps comments", "The app", answer: 0, why: "Tree-sitter is compiled into the app only: it costs about 18 MB, so the daemon doesn't link it too.", choices: [("The app", "The daemon asks over the app link"), ("The daemon", "It reads the file anyway"), ("The agent", "It names the range itself"), ("The CLI", "Before it sends the comment")]),
+        question("bug", "ad2317c", "This is `merge` from today's agent setup, with one bug put in. Which line?", "crates/kanna-daemon/src/agents.rs", 526, "git merge-file's exit code", "Daemon", answer: 3, why: "`git merge-file` exits 0 when clean and with the number of conflicts otherwise, so a merge only counts at `Some(0)`.", lines: [PickLine(n: 521, text: "let out = match files {"), PickLine(n: 522, text: "[Ok(..), ..] => Command::new(\"git\")"), PickLine(n: 525, text: "let _ = fs::remove_dir_all(&dir);"), PickLine(n: 526, text: "out.filter(|o| o.status.code() != Some(1)).map(|o| o.stdout)")], code: Doc(file: "crates/kanna-daemon/src/agents.rs", line: 526, commit: "ad2317c", hot: [526, 526], lines: ["    out.filter(|o| o.status.code() == Some(0)).map(|o| o.stdout)"])),
+    ], answers: [])
+
+    private static func machines(_ id: String, about: String?, title: String, back: Bool) -> QuizRound {
+        let ask = { (text: String, topic: String, line: Int, answer: Int, why: String, choices: [(String, String)]) in
+            question("behaviour", "docs/specs/machines.md", text, "docs/specs/machines.md", line, topic, "Machines", answer: answer, why: why, choices: choices)
+        }
+        var questions = [
+            ask("When does a machine use a relay?", "When the relay's used", 30, 0, "LAN first: machines connect directly whenever they can.", [("Only when it's away or the LAN fails", "Direct first, whenever it can"), ("Always, for its first packet", "Then it upgrades to direct"), ("For control messages", "Terminals go direct"), ("Whenever two machines differ in version", "To translate between them")]),
+            ask("What can your relay do with what it carries?", "What a relay can see", 33, 2, "End to end: a relay carries only ciphertext and can't add a device.", [("Read task names", "They're in the clear for routing"), ("Add a device", "If you've signed in to it"), ("Only pass ciphertext on", "It can't read it or add a device"), ("Hold messages while a peer is away", "For a day")]),
+            ask("What does signing a new peer into the log take?", "Signing a peer", 89, 0, "Signing a peer takes a gesture in the app.", [("A gesture in the app", "On a machine already in the log"), ("`kanna machine pair` alone", "The code is proof enough"), ("A signature from every peer", "So all of them agree"), ("Nothing: any peer can add one", "Over its link")]),
+            ask("A peer is revoked, then a later entry adds it back. Which wins?", "Revocation wins", 89, 1, "A revocation beats any later add.", [("The add", "It's the newest entry"), ("The revocation", "It beats any later add"), ("Whichever most peers have seen", "By majority"), ("Neither: the log stops", "Until you choose")]),
+            ask("A name comes back with another key. What happens?", "A name and its key", 89, 1, "A name that comes back with another key is refused.", [("It takes over the name", "The log keeps the newest key"), ("It's refused", "A name stays with its key"), ("It joins as `name-2`", "Beside the old one"), ("The app asks you", "On every machine")]),
+        ]
+        if back { questions[0] = mergeBack }
+        return QuizRound(round: id, title: title, about: about, says: about.map { "about \($0)" } ?? "about how machines link", written: 0, head: "ad2317c", questions: questions, answers: [])
+    }
+
+    private static func tile(_ name: String, _ lines: Int, _ mastery: Int?, moved: Int = 0, paths: [String], was: Int? = nil, notes: String = "", misses: [TileMiss] = []) -> Tile {
+        let level = mastery.map { $0 >= 80 ? 4 : $0 >= 60 ? 3 : $0 >= 40 ? 2 : 1 } ?? 0
+        let commits = (0..<min(moved, 3)).map { MovedCommit(hash: "abc123\($0)", at: Date().timeIntervalSince1970 - Double($0 + 1) * 86400, subject: "A change in \(name) \($0 + 1)") }
+        return Tile(name: name, paths: paths, lines: lines, mastery: mastery, level: level, answers: mastery == nil ? 0 : 9, asked: mastery == nil ? nil : Date().timeIntervalSince1970 - 86400 * 3, was: was, wasAt: was.map { _ in Date().timeIntervalSince1970 - 86400 * 12 }, moved: moved, slipping: moved >= 10 && (mastery ?? 100) < 50, commits: commits, misses: misses, notes: notes)
+    }
+
+    private var tiles: [Tile] = [
+        tile("Daemon", 2500, 72, moved: 12, paths: ["crates/kanna-daemon/**"], was: 75, notes: "You know the task lifecycle well, and slip on what restarts adopt."),
+        tile("The app", 1700, 88, paths: ["apps/kanna/**"], was: 86, notes: "Strong on panes and tabs."),
+        tile("Machines", 1100, 24, moved: 41, paths: ["crates/kanna-net/**", "docs/specs/machine*.md"], was: 58, notes: "You know who owns what here, but slip on what happens when a link drops.", misses: [TileMiss(answer: "a4", text: "What a drop leaves behind", file: "crates/kanna-net/src/link.rs:88")]),
+        tile("CLI", 600, 91, paths: ["crates/kanna/**"], was: 90),
+        tile("Keeper", 280, 85, paths: ["crates/kanna-keeper/**"], was: 85),
+        tile("Terminal", 560, 55, paths: ["crates/kanna-mux/**"], was: 61, notes: "Unsure of the flow control on a terminal's output."),
+        tile("Cloud", 560, nil, paths: ["docs/specs/kanna-cloud.md"]),
+        tile("Pipelines", 560, 31, moved: 19, paths: ["crates/kanna-pipe/**"], was: 44, notes: "Last asked three weeks ago."),
+        tile("Build", 560, 47, moved: 8, paths: ["scripts/**"], was: 50),
+        tile("Skills", 560, 66, paths: [".agents/kanna-skills/**"], was: 66),
+    ]
+
+    private var quizOpen: [QuizRound] = []
+    private var quizWriting: Writing?
+    private var quizFailed: String?
+
+    func quizMap(repo: String) async throws -> MapPage {
+        if down { throw Refused(code: "unreachable", message: "down") }
+        return MapPage(subsystems: repo == "kanna" ? tiles : [])
+    }
+
+    func quizRounds(repo: String) async throws -> RoundsPage {
+        if down { throw Refused(code: "unreachable", message: "down") }
+        return RoundsPage(rounds: repo == "kanna" ? quizOpen : [], writing: quizWriting, queued: [], failed: quizFailed)
+    }
+
+    private func write(_ repo: String, about: String?) {
+        guard quizWriting == nil else { return }
+        quizWriting = Writing(since: Date().timeIntervalSince1970, about: about)
+        onNotice?(.quiz(repo: repo))
+        guard let seconds = writerSeconds else { return }
+        Task {
+            await wait(seconds)
+            quizWriting = nil
+            if writerFails, about == nil {
+                quizFailed = "The quiz writer finished without writing a round"
+                onNotice?(.quiz(repo: repo))
+                return
+            }
+            written += 1
+            let id = "r\(written + 1)"
+            quizOpen.append(about == nil && written > 1 || about == nil && emptyQuiz ? Self.today.withID(id) : Self.machines(id, about: about, title: about ?? "Machine links", back: missed && about == nil))
+            if let about { say(repo, "round", Doc(round: id, title: about, about: about)) }
+            onNotice?(.quiz(repo: repo))
+        }
+    }
+
+    func quizAnswer(round: String, n: Int, pick: Int, again: String?) async throws {
+        if down { throw Refused(code: "unreachable", message: "down") }
+        guard let index = quizOpen.firstIndex(where: { $0.round == round }) else { return }
+        guard !quizOpen[index].answers.contains(where: { $0.n == n }) else { return }
+        quizOpen[index].answers.append(Pick(n: n, pick: pick))
+        let question = quizOpen[index].questions[n]
+        let right = pick == question.answer
+        if !right {
+            missed = true
+            if let waiting = quizOpen.firstIndex(where: { $0.taken == nil && $0.about == nil }) { quizOpen[waiting].questions[0] = Self.mergeBack }
+        }
+        if let tile = tiles.firstIndex(where: { $0.name == question.subsystem }) {
+            let was = tiles[tile].mastery ?? 0
+            tiles[tile].mastery = min(100, max(0, was + (right ? 2 : -1)))
+        }
+        if quizOpen[index].taken == nil {
+            quizOpen[index].taken = Date().timeIntervalSince1970
+            if !quizOpen.contains(where: { $0.taken == nil && $0.about == nil }) { write("kanna", about: nil) }
+        }
+        if quizOpen[index].answers.count == quizOpen[index].questions.count { quizOpen.remove(at: index) }
+    }
+
+    func quizAhead(repo: String, about: String?, again: Bool) async throws {
+        if down { throw Refused(code: "unreachable", message: "down") }
+        if again { quizFailed = nil }
+        if about != nil || (quizOpen.isEmpty && quizFailed == nil) { write(repo, about: about) }
+    }
+
     func close() {}
 
     func forget() { paired = nil }
 
-    func link() async -> Link { Link(path: .lan, milliseconds: 9) }
+    func link() async -> Link { down ? Link(path: .off, milliseconds: 0) : Link(path: .lan, milliseconds: 9) }
 
     func highlight(file: String, text: String) -> [TextSpan] { Rust.highlight(file: file, text: text) }
+
+    func drawing(_ source: String) -> DrawingScene? { Rust.drawing(source) }
+}
+
+private extension QuizRound {
+    func withID(_ id: String) -> QuizRound {
+        var copy = self
+        copy.round = id
+        return copy
+    }
 }

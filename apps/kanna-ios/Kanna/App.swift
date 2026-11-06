@@ -31,6 +31,11 @@ struct MainTabs: View {
                     ShelfView().navigationDestination(for: String.self) { TaskDetail(id: $0) }
                 }
             }
+            Tab("Quiz", systemImage: "map", value: AppTab.quiz) {
+                NavigationStack(path: $s.quizPath) {
+                    QuizHome().navigationDestination(for: String.self) { SubsystemView(name: $0) }
+                }
+            }
         }
         .overlay {
             if store.showChipPop {
@@ -46,7 +51,11 @@ struct MainTabs: View {
         }
         .animation(.snappy, value: store.showChipPop)
         .sheet(isPresented: $s.showRepos) { RepoSheet() }
-        .onChange(of: store.tab) { if store.tab == .shelf { store.refreshShelf() } }
+        .fullScreenCover(isPresented: $s.roundOpen) { RoundView() }
+        .onChange(of: store.tab) {
+            if store.tab == .shelf { store.refreshShelf() }
+            if store.tab == .quiz { store.openQuiz() }
+        }
     }
 }
 
