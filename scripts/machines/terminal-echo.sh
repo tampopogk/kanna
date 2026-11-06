@@ -9,7 +9,7 @@ Starts a private daemon on this Mac in DIR/mbp and a second one, in DIR/peer her
 ~/kanna-echo on SSH-HOST (which needs kanna-daemon, kanna-keeper and kanna built for it
 in ~/kanna-echo/bin), pairs them, and runs the terminal-echo example from this Mac against
 the second: link round trips, keystroke echo idle and while another terminal floods, and
-attach sizes. The JSON report is DIR/LABEL.json. Neither daemon uses your own Kanna's
+attach sizes. Keep DIR short: the daemons' sockets live under it. The JSON report is DIR/LABEL.json. Neither daemon uses your own Kanna's
 state, HOME or socket; both are stopped at the end.
 --lan-proxy sends this Mac's side through a python UDP forwarder on 127.0.0.1, for binaries
 macOS Local Network privacy hasn't allowed to reach the LAN ("No route to host").
