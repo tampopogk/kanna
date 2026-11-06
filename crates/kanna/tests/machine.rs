@@ -206,7 +206,7 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     vm.kanna(&["open", "--window", "new", "--name", "far", "--no-wait", "--cmd", "/bin/cat"]).ok();
     let (mut far, hello) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocol": kanna_build::PROTOCOL, "build": "another", "commit": "abc" }));
     assert_eq!((hello["ok"].clone(), hello["protocol"].clone(), hello["daemon"]["machine"].clone()), (json!(true), json!(kanna_build::PROTOCOL), json!("vm")), "{hello}");
-    let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["id"].as_str().unwrap().to_string();
+    let terminal = hello["panes"].as_array().unwrap().iter().find(|p| p["name"] == "far").unwrap()["terminal"].as_str().unwrap().to_string();
     far.send(json!({ "cmd": "attach", "args": { "terminal": terminal } }));
     far.next(|m| m["cmd"] == "snapshot" && m["args"]["terminal"] == terminal.as_str());
     far.send(json!({ "cmd": "input", "args": { "terminal": terminal, "data": "dHlwZWQgZmFyCg==" } }));

@@ -308,12 +308,6 @@ fn run() -> Result<(), String> {
     }
     let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
-    let renaming = Rc::downgrade(&terminals);
-    core.on_renamed(Rc::new(move |from, to| {
-        if let Some(terminals) = renaming.upgrade() {
-            terminals.renamed(from, to);
-        }
-    }));
     let detector = Rc::new(status::Detector::start(events.clone()));
     *terminals.detector.borrow_mut() = Some(detector.clone());
     let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone()));
@@ -335,29 +329,35 @@ fn run() -> Result<(), String> {
         let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
         workspaces.iter().filter(|w| w["where"]["planner"] == tasks::WINDOWLESS).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
     }));
+    let run_of = {
+        let core = core.weak();
+        Rc::new(move |pane: &str| core.upgrade()?.pane(pane)?.terminal)
+    };
     let programs = Rc::downgrade(&detector);
+    let run = run_of.clone();
     *tasks.channel.borrow_mut() = Some(Box::new(move |pane| {
         let detector = programs.upgrade()?;
-        let program = detector.program(pane)?;
+        let terminal = run(pane)?;
+        let program = detector.program(&terminal)?;
         Some(match program.agent.as_str() {
             "claude" => {
                 let config = kanna_detect::program::environment(program.pid, "CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).unwrap_or_else(|| agents::home().join(".claude"));
                 messages::Channel::Claude(messages::inbox(&config, program.pid))
             }
-            "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(pane))),
+            "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(&terminal))),
             "antigravity" => messages::Channel::Other("agy".to_string()),
             other => messages::Channel::Other(other.to_string()),
         })
     }));
-    let modes = Rc::downgrade(&detector);
-    *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
-    let trees = Rc::downgrade(&detector);
+    let (modes, run) = (Rc::downgrade(&detector), run_of.clone());
+    *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().zip(run(pane)).is_some_and(|(detector, terminal)| detector.line_mode(&terminal))));
+    let (trees, run) = (Rc::downgrade(&detector), run_of.clone());
     *tasks.background.borrow_mut() = Some(Box::new(move |pane| {
-        let program = trees.upgrade()?.program(pane)?;
+        let program = trees.upgrade()?.program(&run(pane)?)?;
         kanna_detect::agents::idle_with_background(&program.agent).then(|| kanna_detect::program::background(program.pid))
     }));
     let argvs = Rc::downgrade(&detector);
-    *tasks.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
+    *tasks.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(&run_of(pane)?))));
     let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), Some(projects::repos())));
     projects.install(&core);
     let toasts = Rc::new(toasts::Toasts::new(core.weak()));
@@ -502,9 +502,10 @@ fn run() -> Result<(), String> {
         );
     }
     core.note_numbers(&layout.content_numbers());
-    core.install_panes(layout.saved_panes(), 0, 0);
+    core.install_panes(layout.saved_panes(), 0, 0, 0);
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
+    tasks.repair_comment_targets();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -546,11 +547,10 @@ fn run() -> Result<(), String> {
             shown(view);
         }
     }));
-    let (folder_link, folder_core) = (Rc::downgrade(&app), core.weak());
-    core.on_renamed(Rc::new(move |_, to| {
-        let cwd = folder_core.upgrade().and_then(|core| core.pane(to)).and_then(|pane| pane.cwd);
-        if let (Some(app), Some(cwd)) = (folder_link.upgrade(), cwd) {
-            app.folder(to, &cwd);
+    let run_link = Rc::downgrade(&app);
+    core.on_new_run(Rc::new(move |pane| {
+        if let Some(app) = run_link.upgrade() {
+            app.status(pane, None);
         }
     }));
     let toast_link = Rc::downgrade(&app);

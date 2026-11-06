@@ -782,7 +782,7 @@ impl AppLink {
     }
 
     pub fn started(&self, terminal: &str) {
-        let Some(pane) = self.core.upgrade().and_then(|core| core.pane(terminal)) else { return };
+        let Some(pane) = self.terminals.pane_of(terminal).and_then(|pane| self.core.upgrade()?.pane(&pane)) else { return };
         self.notify("pane", json!({ "pane": Value::Object(pane_record(&pane)) }));
         if let Some(cwd) = &pane.cwd {
             self.folder(&pane.id, cwd);
