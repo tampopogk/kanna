@@ -31,9 +31,16 @@ targets:
         NSCameraUsageDescription: Kanna reads the pairing code on your Mac with the camera.
         NSLocalNetworkUsageDescription: Kanna reaches your machines directly on this network.
         NSBonjourServices: ["_kanna-phone._udp"]
+    postBuildScripts:
+      - name: Version from the last tag
+        script: exec "$SRCROOT/../../scripts/ios-version.sh"
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        basedOnDependencyAnalysis: false
     settings:
       base:
         GENERATE_INFOPLIST_FILE: "NO"
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
         PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.phone
   KannaUITests:
     type: bundle.ui-testing
