@@ -102,6 +102,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 | `debug.click {tab, clicks?}`, `{pane, at?: [x, y]}`, `{…, button}` | clicks a tab (2 clicks: rename) or a point in a pane (from its top left). In a `--bg` app the click goes to the view under the point as it would in the key window. `button` 3 or 4 is the mouse's back or forward button; `button: 1` doesn't open the right-click menu (it would block) but answers its items: `{menu: [titles]}`, empty on a terminal whose program takes the mouse, as a right-click there opens no menu |
 | `debug.drag {pane, to}`, `{tab, to}`, `{divider: pane, at}` | kmux's: a drag replayed along scripted points, with no hint shown; `to` is `{pane, x, y}` (fractions from the top left), `{tab}`, `{plus: window}` or `{outside: true}`; `divider` is the divider after that pane, moved to `at` of the pair |
 | `debug.menu` | every menu item: `{menu, item, shortcut}` |
+| `debug.about` | the text of the open About panel: `{lines}` |
 | `debug.view` | the view the app draws: the daemon's `layout` with the app's physical state laid over it ([2](#2-what-the-app-keeps)) |
 | `debug.pinch {pane, steps?, at?, drift?}` | a trackpad pinch over a markdown or web pane, at the middle or `at`, the fingers moving by `drift` each event; the zoom after each step, a markdown pane's top line and laid-out width, and a web pane's position |
 | `debug.drop {pane, files \| image \| text}` | a drop on a terminal: file paths, a PNG or TIFF file's data, or text, as a drag would bring them |

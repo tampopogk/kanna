@@ -26,6 +26,8 @@ extension AppController {
             return submenu
         }
         let app = menu("Kanna", [])
+        app.addItem(withTitle: "About \(KannaBuild.name)", action: #selector(showAbout), keyEquivalent: "").target = self
+        app.addItem(.separator())
         if Self.instanceName != "default" {
             app.addItem(withTitle: "Instance: \(Self.instanceName)", action: nil, keyEquivalent: "")
             app.addItem(.separator())
@@ -417,6 +419,10 @@ extension AppController {
             refresh()
         }
         layoutCommand("focus", ["tab": .string(next), "keep": "dock"])
+    }
+
+    @objc func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationVersion: KannaBuild.version, .version: "\(KannaBuild.channel) \(KannaBuild.shortCommit)"])
     }
 
     @objc func showAccounts() { accountsTerminal("kanna accounts; exec \"${SHELL:-/bin/sh}\" -l") }

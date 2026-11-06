@@ -42,7 +42,7 @@ flowchart LR
 ```
 
 - **One source of truth:** `crates/kanna-build` derives everything from the channel and the worktree's folder name (kept to letters, digits, `-` and `_`, 32 at most; the bundle ID lowercases it). `KANNA_CHANNEL` defaults to `dev`; a plain `cargo build` in a worktree makes that worktree's dev CLI.
-- **The app** reads `KannaChannel` and `KannaInstance` from its Info.plist; staging and dev builds put a STAGING or DEV band on their Dock icon, and the Kanna menu's Quit item is named after the app.
+- **The app** reads `KannaChannel`, `KannaInstance` and `KannaCommit` from its Info.plist; staging and dev builds put a STAGING or DEV band on their Dock icon, the Kanna menu's About and Quit items are named after the app, and the About panel reads `Version X.Y.Z (CHANNEL COMMIT)`.
 
 ## 3. Which Kanna a command reaches
 

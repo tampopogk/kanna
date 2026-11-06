@@ -58,6 +58,11 @@ extension AppController {
             if let title = args["item"]?.string { try choose(menuItem: title) }
             return ["items": .array(menuItems)]
         }
+        commands["debug.about"] = { _ in
+            func lines(_ view: NSView) -> [String] { ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(lines) }
+            let shown = NSApp.windows.filter(\.isVisible).compactMap { $0.contentView.map(lines) }
+            return ["lines": .array((shown.first { $0.contains { $0.hasPrefix("Version ") } } ?? []).map { .string($0) })]
+        }
         commands["debug.rename"] = { [weak self] args in
             guard let tab = args["tab"]?.string, let title = args["title"]?.string else { throw KannaError("bad_request", "debug.rename needs a tab and a title") }
             self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)])
