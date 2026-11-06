@@ -1,6 +1,6 @@
 # Phone: Machines, Stats and the Planner's Machine
 
-**Status:** built on the LAN ([slice 3](mobile-app.md#9-build-order)) · **Tested:** e2e `phone_machines` (two daemons, the mock as claude), `tasks`/`phone.rs` unit tests, `FlowTests` on the fixture backend; `DeviceTests.testMachinesAndStats` is written and has not yet run on a real iPhone · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [chat §1](mobile-chat.md#1-the-planner-machine), [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), [Stats](stats.md)
+**Status:** built on the LAN ([slice 3](mobile-app.md#9-build-order)) · **Tested:** e2e `phone_machines` (two daemons, the mock as claude), `tasks`/`phone.rs` unit tests, `FlowTests` on the fixture backend, and by hand on a real iPhone against real daemons on a MacBook Pro and a Mac Studio, with the planner moved to each. `DeviceTests.testMachinesAndStats` is written but hasn't run: XCUITest timed out enabling automation mode on that phone · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [chat §1](mobile-chat.md#1-the-planner-machine), [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), [Stats](stats.md)
 
 Several machines read as one repo on the phone. Each daemon says what it has clones of in the replicated Shelf, so `hello` answers at once from any machine, including for machines that are asleep. The link goes to one machine at a time, and it moves to whichever machine runs the current repo's planner.
 
@@ -69,6 +69,7 @@ sequenceDiagram
 
 - **`no_clone`** if the machine has no clone. The phone offers only machines that have one and are up.
 - **It works with the old planner machine asleep,** since the phone goes through any machine it can reach.
+- **A planner machine's daemon runs in the user's login session,** from Kanna.app or launchd (`kanna machine serve`). Started over SSH, the login keychain is locked and `claude` reports it isn't logged in.
 - **The old planner keeps running.** A Mac's Desk keeps its planner, as [chat §1](mobile-chat.md#1-the-planner-machine) says: this only changes which one the phone talks to.
 
 ## 5. The chat across machines
