@@ -35,3 +35,8 @@ feed_for() {
   "$repo_root/scripts/write-appcast.sh" --title Kanna --version 4.91.0 --build "$build_b" --minimum 15.0.0 --protocol "${speaks:-$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")}" \
     --url "http://127.0.0.1:$port/$name" --length "$(stat -f %z "$dmg")" --signature "$signature"
 }
+stop_instance() {
+  "$T/A/Kanna.app/Contents/Helpers/kanna" instances stop >/dev/null 2>&1 || true
+  wait_for 30 eval '! pgrep -f "^$install/" >/dev/null' || fail "the last instance didn't stop"
+  rm -rf "$state"
+}

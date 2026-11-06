@@ -1,7 +1,6 @@
 good_feed
-"$T/A/Kanna.app/Contents/Helpers/kanna" instances stop --force >/dev/null 2>&1 || "$T/A/Kanna.app/Contents/Helpers/kanna" instances stop >/dev/null 2>&1 || true
-sleep 1
-rm -rf "$state" "$T/ticks"
+stop_instance
+rm -f "$T/ticks"
 reinstall
 export KANNA_AGENTS_HOME="$T/home"
 repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"; agents="$T/agents"; harness="$repo_root/tools/agent-harness"

@@ -1,14 +1,13 @@
 kanna_a="$T/A/Kanna.app/Contents/Helpers"
-"$kanna_a/kanna" instances stop >/dev/null 2>&1 || true
-sleep 1
-rm -rf "$state"
+stop_instance
+rm -f "$T/offer" "$T/confirmed" "$T/peer-ticks"
 reinstall
 peer="$(mktemp -d /tmp/claude/kau.XXXX)"
 mkdir -p "$peer/state" && chmod 700 "$peer"
 export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
 peerk() { KANNA_SOCKET="$peer/kanna.sock" KANNA_STATE_DIR="$peer/state" "$kanna_a/kanna" "$@"; }
 start_peer() {
-  KANNA_SOCKET="$peer/kanna.sock" KANNA_STATE_DIR="$peer/state" KANNA_KEEPER="$1/kanna-keeper" "$1/kanna-daemon" >>"$T/peer.log" 2>&1 &
+  KANNA_MACHINE_PORT=38472 KANNA_SOCKET="$peer/kanna.sock" KANNA_STATE_DIR="$peer/state" KANNA_KEEPER="$1/kanna-keeper" "$1/kanna-daemon" >>"$T/peer.log" 2>&1 &
   peer_pid=$!
   wait_for 10 test -S "$peer/kanna.sock" || fail "the peer didn't open its socket"
 }
