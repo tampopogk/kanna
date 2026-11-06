@@ -6,6 +6,7 @@ use crate::pane::{Pane, PaneType, Panes};
 use crate::saved::{self, LAYOUT_VERSION};
 use crate::state::{self, number_in};
 use crate::state_file::{Contents, StateFile};
+use crate::workspace::Where;
 use std::collections::{HashMap, HashSet};
 
 pub struct LayoutOwner {
@@ -130,6 +131,11 @@ impl LayoutOwner {
                 self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect()
             }
         }
+    }
+
+    pub fn saved_planners(&self) -> HashSet<String> {
+        let workspaces = self.saved.as_ref().and_then(|saved| saved.get("workspaces")).and_then(Value::as_array).into_iter().flatten();
+        workspaces.filter(|ws| matches!(Where::read(ws.get("where")), Some(Where::Planner(_)))).filter_map(|ws| ws.get("dock")?.get("pane")?.as_str().map(String::from)).collect()
     }
 
     fn record(&mut self, record: &Value) -> Result<Map, KmuxError> {
@@ -556,6 +562,22 @@ mod tests {
         assert_eq!((view["workspaces"][0]["background"].clone(), view["windows"].clone()), (json!(["p3"]), json!([])));
         again.handle(&json!({ "call": "serve", "request": { "op": "remove", "ids": ["p1", "p3"], "task": "p1", "tidy": true } }));
         assert_eq!(Value::Object(again.view())["workspaces"], json!([]));
+    }
+
+    #[test]
+    fn a_planner_whose_pane_is_left_out_loses_its_workspace_but_not_its_tabs() {
+        let mut owner = LayoutOwner::new();
+        owner.handle(&json!({ "call": "attach", "panes": [] }));
+        open(&mut owner, json!({ "id": "p1", "name": null, "type": "term" }), json!({ "dock": "left", "planner": true, "claim": "daemon" }));
+        let planner = owner.view()["workspaces"][0]["id"].as_str().unwrap().to_string();
+        open(&mut owner, json!({ "id": "p2", "name": null, "type": "term" }), json!({ "tab": true, "workspace": planner }));
+        open(&mut owner, json!({ "id": "p3", "name": null, "type": "term" }), json!({ "dock": "left", "shelf": true }));
+        let mut again = LayoutOwner::restoring(owner.export()).unwrap();
+        assert_eq!(again.saved_planners(), HashSet::from(["p1".to_string()]));
+        again.handle(&json!({ "call": "attach", "panes": table(&["p2", "p3"]) }));
+        let view = Value::Object(again.view());
+        assert_eq!(view["workspaces"].as_array().map(|w| w.iter().map(|w| w["dock"]["pane"].clone()).collect::<Vec<_>>()), Some(vec![json!("p3")]), "{view}");
+        assert_eq!(again.saved_planners(), HashSet::new());
     }
 
     #[test]

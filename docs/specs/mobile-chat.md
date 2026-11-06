@@ -101,6 +101,7 @@ stateDiagram-v2
 - **A Desk adopts it:** `tasks plan` from the app finds the repo's windowless planner, claims it for that app and shows it, instead of [starting a second conversation](planner-resume.md#1-when-it-resumes).
 - **Closing a window** on the repo's planner machine leaves its planner windowless (`tasks let-go`, which the app sends in place of `close`). Elsewhere it ends, as before. A machine is the planner machine for a repo once a phone has talked to it there: it has `phone_chat` rows.
 - **An hour idle with no app,** Kanna ends it with [its quit keys](shelf-runners.md#2-how-its-built). The next message starts it again from the conversation.
+- **A planner that lost its terminal is gone:** when the keeper died (a reboot, a keeper stopped by hand), the daemon's restore leaves out any planner pane with no running terminal, so its workspace goes too. The chat reads *Not running*, the next message starts one and it resumes the conversation. A Desk's planner goes the same way, and the Desk opens a new one; tabs in that workspace stay, in windows of their own.
 - **Starting can fail silently:** an agent reports no status while it [asks to trust a folder](agent-status.md#2-kannas-agents). With no report 60 s after starting, the chat says *The planner couldn't start on studio; open the repo there once*.
 - **No daemon, no planner:** a Mac's daemon outlives the app but not a restart, so a Mac that serves your phone runs it from launchd, with [`kanna machine serve`](machines.md#5-the-app-link-over-the-network), which isn't built yet and comes in [slice 1](mobile-app.md#9-build-order).
 - **Schedules and Desk news** reach a windowless planner like any other while it runs. Nothing starts one but the phone.
@@ -118,7 +119,7 @@ stateDiagram-v2
 | `message` | → `messages.id`, for `me` |
 | `doc` | The text, choices and the choice made, or the card's lines and commit |
 
-**Tests:** e2e `phone_chat` on a private instance with the mock agent as claude and as codex: a headless phone sends with the planner busy, idle and absent; the reply arrives through `kanna phone`; a resend delivers once; a task agent is refused; a silent turn is nudged once; a windowless planner is adopted by a Desk and goes windowless again.
+**Tests:** e2e `phone_chat` on a private instance with the mock agent as claude and as codex: a headless phone sends with the planner busy, idle and absent; the reply arrives through `kanna phone`; a resend delivers once; a task agent is refused; a silent turn is nudged once; a windowless planner is adopted by a Desk and goes windowless again; a windowless planner whose keeper died is replaced by the next message. e2e `desk_planner_keeper_lost`: a Desk gets a new planner after the same.
 
 ## 6. Rejected
 
