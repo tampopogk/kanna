@@ -136,8 +136,8 @@ final class FixtureBackend: Backend {
         ],
     ]
 
-    private var words: [String: LastWords] = [
-        "Review build output": LastWords(at: Date().timeIntervalSince1970 - 2400, asking: true, text: "Keep the old colours as a fallback, or drop them and restyle the crash page here too?"),
+    private var words: [String: [Said]] = [
+        "Review build output": [Said(at: Date().timeIntervalSince1970 - 2400, asking: true, text: "Keep the old colours as a fallback, or drop them and restyle the crash page here too?")],
     ]
 
     func tasks(repo: String) async throws -> ShelfPage {
@@ -146,7 +146,7 @@ final class FixtureBackend: Backend {
 
     func task(_ id: String) async throws -> TaskPage {
         guard let task = shelf.tasks.first(where: { $0.id == id }) else { throw Refused(code: "not_found", message: "no task \(id)") }
-        return TaskPage(task: task, thread: threads[id] ?? [], last: words[id])
+        return TaskPage(task: task, thread: threads[id] ?? [], said: words[id] ?? [])
     }
 
     private func changed() {
@@ -172,7 +172,7 @@ final class FixtureBackend: Backend {
             if let index = threads[task]?.lastIndex(where: { $0.you }) { threads[task]?[index].read = Date().timeIntervalSince1970 }
             changed()
             await wait(1)
-            threads[task, default: []].append(ThreadLine(at: Date().timeIntervalSince1970, from: task, you: false, text: "Got it. Carrying on with that."))
+            words[task, default: []].append(Said(at: Date().timeIntervalSince1970, asking: false, text: "Got it. Carrying on with that."))
             changed()
         }
     }

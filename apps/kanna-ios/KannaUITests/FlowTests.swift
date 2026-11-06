@@ -91,6 +91,21 @@ final class FlowTests: XCTestCase {
         shot("answered-task")
     }
 
+    func testEveryReplyStaysInTheThread() {
+        shelf()
+        tap("Review build output")
+        let said = app.descendants(matching: .any).matching(identifier: "last-words")
+        func replies(_ count: Int) -> Bool {
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == %d", count), object: said)], timeout: 12) == .completed
+        }
+        see("It said,")
+        XCTAssertTrue(replies(1))
+        say("First")
+        XCTAssertTrue(replies(2))
+        say("Second")
+        XCTAssertTrue(replies(3), "a reply replaces none before it")
+    }
+
     func testAMessageToATaskThatHasnTStartedGoesWithItsFirstMessage() {
         shelf()
         app.swipeUp()

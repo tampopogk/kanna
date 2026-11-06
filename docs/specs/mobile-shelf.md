@@ -60,7 +60,7 @@ sequenceDiagram
 
 ## 3. Last words
 
-*Needs you* is no use without what the agent said, and that's in its terminal, not its messages. The daemon keeps the final text of each task's last turn, and the question if it's asking one.
+*Needs you* is no use without what the agent said, and that's in its terminal, not its messages. The daemon keeps the final text of each of a task's turns, and the question if it's asking one, so the phone reads a task's replies as a conversation.
 
 - **When:** at each turn's end, and when its status goes to `needs-you` ([agent status](agent-status.md#3-the-report-osc-7501)), and again 2 s later, since an agent can report before its session file has the turn. A task with no row, one that stopped before this was built, is read when the phone opens it.
 - **Where from:** the agent's own session, which Kanna already finds to resume it ([planner resume §2](planner-resume.md#2-each-agent)). A reader per agent in `kanna-detect`, next to the quit files:
@@ -72,10 +72,10 @@ sequenceDiagram
 | opencode | Its database, as for resume |
 | agy | Nothing: the phone shows the status alone |
 
-- **Kept** in `last_words` in `kanna.db`: who, when, whether it's a question, text, the last 8 KB. One row per task, replaced each turn, and it lives as long as the task.
+- **Kept** in `said` in `kanna.db`: who, when, whether it's a question, text, the last 8 KB. One row per reply, the newest 100 per task; the same text again is the same reply, since a turn is read twice, so two identical replies in a row show as one. `task.read` sends them oldest first as `said`.
 - **For a planner too (not built):** the row is keyed by `who`, so a planner's can sit beside the tasks' and *Needs you at studio* can have words.
-- **Best effort:** a reader that fails (a new session format, say) logs it and keeps the last row. The phone then shows the status alone. e2e `real_agent_last_words` runs real claude and codex against the mock model, so a format change fails a test.
-- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone shows them in the thread, by when they were said, under the first message, which stays at the top: sending a message hides nothing.
+- **Best effort:** a reader that fails (a new session format, say) logs it and adds no row. The phone then shows the status alone. e2e `real_agent_last_words` runs real claude and codex against the mock model, so a format change fails a test.
+- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone shows every reply in the thread, by when it was said, under the first message, which stays at the top: sending a message hides nothing.
 
 ## 4. A message to a task that hasn't started
 

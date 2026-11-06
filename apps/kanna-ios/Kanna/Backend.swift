@@ -95,7 +95,7 @@ struct ThreadLine: Codable, Equatable {
     var client: String?
 }
 
-struct LastWords: Codable, Equatable {
+struct Said: Codable, Equatable {
     var at: Double
     var asking: Bool
     var text: String
@@ -104,7 +104,7 @@ struct LastWords: Codable, Equatable {
 struct TaskPage: Codable, Equatable {
     var task: ShelfTask
     var thread: [ThreadLine]
-    var last: LastWords?
+    var said: [Said]
 }
 
 enum Notice {

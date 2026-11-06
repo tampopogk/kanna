@@ -143,7 +143,7 @@ impl Tasks {
                 let read = crate::runtime::off_loop(move || read_words(&reading)).await.flatten();
                 let Some(this) = this.upgrade() else { return };
                 match read {
-                    Some(words) => match this.db.put_last_words(&id, &words.text, words.asking) {
+                    Some(words) => match this.db.put_said(&id, &words.text, words.asking) {
                         Ok(()) => this.revised(),
                         Err(error) => log!("kanna-daemon: couldn't keep {id}'s last words in {}: {error}", db::FILE),
                     },
@@ -190,7 +190,7 @@ impl Tasks {
     }
 
     pub fn fill_last_words(self: &Rc<Self>, task: &str) {
-        if !matches!(self.db.last_words(task), Ok(None)) {
+        if !self.db.said(task).is_ok_and(|said| said.is_empty()) {
             return;
         }
         let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == task && e.folder.is_some()) else { return };
@@ -315,8 +315,8 @@ impl Tasks {
         let told = self.db.messages(Some(&id)).unwrap_or_default();
         let mut thread: Vec<Value> = notes.chain(told.iter().map(|m| json!({ "at": num(m.at), "from": from(&m.sender), "you": you(&m.sender), "text": m.text, "read": m.delivered.map(num) }))).collect();
         thread.sort_by(|a, b| a["at"].as_f64().partial_cmp(&b["at"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
-        let last = self.db.last_words(&id).ok().flatten().map_or(Value::Null, |w| json!({ "at": num(w.at), "asking": w.asking, "text": w.text }));
-        Ok(Map::from_iter([("task".to_string(), item), ("thread".to_string(), Value::Array(thread)), ("last".to_string(), last)]))
+        let said: Vec<Value> = self.db.said(&id).unwrap_or_default().iter().map(|w| json!({ "at": num(w.at), "asking": w.asking, "text": w.text })).collect();
+        Ok(Map::from_iter([("task".to_string(), item), ("thread".to_string(), Value::Array(thread)), ("said".to_string(), Value::Array(said))]))
     }
 
     pub fn task_record(&self, task: &str) -> Option<Map> {
@@ -328,7 +328,7 @@ impl Tasks {
         drop(replica);
         let mut item = self.shelf_records(&project, &shown).into_iter().find(|t| t["id"] == task)?;
         item["message"] = opt(message.as_deref());
-        Some(Map::from_iter([("task".to_string(), item), ("thread".to_string(), json!([])), ("last".to_string(), Value::Null)]))
+        Some(Map::from_iter([("task".to_string(), item), ("thread".to_string(), json!([])), ("said".to_string(), json!([]))]))
     }
 }
 

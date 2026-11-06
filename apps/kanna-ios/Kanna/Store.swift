@@ -303,9 +303,9 @@ final class Store {
             let time = Self.clock.string(from: Date(timeIntervalSince1970: line.at))
             return Message(id: "\(task.id)/\(index)", from: line.from, time: time, text: line.text, you: line.you, receipt: line.you ? Self.receipt(line, status) : .none, at: line.at)
         }
-        if let last = page?.last {
-            let said = Message(id: "\(task.id)/said", from: task.name, time: Self.clock.string(from: Date(timeIntervalSince1970: last.at)), text: last.text, at: last.at, said: true)
-            thread.insert(said, at: thread.firstIndex { $0.at > last.at } ?? thread.count)
+        for words in page?.said ?? [] {
+            let said = Message(id: "\(task.id)/said/\(words.at)", from: task.name, time: Self.clock.string(from: Date(timeIntervalSince1970: words.at)), text: words.text, at: words.at, said: true)
+            thread.insert(said, at: thread.firstIndex { $0.at > words.at } ?? thread.count)
         }
         let sent = Set((page?.thread ?? []).compactMap(\.client))
         for message in queued where message.task == task.id && !sent.contains(message.id) {

@@ -4421,7 +4421,7 @@ real_agent_last_words() {
     id="$(cd "$repo" && kanna task new "$agent words" "LAST_WORDS $agent" --agent "$agents/bin/$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
     kanna task start "$id" >/dev/null || { echo "real_agent_last_words: $agent's task didn't start"; return 1; }
     check wait_for 60 shows "$agent words" "Agent status probe" || { echo "real_agent_last_words: $agent didn't show the mock's answer"; kanna read "$agent words"; return 1; }
-    check wait_for 20 eval 'words="$(raw "{\"id\":1,\"cmd\":\"phone\",\"args\":{\"request\":\"here.read\",\"task\":\"$id\"}}" | field last.text)"; [[ "$words" == *"Agent status probe"* ]]' || { echo "real_agent_last_words: $agent's last words were [$words]"; find "$agents/$agent-home" -name '*.jsonl' | tail -3; find "$agents/$agent-home" -name '*.jsonl' | tail -1 | xargs tail -2 | cut -c1-400; grep "last words" "$out/daemon.log" | tail -3; return 1; }
+    check wait_for 20 eval 'words="$(raw "{\"id\":1,\"cmd\":\"phone\",\"args\":{\"request\":\"here.read\",\"task\":\"$id\"}}" | field said.0.text)"; [[ "$words" == *"Agent status probe"* ]]' || { echo "real_agent_last_words: $agent's last words were [$words]"; find "$agents/$agent-home" -name '*.jsonl' | tail -3; find "$agents/$agent-home" -name '*.jsonl' | tail -1 | xargs tail -2 | cut -c1-400; grep "last words" "$out/daemon.log" | tail -3; return 1; }
   done
 }
 
@@ -6439,10 +6439,10 @@ print([w["where"] for w in json.load(sys.stdin)["workspaces"] if w.get("task") a
 print([r.get("claim") for r in json.load(sys.stdin)["records"] if r["task"].startswith(sys.argv[1])][0])' "$one")" == "$me" || { echo "phone_shelf: no claim in the replica"; return 1; }
   check test "$(phone task "$one" | field thread.0.read)" != None || { echo "phone_shelf: a note read as waiting once it started"; return 1; }
   kanna send "$agent" "say All done, nothing left" >/dev/null && kanna send-key "$agent" enter >/dev/null || return 1
-  check wait_for 8 eval '[[ "$(phone task "$one" | field last.text)" == "All done, nothing left" ]]' || { echo "phone_shelf: no last words: $(phone task "$one" | cut -c1-500)"; return 1; }
+  check wait_for 8 eval '[[ "$(phone task "$one" | field said.0.text)" == "All done, nothing left" ]]' || { echo "phone_shelf: no last words: $(phone task "$one" | cut -c1-500)"; return 1; }
   kanna send "$agent" "question Which way?" >/dev/null && kanna send-key "$agent" enter >/dev/null || return 1
-  check wait_for 8 eval '[[ "$(phone task "$one" | field last.asking)" == True ]]' || { echo "phone_shelf: the question isn't its last words: $(phone task "$one" | cut -c1-500)"; return 1; }
-  check test "$(phone task "$one" | field last.text | head -1)" == "Which way?" || { echo "phone_shelf: asked $(phone task "$one")"; return 1; }
+  check wait_for 8 eval '[[ "$(phone task "$one" | field said.1.asking)" == True ]]' || { echo "phone_shelf: the question isn't its last words: $(phone task "$one" | cut -c1-500)"; return 1; }
+  check test "$(phone task "$one" | field said.1.text | head -1)" == "Which way?" && check test "$(phone task "$one" | field said.0.text)" == "All done, nothing left" || { echo "phone_shelf: asked $(phone task "$one")"; return 1; }
   check wait_for 8 eval '[[ "$(shelf "$one" status)" == idle ]]' || { echo "phone_shelf: status $(shelf "$one" status)"; return 1; }
   phone tell "$one" n2 "Keep it" >/dev/null || return 1
   check wait_for 15 shows "$agent" "peer: \[message from user\] Keep it" || { echo "phone_shelf: the message didn't reach the agent"; kanna read "$agent"; return 1; }
