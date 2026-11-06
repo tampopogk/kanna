@@ -378,14 +378,6 @@ impl AppLink {
             return false;
         }
         let args = hello.get("args").cloned().unwrap_or(Value::Null);
-        let protocol = args.get("protocol").and_then(Value::as_u64);
-        if protocol != Some(PROTOCOL) {
-            let theirs = protocol.map_or("an older protocol".to_string(), |p| format!("protocol {p}"));
-            log!("kanna-daemon: an app speaking {theirs} said hello; this daemon speaks {PROTOCOL}");
-            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocol {PROTOCOL} and the app {theirs}") }, "protocol": PROTOCOL, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION }));
-            let _ = stream.shutdown(Shutdown::Read);
-            return false;
-        }
         let app_build = args.get("build").and_then(Value::as_str).filter(|_| remote.is_none());
         let keeps = remote.is_none() && args.get("keepsSocket") == Some(&Value::Bool(true));
         let listener = self.listener.as_ref().filter(|_| keeps);
@@ -397,6 +389,14 @@ impl AppLink {
                 let _ = stream.shutdown(Shutdown::Both);
                 return true;
             }
+        }
+        let protocol = args.get("protocol").and_then(Value::as_u64);
+        if protocol != Some(PROTOCOL) {
+            let theirs = protocol.map_or("an older protocol".to_string(), |p| format!("protocol {p}"));
+            log!("kanna-daemon: an app speaking {theirs} said hello; this daemon speaks {PROTOCOL}");
+            answer(json!({ "id": id, "ok": false, "error": { "code": "other_protocol", "message": format!("this daemon speaks protocol {PROTOCOL} and the app {theirs}") }, "protocol": PROTOCOL, "commit": kanna_build::COMMIT, "version": kanna_build::VERSION }));
+            let _ = stream.shutdown(Shutdown::Read);
+            return false;
         }
         let pid = args.get("pid").cloned().unwrap_or(Value::Null);
         match (&remote, args.get("client").and_then(Value::as_str)) {

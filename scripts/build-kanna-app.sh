@@ -81,14 +81,35 @@ done
 
 app="$arch_dir/Kanna.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp "$product_dir/Kanna" "$app/Contents/MacOS/Kanna"
 cp "$signed/kanna-daemon" "$signed/kanna-keeper" "$signed/kanna" "$app/Contents/Helpers/"
+ditto "$product_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$app/Contents/Frameworks/Sparkle.framework/XPCServices" "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
 cp "$repo_root/assets/Kanna.icns" "$app/Contents/Resources/Kanna.icns"
 cp "$repo_root/LICENSE" "$app/Contents/Resources/"
 install -m 755 "$repo_root/apps/kanna/Resources/planner.sh" "$app/Contents/Resources/"
 mkdir -p "$app/Contents/Resources/kanna-skills"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$app/Contents/Resources/kanna-skills/"; done
+
+case "$channel" in
+  production|staging) update_feed="$KANNA_UPDATE_FEEDS/$channel-$(kanna_triple_arch "$triple").xml" ;;
+  *) update_feed="" ;;
+esac
+update_feed="${KANNA_UPDATE_FEED:-$update_feed}"
+update_plist=""
+if [[ -n "$update_feed" ]]; then
+  update_plist="<key>SUFeedURL</key><string>$update_feed</string>
+<key>SUPublicEDKey</key><string>$KANNA_UPDATE_PUBLIC_KEY</string>
+<key>SUEnableAutomaticChecks</key><true/>
+<key>SUScheduledCheckInterval</key><integer>21600</integer>
+<key>SUAutomaticallyUpdate</key><false/>
+<key>SUAllowsAutomaticUpdates</key><false/>
+<key>SUVerifyUpdateBeforeExtraction</key><true/>
+<key>SURequireSignedFeed</key><true/>"
+  [[ "$update_feed" == http://127.0.0.1* ]] && update_plist+="
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>"
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -112,6 +133,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>NSBonjourServices</key><array><string>_kanna._udp</string></array>
 <key>LSMinimumSystemVersion</key><string>$macos_target</string>
 <key>NSHighResolutionCapable</key><true/>
+$update_plist
 </dict></plist>
 PLIST
 kanna_sign_app "$repo_root" "$app" "$identity"

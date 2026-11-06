@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [build channels](build-channels.md), [build architectures](build-architectures.md) · **Why:** people download Kanna as a signed, notarized DMG from GitHub, so one command has to take main to a published release
 
-`scripts/release.sh [--major|--minor|--patch | VERSION] [--staging] [--dry-run]` builds Kanna for arm64 and x86_64, signs and notarizes one DMG per architecture, tags the source and publishes a GitHub Release on **tampopogk/kanna**, the repo that holds both the source and the downloads. It's Kanna v2's `ship.sh` and `mirror-release.sh` without the updater, the appcast or the soak and promote gates.
+`scripts/release.sh [--major|--minor|--patch | VERSION] [--staging] [--dry-run]` builds Kanna for arm64 and x86_64, signs and notarizes one DMG per architecture, tags the source and publishes a GitHub Release on **tampopogk/kanna**, the repo that holds both the source and the downloads. It's Kanna v2's `ship.sh` and `mirror-release.sh` without the soak and promote gates. It also signs the DMGs for the updater and publishes the update feeds last ([auto update](auto-update.md#7-publishing)).
 
 - [The flow](#the-flow)
 - [Preflight](#preflight)
@@ -11,7 +11,6 @@
 - [Signing and the DMG](#signing-and-the-dmg)
 - [Publishing](#publishing)
 - [The staging channel](#the-staging-channel)
-- [Never latest.json](#never-latestjson)
 - [Glossary](#glossary)
 
 ## The flow
@@ -48,6 +47,7 @@ Every check runs before any build, and each failure says what to do.
 | A Developer ID identity | `security find-identity -v -p codesigning` has a "Developer ID Application" identity; it signs by its hash |
 | The notary credential works | `~/.kanna/.env.release.local` (shared with Kanna v2) names `APPLE_KEYCHAIN_PROFILE` and `APPLE_KEYCHAIN_PATH`; `xcrun notarytool history` with them succeeds |
 | gh and claude | `gh auth status` succeeds; `claude` is on PATH |
+| The update key and feeds | the update key file is there and matches the public key in `scripts/env.sh`; gh can push to `tampopogk/kanna-web`; the build number is above each published feed's |
 
 - **`--dry-run` only warns** about the first two, so an unmerged branch can be dry-run.
 - **No secrets:** the env file is read for those two keys only, never sourced or printed; the credential stays in its keychain.
@@ -95,7 +95,7 @@ flowchart LR
     N --> S["stapler staple"]
 ```
 
-- **Inside out, no `--deep`:** every Mach-O in `Contents/Helpers` first, then the app, through `kanna_sign_app` (`scripts/env.sh`), which dev builds use too ([privacy prompts](privacy-prompts.md#4-how-dev-builds-are-signed)); a Mach-O anywhere else stops the release, since it would go unsigned.
+- **Inside out, no `--deep`:** every Mach-O in `Contents/Helpers` first, then Sparkle.framework's `Autoupdate`, `Updater.app` and the framework, then the app, through `kanna_sign_app` (`scripts/env.sh`), which dev builds use too ([privacy prompts](privacy-prompts.md#4-how-dev-builds-are-signed)); a Mach-O outside those stops the release, since it would go unsigned.
 - **Explicit identifiers:** the app is its bundle ID (`dev.kanna.app`), each helper `BUNDLE_ID.HELPER` (`dev.kanna.app.kanna-keeper`), not what codesign makes up from the file name.
 - **Entitlements** (`apps/kanna/Resources/Kanna.entitlements`), on the app only. Programs in Kanna's terminals are attributed to Kanna by macOS privacy controls, and under the hardened runtime they're refused without an entitlement:
 
@@ -121,10 +121,6 @@ The tag and the release are both on **tampopogk/kanna**, which origin must point
 ## The staging channel
 
 `--staging` builds the staging channel (Kanna Staging, [build channels](build-channels.md)) and publishes a GitHub **pre-release** `vX.Y.Z-staging.N`: `X.Y.Z` is the version as above, and `N` is one past the highest `vX.Y.Z-staging.*` tag on origin. The DMGs are `Kanna-Staging-X.Y.Z-staging.N-arm64.dmg` and `…-x86_64.dmg`. There are no soak or promote gates: a production release is its own run.
-
-## Never latest.json
-
-Kanna v2 installs check `tampopogk/kanna/releases/latest/download/latest.json` for updates. That path now lands on Kanna v4's releases, so **no release may ever have an asset named `latest.json`**: v2 would install whatever it pointed at. release.sh refuses one before publishing and checks the published release's assets after.
 
 ## Glossary
 
