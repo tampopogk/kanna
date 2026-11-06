@@ -194,6 +194,23 @@ kanna_cargo_seed "$second" "" 15.0 2>/dev/null
 [[ "$(cat "$second/target/debug/deps/libdep_x.rlib")" == mine ]] || fail "seed: replaced a worktree's own build"
 kanna_cargo_seed "$main" "" 15.0 2>/dev/null
 [[ ! -e "$main/target/debug" && ! -e "$main/target/release" ]] || fail "seed: seeded the main checkout"
+caller="$(worktree task-caller)" && (kanna_targets "$caller") 2>/dev/null
+triple=caller key=caller stamp=caller
+kanna_cargo_seed "$caller" "" 15.0 2>/dev/null
+kanna_cargo_stamp "$caller" 15.0 2>/dev/null
+[[ "$triple $key $stamp" == "caller caller caller" ]] || fail "seed: changed the build scripts' variables: $triple $key $stamp"
+
+packages="$main/target/kanna-build"
+mkdir -p "$packages/checkouts" "$packages/repositories" "$packages/artifacts/s/S"
+printf '{"local": "%s/target/ghosttykit/G", "remote": "%s/artifacts/s/S"}\n' "$main" "$packages" >"$packages/workspace-state.json"
+borrowed="$(worktree task-borrowed)"
+host_triple="$(kanna_host_triple)"
+for arch_triple in "$host_triple" other-apple-darwin; do
+  scratch="$(kanna_arch_dir "$borrowed" "$arch_triple")/kanna-build"
+  kanna_borrow_swiftpm "$borrowed" "$arch_triple" >/dev/null
+  [[ "$(cat "$scratch/workspace-state.json")" == "{\"local\": \"$borrowed/target/ghosttykit/G\", \"remote\": \"$scratch/artifacts/s/S\"}" ]] || fail "borrow: $arch_triple's state is $(cat "$scratch/workspace-state.json")"
+  [[ -d "$scratch/artifacts/s/S" ]] || fail "borrow: $arch_triple got no binary artifacts"
+done
 
 [[ $failed == 0 ]] && echo "store: ok"
 exit "$failed"

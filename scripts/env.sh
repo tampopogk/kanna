@@ -70,17 +70,17 @@ kanna_rust_dir() {
 kanna_cargo_stamp() {
   cargo_triple="${3:-$(kanna_host_triple)}"
   cargo_dir="$(kanna_rust_dir "$1" "$cargo_triple")" || return 1
-  stamp="$cargo_dir/macos-deployment-target"
-  [ "$(cat "$stamp" 2>/dev/null)" = "$2" ] && return
+  cargo_stamp="$cargo_dir/macos-deployment-target"
+  [ "$(cat "$cargo_stamp" 2>/dev/null)" = "$2" ] && return
   if [ -d "$cargo_dir" ]; then
-    echo "==> $cargo_dir was built for macOS $(cat "$stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
+    echo "==> $cargo_dir was built for macOS $(cat "$cargo_stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
     if [ "$cargo_triple" = "$(kanna_host_triple)" ]; then
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" >&2 || return 1
     else
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" --target "$cargo_triple" >&2 || return 1
     fi
   fi
-  mkdir -p "$cargo_dir" && echo "$2" > "$stamp"
+  mkdir -p "$cargo_dir" && echo "$2" > "$cargo_stamp"
 }
 
 kanna_zig_build() {
@@ -285,10 +285,10 @@ kanna_borrow_swiftpm() {
   [ -e "$here" ] && return
   main="$(kanna_main_checkout "$1")" || return 0
   from="$main/target/kanna-build"
-  [ -f "$from/workspace-state.json" ] && [ -d "$from/checkouts" ] && [ -d "$from/repositories" ] || return 0
+  [ -f "$from/workspace-state.json" ] && [ -d "$from/checkouts" ] && [ -d "$from/repositories" ] && [ -d "$from/artifacts" ] || return 0
   mkdir -p "$here.borrowing"
-  if kanna_clone "$from/repositories" "$here.borrowing/repositories" && kanna_clone "$from/checkouts" "$here.borrowing/checkouts" &&
-     sed "s#$main/#$1/#g" "$from/workspace-state.json" > "$here.borrowing/workspace-state.json"; then
+  if kanna_clone "$from/repositories" "$here.borrowing/repositories" && kanna_clone "$from/checkouts" "$here.borrowing/checkouts" && kanna_clone "$from/artifacts" "$here.borrowing/artifacts" &&
+     sed -e "s#$main/#$1/#g" -e "s#$1/target/kanna-build/#$here/#g" "$from/workspace-state.json" > "$here.borrowing/workspace-state.json"; then
     mv "$here.borrowing" "$here"
     echo "Borrowed $from's Swift packages"
   else
