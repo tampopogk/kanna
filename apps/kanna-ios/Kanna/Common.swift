@@ -363,6 +363,7 @@ struct ReceiptLine: View {
         case .read: (false, "Read")
         case .waitingTurn: (true, "Waiting for its turn to end")
         case .waitingPlanner: (true, "Waiting for the planner")
+        case .waitingStart: (true, "Waits until it starts")
         case .waitingMachine(let m): (true, "Sends when \(m) is back")
         case .dayOld: (true, "A day old, not sent")
         }
@@ -436,6 +437,23 @@ struct PrimaryButton: View {
         }
         .buttonStyle(.plain)
         .disabled(off)
+    }
+}
+
+struct Hero<Extra: View>: View {
+    var title: String
+    @ViewBuilder var extra: () -> Extra
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 21, weight: .bold)).foregroundStyle(K.text)
+            extra()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .overlay(alignment: .bottom) { K.line.frame(height: 1) }
     }
 }
 

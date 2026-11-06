@@ -1,10 +1,10 @@
 # Agent Stats
 
-**Status:** built · **Tests:** `stats.rs`, `tasks.rs`, `AgentStatusesTests`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) (`#picture,agents`) · **Builds on:** [Stats](stats.md), [agent status](agent-status.md), [task history](database.md)
+**Status:** built · **Tests:** `stats.rs`, `tasks.rs`, `AgentStatusesTests`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) (`#picture,agents`) · **Builds on:** [Stats](stats.md), [agent status](agent-status.md) and its [stored status](agent-status.md#5-across-a-daemon-restart), [task history](database.md)
 
 **The Agents section of the Stats tab:** how long task agents worked, how long they waited on you, how long finished work sat unlooked at, and how their turns went, over the last 30 days. Agents do the work, so the time that matters is theirs and the time they spend on you.
 
-The numbers come from a row in `task_events` for each change of a task agent's status. The planner, a run's stages and plain terminals have no rows. Only the Stats tab and `kanna stats` show them: `kanna task list` and the Desk's rows have no per-task numbers yet.
+The numbers come from a row in `task_events` for each change of a task agent's status. The planner, a run's stages and plain terminals have no rows. Only the Stats tab, on the Mac and the [phone](mobile-machines.md#7-stats), and `kanna stats` show them: `kanna task list` and the Desk's rows have no per-task numbers yet.
 
 | Dark | Light |
 |---|---|
@@ -45,8 +45,8 @@ The numbers come from a row in `task_events` for each change of a task agent's s
 
 - **Only changes:** a status equal to the task's last one adds no row. The last one is read from `kanna.db`, so it holds across a restart. A `stopped` or `started` row clears it, so an agent that stops and starts at the same status records it again.
 - **On its way out:** while Kanna quits or stops an agent, its reports add no row, so an agent stopped at needs-you isn't taken as answered. Its `exited` still does.
-- **No status is no change:** a pane with no report, as an agent has right after a daemon restart, writes nothing.
-- **A restart leaves no gap:** the last row stands until the next differs, so a turn under way when the daemon stopped carries on as one turn, and the daemon's time away counts.
+- **No status is no change:** a pane with no report writes nothing.
+- **A restart leaves no gap:** the daemon puts a terminal's [stored status](agent-status.md#5-across-a-daemon-restart) back, which repeats the last row and adds none, so a turn under way when the daemon stopped carries on as one turn, and the daemon's time away counts. A report the keeper buffered meanwhile is a change like any other, written when the new daemon reads it.
 - **Gone while no daemon ran:** at startup, once the panes are back, a task whose agent isn't running gets `exited` (`Tasks::settle_statuses`).
 - **Looked at:** the app tells the pane's own machine. Any app's look counts. A Mac app's *unread* mark goes when an agent exits, so `looked` is sent on its own rule and unread stays as it is.
 
@@ -84,7 +84,6 @@ stateDiagram-v2
 
 ## 5. Limits
 
-- **Stored status:** this doesn't need the agent's status restored after a restart, since the rows carry it. Once a pane reports its stored status after a restart, that's a repeat and adds no row.
 - **Time asleep counts:** a Mac asleep or a daemon away with an agent at working adds to Agent time until the next row. A reboot, which ends the terminals, adds its length, up to the `exited` the next daemon writes.
 - **One machine:** rows stay on the machine that ran the agent, as with the rest of Stats until Stats across machines. A task moved away keeps its rows there, and a wait it left open goes on showing.
 - **A turn under the status watcher's look** (about 100 ms) leaves no row: it's too short to change the numbers.

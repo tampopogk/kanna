@@ -42,7 +42,7 @@ flowchart LR
 ```
 
 - **One source of truth:** `crates/kanna-build` derives everything from the channel and the worktree's folder name (kept to letters, digits, `-` and `_`, 32 at most; the bundle ID lowercases it). `KANNA_CHANNEL` defaults to `dev`; a plain `cargo build` in a worktree makes that worktree's dev CLI.
-- **The app** reads `KannaChannel` and `KannaInstance` from its Info.plist; staging and dev builds put a STAGING or DEV band on their Dock icon, and the Kanna menu's Quit item is named after the app.
+- **The app** reads `KannaChannel`, `KannaInstance`, `KannaCommit` and `KannaVersion` from its Info.plist; staging and dev builds put a STAGING or DEV band on their Dock icon, the Kanna menu's About and Quit items are named after the app, and the About panel reads `Version VERSION (COMMIT)` in production and `Version VERSION (CHANNEL COMMIT)` otherwise, `VERSION` in full, so a staging release shows `X.Y.Z-staging.N`.
 
 ## 3. Which Kanna a command reaches
 
@@ -67,7 +67,7 @@ So in production's terminals every `kanna` talks to production; to reach the wor
 | `scripts/run-kanna.sh COMMAND …` | runs this checkout's CLI against this checkout's Kanna (starting it if needed), from anywhere, a production terminal included |
 | `kanna instances` | the running instances of every channel: name, channel, windows and panes, and the worktree a dev build came from (`(gone)` once it's removed) |
 | `kanna instances prune` | deletes the folders of instances whose worktree is gone, keeping any that still answer or whose keeper still runs |
-| `kanna --version` | the CLI's version and which app it is, e.g. `kanna 0.1.0 (Kanna Dev task-3f9a1c2e)` |
+| `kanna --version` | the CLI's version and which app it is, e.g. `kanna 4.1.1-dev (Kanna Dev task-3f9a1c2e)` |
 
 Any build can run with `KANNA_DEBUG=1` (the planner's dev Kanna does): it answers `debug.*` and shows **Debug** in its title bars, and is otherwise the same, its clipboard included ([terminal](terminal.md#5-debug-mode)).
 
