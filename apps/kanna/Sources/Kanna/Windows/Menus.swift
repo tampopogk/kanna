@@ -30,6 +30,10 @@ extension AppController {
             app.addItem(withTitle: "Instance: \(Self.instanceName)", action: nil, keyEquivalent: "")
             app.addItem(.separator())
         }
+        if let updates {
+            app.addItem(updates.menuItem)
+            app.addItem(.separator())
+        }
         let accounts = app.addItem(withTitle: "Agent Accounts", action: nil, keyEquivalent: "")
         accounts.submenu = NSMenu(title: accounts.title)
         for (label, action) in [("Show Accounts", #selector(showAccounts)), ("Add Claude Subscription…", #selector(addClaudeSubscription)), ("Add Anthropic API Key…", #selector(addAnthropicKey)), ("Add Codex (ChatGPT) Account…", #selector(addCodexAccount)), ("Add OpenAI API Key…", #selector(addOpenAIKey)), ("Remove Claude Account", #selector(removeClaudeAccount)), ("Remove Codex Account", #selector(removeCodexAccount))] {

@@ -81,7 +81,7 @@ stateDiagram-v2
     Waiting --> Found: next launch, or a newer build
     Waiting --> Downloading: Install Update… in the menu
     Found --> Downloading: Install and Relaunch
-    Downloading --> Idle: Cancel, a failure, or quit
+    Downloading --> Waiting: Cancel, a failure, or quit
     Downloading --> Installing: archive verified
     Installing --> Relaunched: the app quits, the bundle is swapped
     Relaunched --> Idle
@@ -117,8 +117,7 @@ Quit in any state before Installing installs nothing, because no installer is ru
 
 ## 6. The update key
 
-- **Private half:** the login keychain of the release Mac, in Sparkle's item under the account `kanna`. It is created once with `generate_keys --account kanna`. Nothing else holds it: never in the repo, in `.env.release.local`, in a log or in a test.
-- **Backup:** `generate_keys --account kanna -x FILE`, which you store in your password manager and delete from disk.
+- **Private half:** in two places on the release Mac. `sign_update` reads the login keychain, item "Private key for signing Sparkle updates", account `kanna` (open Keychain Access to see it). A copy is at `~/.kanna/secrets/kanna-update-ed25519.key`, mode 0600, beside the other release keys, and `generate_keys --account kanna -f FILE` restores it on another Mac. It never goes in the repo, in a log or in a test.
 - **Public half:** `KANNA_UPDATE_PUBLIC_KEY` in `scripts/env.sh`, the same for both channels.
 - **Lost key:** a new key can ship inside a release signed with the same Developer ID, since Sparkle accepts a change of either one, never both.
 - **Tests** generate a throwaway key and never touch the keychain item.

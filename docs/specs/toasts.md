@@ -56,6 +56,8 @@ sequenceDiagram
 - **With no target app** ([app link §3](app-link.md#3-rules)) a toast is held, at most 8 and for 60 seconds, and sent when one says hello. Older ones are dropped. A toast goes to the target app only, so `kanna toast` on a machine shows on that machine.
 - **The app link message** is the notice `toast {id, title, detail, pane, task, about}` ([app link](app-link.md#2-messages)); `detail`, `pane`, `task` and `about` may be null. The app replies nothing.
 
+**The app's own toasts** skip the daemon: `showLocal` shows one in this app, with an ID that replaces any toast of that ID, and it may carry a warning line, a link, a progress bar and buttons. A toast with buttons stays until they're pressed: a click on its body does nothing and it has no ×. The updater's are the first ([auto update](auto-update.md#2-what-you-see)); `debug.toasts` presses a button with `click: ID, action: TITLE`.
+
 **The crash banner** is a toast too: `sticky` (it never fades) with a `record` it opens ([crashes](crashes.md#4-surface)).
 
 ## The CLI
