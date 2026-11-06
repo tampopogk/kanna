@@ -80,7 +80,7 @@ A `quiz` notice says when a round is in or the writer's state changed, and the p
 | **Slipping** | Asked before, moved 10 or more and mastery below 50, the list under the map |
 | **Tile size** | Lines in the subsystem's files at main, specs included; Other counts code only |
 
-- **Worked out by the daemon** in `quiz_map.rs`, off its main thread, at each request: mastery from `quiz_answers`, lines from main's tree and moved from one `git log` over the window, both read when asked (about a tenth of a second on this repo). They aren't samples: a sample's value would depend on the map, so a new map would re-sample 30 days of commits, and a repo with no catch-up yet would have no tiles to draw. Nothing but today's numbers is needed.
+- **Worked out by the daemon** in `quiz_map.rs`, off its main thread, at each request: mastery from `quiz_answers`, lines from main's tree and moved from one `git log` over the window, both read when asked (half a second to a second on this repo). They aren't samples: a sample's value would depend on the map, so a new map would re-sample 30 days of commits, and a repo with no catch-up yet would have no tiles to draw. Nothing but today's numbers is needed.
 - **The phone only draws them,** laying tiles out by size, so a change of formula needs no app update.
 - **Mac rounds count** towards the map, from the same table, and only the phone shows it. The Mac's round still [says only this round](quiz.md#2-rules), and the skill keeps *No score to protect*.
 

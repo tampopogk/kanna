@@ -30,6 +30,7 @@ mod quiz_map;
 mod quiz_round;
 mod quiz_writer;
 mod replica;
+mod reports;
 mod stamped;
 mod stats;
 mod quality;
@@ -114,6 +115,8 @@ pub enum Event {
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
+    Reported { terminal: String, serial: u64, kept: reports::Kept },
+    Unreported { terminal: String },
     Stacks { seen: Vec<stacks::Seen> },
     Heads,
     Turn { token: u64 },
@@ -151,6 +154,7 @@ impl Event {
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
+            Event::Reported { .. } | Event::Unreported { .. } => "loop.reported",
             Event::Stacks { .. } | Event::Heads | Event::Turn { .. } | Event::Merged { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::Log { .. } => "loop.log",
@@ -503,7 +507,8 @@ fn run() -> Result<(), String> {
             return Err(format!("can't take the terminals back from the keeper: {error}"));
         }
     };
-    let restored = terminals.restore(adopted);
+    let restored = terminals.restore(adopted, reports::load(&db));
+    reports::keep_only(&db, &terminals.running());
     if restored != Restored::default() {
         log!(
             "kanna-daemon: took back {} terminal(s) from the keeper ({} the disk didn't know), {} that had exited; {} gone",
@@ -808,6 +813,12 @@ fn run() -> Result<(), String> {
                     runs.status(&pane, ended);
                 }
             }
+            Event::Reported { terminal, serial, kept } => {
+                if terminals.current(&terminal, serial) {
+                    reports::save(&db, &[(terminal, Some(kept))]);
+                }
+            }
+            Event::Unreported { terminal } => reports::save(&db, &[(terminal, None)]),
             Event::TooOld { terminal, serial, why } => {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     let refused = tasks.too_old(&pane, &why).or_else(|| runs.too_old(&pane, &why).then(|| "a run's stage".to_string()));
@@ -944,6 +955,7 @@ fn run() -> Result<(), String> {
     layout.flush();
     layout.save_now();
     terminals.shutdown();
+    reports::save(&db, &detector.kept());
     if let Some(machines) = &machines {
         machines.stop();
     }
