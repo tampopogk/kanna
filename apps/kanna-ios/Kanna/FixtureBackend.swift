@@ -140,13 +140,19 @@ final class FixtureBackend: Backend {
         "Review build output": [Said(at: Date().timeIntervalSince1970 - 2400, asking: true, text: "Keep the old colours as a fallback, or drop them and restyle the crash page here too?")],
     ]
 
+    private var spoken: [String: [Item]] = [:]
+
+    private func speak(_ task: String, _ kind: String, _ doc: Doc) {
+        spoken[task, default: []].append(Item(seq: (spoken[task]?.count ?? 0) + 1, at: Date().timeIntervalSince1970, kind: kind, doc: doc))
+    }
+
     func tasks(repo: String) async throws -> ShelfPage {
         repo == "kanna" ? shelf : ShelfPage(tasks: [], desks: shelf.desks, done: [])
     }
 
     func task(_ id: String) async throws -> TaskPage {
         guard let task = shelf.tasks.first(where: { $0.id == id }) else { throw Refused(code: "not_found", message: "no task \(id)") }
-        return TaskPage(task: task, thread: threads[id] ?? [], said: words[id] ?? [])
+        return TaskPage(task: task, thread: threads[id] ?? [], said: words[id] ?? [], items: spoken[id] ?? [])
     }
 
     private func changed() {
@@ -172,9 +178,20 @@ final class FixtureBackend: Backend {
             if let index = threads[task]?.lastIndex(where: { $0.you }) { threads[task]?[index].read = Date().timeIntervalSince1970 }
             changed()
             await wait(1)
-            words[task, default: []].append(Said(at: Date().timeIntervalSince1970, asking: false, text: "Got it. Carrying on with that."))
+            if text.contains("show me") {
+                speak(task, "say", Doc(text: "It's **here**, in `build_view.swift`:"))
+                speak(task, "show", Doc(file: "apps/build_view.swift", line: 12, commit: "abcdef1234", hot: [13, 13], lines: ["let old = palette.legacy", "let new = palette.status"]))
+                speak(task, "ask", Doc(text: "Which do I keep?", choices: [Choice(label: "The new one", why: "Restyle the crash page"), Choice(label: "Both")]))
+            } else {
+                words[task, default: []].append(Said(at: Date().timeIntervalSince1970, asking: false, text: "Got it. Carrying on with that."))
+            }
             changed()
         }
+    }
+
+    func choose(task: String, id: String, seq: Int, choice: String) async throws {
+        if let index = spoken[task]?.firstIndex(where: { $0.seq == seq }) { spoken[task]?[index].doc.chosen = choice }
+        changed()
     }
 
     func pick(task: String, desk: String, room: String?) async throws {

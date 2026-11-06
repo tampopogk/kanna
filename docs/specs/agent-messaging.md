@@ -30,7 +30,7 @@ flowchart LR
 - **The user starts them:** the skills tell agents to send a message only when the user asks. A task that's done or needs you says so in its own chat, and the Desk view and strip show it; the planner never asks a task to report back or sends tasks to talk to each other.
 - **Answering:** a task answers a message once, briefly, with another `kanna task send`, since the sender can't see its chat, and a message from `user` in the chat. The planner tells you in its chat what a task's message means for you, without a back-and-forth with the task. Nobody waits on an answer: it comes as a turn of its own.
 - **A done task takes none:** `kanna task send` says it's done.
-- **From the phone:** a message to the planner is from `phone`, and a task's from `user` ([phone chat](mobile-chat.md#3-the-conversation)). Both carry the recipient's permission class, as yours do.
+- **From the phone:** a message to the planner or a task is from `phone`, and it answers with `kanna phone` ([phone chat](mobile-chat.md#3-the-conversation), [Shelf §3](mobile-shelf.md#3-what-a-task-says)). Both carry the recipient's permission class, as yours do.
 
 ## 2. Delivery
 

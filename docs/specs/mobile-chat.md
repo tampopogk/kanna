@@ -49,10 +49,10 @@ A repo has one planner machine for the phone. It holds the chat, the quiz and St
 |---|---|---|
 | `kanna phone say TEXT` | A message | Markdown: paragraphs, lists, bold, inline code |
 | `kanna phone ask TEXT --choice 'LABEL\|WHY'…` | A question with choices | Returns at once. The tap arrives as a new message; typing in the box answers it too |
-| `kanna phone show FILE:LINE[-LAST] [--commit C] [--hot N-M]` | A code card | Lines read from `main` unless `--commit` says otherwise, kept with the item, at most 200 |
+| `kanna phone show FILE:LINE[-LAST] [--commit C] [--hot N-M]` | A code card | Lines read from your `HEAD` unless `--commit` says otherwise, kept with the item, at most 200 |
 | `kanna phone history [--last N]` | Nothing | The phone conversation so far, for a resumed planner |
 
-- **Only the repo's planner** may run them: from any other terminal they're refused (`not_planner`). Task agents leave the planner a message; they have no way into this chat. This is the [same kind of check as `by`](agent-messaging.md#2-delivery), a rule for agents and not a security boundary.
+- **Only the repo's planner and its tasks' agents** may run them: from any other terminal they're refused (`not_an_agent`). A task's go to [its own page](mobile-shelf.md#3-what-a-task-says), not this chat. This is the [same kind of check as `by`](agent-messaging.md#2-delivery), a rule for agents and not a security boundary.
 - **The code card keeps its text and commit,** so it stays true after main moves and reads offline. The phone highlights it with `kanna-syntax`, wraps at spaces with a hanging indent, and tapping a line sends a question about it (*Ask about line 161*), which arrives with `file:line@commit`. The full screen is the same lines, larger, with Wrap.
 - **A round card** comes from `kanna quiz ahead`, not from `kanna phone` ([quiz §1](mobile-quiz.md#1-rounds-written-ahead)).
 

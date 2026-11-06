@@ -949,6 +949,10 @@ impl Db {
         rows.collect()
     }
 
+    pub fn phone_asked(&self, thread: &str) -> rusqlite::Result<Option<f64>> {
+        self.conn.query_row("select at from phone_chat where repo = ?1 and seq = (select max(seq) from phone_chat where repo = ?1) and kind = 'ask' and json_extract(doc, '$.chosen') is null", [thread], |r| r.get(0)).optional()
+    }
+
     pub fn phone_item(&self, repo: &str, seq: i64) -> rusqlite::Result<Option<PhoneItem>> {
         self.conn.query_row("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and seq = ?2", params![repo, seq], Self::phone_item_row).optional()
     }

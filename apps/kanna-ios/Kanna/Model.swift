@@ -48,6 +48,7 @@ struct Snippet: Identifiable {
     let file: String
     let lines: [CodeLine]
     let commit: String
+    var task: String?
     var first: Int { lines.first?.n ?? 0 }
     var base: String { file.components(separatedBy: "/").last ?? file }
     var folder: String { String(file.dropLast(base.count)) }
@@ -85,6 +86,7 @@ struct ChatItem: Identifiable {
     let id: String
     var kind: ChatKind
     var seq = 0
+    var task: String?
 }
 
 enum Status {
@@ -112,7 +114,7 @@ struct Message: Identifiable {
     var you = false
     var receipt: Receipt = .none
     var at = 0.0
-    var said = false
+    var said: [ChatItem] = []
 }
 
 struct WorkItem: Identifiable {

@@ -11,15 +11,15 @@ const MAX_LINES: u64 = 200;
 pub const COMMAND: Command = Command {
     name: "phone",
     group: "Information",
-    summary: "Talk to the phone: as the repo's planner, answer the user there; or show the code that pairs a phone.",
+    summary: "Talk to the phone: as the repo's planner or a task's agent, answer the user there; or show the code that pairs a phone.",
     usage: "kanna phone say TEXT\n       kanna phone ask TEXT --choice 'LABEL|WHY' [--choice ...]\n       kanna phone show FILE:LINE[-LAST] [--commit C] [--hot N-M]\n       kanna phone history [--last N]\n       kanna phone pair",
     options: &[
         ("--choice 'LABEL|WHY'", "ask: one choice, repeated; a tap arrives as a new message, and typing answers too."),
-        ("--commit C", "show: read the lines from this commit (default: main)."),
+        ("--commit C", "show: read the lines from this commit (default: your HEAD)."),
         ("--hot N-M", "show: the lines to mark."),
         ("--last N", "history: only the last N items."),
     ],
-    notes: "say, ask, show and history are for the repo's planner, run in its terminal: any other is refused (not_planner). A message starting [message from phone] came from the user on their phone, who can't see the terminal. ask returns at once. show keeps the lines and their commit with the message, so it stays true after main moves. history is the conversation so far, for a planner that resumed. pair shows a QR for the phone to scan; adding it takes a yes in Kanna.app.",
+    notes: "say, ask, show and history are for the repo's planner and its tasks' agents, run in their own terminal: any other is refused (not_an_agent). The planner's go to the phone's chat, a task's to that task's page. A message starting [message from phone] came from the user on their phone, who can't see the terminal. ask returns at once. show keeps the lines and their commit with the message, so it stays true after main moves. history is the conversation so far, for an agent that resumed. pair shows a QR for the phone to scan; adding it takes a yes in Kanna.app.",
     examples: &[
         ("kanna phone say \"Three merges on main; nothing needs you.\"", "Answer on the phone."),
         ("kanna phone ask \"Merge it?\" --choice 'Merge|tests pass' --choice 'Wait'", "Ask with choices."),
@@ -124,7 +124,7 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
             if end < line || end - line >= MAX_LINES {
                 return Err(usage("phone", &format!("a code card holds 1 to {MAX_LINES} lines")));
             }
-            out["commit"] = json!(commit.unwrap_or_else(|| "main".into()));
+            out["commit"] = json!(commit.or_else(|| git_line(".", &["rev-parse", "HEAD"])).unwrap_or_else(|| "main".into()));
             out["file"] = json!(crate::commands::quiz::in_repo(&file));
             out["line"] = json!(line);
             out["end"] = json!(end);

@@ -25,7 +25,7 @@ Pictures are the prototype's, on fixtures, in dark mode; `screenshots/` there co
 ## 1. Rules
 
 - **One agent.** The chat is with the repo's planner. Everything risky goes through it: it can say no, and the Mac's terminal shows the whole exchange.
-- **No noise.** Only what the planner sends with `kanna phone` shows in the chat.
+- **No noise.** Only what the planner sends with `kanna phone` shows in the chat, and a task's page shows what it sends the same way, or its last words.
 - **One repo at a time.** Every tab belongs to the repo named at the top.
 - **The phone runs nothing.** It's a device in your peer log with a narrow role: it holds no tasks and has no terminals.
 - **What's new shows when you open it.** No push notifications in the first version.

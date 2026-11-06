@@ -216,11 +216,14 @@ struct ThreadRow: View {
     var message: Message
 
     var body: some View {
-        if message.said {
+        if !message.said.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Label2("It said, \(message.time)")
-                Card { Text(verbatim: message.text).font(.system(size: 15)) }
-                    .accessibilityIdentifier("last-words")
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(message.said) { ChatRow(item: $0) }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("last-words")
             }
         } else if message.you {
             VStack(alignment: .trailing, spacing: 2) {

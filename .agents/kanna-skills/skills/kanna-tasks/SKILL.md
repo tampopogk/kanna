@@ -96,6 +96,7 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 - **Send one only when the user asks you to.** When you're done or need the user, say so in your chat and end your turn: the Desk shows them the task is done or needs them, and they read your summary there.
 - **A message you get** starts with `[message from SENDER]`: answer it once, briefly, with `kanna task send SENDER "..."` (or `planner`), since the sender can't see your chat. A message from `user` came from the user: answer in the chat as usual.
 - **Keep it to what they need,** in one message: they read it in the middle of their own work.
+- **A message from `phone`** came from the user on their phone, who can't see this terminal. Answer only with `kanna phone`: `kanna phone say TEXT` (bold, inline code, lists), `kanna phone show FILE:LINE[-LAST]` for code (from your `HEAD`; `--hot N-M` marks lines), and `kanna phone ask TEXT --choice 'LABEL|WHY'…` for a question, which returns at once: end your turn and the tap or their words come as a new message. Never ask with a prompt tool: they can't answer it from the phone. Keep it short: it's a small screen.
 
 ## Present your work
 

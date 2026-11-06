@@ -130,7 +130,19 @@ impl Tasks {
     pub(super) fn keep_last_words(self: &Rc<Self>, pane: &str) {
         let wanted = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone());
         let Some(entry) = wanted.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned()) else { return };
-        self.read_last_words(entry);
+        if !self.spoke.borrow_mut().remove(&entry.id) {
+            self.read_last_words(entry);
+        }
+    }
+
+    pub fn spoke(&self, id: &str) {
+        self.spoke.borrow_mut().insert(id.to_string());
+        self.revised();
+    }
+
+    fn asks_the_phone(&self, id: &str) -> bool {
+        let Ok(Some(asked)) = self.db.phone_asked(id) else { return false };
+        !self.db.messages(Some(id)).unwrap_or_default().iter().any(|m| m.sender == PHONE && m.recipient == id && m.at > asked)
     }
 
     fn read_last_words(self: &Rc<Self>, entry: Entry) {
@@ -190,7 +202,7 @@ impl Tasks {
     }
 
     pub fn fill_last_words(self: &Rc<Self>, task: &str) {
-        if !self.db.said(task).is_ok_and(|said| said.is_empty()) {
+        if !self.db.said(task).is_ok_and(|said| said.is_empty()) || !self.db.phone_items(task, 0).is_ok_and(|items| items.is_empty()) {
             return;
         }
         let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == task && e.folder.is_some()) else { return };
@@ -239,6 +251,7 @@ impl Tasks {
 
     fn item(&self, entry: &Entry, pane: Option<&str>, desk: Option<String>) -> Value {
         let (status, since) = self.status_of(entry, pane);
+        let status = if !["working", "needs", "waiting", "blocked"].contains(&status.as_str()) && self.asks_the_phone(&entry.id) { "needs".to_string() } else { status };
         json!({
             "id": entry.id,
             "name": entry.name.clone().unwrap_or_else(|| self.short(&entry.id)),
@@ -316,7 +329,8 @@ impl Tasks {
         let mut thread: Vec<Value> = notes.chain(told.iter().map(|m| json!({ "at": num(m.at), "from": from(&m.sender), "you": you(&m.sender), "text": m.text, "read": m.delivered.map(num) }))).collect();
         thread.sort_by(|a, b| a["at"].as_f64().partial_cmp(&b["at"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
         let said: Vec<Value> = self.db.said(&id).unwrap_or_default().iter().map(|w| json!({ "at": num(w.at), "asking": w.asking, "text": w.text })).collect();
-        Ok(Map::from_iter([("task".to_string(), item), ("thread".to_string(), Value::Array(thread)), ("said".to_string(), Value::Array(said))]))
+        let items: Vec<Value> = self.db.phone_items(&id, 0).unwrap_or_default().iter().map(|i| json!({ "seq": i.seq, "at": num(i.at), "kind": i.kind, "doc": i.doc })).collect();
+        Ok(Map::from_iter([("task".to_string(), item), ("thread".to_string(), Value::Array(thread)), ("said".to_string(), Value::Array(said)), ("items".to_string(), Value::Array(items))]))
     }
 
     pub fn task_record(&self, task: &str) -> Option<Map> {
@@ -328,7 +342,7 @@ impl Tasks {
         drop(replica);
         let mut item = self.shelf_records(&project, &shown).into_iter().find(|t| t["id"] == task)?;
         item["message"] = opt(message.as_deref());
-        Some(Map::from_iter([("task".to_string(), item), ("thread".to_string(), json!([])), ("said".to_string(), json!([]))]))
+        Some(Map::from_iter([("task".to_string(), item), ("thread".to_string(), json!([])), ("said".to_string(), json!([])), ("items".to_string(), json!([]))]))
     }
 }
 
