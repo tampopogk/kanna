@@ -12,8 +12,17 @@ final class Lookup: @unchecked Sendable {
     private var browser: NWBrowser?
     private var connections: [NWConnection] = []
     private let queue = DispatchQueue(label: "kanna.lookup")
+    private var giveUp: (() -> Void)?
 
     func find(_ instance: String, seconds: Double) async -> String? {
+        await withTaskCancellationHandler {
+            await look(for: instance, seconds: seconds)
+        } onCancel: {
+            queue.async { [self] in giveUp?() }
+        }
+    }
+
+    private func look(for instance: String, seconds: Double) async -> String? {
         await withCheckedContinuation { continuation in
             let browser = NWBrowser(for: .bonjour(type: "_kanna-phone._udp", domain: "local."), using: NWParameters())
             self.browser = browser
@@ -25,6 +34,10 @@ final class Lookup: @unchecked Sendable {
                 self?.browser?.cancel()
                 self?.connections.forEach { $0.cancel() }
                 continuation.resume(returning: address)
+            }
+            queue.async { [weak self] in
+                if Task.isCancelled { finish(nil) }
+                self?.giveUp = { finish(nil) }
             }
             browser.browseResultsChangedHandler = { [weak self] results, _ in
                 guard let self, self.connections.isEmpty, let match = results.first(where: {

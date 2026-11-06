@@ -1,6 +1,6 @@
 # Phone: Machines, Stats and the Planner's Machine
 
-**Status:** built on the LAN ([slice 3](mobile-app.md#9-build-order)) · **Tested:** e2e `phone_machines` (two daemons, the mock as claude), `tasks`/`phone.rs` unit tests, `FlowTests` on the fixture backend, `DeviceTests.testMachinesAndStats` on a real iPhone · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [chat §1](mobile-chat.md#1-the-planner-machine), [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), [Stats](stats.md)
+**Status:** built on the LAN ([slice 3](mobile-app.md#9-build-order)) · **Tested:** e2e `phone_machines` (two daemons, the mock as claude), `tasks`/`phone.rs` unit tests, `FlowTests` on the fixture backend; `DeviceTests.testMachinesAndStats` is written and has not yet run on a real iPhone · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [chat §1](mobile-chat.md#1-the-planner-machine), [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), [Stats](stats.md)
 
 Several machines read as one repo on the phone. Each daemon says what it has clones of in the replicated Shelf, so `hello` answers at once from any machine, including for machines that are asleep. The link goes to one machine at a time, and it moves to whichever machine runs the current repo's planner.
 
