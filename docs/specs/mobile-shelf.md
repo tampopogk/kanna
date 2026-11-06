@@ -18,7 +18,7 @@ The phone shows the repo's tasks wherever they run, and does three things with t
 
 - **`tasks.list {repo}`** to the planner machine: the Shelf's [replicated records](machine-tasks.md#1-the-replicated-shelf) hold every task's name, state, owner and claim. Live status isn't in them, since each change would be a write that's [never compacted](machine-tasks.md#1-the-replicated-shelf), so the daemon asks each owner with [`machine call`](machines.md#5-the-app-link-over-the-network) and merges the replies. A machine it can't reach shows its tasks as last known, from the records, with `unreachable`. The reply also holds `desks` (§2) and the names of the five tasks `done` last.
 - **`task.read {task}`** answered by the machine that runs the task, through the planner machine: the first message, the messages in and out, last words, what it waits for, its branch.
-- **`task.send {task, id, text}`** leaves a message from `user`, since you wrote it, through [`kanna task send`'s path](agent-messaging.md#1-sending): it wakes a stopped Shelf task, and waits on a Desk task you stopped. `id` is chosen on the phone, so sending twice delivers once. The thread shows the same receipts as the chat.
+- **`task.send {task, id, text}`** leaves a message from `phone`, as the chat's do, so the task knows you can't see its terminal, through [`kanna task send`'s path](agent-messaging.md#1-sending): it wakes a stopped Shelf task, and waits on a Desk task you stopped. `id` is chosen on the phone, so sending twice delivers once. The thread shows the same receipts as the chat.
 - **Fresh while you look:** the daemon sends `tasks {repo}` within a second of a change here, and the phone also lists again every 5 s while the Shelf tab shows, since another machine's status has no notice.
 - **Pick shows only for Shelf tasks.** A task already on a Desk can't be picked.
 
@@ -58,7 +58,18 @@ sequenceDiagram
 - **Desk news:** a pick from the phone tells the planner, [as any change it didn't make](desk-news.md).
 - **What stays the app's:** the active task, the order and which window shows what ([app-desk §2](app-desk.md#2-rules)).
 
-## 3. Last words
+## 3. What a task says
+
+A task answers the phone the way the planner does, and what it writes anywhere else reaches you as last words.
+
+- **`kanna phone say`, `ask` and `show`** from a task's terminal go on that task's page, as the [chat's commands](mobile-chat.md#2-what-the-planner-sends) do: formatted text, tappable choices, code cards. They're rows of `phone_chat` under the task's ID, and `task.read` carries them as `items`, so they read through the planner machine like everything else on the page. `show` reads the agent's own `HEAD`.
+- **A message from the phone arrives as `[message from phone]`,** and the `kanna-tasks` skill says what it means: you can't see the terminal, so answer with `kanna phone`, and ask with `kanna phone ask`, never a prompt tool, which would hold your answer.
+- **A choice** is `task.choose {task, id, seq, choice}`: the task's machine keeps it on the question, then it's a message, `I chose: LABEL`. Typing answers too, and the choices go.
+- **An open question is *needs you*:** the newest item is an `ask` with no choice and no message from the phone since, and the Shelf says so though the agent's turn is over.
+- **A turn that used `kanna phone` adds no last words,** so nothing shows twice. A task nobody messaged from the phone still shows its replies below, so nothing depends on an agent remembering.
+- **Known gap:** a prompt tool's question on a running task holds any message until it's answered on the Mac ([delivery](agent-messaging.md#2-delivery)). The phone shows it as last words, plain text.
+
+### Last words
 
 *Needs you* is no use without what the agent said, and that's in its terminal, not its messages. The daemon keeps the final text of each of a task's turns, and the question if it's asking one, so the phone reads a task's replies as a conversation.
 
@@ -75,7 +86,7 @@ sequenceDiagram
 - **Kept** in `said` in `kanna.db`: who, when, whether it's a question, text, the last 8 KB. One row per reply, the newest 100 per task; the same text again is the same reply, since a turn is read twice, so two identical replies in a row show as one. `task.read` sends them oldest first as `said`.
 - **For a planner too (not built):** the row is keyed by `who`, so a planner's can sit beside the tasks' and *Needs you at studio* can have words.
 - **Best effort:** a reader that fails (a new session format, say) logs it and adds no row. The phone then shows the status alone. e2e `real_agent_last_words` runs real claude and codex against the mock model, so a format change fails a test.
-- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone shows every reply in the thread, by when it was said, under the first message, which stays at the top: sending a message hides nothing.
+- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone formats its bold and inline code, and shows every reply in the thread, by when it was said, under the first message, which stays at the top: sending a message hides nothing.
 
 ## 4. A message to a task that hasn't started
 
@@ -95,6 +106,6 @@ The planner still can't change a first message; a task whose whole brief is wron
 - **Greying out closed Macs** (the stopgap for D4): it makes Pick useless when you most want it.
 - **Moving a Desk's order and active task to the daemon:** those are [how one app presents its work](app-desk.md#5-rejected), and the phone doesn't show them.
 - **Last words from the screen:** the daemon has it, but a TUI's screen is chrome, wrapped lines and spinners.
-- **Last words from `kanna task send`:** a task would have to remember to report, which [agents are told not to](agent-messaging.md#1-sending).
+- **`kanna phone` as the only way out of a task:** a task would have to remember, so last words stay underneath it.
 - **Starting a task from the phone:** ask the planner, who can check what it waits for.
 - **Delivering a note at the first turn's end,** as today: the agent does the whole job before it reads *don't forget X*.

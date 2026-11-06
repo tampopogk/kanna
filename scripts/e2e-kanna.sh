@@ -5721,7 +5721,7 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
     in_repo task stop $t >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
     check wait_for 15 eval '[[ "$(of $t 2)" == stopped:* ]]' || { echo "shelf_runners: $t didn't stop"; shelf; return 1; }
   done
-  in_repo task send $(tid 11) "your turn, newer" >/dev/null && in_repo task send $(tid 9) "your turn, older" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  (cd "$repo" && KANNA_TERMINAL="$(of $(tid 9) 3)" kanna task send $(tid 11) "your turn, newer" >/dev/null && KANNA_TERMINAL="$(of $(tid 11) 3)" kanna task send $(tid 9) "your turn, older" >/dev/null) || { echo "shelf_runners line $LINENO"; return 1; }
   runners 1
   seen="" most=0
   for _ in $(seq 900); do
@@ -5759,6 +5759,35 @@ print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"]
   local wakes; wakes="$(of $(tid 14) 3)"
   check wait_for 30 eval '[[ "$(of $(tid 14) 2)" == stopped:finished ]]' || { echo "shelf_runners: the task woken by its background command didn't stop"; shelf; kanna read "$wakes"; return 1; }
   shows "$wakes" WOKE_DONE || { echo "shelf_runners: the task that worked again within the grace was stopped mid-turn"; kanna read "$wakes"; return 1; }
+}
+
+scenario message_past_the_limit M4
+message_past_the_limit() {
+  start_daemon && start_app || { echo "message_past_the_limit line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "message_past_the_limit line $LINENO"; return 1; }
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  repo="$(cd "$repo" && pwd -P)"
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
+  in_repo task new "Short" "work 1" --agent "$fake/codex" >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  local short; short="$(tid 1)"
+  check wait_for 15 eval '[[ "$(task_state $short)" == stopped* ]]' || { echo "message_past_the_limit: the task didn't run and stop"; return 1; }
+  in_repo task new "Long" "work 30" --agent "$fake/codex" >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  local long; long="$(tid 2)"
+  check wait_for 15 eval '[[ "$(task_state $long)" == running* ]]' || { echo "message_past_the_limit: the runner didn't take the long task"; return 1; }
+  local term; term="$(task_state $long | cut -d' ' -f2)"
+  (cd "$repo" && KANNA_TERMINAL="$term" kanna task send "$short" "from a task") >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  sleep 4
+  check test "$(task_state $short | cut -d' ' -f1)" == stopped || { echo "message_past_the_limit: a task's message passed the limit"; return 1; }
+  in_repo task send "$short" "from you" >/dev/null || { echo "message_past_the_limit line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(task_state $short)" == running* ]]' || { echo "message_past_the_limit: what you typed waited for a runner"; task_state "$short"; return 1; }
+  check test "$(task_state $long | cut -d' ' -f1)" == running || { echo "message_past_the_limit: the long task stopped"; return 1; }
+  term="$(task_state $short | cut -d' ' -f2)"
+  check wait_for 15 shows "$term" "peer: \[message from user\] from you" || { echo "message_past_the_limit: the task didn't get it"; kanna read "$term"; return 1; }
 }
 
 scenario agent_messaging M4
@@ -6431,7 +6460,7 @@ print([t["pane"] for t in json.load(sys.stdin)["desk"] if t["id"].startswith(sys
   grep -q '"notice":"tasks"' "$KANNA_STATE_DIR/notices" || { echo "phone_shelf: no tasks notice"; return 1; }
   check test "$(shelf "$one" desk)" == "$me" || { echo "phone_shelf: the pick isn't on $me's Desk: $(phone tasks repo)"; return 1; }
   local agent; agent="$(pane_of "$one")"
-  check wait_for 10 unwrapped "$agent" "[message from user] mind the gap" || { echo "phone_shelf: the note didn't go with the first message"; kanna read "$agent"; return 1; }
+  check wait_for 10 unwrapped "$agent" "[message from phone] mind the gap" || { echo "phone_shelf: the note didn't go with the first message"; kanna read "$agent"; return 1; }
   unwrapped "$agent" "First words of the brief" || { echo "phone_shelf: the first message changed"; kanna read "$agent"; return 1; }
   check test "$(kanna workspace list --all --json | python3 -c 'import json, sys, os
 print([w["where"] for w in json.load(sys.stdin)["workspaces"] if w.get("task") and w["task"].startswith(sys.argv[1])][0])' "$one")" == "{'desk': 'mac'}" || { echo "phone_shelf: no claim for mac"; kanna workspace list --all; return 1; }
@@ -6445,8 +6474,23 @@ print([r.get("claim") for r in json.load(sys.stdin)["records"] if r["task"].star
   check test "$(phone task "$one" | field said.1.text | head -1)" == "Which way?" && check test "$(phone task "$one" | field said.0.text)" == "All done, nothing left" || { echo "phone_shelf: asked $(phone task "$one")"; return 1; }
   check wait_for 8 eval '[[ "$(shelf "$one" status)" == idle ]]' || { echo "phone_shelf: status $(shelf "$one" status)"; return 1; }
   phone tell "$one" n2 "Keep it" >/dev/null || return 1
-  check wait_for 15 shows "$agent" "peer: \[message from user\] Keep it" || { echo "phone_shelf: the message didn't reach the agent"; kanna read "$agent"; return 1; }
+  check wait_for 15 shows "$agent" "peer: \[message from phone\] Keep it" || { echo "phone_shelf: the message didn't reach the agent"; kanna read "$agent"; return 1; }
   check wait_for 5 eval '[[ "$(phone task "$one" | field thread.1.read)" != None ]]' || { echo "phone_shelf: no receipt: $(phone task "$one")"; return 1; }
+  check wait_for 8 eval '[[ "$(shelf "$one" status)" == idle ]]' || { echo "phone_shelf: status $(shelf "$one" status)"; return 1; }
+  local spoke; spoke="$(phone task "$one" | field said)"
+  (cd "$phone_repo" && printf 'one\ntwo\n' >code.txt && git add code.txt && git -c user.email=e@e -c user.name=e commit -qm code) || return 1
+  phone tell "$one" n3 "mock: run $bin/kanna phone say Done, see below" >/dev/null || return 1
+  check wait_for 15 eval '[[ "$(phone task "$one" | field items.0.doc.text)" == "Done, see below" ]]' || { echo "phone_shelf: the task's say didn't reach its page: $(phone task "$one" | cut -c1-500)"; kanna read "$agent"; return 1; }
+  check wait_for 5 eval '[[ "$(shelf "$one" status)" == idle ]]' && sleep 3
+  check test "$(phone task "$one" | field said)" == "$spoke" || { echo "phone_shelf: a turn that spoke on the phone also showed its session text: $(phone task "$one" | field said)"; return 1; }
+  test -z "$(phone read repo | python3 -c 'import json, sys; print([i for i in json.load(sys.stdin)["items"] if "Done, see below" in str(i)] or "")')" || { echo "phone_shelf: a task's say reached the planner's chat"; return 1; }
+  phone tell "$one" n4 "mock: run $bin/kanna phone ask Which? --choice Left --choice Right" >/dev/null || return 1
+  check wait_for 15 eval '[[ "$(phone task "$one" | field items.1.doc.choices.0.label)" == Left ]]' || { echo "phone_shelf: no question: $(phone task "$one" | cut -c1-500)"; return 1; }
+  check wait_for 8 eval '[[ "$(shelf "$one" status)" == needs ]]' || { echo "phone_shelf: an open question isn't needs: $(shelf "$one" status)"; return 1; }
+  phone choosetask "$one" n5 2 Left | grep -q '"ok":true' || { echo "phone_shelf: the tap was refused: $(phone choosetask "$one" n5 2 Left)"; return 1; }
+  check wait_for 15 shows "$agent" "peer: \[message from phone\] I chose: Left" || { echo "phone_shelf: the tap didn't reach the task"; kanna read "$agent"; return 1; }
+  check test "$(phone task "$one" | field items.1.doc.chosen)" == Left || { echo "phone_shelf: the choice wasn't kept"; return 1; }
+  check wait_for 8 eval '[[ "$(shelf "$one" status)" == idle ]]' || { echo "phone_shelf: answered, status $(shelf "$one" status)"; return 1; }
   local two three four; two="$(task_of Two "b")" three="$(task_of Three "c")" four="$(task_of Four "d")"
   phone pick "$two" "$me" >/dev/null && phone pick "$three" "$me" >/dev/null || { echo "phone_shelf line $LINENO"; return 1; }
   local refused; refused="$(phone pick "$four" "$me")"
@@ -6480,7 +6524,7 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   check test "$seq" == 1 || { echo "phone_chat: a resend made a new item ($seq)"; phone read repo; return 1; }
   check test "$(kanna read "$planner" | grep -c "peer: \[message from phone\]")" == 1 || { echo "phone_chat: a resend delivered twice"; kanna read "$planner"; return 1; }
   local refused; refused="$(cd "$phone_repo" && kanna phone say nope 2>&1)" && { echo "phone_chat: a stranger spoke on the phone"; return 1; }
-  [[ "$refused" == *not_planner* ]] || { echo "phone_chat: refused with: $refused"; return 1; }
+  [[ "$refused" == *not_an_agent* ]] || { echo "phone_chat: refused with: $refused"; return 1; }
   phone send repo m2 "mock: run $me phone show src/a.txt:2-3 --hot 2-2" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   local card; card="$(phone wait repo show 20)" || { echo "phone_chat: no code card"; kanna read "$planner"; return 1; }
   check test "$(field doc.lines.1 <<<"$card")" == three && check test "$(field doc.file <<<"$card")" == src/a.txt || { echo "phone_chat: the card was $card"; return 1; }

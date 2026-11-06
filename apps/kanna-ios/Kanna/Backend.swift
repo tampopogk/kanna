@@ -105,6 +105,7 @@ struct TaskPage: Codable, Equatable {
     var task: ShelfTask
     var thread: [ThreadLine]
     var said: [Said]
+    var items: [Item]
 }
 
 enum Notice {
@@ -138,6 +139,7 @@ protocol Backend: AnyObject {
     func tasks(repo: String) async throws -> ShelfPage
     func task(_ id: String) async throws -> TaskPage
     func tell(task: String, id: String, text: String) async throws
+    func choose(task: String, id: String, seq: Int, choice: String) async throws
     func pick(task: String, desk: String, room: String?) async throws
     func close()
     func forget()

@@ -1,5 +1,8 @@
 Kanna includes code derived from the following projects.
 
+The macOS app also embeds Sparkle 2.10.1 (https://sparkle-project.org), MIT
+License, unmodified, as Contents/Frameworks/Sparkle.framework.
+
 ================================================================================
 kmux
 https://github.com/tampopogk/kmux

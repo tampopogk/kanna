@@ -303,9 +303,18 @@ final class Store {
             let time = Self.clock.string(from: Date(timeIntervalSince1970: line.at))
             return Message(id: "\(task.id)/\(index)", from: line.from, time: time, text: line.text, you: line.you, receipt: line.you ? Self.receipt(line, status) : .none, at: line.at)
         }
+        func reply(_ id: String, _ at: Double, _ said: [ChatItem]) {
+            let message = Message(id: id, from: task.name, time: Self.clock.string(from: Date(timeIntervalSince1970: at)), text: "", at: at, said: said)
+            thread.insert(message, at: thread.firstIndex { $0.at > at } ?? thread.count)
+        }
         for words in page?.said ?? [] {
-            let said = Message(id: "\(task.id)/said/\(words.at)", from: task.name, time: Self.clock.string(from: Date(timeIntervalSince1970: words.at)), text: words.text, at: words.at, said: true)
-            thread.insert(said, at: thread.firstIndex { $0.at > words.at } ?? thread.count)
+            let id = "\(task.id)/said/\(words.at)"
+            reply(id, words.at, [ChatItem(id: id, kind: .planner(Self.blocks(words.text)))])
+        }
+        for entry in page?.items ?? [] {
+            let id = "\(task.id)/item/\(entry.seq)"
+            let answered = page?.thread.contains { $0.you && $0.at > entry.at } == true
+            reply(id, entry.at, taskItems(entry, task: task.id, id: id, answered: answered))
         }
         let sent = Set((page?.thread ?? []).compactMap(\.client))
         for message in queued where message.task == task.id && !sent.contains(message.id) {
@@ -316,10 +325,25 @@ final class Store {
         return item
     }
 
+    private func taskItems(_ entry: Item, task: String, id: String, answered: Bool) -> [ChatItem] {
+        if entry.kind == "show" {
+            return [ChatItem(id: id, kind: .planner([.code(snippet(entry, repo: task, task: task))]), seq: entry.seq, task: task)]
+        }
+        var said = [ChatItem(id: id, kind: .planner(Self.blocks(entry.doc.text ?? "")), seq: entry.seq, task: task)]
+        if entry.kind == "ask" {
+            if let chosen = entry.doc.chosen {
+                said.append(ChatItem(id: "\(id)-chosen", kind: .answered(chosen), seq: entry.seq, task: task))
+            } else if !answered {
+                said.append(ChatItem(id: "\(id)-ask", kind: .ask((entry.doc.choices ?? []).map { AskOption(label: $0.label, why: $0.why ?? "") }), seq: entry.seq, task: task))
+            }
+        }
+        return said
+    }
+
     private static func receipt(_ line: ThreadLine, _ status: Status) -> Receipt {
         if line.read != nil { return .read }
         switch status {
-        case .waiting, .blocked: return .waitingStart
+        case .waiting, .blocked, .stopped, .ready, .stale: return .waitingStart
         case .working, .needs: return .waitingTurn
         default: return .sent
         }
@@ -387,7 +411,7 @@ final class Store {
         }
     }
 
-    private func snippet(_ item: Item, repo: String) -> Snippet {
+    private func snippet(_ item: Item, repo: String, task: String? = nil) -> Snippet {
         let key = "\(repo)/\(item.seq)"
         if let kept = snippets[key] { return kept }
         let lines = item.doc.lines ?? []
@@ -404,7 +428,7 @@ final class Store {
             coded.append(CodeLine(first + index, text, hot: hot.contains(first + index), spans: inside))
             offset += length + 1
         }
-        let made = Snippet(id: key, file: file, lines: coded, commit: String((item.doc.commit ?? "").prefix(7)))
+        let made = Snippet(id: key, file: file, lines: coded, commit: String((item.doc.commit ?? "").prefix(7)), task: task)
         snippets[key] = made
         return made
     }
@@ -593,7 +617,27 @@ final class Store {
         }
     }
 
+    private func chosen(_ task: String, seq: Int, _ choice: String?) {
+        if let index = pages[task]?.items.firstIndex(where: { $0.seq == seq }) {
+            pages[task]?.items[index].doc.chosen = choice
+            rebuild(currentID)
+        }
+    }
+
     func answerAsk(_ item: ChatItem, _ option: AskOption) {
+        if let task = item.task {
+            chosen(task, seq: item.seq, option.label)
+            Task {
+                do {
+                    try await backend.choose(task: task, id: UUID().uuidString, seq: item.seq, choice: option.label)
+                    await read(task)
+                } catch {
+                    chosen(task, seq: item.seq, nil)
+                    pickError = "Couldn't send that: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
         let repo = currentID
         if let index = items[repo]?.firstIndex(where: { $0.seq == item.seq }) {
             items[repo]?[index].doc.chosen = option.label

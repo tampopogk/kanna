@@ -344,5 +344,5 @@ fn a_phone_reads_and_steers_tasks_on_other_machines_through_its_planner_machine(
     set_runners(&here, 1);
     within(60, "studio to take vm's task over and run it", || started(&studio).contains(&moved));
     let pane = ask(&studio, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().find(|t| t["id"] == moved).and_then(|t| t["held"].as_str().map(String::from)).unwrap();
-    within(15, "a note granted away to go with the first message", || studio.kanna(&["read", &pane]).ok().replace(['\n', '\r'], "").contains("[message from user] and this"));
+    within(15, "a note granted away to go with the first message", || studio.kanna(&["read", &pane]).ok().replace(['\n', '\r'], "").contains("[message from phone] and this"));
 }

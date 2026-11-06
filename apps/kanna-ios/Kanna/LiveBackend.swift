@@ -247,6 +247,10 @@ final class LiveBackend: Backend {
         let _: Done = try await call("task.send", ["task": task, "id": id, "text": text])
     }
 
+    func choose(task: String, id: String, seq: Int, choice: String) async throws {
+        let _: Done = try await call("task.choose", ["task": task, "id": id, "seq": seq, "choice": choice])
+    }
+
     func pick(task: String, desk: String, room: String?) async throws {
         var args = ["task": task, "desk": desk]
         if let room { args["room"] = room }

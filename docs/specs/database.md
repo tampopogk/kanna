@@ -88,7 +88,7 @@ flowchart LR
 
 ## Quiz results
 
-`phone_chat` is the phone's conversation ([chat §5](mobile-chat.md#5-store-and-tests)). `said` is every task's replies, for the phone ([Shelf §3](mobile-shelf.md#3-last-words)). The phone will add `quiz_ready`, `quiz_map` and `quiz_notes` ([quiz](mobile-quiz.md)), all planned.
+`phone_chat` is the phone's conversation, by repo for the planner and by task ID for [a task's page](mobile-shelf.md#3-what-a-task-says) ([chat §5](mobile-chat.md#5-store-and-tests)). `said` is every task's replies, for the phone ([Shelf §3](mobile-shelf.md#3-last-words)). The phone will add `quiz_ready`, `quiz_map` and `quiz_notes` ([quiz](mobile-quiz.md)), all planned.
 
 **Built.** Every [quiz](quiz.md) round and answer is kept, so misses can come back in a later round and a round can cover what's new since the last one.
 

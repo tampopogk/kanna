@@ -91,6 +91,19 @@ final class FlowTests: XCTestCase {
         shot("answered-task")
     }
 
+    func testATaskAnswersThePhoneWithCodeAndChoices() {
+        shelf()
+        tap("Review build output")
+        see("It said,")
+        say("Where is it, show me")
+        see("Which do I keep?", 12)
+        see("build_view.swift")
+        tap("The new one")
+        see("You chose")
+        XCTAssertFalse(app.staticTexts["Both"].exists)
+        shot("task-answers")
+    }
+
     func testEveryReplyStaysInTheThread() {
         shelf()
         tap("Review build output")

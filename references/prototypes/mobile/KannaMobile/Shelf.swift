@@ -212,7 +212,12 @@ struct ThreadRow: View {
     var message: Message
 
     var body: some View {
-        if message.you {
+        if !message.said.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("\(message.from) · \(message.time)").font(.system(size: 12)).foregroundStyle(K.muted)
+                ForEach(message.said) { ChatRow(item: $0) }
+            }
+        } else if message.you {
             VStack(alignment: .trailing, spacing: 2) {
                 Text("you · \(message.time)").font(.system(size: 12)).foregroundStyle(K.muted)
                 MyBubble(text: message.text)

@@ -1,6 +1,6 @@
 use crate::db::{self, Change, Comment, Db, Message, Place, Row};
 use crate::desk_news::{self, Merge, News, What};
-use crate::messages::{self, Channel, Ready, PLANNER, USER};
+use crate::messages::{self, Channel, Ready, PHONE, PLANNER, USER};
 use crate::replica::{self, Grant, Hlc, Permit, Replica, Roster};
 use crate::project_import;
 use crate::stacks::{self, Base, Conflict, Made, Mark, Step, Where, KANNA};
@@ -963,6 +963,7 @@ pub struct Tasks {
     pub claimant: RefCell<String>,
     revision: Cell<u64>,
     statuses: RefCell<HashMap<String, (String, f64)>>,
+    spoke: RefCell<HashSet<String>>,
     replica: RefCell<Replica>,
     pub roster: RefCell<Option<Box<dyn Fn() -> Roster>>>,
     pub exchange: RefCell<Option<Box<dyn Fn(String, Value, u64)>>>,
@@ -1115,6 +1116,7 @@ impl Tasks {
             claimant: RefCell::new(MAC_APP.into()),
             revision: Cell::new(0),
             statuses: RefCell::default(),
+            spoke: RefCell::default(),
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
@@ -1239,7 +1241,7 @@ impl Tasks {
         self.entries.borrow().iter().cloned().chain(self.running.borrow().iter().map(|r| r.entry.clone())).collect()
     }
 
-    fn resolve(&self, reference: &str) -> Result<Option<String>, KmuxError> {
+    pub fn resolve(&self, reference: &str) -> Result<Option<String>, KmuxError> {
         if self.is_open(reference) {
             return Ok(Some(reference.to_string()));
         }
@@ -2392,8 +2394,8 @@ impl Tasks {
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
             let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
             for candidate in self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now) {
-                if busy >= slots {
-                    break;
+                if busy >= slots && !self.told_by_you(&candidate) {
+                    continue;
                 }
                 busy += 1;
                 match candidate {
@@ -2481,6 +2483,11 @@ impl Tasks {
         }
         waiting.sort_by(|a, b| a.0.cmp(&b.0));
         waiting.into_iter().map(|(_, candidate)| candidate).collect()
+    }
+
+    fn told_by_you(&self, candidate: &Candidate) -> bool {
+        let Candidate::Wake(entry) = candidate else { return false };
+        self.waiting.borrow().iter().any(|m| m.recipient == entry.id && (m.sender == USER || m.sender == PHONE))
     }
 
     fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
@@ -2858,6 +2865,7 @@ impl Tasks {
         let to = string(args, "to").ok_or_else(|| bad("say who to: a task, or planner"))?;
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| bad("say what: kanna task send TASK TEXT"))?;
         let (from, here) = self.sender(args);
+        let from = if args["from_phone"] == true { PHONE.to_string() } else { from };
         let here = here.or_else(|| string(args, "repo").map(String::from));
         let client = string(args, "id");
         if let Some(sent) = client.and_then(|client| self.sent_already(client)) {
@@ -5904,6 +5912,11 @@ mod tests {
             Candidate::Here(entry) => format!("start {}", entry.id),
             Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
         }).collect();
+        let wake = |id: &str| Candidate::Wake(task(id, 0.0, Some("/r/9")));
+        assert!(tasks.told_by_you(&wake("task-stopped-new")), "what you typed passes the runners' limit");
+        tasks.waiting.borrow_mut().push(Message { id: 5, recipient: "task-quiet".into(), repo: "/r".into(), sender: "task-other".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
+        assert!(!tasks.told_by_you(&wake("task-quiet")), "a task's message takes its turn");
+        assert!(!tasks.told_by_you(&Candidate::Here(task("task-new-old", 0.0, None))));
         assert_eq!(queue, ["wake task-stopped-old", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, and a running or quiet stopped task isn't in it");
         fs::remove_dir_all(&state).unwrap();
     }

@@ -145,6 +145,8 @@ impl Phone {
             "chat.read" => responder.reply(self.read(&args)),
             "chat.send" => responder.reply(self.send(&args)),
             "chat.choose" => responder.reply(self.choose(&args)),
+            "task.choose" => self.task_choose(&args, responder),
+            "here.choose" => responder.reply(self.choose_here(&args)),
             "say" | "ask" | "show" => responder.reply(self.answer(&request, &args)),
             "history" => responder.reply(self.history(&args)),
             "tasks.list" => self.tasks_list(&args, responder),
@@ -294,11 +296,17 @@ impl Phone {
     }
 
     fn answer(&self, kind: &str, args: &Value) -> Result<Map, KmuxError> {
-        let path = string(args, "repo").ok_or_else(|| bad("run it in the repo"))?;
-        let pane = string(args, "pane");
-        if !pane.is_some_and(|pane| self.tasks.is_planner(path, pane)) {
-            return Err(KmuxError::new("not_planner", "only this repo's planner talks to the phone: leave it a message with kanna task send planner"));
-        }
+        let task = string(args, "pane").and_then(|pane| self.tasks.task_of(pane));
+        let thread = match &task {
+            Some(task) => task.clone(),
+            None => {
+                let path = string(args, "repo").ok_or_else(|| bad("run it in the repo"))?;
+                if !string(args, "pane").is_some_and(|pane| self.tasks.is_planner(path, pane)) {
+                    return Err(KmuxError::new("not_an_agent", "only this repo's planner and its tasks' agents talk to the phone"));
+                }
+                path.to_string()
+            }
+        };
         let doc = match kind {
             "say" => json!({ "text": string(args, "text").filter(|t| !t.trim().is_empty()).ok_or_else(|| bad("say what"))? }),
             "ask" => {
@@ -313,8 +321,10 @@ impl Phone {
                 json!({ "file": args.get("file"), "line": args.get("line"), "commit": args.get("commit"), "hot": args.get("hot"), "lines": lines })
             }
         };
-        let item = self.put(path, kind, None, None, doc)?;
-        if let Some(watch) = self.watches.borrow_mut().get_mut(path) {
+        let item = self.put(&thread, kind, None, None, doc)?;
+        if let Some(task) = &task {
+            self.tasks.spoke(task);
+        } else if let Some(watch) = self.watches.borrow_mut().get_mut(&thread) {
             watch.answering = None;
             watch.nudged = false;
         }
@@ -322,7 +332,11 @@ impl Phone {
     }
 
     fn history(&self, args: &Value) -> Result<Map, KmuxError> {
-        let path = string(args, "repo").ok_or_else(|| bad("run it in the repo"))?;
+        let task = string(args, "pane").and_then(|pane| self.tasks.task_of(pane));
+        let path = match &task {
+            Some(task) => task.as_str(),
+            None => string(args, "repo").ok_or_else(|| bad("run it in the repo"))?,
+        };
         let items = self.db.phone_items(path, 0).map_err(|e| failed("read the phone's chat", e))?;
         let last = args.get("last").and_then(Value::as_u64).unwrap_or(items.len() as u64) as usize;
         let from = items.len().saturating_sub(last);
@@ -437,8 +451,34 @@ impl Phone {
         let (Some(task), Some(id)) = (string(args, "task"), string(args, "id")) else { return responder.reply(Err(bad("a message from the phone carries its task and id"))) };
         let Some(text) = string(args, "text").map(str::trim).filter(|t| !t.is_empty()) else { return responder.reply(Err(bad("say what"))) };
         let Some(owner) = self.tasks.owner_of(task) else { return responder.reply(Err(KmuxError::new("not_found", format!("no task {task}")))) };
-        let request = json!({ "action": "send", "to": task, "text": text, "id": id });
+        let request = json!({ "action": "send", "to": task, "text": text, "id": id, "from_phone": true });
         self.ask(owner.as_deref(), "tasks", request, ACT_WAIT, move |reply| responder.reply(reply.map(fields)));
+    }
+
+    fn choose_here(&self, args: &Value) -> Result<Map, KmuxError> {
+        let task = string(args, "task").ok_or_else(|| bad("say which task"))?;
+        let task = self.tasks.resolve(task)?.ok_or_else(|| KmuxError::new("not_found", format!("no task {task}")))?;
+        let task = task.as_str();
+        let seq = args.get("seq").and_then(Value::as_i64).ok_or_else(|| bad("say which question"))?;
+        let choice = string(args, "choice").ok_or_else(|| bad("say which choice"))?;
+        let mut asked = self.db.phone_item(task, seq).map_err(|e| failed("read the question", e))?.filter(|i| i.kind == "ask").ok_or_else(|| bad("no such question"))?;
+        asked.doc["chosen"] = json!(choice);
+        self.db.set_phone_doc(task, seq, &asked.doc).map_err(|e| failed("keep the choice", e))?;
+        Ok(Map::new())
+    }
+
+    fn task_choose(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let (Some(task), Some(id), Some(seq), Some(choice)) = (string(args, "task").map(String::from), string(args, "id").map(String::from), args.get("seq").and_then(Value::as_i64), string(args, "choice").map(String::from)) else {
+            return responder.reply(Err(bad("a choice from the phone carries its task, id, question and choice")));
+        };
+        let Some(owner) = self.tasks.owner_of(&task) else { return responder.reply(Err(KmuxError::new("not_found", format!("no task {task}")))) };
+        let this = Rc::downgrade(self);
+        let host = owner.clone();
+        self.ask(owner.as_deref(), COMMAND, json!({ "request": "here.choose", "task": task, "seq": seq, "choice": choice }), ACT_WAIT, move |reply| {
+            let (Ok(_), Some(this)) = (&reply, this.upgrade()) else { return responder.reply(reply.map(fields)) };
+            let request = json!({ "action": "send", "to": task, "text": format!("I chose: {choice}"), "id": id, "from_phone": true });
+            this.ask(host.as_deref(), "tasks", request, ACT_WAIT, move |reply| responder.reply(reply.map(fields)));
+        });
     }
 
     fn task_pick(self: &Rc<Self>, args: &Value, responder: Responder) {
