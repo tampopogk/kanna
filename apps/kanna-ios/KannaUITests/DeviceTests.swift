@@ -45,7 +45,9 @@ final class DeviceTests: XCTestCase {
         XCTAssertTrue(listed.waitForExistence(timeout: 15), "not on the Shelf: \(task): " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
         shot("shelf")
         listed.tap()
-        XCTAssertTrue(seen("First message").waitForExistence(timeout: 10), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        let composer = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10), app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        Thread.sleep(forTimeInterval: 2)
         shot("task")
         if let say = environment["KANNA_TELL"] {
             let field = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]

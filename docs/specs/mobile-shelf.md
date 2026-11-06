@@ -62,7 +62,7 @@ sequenceDiagram
 
 *Needs you* is no use without what the agent said, and that's in its terminal, not its messages. The daemon keeps the final text of each task's last turn, and the question if it's asking one.
 
-- **When:** at each turn's end, and when its status goes to `needs-you` ([agent status](agent-status.md#3-the-report-osc-7501)), and again 2 s later, since an agent can report before its session file has the turn.
+- **When:** at each turn's end, and when its status goes to `needs-you` ([agent status](agent-status.md#3-the-report-osc-7501)), and again 2 s later, since an agent can report before its session file has the turn. A task with no row, one that stopped before this was built, is read when the phone opens it.
 - **Where from:** the agent's own session, which Kanna already finds to resume it ([planner resume §2](planner-resume.md#2-each-agent)). A reader per agent in `kanna-detect`, next to the quit files:
 
 | Agent | Reads |
@@ -75,7 +75,7 @@ sequenceDiagram
 - **Kept** in `last_words` in `kanna.db`: who, when, whether it's a question, text, the last 8 KB. One row per task, replaced each turn, and it lives as long as the task.
 - **For a planner too (not built):** the row is keyed by `who`, so a planner's can sit beside the tasks' and *Needs you at studio* can have words.
 - **Best effort:** a reader that fails (a new session format, say) logs it and keeps the last row. The phone then shows the status alone. e2e `real_agent_last_words` runs real claude and codex against the mock model, so a format change fails a test.
-- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone shows them unless the task is working.
+- **Plain text on the phone:** it's an agent's output, shown as text with no links acted on. The phone shows them after the thread, where a long thread opens, unless the task is working.
 
 ## 4. A message to a task that hasn't started
 

@@ -130,6 +130,10 @@ impl Tasks {
     pub(super) fn keep_last_words(self: &Rc<Self>, pane: &str) {
         let wanted = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone());
         let Some(entry) = wanted.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).cloned()) else { return };
+        self.read_last_words(entry);
+    }
+
+    fn read_last_words(self: &Rc<Self>, entry: Entry) {
         let this = Rc::downgrade(self);
         crate::runtime::spawn("a task's last words", async move {
             let id = entry.id.clone();
@@ -181,23 +185,34 @@ impl Tasks {
         entry.notes.iter().map(|n| json!({ "id": Value::Null, "at": num(n.at), "from": named(&n.from), "to": named(&entry.id), "repo": entry.repo, "delivered": read.map(|_| num(n.at)), "warning": Value::Null, "text": n.text })).collect()
     }
 
+    fn last_event(&self, entry: &Entry) -> f64 {
+        self.db.events(&entry.id).ok().and_then(|events| events.last().map(|e| e.at)).unwrap_or(entry.made_at)
+    }
+
+    pub fn fill_last_words(self: &Rc<Self>, task: &str) {
+        if !matches!(self.db.last_words(task), Ok(None)) {
+            return;
+        }
+        let Some(entry) = self.open_tasks().into_iter().find(|e| e.id == task && e.folder.is_some()) else { return };
+        self.read_last_words(entry);
+    }
+
     fn status_of(&self, entry: &Entry, pane: Option<&str>) -> (String, f64) {
         let core = self.core.upgrade();
         let live = pane.zip(core.as_ref()).filter(|(pane, core)| alive(core, pane)).map(|(pane, _)| pane);
         if let Some(pane) = live {
             let seen = self.statuses.borrow().get(pane).cloned();
             let status = core.as_ref().and_then(|core| core.pane(pane)).and_then(|p| p.status().map(String::from));
-            let since = seen.map_or(entry.made_at, |(_, at)| at);
+            let since = seen.map_or_else(|| self.last_event(entry), |(_, at)| at);
             return match status.as_deref() {
                 Some("needs-you") => ("needs".into(), since),
                 Some("working") => ("working".into(), since),
                 _ if !entry.stale.is_empty() => ("stale".into(), since),
                 _ if entry.ready.is_some() => ("ready".into(), since),
-                Some("idle") => ("idle".into(), since),
-                _ => ("working".into(), since),
+                _ => ("idle".into(), since),
             };
         }
-        let last = self.db.events(&entry.id).ok().and_then(|events| events.last().map(|e| e.at)).unwrap_or(entry.made_at);
+        let last = self.last_event(entry);
         let status = if entry.folder.is_none() && entry.held.is_none() {
             if self.waits(entry).is_empty() { "waiting" } else { "blocked" }
         } else if !entry.stale.is_empty() {

@@ -156,6 +156,11 @@ struct TaskDetail: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        if t.thread.isEmpty || t.status == .blocked || t.status == .waiting, let first = t.firstMessage {
+                            Label2("First message")
+                            Card { Text(rich(first)).font(.system(size: 15)) }
+                        }
+                        ForEach(t.thread) { ThreadRow(message: $0) }
                         if !t.lastWords.isEmpty && t.status != .working {
                             Label2("It said, \(t.lastAt)")
                             Card {
@@ -164,11 +169,6 @@ struct TaskDetail: View {
                                 }
                             }
                         }
-                        if t.thread.isEmpty || t.status == .blocked || t.status == .waiting, let first = t.firstMessage {
-                            Label2("First message")
-                            Card { Text(rich(first)).font(.system(size: 15)) }
-                        }
-                        ForEach(t.thread) { ThreadRow(message: $0) }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
