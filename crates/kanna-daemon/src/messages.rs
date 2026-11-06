@@ -192,7 +192,7 @@ impl Rpc {
             return Err(format!("codex's app-server refused the connection: {}", String::from_utf8_lossy(&head).lines().next().unwrap_or("")));
         }
         let mut rpc = Rpc { stream, next: 0 };
-        let mut hello = json!({ "clientInfo": { "name": "kanna", "version": env!("CARGO_PKG_VERSION") } });
+        let mut hello = json!({ "clientInfo": { "name": "kanna", "version": kanna_build::VERSION } });
         if let Some(capabilities) = capabilities {
             hello["capabilities"] = capabilities;
         }
