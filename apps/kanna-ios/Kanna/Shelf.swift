@@ -179,11 +179,6 @@ struct TaskDetail: View {
             }
             .pushedNav()
             .task(id: id) { await store.read(id) }
-            .alert("Couldn't do that", isPresented: Binding(get: { store.pickError != nil }, set: { if !$0 { store.pickError = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(store.pickError ?? "")
-            }
             .sheet(isPresented: Binding(get: { store.pendingPick == id }, set: { if !$0 { store.pendingPick = nil } })) { WhichDesk(id: id) }
             .sheet(isPresented: Binding(get: { store.fullFor == id && store.pickFull != nil }, set: { if !$0 { store.pickFull = nil; store.fullFor = nil } })) { FullDesk() }
         }

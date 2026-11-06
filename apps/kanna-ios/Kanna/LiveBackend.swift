@@ -12,8 +12,17 @@ final class Lookup: @unchecked Sendable {
     private var browser: NWBrowser?
     private var connections: [NWConnection] = []
     private let queue = DispatchQueue(label: "kanna.lookup")
+    private var giveUp: (() -> Void)?
 
     func find(_ instance: String, seconds: Double) async -> String? {
+        await withTaskCancellationHandler {
+            await look(for: instance, seconds: seconds)
+        } onCancel: {
+            queue.async { [self] in giveUp?() }
+        }
+    }
+
+    private func look(for instance: String, seconds: Double) async -> String? {
         await withCheckedContinuation { continuation in
             let browser = NWBrowser(for: .bonjour(type: "_kanna-phone._udp", domain: "local."), using: NWParameters())
             self.browser = browser
@@ -25,6 +34,10 @@ final class Lookup: @unchecked Sendable {
                 self?.browser?.cancel()
                 self?.connections.forEach { $0.cancel() }
                 continuation.resume(returning: address)
+            }
+            queue.async { [weak self] in
+                if Task.isCancelled { finish(nil) }
+                self?.giveUp = { finish(nil) }
             }
             browser.browseResultsChangedHandler = { [weak self] results, _ in
                 guard let self, self.connections.isEmpty, let match = results.first(where: {
@@ -64,6 +77,7 @@ final class LiveBackend: Backend {
     private let lookup = Lookup()
     private var stopping: Task<Void, Never>?
     private var pairing: String?
+    private var linked: String?
 
     private static var file: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -112,8 +126,9 @@ final class LiveBackend: Backend {
         }.value
     }
 
-    func connect() async throws -> Hello {
-        guard var machine = paired else { throw Refused(code: "unpaired", message: "not paired") }
+    func connect(to wanted: Reach?) async throws -> Hello {
+        guard var saved = paired else { throw Refused(code: "unpaired", message: "not paired") }
+        let machine = wanted ?? Reach(name: saved.machine, key: saved.key, addrs: saved.addrs, good: saved.good)
         try await started()
         let known = [machine.good].compactMap { $0 } + machine.addrs
         let instance = Rust.instance(machine.key)
@@ -137,15 +152,28 @@ final class LiveBackend: Backend {
             return nil
         }
         if let refused { throw refused }
-        guard let opened else { throw Refused(code: "unreachable", message: "Can't reach \(machine.machine)") }
+        guard let opened else { throw Refused(code: "unreachable", message: "Can't reach \(machine.name)") }
         stream = opened
+        linked = key
         listen(opened)
-        let hello: Hello = try await call("hello", [:])
-        machine.addrs = hello.addrs
-        if let remote = (await Task.detached { Rust.path(key) }.value)["remote"] as? String { machine.good = remote }
-        paired = machine
+        let hello = try await hello()
+        let good = (await Task.detached { Rust.path(key) }.value)["remote"] as? String
+        if key == saved.key {
+            saved.addrs = hello.addrs
+            saved.good = good ?? saved.good
+        }
+        var reached = hello.machines ?? []
+        for index in reached.indices {
+            reached[index].good = reached[index].key == key ? good : saved.known?.first { $0.key == reached[index].key }?.good
+        }
+        saved.known = reached
+        paired = saved
         save()
         return hello
+    }
+
+    func hello() async throws -> Hello {
+        try await call("hello", [:])
     }
 
     private func listen(_ stream: UInt64) {
@@ -176,6 +204,7 @@ final class LiveBackend: Backend {
             }
             return
         }
+        if line["notice"] as? String == "projects" { return onNotice?(.projects) ?? () }
         guard let repo = line["repo"] as? String else { return }
         switch line["notice"] as? String {
         case "chat":
@@ -257,8 +286,21 @@ final class LiveBackend: Backend {
         let _: Done = try await call("task.pick", args)
     }
 
+    func machines(repo: String) async throws -> MachinesPage {
+        try await call("machines", ["repo": repo])
+    }
+
+    func stats(repo: String) async throws -> StatsPage {
+        try await call("stats", ["repo": repo])
+    }
+
+    func move(repo: String, machine: String) async throws -> Moved {
+        try await call("planner.move", ["repo": repo, "machine": machine])
+    }
+
     func close() {
         stream = nil
+        linked = nil
         let failed = waiting
         waiting = [:]
         failed.values.forEach { $0.resume(throwing: Refused(code: "unreachable", message: "closed")) }
@@ -279,7 +321,7 @@ final class LiveBackend: Backend {
     }
 
     func link() async -> Link {
-        guard let key = paired?.key, stream != nil else { return Link(path: .off, milliseconds: 0) }
+        guard let key = linked, stream != nil else { return Link(path: .off, milliseconds: 0) }
         let path = await Task.detached { Rust.path(key) }.value
         let milliseconds = Int((path["rtt_ms"] as? Double ?? 0).rounded())
         switch (path["path"] as? String, path["lan"] as? Bool) {

@@ -8,14 +8,22 @@ final class FixtureBackend: Backend {
     private var busy: Bool
     private var chats: [String: [Item]] = [:]
     private var statuses: [String: String]
+    private var linked = "studio"
+    private var planners = ["kanna": "studio", "kmux": "dev-1"]
+    private var ups = ["studio": true, "mbp": true, "dev-1": true, "tests-1": false, "pi": true]
     let phoneName = "iphone-fix1"
 
     private static let machine = Paired(name: "iphone-fix1", machine: "studio", key: "fixture", addrs: [])
 
     init(paired: Bool, planner: String) {
         self.paired = paired ? Self.machine : nil
+        self.paired?.known = Self.names.map(Self.reach)
         busy = planner == "busy"
         statuses = ["kanna": planner == "busy" ? "elsewhere" : "idle", "kmux": "not_running"]
+        if planner == "away" {
+            ups["studio"] = false
+            ups["tests-1"] = true
+        }
     }
 
     func pair(scanned: String) async throws -> Paired {
@@ -24,17 +32,101 @@ final class FixtureBackend: Backend {
         return Self.machine
     }
 
-    func connect() async throws -> Hello {
-        Hello(name: "studio", key: "fixture", addrs: [], projects: ["kanna", "kmux"].map { Project(repo: $0, name: $0, planner: "studio", status: statuses[$0] ?? "idle", since: Date().timeIntervalSince1970) })
+    private static let names = ["studio", "mbp", "dev-1", "tests-1", "pi"]
+
+    private static func reach(_ name: String) -> Reach { Reach(name: name, key: "key-\(name)", addrs: []) }
+
+    private func helloNow() -> Hello {
+        let projects = ["kanna", "kmux"].map { repo -> Project in
+            let planner = planners[repo] ?? "studio"
+            return Project(repo: repo, name: repo, planner: planner, plannerKey: "key-\(planner)", status: planner == linked ? statuses[repo] ?? "idle" : nil, since: Date().timeIntervalSince1970)
+        }
+        return Hello(name: linked, key: "key-\(linked)", addrs: [], projects: projects, machines: Self.names.map(Self.reach))
+    }
+
+    func connect(to machine: Reach?) async throws -> Hello {
+        let name = machine?.name ?? "studio"
+        guard ups[name] == true else { throw Refused(code: "unreachable", message: "Can't reach \(name)") }
+        linked = name
+        paired?.known = helloNow().machines
+        return helloNow()
+    }
+
+    func hello() async throws -> Hello { helloNow() }
+
+    func machines(repo: String) async throws -> MachinesPage {
+        let has: Set<String> = repo == "kanna" ? ["studio", "mbp", "dev-1", "tests-1"] : ["studio", "dev-1"]
+        func one(_ name: String, os: String, arch: String, cores: Int, ms: Double, path: String, lan: Bool) -> MachineInfo {
+            let up = ups[name] == true
+            let me = name == linked
+            return MachineInfo(name: name, key: "key-\(name)", me: me, os: os, arch: arch, cores: cores, version: "4.2.0", has: has.contains(name), planner: planners[repo] == name, up: up, path: up && !me ? path : nil, lan: lan, ms: up && !me ? ms : nil, since: up ? Date().timeIntervalSince1970 - 3600 : nil, seen: Date().timeIntervalSince1970 - 2400)
+        }
+        return MachinesPage(from: linked, machines: [
+            one("studio", os: "macos", arch: "aarch64", cores: 16, ms: 4, path: "direct", lan: true),
+            one("mbp", os: "macos", arch: "aarch64", cores: 12, ms: 9, path: "direct", lan: true),
+            one("dev-1", os: "linux", arch: "x86_64", cores: 32, ms: 184, path: "relay", lan: false),
+            one("tests-1", os: "linux", arch: "x86_64", cores: 8, ms: 0, path: "direct", lan: false),
+            one("pi", os: "linux", arch: "aarch64", cores: 4, ms: 7, path: "direct", lan: true),
+        ])
+    }
+
+    func move(repo: String, machine: String) async throws -> Moved {
+        await wait(0.3)
+        guard ups[machine] == true else { throw Refused(code: "unreachable", message: "\(machine) didn't answer") }
+        planners[repo] = machine
+        statuses[repo] = "starting"
+        let here = linked
+        linked = machine
+        _ = put(repo, "sys", Doc(text: "No planner was running for \(repo), so one is starting on \(machine)"))
+        linked = here
+        Task {
+            await wait(1)
+            status(repo, "idle")
+        }
+        return Moved(planner: machine, plannerKey: "key-\(machine)")
+    }
+
+    private static func days() -> [String] {
+        let format = DateFormatter()
+        format.dateFormat = "yyyy-MM-dd"
+        return (0..<30).map { format.string(from: Date(timeIntervalSinceNow: Double($0 - 29) * 86400)) }
+    }
+
+    private static func wave(_ base: Double, _ swing: Double) -> [Double?] {
+        (0..<30).map { base + swing * sin(Double($0) / 2.5) + Double($0) * 0.1 }
+    }
+
+    func stats(repo: String) async throws -> StatsPage {
+        StatsPage(days: Self.days(), sections: [
+            StatsSection(id: "quiz", title: "Quiz", note: "what you know of the code", tiles: [
+                StatsTile(id: "right", label: "Answers right, last 30 days", value: 72.4, unit: "%", note: "of 85 answers", span: 3, chart: StatsChart(kind: "line", values: Self.wave(70, 5), max: 100, what: "of the answers in the 30 days before")),
+                StatsTile(id: "misses", label: "Misses to come back", value: 6, note: "", span: 3, chart: StatsChart(kind: "line", values: Self.wave(6, 2), what: "misses to come back")),
+                StatsTile(id: "kinds", label: "By kind", note: "", span: 3, chart: StatsChart(kind: "ranked", max: 100, rows: [StatsRow(label: "why", value: 80, note: "8/10"), StatsRow(label: "bug", value: 50, note: "1/2")])),
+            ]),
+            StatsSection(id: "main", title: "Main", note: "what landed", tiles: [
+                StatsTile(id: "commits", label: "Commits", value: 38, note: "today · 616 in 30 days", span: 2, chart: StatsChart(kind: "columns", values: Self.wave(20, 15), what: "commits")),
+                StatsTile(id: "landed", label: "Tasks landed", value: 9, note: "today · 153 in 30 days", span: 2, chart: StatsChart(kind: "columns", values: Self.wave(6, 5), what: "merges into main")),
+            ]),
+            StatsSection(id: "tasks", title: "Tasks", note: "from the Desk's and the Shelf's events", tiles: [
+                StatsTile(id: "open", label: "Open", value: 23, note: "+4 in 30 days", span: 6, chart: StatsChart(kind: "flow", values: Self.wave(20, 3), made: Self.wave(5, 3), done: Self.wave(4, 3), what: "open at the end of the day")),
+                StatsTile(id: "lead", label: "Made to done", value: 12780, unit: "s", note: "median of 40", span: 4, chart: StatsChart(kind: "dots", what: "7-day median", points: [StatsPoint(day: 29, value: 12000, label: "Schedules tab")], line: Self.wave(13000, 3000))),
+            ]),
+            StatsSection(id: "code", title: "Code quality", note: "how good the code is", tiles: [
+                StatsTile(id: "erosion", label: "Erosion", value: 48.5, unit: "%", note: "down 1.0 points in 29 days", span: 2, chart: StatsChart(kind: "line", values: Self.wave(50, 2), max: 100, what: "of complexity")),
+                StatsTile(id: "later", label: "A number from a later Kanna", value: 7, note: "a chart this phone can't draw", span: 2, chart: StatsChart(kind: "heatmap")),
+                StatsTile(id: "worst", label: "Worst functions", note: "", span: 3, chart: StatsChart(kind: "list", rows: [StatsRow(label: "Contents::start", value: 665, note: "164 lines", detail: "Contents.swift:169", figure: "CC 52")])),
+            ]),
+            StatsSection(id: "later", title: "Coming", empty: "Nothing here yet."),
+        ])
     }
 
     func read(repo: String, after: Int) async throws -> Page {
-        Page(items: (chats[repo] ?? []).filter { $0.seq > after }, status: statuses[repo] ?? "idle", since: Date().timeIntervalSince1970)
+        Page(items: (chats[repo + linked] ?? []).filter { $0.seq > after }, status: statuses[repo] ?? "idle", since: Date().timeIntervalSince1970)
     }
 
     private func put(_ repo: String, _ kind: String, _ doc: Doc, client: String? = nil) -> Item {
-        let item = Item(seq: (chats[repo]?.count ?? 0) + 1, at: Date().timeIntervalSince1970, kind: kind, client: client, doc: doc)
-        chats[repo, default: []].append(item)
+        let item = Item(seq: (chats[repo + linked]?.count ?? 0) + 1, at: Date().timeIntervalSince1970, kind: kind, client: client, doc: doc)
+        chats[repo + linked, default: []].append(item)
         return item
     }
 
@@ -48,9 +140,9 @@ final class FixtureBackend: Backend {
     }
 
     private func markRead(_ repo: String) {
-        guard let index = chats[repo]?.lastIndex(where: { $0.kind == "me" }) else { return }
-        chats[repo]?[index].read = Date().timeIntervalSince1970
-        if let item = chats[repo]?[index] { onNotice?(.chat(repo: repo, item: item)) }
+        guard let index = chats[repo + linked]?.lastIndex(where: { $0.kind == "me" }) else { return }
+        chats[repo + linked]?[index].read = Date().timeIntervalSince1970
+        if let item = chats[repo + linked]?[index] { onNotice?(.chat(repo: repo, item: item)) }
     }
 
     private func wait(_ seconds: Double) async {
@@ -68,7 +160,7 @@ final class FixtureBackend: Backend {
     private func run(_ repo: String, _ text: String) async {
         await wait(0.5)
         if repo == "kmux" {
-            say(repo, "sys", Doc(text: "No planner was running for kmux, so one is starting on studio"))
+            say(repo, "sys", Doc(text: "No planner was running for kmux, so one is starting on \(linked)"))
             status(repo, "starting")
             await wait(6)
             markRead(repo)
@@ -96,9 +188,9 @@ final class FixtureBackend: Backend {
     }
 
     func choose(repo: String, id: String, seq: Int, choice: String) async throws -> Item {
-        if let index = chats[repo]?.firstIndex(where: { $0.seq == seq }) {
-            chats[repo]?[index].doc.chosen = choice
-            if let asked = chats[repo]?[index] { onNotice?(.chat(repo: repo, item: asked)) }
+        if let index = chats[repo + linked]?.firstIndex(where: { $0.seq == seq }) {
+            chats[repo + linked]?[index].doc.chosen = choice
+            if let asked = chats[repo + linked]?[index] { onNotice?(.chat(repo: repo, item: asked)) }
         }
         let item = put(repo, "me", Doc(text: choice, choice: seq), client: id)
         Task {
@@ -147,7 +239,8 @@ final class FixtureBackend: Backend {
     }
 
     func tasks(repo: String) async throws -> ShelfPage {
-        repo == "kanna" ? shelf : ShelfPage(tasks: [], desks: shelf.desks, done: [])
+        guard planners[repo] == linked else { throw Refused(code: "unknown_repo", message: "not here") }
+        return repo == "kanna" ? shelf : ShelfPage(tasks: [], desks: shelf.desks, done: [])
     }
 
     func task(_ id: String) async throws -> TaskPage {
@@ -213,7 +306,7 @@ final class FixtureBackend: Backend {
 
     func forget() { paired = nil }
 
-    func link() async -> Link { Link(path: .lan, milliseconds: 9) }
+    func link() async -> Link { Link(path: linked == "dev-1" ? .relay : .lan, milliseconds: linked == "dev-1" ? 184 : 9) }
 
     func highlight(file: String, text: String) -> [TextSpan] { Rust.highlight(file: file, text: text) }
 }

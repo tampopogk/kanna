@@ -134,6 +134,154 @@ final class FlowTests: XCTestCase {
         see("Working")
     }
 
+    private func stats() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
+        app.launch()
+        tabBar("Stats")
+    }
+
+    private func machines() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
+        app.launch()
+        tabBar("Machines")
+    }
+
+    func testStatsDrawsTheReply() {
+        stats()
+        see("72.4%")
+        see("of 85 answers")
+        see("3h 33m")
+        see("Tasks landed")
+        app.swipeUp()
+        see("Worst functions")
+        see("CC 52")
+        see("a chart this phone can't draw")
+        see("Nothing here yet.")
+        shot("stats")
+    }
+
+    func testStatsScrub() {
+        stats()
+        let start = app.staticTexts["72.4%"].firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        let from = start.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 4))
+        let to = start.coordinate(withNormalizedOffset: CGVector(dx: 4, dy: 4))
+        let held = expectation(description: "shot while pressed")
+        var image: XCUIScreenshot?
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
+            image = XCUIScreen.main.screenshot()
+            held.fulfill()
+        }
+        from.press(forDuration: 0.5, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 4)
+        wait(for: [held], timeout: 10)
+        let a = XCTAttachment(screenshot: image!)
+        a.name = "scrub-held"
+        a.lifetime = .keepAlways
+        add(a)
+    }
+
+    func testStatsStillScrolls() {
+        stats()
+        let last = app.staticTexts["Erosion"]
+        XCTAssertTrue(app.staticTexts["72.4%"].waitForExistence(timeout: 5))
+        let before = last.frame.maxY
+        app.swipeUp()
+        app.swipeUp()
+        XCTAssertLessThan(last.frame.maxY, before - 200)
+        shot("scrolled")
+    }
+
+    func testMachinesListTheRepoSMachines() {
+        machines()
+        see("Have kanna")
+        see("studio")
+        see("Planner")
+        see("Desk 2 of 3")
+        see("dev-1")
+        see("Relayed")
+        see("tests-1")
+        see("last seen")
+        see("1 machine without kanna")
+        shot("machines")
+        tap("1 machine without kanna")
+        see("pi")
+    }
+
+    func testAMachineSPageShowsWhatSOnIt() {
+        machines()
+        tap("mbp")
+        see("Mac · aarch64 · 12 cores · Kanna 4.2.0")
+        see("Path from studio")
+        see("Round trip")
+        see("Restore task tabs")
+        shot("machine")
+    }
+
+    func testRunThePlannerHere() {
+        machines()
+        tap("dev-1")
+        tap("Run the planner here")
+        tabBar("Chat")
+        see("so one is starting on dev-1", 8)
+        XCTAssertTrue(app.staticTexts["Relayed"].waitForExistence(timeout: 5))
+        shot("moved")
+    }
+
+    func testMovePlannerFromItsOwnPage() {
+        machines()
+        tap("studio")
+        tap("Run the planner on another machine")
+        see("It won't know this conversation")
+        tap("mbp")
+        tabBar("Chat")
+        see("so one is starting on mbp", 8)
+    }
+
+    func testAnEarlierChatStaysAfterAMove() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
+        app.launch()
+        say("What's on the Shelf?")
+        see("Schedule history page is out of date", 8)
+        app.staticTexts["What's on the Shelf?"].tap()
+        tabBar("Machines")
+        tap("mbp")
+        tap("Run the planner here")
+        tabBar("Chat")
+        see("The planner is on mbp now", 8)
+        see("Schedule history page is out of date")
+        XCTAssertFalse(app.buttons["Cut it down"].exists, "a question for the old planner can't be answered")
+        say("And now?")
+        see("Schedule history page is out of date", 8)
+        shot("two-planners")
+    }
+
+    func testTheRepoSwitcherMovesTheLink() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
+        app.launch()
+        app.buttons["repo-switcher"].tap()
+        tap("kmux")
+        XCTAssertTrue(app.staticTexts["Relayed"].waitForExistence(timeout: 8))
+        tabBar("Machines")
+        see("Have kmux")
+        see("dev-1")
+        app.buttons["repo-switcher"].tap()
+        tap("kanna")
+        XCTAssertTrue(app.staticTexts["Direct · LAN"].waitForExistence(timeout: 8))
+    }
+
+    func testAnAsleepPlannerMachineStillLetsYouMoveIt() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-planner", "away"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Offline"].waitForExistence(timeout: 10))
+        tabBar("Machines")
+        see("Asking")
+        tap("mbp")
+        tap("Run the planner here")
+        XCTAssertTrue(app.staticTexts["Direct · LAN"].waitForExistence(timeout: 10))
+        tabBar("Chat")
+        see("Planner")
+    }
+
     func testPairingThenChat() {
         app.launchArguments = ["-fixture", "YES", "-paired", "NO"]
         app.launch()
@@ -167,8 +315,8 @@ final class FlowTests: XCTestCase {
         see("Planner · not running")
         say("what landed overnight")
         see("Waiting for the planner")
-        see("so one is starting on studio")
-        see("Planner · starting on studio")
+        see("so one is starting on dev-1")
+        see("Planner · starting on dev-1")
         shot("starting")
         see("Three merges on main", 30)
         see("Read")
