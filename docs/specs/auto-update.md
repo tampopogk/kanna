@@ -10,7 +10,7 @@ macOS only. Production and staging each have their own feeds, and dev builds hav
 
 ## Contents
 
-1. [Decision for review](#1-decision-for-review)
+1. [Why the download waits for your yes](#1-why-the-download-waits-for-your-yes)
 2. [What you see](#2-what-you-see)
 3. [The flow](#3-the-flow)
 4. [Sparkle in the app](#4-sparkle-in-the-app)
@@ -23,7 +23,7 @@ macOS only. Production and staging each have their own feeds, and dev builds hav
 11. [Rejected](#11-rejected)
 12. [Glossary](#12-glossary)
 
-## 1. Decision for review
+## 1. Why the download waits for your yes
 
 **Sparkle can't both download in the background and promise no install at quit.** Its only background download is its automatic mode, and that mode starts the installer as soon as the download ends. From then on, the app ending in any way installs the update.
 
@@ -35,13 +35,15 @@ macOS only. Production and staging each have their own feeds, and dev builds hav
 
 Cancelling the installer in `applicationWillTerminate` isn't enough: a crash or a force quit never gets there, so the update would install.
 
+**Decided with the user (November 2026): option A.** The first brief had Kanna download in the background before asking; no install without a yes took priority.
+
 | Option | Your yes | Later and quit | Cost |
 |---|---|---|---|
-| **A. Ask, then download (recommended)** | downloads with progress (45 MB), then relaunches | nothing on disk, nothing to install | one change to what we agreed: the download waits for your yes |
+| **A. Ask, then download (chosen)** | downloads with progress (45 MB), then relaunches | nothing on disk, nothing to install | one change to what we agreed: the download waits for your yes |
 | B. Fork Sparkle | relaunches at once | the archive waits in Sparkle's cache | an added hook of about 10 lines, but we build and sign Sparkle's framework ourselves and merge every upstream security fix |
 | C. Kanna's own downloader beside Sparkle | relaunches at once | the archive waits in Kanna's cache | a second download path, plus a loopback web server to feed Sparkle, which refuses `file:` URLs |
 
-This spec describes A. It keeps "ask first" with no patched updater and no second download path, and a slow connection can still cancel from the toast. B is the one to take if an instant relaunch matters more than staying on upstream Sparkle.
+A keeps "ask first" with no patched updater and no second download path, and a slow connection can still cancel from the toast.
 
 ## 2. What you see
 
