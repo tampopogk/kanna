@@ -152,7 +152,7 @@ impl Phone {
             "task.send" => self.task_send(&args, responder),
             "task.pick" => self.task_pick(&args, responder),
             "here.shelf" => responder.reply(self.here_shelf(&args)),
-            "here.read" => responder.reply(string(&args, "task").ok_or_else(|| bad("say which task")).and_then(|task| self.tasks.task_here(task))),
+            "here.read" => responder.reply(string(&args, "task").ok_or_else(|| bad("say which task")).and_then(|task| self.read_here(task))),
             other => responder.reply(Err(bad(format!("no phone request \"{other}\"")))),
         }
     }
@@ -410,11 +410,19 @@ impl Phone {
         }
     }
 
+    fn read_here(self: &Rc<Self>, task: &str) -> Result<Map, KmuxError> {
+        let read = self.tasks.task_here(task)?;
+        if let Some(id) = read["task"]["id"].as_str() {
+            self.tasks.fill_last_words(id);
+        }
+        Ok(read)
+    }
+
     fn task_read(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(task) = string(args, "task").map(String::from) else { return responder.reply(Err(bad("say which task"))) };
         match self.tasks.owner_of(&task) {
             None => responder.reply(Err(KmuxError::new("not_found", format!("no task {task}")))),
-            Some(None) => responder.reply(self.tasks.task_here(&task)),
+            Some(None) => responder.reply(self.read_here(&task)),
             Some(Some(owner)) => {
                 let tasks = self.tasks.clone();
                 self.ask(Some(&owner), COMMAND, json!({ "request": "here.read", "task": task }), PEER_WAIT, move |reply| match reply {

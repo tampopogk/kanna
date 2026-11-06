@@ -158,16 +158,16 @@ struct TaskDetail: View {
                             }
                             .buttonStyle(.plain)
                         }
-                        if !t.lastWords.isEmpty && t.status != .working {
-                            Label2("It said, \(t.lastAt)")
-                            Card { Text(verbatim: t.lastWords).font(.system(size: 15)) }
-                                .accessibilityIdentifier("last-words")
-                        }
                         if t.thread.isEmpty || t.status == .blocked || t.status == .waiting, let first = t.firstMessage {
                             Label2("First message")
                             Card { Text(rich(first)).font(.system(size: 15)) }
                         }
                         ForEach(t.thread) { ThreadRow(message: $0) }
+                        if !t.lastWords.isEmpty && t.status != .working {
+                            Label2("It said, \(t.lastAt)")
+                            Card { Text(verbatim: t.lastWords).font(.system(size: 15)) }
+                                .accessibilityIdentifier("last-words")
+                        }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 14)
