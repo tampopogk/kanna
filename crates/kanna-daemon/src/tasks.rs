@@ -6081,7 +6081,7 @@ mod tests {
         let mut pane = Pane::new("term-7", None, kanna_mux::PaneType::Term);
         pane.state = PaneState::Running;
         pane.status = Some("working".into());
-        core.install_panes(vec![pane], 0, 7);
+        core.install_panes(vec![pane], 0, 7, 0);
         let (events, _inbox) = crate::runtime::channel();
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
         tasks.install(&core);
