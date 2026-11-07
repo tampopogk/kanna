@@ -22,6 +22,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     let schedulesPage = SchedulesPage()
     static let pages = ["Desk", "Machines", "Stats", "Schedules"]
     var stats: StatsReport?
+    var statsRoot: String?
     var schedules: [ScheduleRow]?
     var schedulesRepo: String?
     var page: String?

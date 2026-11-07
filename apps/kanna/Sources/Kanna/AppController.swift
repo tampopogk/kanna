@@ -264,6 +264,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
         link.onSchedules = { [weak self] in self?.schedulesChanged(on: machine) }
+        link.onStats = { [weak self] repo in self?.statsChanged(repo, on: machine) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
             self?.contents.update(pane)

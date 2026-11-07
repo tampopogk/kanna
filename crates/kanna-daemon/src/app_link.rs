@@ -477,6 +477,10 @@ impl AppLink {
         }));
     }
 
+    pub fn stats_changed(&self, repo: &str) {
+        self.notify("stats", json!({ "repo": repo }));
+    }
+
     pub fn folder(&self, pane: &str, cwd: &str) {
         if self.attached() {
             let notice = self.folder_notice(pane, cwd);

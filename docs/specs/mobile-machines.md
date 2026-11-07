@@ -98,7 +98,7 @@ Each machine's `phone_chat` counts its own `seq`, so the phone keeps a chat per 
 
 ## 7. Stats
 
-`stats {repo}` is the [same reply](stats.md#4-adding-a-metric) as `kanna stats --json`, read from the planner machine, kept for offline, asked when the tab shows and every minute while it does. A sampler catching up can take a while, so the phone waits for it.
+`stats {repo}` is the [same reply](stats.md#4-adding-a-metric) as `kanna stats --json`, read from the planner machine, kept for offline, asked when the tab shows, every minute while it does, and when a `stats` notice says the numbers moved. The reply comes at once with what's stored, so the phone never waits for the sampler: its last page stays drawn, a reply with no sections doesn't replace it, and the [status line](stats.md#3-where-they-come-from) shows the same words as the Mac under the offline banner until the catch-up ends. Offline, the line is hidden: nothing is updating.
 
 - **Tiles:** a span of 4 or more, `ranked` and `list` take the full width, the rest two to a row.
 - **Charts:** `line`, `columns`, `flow`'s line and `dots`' median as sparklines or bars, with a press-and-drag readout from `what` and `days`; `ranked` and `list` as rows, the first five. **Any other kind shows the tile's number alone,** because phones update later than daemons.

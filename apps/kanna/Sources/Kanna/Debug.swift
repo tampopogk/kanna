@@ -183,7 +183,7 @@ extension AppController {
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
-                    "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
+                    "statsPage": .bool(!controller.statsPage.isHidden), "statsStatus": controller.statsPage.shownStatus.map { .string($0) } ?? .null, "statsLoadings": .number(Double(controller.statsPage.loadings)), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "schedulesPage": .bool(!controller.schedulesPage.isHidden), "scheduleGroups": .array(controller.schedulesPage.groupOrder.map { $0.map { .string($0) } ?? .null }),
                     "schedules": .array(controller.schedulesPage.rows.map { row in
                         ["id": .string(row.id), "name": .string(row.name), "repo": row.repo.map { .string($0) } ?? .null, "rule": .string(row.rule), "target": .string(row.target), "next": .string(row.next), "waiting": .bool(row.waiting), "paused": .bool(row.paused),

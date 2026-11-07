@@ -10,7 +10,7 @@ pub const COMMAND: Command = Command {
     summary: "Print this project's numbers over the last 30 days, as the Desk view's Stats tab shows them.",
     usage: "kanna stats",
     options: &[],
-    notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality isn't measured yet. Each line is a number, its note and a sparkline of its 30 days, oldest first.",
+    notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality: how good the code on main is, measured at each of its commits. It answers at once with what's stored: while the daemon catches up behind it, a line under the title (`status` with --json) says what it's doing. Each line is a number, its note and a sparkline of its 30 days, oldest first.",
     examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them.")],
     parse,
     show,
@@ -67,6 +67,12 @@ pub fn show(_: &Value, reply: &Value) -> String {
     let mut out = vec![];
     if let Some(project) = reply["project"].as_str() {
         out.push(format!("{} · main · last 30 days", home_relative(project)));
+    }
+    if let Some(status) = reply["status"].as_str() {
+        out.push(status.to_string());
+    }
+    if reply["sections"].as_array().is_some_and(Vec::is_empty) {
+        out.push("No numbers yet: run this again in a moment.".to_string());
     }
     for row in &rows {
         let line = if row[2].is_empty() && row[4].is_empty() {
@@ -132,6 +138,12 @@ mod tests {
         let text = show(&json!({}), &reply);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "/r · main · last 30 days");
+        let mut updating = reply.clone();
+        updating["status"] = json!("Updating: running coverage");
+        let shown = show(&json!({}), &updating);
+        assert_eq!(shown.lines().nth(1), Some("Updating: running coverage"));
+        assert_eq!(shown.lines().nth(2), Some(lines[1]));
+        assert_eq!(show(&json!({}), &json!({ "project": "/r", "sections": [], "status": null })), "/r · main · last 30 days\nNo numbers yet: run this again in a moment.");
         assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers              ▅█");
         assert_eq!(lines[2], "              By kind");
         assert_eq!(lines[3], "                why             92%  11/12");

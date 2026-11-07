@@ -343,6 +343,20 @@ final class FlowTests: XCTestCase {
         shot("stats")
     }
 
+    func testStatsSaysWhatItIsDoingAndKeepsTheOldNumbers() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-statsSteps", "YES"]
+        app.launch()
+        tabBar("Stats")
+        see("Updating: measuring code, 3 of 14 commits")
+        see("72.4%")
+        shot("stats-updating")
+        see("Updating: running coverage")
+        see("72.4%")
+        let status = app.staticTexts["stats-status"]
+        XCTAssertTrue(status.waitForNonExistence(timeout: 10))
+        see("72.4%")
+    }
+
     func testStatsScrub() {
         stats()
         let start = app.staticTexts["72.4%"].firstMatch

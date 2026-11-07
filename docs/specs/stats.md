@@ -1,6 +1,6 @@
 # Stats
 
-**Status:** built · **Tests:** `stats.rs`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** [code quality metrics](code-quality-metrics.md)
+**Status:** built · **Tests:** `stats.rs`, `StatsFormatTests`, e2e `stats_tab`, `stats_updating` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** [code quality metrics](code-quality-metrics.md)
 
 **Stats** is a third fixed tab in the Desk view, after Desk and Machines: the project's numbers over the last 30 days. Each number is today's value over a small chart of the 30 days. Four sections: what you know of the code (from your quiz answers), what landed on main, how many tasks are open and how they moved, and how good the code is ([code quality metrics](code-quality-metrics.md)). `kanna stats [--json]` prints the same numbers.
 
@@ -11,6 +11,10 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 | ![Stats in dark mode](stats.png) | ![Stats in light mode](stats-light.png) | ![Stats with no quiz answers and three days of commits](stats-empty.png) |
 
 *(From the mockup: `#picture`, `#picture,light`, `#picture,empty`.)*
+
+![The Stats tab while the daemon catches up: the old numbers, and "Updating: measuring code, 4 of 8 commits" under the title](stats-updating.png)
+
+*(The running page in e2e `stats_updating`; in the mockup, `#picture,updating`.)*
 
 ## Contents
 
@@ -27,7 +31,9 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 
 - **A fixed tab**, like Desk and Machines ([machine links §5](machine-links.md#5-paths-the-machines-tab-and-offline)): no close button, in Next and Previous Tab's order after Machines, ← and → when focused. Only in the Desk view; the active task has none.
 - **The Desk's project**, on the machine its Desk is on: the app asks that machine's daemon. Counting a project across machines is a later task (Stats across machines).
-- **Asked when shown** and every minute while it shows; nothing is asked while it's hidden. A reply that hasn't come yet leaves the last page drawn.
+- **Asked when shown,** when the daemon says the numbers moved ([§3](#3-where-they-come-from)), and every minute while it shows; nothing is asked while it's hidden. A reply that hasn't come yet leaves the last page drawn.
+- **Never blank while refreshing.** The reply comes at once with what's stored, and new numbers replace old as they arrive. `Loading…` is only for a repo with nothing stored at all, whose first reply has no sections; a reply with no sections never replaces a page that has them, it only changes the status line.
+- **The status line** sits under the title, in the gap above the first section, so nothing moves when it comes and goes: the reply's `status`, word for word, and nothing when that's null. If only the status changed, only that line is redrawn, so a chart's hover readout stays.
 - **Every chart has a hover readout** for the day under the pointer: that day's value, for open also that day's made and done, and for made to done the tasks done that day. Each tile's accessibility label says its value and note, and each chart's says its 30 values.
 - **Days are the daemon's local days**: today and the 29 before it.
 - **Empty:** with no quiz answers the Quiz section says how to get some; a count with no events is a flat chart at 0; made to done with nothing done shows "—".
@@ -80,7 +86,20 @@ flowchart LR
 | `value` | real | the number |
 | `doc` | JSON | the rest, by metric |
 
-- **The sampler catches up** on a worker thread, off the daemon's main thread, when a `stats` request comes: for each metric, the first-parent commits on main (else `master`, else `HEAD`) in the last 30 days with no row for it, oldest first. The thread sends what it found back through the daemon's event loop (`Event::Sampled`), which writes the rows and answers. One catch-up per repo at a time: a request during one waits for it and gets the same answer.
+- **A `stats` request is answered at once** from `kanna.db`. It never waits for the sampler.
+- **The sampler catches up** behind that reply on a worker thread, off the daemon's main thread: for each metric, the first-parent commits on main (else `master`, else `HEAD`) in the last 30 days with no row for it, oldest first. The thread sends each step and what it found back through the daemon's event loop (`Event::Sampled`), which writes the rows. One catch-up per repo at a time: a request during one reads what's there so far.
+- **`status`** in the reply says what's going on now, in the same words for every client, or is null:
+
+  | Step | `status` |
+  |---|---|
+  | commit metrics of the commits missing them | `Updating: reading 12 new commits` |
+  | tree metrics, [newest first](code-quality-metrics.md#3-sampling) | `Updating: measuring code, 3 of 14 commits` |
+  | a [coverage run](code-quality-metrics.md#4-coverage-runs) | `Updating: running coverage` |
+  | a catch-up and a run at once | `Updating: measuring code, 3 of 14 commits · running coverage` |
+
+  A catch-up that finds nothing to do says nothing, so the minute's refresh shows no line. Coverage has no count: a run doesn't report its progress.
+- **The daemon says when the numbers moved:** a `stats {repo}` message on the app link, and a `stats` notice to the phone, when a step changes, samples land, a coverage run starts or ends, or a repo's first catch-up ends. Clients showing that repo ask again, so the page follows each step and its last reply has no status. A catch-up with no work sends nothing, so a client's asking can't start a loop. Steps land at most every 2 s. The minute's refresh stays as the backstop for a lost message.
+- **What's still to come says so.** Until a repo's first catch-up has run, or while a step is under way, Main with no samples says `Reading main's commits.` and Code quality with none says `Measuring the code on main.`, not zeros or "no code". With no answers, samples or task events either, the reply has no sections.
 - **Every sampled commit gets a row for every metric,** 0 when nothing applies, so a missing row always means "not sampled yet", and a new metric fills in its 30 days by itself.
 - **It reads main without touching any checkout:** `git log --first-parent`, `git rev-list --count`, and for metrics that need the files, the commit's blobs from git's object store ([code quality §3](code-quality-metrics.md#3-sampling)). Only coverage checks a commit out, in a worktree of its own.
 
@@ -96,6 +115,7 @@ The reply, the same as `kanna stats --json`:
 
 ```json
 {"project": "/Users/u/work/kanna-v4", "days": ["2026-10-02", "…", "2026-10-31"],
+ "status": "Updating: reading 12 new commits",
  "sections": [
   {"id": "quiz", "title": "Quiz", "note": "what you know of the code, from your kept answers", "tiles": [
     {"id": "right", "label": "Answers right, last 30 days", "value": 79, "unit": "%", "note": "of 95 answers",
@@ -107,7 +127,7 @@ The reply, the same as `kanna stats --json`:
 
 ## 5. `kanna stats`
 
-`kanna stats [--json]`: the stats of the project the terminal is in (its main checkout for a worktree), as text, a line a tile with a sparkline of its 30 days, or the reply as JSON.
+`kanna stats [--json]`: the stats of the project the terminal is in (its main checkout for a worktree), as text, a line a tile with a sparkline of its 30 days, or the reply as JSON. It answers at once, like the page: the status line prints under the title (`status` in the JSON), and the first run on a repo with nothing stored says to run it again in a moment.
 
 ```
 Quiz          Answers right, last 30 days   79%  of 95 answers          ▅▅▅▆▆▆▆▆▆▆▆▆▇▇▇▇
@@ -117,10 +137,11 @@ Main          Commits                        28  today · 616 in 30 days  ▃▂
 
 ## 6. Tests
 
-- `stats.rs`: the grade as of each day (a miss 40 days back still in day 0's window, a day with no answers in its 30 is empty), a miss counted until it's asked again and a miss asked again and missed standing for the old one, areas by two folders with Other last, first starts only and made to done with its 7-day median, open tasks from a fixed series of events in `kanna.db` (open from before the 30 days, picked and shelved, done two days back, a task made and done the same day, a done task with no `done` event, another repo's task) and their change up, down and none, an empty project and no code; the sampler on a fixture repo (a plain commit, a merge bringing two) writes a row per metric per commit and fills only what's missing; the command answers two requests with one catch-up and reads back from `kanna.db`.
+- `stats.rs`: the grade as of each day (a miss 40 days back still in day 0's window, a day with no answers in its 30 is empty), a miss counted until it's asked again and a miss asked again and missed standing for the old one, areas by two folders with Other last, first starts only and made to done with its 7-day median, open tasks from a fixed series of events in `kanna.db` (open from before the 30 days, picked and shelved, done two days back, a task made and done the same day, a done task with no `done` event, another repo's task) and their change up, down and none, an empty project and no code; the sampler on a fixture repo (a plain commit, a merge bringing two) writes a row per metric per commit and fills only what's missing; the catch-up's steps with their counts; a request answered at once with no sections when nothing is stored, two requests with one catch-up, the old numbers with each step's status, clients told of each step and not of a catch-up with no work.
 - `StatsFormatTests` (KannaWindows): figures, days, scales and tile places in rows of sixths, stacked when narrow.
 - The CLI: `kanna stats` sends the repo and prints a line a tile, ranked rows under it and a section's words; `stats` is in `capabilities` and `commands`.
 - e2e `stats_tab` on a private instance: a fixture repo with commits three and two days back and a merge today, four quiz answers, three tasks (two started, one done); `kanna stats --json` and the text against the expected numbers (open: 2, "+2 in 30 days", made 3 and done 1 today), the samples in `kanna.db`; then the app: Desk, Machines and Stats as the Desk view's fixed tabs, Next Tab from Machines to Stats, every tile's label and note as the reply has them and its figure, open across the whole row, each section's heading band in order, the code section ([code quality §7](code-quality-metrics.md#7-tests)), snapshots in dark and light (`target/e2e-kanna/stats_tab-*.png`), and Desk leaving the page. `machine_remote_task` steps Next and Previous Tab through all three fixed tabs.
+- e2e `stats_updating`: the daemon runs with a `git` that holds at chosen steps. A repo with no data shows Loading and the reading step, and `kanna stats --json` answers at once with no sections; once released the page fills by itself. Main moves: opening Stats keeps the old numbers with `reading 3 new commits`, Main's numbers change at `measuring code, 0 of 3 commits` while the code's stay, a slowed catch-up shows a step partway (`[1-7] of 8`), and the line goes with no asking. A coverage stub shows `running coverage` until it ends. Loading is never drawn again after the first page. Snapshots `target/e2e-kanna/stats_updating-*.png`.
 
 ## 7. Rejected
 
@@ -129,6 +150,9 @@ Main          Commits                        28  today · 616 in 30 days  ▃▂
 - **A daily count of open tasks kept as rows:** it's made and done replayed, so it's worked out from `task_events` like the other task numbers.
 - **Sampling quiz and task numbers:** they're rows already; a sample could only drift from them.
 - **Commits and merges read from `git log` at each request,** without samples: right today, but the code quality metrics need per-commit rows anyway, and this keeps one store and one sampler for both.
+- **The first reply waiting for the commit metrics:** the page said Loading… for as long as git took, over numbers already in `kanna.db`.
+- **Clients polling fast while `status` is set:** a coverage run lasts hours, and the last step would show until the next poll. A message costs nothing while nothing moves.
+- **A git call on the daemon's loop to see whether main moved,** so the first reply could already have a status: the sampler's thread finds out in milliseconds and the page hears at once.
 - **A score in the quiz itself:** the round still says only what you knew of its five questions ([quiz §2](quiz.md#2-rules)); the totals live here, where you go to look.
 
 ## 8. Glossary

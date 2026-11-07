@@ -7,7 +7,7 @@ use kanna_quality::tree::{Cache, Tree};
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{project, CoreHandle, KmuxError, Responder};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -100,15 +100,42 @@ pub fn first_parents(repo: &Path, since: f64) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
-pub struct Progress {
-    pub sampled: usize,
-    pub of: usize,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    Reading(usize),
+    Measuring { done: usize, of: usize },
 }
 
-pub fn catch_up(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>, deliver: &mut dyn FnMut(Vec<Sample>, Option<Progress>)) -> Result<(), String> {
+fn commits_word(count: usize) -> &'static str {
+    if count == 1 {
+        "commit"
+    } else {
+        "commits"
+    }
+}
+
+impl Step {
+    fn words(self) -> String {
+        match self {
+            Step::Reading(count) => format!("reading {count} new {}", commits_word(count)),
+            Step::Measuring { done, of } => format!("measuring code, {done} of {of} {}", commits_word(of)),
+        }
+    }
+}
+
+pub fn status(step: Option<Step>, covering: bool) -> Option<String> {
+    let doing: Vec<String> = step.map(Step::words).into_iter().chain(covering.then(|| "running coverage".to_string())).collect();
+    (!doing.is_empty()).then(|| format!("Updating: {}", doing.join(" · ")))
+}
+
+pub fn catch_up(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>, every: f64, deliver: &mut dyn FnMut(Vec<Sample>, Option<Step>)) -> Result<(), String> {
     let cx = Context { repo, tasks };
     let commits = first_parents(repo, since)?;
     let missing = |commit: &Commit, metric: &Metric| sampled.get(&(commit.id.clone(), metric.name.to_string())) != Some(&metric.revision);
+    let reading = commits.iter().filter(|c| METRICS.iter().any(|m| matches!(m.sample, Sampler::Commit(_)) && missing(c, m))).count();
+    if reading > 0 {
+        deliver(vec![], Some(Step::Reading(reading)));
+    }
     let mut samples = Vec::new();
     for commit in commits.iter().rev() {
         for metric in METRICS {
@@ -120,7 +147,7 @@ pub fn catch_up(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<St
         }
     }
     let trees: Vec<&Commit> = commits.iter().filter(|c| METRICS.iter().any(|m| matches!(m.sample, Sampler::Tree(_)) && missing(c, m))).collect();
-    let progress = |done: usize| (!trees.is_empty() && done < trees.len()).then_some(Progress { sampled: commits.len() - trees.len() + done, of: commits.len() });
+    let progress = |done: usize| (!trees.is_empty() && done < trees.len()).then_some(Step::Measuring { done, of: trees.len() });
     deliver(std::mem::take(&mut samples), progress(0));
     if trees.is_empty() {
         return Ok(());
@@ -137,7 +164,7 @@ pub fn catch_up(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<St
                 samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc, revision: metric.revision });
             }
         }
-        if now() - batch > BATCH_SECONDS && done + 1 < trees.len() {
+        if now() - batch >= every && done + 1 < trees.len() {
             deliver(std::mem::take(&mut samples), progress(done + 1));
             batch = now();
         }
@@ -194,7 +221,8 @@ pub struct Facts {
     pub answers: Vec<Answer>,
     pub samples: Vec<Sample>,
     pub lives: Vec<Life>,
-    pub sampling: Option<String>,
+    pub pending: bool,
+    pub status: Option<String>,
     pub coverage: Option<String>,
 }
 
@@ -317,6 +345,11 @@ fn count_tile(id: &str, label: &str, days: Vec<f64>, what: &str) -> Value {
 }
 
 fn main_section(facts: &Facts) -> Value {
+    if facts.pending && facts.samples.is_empty() {
+        let mut empty = section("main", "Main", "what landed", vec![]);
+        empty["empty"] = json!("Reading main's commits.");
+        return empty;
+    }
     let first = facts.today - DAYS + 1;
     let of = |metric: &str| per_day(first, facts.samples.iter().filter(|s| s.metric == metric).map(|s| (s.at, s.value)));
     section("main", "Main", "what landed", vec![count_tile("commits", "Commits", of("commits"), "commits"), count_tile("landed", "Tasks landed", of("merged"), "merges into main")])
@@ -382,19 +415,18 @@ fn tasks_section(facts: &Facts) -> Value {
 
 pub fn report(project: &str, facts: &Facts) -> Map {
     let days: Vec<String> = (facts.today - DAYS + 1..=facts.today).map(date).collect();
-    Map::from_iter([
-        ("project".to_string(), json!(project)),
-        ("days".to_string(), json!(days)),
-        ("sections".to_string(), json!([quiz(facts), main_section(facts), tasks_section(facts), quality::code_section(facts)])),
-    ])
+    let nothing = facts.pending && facts.answers.is_empty() && facts.samples.is_empty() && facts.lives.is_empty();
+    let sections = if nothing { json!([]) } else { json!([quiz(facts), main_section(facts), tasks_section(facts), quality::code_section(facts)]) };
+    Map::from_iter([("project".to_string(), json!(project)), ("days".to_string(), json!(days)), ("status".to_string(), json!(facts.status)), ("sections".to_string(), sections)])
 }
 
 pub struct Stats {
     db: Rc<Db>,
     events: crate::runtime::Events,
-    waiting: RefCell<HashMap<String, Vec<Responder>>>,
-    running: RefCell<HashMap<String, Option<String>>>,
+    running: RefCell<HashMap<String, Option<Step>>>,
+    caught: RefCell<HashSet<String>>,
     coverage: Rc<crate::coverage::Coverage>,
+    pub on_change: RefCell<Option<Box<dyn Fn(&str)>>>,
 }
 
 fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
@@ -405,18 +437,14 @@ fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
 pub struct Sampled {
     pub repo: String,
     pub samples: Result<Vec<Sample>, String>,
-    pub progress: Option<String>,
+    pub step: Option<Step>,
     pub done: bool,
 }
 
 impl Stats {
     pub fn new(db: Rc<Db>, events: crate::runtime::Events, state: &Path) -> Stats {
         let coverage = Rc::new(crate::coverage::Coverage::new(db.clone(), events.clone(), state.to_path_buf()));
-        Stats { db, events, waiting: RefCell::default(), running: RefCell::default(), coverage }
-    }
-
-    pub fn coverage(&self) -> &Rc<crate::coverage::Coverage> {
-        &self.coverage
+        Stats { db, events, running: RefCell::default(), caught: RefCell::default(), coverage, on_change: RefCell::default() }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -435,39 +463,41 @@ impl Stats {
             return responder.reply(Err(KmuxError::new("bad_request", "say which repo: an absolute path to a folder in a git repo")));
         };
         let repo = repo.to_string_lossy().to_string();
+        let covering = self.coverage.covering(&repo);
         self.coverage.consider(&repo);
-        if let Some(waiting) = self.waiting.borrow_mut().get_mut(&repo) {
-            return waiting.push(responder);
+        let started = if self.running.borrow().contains_key(&repo) { Ok(()) } else { self.start(&repo) };
+        responder.reply(started.and_then(|()| self.read(&repo)));
+        if self.coverage.covering(&repo) != covering {
+            self.changed(&repo);
         }
-        if self.running.borrow().contains_key(&repo) {
-            return responder.reply(self.read(&repo));
-        }
+    }
+
+    fn start(&self, repo: &str) -> Result<(), KmuxError> {
         let since = day_start(local_day(now()) - DAYS + 1);
-        let sampled = match self.db.sampled(&repo, since) {
-            Ok(sampled) => sampled,
-            Err(error) => return responder.reply(Err(failed("read the samples", error))),
-        };
-        let tasks = self.db.branches(&repo).unwrap_or_else(|error| {
+        let sampled = self.db.sampled(repo, since).map_err(|error| failed("read the samples", error))?;
+        let tasks = self.db.branches(repo).unwrap_or_else(|error| {
             log!("kanna-daemon: couldn't read {repo}'s tasks' branches in {}: {error}", db::FILE);
             HashMap::new()
         });
-        self.waiting.borrow_mut().insert(repo.clone(), vec![responder]);
-        self.running.borrow_mut().insert(repo.clone(), None);
+        self.running.borrow_mut().insert(repo.to_string(), None);
         let events = self.events.clone();
+        let repo = repo.to_string();
         std::thread::spawn(move || {
-            let mut deliver = |samples: Vec<Sample>, progress: Option<Progress>| {
-                let progress = progress.map(|p| format!("sampling {} of {} commits", p.sampled, p.of));
-                let _ = events.send(Event::Sampled(Sampled { repo: repo.clone(), samples: Ok(samples), progress, done: false }));
+            let mut deliver = |samples: Vec<Sample>, step: Option<Step>| {
+                let _ = events.send(Event::Sampled(Sampled { repo: repo.clone(), samples: Ok(samples), step, done: false }));
             };
-            let result = catch_up(&PathBuf::from(&repo), since, &sampled, &tasks, &mut deliver);
-            let _ = events.send(Event::Sampled(Sampled { repo, samples: result.map(|_| vec![]), progress: None, done: true }));
+            let result = catch_up(&PathBuf::from(&repo), since, &sampled, &tasks, BATCH_SECONDS, &mut deliver);
+            let _ = events.send(Event::Sampled(Sampled { repo, samples: result.map(|_| vec![]), step: None, done: true }));
         });
+        Ok(())
     }
 
     pub fn sampled(&self, sampled: Sampled) {
-        let Sampled { repo, samples, progress, done } = sampled;
+        let Sampled { repo, samples, step, done } = sampled;
+        let mut changed = false;
         match samples {
             Ok(samples) if !samples.is_empty() => {
+                changed = true;
                 if let Err(error) = self.db.put_samples(&repo, &samples) {
                     log!("kanna-daemon: couldn't save {} samples of {repo} in {}: {error}", samples.len(), db::FILE);
                 }
@@ -476,29 +506,41 @@ impl Stats {
             Err(error) => log!("kanna-daemon: couldn't sample {repo}'s main: {error}"),
         }
         if done {
-            self.running.borrow_mut().remove(&repo);
+            changed |= self.running.borrow_mut().remove(&repo).flatten().is_some();
+            changed |= self.caught.borrow_mut().insert(repo.clone());
         } else if let Some(running) = self.running.borrow_mut().get_mut(&repo) {
-            *running = progress;
+            changed |= std::mem::replace(running, step) != step;
         }
-        let responders = self.waiting.borrow_mut().remove(&repo).unwrap_or_default();
-        if responders.is_empty() {
-            return;
+        if changed {
+            self.changed(&repo);
         }
-        let reply = self.read(&repo);
-        for responder in responders {
-            responder.reply(reply.clone());
+    }
+
+    pub fn covered(&self, covered: crate::coverage::Covered) {
+        let repo = covered.repo.clone();
+        self.coverage.covered(covered);
+        self.changed(&repo);
+    }
+
+    fn changed(&self, repo: &str) {
+        if let Some(on_change) = self.on_change.borrow().as_ref() {
+            on_change(repo);
         }
     }
 
     fn read(&self, repo: &str) -> Result<Map, KmuxError> {
         let today = local_day(now());
         let since = day_start(today - DAYS + 1);
+        let running = self.running.borrow().get(repo).copied();
+        let step = running.flatten();
+        let first = running.is_some() && !self.caught.borrow().contains(repo);
         let facts = Facts {
             today,
             answers: self.db.answers(repo, false).map_err(|e| failed("read the quiz answers", e))?,
             samples: self.db.samples(repo, since).map_err(|e| failed("read the samples", e))?,
             lives: self.db.lives(repo, since).map_err(|e| failed("read the task events", e))?,
-            sampling: self.running.borrow().get(repo).cloned().flatten(),
+            pending: step.is_some() || first,
+            status: status(step, self.coverage.covering(repo)),
             coverage: self.coverage.status(repo),
         };
         Ok(report(repo, &facts))
@@ -528,12 +570,12 @@ pub mod tests {
     }
 
     pub fn facts(today: i64, answers: Vec<Answer>, samples: Vec<Sample>, lives: Vec<Life>) -> Facts {
-        Facts { today, answers, samples, lives, sampling: None, coverage: None }
+        Facts { today, answers, samples, lives, pending: false, status: None, coverage: None }
     }
 
     pub fn collect(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>) -> Vec<Sample> {
         let mut all = Vec::new();
-        catch_up(repo, since, sampled, tasks, &mut |samples, _| all.extend(samples)).unwrap();
+        catch_up(repo, since, sampled, tasks, BATCH_SECONDS, &mut |samples, _| all.extend(samples)).unwrap();
         all
     }
 
@@ -764,40 +806,116 @@ pub mod tests {
         let _ = fs::remove_dir_all(&repo);
     }
 
-    #[test]
-    fn the_command_samples_once_and_reads_back_from_the_db() {
-        let repo = fixture("command");
-        let state = std::env::temp_dir().join(format!("kanna-stats-state-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&state);
-        fs::create_dir_all(&state).unwrap();
-        let db = Rc::new(Db::open(&state));
-        let (sender, mut events) = crate::runtime::channel();
-        let stats = Stats::new(db.clone(), sender, &state);
-        let path = repo.to_string_lossy().to_string();
-        let (first, reply) = kanna_mux::responder();
-        let mut reply = Box::pin(reply);
-        let (second, _) = kanna_mux::responder();
-        stats.ask(&json!({ "repo": path }), first);
-        stats.ask(&json!({ "repo": path }), second);
-        let mut repo_sampled;
+    fn run_to_the_end(stats: &Stats, events: &mut crate::runtime::Inbox) {
         loop {
-            let Ok(Event::Sampled(sampled)) = crate::runtime::next(&mut events, std::time::Duration::from_secs(10)) else { panic!("no samples") };
-            repo_sampled = sampled.repo.clone();
+            let Ok(Event::Sampled(sampled)) = crate::runtime::next(events, std::time::Duration::from_secs(10)) else { panic!("no samples") };
             let done = sampled.done;
             stats.sampled(sampled);
             if done {
-                break;
+                return;
             }
         }
-        let sampled = repo_sampled;
-        assert!(events.try_recv().is_err(), "one catch-up for both requests");
+    }
+
+    fn asked(stats: &Stats, repo: &str) -> Map {
+        let (responder, reply) = kanna_mux::responder();
+        let mut reply = Box::pin(reply);
+        stats.ask(&json!({ "repo": repo }), responder);
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        let std::task::Poll::Ready(Ok(report)) = reply.as_mut().poll(&mut cx) else { panic!("no reply") };
-        assert_eq!(report["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        let std::task::Poll::Ready(Ok(report)) = reply.as_mut().poll(&mut cx) else { panic!("no reply at once") };
+        report
+    }
+
+    fn watched(name: &str) -> (PathBuf, PathBuf, Rc<Db>, Stats, crate::runtime::Inbox, Rc<RefCell<Vec<String>>>) {
+        let repo = fixture(name);
+        let state = std::env::temp_dir().join(format!("kanna-stats-state-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let db = Rc::new(Db::open(&state));
+        let (sender, events) = crate::runtime::channel();
+        let stats = Stats::new(db.clone(), sender, &state);
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let heard = told.clone();
+        *stats.on_change.borrow_mut() = Some(Box::new(move |repo| heard.borrow_mut().push(repo.to_string())));
+        (repo, state, db, stats, events, told)
+    }
+
+    #[test]
+    fn a_request_is_answered_at_once_and_the_catch_up_carries_on_behind_it() {
+        let (repo, state, db, stats, mut events, told) = watched("command");
+        let path = fs::canonicalize(&repo).unwrap().to_string_lossy().to_string();
+        let first = asked(&stats, &path);
+        assert_eq!(first["sections"], json!([]), "no data at all is the one reply with no sections");
+        assert_eq!(asked(&stats, &path)["sections"], json!([]));
+        run_to_the_end(&stats, &mut events);
+        assert!(events.try_recv().is_err(), "one catch-up for both requests");
+        assert!(told.borrow().iter().all(|r| *r == path) && !told.borrow().is_empty(), "the clients hear each step: {told:?}");
         let since = day_start(local_day(now()) - DAYS + 1);
-        assert_eq!(db.sampled(&sampled, since).unwrap().len(), 3 * METRICS.len());
+        assert_eq!(db.sampled(&path, since).unwrap().len(), 3 * METRICS.len());
+        told.borrow_mut().clear();
+        let report = asked(&stats, &path);
+        assert_eq!(report["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        assert_eq!(report["status"], Value::Null);
+        run_to_the_end(&stats, &mut events);
+        assert_eq!(*told.borrow(), Vec::<String>::new(), "a catch-up with nothing to do tells nobody, or a client would ask for ever");
         let _ = fs::remove_dir_all(&repo);
         let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn a_reply_during_a_catch_up_has_the_old_numbers_and_the_step() {
+        let (repo, state, _db, stats, mut events, _told) = watched("status");
+        let path = fs::canonicalize(&repo).unwrap().to_string_lossy().to_string();
+        asked(&stats, &path);
+        run_to_the_end(&stats, &mut events);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "new"], now() as i64);
+        let moved = asked(&stats, &path);
+        assert_eq!(moved["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        stats.sampled(Sampled { repo: path.clone(), samples: Ok(vec![]), step: Some(Step::Reading(1)), done: false });
+        let reading = asked(&stats, &path);
+        assert_eq!(reading["status"], json!("Updating: reading 1 new commit"));
+        assert_eq!(reading["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        stats.sampled(Sampled { repo: path.clone(), samples: Ok(vec![]), step: Some(Step::Measuring { done: 3, of: 14 }), done: false });
+        assert_eq!(asked(&stats, &path)["status"], json!("Updating: measuring code, 3 of 14 commits"));
+        run_to_the_end(&stats, &mut events);
+        let done = asked(&stats, &path);
+        assert_eq!(done["status"], Value::Null);
+        assert_eq!(done["sections"][1]["tiles"][0]["note"], json!("today · 5 in 30 days"));
+        run_to_the_end(&stats, &mut events);
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn the_catch_up_says_each_step_with_real_counts() {
+        let repo = fixture("steps");
+        let since = day_start(local_day(now()) - DAYS + 1);
+        let mut steps = Vec::new();
+        catch_up(&repo, since, &Revisions::new(), &HashMap::new(), 0.0, &mut |_, step| steps.push(step)).unwrap();
+        assert_eq!(steps, [Some(Step::Reading(3)), Some(Step::Measuring { done: 0, of: 3 }), Some(Step::Measuring { done: 1, of: 3 }), Some(Step::Measuring { done: 2, of: 3 }), None]);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn the_status_line_says_what_is_going_on() {
+        assert_eq!(status(None, false), None);
+        assert_eq!(status(Some(Step::Reading(12)), false).unwrap(), "Updating: reading 12 new commits");
+        assert_eq!(status(None, true).unwrap(), "Updating: running coverage");
+        assert_eq!(status(Some(Step::Measuring { done: 3, of: 14 }), true).unwrap(), "Updating: measuring code, 3 of 14 commits · running coverage");
+    }
+
+    #[test]
+    fn only_what_is_still_to_come_says_so() {
+        let today = 20393;
+        let mut waiting = facts(today, vec![answer(1, today, "why", "a/b/c.rs", true, None)], vec![], vec![]);
+        waiting.pending = true;
+        let report = report("/r", &waiting);
+        let sections = report["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 4, "the quiz numbers are in kanna.db already");
+        assert_eq!(tiles(&report, "quiz").len(), 4);
+        assert_eq!(sections[1]["empty"], json!("Reading main's commits."));
+        assert_eq!(sections[1]["tiles"], json!([]));
+        assert_eq!(sections[3]["empty"], json!("Measuring the code on main."));
     }
 
     use std::future::Future;
