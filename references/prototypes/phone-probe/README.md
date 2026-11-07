@@ -33,6 +33,21 @@ November 6, 2026: iPhone 15 Pro, iOS 27.0.1, on the same LAN as a MacBook Pro.
 - **Not covered:** a phone locked while away (the 89 s was on the Home Screen), a refused Local Network prompt, any other network.
 - **Unexplained:** this server's own iroh record never appeared in a browse, though the daemons' do. The results above for iroh's records are from this Mac's daemon.
 
+## Cellular
+
+November 7, 2026: the real app, not the probe, on the same iPhone with Wi-Fi off and cellular on, no VPN, against a MacBook Pro with a public address and `relay.kanna.build`. One run of `testAway`.
+
+| Check | Result |
+|---|---|
+| Launch to a link | 5,966 ms, `Direct · internet`, RTT 100 ms |
+| Question to answer on the phone | **Pass.** The app got the answer in 69 s, most of it a new planner's first start and its trust prompt |
+| Back after 5, 15 and 45 s on the Home Screen | 12,126, 12,779 and 12,024 ms, each `Relayed` |
+| The chip after that, watched for 90 s | `Relayed` to `Direct · internet` at 18 s, back to `Relayed` at 84 s |
+
+- **Unexplained:** coming back took twice as long as a cold launch, and landed on a slower path. It's about the 10 s dial limit plus a second dial, which suggests a first dial that fails, but nothing timed the steps. The target of a second is for the LAN.
+- **Why it dropped back to `Relayed`** at 84 s wasn't diagnosed.
+- **Not covered:** a carrier NAT with no way through, Wi-Fi coming back while the app is open, a phone locked while away.
+
 ## What had to change to build
 
 - `vendor/netdev` and `vendor/netwatch`: neither compiles for iOS; see `NOTICE`. Upstream `netwatch` 0.20 has the same gap.

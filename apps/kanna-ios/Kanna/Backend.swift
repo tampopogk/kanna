@@ -233,6 +233,7 @@ protocol Backend: AnyObject {
     func pair(scanned: String) async throws -> Paired
     func connect(to machine: Reach?) async throws -> Hello
     func networkChanged()
+    func askLocalNetwork()
     func hello() async throws -> Hello
     func reaches(_ machine: Reach) async -> Bool
     func read(repo: String, after: Int) async throws -> Page

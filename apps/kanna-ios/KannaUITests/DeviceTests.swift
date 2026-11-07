@@ -146,6 +146,7 @@ final class DeviceTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["KANNA_PAIR"] != nil else { throw XCTSkip("a real phone and a Mac showing a code") }
         app.launch()
         XCTAssertTrue(app.buttons["scan"].waitForExistence(timeout: 15))
+        _ = allow(for: 4) { false }
         app.buttons["scan"].tap()
         XCTAssertTrue(allow(for: 270) { seen("Your repos").exists }, "never paired: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
         shot("paired")
