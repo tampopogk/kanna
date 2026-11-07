@@ -632,7 +632,7 @@ fn run() -> Result<(), String> {
         }),
     );
     let front = link.clone();
-    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers()) {
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers_for(&args)) {
         Some(app) => app.forward("app.front", args, responder),
         None => responder.reply(Ok(Map::new())),
     }));
