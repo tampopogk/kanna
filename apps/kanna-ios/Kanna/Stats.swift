@@ -9,11 +9,22 @@ enum StatsFormat {
         return "\(Int((Double(minutes) / 1440).rounded()))d"
     }
 
+    static func hours(_ hours: Double) -> String {
+        if hours < 1 { return "\(Int((hours * 60).rounded()))m" }
+        if hours < 10 {
+            let tenths = (hours * 10).rounded() / 10
+            return tenths == tenths.rounded() ? "\(Int(tenths))h" : "\(tenths)h"
+        }
+        return "\(Int(hours.rounded()))h"
+    }
+
     static func figure(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
         switch unit {
         case "%": return value == value.rounded() ? "\(Int(value))%" : String(format: "%.1f%%", value)
         case "s": return duration(value)
+        case "h": return hours(value)
+        case "x": return String(format: "%.1f", value)
         default: return "\(Int(value.rounded()))"
         }
     }
