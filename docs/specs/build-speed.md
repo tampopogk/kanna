@@ -79,6 +79,16 @@ Measured with `scripts/build.sh`, dev channel, arm64:
 
 Before, the fresh worktree's 71s was cargo 43s (285 units, 275 CPU-seconds, ~7 of 10 cores), SwiftPM resolve 5s and a release Swift compile of 22s on ~1 core. The merman stack (merman-render, -elk-layered, -core, dugong) is a third of cargo's cold CPU time and its critical path; borrowed dependencies take it off the table.
 
+Tests, `cargo test`, unsandboxed, in a task worktree built with `dev`, same Mac. `Instance` and `Daemon`, the test harnesses' daemons, stand in for Kanna.app with a fake that now answers `app.front`. Before, `focus` waited out the daemon's 10s `APP_TIMEOUT` for an answer that never came, then replied anyway, so nothing failed.
+
+| Test binary | Before | After | Where the time goes after |
+|---|---|---|---|
+| `kanna-daemon` `protocol_cases` | 77.3s | **6.1s** | 36 `Instance`s, ~0.17s each to start and stop |
+| `kanna` `cli` | 71.8s | **11.0s** | |
+| `cargo test -p kanna-daemon`, its 12 binaries' times added up | 128s (`--test-threads=4`) | **52s** | |
+
+One `Instance`, measured alone: start ~105ms, `app.hello` <1ms, a request <2ms, stopping the daemon 1ms, its keeper ~55ms, removing its folder <35ms. The 77s was 7 `focus` steps at 10.00s each, and those 36 `Instance`s at ~0.19s.
+
 ## 5. Not done
 
 - **sccache:** the borrowed dependencies already cover what it would cache, and it can't share our crates between worktrees (their paths differ).

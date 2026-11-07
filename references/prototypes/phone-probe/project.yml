@@ -1,0 +1,57 @@
+name: PhoneProbe
+options:
+  bundleIdPrefix: dev.kanna.probe
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: EA4J68749Z
+    TARGETED_DEVICE_FAMILY: "1"
+    GENERATE_INFOPLIST_FILE: "YES"
+schemes:
+  PhoneProbe:
+    build:
+      targets:
+        PhoneProbe: all
+    test:
+      targets:
+        - PhoneProbeUITests
+targets:
+  PhoneProbeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [PhoneProbeUITests]
+    dependencies:
+      - target: PhoneProbe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.probe.phone.uitests
+  PhoneProbe:
+    type: application
+    platform: iOS
+    sources: [PhoneProbe]
+    dependencies:
+      - framework: ../../../target/ios/KannaIOS.xcframework
+        embed: false
+      - sdk: SystemConfiguration.framework
+      - sdk: Security.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.probe.phone
+        INFOPLIST_KEY_CFBundleDisplayName: Kanna Probe
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_NSCameraUsageDescription: Scans the code the Mac shows.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Finds your Macs on this network.
+        OTHER_LDFLAGS: ["-lc++", "-lresolv"]
+    info:
+      path: PhoneProbe/Info.plist
+      properties:
+        CFBundleDisplayName: Kanna Probe
+        NSBonjourServices: ["_kanna._udp", "_kanna-phone._udp"]
+        NSLocalNetworkUsageDescription: Finds your Macs on this network.
+        NSCameraUsageDescription: Scans the code the Mac shows.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
