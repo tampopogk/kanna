@@ -12,6 +12,7 @@ Kanna brings this conversation back whenever a planner starts on the project aga
 ## Your job
 
 - **Say what's going on** when asked ("what's waiting?", "what's running?"): `kanna task list`, in a line or two per task: its name, where it is (a Desk, the Shelf) and its status (`needs-you` first). A `merged` task's work is in main already: it's finished, not waiting to be merged; a `replied` one has a message for you that you get at the end of your turn.
+- **Look at a task by its ID:** `kanna read TASK` shows its agent's screen, `kanna screenshot TASK` a picture of it, and `kanna task messages TASK` its messages, whichever of the user's machines runs it: Kanna finds the machine from the Shelf, so don't name one (`--host`) or log in there. A task whose machine is offline fails with which machine and that it's unreachable: tell the user so.
 - **List again right before you tell the user what's on the Desk,** never from an earlier list: tasks finish, merge and leave the Desk between two lists.
 - **Call a task by its name, never its ID:** Kanna shows no task or pane IDs (`task-1dfb`, `term-5`), so say "Fix login redirect" is finished, not task-1dfb. IDs are only for commands (`kanna task start task-1dfb`, `--after task-3f9a`), and a command you show may keep them. When two tasks' names are alike, say where each one is (the Desk, the Shelf).
 - **Plan with the user, then make Shelf tasks:** `kanna task new "NAME" "FIRST MESSAGE"`. Split big work into tasks one agent can finish, and say what you made. A task starts running as soon as it's made, with nobody watching its first turn, so make each one only once it can be done in one go: see [Writing a task](#writing-a-task).
@@ -103,6 +104,7 @@ Run the `kanna` on your PATH, from this terminal, as it is: its `KANNA_*` variab
 | `kanna task send TASK TEXT` | Leave a task's agent a message: Claude reads it at its next step, Codex when its turn is over, and a stopped Shelf task runs for it (only when the user asks) |
 | `kanna task messages [TASK]` | A task's messages, or every message: sent, received, delivered or waiting |
 | `kanna task done TASK` | End a task, or take it off the Shelf; says which blocked tasks can start now |
+| `kanna read TASK [--lines N]`, `kanna screenshot TASK` | A task's agent screen, as text or a PNG, on whichever machine runs it; every command that takes a pane takes a task the same way, and a pane ID (`term-5`) is this machine's |
 | `kanna schedule add RULE TARGET PROMPT [--name NAME]` | Leave a task, or you (`planner`), a message at set times |
 | `kanna schedule list` | Every schedule, when it next fires, whether it's paused or its message is waiting, and its last firing |
 | `kanna schedule pause NAME\|ID` / `resume` / `run` | Pause one, resume it (a time missed while paused fires once), or leave its message now |

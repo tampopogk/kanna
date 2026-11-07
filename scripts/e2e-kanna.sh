@@ -7193,6 +7193,46 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
   check test "$(kanna task list --all --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["tasks"]))')" == 0 || { echo "machine_remote_task: vm's task leaked into this Mac's Shelf"; return 1; }
 }
 
+scenario machine_task_by_id M4
+machine_task_by_id() {
+  local vm vm_pid
+  machine_vm machine_task_by_id || return 1
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/routed" agent="$KANNA_STATE_DIR/bin/claude"
+  mkdir -p "$repo" "${agent%/*}/mock" && ln -sf "$mock_agent" "${agent%/*}/mock/claude" && printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "${agent%/*}/mock/claude" >"$agent" && chmod +x "$agent" || { echo "machine_task_by_id line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/routed.git || { echo "machine_task_by_id line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  local task; task="$(cd "$repo" && vmk task new "Routed" "the routed brief" --agent "$agent" --json | field task.id)" || { echo "machine_task_by_id line $LINENO"; return 1; }
+  vmk task start "$task" >/dev/null || { echo "machine_task_by_id line $LINENO"; return 1; }
+  local short="${task:5:4}" pane; pane="$(vmk task list --all --json | python3 -c 'import json, sys; print([t["held"] for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1] and t.get("held")][0])' "$task")" || { echo "machine_task_by_id: vm's task has no pane"; vmk task list --all --json; return 1; }
+  routed() { kanna read "$short" 2>&1 | tr -d '\r\n' | grep -q -- "$1"; }
+  check wait_for 15 routed "the routed brief" || { echo "machine_task_by_id: reading vm's task by its ID alone"; kanna read "$short"; return 1; }
+  check test "$(kanna read "task-$short" | tr -d '\r\n')" == "$(vmk read "$pane" | tr -d '\r\n')" || { echo "machine_task_by_id: task-ID and the agent's own screen differ"; return 1; }
+  ! kanna read "$pane" 2>/dev/null | tr -d '\r\n' | grep -q "the routed brief" || { echo "machine_task_by_id: a plain pane ID reached vm"; return 1; }
+
+  local picked; picked="$(kanna task pick "$short" 2>&1)" || { echo "machine_task_by_id: picking vm's task by its ID: $picked"; return 1; }
+  local activated; activated="$(kanna task activate "$short" 2>&1)" || { echo "machine_task_by_id: activating vm's task by its ID: $activated"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"${2:-d1}\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk window.dock.pane)" == "$pane@vm" ]]' || { echo "machine_task_by_id: activating didn't dock vm's agent"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
+  local shot="$KANNA_STATE_DIR/routed.png" shown
+  shown="$(kanna screenshot "$short" -o "$shot")" && [[ "$shown" == "$shot" ]] || { echo "machine_task_by_id: screenshot of vm's task: $shown"; return 1; }
+  check test "$(head -c 4 "$shot" | xxd -p)" == 89504e47 || { echo "machine_task_by_id: the screenshot isn't a PNG saved here"; return 1; }
+
+  local sent; sent="$(kanna task send "$short" "mock: say routed hello" 2>&1)" || { echo "machine_task_by_id: sending to vm's task: $sent"; return 1; }
+  check wait_for 15 routed "peer: \[message from user\] mock: say routed hello" || { echo "machine_task_by_id: the message didn't reach vm's agent"; kanna read "$short"; vmk task messages "$task"; return 1; }
+  kanna task messages "$short" | grep -q "mock: say routed hello" || { echo "machine_task_by_id: messages of vm's task"; kanna task messages "$short"; return 1; }
+
+  vmk task stop "$task" >/dev/null || { echo "machine_task_by_id line $LINENO"; return 1; }
+  kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "machine_task_by_id: vm's daemon didn't stop"; return 1; }
+  local refused code
+  refused="$(kanna read "$short" 2>&1)"; code=$?
+  [[ $code == 3 && "$refused" == *"task-$short \"Routed\" runs on vm, which is unreachable"* ]] || { echo "machine_task_by_id: reading a task on an unreachable machine ($code): $refused"; return 1; }
+  refused="$(kanna task send "$short" "anyone?" 2>&1)"; code=$?
+  [[ $code == 3 && "$refused" == *"runs on vm, which is unreachable"* ]] || { echo "machine_task_by_id: messaging a task on an unreachable machine ($code): $refused"; return 1; }
+  KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  vm_pid=$!
+  wait_for 10 eval 'vmk task list >/dev/null 2>&1' || { echo "machine_task_by_id: vm's daemon didn't start again to stop its keeper"; return 1; }
+}
+
 scenario project_import M4
 project_import() {
   start_daemon && start_app || { echo "project_import line $LINENO"; return 1; }

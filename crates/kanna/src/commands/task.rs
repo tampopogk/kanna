@@ -260,10 +260,14 @@ fn after(request: &Value, reply: &mut Value, mux: &mut Session, call: &mut Call)
 }
 
 fn before(request: &mut Value, mux: &mut Session) -> Result<Call, Failure> {
-    let located = locate(request, mux)?;
+    let remote = crate::route::task(request, mux)?;
+    let located = locate(request, mux).map_err(|f| match &remote {
+        Some(remote) => remote.explain(f),
+        None => f,
+    })?;
     let waiting = if request["action"] == "done" { mux.call("tasks", json!({ "action": "list" })).ok() } else { None };
     let (task, shorts) = located.unzip();
-    Ok(Call { task, shorts: shorts.unwrap_or_default(), waiting, ..Call::default() })
+    Ok(Call { task, shorts: shorts.unwrap_or_default(), waiting, remote, ..Call::default() })
 }
 
 fn wire(request: &Value) -> &'static str {

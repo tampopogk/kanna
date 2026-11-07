@@ -35,12 +35,12 @@ Both pictures were taken by the command, of a window in the background (`--bg`).
 | Command | Does |
 |---|---|
 | `kanna screenshot` | The caller's window to `$TMPDIR`; prints the path (refused outside a Kanna terminal) |
-| `kanna screenshot PANE` | That pane alone |
+| `kanna screenshot PANE` | That pane alone; PANE may be a task (`ac2b`), for its agent's pane, on whichever machine runs it |
 | `kanna screenshot --window WINDOW` | That whole window |
 | `-o FILE`, `--out FILE` | Write to FILE; with `--force`, replace it |
 | `--json` | The reply: `path`, `window`, `pane` (for a pane), `width`, `height` |
 
-Like any command that needs the app, it starts Kanna.app if it isn't running (exit 6 with `KANNA_SOCKET` set). It's in `kanna help screenshot`, `kanna commands --json` and the tab completion.
+Like any command that needs the app, it starts Kanna.app if it isn't running (exit 6 with `KANNA_SOCKET` set). A pane on another machine (a task there, or `--host`) is taken by that machine's app: its daemon replies with the PNG (`png: true`) instead of saving it, and this daemon saves it here ([machines §5](machines.md#5-the-app-link-over-the-network)). It's in `kanna help screenshot`, `kanna commands --json` and the tab completion.
 
 ## 3. How it's built
 

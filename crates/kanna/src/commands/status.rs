@@ -1,4 +1,4 @@
-use super::{pane, usage, Command, Flow};
+use super::{pane, usage, Command, Flow, PANE};
 use crate::args::Argv;
 use kanna_client::Failure;
 use serde_json::{json, Value};
@@ -18,7 +18,7 @@ pub const COMMAND: Command = Command {
     ],
     parse,
     show,
-    flow: Flow::PLAIN,
+    flow: Flow { panes: PANE, ..Flow::PLAIN },
 };
 
 fn parse(args: &mut Argv) -> Result<Value, Failure> {
