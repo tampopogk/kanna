@@ -56,6 +56,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .section > .sh span { color: var(--muted); font-size: 12px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px 22px; margin-top: 14px; }
 .grid.two { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.grid.three { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
 .tile { min-width: 0; }
 .tile.wide { grid-column: span 2; }
 .tile .label { color: var(--muted); font-size: 12px; }
@@ -93,7 +94,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Stats: a project's numbers over the last 30 days</h1>
-    <p>A third fixed tab in the Desk view, after Desk and Machines. Each number is today's value over a small chart of the last 30 days; hover a chart for a day's value. Quiz: the share of kept quiz answers you got right in the 30 days before each day, by kind and by area, and the misses still to come back. Main: commits and merges (tasks landed) per day. Tasks: how many are open at the end of each day (not done, Desk and Shelf together) with each day's made and done under it, made, started and ended per day, and how long each task took from made to done. Code quality is a placeholder for the next task.</p>
+    <p>A third fixed tab in the Desk view, after Desk and Machines. Each number is today's value over a small chart of the last 30 days; hover a chart for a day's value. Quiz: the share of kept quiz answers you got right in the 30 days before each day, by kind and by area, and the misses still to come back. Main: commits and merges (tasks landed) per day. Tasks: how many are open at the end of each day (not done, Desk and Shelf together) with each day's made and done under it, made, started and ended per day, and how long each task took from made to done. Agents: how long task agents worked, how long they waited on you and how soon you answered, how long finished work sat unlooked at, and turns per task with the median turn. Code quality is a placeholder for the next task.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="empty">A new project</button>
@@ -109,6 +110,7 @@ const today = new Date(2026, 9, 31);
 let fresh = location.hash.includes("empty");
 let updating = location.hash.includes("updating");
 
+const sum = a => a.reduce((x, y) => x + (y || 0), 0);
 function rng(seed) { let x = seed; return () => (x = (x * 1103515245 + 12345) % 2147483648) / 2147483648; }
 function series(seed, base, swing, zeroes = 0.1) {
   const r = rng(seed);
@@ -125,7 +127,7 @@ function data() {
     const made = Array(DAYS).fill(0); made[28] = 4; made[29] = 2;
     const started = Array(DAYS).fill(0); started[28] = 2; started[29] = 3;
     const ended = Array(DAYS).fill(0); ended[29] = 1;
-    return { project: "~/work/notes", before: 0, grade: null, misses: [], kinds: [], areas: [], answers: 0, commits, merges, made, started, ended, lead: [{ day: 29, hours: 5.2, name: "Set up the repo" }] };
+    return { project: "~/work/notes", before: 0, grade: null, misses: [], kinds: [], areas: [], answers: 0, commits, merges, made, started, ended, lead: [{ day: 29, hours: 5.2, name: "Set up the repo" }], agents: null };
   }
   const r = rng(7);
   const grade = Array.from({ length: DAYS }, (_, i) => i < 4 ? null : Math.round((0.58 + i * 0.0068 + (r() - 0.5) * 0.04) * 1000) / 10);
@@ -141,14 +143,30 @@ function data() {
     kinds: [["why", 11, 12], ["where", 13, 16], ["behaviour", 15, 20], ["architecture", 14, 21], ["drawing", 6, 10], ["bug", 9, 16]],
     areas: [["docs/specs", 17, 20], ["crates/kanna-daemon", 19, 26], ["apps/kanna", 15, 22], ["crates/kanna", 7, 11], ["scripts", 5, 9], ["Other", 5, 7]],
     commits, merges, made: series(21, 7, 8), started: series(31, 8, 9), ended: series(41, 6, 8), lead,
+    agents: agentData(merges),
   };
+}
+function agentData(merges) {
+  const r = rng(13);
+  const names = ["Stats tab on the Desk", "Fix the page_comments pinch", "Agent prompts setting", "Cycle skips minimized", "Shelf trailing closure warning", "Release notes"];
+  const work = merges.map(m => Math.round((m * 2.6 + r() * 5) * 10) / 10);
+  const waiting = merges.map(m => m ? Math.round((m * 0.5 + r() * 1.2) * 10) / 10 : 0);
+  const answers = [], unread = [];
+  merges.forEach((m, day) => {
+    for (let k = 0; k < m * 2; k++) answers.push({ day, hours: Math.round(Math.exp(r() * 4.2 - 4) * 100) / 100, name: names[Math.floor(r() * 6)] });
+    for (let k = 0; k < m; k++) unread.push({ day, hours: Math.round(Math.exp(r() * 5 - 3) * 100) / 100, name: names[Math.floor(r() * 6)] });
+  });
+  const turns = merges.map(m => m * 5 + Math.round(r() * 9)), tasks = merges.map(m => m + 2);
+  const perTask = turns.map((t, i) => Math.round(t / tasks[i] * 10) / 10);
+  const length = merges.map((m, i) => Math.round((5 + i * 0.05 + (r() - 0.5) * 3) * 10) / 60 / 10);
+  return { work, waiting, answers, unread, turns: sum(turns), tasks: Math.round(sum(turns) / 4.3), perTask, length, waitingNow: 2, unreadNow: 3 };
 }
 const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const dayOf = i => new Date(today - (DAYS - 1 - i) * DAY);
 const fmtDay = i => i === DAYS - 1 ? "Today" : dayOf(i).toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
 const short = i => i === DAYS - 1 ? "today" : dayOf(i).toLocaleDateString("en", { month: "short", day: "numeric" });
-const sum = a => a.reduce((x, y) => x + (y || 0), 0);
 const hours = h => h < 1 ? `${Math.round(h * 60)}m` : h < 48 ? `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`.replace(/ 0m$/, "") : `${Math.round(h / 24)}d`;
+const total = h => h < 1 ? `${Math.round(h * 60)}m` : h < 10 ? `${Math.round(h * 10) / 10}h` : `${Math.round(h)}h`;
 const median = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const nice = v => { if (v <= 5) return Math.max(1, Math.ceil(v)); const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; };
 
@@ -224,7 +242,7 @@ function draw(el) {
       text = `<b>${c.med[i] == null ? "—" : hours(c.med[i])}</b> <span>7-day median</span><br>${on.length ? on.map(p => `${esc(p.name)} · ${hours(p.hours)}`).join("<br>") : `<span>No task done</span>`}`;
     } else {
       const v = vals[i];
-      text = `<b>${v == null ? "—" : c.opts.unit === "%" ? v + "%" : v}</b> <span>${esc(c.opts.what(v))}</span>`;
+      text = `<b>${v == null ? "—" : c.opts.unit === "%" ? v + "%" : c.opts.unit === "h" ? total(v) : v}</b> <span>${esc(c.opts.what(v))}</span>`;
     }
     showTip(`<span>${fmtDay(i)}</span><br>${text}`, e);
   };
@@ -266,6 +284,16 @@ function render() {
       <div class="tile"><div class="label">By kind</div>${ranked(d.kinds.slice().sort((a, b) => b[1] / b[2] - a[1] / a[2]))}</div>
       <div class="tile"><div class="label">By area</div>${ranked(d.areas.filter(a => a[0] !== "Other").sort((a, b) => b[1] / b[2] - a[1] / a[2]).concat(d.areas.filter(a => a[0] === "Other")))}</div>
     </div>` : `<p class="empty-note">No quiz answers yet. The planning agent offers a quiz once something lands on main; your answers show here.</p>`;
+  const a = d.agents;
+  const agents = !a ? `<p class="empty-note">No agent status recorded yet. Once a task's agent runs, its time shows here.</p>` : `
+      <div class="grid three">
+        ${tile("Agent time", total(sum(a.work)), `in 30 days · ${total(last(a.work))} today`, chart("columns", a.work, { unit: "h", what: () => "agents worked" }))}
+        ${tile("Waiting on you", total(sum(a.waiting)), `in 30 days · ${total(last(a.waiting))} today`, chart("columns", a.waiting, { unit: "h", what: () => "at needs-you" }))}
+        ${tile("Time to your answer", hours(median(a.answers.map(p => p.hours))), `median of ${a.answers.length} · ${a.waitingNow} waiting now`, chart("dots", a.answers, { unit: "h" }))}
+        ${tile("Done, not looked at", hours(median(a.unread.map(p => p.hours))), `median of ${a.unread.length} · ${a.unreadNow} not looked at yet`, chart("dots", a.unread, { unit: "h" }))}
+        ${tile("Turns per task", (a.turns / a.tasks).toFixed(1), `${a.turns} turns · ${a.tasks} tasks`, chart("line", a.perTask, { what: () => "turns per task that day" }))}
+        ${tile("Turn length", hours(median(a.length)), `median of ${a.turns}`, chart("line", a.length, { unit: "h", max: 0.25, what: () => "median turn that day" }))}
+      </div>`;
   const page = `
     <h2>Stats</h2>
     <p class="sub">${esc(d.project)} · main · last 30 days</p>
@@ -284,6 +312,7 @@ function render() {
         ${tile("Ended", last(d.ended), `today · ${sum(d.ended)} in 30 days`, chart("columns", d.ended, { what: v => v === 1 ? "task ended" : "tasks ended" }))}
         ${tile("Made to done", leads.length ? hours(median(leads)) : "—", leads.length ? `median of ${leads.length}` : "", chart("dots", d.lead, { unit: "h" }), "wide")}
       </div></div>
+    <div class="section" id="agents"><div class="sh"><b>Agents</b><span>task agents, from each change of their status</span></div>${agents}</div>
     <div class="section"><div class="sh"><b>Code quality</b><span>how good the code is, and its trend</span></div>
       <div class="placeholder"><b>Not measured yet.</b> Measures of the code on main, sampled at each new commit, come here.</div></div>
     <div class="tip" hidden></div>`;
@@ -305,6 +334,7 @@ if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
 addEventListener("resize", () => document.querySelectorAll("[data-chart]").forEach(draw));
 render();
+if (location.hash.includes("agents")) document.getElementById("agents").scrollIntoView();
 </script>
 </body>
 </html>

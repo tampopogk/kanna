@@ -96,7 +96,19 @@ fn figure(value: &Value, unit: Option<&str>) -> String {
         (None, _) => "—".to_string(),
         (Some(v), Some("%")) => format!("{}%", v.round() as i64),
         (Some(v), Some("s")) => duration(v),
+        (Some(v), Some("h")) => hours(v),
+        (Some(v), Some("x")) => format!("{v:.1}"),
         (Some(v), _) => format!("{}", v.round() as i64),
+    }
+}
+
+fn hours(hours: f64) -> String {
+    if hours < 1.0 {
+        format!("{}m", (hours * 60.0).round() as i64)
+    } else if hours < 10.0 {
+        format!("{}h", (hours * 10.0).round() / 10.0)
+    } else {
+        format!("{}h", hours.round() as i64)
     }
 }
 
@@ -114,6 +126,15 @@ pub fn duration(seconds: f64) -> String {
 mod tests {
     use super::*;
     use crate::commands::tests::parse;
+
+    #[test]
+    fn hours_and_ratios_read_as_the_app_shows_them() {
+        assert_eq!(figure(&json!(212.4), Some("h")), "212h");
+        assert_eq!(figure(&json!(3.44), Some("h")), "3.4h");
+        assert_eq!(figure(&json!(3.0), Some("h")), "3h");
+        assert_eq!(figure(&json!(0.5), Some("h")), "30m");
+        assert_eq!(figure(&json!(4.3), Some("x")), "4.3");
+    }
 
     #[test]
     fn stats_print_a_line_a_tile_with_its_sparkline() {

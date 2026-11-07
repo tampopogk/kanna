@@ -582,7 +582,8 @@ final class StatsChartView: NSView {
             let all = tile.chart.points.map(\.value)
             return StatsFormat.niceDuration(StatsFormat.percentile(all, 0.9) ?? 3600)
         }
-        return StatsFormat.nice(tile.chart.values.compactMap { $0 }.max() ?? 0)
+        let top = tile.chart.values.compactMap { $0 }.max() ?? 0
+        return tile.unit == "s" ? StatsFormat.niceDuration(top) : StatsFormat.nice(top)
     }
 
     private var strip: CGFloat { tile.chart.kind == "flow" ? 34 : 0 }
@@ -590,7 +591,7 @@ final class StatsChartView: NSView {
 
     private func y(_ value: Double) -> CGFloat { baseline - CGFloat(min(value, scale) / scale) * (baseline - plot.minY) }
 
-    private func tick(_ value: Double) -> String { tile.unit == "s" ? StatsFormat.duration(value) : tile.unit == "%" ? "\(Int(value))%" : "\(Int(value))" }
+    private func tick(_ value: Double) -> String { tile.unit == "s" ? StatsFormat.duration(value) : tile.unit == "h" ? StatsFormat.hours(value) : tile.unit == "%" ? "\(Int(value))%" : "\(Int(value))" }
 
     override func draw(_ dirtyRect: NSRect) {
         let plot = self.plot

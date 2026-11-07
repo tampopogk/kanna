@@ -811,9 +811,12 @@ impl Phone {
             for item in self.db.phone_unread(path).unwrap_or_default() {
                 if let Some(delivered) = item.message.and_then(|id| self.db.message(id).ok().flatten()).and_then(|m| m.delivered) {
                     let _ = self.db.set_phone_read(path, item.seq);
+                    let answered = self.db.phone_items(path, item.seq).unwrap_or_default().iter().any(|later| later.kind != "me" && later.kind != "sys");
                     retell.push(item);
-                    watch.answering = Some(delivered);
-                    watch.nudged = false;
+                    if !answered {
+                        watch.answering = Some(delivered);
+                        watch.nudged = false;
+                    }
                 }
             }
             if let Some(delivered) = watch.answering.filter(|at| state.as_deref() == Some("idle") && time - at > SETTLE) {
