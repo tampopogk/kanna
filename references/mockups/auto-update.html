@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto Update</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #f07a7a; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5); --toast: rgba(34,38,45,.97); --toast-shadow: 0 8px 24px rgba(0,0,0,.45);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #c43d3d; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18); --toast: rgba(255,255,255,.98); --toast-shadow: 0 8px 24px rgba(0,0,0,.16);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
+.controls .gap { width: 12px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { border-color: var(--accent); color: var(--accent); }
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 480px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.menubar { height: 24px; flex: none; display: flex; gap: 16px; align-items: center; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; }
+.menubar b { font-weight: 600; cursor: default; }
+.menubar .kanna.open { background: var(--accent); color: #fff; border-radius: 4px; padding: 0 6px; margin: 0 -6px; }
+.menu { position: absolute; top: 24px; left: 6px; width: 230px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--toast-shadow); padding: 4px; z-index: 6; font-size: 13px; }
+.menu div { padding: 3px 10px; border-radius: 4px; }
+.menu div.hr { height: 1px; padding: 0; margin: 4px 8px; background: var(--line); }
+.menu div.live { cursor: pointer; }
+.menu div.live:hover { background: var(--accent); color: #fff; }
+.menu div.muted { color: var(--muted); }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.lights { display: flex; gap: 6px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 44%; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--term); }
+.head { height: 32px; flex: none; display: flex; align-items: center; padding: 0 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; overflow: auto; padding: 10px 12px; font: 12px/1.6 var(--mono); white-space: pre-wrap; }
+.term .p { color: var(--warn); } .term .m { color: var(--machine); } .term .out { color: var(--muted); }
+.side { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.stack { position: absolute; top: 72px; right: 12px; width: 340px; display: flex; flex-direction: column; gap: 8px; z-index: 5; }
+.toast { display: flex; gap: 10px; align-items: flex-start; background: var(--toast); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: var(--toast-shadow); }
+.toast .icon { flex: none; width: 18px; height: 18px; color: var(--accent); margin-top: 1px; }
+.toast.bad .icon { color: var(--bad); } .toast.done .icon { color: var(--ok); }
+.toast .body { flex: 1; min-width: 0; }
+.toast .title { font-weight: 600; }
+.toast .detail { color: var(--muted); font-size: 12px; }
+.toast .warnline { color: var(--warn); font-size: 12px; margin-top: 3px; }
+.toast .where { color: var(--accent); font-size: 11px; margin-top: 3px; cursor: pointer; }
+.toast .acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.toast .acts .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.meter { height: 4px; border-radius: 2px; background: var(--line); margin-top: 6px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); }
+.status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; background: var(--bg); color: var(--muted); z-index: 7; }
+.status b { color: var(--text); font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Auto update: ask first</h1>
+    <p>Kanna checks by itself and shows one toast that stays until you answer. Nothing installs without Install and Relaunch, and Later leaves everything as it was. Walk through it with the buttons, or start from a scene.</p>
+    <div class="controls" id="controls"></div>
+  </div>
+  <div class="window">
+    <div class="menubar"><b class="kanna" id="kanna">Kanna</b><span>File</span><span>Edit</span><span>Pane</span><span>Window</span></div>
+    <div class="menu" id="menu" hidden></div>
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Add rate limiting</b></div>
+    <div class="content">
+      <div class="agent"><div class="head">Agent · claude · Add rate limiting</div><div class="term" id="term"></div></div>
+      <div class="side"><div class="head">crates/kanna/src/limit.rs</div><div class="term out" id="tab"></div></div>
+    </div>
+    <div class="stack" id="stack"></div>
+    <div class="status" id="status" hidden></div>
+  </div>
+</main>
+<script>
+const NEW = "4.2.0", OLD = "4.1.2";
+const ICONS = {
+  update: `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.5"/><path d="M10 14V6.5M6.8 9.6 10 6.4l3.2 3.2"/></svg>`,
+  done: `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.5"/><path d="m6.5 10.2 2.4 2.4 4.6-5"/></svg>`,
+  bad: `<svg class="icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 2.8 18 17H2z"/><path d="M10 8v4.2M10 14.6v.1" stroke-linecap="round"/></svg>`,
+};
+const SCENES = {
+  found: { label: "Found", toast: () => ({ icon: "update", title: `Kanna ${NEW} is available`, detail: "Relaunching keeps your terminals and running agents.", where: "What's new", acts: [["Later", "later"], ["Install and Relaunch", "download", true]] }) },
+  protocol: { label: "Found: a machine falls behind", toast: () => ({ icon: "update", title: `Kanna ${NEW} is available`, detail: "Relaunching keeps your terminals and running agents.", warn: "linux-1 will show Incompatible until you update it.", where: "What's new", acts: [["Later", "later"], ["Install and Relaunch", "download", true]] }) },
+  download: { label: "Downloading", toast: () => ({ icon: "update", title: `Downloading Kanna ${NEW}`, detail: "18 of 45 MB", meter: 40, acts: [["Cancel", "idle"]] }) },
+  relaunch: { label: "Relaunching", status: [`Installing Kanna ${NEW}`, "Your terminals keep running."] },
+  updated: { label: "Updated", toast: () => ({ icon: "done", cls: "done", title: `Updated to Kanna ${NEW}`, detail: "Every terminal and agent carried on.", where: "What's new" }) },
+  later: { label: "After Later", menu: true },
+  idle: { label: "Up to date", toast: () => ({ icon: "done", cls: "done", title: "Kanna is up to date", detail: `${OLD} is the newest version.` }), menu: "idle" },
+  failed: { label: "Failed", toast: () => ({ icon: "bad", cls: "bad", title: `Kanna ${NEW} didn't install`, detail: "This copy of Kanna is on a read-only disk. Move it to Applications.", acts: [["Close", "later"]] }) },
+};
+const TERM = `<span class="p">&gt;</span> add rate limiting to the login endpoint\n<span class="m">●</span> Reading crates/kanna/src/limit.rs\n<span class="m">●</span> Running cargo test -p kanna limit\n  <span class="out">running 14 tests…</span>`;
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let scene = "found", menuOpen = false, afterLater = false;
+
+function menuItems() {
+  const item = afterLater && scene !== "idle" ? `<div class="live" data-go="download">Install Update ${NEW}…</div>` : `<div class="live" data-go="idle">Check for Updates…</div>`;
+  return `${item}<div class="hr"></div><div class="muted">Agent Accounts</div><div class="hr"></div><div class="muted">Quit Kanna</div>`;
+}
+function render() {
+  const s = SCENES[scene];
+  document.getElementById("term").innerHTML = TERM;
+  document.getElementById("tab").textContent = "pub struct Limiter { … }\n\nimpl Limiter { … }";
+  const t = s.toast && s.toast();
+  document.getElementById("stack").innerHTML = t ? `<div class="toast ${t.cls || ""}">${ICONS[t.icon]}<div class="body">
+    <div class="title">${esc(t.title)}</div><div class="detail">${esc(t.detail)}</div>
+    ${t.meter ? `<div class="meter"><i style="width:${t.meter}%"></i></div>` : ""}
+    ${t.warn ? `<div class="warnline">${esc(t.warn)}</div>` : ""}
+    ${t.where ? `<div class="where">${esc(t.where)}</div>` : ""}
+    ${t.acts ? `<div class="acts">${t.acts.map(([label, go, primary]) => `<button data-go="${go}" class="${primary ? "primary" : ""}">${label}</button>`).join("")}</div>` : ""}
+  </div></div>` : "";
+  const status = document.getElementById("status");
+  status.hidden = !s.status;
+  if (s.status) status.innerHTML = `<b>${esc(s.status[0])}</b><span>${esc(s.status[1])}</span>`;
+  const menu = document.getElementById("menu");
+  menu.hidden = !menuOpen;
+  menu.innerHTML = menuItems();
+  document.getElementById("kanna").classList.toggle("open", menuOpen);
+  document.querySelectorAll("#controls [data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === scene));
+}
+function go(name) {
+  if (name === "later") { afterLater = true; scene = "later"; menuOpen = true; }
+  else if (name === "idle") { afterLater = false; scene = "idle"; menuOpen = false; }
+  else { scene = name; menuOpen = !!SCENES[name].menu && name === "later"; if (name !== "later") afterLater = false; }
+  render();
+  if (name === "download" && !location.hash.includes("picture")) timer = setTimeout(() => { go("relaunch"); timer = setTimeout(() => go("updated"), 1500); }, 1800);
+}
+let timer;
+document.getElementById("controls").innerHTML = Object.entries(SCENES).map(([id, s]) => `<button data-scene="${id}">${s.label}</button>`).join("") + `<span class="gap"></span><button id="theme">Light / dark</button>`;
+document.addEventListener("click", e => {
+  const scenic = e.target.closest("[data-scene]"), jump = e.target.closest("[data-go]");
+  if (scenic || jump) { clearTimeout(timer); go(scenic ? scenic.dataset.scene : jump.dataset.go); }
+  if (e.target.id === "kanna") { menuOpen = !menuOpen; render(); }
+  if (e.target.id === "theme") { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; }
+});
+const hash = location.hash.slice(1).split("&");
+if (hash.includes("light")) document.documentElement.dataset.theme = "light";
+const picture = hash.find(h => h.startsWith("picture-"));
+if (picture) { document.body.classList.add("picture"); go(picture.slice(8)); } else render();
+</script>
+</body>
+</html>

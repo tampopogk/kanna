@@ -240,9 +240,105 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     alter table samples add column revision integer not null default 0;
 "), Step::Sql("
     alter table messages add column comment text check (comment is null or json_valid(comment));
+"), Step::Sql("
+    alter table schedules add column paused real;
+    create table schedule_firings (
+        id integer primary key,
+        schedule integer not null references schedules (id) on delete cascade,
+        at real not null,
+        how text not null check (how in ('rule', 'run')),
+        state text not null check (state in ('left', 'skipped', 'failed')),
+        message integer references messages (id),
+        detail text,
+        reply text,
+        replied_at real
+    );
+    create index schedule_firings_by_schedule on schedule_firings (schedule, id);
+"), Step::Sql("
+    create table phone_chat (
+        repo text not null,
+        seq integer not null,
+        at real not null,
+        kind text not null check (kind in ('me', 'say', 'ask', 'show', 'round', 'sys')),
+        client text,
+        message integer references messages (id),
+        read integer not null default 0,
+        doc text not null default '{}' check (json_valid(doc)),
+        primary key (repo, seq)
+    );
+    create unique index phone_chat_once on phone_chat (repo, client) where client is not null;
+"), Step::Sql("
+    alter table messages add column client text;
+    create unique index messages_once on messages (recipient, client) where client is not null;
+    create table last_words (
+        who text primary key,
+        at real not null,
+        asking integer not null default 0,
+        text text not null
+    );
+"), Step::Sql("
+    create table said (
+        id integer primary key,
+        who text not null,
+        at real not null,
+        asking integer not null default 0,
+        text text not null
+    );
+    create index said_by_who on said (who, id);
+    insert into said (who, at, asking, text) select who, at, asking, text from last_words;
+    drop table last_words;
+"), Step::Sql("
+    create table status_reports (
+        terminal text primary key,
+        at real not null,
+        doc text not null check (json_valid(doc))
+    );
+"), Step::Sql("
+    alter table quiz_answers add column n integer;
+    create unique index quiz_answers_by_question on quiz_answers (round, n) where n is not null;
+    create table quiz_ready (
+        round integer primary key references quiz_rounds (id),
+        repo text not null,
+        written real not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        taken real
+    );
+    create index quiz_ready_by_repo on quiz_ready (repo, taken);
+    create table quiz_map (
+        repo text primary key,
+        at real not null,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create table quiz_notes (
+        repo text not null,
+        subsystem text not null,
+        at real not null,
+        text text not null,
+        primary key (repo, subsystem)
+    );
 ")];
 
 pub const RECENT: usize = 10;
+pub const SAID_KEPT: i64 = 100;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Said {
+    pub at: f64,
+    pub asking: bool,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhoneItem {
+    pub seq: i64,
+    pub at: f64,
+    pub kind: String,
+    pub client: Option<String>,
+    pub message: Option<i64>,
+    pub doc: Value,
+}
+
+pub const FIRINGS_KEPT: i64 = 20;
 
 pub fn version() -> i64 {
     MIGRATIONS.len() as i64
@@ -361,6 +457,16 @@ pub struct Round {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Ready {
+    pub round: i64,
+    pub repo: String,
+    pub head: String,
+    pub written: f64,
+    pub doc: Value,
+    pub taken: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Answer {
     pub id: i64,
     pub round: i64,
@@ -383,7 +489,44 @@ pub struct Schedule {
     pub next: f64,
     pub message: Option<i64>,
     pub made_at: f64,
+    pub paused: Option<f64>,
     pub doc: Value,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum How {
+    Rule,
+    Run,
+}
+
+impl How {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            How::Rule => "rule",
+            How::Run => "run",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Left {
+    Message(i64),
+    Skipped,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Firing {
+    pub id: i64,
+    pub schedule: i64,
+    pub at: f64,
+    pub how: String,
+    pub state: String,
+    pub message: Option<i64>,
+    pub delivered: Option<f64>,
+    pub detail: Option<String>,
+    pub reply: Option<String>,
+    pub replied_at: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -394,6 +537,15 @@ pub struct Sample {
     pub value: f64,
     pub doc: Value,
     pub revision: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentRow {
+    pub task: String,
+    pub name: String,
+    pub at: f64,
+    pub what: String,
+    pub status: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -755,6 +907,36 @@ impl Db {
         self.conn.execute("insert into planners (path, doc) values (?1, ?2) on conflict (path) do update set doc = excluded.doc", params![path, doc.to_string()]).map(|_| ())
     }
 
+    pub fn reports(&self) -> rusqlite::Result<Vec<(String, Value)>> {
+        let mut statement = self.conn.prepare("select terminal, doc from status_reports")?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, doc_of(r.get(1)?))))?;
+        rows.collect()
+    }
+
+    pub fn put_reports(&self, rows: &[(String, Option<Value>)]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (terminal, doc) in rows {
+            match doc {
+                Some(doc) => tx.execute("insert into status_reports (terminal, at, doc) values (?1, ?2, ?3) on conflict (terminal) do update set at = excluded.at, doc = excluded.doc", params![terminal, now(), doc.to_string()])?,
+                None => tx.execute("delete from status_reports where terminal = ?1", [terminal])?,
+            };
+        }
+        tx.commit()
+    }
+
+    pub fn keep_reports(&self, terminals: &[String]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let kept: Vec<String> = {
+            let mut statement = tx.prepare("select terminal from status_reports")?;
+            let rows = statement.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for terminal in kept.iter().filter(|t| !terminals.contains(t)) {
+            tx.execute("delete from status_reports where terminal = ?1", [terminal])?;
+        }
+        tx.commit()
+    }
+
     pub fn log(&self, task: &str, change: &Change) -> rusqlite::Result<()> {
         log(&self.conn, task, change)
     }
@@ -800,6 +982,81 @@ impl Db {
         }
     }
 
+    pub fn set_message_client(&self, id: i64, client: &str) -> rusqlite::Result<()> {
+        self.conn.execute("update messages set client = ?2 where id = ?1", params![id, client]).map(|_| ())
+    }
+
+    pub fn message_of(&self, client: &str) -> rusqlite::Result<Option<Message>> {
+        Ok(self.select_messages(&format!("select {MESSAGE} from messages where client = ?1"), [client])?.into_iter().next())
+    }
+
+    pub fn put_said(&self, who: &str, text: &str, asking: bool) -> rusqlite::Result<()> {
+        let newest = self.conn.query_row("select id, asking, text from said where who = ?1 order by id desc limit 1", [who], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?, r.get::<_, String>(2)?))).optional()?;
+        match newest {
+            Some((_, was, same)) if same == text && was == asking => Ok(()),
+            Some((id, _, same)) if same == text => self.conn.execute("update said set at = ?2, asking = ?3 where id = ?1", params![id, now(), asking]).map(|_| ()),
+            _ => {
+                self.conn.execute("insert into said (who, at, asking, text) values (?1, ?2, ?3, ?4)", params![who, now(), asking, text])?;
+                self.conn.execute("delete from said where who = ?1 and id not in (select id from said where who = ?1 order by id desc limit ?2)", params![who, SAID_KEPT]).map(|_| ())
+            }
+        }
+    }
+
+    pub fn said(&self, who: &str) -> rusqlite::Result<Vec<Said>> {
+        self.conn.prepare("select at, asking, text from said where who = ?1 order by id")?.query_map([who], |r| Ok(Said { at: r.get(0)?, asking: r.get(1)?, text: r.get(2)? }))?.collect()
+    }
+
+    pub fn message(&self, id: i64) -> rusqlite::Result<Option<Message>> {
+        Ok(self.select_messages(&format!("select {MESSAGE} from messages where id = ?1"), [id])?.into_iter().next())
+    }
+
+    fn phone_item_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<PhoneItem> {
+        let doc: String = r.get(5)?;
+        Ok(PhoneItem { seq: r.get(0)?, at: r.get(1)?, kind: r.get(2)?, client: r.get(3)?, message: r.get(4)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+    }
+
+    pub fn put_phone_item(&self, repo: &str, kind: &str, client: Option<&str>, message: Option<i64>, doc: &Value) -> rusqlite::Result<PhoneItem> {
+        let at = now();
+        let seq: i64 = self.conn.query_row("insert into phone_chat (repo, seq, at, kind, client, message, doc) values (?1, (select coalesce(max(seq), 0) + 1 from phone_chat where repo = ?1), ?2, ?3, ?4, ?5, ?6) returning seq", params![repo, at, kind, client, message, doc.to_string()], |r| r.get(0))?;
+        Ok(PhoneItem { seq, at, kind: kind.to_string(), client: client.map(String::from), message, doc: doc.clone() })
+    }
+
+    pub fn phone_items(&self, repo: &str, after: i64) -> rusqlite::Result<Vec<PhoneItem>> {
+        let mut statement = self.conn.prepare("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and seq > ?2 order by seq")?;
+        let rows = statement.query_map(params![repo, after], Self::phone_item_row)?;
+        rows.collect()
+    }
+
+    pub fn phone_asked(&self, thread: &str) -> rusqlite::Result<Option<f64>> {
+        self.conn.query_row("select at from phone_chat where repo = ?1 and seq = (select max(seq) from phone_chat where repo = ?1) and kind = 'ask' and json_extract(doc, '$.chosen') is null", [thread], |r| r.get(0)).optional()
+    }
+
+    pub fn phone_item(&self, repo: &str, seq: i64) -> rusqlite::Result<Option<PhoneItem>> {
+        self.conn.query_row("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and seq = ?2", params![repo, seq], Self::phone_item_row).optional()
+    }
+
+    pub fn phone_item_of(&self, repo: &str, client: &str) -> rusqlite::Result<Option<PhoneItem>> {
+        self.conn.query_row("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and client = ?2", params![repo, client], Self::phone_item_row).optional()
+    }
+
+    pub fn set_phone_doc(&self, repo: &str, seq: i64, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update phone_chat set doc = ?3 where repo = ?1 and seq = ?2", params![repo, seq, doc.to_string()]).map(|_| ())
+    }
+
+    pub fn phone_unread(&self, repo: &str) -> rusqlite::Result<Vec<PhoneItem>> {
+        let mut statement = self.conn.prepare("select seq, at, kind, client, message, doc from phone_chat where repo = ?1 and kind = 'me' and read = 0 order by seq")?;
+        let rows = statement.query_map([repo], Self::phone_item_row)?;
+        rows.collect()
+    }
+
+    pub fn phone_waiting(&self, repo: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row("select exists (select 1 from phone_chat p join messages m on m.id = p.message where p.repo = ?1 and m.delivered is null)", [repo], |r| r.get(0))
+    }
+
+    pub fn set_phone_read(&self, repo: &str, seq: i64) -> rusqlite::Result<()> {
+        self.conn.execute("update phone_chat set read = 1 where repo = ?1 and seq = ?2", params![repo, seq]).map(|_| ())
+    }
+
     pub fn delivered(&self, ids: &[i64]) -> rusqlite::Result<()> {
         let at = now();
         let tx = self.conn.unchecked_transaction()?;
@@ -830,6 +1087,69 @@ impl Db {
             params![round, now(), kind, file, right, again, doc.to_string()],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn answer_question(&self, round: i64, n: i64, kind: &str, file: &str, right: bool, again: Option<i64>, doc: &Value) -> rusqlite::Result<(i64, bool)> {
+        let added = self.conn.execute(
+            "insert into quiz_answers (round, at, kind, file, right, again, doc, n) values (?1, ?2, ?3, ?4, ?5, ?6, json_patch('{}', ?7), ?8) on conflict (round, n) where n is not null do nothing",
+            params![round, now(), kind, file, right, again, doc.to_string(), n],
+        )?;
+        let id = self.conn.query_row("select id from quiz_answers where round = ?1 and n = ?2", params![round, n], |r| r.get(0))?;
+        Ok((id, added > 0))
+    }
+
+    pub fn put_ready(&self, repo: &str, head: &str, round_doc: &Value, doc: &Value) -> rusqlite::Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        let written = now();
+        tx.execute("insert into quiz_rounds (repo, at, head, doc) values (?1, ?2, ?3, json_patch('{}', ?4))", params![repo, written, head, round_doc.to_string()])?;
+        let round = tx.last_insert_rowid();
+        tx.execute("insert into quiz_ready (round, repo, written, doc) values (?1, ?2, ?3, ?4)", params![round, repo, written, doc.to_string()])?;
+        tx.commit()?;
+        Ok(round)
+    }
+
+    pub fn ready(&self, round: i64) -> rusqlite::Result<Option<Ready>> {
+        self.conn.query_row(&format!("{READY} where q.round = ?1"), [round], ready_row).optional()
+    }
+
+    pub fn open_rounds(&self, repo: &str) -> rusqlite::Result<Vec<Ready>> {
+        let mut statement = self.conn.prepare(&format!("{READY} where q.repo = ?1 and (q.taken is null or (select count(*) from quiz_answers a where a.round = q.round and a.n is not null) < json_array_length(q.doc, '$.questions')) order by q.round"))?;
+        let rows = statement.query_map([repo], ready_row)?;
+        rows.collect()
+    }
+
+    pub fn round_waits(&self, repo: &str) -> rusqlite::Result<bool> {
+        self.conn.prepare("select 1 from quiz_ready where repo = ?1 and taken is null and json_type(doc, '$.about') is not 'text'")?.exists([repo])
+    }
+
+    pub fn take_ready(&self, round: i64) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute("update quiz_ready set taken = ?2 where round = ?1 and taken is null", params![round, now()])? > 0)
+    }
+
+    pub fn picks(&self, round: i64) -> rusqlite::Result<Vec<(i64, i64)>> {
+        let mut statement = self.conn.prepare("select n, coalesce(json_extract(doc, '$.pick'), 0) from quiz_answers where round = ?1 and n is not null order by n")?;
+        let rows = statement.query_map([round], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn quiz_map(&self, repo: &str) -> rusqlite::Result<Option<Value>> {
+        self.conn.query_row("select doc from quiz_map where repo = ?1", [repo], |r| Ok(doc_of(r.get(0)?))).optional()
+    }
+
+    pub fn set_quiz_map(&self, repo: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into quiz_map (repo, at, doc) values (?1, ?2, ?3) on conflict (repo) do update set at = excluded.at, doc = excluded.doc", params![repo, now(), doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn quiz_notes(&self, repo: &str) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut statement = self.conn.prepare("select subsystem, text from quiz_notes where repo = ?1 order by subsystem")?;
+        let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn set_quiz_note(&self, repo: &str, subsystem: &str, text: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert into quiz_notes (repo, subsystem, at, text) values (?1, ?2, ?3, ?4) on conflict (repo, subsystem) do update set at = excluded.at, text = excluded.text", params![repo, subsystem, now(), text])?;
+        Ok(())
     }
 
     pub fn find_answer(&self, id: i64) -> rusqlite::Result<Option<(Answer, String)>> {
@@ -904,6 +1224,33 @@ impl Db {
         let mut statement = self.conn.prepare("select id, coalesce(json_extract(doc, '$.name'), id) from tasks where repo = ?1")?;
         let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
         rows.collect()
+    }
+
+    pub fn agent_rows(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<AgentRow>> {
+        let mut statement = self.conn.prepare(
+            "select e.task, coalesce(json_extract(t.doc, '$.name'), t.id), e.at, e.what, json_extract(e.doc, '$.status')
+             from task_events e join tasks t on t.id = e.task
+             where t.repo = ?1
+               and e.what in ('status', 'stopped', 'started', 'picked', 'activated', 'looked', 'done')
+               and e.task in (select task from task_events where what = 'status')
+               and (t.place <> 'done' or exists (select 1 from task_events d where d.task = t.id and d.at >= ?2))
+             order by e.task, e.at, e.id",
+        )?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(AgentRow { task: r.get(0)?, name: r.get(1)?, at: r.get(2)?, what: r.get(3)?, status: r.get(4)? }))?;
+        rows.collect()
+    }
+
+    pub fn last_status(&self, task: &str) -> rusqlite::Result<Option<String>> {
+        let found: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "select case what when 'status' then json_extract(doc, '$.status') end from task_events
+                 where task = ?1 and what in ('status', 'stopped', 'started') order by at desc, id desc limit 1",
+                [task],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.flatten())
     }
 
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
@@ -983,7 +1330,7 @@ impl Db {
         let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
         let tx = self.conn.unchecked_transaction()?;
         let mut count = 0;
-        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("quiz_ready", "repo", "update"), ("quiz_map", "repo", "update or replace"), ("quiz_notes", "repo", "update or replace"), ("phone_chat", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
             count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
         }
         let folder = "json_extract(doc, '$.folder')";
@@ -1002,9 +1349,9 @@ impl Db {
     }
 
     pub fn schedules(&self) -> rusqlite::Result<Vec<Schedule>> {
-        let mut statement = self.conn.prepare("select id, repo, name, target, rule, prompt, next, message, made_at, doc from schedules order by id")?;
+        let mut statement = self.conn.prepare("select id, repo, name, target, rule, prompt, next, message, made_at, paused, doc from schedules order by id")?;
         let rows = statement.query_map([], |r| {
-            Ok(Schedule { id: r.get(0)?, repo: r.get(1)?, name: r.get(2)?, target: r.get(3)?, rule: r.get(4)?, prompt: r.get(5)?, next: r.get(6)?, message: r.get(7)?, made_at: r.get(8)?, doc: doc_of(r.get(9)?) })
+            Ok(Schedule { id: r.get(0)?, repo: r.get(1)?, name: r.get(2)?, target: r.get(3)?, rule: r.get(4)?, prompt: r.get(5)?, next: r.get(6)?, message: r.get(7)?, made_at: r.get(8)?, paused: r.get(9)?, doc: doc_of(r.get(10)?) })
         })?;
         rows.collect()
     }
@@ -1013,9 +1360,46 @@ impl Db {
         Ok(self.conn.execute("delete from schedules where id = ?1", [id])? == 1)
     }
 
-    pub fn schedule_fired(&self, id: i64, next: f64, message: Option<i64>) -> rusqlite::Result<()> {
-        self.conn.execute("update schedules set next = ?2, message = coalesce(?3, message) where id = ?1", params![id, next, message])?;
+    pub fn schedule_fired(&self, id: i64, at: f64, how: How, left: &Left, next: f64) -> rusqlite::Result<()> {
+        let (state, message, detail) = match left {
+            Left::Message(message) => ("left", Some(*message), None),
+            Left::Skipped => ("skipped", None, None),
+            Left::Failed(why) => ("failed", None, Some(why.as_str())),
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("update schedules set next = ?2, message = coalesce(?3, message) where id = ?1", params![id, next, message])?;
+        tx.execute("insert into schedule_firings (schedule, at, how, state, message, detail) values (?1, ?2, ?3, ?4, ?5, ?6)", params![id, at, how.as_str(), state, message, detail])?;
+        tx.execute("delete from schedule_firings where schedule = ?1 and id not in (select id from schedule_firings where schedule = ?1 order by id desc limit ?2)", params![id, FIRINGS_KEPT])?;
+        tx.commit()
+    }
+
+    pub fn schedule_paused(&self, id: i64, paused: Option<f64>) -> rusqlite::Result<()> {
+        self.conn.execute("update schedules set paused = ?2 where id = ?1", params![id, paused])?;
         Ok(())
+    }
+
+    pub fn firings(&self, schedule: i64, limit: i64) -> rusqlite::Result<Vec<Firing>> {
+        let mut statement = self.conn.prepare(
+            "select f.id, f.schedule, f.at, f.how, f.state, f.message, m.delivered, f.detail, f.reply, f.replied_at
+             from schedule_firings f left join messages m on m.id = f.message where f.schedule = ?1 order by f.id desc limit ?2",
+        )?;
+        let rows = statement.query_map(params![schedule, limit], |r| {
+            Ok(Firing { id: r.get(0)?, schedule: r.get(1)?, at: r.get(2)?, how: r.get(3)?, state: r.get(4)?, message: r.get(5)?, delivered: r.get(6)?, detail: r.get(7)?, reply: r.get(8)?, replied_at: r.get(9)? })
+        })?;
+        rows.collect()
+    }
+
+    pub fn firing_reply(&self, firing: i64, text: &str, at: f64) -> rusqlite::Result<()> {
+        self.conn.execute("update schedule_firings set reply = ?2, replied_at = ?3 where id = ?1", params![firing, text, at])?;
+        Ok(())
+    }
+
+    pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn put_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert into meta (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value", [key, value]).map(|_| ())
     }
 
     pub fn seed_once(&self, key: &str, schedule: &Schedule) -> rusqlite::Result<bool> {
@@ -1222,6 +1606,8 @@ impl Db {
     }
 }
 
+const READY: &str = "select q.round, q.repo, r.head, q.written, q.doc, q.taken from quiz_ready q join quiz_rounds r on r.id = q.round";
+
 const ANSWER: &str = "a.id, a.round, a.at, a.kind, a.file, a.right, a.again, a.doc";
 
 fn doc_of(text: String) -> Value {
@@ -1230,6 +1616,10 @@ fn doc_of(text: String) -> Value {
 
 fn round_row(r: &rusqlite::Row) -> rusqlite::Result<Round> {
     Ok(Round { id: r.get(0)?, repo: r.get(1)?, at: r.get(2)?, head: r.get(3)?, doc: doc_of(r.get(4)?) })
+}
+
+fn ready_row(r: &rusqlite::Row) -> rusqlite::Result<Ready> {
+    Ok(Ready { round: r.get(0)?, repo: r.get(1)?, head: r.get(2)?, written: r.get(3)?, doc: doc_of(r.get(4)?), taken: r.get(5)? })
 }
 
 fn answer_row(r: &rusqlite::Row) -> rusqlite::Result<Answer> {
@@ -1250,8 +1640,8 @@ pub fn put_row(conn: &Connection, row: &Row, change: Option<&Change>) -> rusqlit
 
 fn insert_schedule(conn: &Connection, schedule: &Schedule) -> rusqlite::Result<i64> {
     conn.execute(
-        "insert into schedules (repo, name, target, rule, prompt, next, message, made_at, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, json_patch('{}', ?9))",
-        params![schedule.repo, schedule.name, schedule.target, schedule.rule, schedule.prompt, schedule.next, schedule.message, schedule.made_at, schedule.doc.to_string()],
+        "insert into schedules (repo, name, target, rule, prompt, next, message, made_at, paused, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, json_patch('{}', ?10))",
+        params![schedule.repo, schedule.name, schedule.target, schedule.rule, schedule.prompt, schedule.next, schedule.message, schedule.made_at, schedule.paused, schedule.doc.to_string()],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -1819,6 +2209,29 @@ mod tests {
         let fleet: i64 = db.conn.query_row("select count(*) from sqlite_master where name = 'fleet'", [], |r| r.get(0)).unwrap();
         assert_eq!(fleet, 0);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_reply_is_kept_and_a_second_read_of_one_adds_nothing() {
+        let dir = std::env::temp_dir().join(format!("kanna-said-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir);
+        db.put_said("task-a", "one", false).unwrap();
+        db.put_said("task-a", "one", false).unwrap();
+        db.put_said("task-a", "two", false).unwrap();
+        db.put_said("task-a", "two", true).unwrap();
+        db.put_said("task-b", "other", false).unwrap();
+        let said = db.said("task-a").unwrap();
+        assert_eq!(said.iter().map(|w| (w.text.as_str(), w.asking)).collect::<Vec<_>>(), [("one", false), ("two", true)]);
+        for reply in 0..SAID_KEPT {
+            db.put_said("task-a", &format!("reply {reply}"), false).unwrap();
+        }
+        let said = db.said("task-a").unwrap();
+        assert_eq!(said.len() as i64, SAID_KEPT);
+        assert_eq!(said[0].text, "reply 0");
+        assert_eq!(db.said("task-b").unwrap().len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

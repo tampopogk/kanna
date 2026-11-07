@@ -182,6 +182,7 @@ final class StatsPage: NSView {
     private(set) var report: StatsReport?
     private var location = ""
     private(set) var tileFrames: [String: NSRect] = [:]
+    private(set) var bandFrames: [String: NSRect] = [:]
     var onOpen: ((JSON) -> Void)?
     var onDays: (() -> Void)?
     private(set) var lists: [String: StatsList] = [:]
@@ -243,6 +244,7 @@ final class StatsPage: NSView {
     private func lay() {
         document.subviews.forEach { $0.removeFromSuperview() }
         tileFrames = [:]
+        bandFrames = [:]
         lists = [:]
         chips = [:]
         tables = [:]
@@ -262,14 +264,18 @@ final class StatsPage: NSView {
             return
         }
         for section in report.sections {
-            y += 30
-            let head = label(section.title, size: 13, weight: .semibold)
-            head.frame.origin = NSPoint(x: left, y: y)
+            y += 40
+            let band = StatsBand(frame: NSRect(x: left, y: y, width: width, height: 0))
+            document.addSubview(band)
+            let inset: CGFloat = 12
+            let head = label(section.title, size: 15, weight: .bold)
+            head.frame.origin = NSPoint(x: left + inset, y: y + 7)
             let note = label(section.note, color: .secondaryLabelColor)
-            note.frame = NSRect(x: left + head.frame.width + 10, y: y + 1, width: max(0, width - head.frame.width - 10), height: note.frame.height)
-            y += head.frame.height + 8
-            document.addSubview(StatsRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
-            y += 14
+            let noteX = head.frame.maxX + 10
+            note.frame = NSRect(x: noteX, y: y + 7 + head.frame.height - note.frame.height - 1, width: max(0, left + width - inset - noteX), height: note.frame.height)
+            band.frame.size.height = head.frame.height + 14
+            bandFrames[section.id] = band.frame
+            y = band.frame.maxY + 14
             if section.hasFilters { y = layFilters(section, at: NSPoint(x: left, y: y), width: width) }
             if section.tiles.isEmpty {
                 if section.placeholder {
@@ -505,8 +511,7 @@ final class StatsPage: NSView {
     }
 
     var shownSections: [JSON] {
-        (report?.sections ?? []).map { ["id": .string($0.id), "title": .string($0.title), "empty": $0.empty.map { .string($0) } ?? .null, "placeholder": .bool($0.placeholder), "tiles": .number(Double($0.tiles.count)),
-                                        "chips": .array(chips.keys.sorted().map { .string($0) }), "on": .array(chips.filter { $0.value.on }.keys.sorted().map { .string($0) }), "tableView": .bool(tableView)] }
+        (report?.sections ?? []).map { ["id": .string($0.id), "title": .string($0.title), "empty": $0.empty.map { .string($0) } ?? .null, "placeholder": .bool($0.placeholder), "tiles": .number(Double($0.tiles.count)), "chips": .array(chips.keys.sorted().map { .string($0) }), "on": .array(chips.filter { $0.value.on }.keys.sorted().map { .string($0) }), "tableView": .bool(tableView), "band": bandFrames[$0.id].map { ["x": .number($0.minX), "y": .number($0.minY), "width": .number($0.width), "height": .number($0.height)] } ?? .null] }
     }
 }
 
@@ -514,10 +519,10 @@ private final class StatsDocument: NSView {
     override var isFlipped: Bool { true }
 }
 
-private final class StatsRule: NSView {
+private final class StatsBand: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
-        bounds.fill()
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
     }
 }
 
@@ -757,7 +762,8 @@ final class StatsChartView: NSView {
             let all = tile.chart.points.map(\.value)
             return StatsFormat.niceDuration(StatsFormat.percentile(all, 0.9) ?? 3600)
         }
-        return StatsFormat.nice(tile.chart.values.compactMap { $0 }.max() ?? 0)
+        let top = tile.chart.values.compactMap { $0 }.max() ?? 0
+        return tile.unit == "s" ? StatsFormat.niceDuration(top) : StatsFormat.nice(top)
     }
 
     private var strip: CGFloat { tile.chart.kind == "flow" ? 34 : 0 }
@@ -765,7 +771,7 @@ final class StatsChartView: NSView {
 
     private func y(_ value: Double) -> CGFloat { baseline - CGFloat(min(value, scale) / scale) * (baseline - plot.minY) }
 
-    private func tick(_ value: Double) -> String { tile.unit == "s" ? StatsFormat.duration(value) : tile.unit == "%" ? "\(Int(value))%" : "\(Int(value))" }
+    private func tick(_ value: Double) -> String { tile.unit == "s" ? StatsFormat.duration(value) : tile.unit == "h" ? StatsFormat.hours(value) : tile.unit == "%" ? "\(Int(value))%" : "\(Int(value))" }
 
     override func draw(_ dirtyRect: NSRect) {
         let plot = self.plot
