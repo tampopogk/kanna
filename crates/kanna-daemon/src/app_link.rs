@@ -525,10 +525,6 @@ impl AppLink {
         self.apps.borrow().values().any(|app| app.remote.is_none())
     }
 
-    pub fn answers(&self) -> bool {
-        self.target().is_some()
-    }
-
     pub fn answers_for(&self, args: &Value) -> bool {
         self.viewer(args).is_some()
     }
@@ -536,7 +532,7 @@ impl AppLink {
     fn viewer(&self, args: &Value) -> Option<u64> {
         let shown_by = self.shown_by(args);
         let apps = self.apps.borrow();
-        let holder = shown_by.and_then(|client| apps.iter().find(|(_, app)| app.client == client).map(|(conn, _)| *conn));
+        let holder = shown_by.and_then(|client| apps.iter().find(|(_, app)| app.client == client && app.remote.is_none() == (client == kanna_mux::MAC_APP)).map(|(conn, _)| *conn));
         drop(apps);
         holder.or_else(|| self.target())
     }
@@ -905,6 +901,9 @@ impl AppLink {
     }
 
     pub fn forward(&self, cmd: &str, mut args: Value, responder: Responder) {
+        if !self.attached() {
+            return responder.reply(Err(no_app(cmd)));
+        }
         if let (Some(reference), Some(core)) = (string(&args, "pane").filter(|p| !p.contains('@')).map(String::from), self.core.upgrade()) {
             match core.pane(&reference) {
                 Some(pane) => args["pane"] = Value::String(pane.id),
@@ -912,7 +911,11 @@ impl AppLink {
             }
         }
         let viewless = VIEWLESS.contains(&cmd);
-        let conn = self.viewer(&args).or_else(|| self.apps.borrow().keys().next_back().copied().filter(|_| viewless));
+        let any = || {
+            let apps = self.apps.borrow();
+            Some(self.last_used.get()).filter(|conn| apps.contains_key(conn)).or_else(|| apps.keys().next_back().copied())
+        };
+        let conn = self.viewer(&args).or_else(|| any().filter(|_| viewless));
         let Some(conn) = conn else { return responder.reply(Err(no_app(cmd))) };
         self.ask_to(conn, cmd, args, self.timeout, responder);
     }

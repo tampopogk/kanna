@@ -7401,6 +7401,126 @@ machine_remote_web() {
   check wait_for 10 eval 'web text | grep -q "after the restart"' || { echo "machine_remote_web: hot reload after the app restarted"; web text; return 1; }
 }
 
+remote_workspace_repo() {
+  mkdir -p "$1/docs" "$1/src" "$1/site/img" && git -C "$1" init -q -b main || return 1
+  printf '# Spec\n\nThe keeper hands terminals over.\n' >"$1/docs/spec.md"
+  printf 'fn main() {\n    println!("work");\n}\n' >"$1/src/main.rs"
+  printf '<!doctype html><html><head><link rel="stylesheet" href="style.css"></head><body><p id="p">hello html</p><img src="img/dot.png"><script src="app.js"></script></body></html>\n' >"$1/site/index.html"
+  printf 'p { color: rgb(255, 59, 48); }\n' >"$1/site/style.css"
+  printf 'document.body.dataset.ran = "yes";\n' >"$1/site/app.js"
+  python3 - "$1/site/img/dot.png" <<'PY'
+import struct, sys, zlib
+chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+rows = b"".join(b"\0" + b"\xff\x3b\x30" * 8 for _ in range(8))
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+PY
+  git -C "$1" add -A && git -C "$1" -c user.email=e@e -c user.name=e commit -q -m first && git -C "$1" remote add origin "$2"
+}
+
+remote_workspace_set() {
+  local run="$1" at="$2" tag="$3" agent="$4" shots="$5" got id
+  ask() { raw "{\"id\":1,\"cmd\":\"debug.$1\",\"args\":{\"pane\":\"$2$at\"${3:-}}}"; }
+  listed() { $run workspace list --json | python3 -c 'import json, sys; ps = [p for p in json.load(sys.stdin)["panes"] if p.get("name") == sys.argv[1]]; print(ps[0].get(sys.argv[2]) if ps else "")' "$1" "$2"; }
+  printf '# Spec\n\nThe keeper hands terminals over. Changed.\n' >docs/spec.md
+  id="$($run open md docs/spec.md --tab --name "spec-$tag" --json | field pane.id)"
+  wait_for 10 eval 'ask md "$id" | field text | grep -q "Changed"' && echo "open md: shown" || echo "open md: not shown"
+  id="$($run open code src/main.rs --tab --name "code-$tag" --json | field pane.id)"
+  wait_for 10 eval 'ask code "$id" | field text | grep -qF "println!(\"work\")"' && echo "open code: shown" || echo "open code: not shown"
+  id="$($run open diff --merge-base main --tab --name "diff-$tag" --json | field pane.id)"
+  wait_for 10 eval '[[ "$(ask diff "$id" | field files)" == *spec.md* ]]' && echo "open diff: shown" || echo "open diff: not shown"
+  id="$($run open web site/index.html --tab --name "page-$tag" --json | field pane.id)"
+  wait_for 10 eval 'ask web "$id" | field text | grep -q "hello html"' && echo "open web FILE: shown" || echo "open web FILE: not shown: $(ask web "$id" | field notice)"
+  wait_for 5 eval '[[ "$(ask web "$id" ",\"js\":\"JSON.stringify([getComputedStyle(document.getElementById(\\\"p\\\")).color, document.images[0].naturalWidth, document.body.dataset.ran])\"" | field value)" == *"255, 59, 48"*8*yes* ]]' && echo "open web FILE: its CSS, image and script loaded" || echo "open web FILE: $(ask web "$id" ",\"js\":\"JSON.stringify([getComputedStyle(document.getElementById(\\\"p\\\")).color, document.images[0].naturalWidth, document.body.dataset.ran])\"" | field value)"
+  [[ "$(listed "page-$tag" url)" == "file://$PWD/site/index.html" ]] && echo "open web FILE: the daemon keeps the file's URL" || echo "open web FILE: the daemon has $(listed "page-$tag" url)"
+  $run markup "spec-$tag" | grep -qF "comments on in" && echo "markup: on" || echo "markup: refused"
+  $run markup "page-$tag" | grep -qF "comments on in" && wait_for 5 eval '[[ "$(ask web "$id" | field markup) $(ask web "$id" | field agent)" == "True $agent$at" ]]' && echo "markup FILE.html: on, to the agent" || echo "markup FILE.html: $(ask web "$id" | field markup) $(ask web "$id" | field agent)"
+  $run comment src/main.rs:2 "The print." >/dev/null && echo "comment: placed" || echo "comment: $($run comment src/main.rs:2 "The print." 2>&1)"
+  [[ "$($run focus "spec-$tag" --json | field front)" != None ]] && echo "focus: brought forward" || echo "focus: nothing brought forward"
+  $run zoom "spec-$tag" >/dev/null && [[ "$($run workspace list --json | field workspaces.0.zoomed)" == "spec-$tag" ]] && echo "zoom: zoomed" || echo "zoom: $($run workspace list --json | field workspaces.0.zoomed)"
+  $run zoom "spec-$tag" >/dev/null
+  got="$($run screenshot "spec-$tag" -o "$shots/$tag.png" 2>&1)"
+  [[ "$got" == *"$shots/$tag.png"* && "$(head -c 4 "$shots/$tag.png" | tail -c 3)" == PNG ]] && echo "screenshot: written where the agent asked" || echo "screenshot: $got"
+  $run screenshot "spec-$tag" -o "$shots/$tag.png" >/dev/null 2>&1 && echo "screenshot: replaced a file without --force" || echo "screenshot: refused over a file"
+  $run toast "toast from $tag" >/dev/null
+  wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.toasts\"}" | grep -qF "toast from $tag"' && echo "toast: shown where the workspace is" || echo "toast: not shown where the workspace is"
+  $run read "$agent" >/dev/null && echo "read: ok" || echo "read: failed"
+  $run close "page-$tag" >/dev/null && [[ -z "$(listed "page-$tag" id)" ]] && echo "close: closed" || echo "close: still open"
+  $run workspace list --json | python3 -c 'import json, sys; w = json.load(sys.stdin)["workspaces"][0]; print("workspace list:", " ".join(t["title"].replace(sys.argv[1], "TAG") for t in w["tabs"]))' "$tag"
+}
+
+scenario remote_workspace M4
+remote_workspace() {
+  local vm vm_pid vm_app
+  machine_vm remote_workspace || return 1
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/work"
+  remote_workspace_repo "$repo" https://example.com/team/work.git || { echo "remote_workspace line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  (cd / && vmk "$repo") >/dev/null || { echo "remote_workspace line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-*@vm ]]' || { echo "remote_workspace: the Desk's planner isn't on vm"; return 1; }
+  local planner; planner="$(desk lead)"
+  (cd "$repo" && KANNA_TERMINAL="${planner%@vm}" vmk task new "Remote work" "Work") >/dev/null || { echo "remote_workspace line $LINENO"; return 1; }
+  local task; task="$(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by rowid limit 1")@vm"
+  check wait_for 10 eval '[[ "$(desk shelf)" == "[\"$task\"]" ]]' || { echo "remote_workspace: the Shelf doesn't list vm's task"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$task"'","window":"d1"}}' >/dev/null
+  check wait_for 10 eval '[[ "$(desk tasks.0.title)" == "Remote work" ]]' || { echo "remote_workspace: picking vm's task"; return 1; }
+  local ragent; ragent="$(desk tasks.0.task)"
+  raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$ragent"'","window":"d1"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$ragent" ]]' || { echo "remote_workspace: activating vm's task"; return 1; }
+  ragent="${ragent%@vm}"
+  local rwork="$repo/.kanna-worktrees/${task%@vm}"
+  check wait_for 10 test -f "$rwork/site/index.html" || { echo "remote_workspace: no worktree on vm"; return 1; }
+
+  KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$app" --bg >>"$out/app-vm.log" 2>&1 &
+  vm_app=$!
+  check wait_for 20 eval '[[ "$(vraw "{\"id\":1,\"cmd\":\"debug.app\"}" | field pid)" == "$vm_app" ]]' || { echo "remote_workspace: vm's own app didn't attach beside this Mac's"; return 1; }
+
+  local here; here="$(e2e_repo work)" || { echo "remote_workspace line $LINENO"; return 1; }
+  rm -rf "$here" && remote_workspace_repo "$here" https://example.com/local/work.git && here="$(cd "$here" && pwd -P)" || { echo "remote_workspace line $LINENO"; return 1; }
+  local lt; lt="$(cd "$here" && kanna --json task new "Local work" --agent 'exec $SHELL #' | field task.id)" || { echo "remote_workspace line $LINENO"; return 1; }
+  kanna task pick "$lt" >/dev/null && kanna task activate "$lt" >/dev/null || { echo "remote_workspace line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(pane "Local work" id)" == term-* ]]' || { echo "remote_workspace: the local task has no agent"; return 1; }
+  local lagent; lagent="$(pane "Local work" id)"
+  local lwork="$here/.kanna-worktrees/$lt"
+  check wait_for 10 test -f "$lwork/site/index.html" || { echo "remote_workspace: no local worktree"; return 1; }
+
+  lk() { KANNA_TERMINAL="$lagent" kanna "$@"; }
+  rk() { KANNA_TERMINAL="$ragent" vmk "$@"; }
+  local shots="$KANNA_STATE_DIR/shots"; mkdir -p "$shots"
+  (cd "$lwork" && remote_workspace_set lk "" local "$lagent" "$shots") >"$out/remote_workspace-local.txt" 2>&1
+  (cd "$rwork" && remote_workspace_set rk @vm remote "$ragent" "$vm") >"$out/remote_workspace-remote.txt" 2>&1
+  diff -u <(sed 's/local/TAG/g' "$out/remote_workspace-local.txt") <(sed 's/remote/TAG/g' "$out/remote_workspace-remote.txt") || { echo "remote_workspace: the agent's commands differ on another machine's app ($out/remote_workspace-*.txt)"; return 1; }
+  diff -u - "$out/remote_workspace-local.txt" <<'WANT' || { echo "remote_workspace: the set on this Mac isn't what an agent gets ($out/remote_workspace-local.txt)"; return 1; }
+open md: shown
+open code: shown
+open diff: shown
+open web FILE: shown
+open web FILE: its CSS, image and script loaded
+open web FILE: the daemon keeps the file's URL
+markup: on
+markup FILE.html: on, to the agent
+comment: placed
+focus: brought forward
+zoom: zoomed
+screenshot: written where the agent asked
+screenshot: refused over a file
+toast: shown where the workspace is
+read: ok
+close: closed
+workspace list: spec-TAG code-TAG diff-TAG main.rs
+WANT
+  check test -z "$(vraw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys; print(" ".join(t["title"] for t in json.load(sys.stdin)["toasts"]))')" || { echo "remote_workspace: a toast from vm's task reached vm's own app"; return 1; }
+
+  stop_pid "$vm_app"
+  check wait_for 5 eval '[[ "$(vraw "{\"id\":1,\"cmd\":\"debug.app\"}" | field error.code)" == no_app ]]' || { echo "remote_workspace: vm's app didn't go"; return 1; }
+  local again; again="$(cd "$rwork" && rk screenshot spec-remote -o "$vm/again.png" 2>&1)"
+  [[ "$again" == *"$vm/again.png"* ]] || { echo "remote_workspace: with vm's own app gone, the screenshot went nowhere: $again"; return 1; }
+  rk task stop >/dev/null 2>&1; rk task park >/dev/null 2>&1
+  raw '{"id":1,"cmd":"debug.click","args":{"deskView":"d1"}}' >/dev/null
+  local hidden; hidden="$(cd "$rwork" && rk screenshot spec-remote 2>&1)" && { echo "remote_workspace: shot a pane that isn't showing"; return 1; }
+  [[ "$hidden" == *"isn't showing"* || "$hidden" == *"isn't in a window"* ]] || { echo "remote_workspace: a hidden pane: $hidden"; return 1; }
+}
+
 shows_file() { kanna workspace list --all --json | python3 -c 'import json, sys; sys.exit(not any(p.get("path") == sys.argv[1] for p in json.load(sys.stdin)["panes"]))' "$1"; }
 
 scenario crash_app_draw M4
