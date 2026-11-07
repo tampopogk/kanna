@@ -34,7 +34,7 @@ pub const COMMAND: Command = Command {
     ],
     parse,
     show,
-    flow: Flow { wire: Some(wire), unplaced: Some(unplaced), offline: Some(crate::threads::offline), ..Flow::PLAIN },
+    flow: Flow { wire: Some(wire), unplaced: Some(unplaced), offline: Some(crate::threads::offline), panes: &["pane", "agent"], ..Flow::PLAIN },
 };
 
 fn wire(request: &Value) -> &'static str {
