@@ -43,7 +43,7 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(dir).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success(), "git {args:?}");
 }
 
-/// A clone of the team's notes repo where this machine's Kanna keeps its projects, with this many runners.
+/// A clone of the team's notes repo where this machine's Kanna keeps its projects, and this machine's runners.
 fn clone(daemon: &Daemon, runners: usize) -> PathBuf {
     let repo = daemon.dir.join("home/.kanna-v4/repos/team/notes");
     std::fs::create_dir_all(repo.join(".kanna")).unwrap();
@@ -56,7 +56,8 @@ fn clone(daemon: &Daemon, runners: usize) -> PathBuf {
 }
 
 fn set_runners(repo: &Path, runners: usize) {
-    std::fs::write(repo.join(".kanna/config.json"), json!({ "version": 1, "shelf": { "runners": runners } }).to_string()).unwrap();
+    let mine = repo.ancestors().nth(3).unwrap().join("config.json");
+    std::fs::write(mine, json!({ "version": 1, "shelf": { "runners": runners } }).to_string()).unwrap();
 }
 
 fn agent(daemon: &Daemon) -> String {
@@ -104,6 +105,29 @@ fn worktrees(repo: &Path) -> Vec<String> {
 
 fn log_says(daemon: &Daemon, text: &str) -> bool {
     std::fs::read_to_string(daemon.dir.join("daemon.log")).unwrap_or_default().contains(text)
+}
+
+#[test]
+fn a_machine_full_with_one_repo_asks_for_no_task_in_another() {
+    let (mbp, vm) = (machine("mbp"), machine("vm"));
+    pair(&mbp, &vm);
+    let (here, there) = (clone(&mbp, 0), clone(&vm, 0));
+    let codex = agent(&mbp);
+    let other = vm.dir.join("home/.kanna-v4/repos/team/other");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&other, &["remote", "add", "origin", "https://example.com/team/other.git"]);
+    let other = other.canonicalize().unwrap();
+
+    let local = new_task(&vm, &other, &["Local", "work 15", "--agent", &agent(&vm)]);
+    set_runners(&there, 1);
+    within(15, "vm to run its own repo's task", || started(&vm).contains(&local));
+    let far = new_task(&mbp, &here, &["Far", "work 1", "--agent", &codex]);
+    within(10, "vm to know the task", || record(&vm, &far)["state"] == "waiting");
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(holds(&mbp, &far) && !started(&vm).contains(&far), "the one runner is taken, by a task in another repo");
+    within(60, "vm to ask for the task once its runner is free", || started(&vm).contains(&far));
 }
 
 #[test]

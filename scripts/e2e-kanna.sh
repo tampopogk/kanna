@@ -32,7 +32,7 @@ real_agent_tasks, real_agent_planners, real_agent_last_words, real_agent_program
 or $KANNA_E2E_CLAUDE / $KANNA_E2E_CODEX) against tools/agent-harness's mock
 model, each in a HOME of its own. A planning terminal
 offers no agent (KANNA_PLANNING_AGENTS=none) unless a scenario gives it some. Shelf tasks
-don't run by themselves (shelf.runners is 0) unless a scenario's repo sets it.
+don't run by themselves (shelf.runners is 0) unless a scenario sets it (machine_runners).
 USAGE
 }
 
@@ -1034,6 +1034,10 @@ for k in sys.argv[2].split("."): v = v[int(k)] if k.isdigit() else v.get(k)
 print(json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v)' "$1" "$2"
 }
 placed() { awk -F'  +' 'BEGIN { OFS = "  " } /^(Desk|Shelf)$/ { where = $1; next } NF > 1 { $2 = $2 OFS where; print }'; }
+machine_runners() {
+  local mine="$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  sed -E 's/"shelf": \{"runners": [0-9]+\}/"shelf": {"runners": '"$1"'}/' "$mine" >"$mine.new" && mv "$mine.new" "$mine"
+}
 tid() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id from tasks order by rowid limit 1 offset $(($1 - 1))"; }
 sid() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id from tasks where place != 'done'" | python3 -c 'import sys
 id, others = sys.argv[1], [o[5:] for o in sys.stdin.read().split() if o != sys.argv[1]]
@@ -1623,7 +1627,7 @@ comment_agents() {
   comment_repo="$(e2e_repo comments)" || return 1
   comment_fake="$KANNA_STATE_DIR/comment-agents"
   mkdir -p "$comment_fake/bin" "$comment_repo/.kanna" || return 1
-  printf '{"version": 1, "shelf": {"runners": 2}}\n' >"$comment_repo/.kanna/config.json"
+  machine_runners 2
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/bin/claude"
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/copilot"
   printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/claude" && chmod +x "$comment_fake/claude"
@@ -4927,7 +4931,7 @@ scheduler() {
   mkdir -p "$repo/.kanna" "$fake" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "scheduler line $LINENO"; return 1; }
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   start_daemon && start_app || { echo "scheduler line $LINENO"; return 1; }
   schedule() { (cd "$repo" && kanna schedule "$@"); }
   schedule list | grep -qE '^s1 +quiz +repo +daily 09:00 +planner +next ' || { echo "scheduler: the repo has no quiz schedule"; schedule list; return 1; }
@@ -4959,7 +4963,7 @@ schedules_tab() {
   mkdir -p "$repo/.kanna" "$other" "$fake" && git -C "$repo" init -q -b main && git -C "$other" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "schedules_tab line $LINENO"; return 1; }
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"; other="$(cd "$other" && pwd -P)"
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   start_daemon && start_app || { echo "schedules_tab line $LINENO"; return 1; }
   schedule() { (cd "$repo" && kanna schedule "$@"); }
   local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "schedules_tab line $LINENO: $opened"; return 1; }
@@ -5024,7 +5028,7 @@ task_events() {
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
   printf '/.kanna\n/.kanna-worktrees\n' >"$repo/.gitignore" && echo base >"$repo/shared" && echo base >"$repo/calm" && git -C "$repo" add . && git -C "$repo" commit -q -m first || { echo "task_events line $LINENO"; return 1; }
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   start_daemon && start_app || { echo "task_events line $LINENO"; return 1; }
   in_repo() { (cd "$repo" && kanna "$@"); }
   task_of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
@@ -5631,7 +5635,7 @@ shelf_runners() {
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  runners() { printf '{"version": 1, "shelf": {"runners": %s}}\n' "$1" >"$repo/.kanna/config.json"; }
+  runners() { machine_runners "$1"; }
   shelf() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 tasks = json.load(sys.stdin)["shelf"]
 for t in tasks: print(t["id"], "running" if t.get("running") else "stopped:" + (t.get("stopped") or "-") if t.get("folder") else "waiting", t.get("held") or "-", t.get("session") or "-")'; }
@@ -5779,6 +5783,54 @@ print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"]
   local wakes; wakes="$(of $(tid 14) 3)"
   check wait_for 30 eval '[[ "$(of $(tid 14) 2)" == stopped:finished ]]' || { echo "shelf_runners: the task woken by its background command didn't stop"; shelf; kanna read "$wakes"; return 1; }
   shows "$wakes" WOKE_DONE || { echo "shelf_runners: the task that worked again within the grace was stopped mid-turn"; kanna read "$wakes"; return 1; }
+  local second="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/second"
+  mkdir -p "$second/.kanna" && git -C "$second" init -q -b main && git -C "$second" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelf_runners line $LINENO"; return 1; }
+  second="$(cd "$second" && pwd -P)"
+  in_second() { (cd "$second" && kanna "$@"); }
+  cap() { printf '{"version": 1, "shelf": {"runners": %s}}\n' "$1" >"$second/.kanna/config.json"; }
+  sorted() { xargs -n1 | sort | xargs; }
+  runners 0
+  cap 5
+  in_repo task new "First here" "work 3" --agent "$fake/codex" >/dev/null && in_second task new "First there" "work 3" --agent "$fake/codex" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  in_repo task new "Next here" "work 3" --agent "$fake/codex" >/dev/null && in_second task new "Next there" "work 3" --agent "$fake/codex" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  sleep 3
+  check test -z "$(running)" || { echo "shelf_runners: a repo's 5 ran tasks past a machine total of 0"; shelf; return 1; }
+  runners 2
+  seen="" most=0
+  for _ in $(seq 600); do
+    now="$(running)"
+    (( $(wc -w <<<"$now") > most )) && most=$(wc -w <<<"$now")
+    for t in $now; do [[ " $seen " == *" $t "* ]] || seen="$seen $t"; done
+    [[ "$(of $(tid 18) 2)" == stopped:* ]] && break
+    sleep 0.1
+  done
+  check test "$most" -le 2 || { echo "shelf_runners: $most ran at once across two repos with a machine total of 2"; return 1; }
+  check test "${seen# }" == "$(tid 15) $(tid 16) $(tid 17) $(tid 18)" || { echo "shelf_runners: two repos' tasks didn't start oldest first: $seen"; shelf; return 1; }
+  runners 0
+  cap 1
+  for name in Three Four Five; do in_second task new "There $name" "work 3" --agent "$fake/codex" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }; done
+  for name in Three Four; do in_repo task new "Here $name" "work 3" --agent "$fake/codex" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }; done
+  runners 3
+  local capped; capped="$(sorted <<<"$(tid 19) $(tid 22) $(tid 23)")"
+  check wait_for 10 eval '[[ "$(running | sorted)" == "$capped" ]]' || { echo "shelf_runners: a repo at its cap didn't leave its places to the next repo's newer tasks"; shelf; return 1; }
+  most=0
+  for _ in $(seq 600); do
+    now="$(running)"
+    local there=0
+    for t in $(tid 19) $(tid 20) $(tid 21); do [[ " $now " == *" $t "* ]] && there=$((there + 1)); done
+    (( there > most )) && most=$there
+    (( $(wc -w <<<"$now") > 3 )) && { echo "shelf_runners: more ran at once than the machine total: $now"; shelf; return 1; }
+    [[ "$(of $(tid 21) 2)" == stopped:* ]] && break
+    sleep 0.1
+  done
+  check test "$most" -eq 1 || { echo "shelf_runners: $most of a repo capped at 1 ran at once"; return 1; }
+  check test "$(of $(tid 21) 2)" == stopped:finished || { echo "shelf_runners: the capped repo's last task didn't run"; shelf; return 1; }
+  runners 0
+  cap 0
+  in_second task new "There off" "work 1" --agent "$fake/codex" >/dev/null && in_repo task new "Here on" "work 1" --agent "$fake/codex" >/dev/null || { echo "shelf_runners line $LINENO"; return 1; }
+  runners 2
+  check wait_for 15 eval '[[ "$(of $(tid 25) 2)" == stopped:finished ]]' || { echo "shelf_runners: a repo set to 0 held up another repo's task"; shelf; return 1; }
+  check test "$(of $(tid 24) 2)" == waiting || { echo "shelf_runners: a repo's 0 didn't hold"; shelf; return 1; }
 }
 
 scenario message_past_the_limit M4
@@ -5789,7 +5841,7 @@ message_past_the_limit() {
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
 print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
@@ -5818,7 +5870,7 @@ agent_messaging() {
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
 print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
@@ -5907,7 +5959,7 @@ agent_too_old() {
   mkdir -p "$repo/.kanna" "$fake/bin" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "agent_too_old line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   sed 's/"KANNA_MOCK_VERSION", "99.0.0"/"KANNA_MOCK_VERSION", "2.1.290"/' "$repo_root/tools/mock-agent/mock-agent" >"$fake/bin/claude" && chmod +x "$fake/bin/claude" || { echo "agent_too_old line $LINENO"; return 1; }
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
 print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("stopped") or "-")' "$1"; }
@@ -5934,7 +5986,7 @@ pipeline_run() {
   mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_run line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   cat >"$repo/.kanna/pipelines/demo.kojo" <<'PIPE'
 budget = 4 sessions, 30m
 build  = claude

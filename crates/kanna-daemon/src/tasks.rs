@@ -195,9 +195,12 @@ const CONTEXT_RANGE: std::ops::RangeInclusive<u64> = 100_000..=1_000_000;
 const CONFIG_VERSION: u64 = 1;
 
 /// Kanna's settings files for a folder, the first that sets a key winning: the repo's `.kanna/config.json`, then `~/.kanna-v4/config.json`.
+fn my_config() -> PathBuf {
+    crate::agents::home().join(".kanna-v4/config.json")
+}
+
 pub fn config_files(folder: &Path) -> Vec<PathBuf> {
-    let home = crate::agents::home();
-    project(folder.to_str()).map(|repo| repo.join(".kanna/config.json")).into_iter().chain([home.join(".kanna-v4/config.json")]).collect()
+    project(folder.to_str()).map(|repo| repo.join(".kanna/config.json")).into_iter().chain([my_config()]).collect()
 }
 
 fn configured<T>(files: &[PathBuf], section: &str, key: &str, read: impl Fn(&Value) -> Option<T>, expected: &str) -> Option<T> {
@@ -280,15 +283,19 @@ pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;
 
-pub fn runners(files: &[PathBuf]) -> usize {
+fn runners_in(file: &Path) -> Option<usize> {
     let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| *n <= RUNNERS_MAX);
-    files
-        .iter()
-        .find_map(|file| {
-            let file = std::slice::from_ref(file);
-            configured(file, "shelf", "runners", read, "a number of tasks from 0 to 10").or_else(|| configured(file, "backlog", "runners", read, "a number of tasks from 0 to 10"))
-        })
-        .unwrap_or(RUNNERS)
+    let file = [file.to_path_buf()];
+    configured(&file, "shelf", "runners", read, "a number of tasks from 0 to 10").or_else(|| configured(&file, "backlog", "runners", read, "a number of tasks from 0 to 10"))
+}
+
+pub fn machine_runners(mine: &Path) -> usize {
+    runners_in(mine).unwrap_or(RUNNERS)
+}
+
+pub fn runners(files: &[PathBuf]) -> usize {
+    let Some((mine, repos)) = files.split_last() else { return RUNNERS };
+    repos.iter().filter_map(|file| runners_in(file)).fold(machine_runners(mine), usize::min)
 }
 
 pub fn scripts(files: &[PathBuf]) -> Scripts {
@@ -2390,65 +2397,78 @@ impl Tasks {
         let mut asked: HashSet<String> = asking.iter().map(|(_, task)| task.clone()).collect();
         self.refused.borrow_mut().retain(|_, until| *until > now);
         let heard = self.heard_from_all(&machines);
+        let total = machine_runners(&my_config());
+        let taken: Vec<&str> = entries.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).map(|e| e.repo.as_str()).chain(asking.iter().map(|(repo, _)| repo.as_str())).collect();
+        let mut busy = taken.len();
+        let mut limits: HashMap<String, (usize, usize)> = HashMap::new();
+        let mut queue: Vec<(Hlc, String, Candidate)> = Vec::new();
         for repo in repos {
             let slots = runners(&config_files(Path::new(&repo)));
             if slots == 0 || self.placed(&repo).is_err() {
                 continue;
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
-            let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
-            for candidate in self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now) {
-                if busy >= slots && !self.told_by_you(&candidate) {
-                    continue;
+            let waiting = self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now);
+            queue.extend(waiting.into_iter().map(|(born, candidate)| (born, repo.clone(), candidate)));
+            limits.insert(repo.clone(), (taken.iter().filter(|r| **r == repo).count(), slots));
+        }
+        queue.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, repo, candidate) in queue {
+            if matches!(&candidate, Candidate::There { task, .. } | Candidate::Take { task, .. } if asked.contains(task)) {
+                continue;
+            }
+            let Some((in_repo, slots)) = limits.get_mut(&repo) else { continue };
+            if (busy >= total || *in_repo >= *slots) && !self.told_by_you(&candidate) {
+                continue;
+            }
+            busy += 1;
+            *in_repo += 1;
+            match candidate {
+                Candidate::Wake(entry) => {
+                    log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {total} here, {repo})", entry.id);
+                    self.wake(core, entry);
                 }
-                busy += 1;
-                match candidate {
-                    Candidate::Wake(entry) => {
-                        log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
-                        self.wake(core, entry);
-                    }
-                    Candidate::Here(entry) => {
-                        let (this, id) = (Rc::downgrade(self), entry.id.clone());
-                        log!("kanna-daemon: {id} runs on the Shelf ({busy} of {slots} in {repo})");
-                        self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
-                            if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                                log!("kanna-daemon: {id} couldn't run on the Shelf: {}", error.message);
-                                if error.code != "conflict" {
-                                    this.failed.borrow_mut().insert(id);
-                                }
+                Candidate::Here(entry) => {
+                    let (this, id) = (Rc::downgrade(self), entry.id.clone());
+                    log!("kanna-daemon: {id} runs on the Shelf ({busy} of {total} here, {repo})");
+                    self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+                        if let (Err(error), Some(this)) = (result, this.upgrade()) {
+                            log!("kanna-daemon: {id} couldn't run on the Shelf: {}", error.message);
+                            if error.code != "conflict" {
+                                this.failed.borrow_mut().insert(id);
                             }
-                        })));
-                    }
-                    Candidate::There { task, birth, owner } => {
-                        log!("kanna-daemon: asks {} for {task} ({busy} of {slots} in {repo})", machines.name_of(&owner));
-                        asked.insert(task.clone());
-                        let args = json!({ "action": "ask", "task": task, "birth": birth });
-                        self.send_to(&owner.clone(), args, Asked::Ask { task, birth, owner, repo: repo.clone() });
-                    }
-                    Candidate::Take { task, birth, owner } => {
-                        log!("kanna-daemon: {task}'s owner {} has been away {}s, so it runs here ({busy} of {slots} in {repo})", machines.name_of(&owner), takeover_after().as_secs());
-                        asked.insert(task.clone());
-                        if let Err(error) = self.replica.borrow_mut().take(&self.db, &task, &birth, &owner) {
-                            log!("kanna-daemon: couldn't take {task}: {error}");
-                            continue;
                         }
-                        self.sync_at.set(Instant::now());
-                        self.adopt();
-                        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == task).cloned() else { continue };
-                        let this = Rc::downgrade(self);
-                        self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
-                            if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                                log!("kanna-daemon: {task} couldn't run on the Shelf: {}", error.message);
-                                this.failed.borrow_mut().insert(task);
-                            }
-                        })));
+                    })));
+                }
+                Candidate::There { task, birth, owner } => {
+                    log!("kanna-daemon: asks {} for {task} ({busy} of {total} here, {repo})", machines.name_of(&owner));
+                    asked.insert(task.clone());
+                    let args = json!({ "action": "ask", "task": task, "birth": birth });
+                    self.send_to(&owner.clone(), args, Asked::Ask { task, birth, owner, repo: repo.clone() });
+                }
+                Candidate::Take { task, birth, owner } => {
+                    log!("kanna-daemon: {task}'s owner {} has been away {}s, so it runs here ({busy} of {total} here, {repo})", machines.name_of(&owner), takeover_after().as_secs());
+                    asked.insert(task.clone());
+                    if let Err(error) = self.replica.borrow_mut().take(&self.db, &task, &birth, &owner) {
+                        log!("kanna-daemon: couldn't take {task}: {error}");
+                        continue;
                     }
+                    self.sync_at.set(Instant::now());
+                    self.adopt();
+                    let Some(entry) = self.entries.borrow().iter().find(|e| e.id == task).cloned() else { continue };
+                    let this = Rc::downgrade(self);
+                    self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+                        if let (Err(error), Some(this)) = (result, this.upgrade()) {
+                            log!("kanna-daemon: {task} couldn't run on the Shelf: {}", error.message);
+                            this.failed.borrow_mut().insert(task);
+                        }
+                    })));
                 }
             }
         }
     }
 
-    fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<Candidate> {
+    fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<(Hlc, Candidate)> {
         let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
         let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
         let woken = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
@@ -2485,8 +2505,7 @@ impl Tasks {
                 }
             }
         }
-        waiting.sort_by(|a, b| a.0.cmp(&b.0));
-        waiting.into_iter().map(|(_, candidate)| candidate).collect()
+        waiting
     }
 
     fn told_by_you(&self, candidate: &Candidate) -> bool {
@@ -5568,26 +5587,34 @@ mod tests {
     }
 
     #[test]
-    fn shelf_runners_come_from_the_repos_config_then_yours() {
+    fn shelf_runners_are_yours_and_a_repo_can_only_lower_them() {
         let dir = std::env::temp_dir().join(format!("kanna-runners-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let (repo, mine) = (dir.join("repo.json"), dir.join("mine.json"));
         let files = [repo.clone(), mine.clone()];
-        assert_eq!(runners(&files), RUNNERS);
-        fs::write(&mine, r#"{"backlog": {"runners": 0}}"#).unwrap();
-        assert_eq!(runners(&files), 0, "0 turns it off");
-        fs::write(&repo, r#"{"backlog": {"runners": 5}}"#).unwrap();
-        assert_eq!(runners(&files), 5, "the repo's wins");
-        fs::write(&repo, r#"{"backlog": {"runners": 11}}"#).unwrap();
-        assert_eq!(runners(&files), 0, "a bad value leaves it to the next file");
-        fs::write(&repo, r#"{"backlog": {"runners": -1}}"#).unwrap();
-        assert_eq!(runners(&[repo.clone()]), RUNNERS);
+        assert_eq!((runners(&files), machine_runners(&mine)), (RUNNERS, RUNNERS));
+        fs::write(&repo, r#"{"shelf": {"runners": 5}}"#).unwrap();
+        assert_eq!(runners(&files), RUNNERS, "a repo can't raise the default");
+        fs::write(&mine, r#"{"shelf": {"runners": 6}}"#).unwrap();
+        assert_eq!(runners(&files), 5, "a repo's lower cap holds");
+        assert_eq!(machine_runners(&mine), 6, "the machine's total isn't the repo's");
+        fs::write(&repo, r#"{"shelf": {"runners": 8}}"#).unwrap();
+        assert_eq!(runners(&files), 6, "a repo can't raise yours");
+        fs::write(&repo, r#"{"shelf": {"runners": 0}}"#).unwrap();
+        assert_eq!(runners(&files), 0, "a repo can turn runners off");
+        fs::write(&repo, r#"{"shelf": {"runners": 11}}"#).unwrap();
+        assert_eq!(runners(&files), 6, "a bad value in a repo caps nothing");
         fs::write(&repo, r#"{"shelf": {"runners": 2}, "backlog": {"runners": 5}}"#).unwrap();
         assert_eq!(runners(&files), 2, "shelf.runners wins over its old name in the same file");
         fs::write(&repo, r#"{"backlog": {"runners": 4}}"#).unwrap();
-        fs::write(&mine, r#"{"shelf": {"runners": 1}}"#).unwrap();
-        assert_eq!(runners(&files), 4, "the repo's old name wins over your new one");
+        assert_eq!(runners(&files), 4, "the repo's old name still caps");
+        fs::write(&mine, r#"{"backlog": {"runners": 0}}"#).unwrap();
+        assert_eq!((runners(&files), machine_runners(&mine)), (0, 0), "0 of yours turns it off everywhere");
+        fs::write(&mine, r#"{"backlog": {"runners": 2}, "shelf": {"runners": 11}}"#).unwrap();
+        assert_eq!(machine_runners(&mine), 2, "a bad value leaves it to the old name");
+        fs::write(&mine, r#"{"shelf": {"runners": -1}}"#).unwrap();
+        assert_eq!(machine_runners(&mine), RUNNERS);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5921,7 +5948,9 @@ mod tests {
             tasks.waiting.borrow_mut().push(Message { id, recipient: recipient.into(), repo: "/r".into(), sender: "user".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
         }
         let handle = tasks.core.upgrade().unwrap();
-        let queue: Vec<String> = tasks.candidates(&handle, "/r", &mine, &HashSet::new(), &tasks.machines(), true, &HashSet::new(), Instant::now()).into_iter().map(|candidate| match candidate {
+        let mut waiting = tasks.candidates(&handle, "/r", &mine, &HashSet::new(), &tasks.machines(), true, &HashSet::new(), Instant::now());
+        waiting.sort_by(|a, b| a.0.cmp(&b.0));
+        let queue: Vec<String> = waiting.into_iter().map(|(_, candidate)| match candidate {
             Candidate::Wake(entry) => format!("wake {}", entry.id),
             Candidate::Here(entry) => format!("start {}", entry.id),
             Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
