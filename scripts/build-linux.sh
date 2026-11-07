@@ -7,8 +7,9 @@ usage: scripts/build-linux.sh [production|staging|dev] [--arch x86_64|aarch64] [
 
 Builds Kanna's Linux tarball on this Mac or a Linux machine: the daemon, keeper and CLI
 cross-compiled with Zig (baseline CPU, glibc 2.35), Kanna's skills and release.json, as
-DIR/Kanna-VERSION-linux-ARCH.tar.gz (default DIR: target/release-linux). KANNA_VERSION sets
-the version. docs/specs/machine-versions.md says what's in it.
+DIR/Kanna-VERSION-linux-ARCH.tar.gz (default DIR: target/release-linux). The version is the
+last vX.Y.Z tag's, as X.Y.Z-dev unless KANNA_VERSION sets it. docs/specs/machine-versions.md
+says what's in it.
 USAGE
   exit 2
 }
@@ -36,7 +37,7 @@ step() { echo "==> $*"; }
 
 commit="$(git -C "$repo_root" rev-parse HEAD)"
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]] || commit="$commit-dirty"
-version="${KANNA_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo_root/Cargo.toml" | head -1)}"
+version="$(kanna_version "$repo_root")" || fail "can't work out the version"
 case "$channel" in staging) name=Kanna-Staging ;; *) name=Kanna ;; esac
 
 zig="$(kanna_zig "$repo_root")"

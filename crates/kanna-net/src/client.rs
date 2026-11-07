@@ -86,7 +86,11 @@ impl Client {
             Ok(Err(e)) => return Err(Failure::new("unreachable", format!("can't reach it: {e}"))),
             Err(_) => return Err(Failure::new("unreachable", format!("can't reach it within {}s", DIAL.as_secs()))),
         };
-        self.conns().insert(key.to_string(), conn.clone());
+        let mut conns = self.conns();
+        if let Some(first) = conns.get(key).filter(|c| c.close_reason().is_none()) {
+            return Ok((first.clone(), false));
+        }
+        conns.insert(key.to_string(), conn.clone());
         Ok((conn, true))
     }
 
@@ -203,6 +207,10 @@ impl Client {
         json!({ "path": if path.is_ip() { "direct" } else { "relay" }, "lan": path.is_ip() && lan, "rtt_ms": path.rtt().as_secs_f64() * 1000.0, "remote": remote })
     }
 
+    pub async fn network_changed(&self) {
+        self.endpoint.network_change().await;
+    }
+
     pub async fn close(&self) {
         self.endpoint.close().await;
     }
@@ -236,8 +244,8 @@ async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     found
 }
 
-fn local(ip: IpAddr) -> bool {
-    match ip {
+pub(crate) fn local(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])),
         IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
     }

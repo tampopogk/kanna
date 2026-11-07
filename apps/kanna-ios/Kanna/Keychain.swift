@@ -4,12 +4,12 @@ import Security
 enum Keychain {
     private static let service = "kanna.device-key"
 
-    private static func query() -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "phone"]
+    private static func query(_ account: String = "phone") -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
 
-    static func read() -> String? {
-        var query = query()
+    static func read(_ account: String = "phone") -> String? {
+        var query = query(account)
         query[kSecReturnData as String] = true
         var found: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let data = found as? Data else { return nil }
@@ -29,5 +29,15 @@ enum Keychain {
 
     static func delete() {
         SecItemDelete(query() as CFDictionary)
+        SecItemDelete(query("relay") as CFDictionary)
+    }
+
+    static func keepRelayToken(_ token: String?) {
+        SecItemDelete(query("relay") as CFDictionary)
+        guard let token else { return }
+        var item = query("relay")
+        item[kSecValueData as String] = Data(token.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
+        SecItemAdd(item as CFDictionary, nil)
     }
 }

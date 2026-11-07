@@ -179,11 +179,6 @@ struct TaskDetail: View {
             }
             .pushedNav()
             .task(id: id) { await store.read(id) }
-            .alert("Couldn't do that", isPresented: Binding(get: { store.pickError != nil }, set: { if !$0 { store.pickError = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(store.pickError ?? "")
-            }
             .sheet(isPresented: Binding(get: { store.pendingPick == id }, set: { if !$0 { store.pendingPick = nil } })) { WhichDesk(id: id) }
             .sheet(isPresented: Binding(get: { store.fullFor == id && store.pickFull != nil }, set: { if !$0 { store.pickFull = nil; store.fullFor = nil } })) { FullDesk() }
         }
@@ -214,6 +209,7 @@ struct Label2: View {
 
 struct ThreadRow: View {
     var message: Message
+    @Environment(Store.self) private var store
 
     var body: some View {
         if !message.said.isEmpty {
@@ -230,6 +226,13 @@ struct ThreadRow: View {
                 Text("you · \(message.time)").font(.system(size: 12)).foregroundStyle(K.muted)
                 MyBubble(text: message.text)
                 ReceiptLine(receipt: message.receipt).padding(.top, 2)
+                if message.receipt == .dayOld {
+                    HStack(spacing: 12) {
+                        Button("Discard") { store.resendAged(message.id, keep: false) }
+                        Button("Keep waiting") { store.resendAged(message.id, keep: true) }
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {

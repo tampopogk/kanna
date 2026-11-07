@@ -201,16 +201,19 @@ kanna_cargo_stamp "$caller" 15.0 2>/dev/null
 [[ "$triple $key $stamp" == "caller caller caller" ]] || fail "seed: changed the build scripts' variables: $triple $key $stamp"
 
 packages="$main/target/kanna-build"
-mkdir -p "$packages/checkouts" "$packages/repositories" "$packages/artifacts/s/S"
-printf '{"local": "%s/target/ghosttykit/G", "remote": "%s/artifacts/s/S"}\n' "$main" "$packages" >"$packages/workspace-state.json"
-borrowed="$(worktree task-borrowed)"
-host_triple="$(kanna_host_triple)"
-for arch_triple in "$host_triple" other-apple-darwin; do
-  scratch="$(kanna_arch_dir "$borrowed" "$arch_triple")/kanna-build"
-  kanna_borrow_swiftpm "$borrowed" "$arch_triple" >/dev/null
-  [[ "$(cat "$scratch/workspace-state.json")" == "{\"local\": \"$borrowed/target/ghosttykit/G\", \"remote\": \"$scratch/artifacts/s/S\"}" ]] || fail "borrow: $arch_triple's state is $(cat "$scratch/workspace-state.json")"
-  [[ -d "$scratch/artifacts/s/S" ]] || fail "borrow: $arch_triple got no binary artifacts"
-done
+mkdir -p "$packages/repositories/r" "$packages/checkouts/c"
+printf '{"path": "%s", "scratch": "%s"}\n' "$main/apps/kanna" "$packages/artifacts/sparkle/Sparkle.xcframework" >"$packages/workspace-state.json"
+unbuilt="$(worktree task-unbuilt)"
+(kanna_borrow_swiftpm "$unbuilt" >/dev/null)
+[[ ! -e "$unbuilt/target/kanna-build" ]] || fail "borrow: borrowed packages without their artifacts"
+mkdir -p "$packages/artifacts/sparkle/Sparkle.xcframework"
+borrower="$(worktree task-borrower)"
+(kanna_borrow_swiftpm "$borrower" >/dev/null)
+[[ -d "$borrower/target/kanna-build/repositories/r" && -d "$borrower/target/kanna-build/checkouts/c" ]] || fail "borrow: no packages"
+[[ -d "$borrower/target/kanna-build/artifacts/sparkle/Sparkle.xcframework" ]] || fail "borrow: no artifacts"
+[[ "$(cat "$borrower/target/kanna-build/workspace-state.json")" == "{\"path\": \"$borrower/apps/kanna\", \"scratch\": \"$borrower/target/kanna-build/artifacts/sparkle/Sparkle.xcframework\"}" ]] || fail "borrow: state says $(cat "$borrower/target/kanna-build/workspace-state.json")"
+(kanna_borrow_swiftpm "$borrower" other-triple >/dev/null)
+[[ "$(cat "$borrower/target/other-triple/kanna-build/workspace-state.json")" == *"\"$borrower/target/other-triple/kanna-build/artifacts/sparkle/Sparkle.xcframework\""* ]] || fail "borrow: another architecture's state says $(cat "$borrower/target/other-triple/kanna-build/workspace-state.json")"
 
 [[ $failed == 0 ]] && echo "store: ok"
 exit "$failed"

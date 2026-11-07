@@ -30,7 +30,7 @@ flowchart LR
 | Ghostty's builds, Zig and source ([build store](build-store.md#2-the-store)) | built once per pin, then a symlink | the Zig build, cloning the fork |
 | Rust dependencies ([seed](build-store.md#2-the-store)) | `cp -c` of the store's dev-profile build of main's `Cargo.lock`, without our crates | compiling ~270 registry crates |
 | Dependencies that differ from main's ([compile cache](build-store.md#4-the-compile-cache)) | `sccache` as `rustc`'s wrapper | recompiling them in every worktree |
-| SwiftPM's packages (`kanna_borrow_swiftpm`) | `cp -c -R -p` of `repositories/`, `checkouts/` and `artifacts/`; `workspace-state.json` with the main checkout's path replaced by the worktree's, and its scratch folder by the architecture's | package resolve 3.5s → 0.2s |
+| SwiftPM's packages (`kanna_borrow_swiftpm`) | `cp -c -R -p` of `repositories/`, `checkouts/` and `artifacts/` (Sparkle's xcframework, which `workspace-state.json` lists as already there); `workspace-state.json` with the main checkout's paths replaced by the worktree's, its scratch folder included, so another architecture's `target/TRIPLE/kanna-build` finds its own artifacts | package resolve 3.5s → 0.2s |
 
 - **One Rust profile.** A worktree builds `target/debug` for its app and its tests alike; the main checkout builds `release` ([build store](build-store.md#3-one-rust-profile-per-worktree)).
 - **Our crates always compile in the worktree,** from its own source: the seed carries none of their artifacts or fingerprints, and sccache doesn't cache incremental crates.

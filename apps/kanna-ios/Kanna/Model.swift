@@ -80,6 +80,7 @@ enum ChatKind {
     case ask([AskOption])
     case answered(String)
     case sys(String)
+    case round(String, String)
 }
 
 struct ChatItem: Identifiable {
@@ -133,7 +134,7 @@ struct WorkItem: Identifiable {
     var picking = false
 }
 
-enum AppTab { case chat, shelf }
+enum AppTab { case chat, shelf, quiz, stats, machines }
 
 enum PairStep { case start, scan, refused, confirm, done }
 
@@ -141,6 +142,7 @@ struct Repo: Identifiable {
     let id: String
     var name: String
     var plannerMachine: String
+    var plannerKey = ""
     var planner: Planner
     var lastLine = ""
     var chat: [ChatItem] = []
@@ -149,6 +151,11 @@ struct Repo: Identifiable {
     var done: [String] = []
     var down = false
     var lastSeen = ""
+    var map: [SubsystemTile] = []
+    var rounds: [QuizRound] = []
+    var writing: Writing?
+    var queued: [String] = []
+    var failed: String?
 }
 
 struct FullCode: Identifiable {

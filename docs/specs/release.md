@@ -54,7 +54,7 @@ Every check runs before any build, and each failure says what to do.
 
 ## Versions
 
-The version comes from the tag: there are no version-bump commits.
+The last `v*` tag is the one source of the version: there are no version-bump commits, and nothing reads `Cargo.toml`'s `version`, which stays only because Cargo needs one.
 
 ```mermaid
 flowchart LR
@@ -66,9 +66,11 @@ flowchart LR
 ```
 
 - **The first release is explicit:** with no `v*` tag yet, a bump flag is an error; `scripts/release.sh 4.0.0` cut Kanna's first.
-- **Into the build:** release.sh sets `KANNA_VERSION`; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part, and `KannaVersion` is all of it, which the About panel shows.
+- **Into a release build:** release.sh sets `KANNA_VERSION` to the exact version; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part, and `KannaVersion` is all of it, which the About panel shows.
+- **Into every other build:** without `KANNA_VERSION`, `crates/kanna-build/build.rs` reads the repo's highest `vX.Y.Z` tag, skipping staging tags as release.sh does, and the build is `X.Y.Z-dev`. A plain `cargo build` gets it too. The tag need not be an ancestor of HEAD, so every checkout of a repo agrees. It rebuilds when a tag lands, from any worktree: it watches `refs/tags` and `packed-refs` in the repo's common git folder.
+- **Scripts ask `kanna-build`:** whatever can't read the baked-in version runs the `kanna-build` binary, which prints `version=`: `scripts/build-kanna-app.sh`, `scripts/build-linux.sh` and `scripts/ios-version.sh` (the last two through `kanna_version` in `scripts/env.sh`), and `scripts/server-setup.sh`.
+- **No tag, no build:** with no `vX.Y.Z` tag to read (a shallow clone, say) the build fails and says to run `git fetch --tags` or set `KANNA_VERSION`, rather than show a made-up number. `kanna build` sends the version with its job, since a build Mac's mirror has no tags.
 - **The build number** (`CFBundleVersion`) is `git rev-list --count HEAD`, in every build.
-- **Without `KANNA_VERSION`** a build is the workspace's version, 0.1.0, as before.
 - **Re-running after a failed publish:** if the tag is already on origin at HEAD, release.sh carries on with that tag's release; at another commit it stops.
 
 ## Stripping

@@ -67,6 +67,11 @@ kanna_rust_dir() {
   echo "$(kanna_arch_dir "$1" "${2:-$(kanna_host_triple)}")/$profile"
 }
 
+kanna_version() {
+  kanna_version_shell="$(CARGO_TARGET_DIR="$1/target/kanna-version" cargo run -q --manifest-path "$1/Cargo.toml" -p kanna-build)" || return 1
+  printf '%s\n' "$kanna_version_shell" | sed -n 's/^version=//p'
+}
+
 kanna_cargo_stamp() {
   cargo_triple="${3:-$(kanna_host_triple)}"
   cargo_dir="$(kanna_rust_dir "$1" "$cargo_triple")" || return 1
@@ -287,7 +292,8 @@ kanna_borrow_swiftpm() {
   from="$main/target/kanna-build"
   [ -f "$from/workspace-state.json" ] && [ -d "$from/checkouts" ] && [ -d "$from/repositories" ] && [ -d "$from/artifacts" ] || return 0
   mkdir -p "$here.borrowing"
-  if kanna_clone "$from/repositories" "$here.borrowing/repositories" && kanna_clone "$from/checkouts" "$here.borrowing/checkouts" && kanna_clone "$from/artifacts" "$here.borrowing/artifacts" &&
+  if kanna_clone "$from/repositories" "$here.borrowing/repositories" && kanna_clone "$from/checkouts" "$here.borrowing/checkouts" &&
+     kanna_clone "$from/artifacts" "$here.borrowing/artifacts" &&
      sed -e "s#$main/#$1/#g" -e "s#$1/target/kanna-build/#$here/#g" "$from/workspace-state.json" > "$here.borrowing/workspace-state.json"; then
     mv "$here.borrowing" "$here"
     echo "Borrowed $from's Swift packages"
