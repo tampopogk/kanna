@@ -13,7 +13,7 @@ Find a Shelf task by typing part of its name, first message or branch, or its ID
 - **The field sits in the Shelf header** of the Desk view, between "Shelf" and the count, which reads "2 of 12" while you search. Its placeholder is "Search the Shelf". It shows only when the Shelf has tasks.
 - **⌘F** (Edit › Find…) puts the cursor in it while the Desk view shows, from the planning terminal too; it scrolls the field into view.
 - **It filters as you type.** A task matches when every word you type, ignoring case, in any order, starts its ID (`task-1dfb`, `TASK-1DFB12C2`, or 4 hex digits or more without `task-`: `1dfb`) or is its agent's pane ID (`term-12`), or appears in its name, first message or branch (`save-default`). Matches are marked in the name and first message. No match: "No Shelf task matches "…"."
-- **The first match is selected.** ↑ ↓ move the selection, and ↩ moves the selected task to the Desk, as clicking it does (refused the same way when the Desk is full). Clicking any row still works.
+- **The first match is selected.** ↑ ↓ move the selection, and ↩ moves the selected task to the Desk, as clicking it does (refused the same way when the Desk is full, with the note "The Desk is full: to make room, drag one of its tasks onto the Shelf.": [Desk](desk.md)). Clicking any row still works.
 - **esc** clears the search; with nothing typed, it goes back to the planning terminal. The field's **×** clears it too, and shows in place of the ⌘F hint once you've typed.
 - **The search clears** when you start a task from it, and when the active task shows again.
 - **Rows look as they do unfiltered,** whatever state they show (waiting, running on the Shelf, blocked): the search only hides the ones that don't match.

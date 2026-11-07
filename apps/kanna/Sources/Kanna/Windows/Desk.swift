@@ -309,9 +309,16 @@ extension AppController {
 
     private func noted(_ window: String, _ reply: JSON, otherwise: String = "it didn't start") {
         guard reply["ok"]?.bool != true, let controller = controllers[window] else { return }
-        controller.note = reply["error"]?["message"]?.string ?? otherwise
+        controller.note = refusal(reply, otherwise: otherwise)
         refresh()
     }
+
+    func refusal(_ reply: JSON, otherwise: String) -> String {
+        if reply["error"]?["code"]?.string == "task_limit" { return Self.deskFull }
+        return reply["error"]?["message"]?.string ?? otherwise
+    }
+
+    static let deskFull = "The Desk is full: to make room, drag one of its tasks onto the Shelf."
 
     func shelveTask(_ task: String, from window: String) {
         controllers[window]?.note = ""
