@@ -29,6 +29,14 @@
       ]
     },
     {
+      "match": "LONG_SLEEP",
+      "tool": "sleep 12",
+      "args": {"sandbox_permissions": "use_default", "yield_time_ms": 30000},
+      "after_tool": [
+        "LONG_TOOL_DONE"
+      ]
+    },
+    {
       "match": "BACKGROUND_TURN",
       "tool": "sleep 600",
       "args": {"tty": true, "yield_time_ms": 1000, "sandbox_permissions": "use_default"},

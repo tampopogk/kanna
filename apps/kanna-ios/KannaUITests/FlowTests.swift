@@ -307,6 +307,16 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Written yesterday"].waitForNonExistence(timeout: 10))
     }
 
+    func testADayOldTaskMessageAsksBeforeItGoes() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-dayOld", "kanna", "-dayOldTask", "Review build output"]
+        app.launch()
+        tabBar("Shelf")
+        tap("Review build output")
+        see("A day old, not sent")
+        tap("Discard")
+        XCTAssertTrue(app.staticTexts["Written yesterday"].waitForNonExistence(timeout: 10))
+    }
+
     private func stats() {
         app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
         app.launch()

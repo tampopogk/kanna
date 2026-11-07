@@ -197,6 +197,10 @@ final class LiveBackend: Backend {
         Task.detached { Rust.networkChanged() }
     }
 
+    func askLocalNetwork() {
+        Task { _ = await Lookup().find("", seconds: 30) }
+    }
+
     func hello() async throws -> Hello {
         try await call("hello", [:])
     }

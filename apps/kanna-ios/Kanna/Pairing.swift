@@ -50,6 +50,7 @@ struct PairStart: View {
                 .padding(.bottom, 12)
         }
         .padding(.horizontal, 30)
+        .onAppear { store.askLocalNetwork() }
     }
 }
 

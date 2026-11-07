@@ -35,7 +35,21 @@ November 6, 2026: iPhone 15 Pro, iOS 27.0.1, on the same LAN as a MacBook Pro.
 
 ## Cellular
 
-November 7, 2026: iPhone 15 Pro, iOS 27.0.1, on 4G with one bar and Wi-Fi off, through `https://relay.kanna.build:8444`. `DeviceTests/testAway`, with the app stopped by `SIGSTOP` for most of each absence, since XCUITest keeps it from being suspended.
+November 7, 2026: the real app, not the probe, on the same iPhone with Wi-Fi off and cellular on, no VPN, against a MacBook Pro with a public address and `relay.kanna.build`. One run of `testAway`.
+
+| Check | Result |
+|---|---|
+| Launch to a link | 5,966 ms, `Direct · internet`, RTT 100 ms |
+| Question to answer on the phone | **Pass.** The app got the answer in 69 s, most of it a new planner's first start and its trust prompt |
+| Back after 5, 15 and 45 s on the Home Screen | 12,126, 12,779 and 12,024 ms, each `Relayed` |
+| The chip after that, watched for 90 s | `Relayed` to `Direct · internet` at 18 s, back to `Relayed` at 84 s |
+
+- **Why coming back took 12 s,** and why the chip went back to `Relayed`: [timed and fixed](#timed-and-fixed), below.
+- **Not covered:** a carrier NAT with no way through, Wi-Fi coming back while the app is open, a phone locked while away.
+
+### Timed and fixed
+
+Later on November 7: the same phone on 4G with one bar and Wi-Fi off, through `https://relay.kanna.build:8444`. `DeviceTests/testAway`, with the app stopped by `SIGSTOP` for most of each absence, since XCUITest keeps it from being suspended.
 
 | Back after | Before | After |
 |---|---|---|

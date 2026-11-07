@@ -962,6 +962,10 @@ final class Store {
         }
     }
 
+    func askLocalNetwork() {
+        backend.askLocalNetwork()
+    }
+
     func beginScan() {
         pairError = nil
         pairStep = .scan
