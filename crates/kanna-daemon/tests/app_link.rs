@@ -260,17 +260,21 @@ fn exited_comes_after_the_last_output() {
         let mut app = instance.app();
         app.tell("attach", json!({"terminal": pane}));
         let mut replica: Option<Terminal> = None;
+        let mut last = Vec::new();
         let exited = app.until("the exit", |m| {
             if is(m, "snapshot", &pane) {
                 replica = Some(Terminal::from_snapshot(&data(m)).unwrap());
             } else if is(m, "output", &pane) {
-                replica.as_mut().expect("output before the snapshot").write(&data(m));
+                let bytes = data(m);
+                replica.as_mut().expect("output before the snapshot").write(&bytes);
+                last.extend_from_slice(&bytes);
+                last.drain(..last.len().saturating_sub(300));
             }
             is(m, "exited", &pane)
         });
         assert_eq!(exited["args"]["code"], 7, "{exited}");
         let screen = replica.expect("no snapshot").text(Lines::Screen);
-        assert!(screen.ends_with("END"), "round {round}: exited came before the last output (the screen ends {:?})", &screen[screen.len().saturating_sub(20)..]);
+        assert!(screen.ends_with("END"), "round {round}: exited came before the last output (the last bytes were {:?}, the daemon's screen is {:?})", String::from_utf8_lossy(&last), instance.screen(&pane));
         drop(app);
         instance.call("close", json!({"pane": instance.pane_of(&pane)}));
     }
