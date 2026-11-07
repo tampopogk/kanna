@@ -1,6 +1,6 @@
 # Task list
 
-**Status:** built · **Builds on:** [Desk](desk.md#5-cli), [tasks](tasks.md#7-cli), [blocked tasks](task-dependencies.md), [agent messaging](agent-messaging.md), [task scripts](task-scripts.md) · **Code:** `crates/kanna/src/output.rs` (the text), `crates/kanna-daemon/src/tasks.rs` (`merged`, `replied`)
+**Status:** built · **Builds on:** [Desk](desk.md#5-cli), [tasks](tasks.md#7-cli), [blocked tasks](task-dependencies.md), [agent messaging](agent-messaging.md), [task scripts](task-scripts.md) · **Code:** `crates/kanna/src/commands/task.rs` (the text), `crates/kanna-daemon/src/tasks.rs` (`merged`, `replied`)
 
 `kanna task list` is how the planning agent, and you, see what's on the Desk and what waits on the Shelf. It reads the Desk first, then the Shelf, each under its own heading, with one short row per task, so the Desk's state reads at a glance. Its STATE says when a task's branch is already in main (`merged`) and when the task has said something to the planner that the planner hasn't had yet (`replied`), so a finished task never reads as one still to merge.
 
@@ -137,7 +137,7 @@ sequenceDiagram
 - **The daemon works out `merged`,** since it knows each task's worktree and runs where the repo is, also for a task on another machine. It does it only when asked (`merged: true`: the CLI's other `tasks list` calls, for IDs, don't), on a thread of its own, one thread per worktree, so the list isn't held up by git.
 - **`replied`** is read from the messages not yet delivered whose recipient is `planner`.
 
-**Tested** by `output.rs`'s `list_tests` (the layout, the agent and repo only where they differ, waits by name), `task_scripts.rs`'s `a_worktree_is_merged_once_its_own_commits_are_in_main`, `tests/cli.rs` (the caller's repo, `--all`, QUERY), and e2e `task_shelf` (a Desk task reads `replied` while its message to the planner waits, stays so after an unmerged commit, then `merged` once main merges it, and `--json` says `merged`).
+**Tested** by `commands/task.rs`'s `list_tests` (the layout, the agent and repo only where they differ, waits by name), `task_scripts.rs`'s `a_worktree_is_merged_once_its_own_commits_are_in_main`, `tests/cli.rs` (the caller's repo, `--all`, QUERY), and e2e `task_shelf` (a Desk task reads `replied` while its message to the planner waits, stays so after an unmerged commit, then `merged` once main merges it, and `--json` says `merged`).
 
 ## 7. Rejected
 

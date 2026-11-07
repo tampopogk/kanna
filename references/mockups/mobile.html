@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mobile App Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --tint: rgba(122, 162, 255, .18); --oktint: rgba(95, 207, 147, .13); --badtint: rgba(239, 107, 107, .13); --warntint: rgba(240, 179, 90, .13);
+  --page: #0d0e10; --card: #1f232a; --onaccent: #0d0e10;
+  --series: #3987e5; --wash: rgba(57,135,229,.12); --grid: #262a31; --axis: #3a404a;
+  --m0: #1f232a; --m1: #232c40; --m2: #2c3f66; --m3: #3c5a96; --m4: #4a72cc; --mt: #e6e8eb; --mt4: #ffffff; --mm: rgba(230,232,235,.68); --mm4: rgba(255,255,255,.8); --hatch: rgba(240,179,90,.3);
+  --num: #4b5260; --keyword: #c792ea; --function: #7aa2ff; --type: #e5c07b; --string: #a5d6a7;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --tint: rgba(47, 99, 216, .14); --oktint: rgba(31, 157, 92, .10); --badtint: rgba(207, 63, 63, .09); --warntint: rgba(183, 121, 31, .11);
+  --page: #dfe2e7; --card: #ffffff; --onaccent: #ffffff;
+  --series: #2a78d6; --wash: rgba(42,120,214,.10); --grid: #eceef1; --axis: #c9cdd4;
+  --m0: #f4f5f7; --m1: #e4ebfb; --m2: #c6d5f6; --m3: #93b0ee; --m4: #2f63d8; --mt: #1d2026; --mt4: #ffffff; --mm: rgba(29,32,38,.66); --mm4: rgba(255,255,255,.82); --hatch: rgba(183,121,31,.24);
+  --num: #b4bac4; --keyword: #8839c4; --function: #2f63d8; --type: #a15c00; --string: #2d7d3a;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 52px; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1860px; margin: 0 auto; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+code { font: 12px var(--mono); }
+.controls { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; background: var(--page); }
+.controls a, .controls button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; text-decoration: none; }
+.controls a:hover, .controls button:hover { border-color: var(--accent); }
+section.part { margin-top: 36px; }
+section.part > h2 { font-size: 15px; margin: 0; padding: 7px 12px; border-radius: 6px; background: var(--panel2); }
+section.part > p { color: var(--muted); max-width: 920px; margin: 8px 0 0; }
+.wall { display: flex; flex-wrap: wrap; gap: 30px 28px; margin-top: 18px; align-items: flex-start; }
+figure { margin: 0; width: 414px; }
+figure:target .phone { box-shadow: 0 0 0 3px var(--accent); }
+figcaption { padding: 10px 6px 0; color: var(--muted); }
+figcaption b { display: block; color: var(--text); font-size: 13px; }
+.d { display: inline-block; font: 600 11px var(--sans); color: var(--warn); background: var(--warntint); border-radius: 4px; padding: 0 5px; text-decoration: none; margin-left: 2px; }
+
+.phone { width: 414px; height: 868px; padding: 12px; border-radius: 58px; background: #000; box-shadow: 0 0 0 1px #3a3d44, 0 20px 50px rgba(0,0,0,.35); }
+.screen { position: relative; width: 390px; height: 844px; border-radius: 46px; overflow: hidden; background: var(--bg); color: var(--text); font: 15px/1.38 var(--sans); display: flex; flex-direction: column; }
+.island { position: absolute; top: 11px; left: 133px; width: 124px; height: 36px; border-radius: 18px; background: #000; z-index: 9; }
+.status { flex: none; height: 54px; padding: 18px 30px 0 40px; display: flex; justify-content: space-between; font-weight: 600; font-size: 15px; }
+.status .r { display: flex; gap: 5px; align-items: center; }
+.status svg { display: block; }
+.home { position: absolute; bottom: 8px; left: 128px; width: 134px; height: 5px; border-radius: 3px; background: var(--text); z-index: 9; }
+.ico { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; display: block; }
+
+.nav { flex: none; min-height: 50px; padding: 4px 16px 8px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
+.nav .who { flex: 1; min-width: 0; }
+.nav .repo { display: inline-flex; align-items: center; gap: 3px; font-weight: 600; font-size: 17px; }
+.nav .repo .ico { width: 14px; height: 14px; color: var(--muted); stroke-width: 2.4; }
+.nav .sub { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.nav.title { justify-content: space-between; }
+.nav .back { color: var(--accent); display: flex; align-items: center; margin-left: -6px; }
+.nav .back .ico { width: 24px; height: 24px; }
+.chip { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; color: var(--muted); padding: 3px 9px 3px 7px; border-radius: 999px; background: var(--panel); }
+.chip .ico { width: 14px; height: 14px; stroke-width: 2; }
+.chip.relay { color: var(--machine); }
+.chip.off { color: var(--bad); background: var(--badtint); }
+.chip.lan .ico, .chip.net .ico { color: var(--ok); }
+.chip.on { box-shadow: 0 0 0 1.5px var(--accent); }
+
+.tabs { flex: none; height: 82px; padding: 8px 6px 0; display: flex; border-top: 1px solid var(--line); background: var(--panel); }
+.tabs div { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 500; color: var(--muted); }
+.tabs .ico { width: 25px; height: 25px; }
+.tabs .on { color: var(--accent); }
+.tabs .badge { position: relative; }
+.tabs .badge::after { content: ""; position: absolute; top: 0; right: 24px; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+
+.body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.pad { padding: 14px 16px; }
+.fill { flex: 1; min-height: 0; overflow: hidden; }
+.chat { flex: 1; min-height: 0; overflow: hidden; padding: 12px 16px 8px; display: flex; flex-direction: column; justify-content: flex-end; gap: 10px; }
+.when { align-self: center; color: var(--muted); font-size: 12px; }
+.me { align-self: flex-end; max-width: 82%; background: var(--tint); padding: 8px 12px; border-radius: 16px 16px 5px 16px; }
+.state { align-self: flex-end; margin-top: -6px; font-size: 11.5px; color: var(--muted); display: flex; gap: 4px; align-items: center; }
+.state .ico { width: 12px; height: 12px; stroke-width: 2.2; }
+.pl { max-width: 100%; }
+.pl p { margin: 0 0 8px; } .pl p:last-child { margin: 0; }
+.pl ul { margin: 0 0 8px; padding-left: 18px; } .pl li { margin-bottom: 3px; }
+.pl code, .inl { font: 13px var(--mono); color: var(--function); }
+.work { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.work .pulse { display: flex; gap: 3px; }
+.work .pulse i { width: 6px; height: 6px; border-radius: 50%; background: var(--machine); }
+.work .pulse i:nth-child(2) { opacity: .6; } .work .pulse i:nth-child(3) { opacity: .3; }
+.sys { align-self: center; max-width: 92%; text-align: center; color: var(--muted); font-size: 13px; background: var(--panel); padding: 7px 12px; border-radius: 12px; }
+.ask { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.ask .opt { display: block; width: 100%; padding: 10px 12px; border-top: 1px solid var(--line); }
+.ask .opt:first-child { border-top: 0; }
+.ask .opt b { display: block; font-weight: 600; color: var(--accent); }
+.ask .opt span { display: block; font-size: 13px; color: var(--muted); }
+.ask.done { padding: 8px 12px; color: var(--muted); font-size: 13px; }
+.ask.done b { color: var(--text); font-weight: 600; }
+.comp { flex: none; display: flex; align-items: flex-end; gap: 8px; padding: 8px 12px; }
+.notab .comp { padding-bottom: 30px; }
+.comp .in { flex: 1; min-height: 38px; padding: 8px 14px; border-radius: 19px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); font-size: 15px; }
+.comp .send { width: 38px; height: 38px; border-radius: 50%; background: var(--accent); color: var(--onaccent); display: flex; align-items: center; justify-content: center; }
+.comp .send.idle { background: var(--panel2); color: var(--muted); }
+.comp .in.typed { color: var(--text); }
+.banner { flex: none; display: flex; gap: 8px; padding: 9px 16px; font-size: 13px; }
+.banner .ico { width: 18px; height: 18px; margin-top: 1px; }
+.banner.off { background: var(--badtint); color: var(--text); }
+.banner.off .ico { color: var(--bad); }
+.banner.needs { background: var(--warntint); }
+.banner.needs .ico { color: var(--warn); }
+.banner small { display: block; color: var(--muted); font-size: 12.5px; }
+
+.code { background: var(--term); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.code .hd { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: var(--panel); border-bottom: 1px solid var(--line); font: 12px var(--mono); color: var(--muted); }
+.code .hd b { color: var(--text); font-weight: 600; }
+.code .hd span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.code .hd .ico { width: 15px; height: 15px; }
+.code .ls { padding: 6px 0; font: 12.5px/18px var(--mono); }
+.ln { display: flex; padding-right: 8px; }
+.ln .n { flex: none; width: 38px; padding-right: 9px; text-align: right; color: var(--num); user-select: none; }
+.ln .t { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ln.on .n, .ln.badl .n { color: var(--muted); }
+.ln.on { background: var(--tint); box-shadow: inset 2px 0 0 var(--accent); }
+.ln.badl { background: var(--badtint); box-shadow: inset 2px 0 0 var(--bad); }
+.note { margin: 6px 8px; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; padding: 6px 9px; font: 13px/1.4 var(--sans); }
+.kw { color: var(--keyword); } .fn { color: var(--function); } .ty { color: var(--type); } .st { color: var(--string); }
+
+.search { margin: 10px 16px 2px; padding: 7px 10px; border-radius: 10px; background: var(--panel); color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.search .ico { width: 16px; height: 16px; }
+.gh { display: flex; justify-content: space-between; padding: 14px 16px 5px; font-size: 13px; color: var(--muted); }
+.gh b { color: var(--text); font-weight: 600; }
+.row { display: flex; align-items: center; gap: 11px; padding: 9px 16px; border-bottom: 1px solid var(--line); }
+.row .t { flex: 1; min-width: 0; }
+.row .n { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .s { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .s .need { color: var(--warn); font-weight: 500; }
+.row > .ico { width: 15px; height: 15px; color: var(--muted); stroke-width: 2.2; }
+.dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--muted); }
+.dot.working { background: var(--accent); } .dot.needs { background: var(--warn); } .dot.idle { background: var(--ok); }
+.dot.ready { background: var(--ok); box-shadow: 0 0 0 2px var(--oktint); }
+.dot.stopped, .dot.waiting { background: transparent; border: 1.5px solid var(--muted); }
+.dot.blocked { background: transparent; border: 1.5px dotted var(--muted); }
+.dot.stale { background: var(--machine); }
+.dot.offline { background: var(--bad); }
+.dim80 { opacity: .55; }
+
+.hero { padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
+.hero h3 { font-size: 21px; line-height: 1.2; margin: 0 0 5px; }
+.hero .meta { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.acts { display: flex; gap: 8px; margin-top: 11px; }
+.btn { flex: 1; text-align: center; font-weight: 600; font-size: 15px; padding: 10px; border-radius: 12px; background: var(--panel2); color: var(--accent); }
+.btn.pri { background: var(--accent); color: var(--onaccent); }
+.btn.off { opacity: .42; color: var(--muted); }
+.lbl { font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+.card { background: var(--panel); border-radius: 12px; padding: 10px 12px; }
+.msg { display: flex; flex-direction: column; gap: 2px; }
+.msg .h { font-size: 12px; color: var(--muted); }
+.msg.you { align-items: flex-end; }
+
+.dimmer { position: absolute; inset: 0; background: rgba(0,0,0,.5); z-index: 6; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; background: var(--panel); border-radius: 20px 20px 0 0; padding: 8px 0 30px; }
+.sheet .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--axis); margin: 0 auto 10px; }
+.sheet h4 { font-size: 17px; margin: 0; padding: 0 16px; }
+.sheet p { color: var(--muted); font-size: 13px; margin: 3px 0 8px; padding: 0 16px; }
+.sheet .row { border-color: var(--line); }
+.sheet .row .ck { color: var(--accent); }
+.pop { position: absolute; top: 106px; right: 12px; left: 56px; z-index: 7; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 11px 13px; font-size: 13.5px; box-shadow: 0 12px 28px rgba(0,0,0,.35); }
+.pop b { display: block; font-size: 15px; }
+.pop .kv { display: flex; justify-content: space-between; color: var(--muted); padding: 3px 0; font-size: 13px; }
+.pop .kv span:last-child { color: var(--text); }
+
+.sec { margin: 14px 16px 0; padding: 5px 10px; border-radius: 6px; background: var(--panel2); display: flex; align-items: baseline; gap: 8px; }
+.sec b { font-size: 14px; }
+.sec span { color: var(--muted); font-size: 12px; }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; padding: 10px 16px 0; }
+.tile .k { color: var(--muted); font-size: 12px; }
+.tile .v { font-size: 22px; font-weight: 600; letter-spacing: -.2px; }
+.tile .v small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.tile.wide { grid-column: span 2; }
+.tile svg { display: block; width: 100%; height: 44px; }
+.tile.wide svg { height: 72px; }
+.read { position: absolute; z-index: 3; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font-size: 12px; box-shadow: 0 6px 16px rgba(0,0,0,.28); white-space: nowrap; }
+.read span { color: var(--muted); }
+
+.strip { flex: none; display: flex; align-items: center; gap: 14px; padding: 10px 16px 2px; }
+.strip h3 { flex: 1; font-size: 20px; margin: 0; }
+.score { display: flex; gap: 12px; font-weight: 600; font-size: 14px; }
+.score span { display: inline-flex; align-items: center; gap: 3px; }
+.score .ico { width: 16px; height: 16px; }
+.score .flame { color: var(--warn); } .score .star { color: var(--accent); }
+.map { display: grid; grid-template-columns: repeat(6, 1fr); grid-auto-rows: 47px; gap: 2px; margin: 8px 16px 0; }
+.mt { position: relative; min-width: 0; padding: 5px 7px; border-radius: 4px; overflow: hidden; background: var(--m1); color: var(--mt); font-size: 12.5px; font-weight: 600; line-height: 1.18; }
+.mt small { display: block; font-size: 11px; font-weight: 400; color: var(--mm); }
+.mt.l0 { background: var(--m0); box-shadow: inset 0 0 0 1px var(--line); } .mt.l1 { background: var(--m1); } .mt.l2 { background: var(--m2); } .mt.l3 { background: var(--m3); } .mt.l4 { background: var(--m4); color: var(--mt4); }
+.mt.l4 small { color: var(--mm4); }
+.mt.stale { background-image: repeating-linear-gradient(135deg, var(--hatch) 0 2px, transparent 2px 9px); }
+.mt.sel { box-shadow: inset 0 0 0 2px var(--text); }
+.legend { flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 16px 0; font-size: 11.5px; color: var(--muted); }
+.legend i { width: 15px; height: 11px; border-radius: 2px; display: block; }
+.legend .gap { flex: 1; }
+.legend .h { background: repeating-linear-gradient(135deg, var(--warn) 0 2px, transparent 2px 5px), var(--m2); }
+.startb { flex: none; margin: 8px 16px 10px; padding: 11px 14px; border-radius: 14px; background: var(--accent); color: var(--onaccent); display: flex; align-items: center; }
+.startb b { display: block; font-size: 16px; }
+.startb small { font-size: 13px; opacity: .85; }
+.startb .t { flex: 1; }
+.startb.calm { background: var(--panel); color: var(--text); }
+.startb.calm small { color: var(--muted); opacity: 1; }
+.big { font-size: 38px; font-weight: 700; letter-spacing: -.5px; line-height: 1.05; }
+.bar { height: 8px; border-radius: 4px; background: var(--panel2); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+
+.qtop { flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px; color: var(--muted); }
+.qtop .ico { width: 20px; height: 20px; }
+.prog { flex: 1; display: flex; gap: 4px; }
+.prog i { flex: 1; height: 6px; border-radius: 3px; background: var(--panel2); }
+.prog i.r { background: var(--ok); } .prog i.w { background: var(--bad); } .prog i.c { background: var(--accent); }
+.qmeta { color: var(--muted); font-size: 13px; padding: 0 16px; }
+.qmeta b { color: var(--text); font-weight: 600; }
+.q { font-size: 20px; font-weight: 600; line-height: 1.26; padding: 5px 16px 12px; }
+.q code { font: 600 17px var(--mono); }
+.ch { margin: 0 16px 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); display: flex; gap: 10px; align-items: flex-start; }
+.ch .a { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--panel2); color: var(--muted); font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.ch .a .ico { width: 14px; height: 14px; stroke-width: 3; }
+.ch b { font-weight: 600; display: block; }
+.ch span.d2 { color: var(--muted); font-size: 13px; display: block; }
+.ch code { font: 13.5px var(--mono); }
+.ch.right { border-color: var(--ok); background: var(--oktint); } .ch.right .a { background: var(--ok); color: var(--onaccent); }
+.ch.wrong { border-color: var(--bad); background: var(--badtint); } .ch.wrong .a { background: var(--bad); color: var(--onaccent); }
+.ch.fade { opacity: .5; }
+.why { margin: 4px 16px 8px; font-size: 14.5px; }
+.why b.r { color: var(--ok); } .why b.w { color: var(--bad); }
+.pts { display: inline-block; font-weight: 700; font-size: 13px; color: var(--ok); margin-left: 4px; }
+.next { flex: none; margin: 6px 16px 30px; }
+.pic { margin: 0 16px 8px; padding: 6px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); display: flex; gap: 6px; align-items: center; }
+.pic svg { flex: 1; min-width: 0; height: 128px; }
+.pic text { font: 12px var(--sans); fill: var(--text); text-anchor: middle; }
+.pic .bx { fill: var(--card); stroke: var(--axis); }
+.pic .ln2 { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.pic .dash { stroke-dasharray: 4 3; }
+.pic .ah { fill: var(--muted); }
+.sel-line { display: flex; font: 12.5px/18px var(--mono); margin: 0 16px 8px; padding: 8px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--term); gap: 8px; }
+.sel-line .a { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--tint); color: var(--accent); font: 600 12px var(--sans); display: flex; align-items: center; justify-content: center; }
+.sel-line .n { flex: none; color: var(--num); }
+.sel-line .t { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.endrow { display: flex; align-items: center; gap: 9px; padding: 6px 16px; }
+.endrow .ico { width: 16px; height: 16px; stroke-width: 2.6; }
+.endrow .ok { color: var(--ok); } .endrow .no { color: var(--bad); }
+.endrow .t { flex: 1; min-width: 0; font-size: 14px; }
+.endrow small { display: block; font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.center { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 0 30px; gap: 10px; }
+.logo { width: 76px; height: 76px; border-radius: 18px; background: var(--term); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font: 700 34px var(--mono); color: var(--accent); }
+.center h3 { font-size: 24px; margin: 6px 0 0; line-height: 1.2; }
+.center p { margin: 0; color: var(--muted); }
+.cam { flex: 1; background: #0b0c0e; position: relative; display: flex; align-items: center; justify-content: center; color: #fff; }
+.vf { width: 244px; height: 244px; border-radius: 22px; border: 3px solid #fff; display: flex; align-items: center; justify-content: center; }
+.fp { font: 13px var(--mono); padding: 8px 12px; border-radius: 10px; background: var(--panel); color: var(--text); letter-spacing: 1px; }
+
+.macs { width: 460px; align-self: center; }
+.mac { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg); margin-bottom: 18px; }
+.mac .tb { height: 30px; display: flex; align-items: center; gap: 7px; padding: 0 11px; color: var(--muted); font-size: 12px; font-weight: 600; background: var(--panel); }
+.mac .tb i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.mac .mb { padding: 16px; display: flex; gap: 16px; align-items: center; }
+.mac .mb p { margin: 2px 0 0; color: var(--muted); }
+.mbtn { display: inline-block; margin-top: 8px; margin-right: 6px; padding: 3px 12px; border-radius: 6px; background: var(--panel2); font-size: 12px; }
+.mbtn.pri { background: var(--accent); color: var(--onaccent); }
+
+.dec { margin: 16px 0 0; padding: 0; list-style: none; counter-reset: d; max-width: 980px; }
+.dec li { padding: 10px 12px; border-top: 1px solid var(--line); scroll-margin-top: 52px; }
+.dec li:target { background: var(--tint); }
+.dec b { font-size: 13.5px; }
+.dec .tag { font: 600 11px var(--sans); color: var(--warn); background: var(--warntint); border-radius: 4px; padding: 0 5px; margin-right: 6px; }
+.dec p { margin: 3px 0 0; color: var(--muted); }
+.dec p i { font-style: normal; color: var(--text); }
+.dec a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Kanna on the phone: one repo at a time, the planner in your pocket</h1>
+    <p>Every screen of the native iOS app, in a phone frame at real size (390 × 844 points), for review with markup. Fixtures, not data. The app is one repo at a time; Machines, Stats and the Shelf are all of that repo, and the switcher sits on the repo's name at the top of every tab. Five tabs: Chat, which is the point of the app, then Shelf, Quiz, Stats, Machines. No push notifications in the first version, so nothing here arrives by itself: the app shows what's new when you open it. <span class="d">D3</span> tags point to the open decisions at the end of the page.</p>
+  </div>
+  <div class="controls">
+    <button id="theme">Light / dark</button>
+    <a href="#chat">Chat</a><a href="#repos">Repos</a><a href="#conn">Connection</a><a href="#shelf">Shelf</a><a href="#machines">Machines</a><a href="#stats">Stats</a><a href="#quiz">Quiz</a><a href="#pair">Pairing</a><a href="#decisions">Open decisions</a>
+  </div>
+  <div id="stage"></div>
+</main>
+<script>
+const P = {
+  chat: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17A2.5 2.5 0 0 1 4 14.500z"/>',
+  shelf: '<path d="M3.500 13.500 6 5h12l2.500 8.500V19a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1z"/><path d="M3.500 13.500H9a3 3 0 0 0 6 0h5.500"/>',
+  quiz: '<circle cx="12" cy="12" r="8.500"/><circle cx="12" cy="12" r="4.500"/><circle cx="12" cy="12" r=".8"/>',
+  stats: '<path d="M5 20v-7M12 20V5M19 20v-10"/>',
+  mach: '<rect x="4" y="4.500" width="16" height="6" rx="1.500"/><rect x="4" y="13.500" width="16" height="6" rx="1.500"/><path d="M8 7.500h.01M8 16.500h.01"/>',
+  chev: '<path d="m6 9 6 6 6-6"/>', right: '<path d="m9 6 6 6-6 6"/>', back: '<path d="m15 5-7 7 7 7"/>',
+  up: '<path d="M12 19V6M6 12l6-6 6 6"/>', check: '<path d="m5 12.500 4.500 4.500L19 7.500"/>', x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  direct: '<circle cx="12" cy="12" r="4" fill="currentColor"/>',
+  relay: '<circle cx="5" cy="12" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="12" cy="6" r="2"/><path d="M6.500 10.500 10.300 7.300M17.500 10.500l-3.800-3.200"/>',
+  off: '<path d="M4 4l16 16M8.500 8.500A7 7 0 0 0 5 11M12 18h.01M9 15a4 4 0 0 1 4-1.500M12 7a11 11 0 0 1 8 3.500"/>',
+  flame: '<path d="M12 3c1 4 5 5.500 5 10.500a5 5 0 0 1-10 0c0-2 1-3.500 2-4.500.3 1.500 1 2 1.500 2C10.500 8.500 11 5.500 12 3z" fill="currentColor" stroke="none"/>',
+  star: '<path d="m12 4 2.500 5 5.500.8-4 3.900.9 5.500-4.900-2.600-4.900 2.600.9-5.500-4-3.900 5.500-.8z" fill="currentColor" stroke="none"/>',
+  expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>', clock: '<circle cx="12" cy="12" r="8.500"/><path d="M12 7v5l3 2"/>',
+  search: '<circle cx="11" cy="11" r="6.500"/><path d="m16 16 4 4"/>', bell: '<path d="M12 8v5M12 16.500h.01"/><circle cx="12" cy="12" r="9"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', plus: '<path d="M12 5v14M5 12h14"/>',
+};
+const I = (n, c = "") => `<svg class="ico ${c}" viewBox="0 0 24 24">${P[n]}</svg>`;
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hl = t => esc(t)
+  .replace(/\b(fn|let|match|true|false|if|return|self|pub|const|Some|None|Ok|Err|move)\b/g, '<span class="kw">$1</span>')
+  .replace(/(&quot;[^&]*?&quot;)/g, '<span class="st">$1</span>')
+  .replace(/\b([a-z_]+)(\()/g, '<span class="fn">$1</span>$2')
+  .replace(/\b(String|Option|Vec|Command)\b/g, '<span class="ty">$1</span>');
+
+const STATUS = `<div class="status"><span>9:41</span><span class="r"><svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect y="8" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="7" rx="1"/><rect x="10" y="2.500" width="3" height="9.500" rx="1"/><rect x="15" width="3" height="12" rx="1"/></svg><svg width="26" height="12" viewBox="0 0 26 12"><rect x=".5" y=".5" width="22" height="11" rx="3.200" fill="none" stroke="currentColor" opacity=".5"/><rect x="2" y="2" width="16" height="8" rx="2" fill="currentColor"/><rect x="24" y="4" width="2" height="4" rx="1" fill="currentColor" opacity=".5"/></svg></span></div>`;
+const TABS = [["chat", "Chat"], ["shelf", "Shelf"], ["quiz", "Quiz"], ["stats", "Stats"], ["mach", "Machines"]];
+const tabs = on => `<div class="tabs">${TABS.map(([k, l]) => `<div class="${k === on ? "on" : ""}">${I(k)}${l}</div>`).join("")}</div>`;
+const CHIP = { lan: ["direct", "Direct · LAN"], net: ["direct", "Direct · internet"], relay: ["relay", "Relayed"], off: ["off", "Offline"] };
+const chip = (k, on) => `<span class="chip ${k} ${on ? "on" : ""}">${I(CHIP[k][0])}${CHIP[k][1]}</span>`;
+const nav = (o = {}) => `<div class="nav"><div class="who"><span class="repo">${o.repo || "kanna"}${I("chev")}</span>${o.sub ? `<div class="sub">${o.sub}</div>` : ""}</div>${chip(o.path || "lan", o.chipOn)}</div>`;
+const title = (back, path = "lan") => `<div class="nav title"><span class="back">${I("back")}${back}</span>${chip(path)}</div>`;
+const me = (t, st) => `<div class="me">${t}</div>${st ? `<div class="state">${st}</div>` : ""}`;
+const pl = t => `<div class="pl">${t}</div>`;
+const when = t => `<div class="when">${t}</div>`;
+const work = t => `<div class="work"><span class="pulse"><i></i><i></i><i></i></span>${t}</div>`;
+const comp = (ph = "Message the planner", typed) => `<div class="comp"><div class="in ${typed ? "typed" : ""}">${ph}</div><div class="send ${typed ? "" : "idle"}">${I("up")}</div></div>`;
+const hang = t => { const n = t.length - t.trimStart().length + 2; return `padding-left:${n}ch;text-indent:-${n}ch`; };
+const code = (file, range, lines, o = {}) => `<div class="code"><div class="hd"><span>${file.replace(/([^/]+)$/, "<b>$1</b>")}:${range}</span>${I("expand")}</div><div class="ls">${lines.map(([n, t, c, note]) => `<div class="ln ${c || ""}"><span class="n">${n}</span><span class="t" style="${hang(t)}">${hl(t) || " "}</span></div>${note ? `<div class="note">${note}</div>` : ""}`).join("")}</div></div>`;
+const row = (st, n, s, end = I("right")) => `<div class="row"><span class="dot ${st}"></span><div class="t"><div class="n">${n}</div><div class="s">${s}</div></div>${end}</div>`;
+
+const CODEX = [[160, "fn in_its_terminal(agent: &str) -> String {"], [161, "    match program(agent) == \"codex\" && !agent.split_whitespace().any(|w| w == \"--no-daemon\") {", "on"], [162, "        true => format!(\"{agent} --no-daemon\"),", "on"], [163, "        false => agent.to_string(),"], [164, "    }"], [165, "}"]];
+
+function phone(f) {
+  const tags = (f.d || []).map(n => `<a class="d" href="#d${n}">D${n}</a>`).join("");
+  const inner = f.raw ? f.body : `${f.nav || ""}${f.banner || ""}<div class="body">${f.body}</div>${f.comp || ""}${f.tab === null ? "" : tabs(f.tab)}`;
+  return `<figure id="${f.id}"><div class="phone"><div class="screen ${f.tab === null ? "notab" : ""}"><div class="island"></div>${f.nostatus ? "" : STATUS}${inner}${f.over || ""}<div class="home"></div></div></div><figcaption><b>${f.name}</b>${f.cap} ${tags}</figcaption></figure>`;
+}
+
+const CHAT = [
+  { id: "chat-answer", name: "An answer", tab: "chat", nav: nav({ sub: `<span class="dot idle"></span>Planner · idle` }), comp: comp(),
+    cap: "The main screen, and the one that opens. Your messages and what the planner says back with <code>kanna phone say</code>, nothing else: no Desk news, no schedule messages, no tool calls. The planner's lines run the full width, so a long answer reads like a page.",
+    body: `<div class="chat">${when("Today 8:52")}${me("What landed overnight?", "Read")}${pl(`<p>Three merges on main:</p><ul><li><b>Schedules tab:</b> the Desk view's fourth tab, with each schedule's firings and replies, and Pause, Resume, Run now.</li><li><b>Task events:</b> a task hears when main moves into conflict with it.</li><li><b>Stats headings:</b> the sections sit on a tinted band.</li></ul><p>Task events added a table, so <code>schedules_tab</code> and <code>task_events</code> both moved in the e2e script. Nothing is stuck. Two tasks are waiting on you, on the Shelf tab.</p>`)}${when("9:38")}${me("Which one should I look at first?", "Read")}${pl(`<p><b>Review build output</b>: it's asking whether to keep the old colours, and everything else on it is done.</p>`)}</div>` },
+  { id: "chat-working", name: "The planner working", tab: "chat", nav: nav({ sub: `<span class="dot working"></span>Planner · working · 2m` }), comp: comp(), d: [3],
+    cap: "Just that it's working and for how long: its tools and output stay on the Mac. You can keep typing, and what you send waits for the end of its turn, as every Kanna message does.",
+    body: `<div class="chat">${when("Today 9:38")}${me("Which one should I look at first?", "Read")}${pl(`<p><b>Review build output</b>: it's asking whether to keep the old colours, and everything else on it is done.</p>`)}${when("9:41")}${me("Why are there no merges for recipe in Stats?", "Read")}${work("Working")}</div>` },
+  { id: "chat-queued", name: "A message while it's busy", tab: "chat", nav: nav({ sub: `<span class="dot working"></span>Planner · working · 14m` }), comp: comp(), d: [3],
+    cap: "The planner may be mid-turn on something else, with you at the Desk or a schedule's prompt. The message says so, and turns to Read when the planner gets it as <code>[message from phone]</code>.",
+    body: `<div class="chat">${when("Today 9:41")}${me("Why are there no merges for recipe in Stats?", `${I("clock")}Waiting for its turn to end`)}${work("Working on something else")}</div>` },
+  { id: "chat-question", name: "A question in chat", tab: "chat", nav: nav({ sub: `<span class="dot needs"></span>Planner · asks you` }), comp: comp("Or answer in your own words"),
+    cap: "The planner asks with <code>kanna phone ask</code>, choices you tap. Each is a label and a line of why, as Claude's question tool has. The composer stays open for an answer that isn't on the list.",
+    body: `<div class="chat">${when("Today 9:44")}${me("Is anything on the Shelf out of date after the schedules tab?", "Read")}${pl(`<p>One: <b>Schedule history page</b> asks for what the tab now does, plus an export. What should I do with it?</p>`)}<div class="ask"><div class="opt"><b>End it</b><span>The tab covers it. Drop the export.</span></div><div class="opt"><b>Cut it down</b><span>A new task with only the export.</span></div><div class="opt"><b>Leave it</b><span>I'll look at it at the Desk.</span></div></div></div>` },
+  { id: "chat-answered", name: "The question answered", tab: "chat", nav: nav({ sub: `<span class="dot working"></span>Planner · working` }), comp: comp(),
+    cap: "Your tap goes in as your answer and the choices fold to one line, so the conversation reads back cleanly.",
+    body: `<div class="chat">${when("Today 9:44")}${me("Is anything on the Shelf out of date after the schedules tab?", "Read")}${pl(`<p>One: <b>Schedule history page</b> asks for what the tab now does, plus an export. What should I do with it?</p>`)}<div class="ask done">You chose <b>Cut it down</b></div>${work("Working")}</div>` },
+  { id: "chat-code", name: "Code it shows", tab: "chat", nav: nav({ sub: `<span class="dot idle"></span>Planner · idle` }), comp: comp(), d: [9],
+    cap: "When you ask for an explanation, the planner sends lines with <code>kanna phone show FILE:LINE</code>. A card with the path and lines, line numbers, the syntax colours of the Mac's code viewer, the lines it means in tint, and soft wrap with a hanging indent so nothing scrolls sideways.",
+    body: `<div class="chat">${when("Today 10:02")}${me("Explain how a Codex task stays in its own terminal", "Read")}${pl(`<p>Kanna adds <code>--no-daemon</code> when it builds the command, unless you already did:</p>`)}${code("crates/kanna-daemon/src/backlog.rs", "160", CODEX)}${pl(`<p>Codex's shared server would run every session's hooks in the environment of whatever started it, so <code>kanna task name</code> would see the wrong pane.</p>`)}</div>` },
+  { id: "code-full", name: "The code, full screen", tab: null, d: [9],
+    nav: `<div class="nav title"><span class="back">${I("x")}</span><span style="font:600 13px var(--mono)">backlog.rs:160</span><span class="chip">Wrap</span></div>`,
+    comp: comp("Ask about line 161"),
+    cap: "Tap a card to read it alone, with room and pinch to zoom; Wrap turns off to see the real indentation. These are only the lines the agent sent: there's no code browser and no going up the file. Tap a line and the composer asks about it.",
+    body: `<div class="fill" style="padding-top:8px;font:14px/21px var(--mono)"><div class="ls">${CODEX.map(([n, t, c], i) => `<div class="ln ${i === 1 ? "on" : ""}" style="${i === 1 ? "box-shadow:inset 3px 0 0 var(--accent)" : ""}"><span class="n">${n}</span><span class="t" style="${hang(t)}">${hl(t)}</span></div>`).join("")}</div></div><div class="pad" style="color:var(--muted);font-size:13px">crates/kanna-daemon/src/backlog.rs, on main at 270bf73</div>` },
+  { id: "chat-none", name: "No planner running", tab: "chat", nav: nav({ sub: `<span class="dot waiting"></span>Planner · starting on studio` }), comp: comp(), d: [1, 2],
+    cap: "You needn't care that it wasn't running: your message goes in and Kanna starts a planner for it. The note says where, in case that surprises you, and your message waits for it like any other.",
+    body: `<div class="chat">${when("Yesterday 18:20")}${pl(`<p>That's everything on the Desk merged. Enjoy the evening.</p>`)}${when("9:41")}${me("Start the Keep terminal output task", `${I("clock")}Waiting for the planner`)}<div class="sys">No planner was running for kanna, so one is starting on studio.</div></div>` },
+  { id: "chat-quiz", name: "Asking for a quiz", tab: "chat", nav: nav({ sub: `<span class="dot idle"></span>Planner · idle` }), comp: comp(), d: [12],
+    cap: "Any repo, any time: ask in chat. The planner has the quiz agent write the round into the quiz store and sends a card, and from there no agent is involved. The card opens the round; once it's played it shows your result instead.",
+    body: `<div class="chat">${when("Today 12:10")}${me("Quiz me on the relay stuff from this week", "Read")}${pl(`<p>Five questions on how machines link, from the last week of <code>kanna-net</code>.</p>`)}<div class="startb" style="margin:0">${`<div class="t"><b>Round ready: Machine links</b><small>5 questions · about 2 minutes</small></div>${I("right")}`}</div></div>` },
+];
+
+const REPOS = [
+  { id: "repos-sheet", name: "The repo switcher", tab: "chat", nav: nav({ sub: `<span class="dot idle"></span>Planner · idle` }), comp: comp(),
+    cap: "Tap the repo's name, on any tab. You stay on that tab in the new repo. Each row has its planner's last line, so you can tell which is worth opening, and the dot is that planner's state. A repo is one project across your machines, as the Mac's Desks treat it.",
+    body: `<div class="chat">${pl("<p>Three merges on main.</p>")}</div>`,
+    over: `<div class="dimmer"></div><div class="sheet"><div class="grab"></div><h4>Repos</h4><p style="margin-bottom:6px">From your machines</p>${row("idle", "kanna", "Two tasks are waiting on you", I("check", "ck"))}${row("working", "recipe", "Working · 6m", "")}${row("idle", "kmux", "The 0.9 tag is pushed", "")}${row("offline", "homelab", "Offline · r720-1 last seen 2d ago", "")}</div>` },
+];
+
+const CONN = [
+  { id: "conn-direct", name: "Direct", tab: "chat", nav: nav({ path: "net", sub: `<span class="dot idle"></span>Planner · idle` }), comp: comp(),
+    cap: "The chip at the top right of every tab says how the phone reaches the machine running this repo's planner, in the Mac's words. On the LAN it reads Direct · LAN; out and about it's Direct · internet, when a direct path can be punched through.",
+    body: `<div class="chat">${when("Today 13:05")}${me("Did the e2e pass?", "Read")}${pl(`<p>All of it, on tests-1.</p>`)}</div>` },
+  { id: "conn-relay", name: "Relayed", tab: "chat", nav: nav({ path: "relay", chipOn: true, sub: `<span class="dot idle"></span>Planner · idle` }), comp: comp(),
+    cap: "Everything works the same; this is only a path. Tapping the chip says what it means. The phone takes a direct path by itself when one opens, with no reload and no fuss.",
+    body: `<div class="chat">${when("Today 13:05")}${me("Did the e2e pass?", "Read")}${pl(`<p>All of it, on tests-1.</p>`)}</div>`,
+    over: `<div class="pop"><b>studio · Relayed</b><div style="margin:3px 0 7px;color:var(--muted)">Through your relay, encrypted end to end: it passes bytes on and can't read them.</div><div class="kv"><span>Round trip</span><span>184 ms</span></div><div class="kv"><span>Direct path</span><span>Trying</span></div></div>` },
+  { id: "conn-offline", name: "Offline: the conversation", tab: "chat", nav: nav({ path: "off", sub: `Planner · last seen 9:12` }), comp: comp(), d: [7],
+    banner: `<div class="banner off">${I("off")}<div>Can't reach studio<small>Last seen 9:12. It may be asleep.</small></div></div>`,
+    cap: "The conversation stays on the phone to read. What you write waits, on the phone, and goes when the machine is back. This is the machine being out of reach; with no network at all the banner says so instead.",
+    body: `<div class="chat">${when("Today 9:10")}${me("Did the e2e pass?", "Read")}${pl(`<p>All of it, on tests-1.</p>`)}${when("13:40")}${me("Start the Native diff viewer task", `${I("clock")}Sends when studio is back`)}</div>` },
+  { id: "conn-shelf", name: "Offline: the Shelf", tab: "shelf", nav: nav({ path: "off", sub: "As of 9:12" }), d: [7],
+    banner: `<div class="banner off">${I("off")}<div>Can't reach studio<small>This is the Shelf as it was at 9:12.</small></div></div>`,
+    cap: "Every tab keeps its last copy and says how old it is. Actions that need a machine are off rather than queued: Pick needs an answer. A round already on the phone still plays.",
+    body: `<div class="fill dim80"><div class="gh"><b>studio's Desk</b><span>2 of 3</span></div>${row("working", "Keep terminal output", "working · dev-1")}${row("needs", "Review build output", `<span class="need">needs you</span> · tests-1`)}<div class="gh"><b>Shelf</b><span>6</span></div>${row("working", "Polish project search", "working · studio")}${row("stopped", "Document reconnect behavior", "stopped · dev-1")}${row("waiting", "Native diff viewer", "not started")}${row("blocked", "Check tab restoration", "blocked by Restore task tabs")}</div>` },
+];
+
+const SHELFS = [
+  { id: "shelf-list", name: "The repo's tasks", tab: "shelf", nav: nav(), d: [6],
+    cap: "All of the repo's tasks, as <code>kanna task list</code> has them: each Desk's, then the Shelf's, oldest first. A row always says its state in words beside the dot. There's no hover on a phone, so the machine goes on the line too. No New Task button: you ask the planner.",
+    body: `<div class="fill"><div class="search">${I("search")}Find a task</div><div class="gh"><b>studio's Desk</b><span>2 of 3</span></div>${row("working", "Keep terminal output", "working · 12m · dev-1")}${row("needs", "Review build output", `<span class="need">needs you</span> · 40m · tests-1`)}<div class="gh"><b>mbp's Desk</b><span>3 of 3</span></div>${row("idle", "Restore task tabs", "idle · 2h · mbp")}<div class="gh"><b>Shelf</b><span>6</span></div>${row("working", "Polish project search", "working · 4m · studio")}${row("ready", "Agent prompts setting", "ready · merges after Task events")}${row("stale", "Pane titles in tooltips", "stale · behind Restore task tabs")}${row("stopped", "Document reconnect behavior", "stopped · yesterday · dev-1")}${row("waiting", "Native diff viewer", "not started")}${row("blocked", "Check tab restoration", "blocked by Restore task tabs")}<div class="row" style="border:0;color:var(--muted)"><div class="t">5 done lately</div>${I("right")}</div></div>` },
+  { id: "task-new", name: "A task on the Shelf", tab: "shelf", nav: title("Shelf"), d: [6],
+    comp: comp("Message this task"),
+    cap: "Pick for a Desk moves it there and starts it. There's no Start button, nor any way to finish, merge or stop a task: you ask the planner in Chat.",
+    body: `<div class="hero"><h3>Native diff viewer</h3><div class="meta"><span class="dot waiting"></span>Not started · on the Shelf · claude</div><div class="acts"><div class="btn">Pick for a Desk</div></div></div><div class="pad"><div class="lbl">First message</div><div class="card">Show a task's branch diff in a tab, side by side, with comments like doc markup. Mockup first, then the spec, in <span class="inl">references/mockups/diff.html</span>. Say what to do with renames.</div></div>` },
+  { id: "task-running", name: "A running task", tab: "shelf", nav: title("Shelf"),
+    comp: comp("Message this task"),
+    cap: "The thread is <code>kanna task messages</code>: what went to the task and what it sent, each with whether it arrived. A message you send waits for the end of the agent's turn. Your words reach it as a message from the phone, not from the Desk, so it knows you can't see its terminal.",
+    body: `<div class="hero"><h3>Keep terminal output</h3><div class="meta"><span class="dot working"></span>Working · 12m · dev-1 · claude</div><div class="meta" style="font-family:var(--mono);font-size:12px;margin-top:2px">terminal-output</div><div class="acts"><div class="btn">Pick for a Desk</div></div></div><div class="fill pad" style="display:flex;flex-direction:column;gap:12px;justify-content:flex-end"><div class="msg"><div class="h">planner · 8:30</div><div class="card">The scrollback test on main changed. Merge it before you touch <span class="inl">vt_buffer.rs</span>.</div></div><div class="msg"><div class="h">Keep terminal output · 8:44</div><div class="card">Merged, and the test passes. Moving on to the restore path.</div></div><div class="msg you"><div class="h">you · 9:40</div><div class="me">Keep the 10,000 line limit for now.</div><div class="state" style="margin-top:2px">${I("clock")}Waiting for its turn to end</div></div></div>` },
+  { id: "task-needs", name: "A task that needs you", tab: "shelf", nav: title("Shelf"), d: [5],
+    banner: `<div class="banner needs">${I("bell")}<div>Needs you<small>Stopped 40m ago, waiting for an answer</small></div></div>`,
+    comp: comp("Answer the task", false),
+    cap: "A Shelf task asks and ends its turn. For that to be any use here, the phone shows what it said last, which isn't one of its messages today. Your answer goes as a message, and the task runs again where it is.",
+    body: `<div class="hero"><h3>Review build output</h3><div class="meta"><span class="dot needs"></span>Needs you · tests-1 · codex</div><div class="acts"><div class="btn">Pick for a Desk</div></div></div><div class="pad"><div class="lbl">It said, 9:01</div><div class="card"><p style="margin:0 0 8px">Everything's in except the status colours. The new palette is in <span class="inl">build_view.swift</span>, but the three old tokens are still used by the crash page.</p><p style="margin:0">Keep the old colours as a fallback, or drop them and restyle the crash page here too?</p></div></div>` },
+  { id: "task-blocked", name: "A blocked task", tab: "shelf", nav: title("Shelf"),
+    comp: comp("Message this task"),
+    cap: "It can't start until what it waits for is ready, so Pick is off, and the line says why and links to the task that's in the way.",
+    body: `<div class="hero"><h3>Check tab restoration</h3><div class="meta"><span class="dot blocked"></span>Blocked · on the Shelf · codex</div><div class="acts"><div class="btn off">Pick for a Desk</div></div></div><div class="pad"><div class="lbl">Waits for</div>${`<div class="card" style="display:flex;gap:9px;align-items:center"><span class="dot idle"></span><div style="flex:1">Restore task tabs<div style="color:var(--muted);font-size:13px">idle on mbp's Desk, not ready yet</div></div>${I("right")}</div>`}<div class="lbl" style="margin-top:14px">First message</div><div class="card">Reopen a project after a crash and check every tab comes back in its place, with its scroll and zoom.</div></div>` },
+  { id: "pick-sheet", name: "Pick for a Desk: which Mac", tab: "shelf", nav: title("Shelf"), comp: comp("Message this task"), d: [4],
+    cap: "A Desk is an app's, so with several Macs you say which. With one Mac this sheet doesn't appear and Pick just works. The task runs where it runs; only the Desk it shows on changes. A Mac that's closed still takes the pick, and shows it when it next opens.",
+    body: `<div class="hero"><h3>Native diff viewer</h3><div class="meta"><span class="dot waiting"></span>Not started · on the Shelf · claude</div></div>`,
+    over: `<div class="dimmer"></div><div class="sheet"><div class="grab"></div><h4>Which Desk?</h4><p>It starts when it's picked.</p>${row("idle", "studio", "2 of 3 · open now", "")}${row("idle", "mbp", "3 of 3 · full", I("right"))}${`<div class="row" style="border:0;justify-content:center;color:var(--accent);font-weight:600">Cancel</div>`}</div>` },
+  { id: "pick-full", name: "Pick for a Desk: a full Desk", tab: "shelf", nav: title("Shelf"), comp: comp("Message this task"),
+    cap: "A full Desk asks which task goes back to the Shelf, as it would at the Mac when you ask to make room. It keeps running or stays stopped, as it is.",
+    body: `<div class="hero"><h3>Native diff viewer</h3><div class="meta"><span class="dot waiting"></span>Not started · on the Shelf · claude</div></div>`,
+    over: `<div class="dimmer"></div><div class="sheet"><div class="grab"></div><h4>mbp's Desk is full</h4><p>Move one to the Shelf to make room.</p>${row("idle", "Restore task tabs", "idle · 2h", "")}${row("idle", "Fix the page_comments pinch", "idle · 3h", "")}${row("working", "Shelf trailing edge", "working · active on mbp", "")}<div class="row" style="border:0;justify-content:center;color:var(--accent);font-weight:600">Cancel</div></div>` },
+];
+
+const MACH = [
+  { id: "mach-list", name: "This repo's machines", tab: "mach", nav: nav(), d: [1],
+    cap: "The machines that have this repo, each with its path from this phone in the Mac's words and what of this repo is on it. Unlike the Mac's tab, it says what's running, because that's why you'd look here on a phone. A machine without this repo is one line at the bottom. New machines join from a Mac, so there's no Pair here.",
+    body: `<div class="fill"><div class="gh"><b>Have kanna</b><span>4</span></div>${[["idle", "studio", "Planner · Desk 2 of 3", "lan", "4 ms"], ["idle", "mbp", "Desk 3 of 3", "lan", "9 ms"], ["working", "dev-1", "Linux · 2 tasks running", "relay", "184 ms"], ["offline", "tests-1", "Linux · last seen 40m ago", "off", ""]].map(([d, n, s, p, ms]) => `<div class="row"><span class="dot ${d}"></span><div class="t"><div class="n">${n}</div><div class="s">${s}</div></div><div style="text-align:right">${chip(p)}${ms ? `<div class="s" style="color:var(--muted);font-size:12px;margin-top:2px">${ms}</div>` : ""}</div></div>`).join("")}<div class="row" style="border:0;color:var(--muted)"><div class="t">2 machines without kanna</div>${I("right")}</div></div>` },
+  { id: "mach-detail", name: "A machine", tab: "mach", nav: title("Machines", "lan"), d: [1],
+    cap: "Its link and what of this repo is on it. Only this repo: the machine's other projects are in the switcher. Moving the planner is the one thing you can change here.",
+    body: `<div class="hero"><h3>studio</h3><div class="meta">Mac Studio · macOS 26 · Kanna 4.2</div></div><div class="pad"><div class="card"><div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--muted)">Path from this phone</span><span>Direct · LAN</span></div><div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--muted)">Round trip</span><span>4 ms</span></div><div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:var(--muted)">Connected</span><span>since 8:52</span></div></div></div><div class="gh" style="padding-top:2px"><b>kanna here</b></div>${row("idle", "Planner", "idle · this repo's planner", "")}${row("working", "Polish project search", "working · 4m")}${row("needs", "Review build output", `Desk task · <span class="need">needs you</span>`)}<div class="pad"><div class="btn">Run the planner on another machine</div></div>` },
+];
+
+function rng(seed) { let x = seed; return () => (x = (x * 1103515245 + 12345) % 2147483648) / 2147483648; }
+const ser = (seed, base, swing, up = 0) => { const r = rng(seed); return Array.from({ length: 30 }, (_, i) => Math.max(0, base + (r() - .5) * swing + i * up)); };
+function spark(v, o = {}) {
+  const w = 170, h = 44, min = o.zero ? 0 : Math.min(...v), max = Math.max(...v) || 1;
+  const pts = v.map((y, i) => [i / (v.length - 1) * w, h - 3 - (y - min) / (max - min || 1) * (h - 8)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const at = o.at != null ? pts[o.at] : null;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path d="${line} L${w},${h} L0,${h} Z" fill="var(--wash)"/><line x1="0" x2="${w}" y1="${h - .5}" y2="${h - .5}" stroke="var(--axis)" vector-effect="non-scaling-stroke"/><path d="${line}" fill="none" stroke="var(--series)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>${at ? `<line x1="${at[0]}" x2="${at[0]}" y1="0" y2="${h}" stroke="var(--muted)" vector-effect="non-scaling-stroke"/><circle cx="${at[0]}" cy="${at[1]}" r="2.500" fill="var(--series)"/>` : ""}</svg>`;
+}
+function bars(v) {
+  const w = 170, h = 44, max = Math.max(...v) || 1, bw = w / v.length - 1.2;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${v.map((y, i) => `<rect x="${(i * w / v.length).toFixed(1)}" y="${(h - y / max * (h - 2)).toFixed(1)}" width="${bw.toFixed(1)}" height="${(y / max * (h - 2)).toFixed(1)}" fill="var(--series)" rx=".8"/>`).join("")}<line x1="0" x2="${w}" y1="${h - .5}" y2="${h - .5}" stroke="var(--axis)" vector-effect="non-scaling-stroke"/></svg>`;
+}
+const tile = (k, v, c, wide) => `<div class="tile ${wide ? "wide" : ""}"><div class="k">${k}</div><div class="v">${v}</div>${c}</div>`;
+const sec = (b, s) => `<div class="sec"><b>${b}</b><span>${s}</span></div>`;
+
+const grade = ser(7, 66, 5, .34), misses = ser(9, 5, 3, .05).map(Math.round), merges = ser(11, 7, 12).map(Math.round), commits = merges.map((m, i) => m * 3 + (i * 7) % 9), open = ser(13, 20, 4, .14).map(Math.round), lead = ser(15, 4.4, 2.4, -.03);
+const STATS = [
+  { id: "stats-top", name: "Stats: the top", tab: "stats", nav: nav({ sub: "Last 30 days" }),
+    cap: "The Mac's Stats tab for this repo, in the same sections and order, on two columns. Each number is today's value over its last 30 days, and the section bands are the Mac's. It's asked for when shown, like the Mac's.",
+    body: `<div class="fill">${sec("Quiz", "what you know of the code")}<div class="tiles">${tile("Right, 30 days", "72.4%", spark(grade), true)}${tile("Misses waiting", "6", spark(misses, { zero: true }))}${tile("Answers", "85", spark(ser(21, 3, 5, .03)))}</div>${sec("Main", "what landed")}<div class="tiles">${tile("Commits", "38", bars(commits))}${tile("Merges", "9", bars(merges))}</div></div>` },
+  { id: "stats-more", name: "Stats: further down", tab: "stats", nav: nav({ sub: "Last 30 days" }),
+    cap: "Tasks and code quality follow. Tiles wrap rather than shrink, so a wider tile on the Mac spans both columns here.",
+    body: `<div class="fill">${sec("Tasks", "from the Desk's and the Shelf's events")}<div class="tiles">${tile("Open", "23", spark(open), true)}${tile("Made", "7", bars(ser(17, 5, 7).map(Math.round)))}${tile("Done", "9", bars(ser(19, 6, 8).map(Math.round)))}${tile("Made to done", "3h 33m <small>7-day median</small>", spark(lead), true)}</div>${sec("Code quality", "how good the code is")}<div class="tiles">${tile("Verbosity", "18.8%", spark(ser(23, 21, 2, -.1)))}${tile("Erosion", "0.34", spark(ser(25, .4, .04, -.002)))}</div></div>` },
+  { id: "stats-scrub", name: "Stats: a day's value", tab: "stats", nav: nav({ sub: "Last 30 days" }),
+    cap: "Hover becomes press and drag: a finger on a chart shows that day's value above it, the same readout as the Mac's, and the phone gives a tick at each day.",
+    body: `<div class="fill" style="position:relative">${sec("Tasks", "from the Desk's and the Shelf's events")}<div class="tiles">${tile("Open", "23", spark(open, { at: 21 }), true)}</div><div class="read" style="top:48px;left:172px"><b>24</b> <span>open at the end of Oct 22</span><br>6 <span>made</span> · 5 <span>done</span></div></div>` },
+];
+
+const mt = (n, sp, lv, pct, stale, o = "") => `<div class="mt l${lv} ${stale ? "stale" : ""} ${o}" style="grid-column:span ${sp[0]};grid-row:span ${sp[1]}">${n}<small>${pct}${stale ? ` · +${stale}` : ""}</small></div>`;
+const MAP = o => `<div class="map">${mt("Daemon", [3, 3], 3, "72%", 12)}${mt("The app", [3, 2], 4, "88%")}${mt("Machines", [2, 2], 1, "24%", 41, o === "sel" ? "sel" : "")}${mt("CLI", [1, 2], 4, "91%")}${mt("Keeper", [1, 1], 4, "85%")}${mt("Terminal", [2, 1], 2, "55%")}${mt("Panes", [2, 1], 3, "68%")}${mt("Cloud", [2, 1], 0, "Not asked")}${mt("Pipelines", [2, 1], 1, "31%", 19)}${mt("Diff", [1, 1], 2, "60%")}${mt("Stats", [1, 1], 3, "74%")}${mt("Build", [2, 1], 2, "47%", 8)}${mt("Skills", [2, 1], 3, "66%")}</div>`;
+const LEGEND = `<div class="legend">Less<i style="background:var(--m1)"></i><i style="background:var(--m2)"></i><i style="background:var(--m3)"></i><i style="background:var(--m4)"></i>More<span class="gap"></span><i class="h"></i>Moved since · commits</div>`;
+const SCORE = (s = 6, p = "1,240") => `<div class="score"><span class="flame">${I("flame")}<em style="font-style:normal;color:var(--text)">${s}</em></span><span class="star">${I("star")}<em style="font-style:normal;color:var(--text)">${p}</em></span></div>`;
+const QHEAD = t => `<div class="strip"><h3>${t}</h3>${SCORE()}</div>`;
+const prog = (done, cur) => `<div class="prog">${[0, 1, 2, 3, 4].map(i => `<i class="${done[i] || (i === cur ? "c" : "")}"></i>`).join("")}</div>`;
+const qtop = (d, pts = "1,240", cur = d.length) => `<div class="qtop">${I("x")}${prog(d, cur)}<span class="score"><span class="star">${I("star")}<em style="font-style:normal;color:var(--text)">${pts}</em></span></span></div>`;
+const ch = (l, b, s, c = "", mark) => `<div class="ch ${c}"><span class="a">${mark ? I(mark) : l}</span><div>${b}${s ? `<span class="d2">${s}</span>` : ""}</div></div>`;
+
+const arrow = (x1, y1, x2, y2, dash) => { const a = Math.atan2(y2 - y1, x2 - x1), hx = x2 - 7 * Math.cos(a - .45), hy = y2 - 7 * Math.sin(a - .45), kx = x2 - 7 * Math.cos(a + .45), ky = y2 - 7 * Math.sin(a + .45); return `<path class="ln2 ${dash ? "dash" : ""}" d="M${x1},${y1} L${x2},${y2}"/><path class="ah" d="M${x2},${y2} L${hx},${hy} L${kx},${ky} Z"/>`; };
+const box = (x, y, w, t) => `<rect class="bx" x="${x}" y="${y}" width="${w}" height="30" rx="6"/><text x="${x + w / 2}" y="${y + 19}">${t}</text>`;
+const DRAW = {
+  A: `${box(4, 44, 86, "Kanna.app")}${box(130, 8, 70, "daemon")}${box(130, 84, 70, "keeper")}${box(238, 84, 50, "pty")}${arrow(90, 54, 130, 92)}${arrow(200, 99, 238, 99)}${arrow(165, 38, 165, 84)}`,
+  B: `${box(4, 8, 86, "Kanna.app")}${box(118, 8, 70, "daemon")}${box(222, 8, 62, "pty")}${box(150, 84, 70, "keeper")}${arrow(90, 23, 118, 23)}${arrow(188, 23, 222, 23)}${arrow(165, 38, 182, 84)}${arrow(200, 84, 240, 38, true)}`,
+  C: `${box(4, 8, 86, "Kanna.app")}${box(196, 8, 70, "pty")}${box(4, 84, 86, "daemon")}${arrow(90, 23, 196, 23)}${arrow(47, 84, 47, 38)}`,
+};
+const pic = (l, c = "") => `<div class="pic ${c}"><span class="a" style="flex:none;width:24px;height:24px;border-radius:50%;background:var(--tint);color:var(--accent);font-weight:600;font-size:13px;display:flex;align-items:center;justify-content:center;margin-left:4px">${l}</span><svg viewBox="0 0 292 122">${DRAW[l]}</svg></div>`;
+const round = (id, name, cap, body, d) => ({ id, name, cap, d, raw: true, body: `<div class="body">${body}</div>` });
+
+const QUIZ = [
+  { id: "quiz-home", name: "The mastery map", tab: "quiz", nav: nav(), d: [8, 10],
+    cap: "The Quiz tab leads with what you know of this repo: one tile per subsystem, sized by its code, shaded by what you've got right, hatched where the code has moved since. The flame is your streak and the star your points, beside the map, not over it. The next round is one tap away, and it's already written: starting one sets the quiz agent writing the one after.",
+    body: `${QHEAD("What you know")}${MAP()}${LEGEND}<div class="fill" style="padding-top:8px"><div class="gh" style="padding:4px 16px"><b>Slipping</b></div>${`<div class="row" style="padding-top:5px;padding-bottom:5px"><div class="t"><div class="n">Machines</div><div class="s">41 commits since you last knew it</div></div>${I("right")}</div><div class="row" style="padding-top:5px;padding-bottom:5px;border:0"><div class="t"><div class="n">Pipelines</div><div class="s">19 commits · last asked 3 weeks ago</div></div>${I("right")}</div>`}</div><div class="startb"><div class="t"><b>Next round</b><small>5 questions · about 2 minutes · 2 misses back</small></div>${I("right")}</div>` },
+  { id: "quiz-sub", name: "A subsystem", tab: "quiz", nav: title("Quiz"), d: [8, 12],
+    cap: "A tile opens to what's behind its shade: what you knew, what's changed, what you got wrong. The line under the bar is from the quiz agent's notes on you. Quiz me on this asks the quiz agent for a round on it, so it isn't instant; a card lands in Chat, and here, when it's ready.",
+    body: `<div class="hero"><h3>Machines</h3><div class="meta" style="font-family:var(--mono);font-size:12px">crates/kanna-net · docs/specs/machine-*</div></div><div class="pad"><div style="display:flex;align-items:baseline;gap:8px"><span class="big">24%</span><span style="color:var(--muted)">was 58% on Oct 8</span></div><div class="bar" style="margin-top:7px"><i style="width:24%"></i></div><div class="card" style="margin-top:10px;font-size:14px">You know who owns what here, but slip on what happens when a link drops.</div></div><div class="gh" style="padding-top:0"><b>Moved since you knew it</b><span>41 commits</span></div><div class="row"><div class="t"><div class="n">The relay path</div><div class="s">14 commits · never asked</div></div></div><div class="row"><div class="t"><div class="n">Agent sign-in across machines</div><div class="s">11 commits · never asked</div></div></div><div class="gh"><b>Misses waiting</b><span>2</span></div><div class="row"><div class="t"><div class="n">Who starts the peer log</div><div class="s" style="font-family:var(--mono);font-size:12px">kanna-net/src/pair.rs:104</div></div></div><div class="row"><div class="t"><div class="n">Why a server can't add a peer</div><div class="s" style="font-family:var(--mono);font-size:12px">kanna-net/src/node.rs:975</div></div></div><div class="fill"></div><div class="startb"><div class="t"><b>Quiz me on this</b><small>The quiz agent writes it · about a minute</small></div>${I("right")}</div>` },
+  round("quiz-q", "A question", "Full screen, one at a time, with no tab bar, as in the Mac's round: where the question comes from, its kind, four plausible choices. The app renders what's in the store, so there's no agent to wait for, and a question appears as fast as you can tap.",
+    `${qtop(["r"], "1,255")}<div class="qmeta"><b>2 of 5</b> · Behaviour · 6dae46b</div><div class="q">When a Codex task starts, how does Kanna run <code>codex</code>?</div>${ch("1", "<b>With <code>--no-daemon</code></b>", "Its session runs in the task's own terminal")}${ch("2", "<b>In Codex's shared background server</b>", "One session per task")}${ch("3", "<b>As <code>codex exec</code></b>", "With the first message as its prompt")}${ch("4", "<b>With <code>resume</code></b>", "And the task's session ID, as Claude does")}<div class="fill"></div>`),
+  round("quiz-right", "Answered right", "Every answer gets its why. The tick, the points and the run all come at once and quietly: this should feel like getting something right, not a slot machine.",
+    `${qtop(["r", "r"], "1,275", -1)}<div class="qmeta"><b>2 of 5</b> · Behaviour · 6dae46b</div><div class="q">When a Codex task starts, how does Kanna run <code>codex</code>?</div>${ch("1", "<b>With <code>--no-daemon</code></b>", "Its session runs in the task's own terminal", "right", "check")}${ch("2", "<b>In Codex's shared background server</b>", "One session per task", "fade")}${ch("3", "<b>As <code>codex exec</code></b>", "", "fade")}${ch("4", "<b>With <code>resume</code></b>", "", "fade")}<div class="why"><b class="r">Right.</b> <span class="pts">+20</span> <span style="color:var(--muted);font-size:13px">2 in a row</span><br>Codex's shared server runs every session's hooks with the environment of whatever started it, so the hook would see the wrong pane.</div><div class="fill"></div><div class="btn pri next">Next question</div>`, [10]),
+  round("quiz-miss", "Answered wrong: the code", "On a miss the code comes up in the answer, the Mac's comment on its lines, the same card as in Chat. No code tab beside you here. A miss comes back in a later round, reworded, and getting it right then earns it back.",
+    `${qtop(["r", "r", "w"], "1,275", -1)}<div class="qmeta"><b>3 of 5</b> · Where it lives · ad2317c</div><div class="q" style="font-size:17px">You edited an installed skill, and Kanna ships a new version. Where are the two merged?</div>${ch("2", "<b>In the daemon</b>", "With <code>git merge-file</code>", "right", "check")}${ch("1", "<b>In the <code>kanna</code> CLI</b>", "You picked this", "wrong", "x")}<div class="why"><b class="w">Not quite.</b> The daemon keeps each file as it installed it and runs <span class="inl">git merge-file</span> on yours, that base and the new one. Only a conflict brings in your editor.</div><div style="margin:0 16px">${code("crates/kanna-daemon/src/agents.rs", "514", [[514, "fn merge(mine: &[u8], base: &[u8], new: &[u8]) -> Option<Vec<u8>> {", "on"], [521, "    let out = match files {"], [522, "        [Ok(mine), Ok(base), Ok(new)] => Command::new(\"git\").args([\"merge-file\", \"-p\", \"-q\"]).output().ok(),", "on"]])}</div><div class="fill"></div><div class="btn pri next">Next question</div>`),
+  round("quiz-bug", "Spot the bug", "The lines are the choices: tap the one that's wrong. Each wraps in full, since a clipped line can't be judged, and keeps its real number.",
+    `${qtop(["r", "r", "w", "r"], "1,295")}<div class="qmeta"><b>5 of 5</b> · Spot the bug · ad2317c</div><div class="q" style="font-size:18px">This is <code>merge</code> from today's agent setup, with one bug put in. Which line?</div>${[["A", 521, "    let out = match files {"], ["B", 522, "        [Ok(..), ..] => Command::new(\"git\").args([\"merge-file\", \"-p\", \"-q\"])"], ["C", 525, "    let _ = fs::remove_dir_all(&dir);"], ["D", 526, "    out.filter(|o| o.status.code() != Some(1)).map(|o| o.stdout)"]].map(([l, n, t]) => `<div class="sel-line"><span class="a">${l}</span><span class="n">${n}</span><span class="t">${hl(t.trim())}</span></div>`).join("")}<div class="fill"></div>`),
+  round("quiz-drawing", "Pick the drawing", "On the Mac, three drawings open in a tab. Here they stack in the question, and tapping one picks it; pinch to look closer. They're mermaid in the store, laid out by the same library the Mac uses.",
+    `${qtop([])}<div class="qmeta"><b>1 of 5</b> · Architecture · docs/kanna-spec.md</div><div class="q" style="font-size:18px">Which drawing shows how a terminal's bytes reach Kanna.app?</div>${pic("A")}${pic("B")}${pic("C")}<div class="fill"></div>`),
+  round("quiz-end", "The end of the round", "What you knew, each question with its file and line, and how the map moved. Another round is there at once, since it was written while you played this one. The Mac's round ends on only this round's result; here it also shows the score and streak, and that's the change this app makes to the skill's 'no score to protect'.",
+    `<div class="pad" style="padding-top:26px;text-align:center"><div class="big">4 of 5</div><div style="color:var(--muted)">about today's changes</div><div style="display:flex;justify-content:center;margin-top:10px"><div class="score" style="font-size:16px;gap:20px"><span class="flame">${I("flame")}<em style="font-style:normal;color:var(--text)">7 days</em></span><span class="star">${I("star")}<em style="font-style:normal;color:var(--text)">+85</em></span></div></div></div>${[["check", "ok", "Who reads a terminal", "docs/kanna-spec.md:141"], ["check", "ok", "Codex runs with --no-daemon", "kanna-daemon/src/backlog.rs:160"], ["x", "no", "Merging your skill edits", "kanna-daemon/src/agents.rs:514"], ["check", "ok", "The app snaps comments", "docs/specs/code-tour.md:115"], ["check", "ok", "git merge-file's exit code", "kanna-daemon/src/agents.rs:526"]].map(([i, c, t, f]) => `<div class="endrow">${I(i, c)}<div class="t">${t}<small>${f}</small></div></div>`).join("")}<div class="gh"><b>The map moved</b></div><div style="padding:0 16px"><div style="display:flex;justify-content:space-between;font-size:14px;padding-bottom:4px"><span>Daemon</span><span style="color:var(--muted)">72% → 76%</span></div><div class="bar"><i style="width:76%"></i></div><div style="display:flex;justify-content:space-between;font-size:14px;padding:9px 0 4px"><span>The app</span><span style="color:var(--muted)">88% → 89%</span></div><div class="bar"><i style="width:89%"></i></div></div><div class="fill"></div><div class="acts" style="padding:0 16px 34px"><div class="btn">Done</div><div class="btn pri">Another round</div></div>`, [8, 10]),
+  { id: "quiz-none", name: "The next round not ready", tab: "quiz", nav: nav(), d: [12, 11],
+    cap: "Rare: the next round starts being written when this one starts, so it's usually ready before you finish. If you're faster than the agent, or its machine is out of reach, the button goes quiet and says so, and turns into Next round when it's in.",
+    body: `${`<div class="strip"><h3>What you know</h3>${SCORE(7, "1,325")}</div>`}${MAP()}${LEGEND}<div class="fill" style="padding-top:8px"><div class="gh" style="padding:4px 16px"><b>Slipping</b></div><div class="row" style="padding-top:5px;padding-bottom:5px"><div class="t"><div class="n">Machines</div><div class="s">41 commits since you last knew it</div></div>${I("right")}</div><div class="row" style="padding-top:5px;padding-bottom:5px;border:0"><div class="t"><div class="n">Pipelines</div><div class="s">19 commits · last asked 3 weeks ago</div></div>${I("right")}</div></div><div class="startb calm"><div class="t"><b>Writing your next round</b><small>The quiz agent started when your last round did</small></div></div>` },
+];
+
+const qrcells = (() => { const r = rng(42); let o = ""; for (let y = 0; y < 25; y++) for (let x = 0; x < 25; x++) { const f = (x < 7 && y < 7) || (x > 17 && y < 7) || (x < 7 && y > 17); if (f) continue; if (r() > .5) o += `<rect x="${x}" y="${y}" width="1" height="1"/>`; } const fd = (x, y) => `<rect x="${x}" y="${y}" width="7" height="7"/><rect x="${x + 1}" y="${y + 1}" width="5" height="5" fill="#fff"/><rect x="${x + 2}" y="${y + 2}" width="3" height="3"/>`; return o + fd(0, 0) + fd(18, 0) + fd(0, 18); })();
+const qr = s => `<div style="flex:none;background:#fff;padding:8px;border-radius:8px;line-height:0"><svg width="${s}" height="${s}" viewBox="0 0 25 25" fill="#000">${qrcells}</svg></div>`;
+
+const PAIR = [
+  { id: "pair-start", name: "First launch", raw: true, d: [13],
+    cap: "An unpaired phone has one thing to do. It says where to go on the Mac, since the code comes from there.",
+    body: `<div class="center"><div class="logo">K</div><h3>Pair with one of your machines</h3><p>On your Mac, open Kanna, then Machines, then Pair a Phone. Nothing goes through Kanna's servers: the phone and the machine check each other directly.</p></div><div style="padding:0 16px 42px"><div class="btn pri">Scan the code</div></div>` },
+  { id: "pair-scan", name: "Scanning", raw: true,
+    cap: "The QR code is all it takes: it holds the machine's key and addresses and a one-time secret, so you type nothing, there's no looking on the LAN, and it works away from home. iOS asks for the camera here, and for the local network once paired. With the camera refused, the app sends you to Settings.",
+    body: `<div class="cam"><div style="position:absolute;top:8px;left:16px;right:16px;display:flex;justify-content:space-between;align-items:center">${I("x")}<span style="font-weight:600">Scan the code</span><span style="width:22px"></span></div><div class="vf">${qr(180)}</div><div style="position:absolute;bottom:64px;left:30px;right:30px;text-align:center;opacity:.8">Point at the code in Kanna, on your Mac</div></div>` },
+  { id: "pair-confirm", name: "Confirm on the Mac", raw: true,
+    cap: "The scan is proven, and now the Mac asks: signing a new device takes a gesture in the app, there as everywhere else. The fingerprint is the same on both screens.",
+    body: `<div class="center"><div class="logo">K</div><h3>Confirm on studio</h3><p>Kanna on studio is asking whether to add this phone. Check it shows the same letters.</p><div class="fp">7F3A · 19C2 · E0B4</div>${work("Waiting for studio")}</div>` },
+  { id: "pair-done", name: "Paired", raw: true, d: [13],
+    cap: "One pairing reaches all your machines: the peer log goes to every one. Pick a repo, and you land in its Chat. The switcher has the rest.",
+    body: `<div style="padding:22px 16px 10px"><div style="color:var(--ok);display:flex;gap:6px;align-items:center;font-weight:600">${I("check")}Paired with studio</div><h3 style="font-size:24px;margin:8px 0 3px">Your repos</h3><div style="color:var(--muted)">From studio, mbp, dev-1 and tests-1</div></div><div class="fill" style="border-top:1px solid var(--line)">${row("idle", "kanna", "Two tasks are waiting on you")}${row("working", "recipe", "Working · 6m")}${row("idle", "kmux", "The 0.9 tag is pushed")}${row("offline", "homelab", "Offline · r720-1 last seen 2d ago")}</div>` },
+];
+
+const MACFIG = `<figure class="macs" id="pair-mac"><div class="mac"><div class="tb"><i></i><i></i><i></i>Machines · Pair a Phone</div><div class="mb">${qr(120)}<div><b>Scan this with Kanna on your iPhone</b><p>It works once, for five minutes.</p></div></div></div><div class="mac"><div class="tb"><i></i><i></i><i></i>studio</div><div class="mb"><div><b>Add this iPhone to your machines?</b><p>It can reach your repos, tasks and planners, on every machine.</p><p style="font:12px var(--mono);margin-top:6px">iPhone · 7F3A · 19C2 · E0B4</p><span class="mbtn">Don't Add</span><span class="mbtn pri">Add</span></div></div></div><figcaption><b>The Mac's side</b>Not a phone screen, and not designed here beyond this: a Machines button that shows the code, then the sheet the Mac already shows for any new machine. The app is the inviter and the phone the newcomer, but the QR shows on the Mac. <a class="d" href="#d13">D13</a></figcaption></figure>`;
+
+const DECISIONS = [
+  ["Which planner is the repo's planner?", "A planning terminal is one per Desk window today, so two Macs mean two planners, and the brief says \"the repo's planning agent\".", "A repo has one planner machine for the phone, the one where you first chatted, shown on <a href=\"#mach-detail\">the machine's page</a> and changeable there. The chat is with that planner only."],
+  ["Where does a started planner run?", "<a href=\"#chat-none\">One is started for you</a>, but with Kanna.app closed there's no Desk window for it to sit in, and a planner lives in one today.", "The daemon starts it with no window, on the planner machine, and the Desk adopts it when the app next opens. This changes the planning-agent spec's \"Closing the window ends it\"."],
+  ["Can the phone interrupt the planner?", "Kanna holds a message until the turn is over, which can be a long wait from a phone.", "No, not in the first version: <a href=\"#chat-queued\">it says it's waiting</a>. A Stop button risks ending work you started at the Desk and can't see from here."],
+  ["Does a pick go to a closed Mac?", "<a href=\"#pick-sheet\">Pick</a> claims a task on an app's Desk, and claims live in the app's <code>app-state.json</code>, which a closed app can't change. The Desk is keyed by the device.", "Move Desk claims into the daemon of the machine they're claimed for, so a pick lands whatever the app is doing. The stopgap is greying out closed Macs, which makes Pick useless at the moment you most want it. Costs a change to how Desks persist."],
+  ["What does a task that needs you show?", "<a href=\"#task-needs\">It needs its last words</a>, and those are in the agent's terminal, not its messages. The brief only lists messages.", "The daemon keeps the final text of each task's last turn, which is new, and the phone shows it. Without this, needs you tells you nothing you can act on."],
+  ["Which task actions belong on the phone?", "<a href=\"#task-new\">Pick, message and read</a>. Start is out: you ask the planner. Not here either: new, done, stop, shelve, merge.", "Keep to those. The rest go through the planner by chat, so the app stays small and every risky act has an agent that can say no."],
+  ["What works offline?", "<a href=\"#conn-offline\">Reading, and writing messages that wait</a>, is what's drawn. A message queued on a plane could arrive hours late.", "Queue messages for a day, then ask you again. Rounds already on the phone play offline, and the answers sync after, so a quiz is what you do on a train. Pick stays off."],
+  ["What's a subsystem, and how is mastery worked out?", "Stats has <em>areas</em> from a file's first two folders, too literal for <a href=\"#quiz-home\">a map</a>: tiles named after folders, with no way to join a crate to its specs.", "A small repo file names the subsystems and maps paths to them; the quiz agent writes it and keeps it up. Mastery is recency-weighted right answers per subsystem. Moved is commits there since your last right answer. Tile size is lines of code. The quiz agent also keeps a few plain lines on you per repo, where you're strong and where you're weak, in the quiz store: it reads them before writing a round, rewrites them after, and the phone shows the part about a subsystem on its page. Needs testing with real history."],
+  ["Wrap code, or scroll sideways?", "<a href=\"#chat-code\">Drawn with wrap and a hanging indent</a>, which reads Rust's long lines without dragging. GitHub's app scrolls by default, with wrap in a menu.", "Wrap by default, with the toggle on <a href=\"#code-full\">the full screen</a>."],
+  ["Streak, points, or both?", "Both are drawn, as asked. Points are what <a href=\"#quiz-right\">+20</a> shows and streak what <a href=\"#quiz-end\">the end</a> shows.", "Keep the streak and drop points. The map is already the score that means something, and points add a second number that only goes up. Worth trying both in the SwiftUI prototype first."],
+  ["When does a streak break, and do Mac rounds count?", "A round is nearly always ready now, so <a href=\"#quiz-none\">a quiet day</a> is no excuse. But the Mac's skill keeps \"no score to protect\" and Stats rejected a score in the quiz.", "A streak counts days you finished a round; a day when no round could be written, with its machine out of reach, is skipped. Mac rounds count towards the map, the streak and points, from the same <code>quiz_answers</code>, but only the phone shows them. The skill's line changes to say so."],
+  ["Who writes rounds ahead, and when?", "Questions are written ahead, so something has to run the agent that writes them. Today the 09:00 <code>quiz</code> schedule only offers a round.", "Starting a round starts the quiz agent writing the next one, so one is nearly always ready. It isn't a task: no Shelf slot and no runner, on main, on a machine with the repo, whenever it's needed. A round may cover what's new, then older code, weak spots and misses, so there's never nothing to ask. The cost: the next round is written before this round's answers are in, so a miss comes back a round later and the notes lag by one. <a href=\"#quiz-sub\">Quiz me on this</a> and <a href=\"#chat-quiz\">chat</a> ask for one on demand."],
+  ["What is the phone to the peer log, and who shows the code?", "Pairing today has the newcomer show a code and the inviter type it, proven with SPAKE2. <a href=\"#pair-mac\">Here the Mac shows it</a>, since the phone has the camera, and the code travels in the QR, never typed. And a phone isn't a machine: it never runs anything.", "A phone gets its own device key and an entry in the signed log with a role that holds no tasks, so it pairs once, reaches every machine, and any machine can revoke it. Swap who makes the secret; the proof doesn't care. A stopgap of an app key certified by one machine would need pairing with each."],
+];
+
+const part = (id, h, p, phones, extra = "") => `<section class="part" id="${id}"><h2>${h}</h2><p>${p}</p><div class="wall">${phones.map(phone).join("")}${extra}</div></section>`;
+const chipRow = `<span style="display:inline-flex;gap:6px;flex-wrap:wrap;vertical-align:middle">${chip("lan")}${chip("net")}${chip("relay")}${chip("off")}</span>`;
+
+document.getElementById("stage").innerHTML =
+  part("chat", "Chat", "The main screen: one conversation with the repo's planning agent. A message reaches it as <code>[message from phone]</code>, and it answers with <code>kanna phone say TEXT</code>, or <code>ask</code> and <code>show</code>. Only those replies show here.", CHAT) +
+  part("repos", "Repos", "One repo at a time. Everything on every tab belongs to the repo named at the top.", REPOS) +
+  part("conn", "Connection", `Off the LAN the app works through the relay. The Mac hides this in a tooltip; a phone has no hover and moves between networks all day, so it stays visible, on every tab: ${chipRow}`, CONN) +
+  part("shelf", "Shelf", "The repo's tasks with their status. Open one to read its messages, send it one, or pick it for a Desk. Anything else, you ask the planner.", SHELFS) +
+  part("machines", "Machines", "The repo's machines and how the phone reaches them.", MACH) +
+  part("stats", "Stats", "The Mac's numbers for this repo, redrawn for a thumb.", STATS) +
+  part("quiz", "Quiz", "Gamified, unlike the Mac's round: a map of what you know leads, with streak and points beside it. A round's questions are written ahead into the daemon's quiz store and the app renders them, so a quiz starts with no agent waiting. Five questions, one at a time, each explained, the code shown on a miss, in the kinds the skill already has.", QUIZ) +
+  part("pair", "Pairing", "A phone pairs once, with one machine, and reaches them all.", PAIR, MACFIG) +
+  `<section class="part" id="decisions"><h2>Open decisions</h2><p>Each with a recommendation. Comment on any of them here, or on the screens that link to them.</p><ol class="dec">${DECISIONS.map(([q, ctx, rec], i) => `<li id="d${i + 1}"><b><span class="tag">D${i + 1}</span>${q}</b><p>${ctx}</p><p><i>Recommended:</i> ${rec}</p></li>`).join("")}</ol></section>`;
+
+document.getElementById("theme").onclick = () => {
+  const d = document.documentElement;
+  d.dataset.theme = d.dataset.theme === "light" ? "dark" : "light";
+};
+if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
+</script>
+</body>
+</html>

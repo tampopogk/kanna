@@ -18,6 +18,7 @@ Every one of your daemons holds every task's record, synced peer to peer over ir
 | Part | Consistency |
 |---|---|
 | A task's record: project, name, first message, agent, `after`, `on`, state, owner, and a `run.DEVICE` field for each machine that ran it | eventual: last writer wins per field, ordered by a hybrid logical clock ("oldest first") |
+| A task's `claim` and `notes` ([Shelf §2, §4](mobile-shelf.md#2-pick)), and a project's planner machine (planned: [chat §1](mobile-chat.md#1-the-planner-machine)) | eventual, as the record |
 | Who may start or grant it: the **authority** | one machine; changes by a grant from the machine that holds it, or by a takeover when that machine has been away 2 minutes (§2) |
 
 - **The record is a log of field writes** in `kanna.db`: `record_ops (device, ms, n, task, birth, field, value)`, one row per write, never changed. A field's value is its write with the largest `(ms, n, device)`, so every daemon that has the same rows shows the same record, whatever order they came in. `device` is the daemon's endpoint key.
@@ -72,7 +73,7 @@ sequenceDiagram
 - **A machine's clones** are the projects in its `~/.kanna-v4/repos`, the repos of its tasks and its recent projects, matched by project identity. A task granted here goes onto the Shelf of that clone, made from its record.
 - **Two meanings, two words:** "ask" and "grant" are between machines. A **claim** stays what it is in [app-desk](app-desk.md): an app having a task on its Desk, now named by its device (`claimed by: mbp`).
 - **Task IDs** stay random 32 bits ([task IDs](task-ids.md)). Apps key views by (machine, ID). An ID already in the replica is refused when a task is made; one two machines make at once, before they've synced, stays two births, and neither is started or granted (`ambiguous`).
-- **What the app sees:** each daemon's Shelf is the tasks it owns, so a granted task moves from the owner's Shelf to the runner's in the Desk view's merged Shelf. `kanna task list` also lists other machines' waiting and started tasks, `on vm` in WHERE, and keeps them out of `--include-done` even though their row here has the place `done`: the record, not that row, says whether a task is finished.
+- **What the app sees:** each daemon's Shelf is the tasks it owns, so a granted task moves from the owner's Shelf to the runner's in the Desk view's merged Shelf. The app sorts that merged Shelf by age, whichever machine a task is on: oldest `madeAt` first, two made at the same moment by task ID, the same on every machine and after a task moves, as a daemon breaks a tie (`DeskOrder.byAge`; tested in `DeskOrderTests` and e2e `machine_shelf_order`). `kanna task list` also lists other machines' waiting and started tasks, `on vm` in WHERE, and keeps them out of `--include-done` even though their row here has the place `done`: the record, not that row, says whether a task is finished.
 
 | Request (`replica` on a `sync` stream) | Reply |
 |---|---|
