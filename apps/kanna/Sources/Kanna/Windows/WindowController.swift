@@ -28,6 +28,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var schedulesRepo: String?
     var page: String?
     var machines: [MachineRow] = []
+    var phones: [String] = []
     var stale: String?
     var headerTip: String?
     private var pageShown: String?
@@ -254,7 +255,7 @@ final class WindowController: NSObject, NSWindowDelegate {
             deskView.show(DeskPage(active: active, tasks: DeskOrder.byAge(deskTasks, made: \.made), keys: keys, shelf: shelf, running: running, project: project, cheer: cheer, note: note))
         } else if pageShown == Self.pages[1] {
             machinesPage.frame = below
-            machinesPage.show(machines)
+            machinesPage.show(machines, phones: phones)
         } else if pageShown == Self.pages[2] {
             buildsPage.frame = below
             buildsPage.show(builds)

@@ -103,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def log(self, body, turn=None):
-        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body), "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn}
+        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body), "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn, "last": json.dumps(items_of(body)[-1:])}
         with LOCK, LOG_PATH.open("a") as f:
             f.write(json.dumps(entry) + "\n")
 

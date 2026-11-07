@@ -13,7 +13,7 @@ Kanna releases a Linux tarball beside the DMGs, and you install it on your own L
 
 ## 1. The Linux tarball
 
-`scripts/build-linux.sh [production|staging|dev] [--arch x86_64|aarch64] [--out DIR]` builds it on the Mac (or on Linux): the daemon, keeper and CLI cross-compiled with Zig as C compiler and linker, for glibc 2.35 (Ubuntu 22.04 and later) at the `baseline` CPU (the R720s' Ivy Bridge), with debug info stripped. `KANNA_VERSION` sets the version. `scripts/release.sh` builds the x86_64 one after the DMGs, checks it was built from the release's commit, and publishes it with them; an aarch64 one is built by hand with `--arch aarch64`.
+`scripts/build-linux.sh [production|staging|dev] [--arch x86_64|aarch64] [--out DIR]` builds it on the Mac (or on Linux): the daemon, keeper and CLI cross-compiled with Zig as C compiler and linker, for glibc 2.35 (Ubuntu 22.04 and later) at the `baseline` CPU (the R720s' Ivy Bridge), with debug info stripped. Its version is [the last tag's](release.md#versions), `X.Y.Z-dev`, unless `KANNA_VERSION` sets it. `scripts/release.sh` builds the x86_64 one after the DMGs, checks it was built from the release's commit, and publishes it with them; an aarch64 one is built by hand with `--arch aarch64`.
 
 ```
 Kanna-4.1.0-linux-x86_64.tar.gz        (Kanna-Staging-… on staging)
@@ -24,7 +24,7 @@ Kanna-4.1.0-linux-x86_64.tar.gz        (Kanna-Staging-… on staging)
     └── release.json                     {commit, version, channel, os, arch, protocol}
 ```
 
-`release.json` says what the tarball holds; `commit` is `<sha>` or `<sha>-dirty`. `scripts/server-setup.sh --tarball FILE` checks it's for this OS and architecture and installs it ([setup §3](machine-setup.md#3-running-the-setup)); its own builds from a checkout write the same `release.json`.
+`release.json` says what the tarball holds; `commit` is `<sha>` or `<sha>-dirty`. `scripts/server-setup.sh --tarball FILE` checks it's for this OS and architecture and installs it ([setup §3](machine-setup.md#3-running-the-setup)); its own builds from a checkout write the same `release.json`, with the version `kanna-build` prints.
 
 ## 2. Protocols
 

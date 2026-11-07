@@ -72,7 +72,7 @@ stateDiagram-v2
 
 ## 5. Stop, Done, or back to the Shelf
 
-- **Stop ends a task's agent and terminals and leaves it where it is** (`kanna task stop`): on the Desk or the Shelf. Nothing closes: its agent's pane and terminals stay, exited, its other tabs stay with their comments, and the shown tab, focus and zoom stay, as do its worktree and branch. While it's stopped, a pane keeps its last screen with the exited notice. Starting it again (`kanna task start`, or Move to Desk) runs its agent in that pane on a new terminal, in the daemon and the app (the old run's scrollback goes, and so do the modes it left on), resuming its conversation ([which agents resume](#which-agents-resume)), and reruns the terminals that were running when it stopped. A stopped task still takes its place on the Desk.
+- **Stop ends a task's agent and terminals and leaves it where it is** (`kanna task stop`): on the Desk or the Shelf. Nothing closes: its agent's pane and terminals stay, exited, its other tabs stay with their comments, and the shown tab, focus and zoom stay, as do its worktree and branch. While it's stopped, a pane keeps its last screen with the exited notice. Starting it again (`kanna task start`, or Move to Desk) runs its agent in that pane on a new terminal, in the daemon and the app (the pane keeps its ID, the old run's scrollback goes, and so do the modes it left on: [durable panes](durable-panes.md)), resuming its conversation ([which agents resume](#which-agents-resume)), and reruns the terminals that were running when it stopped. A stopped task still takes its place on the Desk.
 - **Its agent quits as you'd quit it:** Stop, Done and a [Shelf runner](shelf-runners.md#2-how-its-built) end an idle agent with `/exit`, and one that's working or asking with its quit keys, so a stop only interrupts work when you stop work. They keep the session it says as it exits when the task has none of its own. A draft in its box is never sent, and it's hung up only if it has no keys or neither way quits it ([how](shelf-runners.md#2-how-its-built)).
 - **A task presents its work:** before its turn ends, its agent sets up its tabs to show what it changed and why, and that's what you see when you make it active ([presenting](presenting.md)).
 
@@ -81,7 +81,8 @@ stateDiagram-v2
 - **Move to Shelf puts a task back** (Task menu, or `kanna task shelve`), freeing its place on the Desk: it leaves the Desk and waits on the Shelf again, under its ID.
 - **It stays as it is there,** running or stopped. A running agent carries on with whatever it was doing, and its tabs stay as they were.
 - **Moving it to the Desk again brings it back as it is:** the same agent and tabs, with no restart (a stopped one starts).
-- **If its agent's pane closed meanwhile,** starting it opens a new agent in its worktree (a new worktree only if that's gone too), and the agent comes back to its conversation.
+- **If its agent's pane closed meanwhile,** starting it opens a new agent in its worktree (a new worktree only if that's gone too), and the agent comes back to its conversation. That's a new pane, with a new ID.
+- **Moved to another machine,** a task gets a new pane ID there; its doc's comment targets don't follow ([durable panes](durable-panes.md#5-across-machines)).
 
 ### Which agents resume
 

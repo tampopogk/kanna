@@ -23,7 +23,7 @@ const KILL_AFTER: Duration = Duration::from_secs(10);
 
 const POLL: Duration = Duration::from_millis(100);
 
-const ENV_ALLOWED: &[&str] = &["KANNA_CHANNEL", "CI", "LANG", "LC_ALL", "RUST_BACKTRACE", "CARGO_TERM_COLOR", "NSUnbufferedIO", "SWIFT_DETERMINISTIC_HASHING"];
+const ENV_ALLOWED: &[&str] = &["KANNA_CHANNEL", "KANNA_VERSION", "CI", "LANG", "LC_ALL", "RUST_BACKTRACE", "CARGO_TERM_COLOR", "NSUnbufferedIO", "SWIFT_DETERMINISTIC_HASHING"];
 
 #[derive(Clone)]
 pub struct Config {

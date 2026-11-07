@@ -9,6 +9,7 @@ pub enum Where {
     Desk(String),
     Shelf,
     Planner(String),
+    Quiz(String),
 }
 
 impl Where {
@@ -17,6 +18,7 @@ impl Where {
             Where::Desk(app) => json!({ "desk": app }),
             Where::Shelf => "shelf".into(),
             Where::Planner(app) => json!({ "planner": app }),
+            Where::Quiz(app) => json!({ "quiz": app }),
         }
     }
 
@@ -25,7 +27,7 @@ impl Where {
             Value::String(place) if place == "shelf" => Some(Where::Shelf),
             Value::Object(place) => {
                 let app = |key: &str| place.get(key).and_then(Value::as_str).map(String::from);
-                app("desk").map(Where::Desk).or_else(|| app("planner").map(Where::Planner))
+                app("desk").map(Where::Desk).or_else(|| app("planner").map(Where::Planner)).or_else(|| app("quiz").map(Where::Quiz))
             }
             _ => None,
         }
@@ -43,7 +45,7 @@ impl Where {
 
     pub fn app(&self) -> Option<&str> {
         match self {
-            Where::Desk(app) | Where::Planner(app) => Some(app),
+            Where::Desk(app) | Where::Planner(app) | Where::Quiz(app) => Some(app),
             Where::Shelf => None,
         }
     }
@@ -65,7 +67,7 @@ impl Workspace {
     }
 
     pub fn is_task(&self) -> bool {
-        !matches!(self.place, Where::Planner(_))
+        !matches!(self.place, Where::Planner(_) | Where::Quiz(_))
     }
 
     pub fn summary(&self) -> Value {

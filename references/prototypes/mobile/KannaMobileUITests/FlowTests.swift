@@ -296,7 +296,7 @@ final class FlowTests: XCTestCase {
         say("Drop them and restyle the crash page")
         see("Got it. Carrying on", 12)
         see("Working")
-        XCTAssertFalse(app.staticTexts["It said, 9:01"].exists)
+        XCTAssertTrue(app.staticTexts["It said, 9:01"].exists)
         shot("answered-task")
     }
 

@@ -12,7 +12,10 @@ let package = Package(
     name: "kanna",
     platforms: [.macOS(.v15)],
     products: [.executable(name: "Kanna", targets: ["Kanna"])],
-    dependencies: [.package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.7.3")],
+    dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.7.3"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
+    ],
     targets: [
         .binaryTarget(name: "GhosttyKit", path: "../../target/ghosttykit/GhosttyKit.xcframework"),
         .systemLibrary(name: "KannaLayoutC", path: "Sources/KannaLayoutC"),
@@ -44,6 +47,8 @@ let package = Package(
         .target(name: "KannaDrop"),
         .target(name: "KannaStatus"),
         .target(name: "KannaMachines"),
+        .target(name: "KannaUpdates"),
+        .testTarget(name: "KannaUpdatesTests", dependencies: ["KannaUpdates"]),
         .target(name: "KannaWindows"),
         .testTarget(name: "KannaWindowsTests", dependencies: ["KannaWindows"]),
         .testTarget(name: "KannaMachinesTests", dependencies: ["KannaMachines"]),
@@ -53,8 +58,8 @@ let package = Package(
         .target(name: "SimBridge", linkerSettings: ["AppKit", "IOSurface", "QuartzCore"].map { .linkedFramework($0) }),
         .executableTarget(
             name: "Kanna",
-            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaCrashC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLog", "KannaSerial", "KannaOverview", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaPerf", "KannaWindows", "SimBridge"],
-            linkerSettings: [.linkedLibrary("c++"), kannaFFI]
+            dependencies: ["GhosttyKit", "KannaLayoutC", "KannaMachinesC", "KannaCrashC", "KannaDiagram", "KannaDocs", "KannaMarkdown", "KannaCode", "KannaDiff", "KannaLog", "KannaSerial", "KannaOverview", "KannaLinks", "KannaDrop", "KannaStatus", "KannaMachines", "KannaUpdates", "KannaPerf", "KannaWindows", "SimBridge", .product(name: "Sparkle", package: "Sparkle")],
+            linkerSettings: [.linkedLibrary("c++"), kannaFFI, .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
                 + ["AppKit", "Carbon", "CoreText", "IOSurface", "Metal", "QuartzCore", "Security", "SystemConfiguration", "UniformTypeIdentifiers", "WebKit"].map { .linkedFramework($0) }
         ),
     ]

@@ -1,15 +1,15 @@
-use super::{usage, Command, Flow};
+use super::{usage, Command, Flow, Invocation};
 use crate::args::Argv;
 use crate::output::join;
 use crate::target::Session;
-use kanna_client::Failure;
+use kanna_client::{fail, Failure};
 use serde_json::{json, Value};
 
 pub const COMMAND: Command = Command {
     name: "machine",
     group: "Information",
     summary: "Your machines: pair one, list them, check one's link, give an address or a relay, or revoke one. kanna --host MACHINE COMMAND runs any command on one.",
-    usage: "kanna machine [list]\n       kanna machine pair\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
+    usage: "kanna machine [list]\n       kanna machine serve [--stop]\n       kanna machine pair\n       kanna machine pair CODE [--peer KEY[@HOST[:PORT]]]\n       kanna machine name NAME\n       kanna machine ping MACHINE\n       kanna machine addr MACHINE HOST[:PORT]\n       kanna machine relay URL [--token-file FILE]|none\n       kanna machine revoke MACHINE\n       kanna --host MACHINE COMMAND ...",
     options: &[
         ("--peer KEY[@HOST[:PORT]]", "pair CODE: the machine to pair with, as `kanna machine pair` prints it there, when it isn't on this LAN."),
         ("--host MACHINE", "Before any command: run it on that machine (its name or key) instead of this one. KANNA_HOST does the same."),
@@ -17,6 +17,7 @@ pub const COMMAND: Command = Command {
     notes: "Each machine's daemon has a key of its own (device.key in its state folder) and listens for the others over iroh, on UDP port 7470 when it's free. Machines on a LAN find each other by themselves.\nTo add a machine, run `kanna machine pair` on it: it shows a six-digit code and waits. On one of your machines (or the first one, which starts them), run `kanna machine pair CODE`; Kanna.app there asks you to confirm, and the new machine joins. A code works once, for five minutes, and three wrong codes close it.\nA machine is known by its name, the first part of its host name unless `kanna machine name` changed it before pairing. A name that comes back with another key is refused; a revoked machine is never let back in, under any name, and has to be paired with a new key.\n`kanna machine addr` gives an address to try for a machine that isn't on this LAN, such as one on your VPN. ping opens a connection and one stream of each kind, and says whether the path is direct.\n`kanna machine relay URL` names the iroh-relay this machine meets the others through when they aren't on its LAN; run it on each machine, and the app dials them through it too. A relay that admits only holders of a secret (iroh-relay's access.shared_token) takes it with --token-file FILE; the token stays in this machine's kanna.db and is never put in the peer log. iroh moves to a direct path by itself whenever one opens. `none` goes back to the LAN and given addresses only.",
     examples: &[
         ("kanna machine list", "This machine, your other machines and how each is reached."),
+        ("kanna machine serve", "Keep this Mac's daemon running from launchd, so your phone reaches its planner with Kanna.app closed."),
         ("kanna machine pair", "On a new machine: show a code to pair it with."),
         ("kanna machine pair 042917", "On your Mac: add the machine showing 042917."),
         ("kanna machine ping r720-1", "Whether r720-1 answers, by which path, and that each kind of stream opens."),
@@ -26,8 +27,44 @@ pub const COMMAND: Command = Command {
     ],
     parse,
     show,
-    flow: Flow { online: Some(online), ..Flow::PLAIN },
+    flow: Flow { offline: Some(offline), online: Some(online), ..Flow::PLAIN },
 };
+
+fn offline(request: &Value, _: &Invocation) -> Option<Result<(), Failure>> {
+    (request["action"] == "serve").then(|| serve(request["stop"] == true))
+}
+
+fn serve(stop: bool) -> Result<(), Failure> {
+    let failed = |what: String| fail(1, what);
+    if !cfg!(target_os = "macos") {
+        return Err(failed("kanna machine serve is for Macs: it runs the daemon from launchd".into()));
+    }
+    let home = std::env::var("HOME").map_err(|_| failed("HOME isn't set".into()))?;
+    let label = format!("{}.daemon", kanna_build::Build::current().bundle_id());
+    let plist = std::path::Path::new(&home).join("Library/LaunchAgents").join(format!("{label}.plist"));
+    let uid = String::from_utf8_lossy(&std::process::Command::new("id").arg("-u").output().map_err(|e| failed(e.to_string()))?.stdout).trim().to_string();
+    let launchctl = |args: &[&str]| std::process::Command::new("launchctl").args(args).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+    let _ = launchctl(&["bootout", &format!("gui/{uid}/{label}")]);
+    if stop {
+        let _ = std::fs::remove_file(&plist);
+        println!("this Mac's daemon no longer runs from launchd");
+        return Ok(());
+    }
+    let daemon = std::env::current_exe().map_err(|e| failed(e.to_string()))?.with_file_name("kanna-daemon");
+    if !daemon.is_file() {
+        return Err(failed(format!("no daemon at {}: run the kanna inside Kanna.app", daemon.display())));
+    }
+    let body = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{label}</string>\n<key>ProgramArguments</key><array><string>{}</string></array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n</dict></plist>\n", daemon.display());
+    if let Some(folder) = plist.parent() {
+        std::fs::create_dir_all(folder).map_err(|e| failed(e.to_string()))?;
+    }
+    std::fs::write(&plist, body).map_err(|e| failed(e.to_string()))?;
+    if !launchctl(&["bootstrap", &format!("gui/{uid}"), &plist.to_string_lossy()]) {
+        return Err(failed(format!("launchctl couldn't load {}", plist.display())));
+    }
+    println!("this Mac's daemon runs from launchd now, as {label}: your phone reaches it with Kanna.app closed, until a restart and after");
+    Ok(())
+}
 
 fn online(request: &Value, mux: &mut Session, json_output: bool) -> Option<Result<(), Failure>> {
     (request["action"] == "offer").then(|| offer(mux, json_output))
@@ -44,6 +81,7 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
             None => json!({ "action": "offer" }),
             Some(code) => json!({ "action": "pair", "code": code, "peer": peer }),
         },
+        Some("serve") => json!({ "action": "serve", "stop": args.flag("--stop") }),
         Some("name") => json!({ "action": "name", "name": args.positional().ok_or_else(|| usage("machine", "machine name needs a NAME"))? }),
         Some(what @ ("ping" | "revoke" | "sync")) => json!({ "action": what, "host": machine(what, args)? }),
         Some("addr") => {
@@ -89,7 +127,8 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 Some(false) => "\nit couldn't be told to drop the agent accounts it was given: rotate them (kanna accounts)",
                 None => "",
             };
-            format!("revoked {} for good; {told}{accounts}", reply["name"].as_str().unwrap_or("?"))
+            let relay = if reply["relay_token"] == true { "\nit holds your relay's token: if it may be in someone else's hands, rotate that too (kanna machine relay URL --token-file FILE, on each machine)" } else { "" };
+            format!("revoked {} for good; {told}{accounts}{relay}", reply["name"].as_str().unwrap_or("?"))
         }
         Some("ping") => {
             let streams = reply["streams"].as_object().map(|s| s.iter().map(|(kind, r)| format!("{kind} {}", if r["ok"] == true { "ok".to_string() } else { r["error"]["code"].as_str().unwrap_or("failed").to_string() })).collect::<Vec<_>>().join(", ")).unwrap_or_default();
@@ -123,6 +162,13 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 let runs = release(&peer["release"]);
                 let runs = if runs.is_empty() { String::new() } else { format!("  Kanna {runs}") };
                 out.push(format!("  {:<14} {:<14} {}  {}{runs}", peer["name"].as_str().unwrap_or("?"), state, short_key(&peer["key"]), join(&peer["addrs"])));
+            }
+            let phones: Vec<&Value> = reply["phones"].as_array().map(|p| p.iter().collect()).unwrap_or_default();
+            if !phones.is_empty() {
+                out.push("phones:".into());
+            }
+            for phone in phones {
+                out.push(format!("  {:<14} {:<14} {}", phone["name"].as_str().unwrap_or("?"), if phone["revoked"] == true { "revoked" } else { "paired" }, short_key(&phone["key"])));
             }
             for nearby in reply["nearby"].as_array().into_iter().flatten().filter(|n| n["pairing"] == true) {
                 out.push(format!("waiting to pair on this LAN: {}  {}", short_key(&nearby["key"]), join(&nearby["addrs"])));
