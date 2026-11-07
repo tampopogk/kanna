@@ -143,7 +143,7 @@ stateDiagram-v2
 | idle, or its program has exited | Not answered · the agent stopped |
 | needs you (asking something in its terminal) | Not answered · the agent is waiting on you |
 | none, or sending failed | Not sent · no agent (or why it failed) |
-| — (the comment is queued for its turn's end) | Waiting · it goes to the agent when its turn is over |
+| — (the comment is queued until it's delivered) | Waiting · it goes to the agent when its turn is over |
 
 ![A comment posted while its Claude works: Waiting until its turn is over](doc-markup-queued.png)
 
