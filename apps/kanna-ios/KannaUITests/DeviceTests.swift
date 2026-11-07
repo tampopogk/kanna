@@ -131,6 +131,72 @@ final class DeviceTests: XCTestCase {
         }
     }
 
+    private var chip: String { app.buttons["chip"].exists ? app.buttons["chip"].label : "" }
+
+    private func linked(within seconds: TimeInterval) -> Int? {
+        let began = Date()
+        while Date().timeIntervalSince(began) < seconds {
+            if !chip.isEmpty, !chip.contains("Offline") { return Int(Date().timeIntervalSince(began) * 1000) }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return nil
+    }
+
+    func testPair() throws {
+        guard ProcessInfo.processInfo.environment["KANNA_PAIR"] != nil else { throw XCTSkip("a real phone and a Mac showing a code") }
+        app.launch()
+        XCTAssertTrue(app.buttons["scan"].waitForExistence(timeout: 15))
+        app.buttons["scan"].tap()
+        XCTAssertTrue(allow(for: 270) { seen("Your repos").exists }, "never paired: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("paired")
+    }
+
+    func testAway() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let ask = environment["KANNA_AWAY_ASK"], let answer = environment["KANNA_ANSWER"], let repo = environment["KANNA_REPO"] else {
+            throw XCTSkip("a paired phone on cellular, with its Wi-Fi off")
+        }
+        XCTAssertFalse(ask.contains(answer), "the answer has to be something the question doesn't say")
+        app.launch()
+        let dial = linked(within: 45)
+        XCTAssertNotNil(dial, "no link")
+        print("kanna-away launch to link: \(dial ?? -1) ms, \(chip)")
+        self.repo(repo)
+        XCTAssertFalse(chip.contains("LAN"), "away from the LAN, the chip says \(chip)")
+        app.buttons["chip"].tap()
+        Thread.sleep(forTimeInterval: 1)
+        print("kanna-away sheet: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        shot("chip")
+        app.buttons["chip"].tap()
+        let field = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.tap()
+        field.typeText(ask)
+        app.buttons["send"].tap()
+        let asked = Date()
+        XCTAssertTrue(seen(answer).waitForExistence(timeout: 300), "no answer: " + app.staticTexts.allElementsBoundByIndex.map(\.label).joined(separator: " | "))
+        print("kanna-away answered in \(Int(Date().timeIntervalSince(asked))) s, \(chip)")
+        shot("answer")
+        for away in [5.0, 15.0, 45.0] {
+            XCUIDevice.shared.press(.home)
+            Thread.sleep(forTimeInterval: away)
+            app.activate()
+            print("kanna-away back after \(Int(away)) s: \(linked(within: 30) ?? -1) ms, \(chip)")
+        }
+        let watched = Date()
+        var last = chip
+        while Date().timeIntervalSince(watched) < 90 {
+            if chip != last {
+                print("kanna-away chip moved at \(Int(Date().timeIntervalSince(watched))) s: \(last) to \(chip)")
+                last = chip
+            }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        print("kanna-away chip at the end: \(chip)")
+        XCTAssertFalse(chip.contains("LAN"))
+        shot("end")
+    }
+
     func testScanAskAnswer() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let ask = environment["KANNA_ASK"], let repo = environment["KANNA_REPO"] else {

@@ -6598,6 +6598,37 @@ print([r.get("claim") for r in json.load(sys.stdin)["records"] if r["task"].star
   kill -0 "$daemon_pid" 2>/dev/null
 }
 
+scenario phone_relay M4
+phone_relay() {
+  (cd "$repo_root" && cargo build -q -p kanna-net --example test-relay) || { echo "phone_relay: the test relay didn't build"; return 1; }
+  phone_rig claude || { echo "phone_relay line $LINENO"; return 1; }
+  local me="$bin/kanna"
+  local relay_out="$KANNA_STATE_DIR/relay.out" token="$KANNA_STATE_DIR/relay.token"
+  printf 's3cret-phone' >"$token"
+  "$rust_dir/examples/test-relay" s3cret-phone >"$relay_out" &
+  local relay=$!
+  trap "kill $relay 2>/dev/null" RETURN
+  check wait_for 10 test -s "$relay_out" || { echo "phone_relay: the relay didn't start"; return 1; }
+  local url; url="$(cat "$relay_out")"
+  ! PHONE_RELAY_ONLY=1 phone hello >/dev/null 2>&1 || { echo "phone_relay: reached it with no relay"; return 1; }
+  kanna machine relay "$url" --token-file "$token" >/dev/null || { echo "phone_relay line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ -n "$(kanna machine list --json | field home_relay)" ]]' || { echo "phone_relay: the daemon never reached the relay"; kanna machine list; return 1; }
+  check test "$(phone hello | field relay)" == "$url" || { echo "phone_relay: hello didn't refresh the relay"; return 1; }
+  check test "$(phone path | field path)" == direct || { echo "phone_relay: with a relay set the LAN isn't direct: $(phone path)"; return 1; }
+  check test "$(phone path | field lan)" == True || { echo "phone_relay: the LAN doesn't read as LAN: $(phone path)"; return 1; }
+  ! PHONE_RELAY_ONLY=1 PHONE_RELAY_TOKEN=wrong phone hello >/dev/null 2>&1 || { echo "phone_relay: a wrong token got through"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone path | field path)" == relay || { echo "phone_relay: not through the relay: $(PHONE_RELAY_ONLY=1 phone path)"; return 1; }
+  PHONE_RELAY_ONLY=1 phone send repo r1 "mock: run $me phone say answered through the relay" >/dev/null || { echo "phone_relay line $LINENO"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone wait repo say 30 | field doc.text)" == "answered through the relay" || { echo "phone_relay: no answer through the relay"; phone read repo; return 1; }
+  phone_dir="$KANNA_STATE_DIR/phone2"
+  mkdir -p "$phone_dir"
+  phone_pair || { echo "phone_relay: a second phone didn't pair"; return 1; }
+  check test "$(field relay <"$phone_dir/machine.json")" == "$url" || { echo "phone_relay: the handoff had no relay"; return 1; }
+  check test "$(field relay_token <"$phone_dir/machine.json")" == s3cret-phone || { echo "phone_relay: the handoff had no token"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone path | field path)" == relay || { echo "phone_relay: a new phone can't use the relay before its first hello"; return 1; }
+  ! grep -q s3cret-phone "$KANNA_STATE_DIR/offer" || { echo "phone_relay: the token is in the QR"; return 1; }
+}
+
 scenario phone_chat_codex M4
 phone_chat_codex() {
   phone_chat_with codex

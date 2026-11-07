@@ -9,6 +9,7 @@ char *kanna_phone_open(const char *request);
 char *kanna_phone_write(unsigned long long stream, const char *line);
 char *kanna_phone_read(unsigned long long stream);
 char *kanna_phone_path(const char *key);
+void kanna_phone_network_changed(void);
 char *kanna_phone_highlight(const char *file, const char *text);
 char *kanna_phone_drawing(const char *source);
 void kanna_phone_stop(void);

@@ -255,6 +255,58 @@ final class FlowTests: XCTestCase {
         see("Writing your next round")
     }
 
+    private func chip(_ link: String, more: [String] = []) {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-link", link] + more
+        app.launch()
+    }
+
+    func testTheChipSaysEachPath() {
+        chip("lan")
+        see("Direct · LAN")
+        app.terminate()
+        chip("net")
+        see("Direct · internet")
+        shot("direct-internet")
+        app.buttons["chip"].tap()
+        see("A direct path across the internet")
+        see("41 ms")
+        app.terminate()
+        chip("relay")
+        see("Relayed")
+        app.buttons["chip"].tap()
+        see("Through your relay")
+        see("Trying")
+        shot("relayed")
+    }
+
+    func testTheChipMovesWhenAHolePunchWorks() {
+        chip("relay,net")
+        see("Relayed")
+        see("Direct · internet", 12)
+    }
+
+    func testTheChipTellsNoNetworkFromAMachineAsleep() {
+        chip("lan", more: ["-noNetwork", "YES"])
+        see("Offline")
+        app.buttons["chip"].tap()
+        see("This phone has no network")
+        shot("no-network")
+    }
+
+    func testADayOldMessageAsksBeforeItGoes() {
+        chip("lan", more: ["-dayOld", "kanna"])
+        see("A day old, not sent")
+        shot("day-old")
+        tap("Keep waiting")
+        XCTAssertTrue(app.staticTexts["A day old, not sent"].waitForNonExistence(timeout: 10))
+        see("Written yesterday")
+        app.terminate()
+        chip("lan", more: ["-dayOld", "kanna"])
+        see("A day old, not sent")
+        tap("Discard")
+        XCTAssertTrue(app.staticTexts["Written yesterday"].waitForNonExistence(timeout: 10))
+    }
+
     private func stats() {
         app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
         app.launch()

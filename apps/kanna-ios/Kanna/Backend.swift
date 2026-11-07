@@ -56,6 +56,8 @@ struct Hello: Codable {
     var name: String
     var key: String
     var addrs: [String]
+    var relay: String?
+    var relay_token: String?
     var projects: [Project]
     var machines: [Reach]?
 }
@@ -67,6 +69,7 @@ struct Paired: Codable {
     var addrs: [String]
     var good: String?
     var known: [Reach]?
+    var relay: String?
 }
 
 struct MachineInfo: Codable, Equatable, Identifiable {
@@ -229,6 +232,7 @@ protocol Backend: AnyObject {
     var paired: Paired? { get }
     func pair(scanned: String) async throws -> Paired
     func connect(to machine: Reach?) async throws -> Hello
+    func networkChanged()
     func hello() async throws -> Hello
     func reaches(_ machine: Reach) async -> Bool
     func read(repo: String, after: Int) async throws -> Page
