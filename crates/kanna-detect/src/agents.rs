@@ -25,6 +25,12 @@ impl Status {
 
 pub const MINIMUMS: &[(&str, &str)] = &[("claude", "2.1.295"), ("codex", "0.163.0"), ("opencode", "2.2.5"), ("antigravity", "1.4.2")];
 
+pub const IDLE_WITH_BACKGROUND: &[&str] = &["claude", "mock"];
+
+pub fn idle_with_background(agent: &str) -> bool {
+    IDLE_WITH_BACKGROUND.contains(&agent)
+}
+
 pub fn minimum(agent: &str) -> Option<&'static str> {
     MINIMUMS.iter().find(|(name, _)| *name == agent).map(|(_, version)| *version)
 }

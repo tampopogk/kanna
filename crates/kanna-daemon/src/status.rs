@@ -1,4 +1,5 @@
 use crate::reader::Feed;
+use crate::reports::Kept;
 use crate::Event;
 use kanna_detect::program::{self, Program, Version};
 use kanna_detect::{agents, Status};
@@ -6,7 +7,6 @@ use kanna_vt::{ProgramState, ProgramStatus};
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,11 +26,12 @@ struct Watch {
     group: Option<i32>,
     reported: Option<ProgramState>,
     turns: u64,
+    kept: u64,
 }
 
 struct Shared {
     watches: Mutex<HashMap<String, Watch>>,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     stop: AtomicBool,
     wake: (Mutex<bool>, Condvar),
 }
@@ -62,7 +63,7 @@ pub fn turn_ended(before: Option<ProgramState>, now: ProgramState) -> bool {
 }
 
 impl Detector {
-    pub fn start(events: Sender<Event>) -> Detector {
+    pub fn start(events: crate::runtime::Events) -> Detector {
         let shared = Arc::new(Shared { watches: Mutex::default(), events, stop: AtomicBool::new(false), wake: (Mutex::new(false), Condvar::new()) });
         let running = shared.clone();
         let thread = std::thread::Builder::new().name("kanna.status".into()).spawn(move || run(&running)).expect("start agent status");
@@ -70,8 +71,11 @@ impl Detector {
     }
 
     pub fn watch(&self, pane: &str, serial: u64, feed: Arc<Mutex<Feed>>, master: OwnedFd) {
-        let turns = lock(&feed).turns();
-        let watch = Watch { serial, feed, master, program: None, version: None, version_known: false, looked: None, status: None, group: None, reported: None, turns };
+        let (turns, kept) = {
+            let feed = lock(&feed);
+            (feed.turns(), feed.statuses_serial())
+        };
+        let watch = Watch { serial, feed, master, program: None, version: None, version_known: false, looked: None, status: None, group: None, reported: None, turns, kept };
         lock(&self.shared.watches).insert(pane.into(), watch);
         self.poke();
     }
@@ -80,7 +84,13 @@ impl Detector {
         let mut watches = lock(&self.shared.watches);
         if watches.get(pane).is_some_and(|w| w.serial == serial) {
             watches.remove(pane);
+            let _ = self.shared.events.send(Event::Unreported { terminal: pane.into() });
         }
+    }
+
+    pub fn kept(&self) -> Vec<(String, Option<Kept>)> {
+        let watches = lock(&self.shared.watches);
+        watches.iter().map(|(pane, watch)| (pane.clone(), Some(kept(&lock(&watch.feed))))).collect()
     }
 
     pub fn program(&self, pane: &str) -> Option<Program> {
@@ -132,6 +142,11 @@ impl Drop for Detector {
     }
 }
 
+fn kept(feed: &Feed) -> Kept {
+    let (owner, records) = feed.kept_statuses();
+    Kept { owner, records }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -160,6 +175,14 @@ fn tick(shared: &Shared, now: Instant) -> bool {
                 lock(&watch.feed).foreground_changed(group);
             }
             watch.group = group;
+        }
+        {
+            let feed = lock(&watch.feed);
+            let now = feed.statuses_serial();
+            if now != watch.kept {
+                watch.kept = now;
+                let _ = shared.events.send(Event::Reported { terminal: pane.clone(), serial, kept: kept(&feed) });
+            }
         }
         if watch.looked.is_none_or(|t| now.duration_since(t) >= LOOK_EVERY) {
             watch.looked = Some(now);

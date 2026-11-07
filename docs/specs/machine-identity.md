@@ -18,6 +18,7 @@ How one of your machines knows another is yours, with no account and no server. 
 |---|---|---|
 | `device.key` (Ed25519 in hex, `0600`, in the instance's state folder, [instances](instances.md); made on first start) | the daemon | the device's signing key and the daemon's iroh endpoint ID |
 | the app's endpoint key | Kanna.app, made at first launch | its own iroh endpoint, with a **certificate** from `device.key`: `{key, device, sig}` |
+| a phone's device key (planned) | the phone's Keychain | its iroh endpoint, in the log with `role: "phone"`: it adds nobody and runs nothing ([phone link §1](mobile-link.md#1-a-phone-in-the-peer-log)) |
 
 - **Why two:** an iroh endpoint *is* its key, so the daemon and the app can't share one. The relay would register only the latest, and the daemon would drop off while the app is open.
 - **A remote daemon accepts** an endpoint whose certificate chains to a device in its peer log. The certificate is in the header of the app's `control` stream ([links §1](machine-links.md#1-making-a-link)).
@@ -25,7 +26,7 @@ How one of your machines knows another is yours, with no account and no server. 
 
 ## 2. Pairing
 
-A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part.
+A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. A phone pairs by the same exchange with the Mac showing the code in a QR ([phone link §2](mobile-link.md#2-pairing)).
 
 ```mermaid
 sequenceDiagram

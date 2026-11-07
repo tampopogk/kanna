@@ -111,7 +111,7 @@ pub enum Heads {
     Changed(Option<Vec<PathBuf>>),
 }
 
-pub fn follow_heads(events: Sender<Event>) -> Sender<Heads> {
+pub fn follow_heads(events: crate::runtime::Events) -> Sender<Heads> {
     let (to, inbox) = mpsc::channel();
     let changes = to.clone();
     std::thread::spawn(move || {
@@ -126,7 +126,7 @@ pub fn follow_heads(events: Sender<Event>) -> Sender<Heads> {
     to
 }
 
-fn heads(mut watcher: impl Watcher, inbox: Receiver<Heads>, events: Sender<Event>) {
+fn heads(mut watcher: impl Watcher, inbox: Receiver<Heads>, events: crate::runtime::Events) {
     let mut dirs: HashMap<PathBuf, PathBuf> = HashMap::new();
     loop {
         let Ok(first) = inbox.recv() else { return };
@@ -416,20 +416,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         sh(&dir, "git init -q -b main && git config user.name e && git config user.email e@e && git commit -q --allow-empty -m first && git worktree add -q -b t wt");
-        let (events, inbox) = mpsc::channel();
+        let (events, mut inbox) = crate::runtime::channel();
         let heads = follow_heads(events);
         heads.send(Heads::Repos(HashSet::from([dir.clone()]))).unwrap();
-        assert!(matches!(inbox.recv_timeout(Duration::from_secs(5)), Ok(Event::Heads)), "following a repo looks at it once");
-        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "nothing moved");
+        assert!(matches!(crate::runtime::next(&mut inbox, Duration::from_secs(5)), Ok(Event::Heads)), "following a repo looks at it once");
+        assert!(crate::runtime::next(&mut inbox, Duration::from_millis(800)).is_err(), "nothing moved");
         sh(&dir.join("wt"), "echo x >x");
-        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "a file in a worktree isn't a head");
+        assert!(crate::runtime::next(&mut inbox, Duration::from_millis(800)).is_err(), "a file in a worktree isn't a head");
         sh(&dir.join("wt"), "git add x && git commit -q -m x");
-        assert!(matches!(inbox.recv_timeout(Duration::from_secs(5)), Ok(Event::Heads)), "a commit moves its branch");
+        assert!(matches!(crate::runtime::next(&mut inbox, Duration::from_secs(5)), Ok(Event::Heads)), "a commit moves its branch");
         heads.send(Heads::Repos(HashSet::new())).unwrap();
         std::thread::sleep(QUIET * 2);
         while inbox.try_recv().is_ok() {}
         sh(&dir.join("wt"), "git commit -q --allow-empty -m y");
-        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "an unfollowed repo is left alone");
+        assert!(crate::runtime::next(&mut inbox, Duration::from_millis(800)).is_err(), "an unfollowed repo is left alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -28,6 +28,12 @@ impl Offer {
         Offer { code: format!("{number:06}"), session: hex(&bytes[4..]), expires: now + OFFER_LIFETIME, attempts: 0, used: false }
     }
 
+    pub fn for_phone(now: Instant) -> Offer {
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes).expect("the OS has no random numbers");
+        Offer { code: hex(&bytes[..16]), session: hex(&bytes[16..]), expires: now + OFFER_LIFETIME, attempts: 0, used: false }
+    }
+
     pub fn begin(&mut self, now: Instant) -> Result<(), Refused> {
         if self.used {
             return Err(Refused::new("code_used"));

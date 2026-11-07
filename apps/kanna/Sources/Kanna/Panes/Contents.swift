@@ -53,9 +53,11 @@ final class Contents {
     var agentStatus: ((String) -> String?)?
     var agentName: ((String) -> String)?
     var onComments: ((String, NSView) -> Void)?
-    private var markdownSpots: [String: [String: (y: CGFloat, zoom: CGFloat)]] = [:]
+    private var markdownSpots: [String: [String: (y: CGFloat, textSize: CGFloat, pageZoom: CGFloat)]] = [:]
     var textSize: ((String) -> CGFloat?)?
     var onTextSize: ((String, CGFloat) -> Void)?
+    var pageZoom: ((String) -> CGFloat?)?
+    var onPageZoom: ((String, CGFloat) -> Void)?
     private var diffSources: [String: (path: String, args: [String])] = [:]
     private var diffContents: [String: String] = [:]
     private var diffLatest: [String: JSON] = [:]
@@ -120,11 +122,12 @@ final class Contents {
     func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? log(id)?.keyView ?? serial(id)?.keyView }
     func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
-    private func send(_ text: String, to agent: String, done: @escaping (String?) -> Void) {
-        guard let onCall else { return done("not connected to the daemon") }
-        onCall("send", ["pane": .string(agent), "text": .string(text)]) { answer in
-            guard answer["ok"]?.bool == true else { return done(answer["error"]?["message"]?.string ?? "send failed") }
-            done(nil)
+    private func send(_ text: String, to agent: String, doc: String, thread: String, done: @escaping (DocDelivery) -> Void) {
+        guard let onCall else { return done(.failed("not connected to the daemon")) }
+        let args: [String: JSON] = ["action": .string("comment"), "pane": .string(agent), "text": .string(text), "doc": .string(doc), "thread": .string(thread)]
+        onCall("tasks", args) { answer in
+            guard answer["ok"]?.bool == true else { return done(.failed(answer["error"]?["message"]?.string ?? "send failed")) }
+            done(answer["state"]?.string == "waiting" ? .waiting : .sent)
         }
     }
 
@@ -178,7 +181,7 @@ final class Contents {
             let machine = MachineIDs.machine(of: id)
             let path = machine == nil ? Self.absolute(pane["path"]?.string ?? "") : pane["path"]?.string ?? ""
             let spot = markdownSpots[id]?[path]
-            let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
+            let markdown = MarkdownPaneView(path: path, textSize: spot?.textSize ?? textSize?(id) ?? 1, pageZoom: spot?.pageZoom ?? pageZoom?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
             markdown.canReveal = machine == nil
             markdown.readFile = { [weak self] path, data, done in self?.read(path, data: data, for: id, done: done) }
             markdown.changeThreads = changer(for: id, path: path)
@@ -186,12 +189,13 @@ final class Contents {
             markdown.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
             markdown.onZoom = { [weak self, weak markdown] in
                 guard let markdown else { return }
-                self?.onTextSize?(id, markdown.zoom)
+                self?.onTextSize?(id, markdown.textSize)
+                self?.onPageZoom?(id, markdown.pageZoom)
             }
             markdown.onFocus = { [weak self] in self?.onFocus?(id) }
             markdown.agent = pane["agent"]?.string
             markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
-            markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            markdown.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
             markdown.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             markdown.onComments = { [weak self] button in self?.onComments?(id, button) }
             if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
@@ -328,7 +332,7 @@ final class Contents {
             web.onTitleChange = { [weak self] title in self?.onUpdate?(id, ["title": .string(title)]) }
             web.agent = pane["agent"]?.string
             web.agentStatus = web.agent.flatMap { self.agentStatus?($0) }
-            web.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            web.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
             web.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             web.onComments = { [weak self] button in self?.onComments?(id, button) }
             web.onMarkup = { [weak self] markup in self?.marked(markup, in: id) }
@@ -415,7 +419,7 @@ final class Contents {
         }
         if let markdown = content as? MarkdownPaneView {
             markdown.stop()
-            markdownSpots[id, default: [:]][markdown.path] = (markdown.scrollTop, markdown.zoom)
+            markdownSpots[id, default: [:]][markdown.path] = (markdown.scrollTop, markdown.textSize, markdown.pageZoom)
         }
         slot.content = nil
         states.removeValue(forKey: id)
