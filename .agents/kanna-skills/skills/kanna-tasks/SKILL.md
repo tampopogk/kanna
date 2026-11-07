@@ -140,6 +140,7 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task subscribe\|unsubscribe EVENT [TASK]` | Hear an event or stop hearing it ([Events](#events)); from your terminal, your task |
 | `kanna task events [TASK]` | What a task hears, and every event message it was sent |
 | `kanna task done [TASK]` | End a task, or take it off the Shelf; says which blocked tasks can start now |
+| `kanna read TASK`, `kanna screenshot TASK` | Another task's agent screen, as text or a PNG, on whichever of the user's machines runs it (no `--host`); every command that takes a pane takes a task the same way, and a pane ID (`term-5`) is this machine's |
 | `kanna schedule add RULE TARGET PROMPT [--name NAME]` | Leave a task, or `planner`, a message at set times |
 | `kanna schedule list` / `remove NAME\|ID` | List the schedules, or remove one |
 | `kanna schedule pause NAME\|ID` / `resume` / `run` | Pause one, resume it (a time missed while paused fires once), or leave its message now |

@@ -627,11 +627,12 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
         Rc::new(move |args, responder| {
             if let Some(link) = screenshot.upgrade() {
-                screenshot::take(&link, args, responder);
+                screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
     );
@@ -658,6 +659,9 @@ fn run() -> Result<(), String> {
                 }
                 return app.forward("desk", args, responder);
             };
+            if task.contains('@') {
+                return app.forward("desk", args, responder);
+            }
             tasks.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
