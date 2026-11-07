@@ -405,6 +405,24 @@ final class FlowTests: XCTestCase {
         see("Planner")
     }
 
+    func testLeavingTheAppWhileItRedialsDoesNotStrandIt() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-slowDial", "YES"]
+        app.launch()
+        see("Planner · idle", 10)
+        app.buttons["chip"].tap()
+        app.buttons["fixture-link"].tap()
+        XCTAssertTrue(app.staticTexts["Planner · idle"].waitForNonExistence(timeout: 10))
+        Thread.sleep(forTimeInterval: 4)
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 1)
+        app.activate()
+        Thread.sleep(forTimeInterval: 2)
+        if !app.buttons["fixture-link"].exists { app.buttons["chip"].tap() }
+        XCTAssertTrue(app.buttons["fixture-link"].waitForExistence(timeout: 5))
+        app.buttons["fixture-link"].tap()
+        see("Planner · idle", 15)
+    }
+
     func testThePhoneTriesItsPlannerItselfWhenAnotherMachineSaysItIsDown() {
         app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-planner", "away", "-plannerWakes", "YES"]
         app.launch()

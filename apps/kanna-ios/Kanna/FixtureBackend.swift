@@ -17,6 +17,7 @@ final class FixtureBackend: Backend {
     private let emptyQuiz: Bool
     private let writerFails: Bool
     private var unseen: Set<String> = []
+    private let slowDial = UserDefaults.standard.bool(forKey: "slowDial")
     private var missed = false
     private var written = 0
 
@@ -58,6 +59,7 @@ final class FixtureBackend: Backend {
     }
 
     func connect(to machine: Reach?) async throws -> Hello {
+        if down, slowDial { try? await Task.sleep(for: .seconds(4)) }
         if down { throw Refused(code: "unreachable", message: "down") }
         let name = machine?.name ?? "studio"
         guard ups[name] == true else { throw Refused(code: "unreachable", message: "Can't reach \(name)") }

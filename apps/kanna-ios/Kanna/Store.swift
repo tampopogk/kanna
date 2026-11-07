@@ -123,6 +123,7 @@ final class Store {
     }
 
     func path(_ machine: String) -> LinkPath {
+        guard linked != nil else { return .off }
         if machine == linked?.name { return linkPath }
         guard let found = machinesPage?.machines.first(where: { $0.name == machine }), found.up else { return .off }
         switch (found.path, found.lan) {
@@ -140,6 +141,7 @@ final class Store {
             wake()
         } else {
             generation += 1
+            waking = false
             backend.close()
             unlinked()
         }
@@ -184,6 +186,13 @@ final class Store {
         waking = true
         generation += 1
         let mine = generation
+        Task {
+            try? await Task.sleep(for: .seconds(40))
+            guard mine == generation, waking, linked == nil else { return }
+            generation += 1
+            waking = false
+            wake()
+        }
         Task {
             defer { if mine == generation { waking = false } }
             do {
