@@ -1,4 +1,4 @@
-# Agent Stats
+# Task Agent Stats
 
 **Status:** built · **Tests:** `stats.rs`, `tasks.rs`, `AgentStatusesTests`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) (`#picture,agents`) · **Builds on:** [Stats](stats.md), [agent status](agent-status.md) and its [stored status](agent-status.md#5-across-a-daemon-restart), [task history](database.md)
 

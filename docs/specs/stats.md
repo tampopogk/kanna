@@ -1,8 +1,8 @@
 # Stats
 
-**Status:** built · **Tests:** `stats.rs`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** [code quality metrics](code-quality-metrics.md), [agent stats](agent-stats.md)
+**Status:** built · **Tests:** `stats.rs`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) · **Builds on:** [Desk view](desk-view.md), [Machines tab](machine-links.md#5-paths-the-machines-tab-and-offline), [database](database.md), [quiz](quiz.md) · **Next:** [code quality metrics](code-quality-metrics.md), [task agent stats](agent-stats.md)
 
-**Stats** is a third fixed tab in the Desk view, after Desk and Machines: the project's numbers over the last 30 days. Each number is today's value over a small chart of the 30 days. Five sections: what you know of the code (from your quiz answers), what landed on main, how many tasks are open and how they moved, how agents spent their time ([agent stats](agent-stats.md)), and how good the code is ([code quality metrics](code-quality-metrics.md)). `kanna stats [--json]` prints the same numbers.
+**Stats** is a third fixed tab in the Desk view, after Desk and Machines: the project's numbers over the last 30 days. Each number is today's value over a small chart of the 30 days. Five sections: what you know of the code (from your quiz answers), what landed on main, how many tasks are open and how they moved, how agents spent their time ([task agent stats](agent-stats.md)), and how good the code is ([code quality metrics](code-quality-metrics.md)). `kanna stats [--json]` prints the same numbers.
 
 Agents write most of the code, so the numbers that matter are whether you keep up with it and how work flows through the Desk. Test counts and pass rates aren't here: every test has to pass, so they say nothing.
 
@@ -44,7 +44,7 @@ Agents write most of the code, so the numbers that matter are whether you keep u
 | Tasks | Open | tasks not done at the end of today, "+N in 30 days" (or −N, or no change) | the count at the end of each day (line), each day's made and done under it (paired bars) | whether the backlog is blowing up or converging |
 | | Made, Started, Ended | tasks made, first started and done today | per day (columns) | the flow through the Shelf and the Desk: made faster than ended means the Shelf grows |
 | | Made to done | median time, last 30 days | a dot per task on the day it was done, the 7-day median as a line | how long a task takes from asking to finished |
-| Agents | see [agent stats](agent-stats.md) | | | how long agents worked and waited on you |
+| Agents | see [task agent stats](agent-stats.md) | | | how long agents worked and waited on you |
 | Code quality | see [code quality metrics](code-quality-metrics.md) | | | how good the code on main is, and its trend |
 
 - **A kind** is a quiz answer's `kind`. **An area** is the answer's file's first two folders (`crates/kanna-daemon`, `docs/specs`), or its one folder, or the file at the root. The five areas with the most answers show, the rest as Other, last.
