@@ -33,13 +33,27 @@ public enum MachineFileURL {
         return parts.url ?? url
     }
 
-    public static func folder(of page: String) -> String {
-        ((page as NSString).standardizingPath as NSString).deletingLastPathComponent
+    public static func parts(_ path: String) -> [Substring]? {
+        guard path.hasPrefix("/") else { return nil }
+        var out: [Substring] = []
+        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
+            switch part {
+            case ".": continue
+            case "..": if out.popLast() == nil { return nil }
+            default: out.append(part)
+            }
+        }
+        return out
     }
 
-    public static func inside(_ path: String, _ folder: String) -> Bool {
-        let path = (path as NSString).standardizingPath
-        return path == folder || path.hasPrefix(folder == "/" ? "/" : folder + "/")
+    public static func folder(of page: String) -> [Substring]? {
+        guard let parts = parts(page), !parts.isEmpty else { return nil }
+        return Array(parts.dropLast())
+    }
+
+    public static func inside(_ path: String, _ folder: [Substring]) -> Bool {
+        guard let parts = parts(path), parts.count >= folder.count else { return false }
+        return zip(parts, folder).allSatisfy { Array($0.utf8) == Array($1.utf8) }
     }
 
     public static func mime(of path: String) -> String {
