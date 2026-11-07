@@ -2648,6 +2648,8 @@ impl Tasks {
                 match args.get("action").and_then(Value::as_str) {
                     Some("new") => this.adding(args, responder),
                     Some("resolve") => responder.reply(this.find(&args)),
+                    Some("locate") => responder.reply(this.locate(&args)),
+                    Some("sender") => responder.reply(this.sending_as(&args)),
                     Some("edit") => responder.reply(this.edit(&args)),
                     Some("ready") => this.mark_ready(args, responder),
                     Some("unready") => responder.reply(this.unmark(&args)),
@@ -2673,7 +2675,7 @@ impl Tasks {
                     Some("subscribe") => responder.reply(this.subscribe(&args, true)),
                     Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
                     Some("hearing") => responder.reply(this.hearing(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -2892,7 +2894,51 @@ impl Tasks {
         Ok(Map::from_iter([("task".to_string(), json!(id)), ("events".to_string(), Value::Array(events))]))
     }
 
+    fn locate(&self, args: &Value) -> Result<Map, KmuxError> {
+        let reference = string(args, "task").ok_or_else(|| bad("say which task or pane"))?;
+        let roster = self.machines();
+        let mut out = Map::from_iter([("me".to_string(), json!(roster.me.name))]);
+        if let Some(pane) = self.core.upgrade().and_then(|core| core.pane(reference)) {
+            out.insert("pane".into(), json!(pane.id));
+            return Ok(out);
+        }
+        let Some(id) = self.resolve(reference)? else { return Ok(out) };
+        let task = |name: Option<String>| json!({ "id": id, "short": self.short(&id), "name": opt(name.as_deref()) });
+        if self.is_open(&id) {
+            let (_, name, pane) = self.about(&id)?;
+            out.insert("task".into(), task(name));
+            out.insert("pane".into(), opt(pane.as_deref()));
+            return Ok(out);
+        }
+        let replica = self.replica.borrow();
+        let Some(record) = replica.births(&id).into_iter().find(|r| r.text("state").is_some_and(|s| s != "done")) else {
+            drop(replica);
+            out.insert("task".into(), task(self.known(&id).and_then(|e| e.name)));
+            out.insert("done".into(), json!(true));
+            return Ok(out);
+        };
+        let owner = record.text("owner").unwrap_or_default().to_string();
+        out.insert("task".into(), task(record.text("name").map(String::from)));
+        drop(replica);
+        if owner.is_empty() || owner == roster.me.key {
+            out.insert("pane".into(), Value::Null);
+            return Ok(out);
+        }
+        out.insert("machine".into(), json!(roster.name_of(&owner)));
+        let peer = roster.peers.iter().find(|p| p.key == owner);
+        out.insert("host".into(), opt(peer.map(|p| if p.name.is_empty() { p.key.as_str() } else { p.name.as_str() })));
+        Ok(out)
+    }
+
+    fn sending_as(&self, args: &Value) -> Result<Map, KmuxError> {
+        let (from, repo) = self.sender(args);
+        Ok(Map::from_iter([("from".to_string(), json!(from)), ("repo".to_string(), opt(repo.as_deref()))]))
+    }
+
     pub fn sender(&self, args: &Value) -> (String, Option<String>) {
+        if let Some(from) = string(args, "sender").filter(|from| db::is_task_id(from) || *from == PLANNER) {
+            return (from.to_string(), string(args, "repo").map(String::from));
+        }
         let Some(pane) = who(args) else { return (USER.into(), None) };
         if let Some(id) = self.task_of(pane) {
             let repo = self.known(&id).map(|e| e.repo);

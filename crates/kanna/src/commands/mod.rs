@@ -72,10 +72,13 @@ pub struct Flow {
     pub online: Option<fn(&Value, &mut Session, bool) -> Option<Result<(), Failure>>>,
     pub before: Option<fn(&mut Value, &mut Session) -> Result<Call, Failure>>,
     pub after: Option<fn(&Value, &mut Value, &mut Session, &mut Call) -> Result<(), Failure>>,
+    pub panes: &'static [&'static str],
 }
 
+pub const PANE: &[&str] = &["pane"];
+
 impl Flow {
-    pub const PLAIN: Flow = Flow { wire: None, unplaced: None, offline: None, online: None, before: None, after: None };
+    pub const PLAIN: Flow = Flow { wire: None, unplaced: None, offline: None, online: None, before: None, after: None, panes: &[] };
 }
 
 impl Command {
@@ -98,6 +101,7 @@ pub struct Call {
     pub listed: bool,
     pub waiting: Option<Value>,
     pub warnings: Vec<String>,
+    pub remote: Option<crate::route::Remote>,
 }
 
 pub const GROUPS: &[&str] = &["Panes", "Tabs and windows", "Information"];
