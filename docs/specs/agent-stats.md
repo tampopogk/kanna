@@ -4,7 +4,7 @@
 
 **The Agents section of the Stats tab:** how long task agents worked, how long they waited on you, how long finished work sat unlooked at, and how their turns went, over the last 30 days. It shows whether you are holding agents up: how much of their time went on work, and how much on waiting for you.
 
-The numbers come from a row in `task_events` for each change of a task agent's status. The planner, a run's stages and plain terminals have no rows. Only the Stats tab, on the Mac and the [phone](mobile-machines.md#7-stats), and `kanna stats` show them: `kanna task list` and the Desk's rows have no per-task numbers yet.
+The numbers come from a row in `task_events` for each change of a task agent's status. It covers task agents and you, one agent to one person: the planner, a run's stages and plain terminals have no rows. A run's stages are for the planned Pipelines section of Stats. Only the Stats tab, on the Mac and the [phone](mobile-machines.md#7-stats), and `kanna stats` show them: `kanna task list` and the Desk's rows have no per-task numbers yet.
 
 | Dark | Light |
 |---|---|
