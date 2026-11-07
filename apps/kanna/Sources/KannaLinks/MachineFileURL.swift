@@ -33,6 +33,15 @@ public enum MachineFileURL {
         return parts.url ?? url
     }
 
+    public static func folder(of page: String) -> String {
+        ((page as NSString).standardizingPath as NSString).deletingLastPathComponent
+    }
+
+    public static func inside(_ path: String, _ folder: String) -> Bool {
+        let path = (path as NSString).standardizingPath
+        return path == folder || path.hasPrefix(folder == "/" ? "/" : folder + "/")
+    }
+
     public static func mime(of path: String) -> String {
         let ext = (path as NSString).pathExtension.lowercased()
         switch ext {

@@ -314,11 +314,11 @@ final class Contents {
             if let machine = MachineIDs.machine(of: id), let page = MachineFileURL.page(url) {
                 url = page.absoluteString
                 unmap = MachineFileURL.file
-                files = MachineFiles { [weak self] (path: String, done: @escaping @MainActor (Result<Data, MachineFiles.Failure>) -> Void) in
+                files = MachineFiles(page: MachineFileURL.path(of: page) ?? "/") { [weak self] (path: String, done: @escaping @MainActor (Result<(real: String, data: Data), MachineFiles.Failure>) -> Void) in
                     guard let self else { return done(.failure(.init(message: "Kanna.app isn't showing this page"))) }
                     read(path, data: true, for: id) { result in
                         switch result {
-                        case .success(let file) where file.type == "file": done(.success(file.data ?? Data()))
+                        case .success(let file) where file.type == "file": done(.success((real: file.path, data: file.data ?? Data())))
                         case .success(let file): done(.failure(.init(message: "\(file.path) isn't a file")))
                         case .failure(let failure): done(.failure(.init(message: failure.message)))
                         }

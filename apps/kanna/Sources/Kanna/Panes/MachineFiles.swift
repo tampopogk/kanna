@@ -8,11 +8,14 @@ final class MachineFiles: NSObject, WKURLSchemeHandler {
         let message: String
     }
 
-    typealias Read = @MainActor (String, @escaping @MainActor (Result<Data, Failure>) -> Void) -> Void
+    typealias Read = @MainActor (String, @escaping @MainActor (Result<(real: String, data: Data), Failure>) -> Void) -> Void
     private let read: Read
+    private let folder: String
+    private var realFolder: String?
     private var live: Set<ObjectIdentifier> = []
 
-    init(read: @escaping Read) {
+    init(page: String, read: @escaping Read) {
+        folder = MachineFileURL.folder(of: page)
         self.read = read
     }
 
@@ -22,10 +25,17 @@ final class MachineFiles: NSObject, WKURLSchemeHandler {
         guard let path = MachineFileURL.path(of: task.request.url), let url = task.request.url else {
             return fail(task, key, NSURLErrorBadURL, "not a file on this page's machine")
         }
-        read(path) { [weak self] (result: Result<Data, Failure>) in
+        guard MachineFileURL.inside(path, folder) else {
+            return fail(task, key, NSURLErrorNoPermissionsToReadFile, "\(path) is outside the page's folder \(folder)")
+        }
+        read(path) { [weak self] (result: Result<(real: String, data: Data), Failure>) in
             guard let self, live.remove(key) != nil else { return }
             switch result {
-            case .success(let data):
+            case .success(let file) where realFolder.map { !MachineFileURL.inside(file.real, $0) } ?? false:
+                task.didFailWithError(NSError(domain: NSURLErrorDomain, code: NSURLErrorNoPermissionsToReadFile, userInfo: [NSLocalizedDescriptionKey: "\(path) leads outside the page's folder"]))
+            case .success(let file):
+                if realFolder == nil { realFolder = MachineFileURL.folder(of: file.real) }
+                let data = file.data
                 let headers = ["Content-Type": MachineFileURL.mime(of: path), "Content-Length": "\(data.count)", "Cache-Control": "no-store"]
                 task.didReceive(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers) ?? URLResponse(url: url, mimeType: nil, expectedContentLength: data.count, textEncodingName: nil))
                 task.didReceive(data)

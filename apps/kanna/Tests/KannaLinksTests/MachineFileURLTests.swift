@@ -25,6 +25,17 @@ struct MachineFileURLTests {
         #expect(MachineFileURL.file(URL(string: value)!).absoluteString == value)
     }
 
+    @Test func aPageReadsOnlyInsideItsFolder() {
+        let folder = MachineFileURL.folder(of: "/w/site/index.html")
+        #expect(folder == "/w/site")
+        #expect(MachineFileURL.inside("/w/site/img/logo.png", folder))
+        #expect(MachineFileURL.inside("/w/site/index.html", folder))
+        #expect(!MachineFileURL.inside("/w/site/../docs/spec.md", folder))
+        #expect(!MachineFileURL.inside("/w/sitemap.html", folder))
+        #expect(!MachineFileURL.inside("/Users/u/.ssh/id_ed25519", folder))
+        #expect(MachineFileURL.inside("/etc/hosts", "/"))
+    }
+
     @Test(arguments: [("a.html", "text/html"), ("app.js", "text/javascript"), ("s.css", "text/css"), ("i.png", "image/png"), ("d.svg", "image/svg+xml"), ("x.unknownext", "application/octet-stream")])
     func eachFileGetsItsType(_ path: String, _ mime: String) {
         #expect(MachineFileURL.mime(of: path) == mime)

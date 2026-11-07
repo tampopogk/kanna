@@ -7431,6 +7431,7 @@ remote_workspace_set() {
   id="$($run open web site/index.html --tab --name "page-$tag" --json | field pane.id)"
   wait_for 10 eval 'ask web "$id" | field text | grep -q "hello html"' && echo "open web FILE: shown" || echo "open web FILE: not shown: $(ask web "$id" | field notice)"
   wait_for 5 eval '[[ "$(ask web "$id" ",\"js\":\"JSON.stringify([getComputedStyle(document.getElementById(\\\"p\\\")).color, document.images[0].naturalWidth, document.body.dataset.ran])\"" | field value)" == *"255, 59, 48"*8*yes* ]]' && echo "open web FILE: its CSS, image and script loaded" || echo "open web FILE: $(ask web "$id" ",\"js\":\"JSON.stringify([getComputedStyle(document.getElementById(\\\"p\\\")).color, document.images[0].naturalWidth, document.body.dataset.ran])\"" | field value)"
+  [[ "$(ask web "$id" ",\"js\":\"(function(){try{var x=new XMLHttpRequest();x.open('GET','../docs/spec.md',false);x.send();return x.responseText.indexOf('keeper')>=0?'read':'refused'}catch(e){return 'refused'}})()\"" | field value)" == '"refused"' ]] && echo "open web FILE: a file outside its folder is refused" || echo "open web FILE: read a file outside its folder"
   [[ "$(listed "page-$tag" url)" == "file://$PWD/site/index.html" ]] && echo "open web FILE: the daemon keeps the file's URL" || echo "open web FILE: the daemon has $(listed "page-$tag" url)"
   $run markup "spec-$tag" | grep -qF "comments on in" && echo "markup: on" || echo "markup: refused"
   $run markup "page-$tag" | grep -qF "comments on in" && wait_for 5 eval '[[ "$(ask web "$id" | field markup) $(ask web "$id" | field agent)" == "True $agent$at" ]]' && echo "markup FILE.html: on, to the agent" || echo "markup FILE.html: $(ask web "$id" | field markup) $(ask web "$id" | field agent)"
@@ -7496,6 +7497,7 @@ open code: shown
 open diff: shown
 open web FILE: shown
 open web FILE: its CSS, image and script loaded
+open web FILE: a file outside its folder is refused
 open web FILE: the daemon keeps the file's URL
 markup: on
 markup FILE.html: on, to the agent
