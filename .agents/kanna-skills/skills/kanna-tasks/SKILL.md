@@ -56,6 +56,20 @@ kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ...
 - **When you're stale,** you get a message from `kanna` saying which task you build on moved. Merge its branch into yours (the message names it), rerun your tests, commit, then `kanna task ready set`. If the message says what you build on is stale itself, wait: you get another once it's ready again. `kanna task ready set` is refused until you've merged what moved.
 - **Don't merge into main while `kanna task list` says your task `merges after` another:** the work you build on isn't in main yet. When it lands, you get a message to merge main, and you're an ordinary task again.
 
+## Events
+
+Kanna tells you when something your work depends on changes, with a message from `kanna` at the end of your turn. Every task hears these from the start:
+
+| Event | You hear |
+|---|---|
+| `main-conflicts` | main moved and now conflicts with your branch: merge or rebase main, rerun your tests, then carry on with what you were doing. You aren't told again about the same files until you've merged |
+| `base-merged` | a stacked task's base landed in main (see [Ready and stale](#ready-and-stale)) |
+| `base-moved` | a stacked task's base moved, or is ready again |
+
+- **Subscribe to `main-moved`** (`kanna task subscribe main-moved`) when you need every move of main, conflict or not: you're building on code others are changing right now, or the user asks you to keep up with main. Each message lists the commits your branch hasn't merged. Unsubscribe when that part of the work is over.
+- **Leave the others on** unless the user asks: without `base-moved` you still go stale, you just aren't told.
+- **Check with `kanna task events`:** what you hear, and what you were sent.
+
 ## Show it in a tab
 
 When the user asks you to show them something (a diff, a file, a doc, a page, a log), open it in a new tab of your own window, not in the chat:
@@ -77,11 +91,12 @@ When the user asks you to show them something (a diff, a file, a doc, a page, a 
 
 ## Messages
 
-`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent once their turn is over, as a prompt `[message from YOUR-TASK "Name"] TEXT`, so it never lands mid-turn, and a stopped Shelf task runs for it. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
+`kanna task send TASK TEXT` leaves a message for another task's agent, and `kanna task send planner TEXT` for this repo's planning agent. Kanna hands it to their agent as `[message from YOUR-TASK "Name"] TEXT` without interrupting their work: Claude reads it at the next step of its turn, Codex once its turn is over. A stopped Shelf task runs for it, and one that hasn't started gets it with its first message. Only Claude and Codex agents take messages: for any other, `kanna task send` warns and the message waits.
 
 - **Send one only when the user asks you to.** When you're done or need the user, say so in your chat and end your turn: the Desk shows them the task is done or needs them, and they read your summary there.
 - **A message you get** starts with `[message from SENDER]`: answer it once, briefly, with `kanna task send SENDER "..."` (or `planner`), since the sender can't see your chat. A message from `user` came from the user: answer in the chat as usual.
 - **Keep it to what they need,** in one message: they read it in the middle of their own work.
+- **A message from `phone`** came from the user on their phone, who can't see this terminal. Answer only with `kanna phone`: `kanna phone say TEXT` (bold, inline code, lists), `kanna phone show FILE:LINE[-LAST]` for code (from your `HEAD`; `--hot N-M` marks lines), and `kanna phone ask TEXT --choice 'LABEL|WHY'…` for a question, which returns at once: end your turn and the tap or their words come as a new message. Never ask with a prompt tool: they can't answer it from the phone. Keep it short: it's a small screen.
 
 ## Present your work
 
@@ -102,7 +117,7 @@ If you stop to ask the user something before presenting the work, use that first
 
 ## Schedules
 
-When the user asks for an agent to be prompted at set times ("remind me every morning to…", "rerun the benchmark every 2h"), make a schedule rather than waiting yourself: `kanna schedule add RULE TARGET PROMPT --name NAME`. RULE is two words in local time (`daily 09:00`, `weekdays 18:00`, `mon,thu 10:30`, `every 2h`); TARGET is a task (your own ID for you, as `kanna task list` shows it) or `planner`, the repo's planning agent. At each time Kanna leaves that agent a message, as `kanna task send` does, which it gets when its turn is over as `[message from schedule NAME] PROMPT`. A message from `schedule NAME` is one of these: do what it says, as if the user had asked.
+When the user asks for an agent to be prompted at set times ("remind me every morning to…", "rerun the benchmark every 2h"), make a schedule rather than waiting yourself: `kanna schedule add RULE TARGET PROMPT --name NAME`. RULE is two words in local time (`daily 09:00`, `weekdays 18:00`, `mon,thu 10:30`, `every 2h`); TARGET is a task (your own ID for you, as `kanna task list` shows it) or `planner`, the repo's planning agent. At each time Kanna leaves that agent a message, as `kanna task send` does, which it gets when its turn is over as `[message from schedule NAME] PROMPT`. A message from `schedule NAME` is one of these: do what it says, as if the user had asked. When there's a result worth seeing, leave it once, briefly, with `kanna schedule reply NAME TEXT`: the user reads it beside that firing on the Desk's Schedules tab, and a schedule can't take a `kanna task send`.
 
 ## Commands
 
@@ -120,10 +135,15 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task activate TASK` | Make a Desk task the active one and show it (only when the user asks) |
 | `kanna task park [TASK]` | Show the Desk view of the task's Desk; the task stays active (only when the user asks) |
 | `kanna task shelve [TASK]` | Move a Desk task back to the Shelf as it is, running or stopped (only when the user asks) |
-| `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; it gets it when its turn is over (only when the user asks, or to answer a message) |
+| `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; Claude reads it at its next step, Codex when its turn is over (only when the user asks, or to answer a message) |
 | `kanna task messages [TASK]` | A task's messages, sent and received, and whether each was delivered |
+| `kanna task subscribe\|unsubscribe EVENT [TASK]` | Hear an event or stop hearing it ([Events](#events)); from your terminal, your task |
+| `kanna task events [TASK]` | What a task hears, and every event message it was sent |
 | `kanna task done [TASK]` | End a task, or take it off the Shelf; says which blocked tasks can start now |
+| `kanna read TASK`, `kanna screenshot TASK` | Another task's agent screen, as text or a PNG, on whichever of the user's machines runs it (no `--host`); every command that takes a pane takes a task the same way, and a pane ID (`term-5`) is this machine's |
 | `kanna schedule add RULE TARGET PROMPT [--name NAME]` | Leave a task, or `planner`, a message at set times |
 | `kanna schedule list` / `remove NAME\|ID` | List the schedules, or remove one |
+| `kanna schedule pause NAME\|ID` / `resume` / `run` | Pause one, resume it (a time missed while paused fires once), or leave its message now |
+| `kanna schedule reply NAME\|ID TEXT` | Leave a result beside the firing you were last delivered |
 
 Run them from your own terminal, in the repo: a new task belongs to the repo you're in.

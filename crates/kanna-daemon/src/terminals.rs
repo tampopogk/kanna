@@ -1,12 +1,12 @@
 use crate::pty::{self, Adopted, Heard, Spawned, Spawner, Spec};
+use crate::reports::Kept;
 use crate::reader::{Feed, Noticed, Reader, Replayed, Typing};
 use crate::wire::Wire;
 use crate::settings::Settings;
 use crate::status::Detector;
 use crate::store::{pane_number, Record, Saved, Store};
-use crate::Event;
 use kanna_mux::json::{json, Map, Value};
-use kanna_mux::{terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
+use kanna_mux::{pty_number, terminal_number, KmuxError, Pane, PaneHost, PaneState, PaneType, Responder, WeakCore};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kanna_vt::{Key, KeyError};
@@ -84,7 +84,7 @@ pub struct Terminals {
     pub core: RefCell<Option<WeakCore>>,
     spawner: Rc<dyn Spawner>,
     store: Store,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     env: Vec<(String, String)>,
     live: RefCell<HashMap<String, Terminal>>,
     starting: RefCell<HashMap<u64, Starting>>,
@@ -98,7 +98,7 @@ pub struct Terminals {
 }
 
 impl Terminals {
-    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: Sender<Event>, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
+    pub fn new(spawner: Rc<dyn Spawner>, store: Store, events: crate::runtime::Events, env: Vec<(String, String)>, wire: Arc<Wire>) -> Terminals {
         let settings = RefCell::new(store.load_settings());
         Terminals {
             settings,
@@ -136,17 +136,10 @@ impl Terminals {
     fn spec(&self, pane: &Pane, terminal: &str) -> Spec {
         let mut env: Vec<(String, Option<String>)> = vec![("KANNA_INSTANCE".into(), None), ("KANNA_PANE".into(), None)];
         env.extend(self.env.iter().map(|(k, v)| (k.clone(), Some(v.clone()))));
-        env.push(("KANNA_TERMINAL".into(), Some(terminal.to_string())));
+        env.push(("KANNA_TERMINAL".into(), Some(pane.id.clone())));
         let (cols, rows) = self.sizes.borrow().get(&pane.id).copied().unwrap_or((COLS, ROWS));
         let command = pane.command.clone().filter(|c| !c.is_empty());
         Spec { id: terminal.to_string(), command, cwd: pane.cwd.clone(), env, cols, rows }
-    }
-
-    pub fn renamed(&self, from: &str, to: &str) {
-        let size = self.sizes.borrow_mut().remove(from);
-        if let Some(size) = size {
-            self.sizes.borrow_mut().insert(to.into(), size);
-        }
     }
 
     pub fn unshown(&self, pane: &Pane) {
@@ -265,14 +258,14 @@ impl Terminals {
         Some(code)
     }
 
-    pub fn resize(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
+    pub fn resize(&self, conn: u64, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
         let mut live = self.live.borrow_mut();
         let Some(terminal) = live.get_mut(id) else { return self.resize_starting(id, cols, rows, width, height) };
         let mut feed = Feed::lock(&terminal.feed);
         if cols > MAX_SIDE || rows > MAX_SIDE {
             log!("kanna-daemon: refused to make {id} {cols}×{rows}: at most {MAX_SIDE} cells a side");
             let grid = grid(id, feed.cols, feed.rows);
-            self.wire.after_output(id, &mut feed, &grid);
+            self.wire.after_output(conn, id, &mut feed, &grid);
             return Some((feed.cols, feed.rows));
         }
         let (cols, rows) = (cols.max(1), rows.max(1));
@@ -287,8 +280,21 @@ impl Terminals {
                 let _ = pty.input.send(replies);
             }
         }
-        self.wire.after_output(id, &mut feed, &grid(id, cols, rows));
+        let grid = grid(id, cols, rows);
+        let viewers: Vec<u64> = feed.viewers.keys().copied().filter(|viewer| *viewer != conn).collect();
+        self.wire.after_output(conn, id, &mut feed, &grid);
+        for viewer in viewers {
+            self.wire.after_output(viewer, id, &mut feed, &grid);
+        }
         Some((cols, rows))
+    }
+
+    pub fn tell_grid(&self, conn: u64, id: &str) {
+        if let Some(terminal) = self.live.borrow().get(id) {
+            let mut feed = Feed::lock(&terminal.feed);
+            let grid = grid(id, feed.cols, feed.rows);
+            self.wire.after_output(conn, id, &mut feed, &grid);
+        }
     }
 
     fn resize_starting(&self, id: &str, cols: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
@@ -351,7 +357,7 @@ impl Terminals {
         }
     }
 
-    pub fn attach(&self, id: &str, shown: bool, history: Option<usize>, from: Option<u64>) -> Option<Attach> {
+    pub fn attach(&self, conn: u64, id: &str, shown: bool, history: Option<usize>, from: Option<u64>) -> Option<Attach> {
         let live = self.live.borrow();
         let t = live.get(id)?;
         let mut feed = Feed::lock(&t.feed);
@@ -369,14 +375,13 @@ impl Terminals {
                     grid(id, feed.cols, feed.rows),
                 ],
                 Err(error) => {
-                    feed.shown = false;
-                    feed.discard();
+                    feed.hide(conn);
                     return Some(Attach { snapshot: Err(error), exit_code: None });
                 }
             },
         };
         if shown {
-            self.wire.shown(id, &mut feed, &messages);
+            self.wire.shown(conn, id, &mut feed, &messages);
         }
         Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
     }
@@ -398,25 +403,21 @@ impl Terminals {
         ]))
     }
 
-    pub fn hide(&self, id: &str) {
+    pub fn hide(&self, conn: u64, id: &str) {
         if let Some(terminal) = self.live.borrow().get(id) {
-            let mut feed = Feed::lock(&terminal.feed);
-            feed.shown = false;
-            feed.discard();
+            Feed::lock(&terminal.feed).hide(conn);
         }
     }
 
-    pub fn hide_all(&self) {
+    pub fn hide_all(&self, conn: u64) {
         for terminal in self.live.borrow().values() {
-            let mut feed = Feed::lock(&terminal.feed);
-            feed.shown = false;
-            feed.discard();
+            Feed::lock(&terminal.feed).hide(conn);
         }
     }
 
-    pub fn after_output(&self, id: &str, message: &Value) {
+    pub fn after_output(&self, conn: u64, id: &str, message: &Value) {
         if let Some(terminal) = self.live.borrow().get(id) {
-            self.wire.after_output(id, &mut Feed::lock(&terminal.feed), message);
+            self.wire.after_output(conn, id, &mut Feed::lock(&terminal.feed), message);
         }
     }
 
@@ -445,6 +446,7 @@ impl Terminals {
         Some(core.with_panes(|panes| Saved {
             counter: panes.counter(),
             terminals: panes.terminals(),
+            ptys: panes.ptys(),
             records: panes
                 .iter()
                 .filter(|pane| pane.kind == PaneType::Term)
@@ -511,12 +513,17 @@ impl Terminals {
         self.store.stop();
     }
 
-    pub fn restore(&self, adopted: Vec<Adopted>) -> Restored {
+    pub fn running(&self) -> Vec<String> {
+        self.live.borrow().iter().filter(|(_, t)| t.running().is_some()).map(|(id, _)| id.clone()).collect()
+    }
+
+    pub fn restore(&self, adopted: Vec<Adopted>, mut reports: HashMap<String, Kept>) -> Restored {
         let saved = self.store.load();
-        let (mut counter, mut terminals) = (saved.counter, saved.terminals);
+        let (mut counter, mut terminals, mut numbered) = (saved.counter, saved.terminals, saved.ptys);
         for id in saved.records.iter().flat_map(|r| [&r.id, &r.pane, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
             counter = counter.max(pane_number(id).unwrap_or(0));
             terminals = terminals.max(terminal_number(id).unwrap_or(0));
+            numbered = numbered.max(pty_number(id).unwrap_or(0));
         }
         let mut ptys: HashMap<String, Adopted> = adopted.into_iter().map(|pty| (pty.id.clone(), pty)).collect();
         let mut restored = Restored::default();
@@ -534,7 +541,8 @@ impl Terminals {
                     pane.state = PaneState::Running;
                     exits.extend(pty.exit.map(|code| (record.keeper.clone(), pty.pid, code)));
                     restored.adopted += 1;
-                    self.adopt(&record.id, &record.pane, &record.keeper, pty, snapshot)
+                    let kept = reports.remove(&record.id).filter(|_| i64::from(pty.pid) == record.pid);
+                    self.adopt(&record.id, &record.pane, &record.keeper, pty, snapshot, kept)
                 }
                 None if record.state == PaneState::Exited => {
                     pane.state = PaneState::Exited;
@@ -557,16 +565,24 @@ impl Terminals {
             }
         }
         let mut unknown: Vec<Adopted> = ptys.into_values().collect();
-        unknown.sort_by_key(|pty| (terminal_number(&pty.id).or(pane_number(&pty.id)).unwrap_or(usize::MAX), pty.id.clone()));
+        unknown.sort_by_key(|pty| (terminal_number(&pty.id).or(pty_number(&pty.id)).or(pane_number(&pty.id)).unwrap_or(usize::MAX), pty.id.clone()));
         for pty in unknown {
-            let id = match terminal_number(&pty.id) {
-                Some(_) if !self.live.borrow().contains_key(&pty.id) => pty.id.clone(),
+            let free = !self.live.borrow().contains_key(&pty.id);
+            let id = match (terminal_number(&pty.id), pty_number(&pty.id)) {
+                (Some(_), _) | (_, Some(_)) if free => pty.id.clone(),
                 _ => {
+                    numbered += 1;
+                    format!("pty-{numbered}")
+                }
+            };
+            let pane_id = match terminal_number(&id) {
+                Some(_) => id.clone(),
+                None => {
                     terminals += 1;
                     format!("term-{terminals}")
                 }
             };
-            let mut pane = Pane::new(&id, None, PaneType::Term);
+            let mut pane = Pane::new(&pane_id, None, PaneType::Term);
             pane.terminal = Some(id.clone());
             pane.command = match pty.cmd.as_slice() {
                 [_, flags @ .., c, command] if c == "-c" && flags.first().is_some_and(|l| l == "-l") && flags.iter().all(|f| ["-l", "-i", "+m"].contains(&f.as_str())) => Some(command.clone()),
@@ -579,7 +595,7 @@ impl Terminals {
             pane.state = PaneState::Running;
             let keeper = pty.id.clone();
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
-            match self.adopt(&id, &id, &keeper, pty, None) {
+            match self.adopt(&id, &pane_id, &keeper, pty, None, None) {
                 Ok(terminal) => {
                     log!("kanna-daemon: took back the keeper's {keeper} as {id}, which the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
@@ -593,7 +609,7 @@ impl Terminals {
             }
         }
         if let Some(core) = self.core.borrow().as_ref().and_then(WeakCore::upgrade) {
-            core.install_panes(panes, counter, terminals);
+            core.install_panes(panes, counter, terminals, numbered);
         }
         let keep: Vec<String> = self.live.borrow().keys().cloned().collect();
         self.store.prune(&keep);
@@ -607,7 +623,7 @@ impl Terminals {
         restored
     }
 
-    fn adopt(&self, id: &str, pane: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>) -> std::io::Result<Terminal> {
+    fn adopt(&self, id: &str, pane: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>, kept: Option<Kept>) -> std::io::Result<Terminal> {
         let settings = self.settings();
         let restored = snapshot.and_then(|snapshot| match Feed::restore(&snapshot, &settings) {
             Ok(feed) => Some(feed),
@@ -629,6 +645,9 @@ impl Terminals {
                 screen.resize(id, cols, rows, 0, 0);
             }
             screen.unsaved |= fresh;
+            if let Some(kept) = kept {
+                screen.restore_statuses(kept.owner, kept.records);
+            }
             (cols, rows)
         };
         pty::set_size(&pty.master, cols, rows, 0, 0);
@@ -728,19 +747,11 @@ impl PaneHost for Terminals {
     }
 
     fn send(&self, pane: &Pane, text: &str, done: Responder) {
-        let line = {
-            let live = self.live.borrow();
-            live.get(Self::of(pane)).and_then(|terminal| {
-                let pty = terminal.running()?;
-                let feed = Feed::lock(&terminal.feed);
-                Some(Line { label: pane.label(), text: feed.paste(text), enter: feed.enter(), input: pty.input.clone() })
-            })
-        };
-        let Some(line) = line else { return done.reply(Err(KmuxError::new("bad_request", format!("{} has no running terminal", pane.label())))) };
-        let sent = std::thread::Builder::new().name(format!("kanna.send.{}", pane.id)).spawn(move || line.type_in(done));
-        if let Err(error) = sent {
-            log!("kanna-daemon: couldn't start sending text: {error}");
-        }
+        self.line(pane, text, true, done);
+    }
+
+    fn paste(&self, pane: &Pane, text: &str, done: Responder) {
+        self.line(pane, text, false, done);
     }
 
     fn send_keys(&self, pane: &Pane, names: Vec<String>, done: Responder) {
@@ -773,7 +784,7 @@ struct Presses {
 struct Line {
     label: String,
     text: Vec<u8>,
-    enter: Vec<u8>,
+    enter: Option<Vec<u8>>,
     input: Sender<Vec<u8>>,
 }
 
@@ -783,9 +794,12 @@ impl Line {
             if self.input.send(self.text).is_err() {
                 return done.reply(Err(KmuxError::new("bad_request", format!("{} ended before the text was sent", self.label))));
             }
-            std::thread::sleep(ENTER_GAP);
+            if self.enter.is_some() {
+                std::thread::sleep(ENTER_GAP);
+            }
         }
-        if self.input.send(self.enter).is_err() {
+        let Some(enter) = self.enter else { return done.reply(Ok(Map::new())) };
+        if self.input.send(enter).is_err() {
             return done.reply(Err(KmuxError::new("bad_request", format!("{} ended before Return was pressed", self.label))));
         }
         done.reply(Ok(Map::new()));
@@ -806,6 +820,22 @@ impl Presses {
 }
 
 impl Terminals {
+    fn line(&self, pane: &Pane, text: &str, enter: bool, done: Responder) {
+        let line = {
+            let live = self.live.borrow();
+            live.get(Self::of(pane)).and_then(|terminal| {
+                let pty = terminal.running()?;
+                let feed = Feed::lock(&terminal.feed);
+                Some(Line { label: pane.label(), text: feed.paste(text), enter: enter.then(|| feed.enter()), input: pty.input.clone() })
+            })
+        };
+        let Some(line) = line else { return done.reply(Err(KmuxError::new("bad_request", format!("{} has no running terminal", pane.label())))) };
+        let sent = std::thread::Builder::new().name(format!("kanna.send.{}", pane.id)).spawn(move || line.type_in(done));
+        if let Err(error) = sent {
+            log!("kanna-daemon: couldn't start sending text: {error}");
+        }
+    }
+
     fn presses(&self, pane: &Pane, names: &[String]) -> Result<Presses, KmuxError> {
         let keys = names.iter().map(|name| name.parse::<Key>()).collect::<Result<Vec<Key>, KeyError>>().map_err(|error| {
             let message = match error {
@@ -834,7 +864,15 @@ impl Terminals {
         let Spawned { pid, master } = spawned;
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
         let typing = Typing::default();
-        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone())?;
+        self.store.track(id, feed.clone());
+        if let Some(detector) = self.detector.borrow().as_ref() {
+            detector.watch(id, serial, feed.clone(), master.try_clone()?);
+        }
+        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone()).inspect_err(|_| {
+            if let Some(detector) = self.detector.borrow().as_ref() {
+                detector.forget(id, serial);
+            }
+        })?;
         let mut writer = File::from(master.try_clone()?);
         let written = typing.clone();
         std::thread::Builder::new().name(format!("kanna.write.{id}")).spawn(move || {
@@ -845,10 +883,6 @@ impl Terminals {
                 crate::reader::written(&written);
             }
         })?;
-        self.store.track(id, feed.clone());
-        if let Some(detector) = self.detector.borrow().as_ref() {
-            detector.watch(id, serial, feed.clone(), master.try_clone()?);
-        }
         self.wire.add(id, serial, reader.resumer()?, input.clone(), typing, feed.clone());
         Ok(Terminal {
             pane: pane.into(),
@@ -919,7 +953,7 @@ mod tests {
         let (spawns, spawned) = mpsc::channel();
         let (release, released) = mpsc::channel();
         let fake = fake_keeper(UnixListener::bind(dir.join("keeper.sock")).unwrap(), spawns, released);
-        let (events, _inbox) = mpsc::channel();
+        let (events, _inbox) = crate::runtime::channel();
         let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
         let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
         let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
@@ -929,6 +963,7 @@ mod tests {
         let opened = Rc::new(RefCell::new(None));
         let answer = opened.clone();
         core.handle(json!({"cmd": "open", "args": {"type": "term", "cmd": "sleep 30"}}), move |reply| *answer.borrow_mut() = Some(reply));
+        core.turn();
         spawned.recv_timeout(Duration::from_secs(5)).expect("the keeper was asked to spawn");
         let listed = core.handle_blocking(json!({"cmd": "list"}));
         assert_eq!(listed["ok"], true, "{listed}");
@@ -940,13 +975,13 @@ mod tests {
         while opened.borrow().is_none() {
             assert!(Instant::now() < by, "the spawn's reply never finished the start");
             assert!(terminals.heard(keeper.take().unwrap()).is_empty());
-            core.poll();
+            core.turn();
             std::thread::sleep(Duration::from_millis(5));
         }
         let reply = opened.borrow_mut().take().unwrap();
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(core.pane(&pane).map(|p| (p.state, p.pid)), Some((PaneState::Running, Some(4243))));
-        assert!(terminals.attach(core.pane(&pane).unwrap().terminal.as_deref().unwrap(), false, None, None).is_some());
+        assert!(terminals.attach(1, core.pane(&pane).unwrap().terminal.as_deref().unwrap(), false, None, None).is_some());
         drop((terminals, keeper));
         drop(fake);
         let _ = std::fs::remove_dir_all(&dir);

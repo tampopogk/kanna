@@ -1,11 +1,11 @@
 use kanna_mux::json::{json, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError};
 use sha2::{Digest, Sha256};
-use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::process::Command;
 
 const RECORD_VERSION: u64 = 2;
@@ -17,8 +17,8 @@ pub struct Agents {
     pub skills: Option<PathBuf>,
     pub socket: String,
     pub keys: Vec<String>,
-    pub asked_setup: Cell<bool>,
-    pub asked_update: Cell<bool>,
+    pub asked_setup: AtomicBool,
+    pub asked_update: AtomicBool,
 }
 
 #[derive(Default)]
@@ -91,28 +91,39 @@ pub fn home() -> PathBuf {
 
 impl Agents {
     pub fn new(home: PathBuf, skills: Option<PathBuf>, socket: String, keys: Vec<String>) -> Agents {
-        Agents { home, skills, socket, keys, asked_setup: Cell::new(false), asked_update: Cell::new(false) }
+        Agents { home, skills, socket, keys, asked_setup: AtomicBool::new(false), asked_update: AtomicBool::new(false) }
     }
 
     pub fn install(self, core: &CoreHandle) {
-        let agents = std::rc::Rc::new(self);
+        let agents = std::sync::Arc::new(self);
+        let turn = std::rc::Rc::new(tokio::sync::Mutex::new(()));
         core.add_command(
             "agents",
             std::rc::Rc::new(move |args, responder| {
-                let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
-                responder.reply(match args.get("action").and_then(Value::as_str) {
-                    Some("status") => agents.status(),
-                    Some("ask") => agents.ask(args.get("kind").and_then(Value::as_str).unwrap_or("")),
-                    Some("setup") => agents.setup(force).map(|report| reply("setup", &report)),
-                    Some("update") => agents.update(force).map(|report| reply("update", &report)),
-                    Some("decline") => agents.decline().map(|_| reply("decline", &Report::default())),
-                    Some("skip") => agents.skip().map(|_| reply("skip", &Report::default())),
-                    Some("resolved") => agents.resolved(args.get("path").and_then(Value::as_str).unwrap_or("")).map(|_| reply("resolved", &Report::default())),
-                    Some("remove") => agents.remove().map(|report| reply("remove", &report)),
-                    _ => Err(KmuxError::new("bad_request", "agents needs an action: status, ask, setup, update, decline, skip, resolved or remove")),
-                })
+                let (agents, turn) = (agents.clone(), turn.clone());
+                crate::runtime::spawn("agents", async move {
+                    let _turn = turn.lock().await;
+                    let answer = crate::runtime::off_loop(move || agents.answer(&args)).await;
+                    responder.reply(answer.unwrap_or_else(|| Err(KmuxError::new("failed", "agents stopped before answering"))));
+                });
             }),
         );
+    }
+
+    fn answer(&self, args: &Value) -> Result<Map, KmuxError> {
+        let agents = self;
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        match args.get("action").and_then(Value::as_str) {
+            Some("status") => agents.status(),
+            Some("ask") => agents.ask(args.get("kind").and_then(Value::as_str).unwrap_or("")),
+            Some("setup") => agents.setup(force).map(|report| reply("setup", &report)),
+            Some("update") => agents.update(force).map(|report| reply("update", &report)),
+            Some("decline") => agents.decline().map(|_| reply("decline", &Report::default())),
+            Some("skip") => agents.skip().map(|_| reply("skip", &Report::default())),
+            Some("resolved") => agents.resolved(args.get("path").and_then(Value::as_str).unwrap_or("")).map(|_| reply("resolved", &Report::default())),
+            Some("remove") => agents.remove().map(|report| reply("remove", &report)),
+            _ => Err(KmuxError::new("bad_request", "agents needs an action: status, ask, setup, update, decline, skip, resolved or remove")),
+        }
     }
 
     pub fn refresh(&self) {
@@ -151,11 +162,11 @@ impl Agents {
         let mut out = self.status()?;
         let record = self.record();
         let ask = match kind {
-            "setup" => record.setup.is_none() && !self.asked_setup.replace(true) && self.skills.is_some(),
+            "setup" => record.setup.is_none() && !self.asked_setup.swap(true, Ordering::Relaxed) && self.skills.is_some(),
             "update" => {
                 let changed = out.get("changes").and_then(Value::as_object).is_some_and(|c| !c.is_empty());
                 let skipped = out.get("skipped").and_then(Value::as_bool).unwrap_or(false);
-                record.setup == Some(true) && changed && !skipped && !self.asked_update.replace(true)
+                record.setup == Some(true) && changed && !skipped && !self.asked_update.swap(true, Ordering::Relaxed)
             }
             _ => return Err(KmuxError::new("bad_request", "ask needs a kind: setup or update")),
         };

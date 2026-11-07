@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 pub type Send = Box<dyn FnMut(Value) -> Value>;
 
-const KANNA_DIFFERS: [(&str, &str); 16] = [
+const KANNA_DIFFERS: [(&str, &str); 17] = [
     ("dock.json: move docks a pane, moves the docked pane to the other edge, and undocks it into a tab", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: docking where a pane is docked sends that one to a new tab, not shown", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: moving the docked pane to another window or beside a pane undocks it; dropping on it swaps", "a docked pane is a task's agent, in its own workspace, not a window's"),
@@ -21,6 +21,7 @@ const KANNA_DIFFERS: [(&str, &str); 16] = [
     ("dock.json: arrange arranges the shown tab; the docked pane is not part of a layout", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: the docked pane is saved with its window and comes back; a window with only a docked pane too", "a docked pane is a task's agent, in its own workspace, not a window's"),
     ("dock.json: restoring a dock repairs its edge and width, and refuses an unknown or twice-placed pane", "a docked pane is a task's agent, in its own workspace, not a window's"),
+    ("contents.json: content IDs: each kind counts on its own; restarting a terminal makes a new one with a new ID in its place, and its name goes with it", "a pane keeps its ID through a restart, with a new run behind it"),
     ("persistence.json: a saved layout comes back: windows, tabs, splits, sizes, names, focus, zoom and what each pane shows; where windows are and how large panes are drawn are the app's, not saved here", "a request that names no window, with several windows, is refused: which window is in front is the app's, not the daemon's"),
     ("workspaces.json: a free window stays free: freeing it changes nothing, and assign needs a window and a workspace that are there", "whether a window shows is each app's, so replies don't say shown"),
 ];

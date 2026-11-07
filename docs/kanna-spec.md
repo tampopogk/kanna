@@ -61,9 +61,10 @@ flowchart TB
 | [Restarting the daemon](specs/daemon-restart.md) | Terminals on disk, adopting the keeper's ptys |
 | [Pane sizes](specs/pane-sizes.md) | A program sees its view's size across a relaunch and a restart, and on the Shelf and in the backlog |
 | [The daemon's socket](specs/daemon-socket.md) | The app keeps `kanna.sock`'s listener, so it answers through a daemon restart |
+| [The daemon's runtime](specs/daemon-runtime.md) | The main loop on tokio: handlers await, nothing blocks it |
 | [The layout](specs/layout.md) | One layout model in the app; layout steps; saving, restoring; working with the app closed |
 | [Windows, tabs and splits](specs/windows.md) · [menus](specs/menus.md) · [zoom](specs/zoom.md) · [docked pane](specs/docked-pane.md) | The windows, their actions and debug commands |
-| [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) · [markdown diff](specs/markdown-diff.md) | The app's panes, lent to the daemon |
+| [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) · [markdown diff](specs/markdown-diff.md) · [scroll anchor](specs/scroll-anchor.md) | The app's panes, lent to the daemon |
 | [Code viewer](specs/code-viewer.md) · [code tour](specs/code-tour.md) | A highlighted code pane; the agent commenting on code |
 | [Diff viewer](specs/diff-viewer.md) | `git diff` in a native pane beside the agent, following the worktree |
 | [Commit graph](specs/commit-graph.md) | `git log` as a graph in a native pane, with task branches labelled and long merges folded |
@@ -94,7 +95,7 @@ flowchart TB
 |---|---|
 | [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [drag to the Shelf](specs/desk-row-shelve.md) · [Shelf row status](specs/shelf-row-status.md) · [internal names](specs/internal-names.md) · [new Desk](specs/new-desk.md) · [a Desk's project](specs/desk-project.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
 | [Project folder](specs/project-folder.md) | Every project lives in `~/.kanna-v4/repos/OWNER/NAME`; `kanna project import` copies one there |
-| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [stacked tasks](specs/stacked-tasks.md) · [task IDs](specs/task-ids.md) · [task list](specs/task-list.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) · [Desk news for the planner](specs/desk-news.md) | One agent in one worktree; the Shelf |
+| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [stacked tasks](specs/stacked-tasks.md) · [task IDs](specs/task-ids.md) · [task list](specs/task-list.md) · [task scripts](specs/task-scripts.md) · [durable panes](specs/durable-panes.md) · [agent messaging](specs/agent-messaging.md) · [Desk news for the planner](specs/desk-news.md) | One agent in one worktree; the Shelf |
 | [Software factory](specs/software-factory.md) · [Kojo](specs/kojo.md) · [build order](specs/software-factory-build-order.md) | Any task's agent builds a change through a pipeline of stages (agents, commands, your approval, merges), driven by the daemon in workers whose terminals are the task's background terminals, with every run measured |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Toasts](specs/toasts.md) | Notices the daemon raises in the app, such as messages that wait |
@@ -102,7 +103,9 @@ flowchart TB
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
 | [Codex's app-server](specs/codex-app-server.md) | Every Codex runs attached to a server of its own, Kanna's door for messages |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |
+| [Kanna on the phone](specs/mobile-app.md) | A native iPhone app: chat with the repo's planner, the Shelf, Stats, Machines, and a quiz map |
 | [Stats](specs/stats.md) | The project's numbers over 30 days: quiz, main, tasks |
+| [Schedules tab](specs/schedules-tab.md) | Every repo's schedules, their firings, and pause, run and remove |
 | [The database](specs/database.md) | Tasks and their history in `kanna.db` |
 | [Settings](specs/settings.md) | Kanna's own settings |
 
@@ -113,5 +116,6 @@ flowchart TB
 | [Deployment target](specs/deployment-target.md) | Everything built for the app's macOS |
 | [Build speed](specs/build-speed.md) · [build architectures](specs/build-architectures.md) · [build targets](specs/build-targets.md) · [build store](specs/build-store.md) | Fast worktree builds; arm64 and x86_64; worktree builds on another volume; shared pinned builds, one profile, eviction |
 | [Release](specs/release.md) | Signed, notarized DMGs published on GitHub |
+| [Auto update](specs/auto-update.md) | Ask-first updates on macOS with Sparkle |
 | [Privacy prompts](specs/privacy-prompts.md) | What macOS asks Kanna for, and dev builds signed so the answers last |
 | [Kanna Cloud: installing a host](specs/cloud-provisioning.md) | Ubuntu on a Kanna Cloud R720 through its iDRAC alone |

@@ -83,8 +83,8 @@ stateDiagram-v2
 | | `Windows/Machines.swift` | "keep their places on the Shelf" → "on the Desk" |
 | Menus | `Windows/Menus.swift` | Task menu: Park/Unpark → Show Desk / Show Active Task (⌘.), Move to Backlog → Move to Shelf, Pull Shelf Task N → Desk Task N; ⌘. becomes the toggle |
 | Toasts | `Windows/Toasts.swift` | none visible; a click makes a Desk task active, or moves a Shelf task to the Desk |
-| CLI help | `crates/kanna/src/commands.rs` | `task` summary, usage, notes, examples; `workspace` and `open` notes ("on a Desk, on the Shelf or in the backlog") |
-| CLI output | `crates/kanna/src/output.rs` | `task list` WHERE and time; `task` replies (§3); workspace places "on the Shelf" → "on the Desk", "in the backlog" → "on the Shelf" |
+| CLI help | `crates/kanna/src/commands/task.rs`, `workspace.rs`, `open.rs` | `task` summary, usage, notes, examples; `workspace` and `open` notes ("on a Desk, on the Shelf or in the backlog") |
+| CLI output | `crates/kanna/src/commands/task.rs`, `workspace.rs` | `task list` WHERE and time; `task` replies (§3); workspace places "on the Shelf" → "on the Desk", "in the backlog" → "on the Shelf" |
 | Errors | `crates/kanna-daemon/src/tasks.rs`, `AppDesk.swift`, `lib.rs` | "N tasks on the Shelf: move one to the backlog with `kanna task defer`", "isn't on this app's Shelf", "no backlog task", "isn't a task: … a Desk or the Shelf, or in the backlog" |
 | Daemon log | `tasks.rs` | "runs in the backlog", "is on mac's Shelf" |
 | Config | `schemas/config.schema.json`, `tasks.rs` `runners()`, `lib.rs` `CONFIG_HELP` | `shelf.runners`, described as the Shelf's; `backlog.runners` stays in the schema marked as the old name and is read when `shelf.runners` isn't set in that file; the planning terminal's description |

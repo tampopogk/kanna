@@ -44,9 +44,9 @@ To walk the user through a change (yours, or a diff) that crosses more than one 
 
 ```calltree
 kanna CLI
-main          crates/kanna/src/lib.rs:17                kanna task name t12 "New name"
-  parse       crates/kanna/src/commands.rs:440          task name TASK NAME → request
-  wire        crates/kanna/src/lib.rs:316               task name with a TASK → tasks
+main          crates/kanna/src/lib.rs:14                kanna task name t12 "New name"
+  parse       crates/kanna/src/commands/task.rs:145     task name TASK NAME → request
+  wire        crates/kanna/src/commands/task.rs:272     task name with a TASK → tasks
     -> socket {"cmd":"tasks","action":"name"}
 kanna-daemon
     Tasks::name    crates/kanna-daemon/src/tasks.rs:1043  finds the task on the Shelf
