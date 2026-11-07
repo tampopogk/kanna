@@ -2937,7 +2937,7 @@ impl Tasks {
 
     fn comment_recipient(&self, pane: &str) -> Option<(String, String)> {
         let core = self.core.upgrade()?;
-        let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none());
+        let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none() || self.coming_up(pane, &channel).is_some());
         if let Some(id) = self.task_of(pane).filter(|id| self.is_open(id)) {
             let entry = self.known(&id)?;
             let knocks = messages::AGENTS.contains(&program(&entry.agent));
@@ -6018,25 +6018,29 @@ mod tests {
         }, |why| why).unwrap();
         let core = kanna_mux::Core::default();
         let mut panes = vec![];
-        for (id, status) in [("term-7", None), ("term-8", None), ("term-9", Some("idle"))] {
+        for (id, status) in [("term-7", None), ("term-8", None), ("term-9", Some("idle")), ("term-10", Some("idle")), ("term-11", Some("idle"))] {
             let mut pane = Pane::new(id, None, kanna_mux::PaneType::Term);
             pane.state = PaneState::Running;
             pane.status = status.map(String::from);
             panes.push(pane);
         }
-        core.install_panes(panes, 0, 9, 0);
+        core.install_panes(panes, 0, 11, 0);
         let (events, _inbox) = crate::runtime::channel();
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
         tasks.install(&core);
-        *tasks.channel.borrow_mut() = Some(Box::new(|pane| (pane != "term-7").then(|| Channel::Claude(Err("no socket".into())))));
-        for (id, pane) in [("task-1dfb12c2", "term-7"), ("task-2e0c34bb", "term-8"), ("task-3f1d56cc", "term-9")] {
+        *tasks.channel.borrow_mut() = Some(Box::new(|pane| (pane != "term-7").then(|| if pane == "term-11" { Channel::Other("copilot".into()) } else { Channel::Claude(Err("no socket".into())) })));
+        *tasks.age.borrow_mut() = Some(Box::new(|pane| Some(if pane == "term-9" { messages::GRACE } else { messages::GRACE - Duration::from_millis(1) })));
+        for (id, pane) in [("task-1dfb12c2", "term-7"), ("task-2e0c34bb", "term-8"), ("task-3f1d56cc", "term-9"), ("task-4a2e78dd", "term-10"), ("task-5b3f90ee", "term-11")] {
             tasks.entries.borrow_mut().push(Entry { id: id.into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some(pane.into()), ..Default::default() });
         }
         let comment = |pane: &str| core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": pane, "text": "[kanna comment c1 · a.md:3]\nHello", "doc": doc, "thread": "c1" } }));
         assert_eq!(comment("term-7")["state"], json!("waiting"), "its program isn't known yet");
         assert_eq!(comment("term-8")["state"], json!("waiting"), "its socket isn't up yet");
         let typed = comment("term-9");
-        assert_ne!(typed["state"], json!("waiting"), "started, reporting, and no door: {typed}");
+        assert_ne!(typed["state"], json!("waiting"), "past its grace, reporting, and no door: {typed}");
+        assert_eq!(comment("term-10")["state"], json!("waiting"), "reporting already, but inside its grace");
+        let typed = comment("term-11");
+        assert_ne!(typed["state"], json!("waiting"), "it can never take messages, however young: {typed}");
         fs::remove_dir_all(&state).unwrap();
     }
 
