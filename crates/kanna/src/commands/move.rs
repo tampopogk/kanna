@@ -52,5 +52,5 @@ pub const COMMAND: Command = Command {
         Ok(Value::Object(out))
     },
     show: |_, reply| output::moved(reply),
-    flow: Flow::PLAIN,
+    flow: Flow { panes: &["pane", "to"], ..Flow::PLAIN },
 };
