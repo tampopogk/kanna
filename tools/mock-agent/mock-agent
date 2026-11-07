@@ -227,8 +227,23 @@ def inbound(text):
     peer(re.sub(r"<\\(?=/cross-session-message)", "<", envelope.group(2)) if envelope else text)
 
 
-def peer(text):
+BUSY = False
+HELD = []
+TAKEN = None
+
+
+def shown(text):
     out("\x1b[J\r\n" + "\r\n".join(f"peer: {l}" for l in text.splitlines()) + "\r\n")
+    if TAKEN:
+        with open(TAKEN, "a") as f:
+            f.write("taken\n")
+
+
+def peer(text):
+    if BUSY:
+        HELD.append(text)
+        return
+    shown(text)
     reported("working")
     orders = re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M)
     if orders:
@@ -236,14 +251,17 @@ def peer(text):
             answering(order)
     else:
         work(1)
-    reported("idle")
+    if not BUSY:
+        reported("idle")
     composer()
 
 
 def remote(args):
+    global TAKEN
     if "--remote" not in args:
         return
     turns = args[args.index("--remote") + 1].removeprefix("unix://") + ".turns"
+    TAKEN = turns + ".taken"
 
     def follow():
         seen = 0
@@ -262,7 +280,7 @@ def app_server(args):
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(path)
     server.listen()
-    atexit.register(lambda: [os.remove(p) for p in (path, path + ".turns") if os.path.exists(p)])
+    atexit.register(lambda: [os.remove(p) for p in (path, path + ".turns", path + ".turns.taken") if os.path.exists(p)])
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         conn, _ = server.accept()
@@ -295,11 +313,20 @@ def rpc(conn, turns):
             result = {"data": ["mock-title", "mock-session"]}
         elif method == "thread/read":
             id = call["params"]["threadId"]
-            result = {"thread": {"id": id, "ephemeral": id == "mock-title"}}
+            result = {"thread": {"id": id, "ephemeral": id == "mock-title", "status": {"type": "idle"}}}
         elif method == "turn/start":
             with open(turns, "a") as f:
                 f.write(json.dumps(call["params"]["input"][0]["text"]) + "\n")
             result = {"turn": {"id": "mock-turn"}}
+        elif method == "thread/queue/add":
+            with open(turns, "a") as f:
+                f.write(json.dumps(call["params"]["input"][0]["text"]) + "\n")
+            added = len(open(turns).read().splitlines())
+            result = {"queuedSubmission": {"id": f"mock-{added}"}}
+        elif method == "thread/queue/list":
+            taken = len(open(turns + ".taken").read().splitlines()) if os.path.exists(turns + ".taken") else 0
+            added = len(open(turns).read().splitlines()) if os.path.exists(turns) else 0
+            result = {"data": [{"id": f"mock-{n}"} for n in range(taken + 1, added + 1)]}
         else:
             result = {}
         data = json.dumps({"jsonrpc": "2.0", "id": call["id"], "result": result}).encode()
@@ -416,12 +443,20 @@ def reported(state):
 
 
 def answer(line):
+    global BUSY
     if line.split()[:1] in (["report"], ["later"]):
         return answering(line)
     reported("working")
+    BUSY = True
     try:
         return answering(line)
     finally:
+        while HELD:
+            text = HELD.pop(0)
+            shown(text)
+            for order in re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M):
+                answering(order)
+        BUSY = False
         reported("idle")
 
 
