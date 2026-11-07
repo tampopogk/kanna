@@ -31,6 +31,11 @@ struct MainTabs: View {
                     ShelfView().navigationDestination(for: String.self) { TaskDetail(id: $0) }
                 }
             }
+            Tab("Quiz", systemImage: "map", value: AppTab.quiz) {
+                NavigationStack(path: $s.quizPath) {
+                    QuizHome().navigationDestination(for: String.self) { SubsystemView(name: $0) }
+                }
+            }
             Tab("Stats", systemImage: "chart.bar", value: AppTab.stats) {
                 NavigationStack { StatsView() }
             }
@@ -59,6 +64,7 @@ struct MainTabs: View {
         }
         .animation(.snappy, value: store.showChipPop)
         .sheet(isPresented: $s.showRepos) { RepoSheet() }
+        .fullScreenCover(isPresented: $s.roundOpen) { RoundView() }
         .alert("Couldn't do that", isPresented: Binding(get: { store.pickError != nil }, set: { if !$0 { store.pickError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {

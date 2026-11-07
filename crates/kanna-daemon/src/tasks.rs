@@ -348,6 +348,8 @@ fn told_task(message: Option<&str>) -> String {
 
 pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on what landed on main.";
 
+pub const WRITER_ROLE: &str = "You are the Kanna quiz writer, on main: write the next round ahead, as the kanna-quiz skill's Writing ahead says, then end your turn.";
+
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
 pub fn started_as(program: &str, role: &str, context: Option<u64>, prompts: Prompts) -> String {
     started_in(program, role, context, prompts, None)
@@ -958,6 +960,7 @@ pub struct Tasks {
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
+    pub age: RefCell<Option<Box<dyn Fn(&str) -> Option<Duration>>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     pub background: RefCell<Option<Box<dyn Fn(&str) -> Option<Vec<Process>>>>>,
@@ -1146,6 +1149,7 @@ impl Tasks {
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
             on_delivered: RefCell::default(),
+            age: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -2940,8 +2944,8 @@ impl Tasks {
         let status = pane.as_deref().and_then(|pane| self.core.upgrade()?.pane(pane)?.status).as_deref().and_then(Status::parse);
         let channel = pane.as_deref().and_then(|pane| self.channel(pane));
         let soon = channel.as_ref().zip(pane.as_deref()).is_some_and(|(channel, pane)| matches!(channel, Channel::Claude(_)) && self.undeliverable(channel).is_none() && messages::mid_turn(channel, status, self.attested(pane, std::slice::from_ref(&message))));
-        let warning = match channel {
-            Some(channel) => self.undeliverable(&channel),
+        let warning = match channel.as_ref().zip(pane.as_deref()) {
+            Some((channel, pane)) => self.undeliverable(channel).filter(|_| self.coming_up(pane, channel).is_none()),
             None => agent.filter(|agent| !messages::AGENTS.contains(&agent.as_str())).map(|agent| format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))).or_else(|| (running && status.is_none()).then(|| messages::UNKNOWN_STATUS.to_string())),
         };
         if let Some(why) = &warning {
@@ -2977,7 +2981,7 @@ impl Tasks {
 
     fn comment_recipient(&self, pane: &str) -> Option<(String, String)> {
         let core = self.core.upgrade()?;
-        let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none());
+        let door = |pane: &str| self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none() || self.coming_up(pane, &channel).is_some());
         if let Some(id) = self.task_of(pane).filter(|id| self.is_open(id)) {
             let entry = self.known(&id)?;
             let knocks = messages::AGENTS.contains(&program(&entry.agent));
@@ -3092,7 +3096,7 @@ impl Tasks {
     }
 
     fn has_mail(&self, pane: &str) -> bool {
-        self.task_of(pane).is_some_and(|id| self.waiting.borrow().iter().any(|m| m.recipient == id)) && self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none())
+        self.task_of(pane).is_some_and(|id| self.waiting.borrow().iter().any(|m| m.recipient == id)) && self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none() || self.coming_up(pane, &channel).is_some())
     }
 
     fn deliver(self: &Rc<Self>, core: &CoreHandle, now: Instant) -> Option<Instant> {
@@ -3137,18 +3141,28 @@ impl Tasks {
             match ready.at() {
                 Some(at) if at <= now => match self.undeliverable(&channel) {
                     Some(why) => {
-                        self.warn(&pane, why);
-                        next = Some(next.map_or(now + messages::RETRY, |n: Instant| n.min(now + messages::RETRY)));
+                        let coming_up = self.coming_up(&pane, &channel);
+                        let retry = now + coming_up.map_or(messages::RETRY, |left| left.min(messages::RETRY));
+                        if coming_up.is_none() {
+                            self.warn(&pane, why);
+                        }
+                        next = Some(next.map_or(retry, |n: Instant| n.min(retry)));
                     }
                     None => self.hand_over(pane, list, channel, true),
                 },
                 Some(at) => next = Some(next.map_or(at, |n: Instant| n.min(at))),
                 None => match self.undeliverable(&channel) {
-                    Some(why) => {
-                        if let Some(at) = ready.unknown() {
-                            self.unknown(&pane, &why, at, now, &mut next);
+                    Some(why) => match self.coming_up(&pane, &channel) {
+                        Some(left) => {
+                            let retry = now + left.min(messages::RETRY);
+                            next = Some(next.map_or(retry, |n: Instant| n.min(retry)));
                         }
-                    }
+                        None => {
+                            if let Some(at) = ready.unknown() {
+                                self.unknown(&pane, &why, at, now, &mut next);
+                            }
+                        }
+                    },
                     None if messages::mid_turn(&channel, ready.status(), self.attested(&pane, &list)) => {
                         if ready.since() <= now {
                             self.hand_over(pane, list, channel, false);
@@ -3255,6 +3269,12 @@ impl Tasks {
 
     fn channel(&self, pane: &str) -> Option<Channel> {
         self.channel.borrow().as_ref().and_then(|channel| channel(pane))
+    }
+
+    fn coming_up(&self, pane: &str, channel: &Channel) -> Option<Duration> {
+        channel.socket()?.err()?;
+        let age = self.age.borrow().as_ref().and_then(|age| age(pane))?;
+        messages::GRACE.checked_sub(age).filter(|left| !left.is_zero())
     }
 
     fn permissions(&self, pane: &str) -> Option<&'static str> {
@@ -6363,6 +6383,23 @@ mod tests {
         assert!(t.warned.borrow().is_empty());
     }
 
+    #[test]
+    fn a_just_started_claude_with_no_status_and_no_socket_waits_unwarned_through_its_grace() {
+        let t = Inbox::new("unknown-grace", None, messages::BYPASS);
+        *t.door.borrow_mut() = Channel::Claude(Err("no socket yet".into()));
+        let age = Rc::new(std::cell::Cell::new(Duration::from_secs(1)));
+        let old = age.clone();
+        *t.tasks.age.borrow_mut() = Some(Box::new(move |_| Some(old.get())));
+        t.leave("hello", None);
+        let core = t.tasks.core.upgrade().unwrap();
+        let later = Instant::now() + messages::UNKNOWN + Duration::from_secs(1);
+        assert!(t.tasks.deliver(&core, later).is_some_and(|next| next <= later + messages::RETRY), "it looks again while it starts");
+        assert!(t.warned.borrow().is_empty(), "{:?}", t.warned.borrow());
+        age.set(messages::GRACE);
+        t.tasks.deliver(&core, later);
+        assert_eq!(t.warned.borrow().len(), 1);
+    }
+
     fn queued(t: &Inbox, submission: &str) -> Message {
         t.leave("hello", None);
         let message = t.tasks.waiting.borrow().last().cloned().unwrap();
@@ -6428,25 +6465,29 @@ mod tests {
         }, |why| why).unwrap();
         let core = kanna_mux::Core::default();
         let mut panes = vec![];
-        for (id, status) in [("term-7", None), ("term-8", None), ("term-9", Some("idle"))] {
+        for (id, status) in [("term-7", None), ("term-8", None), ("term-9", Some("idle")), ("term-10", Some("idle")), ("term-11", Some("idle"))] {
             let mut pane = Pane::new(id, None, kanna_mux::PaneType::Term);
             pane.state = PaneState::Running;
             pane.status = status.map(String::from);
             panes.push(pane);
         }
-        core.install_panes(panes, 0, 9, 0);
+        core.install_panes(panes, 0, 11, 0);
         let (events, _inbox) = crate::runtime::channel();
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
         tasks.install(&core);
-        *tasks.channel.borrow_mut() = Some(Box::new(|pane| (pane != "term-7").then(|| Channel::Claude(Err("no socket".into())))));
-        for (id, pane) in [("task-1dfb12c2", "term-7"), ("task-2e0c34bb", "term-8"), ("task-3f1d56cc", "term-9")] {
+        *tasks.channel.borrow_mut() = Some(Box::new(|pane| (pane != "term-7").then(|| if pane == "term-11" { Channel::Other("copilot".into()) } else { Channel::Claude(Err("no socket".into())) })));
+        *tasks.age.borrow_mut() = Some(Box::new(|pane| Some(if pane == "term-9" { messages::GRACE } else { messages::GRACE - Duration::from_millis(1) })));
+        for (id, pane) in [("task-1dfb12c2", "term-7"), ("task-2e0c34bb", "term-8"), ("task-3f1d56cc", "term-9"), ("task-4a2e78dd", "term-10"), ("task-5b3f90ee", "term-11")] {
             tasks.entries.borrow_mut().push(Entry { id: id.into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some(pane.into()), ..Default::default() });
         }
         let comment = |pane: &str| core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": pane, "text": "[kanna comment c1 · a.md:3]\nHello", "doc": doc, "thread": "c1" } }));
         assert_eq!(comment("term-7")["state"], json!("waiting"), "its program isn't known yet");
         assert_eq!(comment("term-8")["state"], json!("waiting"), "its socket isn't up yet");
         let typed = comment("term-9");
-        assert_ne!(typed["state"], json!("waiting"), "started, reporting, and no door: {typed}");
+        assert_ne!(typed["state"], json!("waiting"), "past its grace, reporting, and no door: {typed}");
+        assert_eq!(comment("term-10")["state"], json!("waiting"), "reporting already, but inside its grace");
+        let typed = comment("term-11");
+        assert_ne!(typed["state"], json!("waiting"), "it can never take messages, however young: {typed}");
         fs::remove_dir_all(&state).unwrap();
     }
 

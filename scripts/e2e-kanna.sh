@@ -1627,12 +1627,14 @@ comment_agents() {
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/bin/claude"
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/copilot"
   printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/claude" && chmod +x "$comment_fake/claude"
+  mkdir -p "$comment_fake/slow"
+  printf '#!/bin/sh\nKANNA_MOCK_INBOX_DELAY=10 KANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/slow/claude" && chmod +x "$comment_fake/slow/claude"
 }
 comment_held() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
 print((t.get("held") or "-") if t.get("running") else "stopped")' "$1"; }
 comment_claude() {
-  comment_task="$(cd "$comment_repo" && kanna --json task new "$1" "work 12" --agent "$comment_fake/claude" | field task.id)" || return 1
+  comment_task="$(cd "$comment_repo" && kanna --json task new "$1" "work ${3:-12}" --agent "${2:-$comment_fake/claude}" | field task.id)" || return 1
   check wait_for 15 eval '[[ "$(comment_held "$comment_task")" == term-* ]]' || { comment_held "$comment_task"; return 1; }
   comment_term="$(comment_held "$comment_task")"
   check wait_for 10 is "$comment_term" status working || { kanna status explain "$comment_term"; return 1; }
@@ -1652,6 +1654,23 @@ comment_arrived() {
   screen="$(kanna read "$comment_term")"
   [[ "$(grep -F "kanna comment" <<<"$screen" | grep -cv "peer: ")" == 0 ]] || { echo "a comment went into the prompt's draft"; echo "$screen"; return 1; }
   [[ "$(cd "$comment_repo" && kanna task messages "$comment_task")" == *"user"*"kanna comment $thread"* ]] || { echo "task messages should list the comment from you"; (cd "$comment_repo" && kanna task messages "$comment_task"); return 1; }
+}
+
+scenario comment_before_socket M4
+comment_before_socket() {
+  start_daemon && start_app || return 1
+  comment_agents && comment_claude "No socket yet" "$comment_fake/slow/claude" 18 || return 1
+  comment_program() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$comment_term\"}}" | field agent; }
+  check wait_for 5 eval '[[ "$(comment_program)" == claude ]]' || { kanna status explain "$comment_term"; return 1; }
+  local doc="$comment_repo/notes.md" said
+  mkdir -p "$comment_repo/.kanna/docs"
+  printf '# Notes\n\nThe strip scrolls.\n' >"$doc"
+  printf '{"file":"%s","agent":null,"socket":null,"next":2,"threads":[{"id":"c1","quote":"The strip scrolls.","line":3,"state":"open","status":"waiting","messages":[{"who":"you","text":"Say when","at":"2026-01-01T00:00:00Z"}]}]}\n' "$doc" >"$comment_repo/.kanna/docs/notes.md.json"
+  comment_status() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["threads"][0]["status"])' "$comment_repo/.kanna/docs/notes.md.json"; }
+  said="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"comment\",\"pane\":\"$comment_term\",\"text\":\"[kanna comment c1 · notes.md:3]\\nSay when\",\"doc\":\"$doc\",\"thread\":\"c1\"}}")"
+  check test "$(field state <<<"$said")" == waiting || { echo "$said"; kanna read "$comment_term"; return 1; }
+  comment_waits c1 comment_status || return 1
+  comment_arrived c1 comment_status || return 1
 }
 
 scenario md_comments M4
@@ -6022,6 +6041,14 @@ print(" ".join(t["about"] + ":" + (t.get("detail") or "") for t in json.load(sys
   sleep 3
   check test "$(task_state "$(tid 4)" | cut -d' ' -f1)" == stopped || { echo "agent_messaging: the agy task was woken for a message it can't take"; return 1; }
   [[ "$(in_repo task messages "$(tid 4)")" == *"waiting  can you hear me"* ]] || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
+  mkdir -p "$fake/slow" && printf '#!/bin/sh\nKANNA_MOCK_INBOX_DELAY=6 KANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/slow/claude" && chmod +x "$fake/slow/claude"
+  in_repo task new "Slow" "work 1" --agent "$fake/slow/claude" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  local slow sterm; slow="$(tid 5)"
+  check wait_for 30 eval '[[ "$(task_state $slow)" == stopped* ]]' || { echo "agent_messaging: the slow claude task didn't run and stop"; task_state "$slow"; return 1; }
+  in_repo task send "$slow" "while you start" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 30 eval 'sterm="$(task_state $slow | cut -d" " -f2)"; [[ "$sterm" == term-* ]] && shows "$sterm" "peer: \[message from user\] while you start"' || { echo "agent_messaging: the woken claude task didn't get its message once it made its socket"; tail -5 "$out/daemon.log"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts"}' | grep -q "Messages wait for Slow" && { echo "agent_messaging: a claude still starting raised a toast"; return 1; }
+  ! grep -q "messages for $sterm wait" "$out/daemon.log" || { echo "agent_messaging: a claude still starting was warned about"; return 1; }
 }
 
 scenario agent_too_old M4
@@ -6730,9 +6757,147 @@ print([r.get("claim") for r in json.load(sys.stdin)["records"] if r["task"].star
   kill -0 "$daemon_pid" 2>/dev/null
 }
 
+scenario phone_relay M4
+phone_relay() {
+  (cd "$repo_root" && cargo build -q -p kanna-net --example test-relay) || { echo "phone_relay: the test relay didn't build"; return 1; }
+  phone_rig claude || { echo "phone_relay line $LINENO"; return 1; }
+  local me="$bin/kanna"
+  local relay_out="$KANNA_STATE_DIR/relay.out" token="$KANNA_STATE_DIR/relay.token"
+  printf 's3cret-phone' >"$token"
+  "$rust_dir/examples/test-relay" s3cret-phone >"$relay_out" &
+  local relay=$!
+  trap "kill $relay 2>/dev/null" RETURN
+  check wait_for 10 test -s "$relay_out" || { echo "phone_relay: the relay didn't start"; return 1; }
+  local url; url="$(cat "$relay_out")"
+  ! PHONE_RELAY_ONLY=1 phone hello >/dev/null 2>&1 || { echo "phone_relay: reached it with no relay"; return 1; }
+  kanna machine relay "$url" --token-file "$token" >/dev/null || { echo "phone_relay line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ -n "$(kanna machine list --json | field home_relay)" ]]' || { echo "phone_relay: the daemon never reached the relay"; kanna machine list; return 1; }
+  check test "$(phone hello | field relay)" == "$url" || { echo "phone_relay: hello didn't refresh the relay"; return 1; }
+  check test "$(phone path | field path)" == direct || { echo "phone_relay: with a relay set the LAN isn't direct: $(phone path)"; return 1; }
+  check test "$(phone path | field lan)" == True || { echo "phone_relay: the LAN doesn't read as LAN: $(phone path)"; return 1; }
+  ! PHONE_RELAY_ONLY=1 PHONE_RELAY_TOKEN=wrong phone hello >/dev/null 2>&1 || { echo "phone_relay: a wrong token got through"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone path | field path)" == relay || { echo "phone_relay: not through the relay: $(PHONE_RELAY_ONLY=1 phone path)"; return 1; }
+  PHONE_RELAY_ONLY=1 phone send repo r1 "mock: run $me phone say answered through the relay" >/dev/null || { echo "phone_relay line $LINENO"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone wait repo say 30 | field doc.text)" == "answered through the relay" || { echo "phone_relay: no answer through the relay"; phone read repo; return 1; }
+  phone_dir="$KANNA_STATE_DIR/phone2"
+  mkdir -p "$phone_dir"
+  phone_pair || { echo "phone_relay: a second phone didn't pair"; return 1; }
+  check test "$(field relay <"$phone_dir/machine.json")" == "$url" || { echo "phone_relay: the handoff had no relay"; return 1; }
+  check test "$(field relay_token <"$phone_dir/machine.json")" == s3cret-phone || { echo "phone_relay: the handoff had no token"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone path | field path)" == relay || { echo "phone_relay: a new phone can't use the relay before its first hello"; return 1; }
+  ! grep -q s3cret-phone "$KANNA_STATE_DIR/offer" || { echo "phone_relay: the token is in the QR"; return 1; }
+}
+
 scenario phone_chat_codex M4
 phone_chat_codex() {
   phone_chat_with codex
+}
+
+scenario phone_quiz M4
+phone_quiz() {
+  phone_rig claude || { echo "phone_quiz line $LINENO"; return 1; }
+  local me="$bin/kanna" round_file="$KANNA_STATE_DIR/round.json" map_file="$KANNA_STATE_DIR/map.json" bad_file="$KANNA_STATE_DIR/bad.json" lines
+  mkdir -p "$phone_repo/net" "$phone_repo/desk" "$(dirname "$KANNA_AGENTS_HOME/.kanna-v4/config.json")" || return 1
+  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}, "agents": {"prompts": "skip"}}\n' "$phone_fake/claude" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json" || return 1
+  seq 1 40 >"$phone_repo/net/a.rs"; seq 1 10 >"$phone_repo/desk/b.rs"
+  git -C "$phone_repo" add . && git -C "$phone_repo" -c user.email=e@e -c user.name=e commit -qm code || return 1
+  local head; head="$(git -C "$phone_repo" rev-parse main)"
+  python3 - "$head" "$round_file" "$map_file" "$bad_file" <<'PY' || return 1
+import json, sys
+head, round_file, map_file, bad_file = sys.argv[1:5]
+choices = [{"label": "A"}, {"label": "B"}, {"label": "C"}, {"label": "D"}]
+q = lambda kind, f, n: {"kind": kind, "file": f, "line": n, "text": f"What is at {f}:{n}?", "why": "It says so", "topic": f"line {n}", "source": head[:7], "choices": choices, "answer": 1}
+bug = dict(q("bug", "net/a.rs", 3), lines=[{"n": n, "text": str(n)} for n in (1, 2, 3, 4)])
+del bug["choices"]
+qs = [q("architecture", "net/a.rs", 2), q("behaviour", "net/a.rs", 5), q("why", "desk/b.rs", 1), q("where", "desk/b.rs", 2), bug]
+json.dump({"head": head, "title": "Today", "commits": [head], "questions": qs}, open(round_file, "w"))
+bad = dict(q("why", "net/a.rs", 999))
+json.dump({"head": head, "questions": [bad] * 5}, open(bad_file, "w"))
+json.dump({"subsystems": [{"name": "Net", "paths": ["net/**"]}, {"name": "Desk", "paths": ["desk/**"]}, {"name": "S1", "paths": ["s1/**"]}, {"name": "S2", "paths": ["s2/**"]}, {"name": "S3", "paths": ["s3/**"]}, {"name": "S4", "paths": ["s4/**"]}]}, open(map_file, "w"))
+PY
+  writer() { kanna workspace list --all --json | python3 -c 'import json, sys
+w = [w for w in json.load(sys.stdin)["workspaces"] if (w.get("where") or {}).get("quiz")]
+print(w[0]["dock"]["pane"] if w else "")'; }
+  type_in() { kanna send "$1" "$2" >/dev/null && kanna send-key "$1" enter >/dev/null; }
+  check test "$(phone quiz-rounds repo | field rounds)" == "[]" || { echo "phone_quiz: a new repo has rounds: $(phone quiz-rounds repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems)" == "[]" || { echo "phone_quiz: a new repo has a map"; return 1; }
+
+  check test "$(phone quiz-ahead repo | field writing.about)" == None || { echo "phone_quiz: an empty store started no writer: $(phone quiz-rounds repo)"; return 1; }
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: no writer"; kanna workspace list --all; return 1; }
+  local pane; pane="$(writer)"
+  check wait_for 10 unwrapped "$pane" "You are the Kanna quiz writer" || { echo "phone_quiz: the writer wasn't told"; kanna read "$pane"; return 1; }
+  [[ "$(phone_planner)" == "" ]] || { echo "phone_quiz: the writer started a planner"; return 1; }
+  check test "$(cd "$phone_repo" && kanna task list --json | field tasks)" == "[]" || { echo "phone_quiz: the writer is a task"; return 1; }
+  phone quiz-ahead repo >/dev/null
+  check test "$(kanna workspace list --all --json | python3 -c 'import json, sys
+print(len([w for w in json.load(sys.stdin)["workspaces"] if (w.get("where") or {}).get("quiz")]))')" == 1 || { echo "phone_quiz: a second writer started"; return 1; }
+
+  type_in "$pane" "run cd $phone_repo; $me quiz map $map_file"
+  check wait_for 10 shows "$pane" "6 subsystems" || { echo "phone_quiz: the map wasn't kept"; kanna read "$pane"; return 1; }
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $bad_file"
+  check wait_for 10 unwrapped "$pane" "no line 999" || { echo "phone_quiz: a bad round wasn't told"; kanna read "$pane"; return 1; }
+  check test "$(phone quiz-rounds repo | field rounds)" == "[]" || { echo "phone_quiz: a bad round was kept"; return 1; }
+  phone listen 12 >"$KANNA_STATE_DIR/quiz-notices" &
+  local listening=$!
+  sleep 0.5
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $round_file"
+  check wait_for 10 eval '[[ "$(phone quiz-rounds repo | field rounds.0.round)" == r1 ]]' || { echo "phone_quiz: no round: $(phone quiz-rounds repo)"; kanna read "$pane"; return 1; }
+  check wait_for 15 eval '[[ -z "$(writer)" ]]' || { echo "phone_quiz: the writer didn't quit"; kanna read "$pane"; return 1; }
+  wait "$listening"
+  grep -q '"notice":"quiz".*"ready":"r1"' "$KANNA_STATE_DIR/quiz-notices" || { echo "phone_quiz: no ready notice: $(cat "$KANNA_STATE_DIR/quiz-notices")"; return 1; }
+  local rounds; rounds="$(phone quiz-rounds repo)"
+  check test "$(field rounds.0.questions.0.subsystem <<<"$rounds")" == Net && check test "$(field rounds.0.questions.0.code.lines.1 <<<"$rounds")" == 2 && check test "$(field rounds.0.questions.0.code.commit <<<"$rounds")" == "$head" || { echo "phone_quiz: the round reads $rounds"; return 1; }
+  check test "$(field writing <<<"$rounds")" == None || { echo "phone_quiz: a written round still reads writing"; return 1; }
+
+  check test "$(phone quiz-map repo | field subsystems.0.mastery)" == None || { echo "phone_quiz: mastery before any answer: $(phone quiz-map repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.0.lines)" == 40 || { echo "phone_quiz: lines: $(phone quiz-map repo)"; return 1; }
+  phone quiz-answer r1 0 1 >/dev/null || { echo "phone_quiz line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: the first answer started no writer"; return 1; }
+  pane="$(writer)"
+  phone quiz-answer r1 0 1 >/dev/null
+  phone quiz-answer r1 1 1 >/dev/null
+  phone quiz-answer r1 2 0 >/dev/null
+  phone quiz-answer r1 3 1 >/dev/null
+  phone quiz-answer r1 4 1 >/dev/null
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*), sum(right) from quiz_answers")" == "5|4" || { echo "phone_quiz: a resend counted: $(sqlite3 "$KANNA_STATE_DIR/kanna.db" "select * from quiz_answers")"; return 1; }
+  local map; map="$(phone quiz-map repo)"
+  check test "$(field subsystems.0.mastery <<<"$map")" == 60 && check test "$(field subsystems.1.mastery <<<"$map")" == 25 || { echo "phone_quiz: the map didn't move: $map"; return 1; }
+  check test "$(field subsystems.1.misses.0.file <<<"$map")" == "desk/b.rs:1" || { echo "phone_quiz: the miss isn't on its subsystem: $map"; return 1; }
+  check test "$(cd "$phone_repo" && kanna quiz history --misses --json | field rounds.0.answers.0.answer)" == a3 || { echo "phone_quiz: a phone miss doesn't come back on the Mac"; return 1; }
+  check test "$(cd "$phone_repo" && kanna stats --json | python3 -c 'import json, sys
+print([t for s in json.load(sys.stdin)["sections"] if s["id"] == "quiz" for t in s["tiles"] if t["id"] == "right"][0]["value"])')" == 80 || { echo "phone_quiz: Stats doesn't count phone answers"; return 1; }
+
+  (cd "$phone_repo" && kanna quiz start >/dev/null && kanna quiz answer r2 --kind why --file desk/b.rs:3 --right >/dev/null) || { echo "phone_quiz line $LINENO"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.1.answers)" == 3 || { echo "phone_quiz: a Mac round doesn't count: $(phone quiz-map repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.1.mastery)" == 40 || { echo "phone_quiz: a Mac round didn't move the map: $(phone quiz-map repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.1.moved)" == 0 || { echo "phone_quiz: moved since the last right answer: $(phone quiz-map repo)"; return 1; }
+  printf 'x\n' >>"$phone_repo/desk/b.rs"
+  git -C "$phone_repo" -c user.email=e@e -c user.name=e commit -qam "desk moved" || return 1
+  check test "$(phone quiz-map repo | field subsystems.1.moved)" == 1 && check test "$(phone quiz-map repo | field subsystems.1.commits.0.subject)" == "desk moved" || { echo "phone_quiz: a commit didn't move its subsystem: $(phone quiz-map repo)"; return 1; }
+
+  type_in "$pane" "run cd $phone_repo; $me quiz ahead --about 'the relay'"
+  check wait_for 10 eval 'phone quiz-rounds repo | grep -q "\"queued\":\[\"the relay\"\]"' || { echo "phone_quiz: the subject wasn't queued: $(phone quiz-rounds repo)"; return 1; }
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $round_file"
+  check wait_for 15 eval '[[ "$(writer)" != "" && "$(writer)" != "$pane" ]]' || { echo "phone_quiz: the queued writer didn't start: $(kanna read "$pane")"; return 1; }
+  pane="$(writer)"
+  check wait_for 10 unwrapped "$pane" "Its subject: the relay" || { echo "phone_quiz: the subject wasn't told"; kanna read "$pane"; return 1; }
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $round_file"
+  local card; card="$(phone wait repo round 15)" || { echo "phone_quiz: no round card in the chat"; phone read repo; return 1; }
+  check test "$(field doc.about <<<"$card")" == "the relay" || { echo "phone_quiz: the card was $card"; return 1; }
+  check wait_for 15 eval '[[ -z "$(writer)" ]]' || { echo "phone_quiz: the second writer didn't quit"; return 1; }
+  check test "$(phone quiz-rounds repo | python3 -c 'import json, sys
+print([r["about"] for r in json.load(sys.stdin)["rounds"]])')" == "[None, 'the relay']" || { echo "phone_quiz: the rounds: $(phone quiz-rounds repo)"; return 1; }
+
+  sqlite3 "$KANNA_STATE_DIR/kanna.db" "update quiz_ready set taken = 1" || return 1
+  phone quiz-ahead repo >/dev/null
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: no writer for the failure"; return 1; }
+  pane="$(writer)"
+  type_in "$pane" "exit"
+  check wait_for 15 eval 'phone quiz-rounds repo | grep -q "quit without writing"' || { echo "phone_quiz: a failed writer wasn't told: $(phone quiz-rounds repo)"; return 1; }
+  phone quiz-ahead repo >/dev/null
+  check test "$(phone quiz-rounds repo | field writing)" == None || { echo "phone_quiz: a failure retried at once"; return 1; }
+  check test "$(phone quiz-again repo | field writing.about)" == None || { echo "phone_quiz: Try again didn't start one: $(phone quiz-rounds repo)"; return 1; }
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: no writer after Try again"; return 1; }
 }
 
 phone_chat_with() {

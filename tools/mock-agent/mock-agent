@@ -193,9 +193,17 @@ def inbox():
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(path)
     server.listen()
-    with open(entry, "w") as f:
-        json.dump({"pid": os.getpid(), "peerProtocol": 1, "messagingSocketPath": path}, f)
     atexit.register(lambda: [os.remove(p) for p in (path, entry) if os.path.exists(p)])
+
+    def announce():
+        with open(entry, "w") as f:
+            json.dump({"pid": os.getpid(), "peerProtocol": 1, "messagingSocketPath": path}, f)
+
+    delay = float(os.environ.get("KANNA_MOCK_INBOX_DELAY") or 0)
+    if delay:
+        threading.Timer(delay, announce).start()
+    else:
+        announce()
 
     def serve():
         while True:
