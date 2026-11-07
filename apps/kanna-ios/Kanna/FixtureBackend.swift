@@ -133,7 +133,7 @@ final class FixtureBackend: Backend {
         default: return page
         }
         Task {
-            await wait(2)
+            await wait(4)
             onNotice?(.stats(repo: repo))
         }
         return page

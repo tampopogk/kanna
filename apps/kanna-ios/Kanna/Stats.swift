@@ -256,7 +256,6 @@ struct StatsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 16)
                             .padding(.top, 10)
-                            .accessibilityIdentifier("stats-status")
                     }
                     if store.statsPage?.sections.isEmpty != false {
                         Text(store.offline ? "No numbers yet: Stats reads from \(store.repo.plannerMachine)." : "Asking \(store.repo.plannerMachine)…").font(.system(size: 14)).foregroundStyle(K.muted).padding(.top, 40)

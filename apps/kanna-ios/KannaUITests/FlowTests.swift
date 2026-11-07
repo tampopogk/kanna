@@ -352,8 +352,7 @@ final class FlowTests: XCTestCase {
         shot("stats-updating")
         see("Updating: running coverage")
         see("72.4%")
-        let status = app.staticTexts["stats-status"]
-        XCTAssertTrue(status.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Updating: running coverage"].waitForNonExistence(timeout: 10))
         see("72.4%")
     }
 
