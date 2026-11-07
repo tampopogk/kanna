@@ -1,10 +1,10 @@
-use kanna_net::{hex, read_key, unhex, Client, LineRecv, LineSend, SecretKey};
+use kanna_net::{hex, read_key, unhex, Client, LineRecv, LineSend, Relay, SecretKey};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn usage() -> ! {
-    eprintln!("usage: phone-client DIR pair OFFER-JSON\n       phone-client DIR hello\n       phone-client DIR read REPO [AFTER]\n       phone-client DIR send REPO ID TEXT\n       phone-client DIR choose REPO ID SEQ CHOICE\n       phone-client DIR wait REPO KIND SECONDS [AFTER]\n       phone-client DIR status REPO STATUS SECONDS\n       phone-client DIR listen SECONDS");
+    eprintln!("usage: phone-client DIR pair OFFER-JSON\n       phone-client DIR hello\n       phone-client DIR path\n       phone-client DIR read REPO [AFTER]\n       phone-client DIR send REPO ID TEXT\n       phone-client DIR choose REPO ID SEQ CHOICE\n       phone-client DIR wait REPO KIND SECONDS [AFTER]\n       phone-client DIR status REPO STATUS SECONDS\n       phone-client DIR listen SECONDS\n       phone-client DIR tasks REPO\n       phone-client DIR task TASK\n       phone-client DIR tell TASK ID TEXT\n       phone-client DIR choosetask TASK ID SEQ CHOICE\n       phone-client DIR pick TASK DESK [ROOM]\n       phone-client DIR machines REPO\n       phone-client DIR stats REPO\n       phone-client DIR move REPO MACHINE\n       phone-client DIR quiz-map REPO\n       phone-client DIR quiz-rounds REPO\n       phone-client DIR quiz-answer ROUND N PICK\n       phone-client DIR quiz-ahead REPO [ABOUT]\n       phone-client DIR quiz-again REPO\n\nPHONE_MACHINE=NAME opens the link to that machine of the last hello's, not the paired one. PHONE_RELAY_ONLY=1 reaches it only through the relay; PHONE_RELAY_TOKEN gives another token.");
     std::process::exit(2)
 }
 
@@ -15,7 +15,11 @@ fn fail(message: impl std::fmt::Display) -> ! {
 
 fn machine(dir: &Path) -> Value {
     let text = std::fs::read_to_string(dir.join("machine.json")).unwrap_or_else(|e| fail(format!("not paired: {e}")));
-    serde_json::from_str(&text).unwrap_or_else(|e| fail(e))
+    let paired: Value = serde_json::from_str(&text).unwrap_or_else(|e| fail(e));
+    let Ok(wanted) = std::env::var("PHONE_MACHINE") else { return paired };
+    let known = std::fs::read_to_string(dir.join("machines.json")).unwrap_or_else(|e| fail(format!("no hello yet: {e}")));
+    let known: Value = serde_json::from_str(&known).unwrap_or_else(|e| fail(e));
+    known.as_array().into_iter().flatten().find(|m| m["name"] == wanted.as_str()).cloned().unwrap_or_else(|| fail(format!("no machine {wanted} in {known}")))
 }
 
 struct Link {
@@ -28,8 +32,9 @@ struct Link {
 impl Link {
     async fn open(client: &Client, dir: &Path) -> Link {
         let machine = machine(dir);
+        let relay = relay_of(dir);
         let addrs: Vec<String> = machine["addrs"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-        let (send, recv, _) = client.lines(machine["key"].as_str().unwrap_or_default(), &addrs, None, json!({ "kind": "phone", "phone": kanna_net::phone::VERSION })).await.unwrap_or_else(|f| fail(format!("{} [{}]", f.message, f.code)));
+        let (send, recv, _) = client.lines(machine["key"].as_str().unwrap_or_default(), &addrs, relay.as_ref(), json!({ "kind": "phone", "phone": kanna_net::phone::VERSION })).await.unwrap_or_else(|f| fail(format!("{} [{}]", f.message, f.code)));
         Link { send, recv, next: 1, notices: vec![] }
     }
 
@@ -54,6 +59,23 @@ impl Link {
     }
 }
 
+fn relay_of(dir: &Path) -> Option<Relay> {
+    let text = std::fs::read_to_string(dir.join("machine.json")).ok()?;
+    let paired: Value = serde_json::from_str(&text).ok()?;
+    let token = std::env::var("PHONE_RELAY_TOKEN").ok().or_else(|| paired["relay_token"].as_str().map(String::from));
+    Relay::new(paired["relay"].as_str()?, token.as_deref()).ok()
+}
+
+fn refresh_relay(dir: &Path, hello: &Value) {
+    let Ok(text) = std::fs::read_to_string(dir.join("machine.json")) else { return };
+    let Ok(mut paired) = serde_json::from_str::<Value>(&text) else { return };
+    if hello["relay"].is_string() {
+        paired["relay"] = hello["relay"].clone();
+        paired["relay_token"] = hello["relay_token"].clone();
+        std::fs::write(dir.join("machine.json"), paired.to_string()).unwrap_or_else(|e| fail(e));
+    }
+}
+
 fn own_key(dir: &Path) -> SecretKey {
     read_key(&dir.join("device.key")).unwrap_or_else(|e| fail(e))
 }
@@ -73,7 +95,8 @@ async fn main() {
     let rest = &args[2..];
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| fail(e));
     let secret = own_key(&dir);
-    let client = Client::start(secret.clone()).await.unwrap_or_else(|e| fail(e));
+    let started = if std::env::var_os("PHONE_RELAY_ONLY").is_some() { Client::start_relay_only(secret.clone()).await } else { Client::start(secret.clone()).await };
+    let client = started.unwrap_or_else(|e| fail(e));
     if action == "instance" {
         println!("{}", kanna_net::phone::instance_of(&hex(&unhex(rest.first().map(String::as_str).unwrap_or_default()).unwrap_or_default())).unwrap_or_default());
         return;
@@ -87,8 +110,11 @@ async fn main() {
     }
     let mut link = Link::open(&client, &dir).await;
     let hello = link.call("hello", json!({})).await;
+    std::fs::write(dir.join("machines.json"), hello["machines"].to_string()).unwrap_or_else(|e| fail(e));
+    refresh_relay(&dir, &hello);
     match (action, rest) {
         ("hello", _) => println!("{hello}"),
+        ("path", _) => println!("{}", client.path(hello["key"].as_str().unwrap_or_default())),
         ("read", [repo, after @ ..]) => {
             let after: i64 = after.first().and_then(|a| a.parse().ok()).unwrap_or(0);
             println!("{}", link.call("chat.read", json!({ "repo": repo_of(&hello, repo), "after": after })).await);
@@ -123,6 +149,19 @@ async fn main() {
             }
             fail(format!("status stayed {}", last["status"]))
         }
+        ("tasks", [repo]) => println!("{}", link.call("tasks.list", json!({ "repo": repo_of(&hello, repo) })).await),
+        ("task", [task]) => println!("{}", link.call("task.read", json!({ "task": task })).await),
+        ("tell", [task, id, text]) => println!("{}", link.call("task.send", json!({ "task": task, "id": id, "text": text })).await),
+        ("choosetask", [task, id, seq, choice]) => println!("{}", link.call("task.choose", json!({ "task": task, "id": id, "seq": seq.parse::<i64>().unwrap_or(0), "choice": choice })).await),
+        ("pick", [task, desk, room @ ..]) => println!("{}", link.call("task.pick", json!({ "task": task, "desk": desk, "room": room.first() })).await),
+        ("quiz-map", [repo]) => println!("{}", link.call("quiz.map", json!({ "repo": repo_of(&hello, repo) })).await),
+        ("quiz-rounds", [repo]) => println!("{}", link.call("quiz.rounds", json!({ "repo": repo_of(&hello, repo) })).await),
+        ("quiz-answer", [round, n, pick]) => println!("{}", link.call("quiz.answer", json!({ "round": round, "n": n.parse::<i64>().unwrap_or(0), "pick": pick.parse::<i64>().unwrap_or(0) })).await),
+        ("quiz-ahead", [repo, about @ ..]) => println!("{}", link.call("quiz.ahead", json!({ "repo": repo_of(&hello, repo), "about": about.first() })).await),
+        ("quiz-again", [repo]) => println!("{}", link.call("quiz.ahead", json!({ "repo": repo_of(&hello, repo), "again": true })).await),
+        ("machines", [repo]) => println!("{}", link.call("machines", json!({ "repo": repo_of(&hello, repo) })).await),
+        ("stats", [repo]) => println!("{}", link.call("stats", json!({ "repo": repo_of(&hello, repo) })).await),
+        ("move", [repo, machine]) => println!("{}", link.call("planner.move", json!({ "repo": repo_of(&hello, repo), "machine": machine })).await),
         ("listen", [seconds]) => {
             let end = std::time::Instant::now() + Duration::from_secs(seconds.parse().unwrap_or(10));
             while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {

@@ -61,7 +61,7 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
   "reason": "NSInternalInconsistencyException: debug.crash in a draw",
   "stack": [{ "image": "Kanna", "symbol": "Kanna.CrashView.draw(__C.CGRect) -> ()", "offset": 112 }],
   "signature": "a41c09e2d7f3b815",
-  "build": { "id": "5d1f…", "channel": "dev", "commit": "26e83e2c", "version": "0.1.0" },
+  "build": { "id": "5d1f…", "channel": "dev", "commit": "26e83e2c", "version": "4.1.1-dev" },
   "panes": [{ "id": "term-41", "name": "agent", "type": "term" }]
 }
 ```

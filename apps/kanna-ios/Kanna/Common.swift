@@ -111,6 +111,11 @@ struct ConnectionPop: View {
                 KeyValue(key: "Round trip", value: "\(store.milliseconds(machine)) ms")
                 KeyValue(key: "Direct path", value: store.plannerPath == .relay ? "Trying" : "In use")
             }
+            if store.fixture {
+                Button(store.offline ? "Bring the link back" : "Drop the link") { store.flipFixtureLink() }
+                    .font(.system(size: 13))
+                    .accessibilityIdentifier("fixture-link")
+            }
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 11)
@@ -210,12 +215,14 @@ extension View {
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
     }
 
-    func pushedNav() -> some View {
+    func pushedNav(chip: Bool = true) -> some View {
         navigationBarTitleDisplayMode(.inline)
             .solidBar()
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { ChipButton() }
-                    .sharedBackgroundVisibility(.hidden)
+                if chip {
+                    ToolbarItem(placement: .topBarTrailing) { ChipButton() }
+                        .sharedBackgroundVisibility(.hidden)
+                }
             }
     }
 
@@ -363,6 +370,7 @@ struct ReceiptLine: View {
         case .read: (false, "Read")
         case .waitingTurn: (true, "Waiting for its turn to end")
         case .waitingPlanner: (true, "Waiting for the planner")
+        case .waitingStart: (true, "Waits until it starts")
         case .waitingMachine(let m): (true, "Sends when \(m) is back")
         case .dayOld: (true, "A day old, not sent")
         }
@@ -436,6 +444,45 @@ struct PrimaryButton: View {
         }
         .buttonStyle(.plain)
         .disabled(off)
+    }
+}
+
+struct StartBanner: View {
+    var title: String
+    var detail: String
+    var calm = false
+    var chevron = true
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.system(size: 16, weight: .bold))
+                Text(detail).font(.system(size: 13)).opacity(calm ? 1 : 0.85).foregroundStyle(calm ? K.muted : K.onAccent)
+            }
+            Spacer(minLength: 0)
+            if chevron { Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)) }
+        }
+        .foregroundStyle(calm ? K.text : K.onAccent)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(calm ? K.panel : K.accent, in: RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+struct Hero<Extra: View>: View {
+    var title: String
+    @ViewBuilder var extra: () -> Extra
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 21, weight: .bold)).foregroundStyle(K.text)
+            extra()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .overlay(alignment: .bottom) { K.line.frame(height: 1) }
     }
 }
 

@@ -186,7 +186,11 @@ struct FullCodeView: View {
             Composer(placeholder: store.fullLine.map { "Ask about line \($0)" } ?? "Ask about this code") { text in
                 let line = store.fullLine.map { "\(s.file):\($0)@\(s.commit)" } ?? "\(s.file)@\(s.commit)"
                 dismiss()
-                store.send("\(text) (\(line))")
+                if let task = s.task {
+                    store.message(task: task, text: "\(text) (\(line))")
+                } else {
+                    store.send("\(text) (\(line))")
+                }
             }
         }
         .background(K.bg)

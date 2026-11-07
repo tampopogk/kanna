@@ -240,6 +240,15 @@ fn a_task_keeps_the_folder_it_opened_in_across_a_restart() {
 }
 
 #[test]
+fn an_app_of_another_build_and_another_protocol_replaces_this_macs_daemon() {
+    let instance = Instance::start();
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "build": "0000", "protocol": kanna_build::PROTOCOL + 1, "panes": []}}));
+    let reply = app.next().unwrap();
+    assert_eq!(reply["error"]["code"], "other_build", "{reply}");
+}
+
+#[test]
 fn an_app_from_another_build_stops_the_daemon_and_the_next_keeps_its_terminals() {
     let mut instance = Instance::start();
     let pane = instance.open("shell", None);

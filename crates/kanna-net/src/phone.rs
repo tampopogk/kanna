@@ -44,6 +44,7 @@ pub async fn join(client: &Client, secret: &SecretKey, offer: &Value) -> Result<
         return Err(Failure::from_reply(&reply));
     }
     let log = party.open(&reply["handoff"], &key)?;
+    let sealed = &reply["handoff"]["payload"];
     send.write(&json!({ "ok": true })).await?;
-    Ok(json!({ "name": name_of(&key), "machine": ha["device"]["name"], "key": machine, "addrs": addrs, "log": log.export() }))
+    Ok(json!({ "name": name_of(&key), "machine": ha["device"]["name"], "key": machine, "addrs": addrs, "relay": sealed["relay"], "relay_token": sealed["relay_token"], "log": log.export() }))
 }

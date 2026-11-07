@@ -90,6 +90,10 @@ impl Caller {
         self.node.log()
     }
 
+    pub fn relay_token(&self) -> Option<String> {
+        self.node.relay_token()
+    }
+
     pub fn phone_offer(&self) -> Result<Value, KmuxError> {
         self.node.offer_phone().map_err(error)
     }

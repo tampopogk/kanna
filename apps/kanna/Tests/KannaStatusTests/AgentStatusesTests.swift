@@ -15,6 +15,34 @@ struct AgentStatusesTests {
         #expect(book.statuses["p1"] == "idle")
     }
 
+    @Test func aFinishIsLookedAtOnceWhetherSeenAsItCameOrLater() {
+        var book = AgentStatuses()
+        book.set("p1", "working", looking: true)
+        let watched = book.set("p1", "idle", looking: true)
+        #expect(watched)
+        let again = book.looked(at: ["p1"])
+        #expect(again.isEmpty)
+        let working = book.set("p1", "working", looking: true)
+        #expect(!working)
+        let away = book.set("p1", "idle", looking: false)
+        #expect(!away)
+        let elsewhere = book.looked(at: ["p2"])
+        #expect(elsewhere.isEmpty)
+        let later = book.looked(at: ["p1"])
+        #expect(later == ["p1"])
+        let once = book.looked(at: ["p1"])
+        #expect(once.isEmpty)
+    }
+
+    @Test func anIdleAgentAfterALaunchIsLookedAtWhenShown() {
+        var book = AgentStatuses()
+        let hidden = book.set("p1", "idle", looking: false)
+        #expect(!hidden)
+        #expect(book.unread.isEmpty)
+        let shown = book.looked(at: ["p1"])
+        #expect(shown == ["p1"])
+    }
+
     @Test func finishingInFrontOfYouIsRead() {
         var book = AgentStatuses()
         book.set("p1", "working", looking: true)
