@@ -397,10 +397,19 @@ final class FlowTests: XCTestCase {
         tabBar("Machines")
         see("Asking")
         tap("mbp")
+        XCTAssertTrue(app.buttons["run-here"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["Offline"].exists)
         tap("Run the planner here")
         XCTAssertTrue(app.staticTexts["Direct · LAN"].waitForExistence(timeout: 10))
         tabBar("Chat")
         see("Planner")
+    }
+
+    func testThePhoneTriesItsPlannerItselfWhenAnotherMachineSaysItIsDown() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-planner", "away", "-plannerWakes", "YES"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Offline"].waitForExistence(timeout: 10))
+        see("Planner · idle", 20)
     }
 
     func testPairingThenChat() {

@@ -215,12 +215,14 @@ extension View {
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
     }
 
-    func pushedNav() -> some View {
+    func pushedNav(chip: Bool = true) -> some View {
         navigationBarTitleDisplayMode(.inline)
             .solidBar()
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { ChipButton() }
-                    .sharedBackgroundVisibility(.hidden)
+                if chip {
+                    ToolbarItem(placement: .topBarTrailing) { ChipButton() }
+                        .sharedBackgroundVisibility(.hidden)
+                }
             }
     }
 

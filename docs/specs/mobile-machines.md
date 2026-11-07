@@ -68,6 +68,7 @@ sequenceDiagram
 ```
 
 - **`no_clone`** if the machine has no clone. The phone offers only machines that have one and are up.
+- **Linked through another machine,** the phone tries the planner machine itself: at once when its network changes, then every 30 s. It doesn't go by what the other machine says, since that machine can be wrong about it, or on an older build.
 - **It works with the old planner machine asleep,** since the phone goes through any machine it can reach.
 - **A planner machine's daemon runs in the user's login session,** from Kanna.app or launchd (`kanna machine serve`). Started over SSH, the login keychain is locked and `claude` reports it isn't logged in.
 - **The old planner keeps running.** A Mac's Desk keeps its planner, as [chat §1](mobile-chat.md#1-the-planner-machine) says: this only changes which one the phone talks to.

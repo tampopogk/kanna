@@ -171,7 +171,7 @@ struct MachineDetail: View {
             }
         }
         .background(K.bg)
-        .pushedNav()
+        .pushedNav(chip: false)
         .sheet(isPresented: $choosing) {
             VStack(spacing: 0) {
                 SheetHead(title: "Run the planner on", detail: "The phone talks to that machine's planner. It won't know this conversation.")

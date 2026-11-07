@@ -33,6 +33,7 @@ final class Store {
     @ObservationIgnored private var syncing = false
     @ObservationIgnored private var askedStats = Date.distantPast
     @ObservationIgnored private var asleep: Set<String> = []
+    @ObservationIgnored private var triedPlanner: Date?
 
     let fixture: Bool
     var paired: Bool
@@ -167,7 +168,10 @@ final class Store {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self?.noNetwork = !up
-                    if up { self?.wake() }
+                    if up {
+                        self?.triedPlanner = nil
+                        self?.wake()
+                    }
                 }
             }
         }
@@ -251,9 +255,11 @@ final class Store {
 
     private func comeBack(_ mine: Int) async {
         let id = repo.id
-        guard let page = try? await backend.machines(repo: id), mine == generation else { return }
-        applyMachines(page, repo: id)
-        if page.machines.contains(where: { $0.key == repo.plannerKey && $0.up }) { relink() }
+        if let page = try? await backend.machines(repo: id), mine == generation { applyMachines(page, repo: id) }
+        if let triedPlanner, Date().timeIntervalSince(triedPlanner) < 30 { return }
+        guard mine == generation, let target = reach(repo.plannerKey) else { return }
+        triedPlanner = Date()
+        if await backend.reaches(target), mine == generation { relink() }
     }
 
     private func measure() async {

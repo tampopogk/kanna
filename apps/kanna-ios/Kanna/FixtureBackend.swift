@@ -16,6 +16,7 @@ final class FixtureBackend: Backend {
     private let writerSeconds: Double?
     private let emptyQuiz: Bool
     private let writerFails: Bool
+    private var unseen: Set<String> = []
     private var missed = false
     private var written = 0
 
@@ -34,6 +35,7 @@ final class FixtureBackend: Backend {
         if planner == "away" {
             ups["studio"] = false
             ups["tests-1"] = true
+            if defaults.bool(forKey: "plannerWakes") { unseen = ["studio"] }
         }
     }
 
@@ -66,10 +68,15 @@ final class FixtureBackend: Backend {
 
     func hello() async throws -> Hello { helloNow() }
 
+    func reaches(_ machine: Reach) async -> Bool {
+        if unseen.contains(machine.name) { ups[machine.name] = true }
+        return !down && ups[machine.name] == true
+    }
+
     func machines(repo: String) async throws -> MachinesPage {
         let has: Set<String> = repo == "kanna" ? ["studio", "mbp", "dev-1", "tests-1"] : ["studio", "dev-1"]
         func one(_ name: String, os: String, arch: String, cores: Int, ms: Double, path: String, lan: Bool) -> MachineInfo {
-            let up = ups[name] == true
+            let up = ups[name] == true && !unseen.contains(name)
             let me = name == linked
             return MachineInfo(name: name, key: "key-\(name)", me: me, os: os, arch: arch, cores: cores, version: "4.2.0", has: has.contains(name), planner: planners[repo] == name, up: up, path: up && !me ? path : nil, lan: lan, ms: up && !me ? ms : nil, since: up ? Date().timeIntervalSince1970 - 3600 : nil, seen: Date().timeIntervalSince1970 - 2400)
         }
