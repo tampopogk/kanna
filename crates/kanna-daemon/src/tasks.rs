@@ -1980,6 +1980,7 @@ impl Tasks {
     }
 
     pub fn exited(self: &Rc<Self>, pane: &str, code: i32) {
+        self.record_status(pane, "exited");
         let setting = self.setting_up.borrow_mut().remove(pane);
         if let Some(setting) = setting {
             self.set_up(pane, &setting);
@@ -2001,8 +2002,34 @@ impl Tasks {
         self.refill();
     }
 
+    fn ending(&self, pane: &str) -> bool {
+        self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane)
+    }
+
+    fn record_status(&self, pane: &str, status: &str) {
+        let Some(id) = self.task_of(pane) else { return };
+        match self.db.last_status(&id) {
+            Ok(last) if last.as_deref() == Some(status) => {}
+            Ok(_) => self.note(pane, Change::new("status").by(Some("daemon")).with("status", json!(status))),
+            Err(error) => log!("kanna-daemon: couldn't read {id}'s last status in {}: {error}", db::FILE),
+        }
+    }
+
+    pub fn settle_statuses(&self) {
+        let Some(core) = self.core.upgrade() else { return };
+        let panes: Vec<String> = self.running.borrow().iter().map(|r| r.pane.clone()).chain(self.entries.borrow().iter().filter_map(|e| e.held.clone())).collect();
+        for pane in panes {
+            if !alive(&core, &pane) {
+                self.record_status(&pane, "exited");
+            }
+        }
+    }
+
     pub fn status(self: &Rc<Self>, pane: &str, status: Option<&str>, ended: bool) {
         let now = Instant::now();
+        if let Some(status) = status.filter(|_| !self.ending(pane)) {
+            self.record_status(pane, status);
+        }
         let status = status.and_then(Status::parse);
         let mut ready = self.ready.borrow_mut();
         let ready = ready.entry(pane.to_string()).or_insert_with(|| Ready::new(now));
@@ -2446,8 +2473,7 @@ impl Tasks {
 
     fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<Candidate> {
         let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
-        let ending = |pane: &str| self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane);
-        let woken = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
+        let woken = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
         let new = mine
             .iter()
             .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
@@ -2622,6 +2648,7 @@ impl Tasks {
                     Some("planner") => this.planner(&args, responder),
                     Some("events") => responder.reply(this.events(&args)),
                     Some("activated") => responder.reply(this.activated(&args)),
+                    Some("looked") => responder.reply(this.looked_at(&args)),
                     Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("comment") => this.comment(&args, responder),
@@ -2629,7 +2656,7 @@ impl Tasks {
                     Some("subscribe") => responder.reply(this.subscribe(&args, true)),
                     Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
                     Some("hearing") => responder.reply(this.hearing(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, send, comment, messages, subscribe, unsubscribe or hearing"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -4121,6 +4148,12 @@ impl Tasks {
             }
         }
         self.news.borrow().next()
+    }
+
+    fn looked_at(&self, args: &Value) -> Result<Map, KmuxError> {
+        let pane = string(args, "task").ok_or_else(|| bad("say which task"))?;
+        self.note(pane, Change::new("looked").by(who(args)));
+        Ok(Map::new())
     }
 
     fn activated(&self, args: &Value) -> Result<Map, KmuxError> {
@@ -5881,6 +5914,51 @@ mod tests {
         tasks.status("term-7", Some("working"), false);
         tasks.status("term-7", Some("idle"), true);
         assert!(tasks.turns.borrow()["term-7"].ended(Instant::now()).is_some(), "its next turn is tracked again");
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_task_agent_s_status_changes_are_kept_and_a_daemon_restart_adds_none() {
+        let state = std::env::temp_dir().join(format!("kanna-status-rows-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let core = kanna_mux::Core::default();
+        let mut agent = Pane::new("term-7", None, kanna_mux::PaneType::Term);
+        agent.state = PaneState::Running;
+        core.install_panes(vec![agent], 0, 7, 0);
+        let db = Rc::new(Db::open(&state));
+        let open = || {
+            let tasks = Rc::new(Tasks::open(db.clone(), &state, core.weak(), crate::runtime::channel().0));
+            tasks.entries.borrow_mut().retain(|e| e.id != "task-1dfb12c2");
+            tasks.entries.borrow_mut().push(Entry { id: "task-1dfb12c2".into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some("term-7".into()), ..Default::default() });
+            tasks
+        };
+        let tasks = open();
+        tasks.store(&tasks.entries.borrow()[0].clone(), Place::Shelf, Some("term-7"), Some(Change::new("made"))).unwrap();
+        let rows = || db.events("task-1dfb12c2").unwrap().into_iter().filter(|e| e.what == "status").map(|e| e.doc["status"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        tasks.status("term-7", None, false);
+        tasks.status("term-7", Some("working"), false);
+        tasks.status("term-7", Some("working"), false);
+        tasks.status("term-9", Some("working"), false);
+        assert_eq!(rows(), ["working"], "no status, a repeat and a pane that's no task's agent add nothing");
+        let tasks = open();
+        tasks.settle_statuses();
+        tasks.status("term-7", None, false);
+        tasks.status("term-7", Some("working"), false);
+        assert_eq!(rows(), ["working"], "the stored status carries the turn across a restart");
+        tasks.status("term-7", Some("needs-you"), false);
+        tasks.stopping.borrow_mut().insert("term-7".into());
+        tasks.status("term-7", Some("idle"), false);
+        assert_eq!(rows(), ["working", "needs-you"], "what an agent says on its way out isn't an answer");
+        tasks.stopping.borrow_mut().remove("term-7");
+        tasks.status("term-7", Some("idle"), true);
+        db.log("task-1dfb12c2", &Change::new("stopped")).unwrap();
+        tasks.status("term-7", Some("idle"), false);
+        assert_eq!(rows(), ["working", "needs-you", "idle", "idle"], "after a stop the same status starts again");
+        core.with_pane_mut("term-7", |p| p.state = PaneState::Exited);
+        let tasks = open();
+        tasks.settle_statuses();
+        assert_eq!(rows().last().map(String::as_str), Some("exited"), "an agent gone while no daemon ran has exited");
         fs::remove_dir_all(&state).unwrap();
     }
 
