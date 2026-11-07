@@ -2940,13 +2940,12 @@ impl Tasks {
             None if recipient == PLANNER => "no-planner".into(),
             None => "stopped".into(),
         };
-        let running = pane.is_some();
         let status = pane.as_deref().and_then(|pane| self.core.upgrade()?.pane(pane)?.status).as_deref().and_then(Status::parse);
         let channel = pane.as_deref().and_then(|pane| self.channel(pane));
         let soon = channel.as_ref().zip(pane.as_deref()).is_some_and(|(channel, pane)| matches!(channel, Channel::Claude(_)) && self.undeliverable(channel).is_none() && messages::mid_turn(channel, status, self.attested(pane, std::slice::from_ref(&message))));
         let warning = match channel.as_ref().zip(pane.as_deref()) {
             Some((channel, pane)) => self.undeliverable(channel).filter(|_| self.coming_up(pane, channel).is_none()),
-            None => agent.filter(|agent| !messages::AGENTS.contains(&agent.as_str())).map(|agent| format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))).or_else(|| (running && status.is_none()).then(|| messages::UNKNOWN_STATUS.to_string())),
+            None => agent.filter(|agent| !messages::AGENTS.contains(&agent.as_str())).map(|agent| format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))).or_else(|| pane.as_deref().and_then(|pane| self.ready.borrow().get(pane).and_then(Ready::unknown)).filter(|at| *at <= Instant::now()).map(|_| messages::UNKNOWN_STATUS.to_string())),
         };
         if let Some(why) = &warning {
             log!("kanna-daemon: warning: the message for {recipient} waits: {why}");
@@ -6398,6 +6397,18 @@ mod tests {
         age.set(messages::GRACE);
         t.tasks.deliver(&core, later);
         assert_eq!(t.warned.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_pane_with_no_agent_warns_the_sender_only_once_it_has_stayed_that_way() {
+        let t = Inbox::new("unknown-send", None, messages::BYPASS);
+        *t.tasks.channel.borrow_mut() = Some(Box::new(|_| None));
+        let core = t.tasks.core.upgrade().unwrap();
+        t.tasks.deliver(&core, Instant::now());
+        let send = || t.core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "send", "to": "task-1dfb12c2", "text": "hello", "repo": t.state.to_str().unwrap() } }));
+        assert_eq!(send()["warning"], Value::Null, "it may only be starting");
+        t.tasks.ready.borrow_mut().insert("term-7".into(), Ready::new(Instant::now() - messages::UNKNOWN));
+        assert_eq!(send()["warning"], json!(messages::UNKNOWN_STATUS));
     }
 
     fn queued(t: &Inbox, submission: &str) -> Message {
