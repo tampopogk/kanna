@@ -129,9 +129,12 @@ final class LiveBackend: Backend {
     func connect(to wanted: Reach?) async throws -> Hello {
         guard var saved = paired else { throw Refused(code: "unpaired", message: "not paired") }
         let machine = wanted ?? Reach(name: saved.machine, key: saved.key, addrs: saved.addrs, good: saved.good)
+        Trace.note("connect \(machine.name) start")
         try await started()
+        Trace.note("connect \(machine.name) started")
         let key = machine.key
         let opened = try await dial(machine)
+        Trace.note("connect \(machine.name) opened")
         stream = opened
         linked = key
         listen(opened)
