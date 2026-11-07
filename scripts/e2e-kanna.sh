@@ -5616,58 +5616,73 @@ print(next(t["folder"] for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.
   of() { in_repo task list --json | python3 -c 'import json, sys
 t = next(t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1])
 names = lambda k: ",".join(x.get("name") or x["id"] for x in t.get(k) or [])
-print("ready" if t.get("ready") else "-", "stale:" + names("stale"), "bases:" + names("bases"))' "$1"; }
+print(t.get("merge") or "-", "stale:" + names("stale"), "bases:" + names("bases"))' "$1"; }
   head() { git -C "$1" rev-parse HEAD; }
+  [[ "$(in_repo task ready set "$a" 2>&1)" == *"\`kanna task ready set\` is gone: use \`kanna task ready [TASK]\`"* ]] || { echo "stacked_tasks: ready set didn't say it's gone"; return 1; }
   in_repo task start "$a" >/dev/null || { echo "stacked_tasks: A didn't start"; return 1; }
-  [[ "$(in_repo task start "$b" 2>&1)" == *"waits for $(sid 1) \"A\": it can start once it's ready or done"* ]] || { echo "stacked_tasks: B started before A was ready"; return 1; }
+  [[ "$(in_repo task start "$b" 2>&1)" == *"waits for $(sid 1) \"A\": it can start once it's ready or done"* ]] || { echo "stacked_tasks: B started before A was claimed"; return 1; }
   local fa fb fc said; fa="$(folder "$a")"
   git -C "$fa" commit -q --allow-empty -m a1 || return 1
-  said="$(in_repo task ready set "$a" 2>&1)"
-  [[ "$said" == "$(sid 1) is ready at "*$'\n'"$(sid 2) \"B\" can start now: nothing it waits for is left" ]] || { echo "stacked_tasks: ready said $said"; return 1; }
-  in_repo task start "$b" >/dev/null || { echo "stacked_tasks: B didn't start on A's ready work"; return 1; }
+  said="$(in_repo task ready "$a" 2>&1)"
+  [[ "$said" == "$(sid 1) is "*$'\n'"$(sid 2) \"B\" can start now: nothing it waits for is left" ]] || { echo "stacked_tasks: ready said $said"; return 1; }
+  check wait_for 10 eval '[[ "$(of "$a")" == "ready stale: bases:" ]]' || { echo "stacked_tasks: A claimed and clean isn't ready"; of "$a"; return 1; }
+  in_repo task start "$b" >/dev/null || { echo "stacked_tasks: B didn't start on A's claimed work"; return 1; }
   fb="$(folder "$b")"
   check test "$(head "$fb")" == "$(head "$fa")" || { echo "stacked_tasks: B didn't start from A's branch"; return 1; }
-  check test "$(of "$b")" == "- stale: bases:A" || { of "$b"; return 1; }
-  git -C "$fb" commit -q --allow-empty -m b1 && in_repo task ready set "$b" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
-  in_repo task start "$c" >/dev/null || { echo "stacked_tasks: C didn't start on B's ready work"; return 1; }
+  check test "$(of "$b")" == "after stale: bases:A" || { of "$b"; return 1; }
+  git -C "$fb" commit -q --allow-empty -m b1 && in_repo task ready "$b" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
+  check test "$(of "$b")" == "after stale: bases:A" || { echo "stacked_tasks: a claimed stacked task isn't merges after"; of "$b"; return 1; }
+  in_repo task start "$c" >/dev/null || { echo "stacked_tasks: C didn't start on B's claimed work"; return 1; }
   fc="$(folder "$c")"
   check test "$(head "$fc")" == "$(head "$fb")" || { echo "stacked_tasks: C didn't start from B's branch"; return 1; }
-  in_repo task list | placed | grep -qE '^'"$(sid 2)"' +B +Shelf +ready +merges after "A"$' || { echo "stacked_tasks: B doesn't say it merges after A"; in_repo task list; return 1; }
+  in_repo task list | placed | grep -E '^'"$(sid 2)"' +B +Shelf ' | grep -v ' ready ' | grep -qE ' merges after "A"$' || { echo "stacked_tasks: B doesn't say it merges after A, or says ready"; in_repo task list; return 1; }
   local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "stacked_tasks line $LINENO: $opened"; return 1; }
   w="${BASH_REMATCH[1]}"
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field "$1"; }
   stack() { desk scroll.stacked | python3 -c 'import json, sys
 print(next((r["stack"] for r in json.load(sys.stdin) if r["task"] == sys.argv[1]), "-"))' "$1"; }
-  check wait_for 10 eval '[[ "$(stack "$b")" == "ready · merges after “A”" ]]' || { echo "stacked_tasks: B's Shelf row doesn't show its stack"; desk scroll.stacked; return 1; }
+  check wait_for 10 eval '[[ "$(stack "$b")" == "merges after “A”" ]]' || { echo "stacked_tasks: B's Shelf row doesn't show its stack"; desk scroll.stacked; return 1; }
+  check wait_for 10 eval '[[ "$(stack "$a")" == "ready" ]]' || { echo "stacked_tasks: A's row doesn't say ready"; desk scroll.stacked; return 1; }
 
   git -C "$fa" commit -q --allow-empty -m a2 || return 1
-  check wait_for 10 eval '[[ "$(of "$c")" == "- stale:B bases:B" ]]' || { echo "stacked_tasks: a new commit on A didn't make C stale"; of "$c"; return 1; }
+  check wait_for 10 eval '[[ "$(of "$b")" == "stale stale:A bases:A" ]]' || { echo "stacked_tasks: a new commit on A didn't make B stale"; of "$b"; return 1; }
   check test "$(of "$a")" == "- stale: bases:" || { echo "stacked_tasks: A is still ready after its branch moved"; of "$a"; return 1; }
-  check test "$(of "$b")" == "- stale:A bases:A" || { echo "stacked_tasks: B isn't stale"; of "$b"; return 1; }
-  in_repo task list | placed | grep -qE '^'"$(sid 3)"' +C +Shelf +stale +behind "B"$' || { in_repo task list; return 1; }
-  check wait_for 10 eval '[[ "$(stack "$c")" == "stale · behind “B”" ]]' || { echo "stacked_tasks: C's row doesn't show it's stale"; desk scroll.stacked; return 1; }
+  check test "$(of "$c")" == "after stale: bases:B" || { echo "stacked_tasks: C went stale though B's head is in it"; of "$c"; return 1; }
+  in_repo task list | placed | grep -qE '^'"$(sid 2)"' +B +Shelf +stale +behind "A"$' || { in_repo task list; return 1; }
+  check wait_for 10 eval '[[ "$(stack "$b")" == "stale · behind “A”" ]]' || { echo "stacked_tasks: B's row doesn't show it's stale"; desk scroll.stacked; return 1; }
   sleep 0.5; snap "$w" stacked_tasks-stale >/dev/null
   in_repo task messages "$b" | grep -q "kanna .*\"A\" moved since this task was built on it" || { echo "stacked_tasks: B wasn't told to catch up"; in_repo task messages "$b"; return 1; }
-  in_repo task messages "$c" | grep -q "kanna .*\"B\" is stale, so this task is too" || { echo "stacked_tasks: C wasn't told to wait"; in_repo task messages "$c"; return 1; }
-  [[ "$(in_repo task ready set "$b" 2>&1)" == *"\"A\" isn't in this branch yet: merge it first (git merge $(head "$fa"))"* ]] || { echo "stacked_tasks: B was let be ready without A's new work"; return 1; }
-  [[ "$(in_repo task ready set "$c" 2>&1)" == *"\"B\" is stale itself"* ]] || { echo "stacked_tasks: C caught up before B"; return 1; }
+  [[ "$(in_repo task ready "$b" 2>&1)" == *"\"A\" isn't in this branch yet: merge it first (git merge $(head "$fa"))"* ]] || { echo "stacked_tasks: B was let claim without A's new work"; return 1; }
 
-  git -C "$fb" merge -q --no-edit "$(head "$fa")" && in_repo task ready set "$b" >/dev/null || { echo "stacked_tasks: B couldn't catch up"; return 1; }
-  check test "$(of "$b")" == "ready stale: bases:A" || { of "$b"; return 1; }
-  sleep 3
-  check test "$(of "$c")" == "- stale:B bases:B" || { echo "stacked_tasks: C stopped being stale before it caught up"; of "$c"; return 1; }
-  [[ "$(in_repo task ready set "$c" 2>&1)" == *"\"B\" isn't in this branch yet"* ]] || { echo "stacked_tasks: C was let be ready without B's new work"; return 1; }
-  in_repo task list | placed | grep -qE '^'"$(sid 2)"' +B +Shelf +ready +merges after "A"$' || { echo "stacked_tasks: B doesn't say it waits for A to merge"; in_repo task list; return 1; }
-  git -C "$fc" merge -q --no-edit "$(head "$fb")" && in_repo task ready set "$c" >/dev/null || { echo "stacked_tasks: C couldn't catch up"; return 1; }
-  check test "$(of "$c")" == "ready stale: bases:B" || { of "$c"; return 1; }
+  git -C "$fb" merge -q --no-edit "$(head "$fa")" || return 1
+  check wait_for 10 eval '[[ "$(of "$b")" == "after stale: bases:A" ]]' || { echo "stacked_tasks: merging A didn't clear B's staleness"; of "$b"; return 1; }
+  check wait_for 10 eval '[[ "$(of "$c")" == "stale stale:B bases:B" ]]' || { echo "stacked_tasks: B's new head didn't make C stale"; of "$c"; return 1; }
+  [[ "$(in_repo task ready "$c" 2>&1)" == *"\"B\" isn't in this branch yet"* ]] || { echo "stacked_tasks: C was let claim without B's new work"; return 1; }
+  in_repo task ready "$b" >/dev/null || { echo "stacked_tasks: B couldn't claim again"; return 1; }
+  in_repo task messages "$c" | grep -q "kanna .*\"B\" is ready again at a new commit" || { echo "stacked_tasks: C wasn't told B is claimed again"; in_repo task messages "$c"; return 1; }
+  git -C "$fc" merge -q --no-edit "$(head "$fb")" && in_repo task ready "$c" >/dev/null || { echo "stacked_tasks: C couldn't catch up"; return 1; }
+  check wait_for 10 eval '[[ "$(of "$c")" == "after stale: bases:B" ]]' || { of "$c"; return 1; }
   check wait_for 10 eval '[[ "$(desk scroll.stacked)" != *"waits for"* ]]' || { echo "stacked_tasks: a started task's row says it waits"; desk scroll.stacked; return 1; }
 
   git -C "$repo" merge -q --no-edit "$(head "$fa")" || return 1
-  check wait_for 10 eval '[[ "$(of "$b")" == "ready stale: bases:" ]]' || { echo "stacked_tasks: A in main didn't make B an ordinary task"; of "$b"; return 1; }
-  in_repo task messages "$b" | grep -q "\"A\"'s work is in main now: merge main" || { echo "stacked_tasks: B wasn't told to merge main"; in_repo task messages "$b"; return 1; }
-  raw '{"id":1,"cmd":"tasks","args":{"action":"events","task":"'"$c"'"}}' | python3 -c 'import json, sys
+  check wait_for 10 eval '[[ "$(of "$b")" == "ready stale: bases:" ]]' || { echo "stacked_tasks: A in main didn't make B ready"; of "$b"; return 1; }
+  in_repo task messages "$b" | grep -q "\"A\"'s work is in main now. Nothing you build on" || { echo "stacked_tasks: B wasn't told A landed"; in_repo task messages "$b"; return 1; }
+  in_repo task list | placed | grep -qE '^'"$(sid 2)"' +B +Shelf +ready$' || { echo "stacked_tasks: B doesn't list as ready"; in_repo task list; return 1; }
+
+  echo b >"$fb/f" && git -C "$fb" add f && git -C "$fb" commit -q -m b2 && in_repo task ready "$b" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(of "$b")" == "ready stale: bases:" ]]' || { of "$b"; return 1; }
+  local objects; objects="$(git -C "$repo" count-objects | cut -d' ' -f1)"
+  echo main >"$repo/f" && git -C "$repo" add f && git -C "$repo" commit -q -m m1 || return 1
+  check wait_for 10 eval '[[ "$(of "$b")" == "conflicts stale: bases:" ]]' || { echo "stacked_tasks: main conflicting with B didn't show"; of "$b"; return 1; }
+  in_repo task list | placed | grep -qE '^'"$(sid 2)"' +B +Shelf +conflicts$' || { echo "stacked_tasks: B doesn't list as conflicts"; in_repo task list; return 1; }
+  check wait_for 10 eval '[[ "$(stack "$b")" == "conflicts" ]]' || { echo "stacked_tasks: B's row doesn't show conflicts"; desk scroll.stacked; return 1; }
+  check test "$(git -C "$repo" count-objects | cut -d' ' -f1)" -le "$((objects + 4))" || { echo "stacked_tasks: the conflict check wrote into the repo"; git -C "$repo" count-objects; return 1; }
+  [[ "$(in_repo task ready "$b" 2>&1)" == *"conflicts with main in f"* ]] || { echo "stacked_tasks: claiming B didn't name the conflict"; return 1; }
+  git -C "$fc" merge -q --no-edit "$(head "$fb")" && in_repo task ready "$c" >/dev/null || { echo "stacked_tasks: C couldn't go on because B conflicts with main"; return 1; }
+  check wait_for 10 eval '[[ "$(of "$c")" == "after stale: bases:B" ]]' || { echo "stacked_tasks: C stopped because B conflicts with main"; of "$c"; return 1; }
+  raw '{"id":1,"cmd":"tasks","args":{"action":"events","task":"'"$b"'"}}' | python3 -c 'import json, sys
 seen = [e["what"] for e in json.load(sys.stdin)["events"]]
-sys.exit(0 if all(w in seen for w in ("ready", "stale")) else print(seen) or 1)' || { echo "stacked_tasks: C's events don't record ready and stale"; return 1; }
+sys.exit(0 if all(w in seen for w in ("ready", "stale", "fresh", "base merged")) else print(seen) or 1)' || { echo "stacked_tasks: B's events don't record ready, stale, fresh and base merged"; return 1; }
   sleep 0.5; snap "$w" stacked_tasks >/dev/null
   stop_agents
 }

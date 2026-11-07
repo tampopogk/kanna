@@ -49,7 +49,7 @@ pub struct Entry {
     pub workspace: Option<String>,
     pub birth: Option<String>,
     pub on: Vec<String>,
-    pub ready: Option<Mark>,
+    pub claimed: Option<Mark>,
     pub bases: Vec<Base>,
     pub stale: Vec<String>,
     pub conflict: Option<Conflict>,
@@ -76,7 +76,7 @@ impl Entry {
             "stopped": opt(self.stopped.as_deref()),
             "workspace": opt(self.workspace.as_deref()),
             "on": self.on,
-            "ready": self.ready.as_ref().map_or(Value::Null, Mark::to_value),
+            "ready": self.claimed.as_ref().map_or(Value::Null, Mark::to_value),
             "bases": Value::Array(self.bases.iter().map(Base::to_value).collect()),
             "stale": self.stale,
             "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
@@ -102,7 +102,7 @@ impl Entry {
                 "workspace": opt(self.workspace.as_deref()),
                 "birth": opt(self.birth.as_deref()),
                 "on": self.on,
-                "ready": self.ready.as_ref().map_or(Value::Null, Mark::to_value),
+                "ready": self.claimed.as_ref().map_or(Value::Null, Mark::to_value),
                 "bases": Value::Array(self.bases.iter().map(Base::to_value).collect()),
                 "stale": self.stale,
                 "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
@@ -132,7 +132,7 @@ impl Entry {
             workspace: text("workspace"),
             birth: text("birth"),
             on: strings(&row.doc, "on"),
-            ready: Mark::from_value(row.doc.get("ready")),
+            claimed: Mark::from_value(row.doc.get("ready")),
             bases: Base::list(row.doc.get("bases")),
             stale: stacks::ids(row.doc.get("stale")),
             conflict: Conflict::from_value(row.doc.get("conflict")),
@@ -994,6 +994,7 @@ pub struct Tasks {
     again: Cell<bool>,
     listening: Cell<bool>,
     listen_again: Cell<bool>,
+    merges: RefCell<HashMap<String, task_events::Check>>,
     heads: RefCell<Option<std::sync::mpsc::Sender<stacks::Heads>>>,
     following: RefCell<HashSet<PathBuf>>,
     news: RefCell<News>,
@@ -1175,6 +1176,7 @@ impl Tasks {
             watching: Cell::new(false),
             again: Cell::new(false),
             listening: Cell::new(false),
+            merges: RefCell::new(HashMap::new()),
             listen_again: Cell::new(false),
             heads: RefCell::default(),
             following: RefCell::default(),
@@ -1334,7 +1336,7 @@ impl Tasks {
             return vec![];
         }
         let open = self.open_tasks();
-        entry.after.iter().filter(|id| open.iter().any(|e| e.id == **id && (e.ready.is_none() || !e.stale.is_empty())) || (!self.is_open(id) && self.replica.borrow().open_task(id))).cloned().collect()
+        entry.after.iter().filter(|id| open.iter().any(|e| e.id == **id && (e.claimed.is_none() || !e.stale.is_empty())) || (!self.is_open(id) && self.replica.borrow().open_task(id))).cloned().collect()
     }
 
     fn ambiguous(&self, id: &str) -> bool {
@@ -1346,7 +1348,7 @@ impl Tasks {
     }
 
     fn stack_of(&self, entry: &Entry) -> Vec<Base> {
-        entry.after.iter().filter_map(|id| self.known(id)).filter_map(|e| e.ready.map(|mark| Base { id: e.id, branch: mark.branch, head: mark.head })).collect()
+        entry.after.iter().filter_map(|id| self.known(id)).filter_map(|e| e.claimed.map(|mark| Base { id: e.id, branch: mark.branch, head: mark.head })).collect()
     }
 
     fn conflicted(&self, entry: &Entry) -> Option<String> {
@@ -2648,7 +2650,6 @@ impl Tasks {
                     Some("sender") => responder.reply(this.sending_as(&args)),
                     Some("edit") => responder.reply(this.edit(&args)),
                     Some("ready") => this.mark_ready(args, responder),
-                    Some("unready") => responder.reply(this.unmark(&args)),
                     Some("name") => this.name(&args, responder),
                     Some("list") => this.listed(&args, responder),
                     Some("done") => this.done(&args, responder),
@@ -2671,7 +2672,7 @@ impl Tasks {
                     Some("subscribe") => responder.reply(this.subscribe(&args, true)),
                     Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
                     Some("hearing") => responder.reply(this.hearing(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -4831,24 +4832,44 @@ impl Tasks {
     fn where_of(&self, base: &Base) -> Where {
         match self.open_tasks().into_iter().find(|e| e.id == base.id).and_then(|e| e.folder) {
             Some(folder) => Where::Folder(PathBuf::from(folder)),
-            None => Where::Branch(self.known(&base.id).and_then(|e| e.ready).map(|m| m.branch).filter(|b| !b.is_empty()).unwrap_or_else(|| base.branch.clone())),
+            None => Where::Branch(self.known(&base.id).and_then(|e| e.claimed).map(|m| m.branch).filter(|b| !b.is_empty()).unwrap_or_else(|| base.branch.clone())),
         }
     }
 
     fn merge_target(&self, id: &str, seen: Option<String>) -> String {
-        let ready = self.known(id).and_then(|e| e.ready).unwrap_or_default();
+        let ready = self.known(id).and_then(|e| e.claimed).unwrap_or_default();
         seen.or(Some(ready.head)).filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_else(|| self.branch_name(id))
     }
 
     fn branch_name(&self, id: &str) -> String {
         let known = self.known(id);
-        let ready = known.as_ref().and_then(|e| e.ready.as_ref()).map(|m| m.branch.clone()).filter(|b| !b.is_empty());
+        let ready = known.as_ref().and_then(|e| e.claimed.as_ref()).map(|m| m.branch.clone()).filter(|b| !b.is_empty());
         ready.or_else(|| known.and_then(|e| e.folder).and_then(|f| branch_of(&f))).filter(|b| b.bytes().all(|c| c.is_ascii_alphanumeric() || b"._/-".contains(&c))).unwrap_or_else(|| id.to_string())
+    }
+
+    pub(super) fn merge_label(&self, entry: &Entry) -> Option<&'static str> {
+        if !entry.stale.is_empty() {
+            return Some("stale");
+        }
+        if !entry.bases.is_empty() {
+            return Some("after");
+        }
+        let claim = entry.claimed.as_ref()?;
+        let merges = self.merges.borrow();
+        let check = merges.get(&entry.id).filter(|c| c.tip == claim.head)?;
+        Some(if check.conflicts.is_empty() { "ready" } else { "conflicts" })
     }
 
     fn stack_fields(&self, entry: &Entry, value: &mut Value) {
         let named = |id: &str| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()) });
-        value["ready"] = entry.ready.as_ref().map_or(Value::Null, Mark::to_value);
+        let label = self.merge_label(entry);
+        value["claim"] = entry.claimed.as_ref().map_or(Value::Null, Mark::to_value);
+        value["ready"] = json!(label == Some("ready"));
+        value["merge"] = opt(label);
+        value["mainConflicts"] = match label {
+            Some("conflicts") => self.merges.borrow().get(&entry.id).map_or(Value::Null, |c| json!(c.conflicts)),
+            _ => Value::Null,
+        };
         value["stale"] = Value::Array(entry.stale.iter().map(|id| named(id)).collect());
         value["bases"] = Value::Array(entry.bases.iter().map(|b| {
             let mut base = named(&b.id);
@@ -4908,11 +4929,8 @@ impl Tasks {
                 bases.push(base);
                 continue;
             }
-            if open.iter().any(|e| e.id == base.id && !e.stale.is_empty()) {
-                return Err(KmuxError::new("stale", format!("{} is stale itself: it catches up first, and you get a message when it's ready again", self.label(&base.id))));
-            }
             if !contained {
-                return Err(KmuxError::new("behind", format!("{} isn't in this branch yet: merge it first (git merge {now}), rerun the tests, then mark it ready", self.label(&base.id))));
+                return Err(KmuxError::new("behind", format!("{} isn't in this branch yet: merge it first (git merge {now}), rerun the tests, then run `kanna task ready`", self.label(&base.id))));
             }
             bases.push(Base { head: now, branch: self.branch_name(&base.id), ..base });
         }
@@ -4920,31 +4938,19 @@ impl Tasks {
         let mark = Mark { head: head.clone(), branch: branch.clone(), at: now() };
         let change = Change::new("ready").by(who(args)).with("head", json!(head)).with("branch", json!(branch));
         let entry = self.alter(&id, change, |e| {
-            e.ready = Some(mark.clone());
+            e.claimed = Some(mark.clone());
             e.stale.clear();
             e.bases = bases.clone();
         }).ok_or_else(|| not_found(reference))?;
         log!("kanna-daemon: {id} is ready at {head}");
-        let behind: Vec<String> = self.open_tasks().into_iter().filter(|e| !e.stale.is_empty() && e.bases.iter().any(|b| b.id == id)).map(|e| e.id).collect();
+        let behind: Vec<String> = self.open_tasks().into_iter().filter(|e| e.stale.contains(&id)).map(|e| e.id).collect();
         for task in behind {
-            self.emit(&task, TaskEvent::BaseMoved, format!("{} is ready again: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready set`.", self.label(&id)), None);
+            self.emit(&task, TaskEvent::BaseMoved, format!("{} is ready again at a new commit: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready`.", self.label(&id)), None);
         }
         let freed: Vec<Value> = blocked.iter().filter_map(|e| self.known(&e.id)).filter(|e| self.waits(e).is_empty()).map(|e| json!({ "id": e.id, "name": opt(e.name.as_deref()) })).collect();
         self.changed();
         self.refill();
         Ok(Map::from_iter([("task".to_string(), self.described(&entry)), ("freed".to_string(), Value::Array(freed))]))
-    }
-
-    fn unmark(&self, args: &Value) -> Result<Map, KmuxError> {
-        let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
-        let id = self.resolve(reference)?.ok_or_else(|| not_found(reference))?;
-        let entry = self.open_tasks().into_iter().find(|e| e.id == id).ok_or_else(|| KmuxError::new("done", format!("{} is done", self.short(&id))))?;
-        let entry = match entry.ready {
-            None => entry,
-            Some(_) => self.alter(&id, Change::new("unready").by(who(args)).with("why", json!("cleared")), |e| e.ready = None).ok_or_else(|| not_found(reference))?,
-        };
-        self.changed();
-        Ok(Map::from_iter([("task".to_string(), self.described(&entry))]))
     }
 
     fn follow(&self) {
@@ -4989,7 +4995,7 @@ impl Tasks {
         let mut probes: Vec<task_events::Probe> = vec![];
         for entry in self.open_tasks() {
             let Some(folder) = entry.folder.clone() else { continue };
-            let task = task_events::TaskProbe { id: entry.id.clone(), folder: PathBuf::from(folder), conflicts: hears_conflicts(&entry), commits: entry.hears.hears(TaskEvent::MainMoved) };
+            let task = task_events::TaskProbe { id: entry.id.clone(), folder: PathBuf::from(folder), conflicts: hears_conflicts(&entry), commits: entry.hears.hears(TaskEvent::MainMoved), checked: self.merges.borrow().get(&entry.id).cloned() };
             match probes.iter_mut().find(|p| p.repo == Path::new(&entry.repo)) {
                 Some(probe) => probe.tasks.push(task),
                 None => probes.push(task_events::Probe { repo: PathBuf::from(&entry.repo), last: self.last_main(&entry.repo), tasks: vec![task] }),
@@ -5003,7 +5009,17 @@ impl Tasks {
     }
 
     fn listened(&self, seen: Vec<task_events::Seen>) {
-        let moved = seen.iter().any(|repo| !repo.tasks.is_empty());
+        let before: Vec<(String, Option<&'static str>)> = self.open_tasks().iter().map(|e| (e.id.clone(), self.merge_label(e))).collect();
+        for (id, check) in seen.iter().flat_map(|repo| repo.checks.iter()) {
+            match check {
+                Some(check) => self.merges.borrow_mut().insert(id.clone(), check.clone()),
+                None => self.merges.borrow_mut().remove(id),
+            };
+        }
+        let open: HashSet<String> = self.open_tasks().into_iter().map(|e| e.id).collect();
+        self.merges.borrow_mut().retain(|id, _| open.contains(id));
+        let relabelled = self.open_tasks().iter().any(|e| before.iter().find(|(id, _)| *id == e.id).is_none_or(|(_, was)| *was != self.merge_label(e)));
+        let moved = relabelled || seen.iter().any(|repo| !repo.tasks.is_empty());
         for repo in seen {
             let key = repo.repo.to_string_lossy().into_owned();
             if self.last_main(&key).as_ref() != Some(&repo.main) {
@@ -5103,7 +5119,7 @@ impl Tasks {
     fn probes(&self) -> Vec<stacks::Probe> {
         self.open_tasks()
             .into_iter()
-            .filter(|e| e.ready.is_some() || !e.bases.is_empty())
+            .filter(|e| e.claimed.is_some() || !e.bases.is_empty() || !e.stale.is_empty())
             .filter_map(|e| {
                 let folder = e.folder.clone()?;
                 Some(stacks::Probe { id: e.id.clone(), repo: PathBuf::from(&e.repo), at: Where::Folder(PathBuf::from(folder)), bases: e.bases.iter().map(|b| (b.clone(), self.where_of(b))).collect() })
@@ -5120,7 +5136,7 @@ impl Tasks {
     }
 
     fn settle(&self, seen: Vec<stacks::Seen>) {
-        let tasks: Vec<stacks::Task> = self.open_tasks().into_iter().map(|e| stacks::Task { id: e.id, ready: e.ready, bases: e.bases, stale: e.stale }).collect();
+        let tasks: Vec<stacks::Task> = self.open_tasks().into_iter().map(|e| stacks::Task { id: e.id, claimed: e.claimed, bases: e.bases, stale: e.stale }).collect();
         let steps = stacks::settle(&tasks, &seen);
         if steps.is_empty() {
             return;
@@ -5128,37 +5144,32 @@ impl Tasks {
         for step in steps {
             match step {
                 Step::Unready { id } => {
-                    log!("kanna-daemon: {id}'s branch moved, so it isn't ready");
-                    self.alter(&id, Change::new("unready").by(Some("daemon")).with("why", json!("moved")), |e| e.ready = None);
+                    log!("kanna-daemon: {id}'s branch moved, so its claim is gone");
+                    self.alter(&id, Change::new("unready").by(Some("daemon")).with("why", json!("moved")), |e| e.claimed = None);
                 }
                 Step::Merged { id, base, main } => {
                     log!("kanna-daemon: {base}'s work is in main, so {id} isn't stacked on it");
                     let Some(left) = self.alter(&id, Change::new("base merged").by(Some("daemon")).with("base", json!(base)), |e| e.bases.retain(|b| b.id != base)) else { continue };
                     let main = main.unwrap_or_else(|| "main".into());
                     let rest = match left.bases.is_empty() {
-                        true => format!(" Nothing you build on is outside {main} now: you're an ordinary task again, and can merge into {main} once you're done."),
+                        true => format!(" Nothing you build on is outside {main} now: you can merge into {main} once you're done."),
                         false => format!(" You still merge after {}.", left.bases.iter().map(|b| self.label(&b.id)).collect::<Vec<_>>().join(", ")),
                     };
-                    self.emit(&id, TaskEvent::BaseMerged, format!("{}'s work is in {main} now: merge {main} into your branch (git merge {main}).{rest}", self.label(&base)), None);
+                    self.emit(&id, TaskEvent::BaseMerged, format!("{}'s work is in {main} now.{rest}", self.label(&base)), None);
                 }
-                Step::Stale { id, behind, waiting } => {
-                    log!("kanna-daemon: {id} is stale: behind {behind:?}, on stale {waiting:?}");
-                    let all: Vec<String> = behind.iter().chain(waiting.iter()).cloned().collect();
-                    self.alter(&id, Change::new("stale").by(Some("daemon")).with("behind", json!(all)), |e| {
-                        e.ready = None;
-                        e.stale = all.clone();
-                    });
-                    let mut said = vec![];
-                    if !behind.is_empty() {
-                        let names: Vec<String> = behind.iter().map(|b| self.label(b)).collect();
-                        let merges: Vec<String> = behind.iter().map(|b| format!("git merge {}", self.merge_target(b, seen_head(&seen, &id, b)))).collect();
-                        said.push(format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready set`.", names.join(", "), merges.join("; ")));
+                Step::Stale { id, behind, new } => {
+                    log!("kanna-daemon: {id} is stale: behind {behind:?}");
+                    self.alter(&id, Change::new("stale").by(Some("daemon")).with("behind", json!(behind)), |e| e.stale = behind.clone());
+                    if new.is_empty() {
+                        continue;
                     }
-                    if !waiting.is_empty() {
-                        let names: Vec<String> = waiting.iter().map(|b| self.label(b)).collect();
-                        said.push(format!("{} is stale, so this task is too: what it builds on moved. Wait for it: you get a message when it's ready again; then merge its branch, rerun the tests and run `kanna task ready set`.", names.join(", ")));
-                    }
-                    self.emit(&id, TaskEvent::BaseMoved, said.join(" "), None);
+                    let names: Vec<String> = new.iter().map(|b| self.label(b)).collect();
+                    let merges: Vec<String> = new.iter().map(|b| format!("git merge {}", self.merge_target(b, seen_head(&seen, &id, b)))).collect();
+                    self.emit(&id, TaskEvent::BaseMoved, format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready`.", names.join(", "), merges.join("; ")), None);
+                }
+                Step::Fresh { id } => {
+                    log!("kanna-daemon: {id} has every base's head in its branch");
+                    self.alter(&id, Change::new("fresh").by(Some("daemon")), |e| e.stale.clear());
                 }
             }
         }
@@ -5937,7 +5948,7 @@ mod tests {
 
     #[test]
     fn entries_round_trip_through_the_db() {
-        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, ready: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }] };
+        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, claimed: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }] };
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).held, None, "a task on the Shelf isn't held");
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the Shelf");
@@ -6679,7 +6690,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stacked_chain_starts_on_ready_work_goes_stale_when_a_base_moves_and_catches_up_one_level_at_a_time() {
+    fn a_stacked_chain_starts_on_claimed_work_goes_stale_only_where_a_base_head_is_missing_and_clears_by_merging() {
         let state = std::env::temp_dir().join(format!("kanna-stacked-{}", std::process::id()));
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
@@ -6727,47 +6738,55 @@ mod tests {
         let fc = start(&c);
         assert_eq!(head(&fc), head(&fb), "C starts from B's branch");
         watch();
-        assert!(entry(&b).stale.is_empty() && entry(&c).stale.is_empty() && entry(&a).ready.is_some(), "nothing moved");
+        assert!(entry(&b).stale.is_empty() && entry(&c).stale.is_empty() && entry(&a).claimed.is_some(), "nothing moved");
 
         sh(&fa, "echo a2 >a && git commit -q -am a2");
         watch();
-        assert!(entry(&a).ready.is_none(), "A's branch moved, so it isn't ready");
+        assert!(entry(&a).claimed.is_none(), "A's branch moved, so its claim is gone");
         assert_eq!(entry(&b).stale, vec![a.clone()]);
-        assert!(entry(&b).ready.is_none(), "a stale task isn't ready");
-        assert_eq!(entry(&c).stale, vec![b.clone()], "the staleness ripples down the chain");
-        assert_eq!((mail(&b), mail(&c)), (1, 1), "each stale task is told");
+        assert!(entry(&b).claimed.is_some(), "B's commit hasn't changed, so its claim stays underneath");
+        assert_eq!(tasks.merge_label(&entry(&b)), Some("stale"));
+        assert!(entry(&c).stale.is_empty(), "C has B's head, so it isn't stale");
+        assert_eq!((mail(&b), mail(&c)), (1, 0), "the stale task is told");
         let told = tasks.waiting.borrow().iter().find(|m| m.recipient == b).cloned().unwrap();
         assert!(told.text.contains(&format!("git merge {}", head(&fa))), "it merges A's commit, never a branch name: {}", told.text);
+        assert!(told.text.ends_with("then run `kanna task ready`."), "{}", told.text);
         assert_eq!(told.mode.as_deref(), Some(messages::PROMPTING), "Kanna's messages come in the envelope");
         watch();
-        assert_eq!((mail(&b), mail(&c)), (1, 1), "once");
+        assert_eq!(mail(&b), 1, "once");
         assert_eq!(ready(&b).unwrap_err().code, "behind", "B hasn't merged A's new work");
-        assert_eq!(ready(&c).unwrap_err().code, "stale", "C can't catch up before B");
 
         sh(&fb, &format!("git merge -q --no-edit {}", head(&fa)));
-        ready(&b).unwrap();
-        assert!(entry(&b).stale.is_empty() && entry(&b).ready.is_some());
-        assert_eq!(mail(&c), 2, "C hears B is ready again");
         watch();
-        assert_eq!(entry(&c).stale, vec![b.clone()], "C stays stale until it catches up too");
+        assert!(entry(&b).stale.is_empty(), "merging A clears it at once");
+        assert!(entry(&b).claimed.is_none(), "and moved B, so it has no claim until it claims again");
+        assert_eq!(entry(&c).stale, vec![b.clone()], "B's head isn't in C now");
+        assert_eq!(mail(&c), 1);
+        ready(&b).unwrap();
+        assert_eq!(mail(&c), 2, "C hears B is ready again");
         assert_eq!(ready(&c).unwrap_err().code, "behind");
         sh(&fc, &format!("git merge -q --no-edit {}", head(&fb)));
-        ready(&c).unwrap();
         watch();
-        assert!(entry(&c).stale.is_empty() && entry(&c).ready.is_some(), "C caught up");
+        assert!(entry(&c).stale.is_empty());
+        ready(&c).unwrap();
+        assert_eq!(tasks.merge_label(&entry(&c)), Some("after"), "C merges after B");
 
-        tasks.unmark(&json!({ "task": c })).unwrap();
-        assert!(entry(&c).ready.is_none(), "unready clears it");
         sh(&state, &format!("git merge -q --no-edit {}", head(&fa)));
         watch();
         assert!(entry(&b).bases.is_empty(), "A is in main, so B is an ordinary task again");
-        assert_eq!(mail(&b), 2, "and is told to merge main");
+        assert_eq!(mail(&b), 2, "and is told so");
+        let merged = tasks.waiting.borrow().iter().filter(|m| m.recipient == b).last().cloned().unwrap();
+        assert!(!merged.text.contains("git merge"), "merging main would cost its claim: {}", merged.text);
+        assert!(entry(&b).claimed.is_some(), "B's commit hasn't changed");
+        tasks.listened(task_events::look(tasks.main_probes()));
+        assert_eq!(tasks.merge_label(&entry(&b)), Some("ready"), "it merges into main cleanly, behind it or not");
+        assert_eq!(tasks.described(&entry(&b))["ready"], json!(true));
         assert_eq!(entry(&c).bases.len(), 1, "C still merges after B");
         let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
         let kept = again.entries.borrow().iter().find(|e| e.id == c).cloned().unwrap();
-        assert_eq!((kept.bases, kept.ready), (entry(&c).bases, None), "the stack survives a restart");
+        assert_eq!((kept.bases, kept.claimed), (entry(&c).bases, entry(&c).claimed), "the stack and the claim survive a restart");
         let events = tasks.db.events(&b).unwrap().into_iter().map(|e| e.what).collect::<Vec<_>>();
-        assert!(["ready", "stale", "base merged"].iter().all(|what| events.iter().any(|e| e == what)), "{events:?}");
+        assert!(["ready", "stale", "fresh", "unready", "base merged"].iter().all(|what| events.iter().any(|e| e == what)), "{events:?}");
         let _ = fs::remove_dir_all(&state);
     }
 
@@ -6854,6 +6873,44 @@ mod tests {
         assert!(told(&tasks, &a).is_empty());
         assert!(tasks.known(&a).unwrap().sent[0].about.is_none(), "the conflict is over");
 
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn a_claimed_task_is_ready_only_while_it_merges_into_main_cleanly_at_the_commit_it_claimed() {
+        let (state, _core, tasks) = main_rig("ready", "f g");
+        let (a, fa) = rig_task(&tasks, &state, "A");
+        let (calm, fc) = rig_task(&tasks, &state, "Calm");
+        rig_sh(&fa, "echo a >f && git commit -q -am a");
+        rig_sh(&fc, "echo c >g && git commit -q -am c");
+        let label = |id: &str| tasks.merge_label(&tasks.known(id).unwrap());
+        let loose = || git(&state, &["count-objects"]).unwrap();
+        listen(&tasks);
+        assert_eq!(label(&a), None, "not claimed");
+        tasks.mark(&json!({ "task": a })).unwrap();
+        tasks.mark(&json!({ "task": calm })).unwrap();
+        assert_eq!((label(&a), label(&calm)), (Some("ready"), Some("ready")));
+
+        rig_sh(&state, "echo main >f && git commit -q -am m1");
+        let before = loose();
+        listen(&tasks);
+        assert_eq!(label(&a), Some("conflicts"), "main moved into a conflict");
+        assert_eq!(label(&calm), Some("ready"), "behind main with no conflict is still ready");
+        assert_eq!(tasks.described(&tasks.known(&a).unwrap())["mainConflicts"], json!(["f"]));
+        assert!(tasks.known(&a).unwrap().claimed.is_some(), "the claim stays underneath");
+        assert_eq!(loose(), before, "the check writes nothing into the repo");
+
+        rig_sh(&fa, "git merge -q main; echo merged >f && git commit -q -am merged");
+        tasks.watched(stacks::look(tasks.probes()));
+        listen(&tasks);
+        assert!(tasks.known(&a).unwrap().claimed.is_none(), "fixing it moved the branch");
+        assert_eq!(label(&a), None);
+        tasks.mark(&json!({ "task": a })).unwrap();
+        assert_eq!(label(&a), Some("ready"));
+
+        rig_sh(&state, &format!("git merge -q --no-edit {}", git(&fc, &["rev-parse", "HEAD"]).unwrap()));
+        listen(&tasks);
+        assert_eq!(label(&calm), None, "merged: nothing left to merge");
         let _ = fs::remove_dir_all(&state);
     }
 
