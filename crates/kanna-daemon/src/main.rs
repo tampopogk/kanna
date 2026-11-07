@@ -5,6 +5,7 @@ macro_rules! log {
 }
 
 mod accounts;
+mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
@@ -525,6 +526,7 @@ fn run() -> Result<(), String> {
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     tasks.repair_comment_targets();
+    tasks.settle_statuses();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();

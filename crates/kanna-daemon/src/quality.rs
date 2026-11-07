@@ -444,7 +444,7 @@ mod tests {
     }
 
     fn tile_of(report: &kanna_mux::json::Map, id: &str) -> Value {
-        report["sections"][3]["tiles"].as_array().unwrap().iter().find(|t| t["id"] == id).cloned().unwrap_or_else(|| panic!("no tile {id}"))
+        report["sections"][4]["tiles"].as_array().unwrap().iter().find(|t| t["id"] == id).cloned().unwrap_or_else(|| panic!("no tile {id}"))
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
         let fix = samples.iter().filter(|s| s.metric == "fixes" && s.value == 1.0).collect::<Vec<_>>();
         assert_eq!(fix.len(), 1, "the fix-busy landing, sampled for the factory's stats though Code quality doesn't show it");
         assert_eq!(fix[0].doc["blamed"], json!(landing));
-        let ids: Vec<&str> = report["sections"][3]["tiles"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
+        let ids: Vec<&str> = report["sections"][4]["tiles"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
         assert!(!ids.iter().any(|id| ["fixed", "fixes", "tofix", "causes", "fix-areas"].contains(id)), "fixes are the factory's, not the code's: {ids:?}");
         assert_eq!(tile_of(&report, "hotspots")["chart"]["rows"][0]["detail"], json!("src/lib.rs"));
         assert_eq!(tile_of(&report, "lines-covered")["note"], json!("not set up: stats.coverage in ~/.kanna-v4/config.json"));
