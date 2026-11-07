@@ -88,7 +88,7 @@ flowchart LR
 
 ## Quiz results
 
-`phone_chat` is the phone's conversation, by repo for the planner and by task ID for [a task's page](mobile-shelf.md#3-what-a-task-says) ([chat §5](mobile-chat.md#5-store-and-tests)). `said` is every task's replies, for the phone ([Shelf §3](mobile-shelf.md#3-last-words)). The phone will add `quiz_ready`, `quiz_map` and `quiz_notes` ([quiz](mobile-quiz.md)), all planned.
+`phone_chat` is the phone's conversation, by repo for the planner and by task ID for [a task's page](mobile-shelf.md#3-what-a-task-says) ([chat §5](mobile-chat.md#5-store-and-tests)). `said` is every task's replies, for the phone ([Shelf §3](mobile-shelf.md#3-last-words)). `quiz_ready`, `quiz_map` and `quiz_notes` are the phone's quiz: [rounds written ahead](mobile-quiz.md#1-rounds-written-ahead) with `taken` set by their first answer, the subsystems, and the notes on what you know, one row per subsystem. A phone's answers are ordinary `quiz_answers` rows, keyed by (`round`, `n`).
 
 **Built.** Every [quiz](quiz.md) round and answer is kept, so misses can come back in a later round and a round can cover what's new since the last one.
 
@@ -130,6 +130,7 @@ sequenceDiagram
 | `file` | text | the file the question is about, relative to the repo |
 | `right` | integer | 1 or 0 |
 | `again` | integer → `quiz_answers.id` | the earlier miss this question asked again |
+| `n` | integer | the question's place in a round written ahead, unique with `round`, so a resent answer counts once; empty for the Mac's |
 | `doc` | JSON | `line`, `last`, question, choices, the pick, the right choice, explanation, … |
 
 - **The quiz agent writes them** with `kanna quiz start`, `answer` and `history`, through the daemon's `quiz` command (`quiz.rs`) like every other write. This replaces the quiz spec's "nothing is kept" rule and its rejected `kanna quiz` command.

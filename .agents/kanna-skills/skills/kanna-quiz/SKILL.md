@@ -1,13 +1,13 @@
 ---
 name: kanna-quiz
-description: Use when you've been told you're the Kanna quiz agent (the agent of a Quiz window), or as the Kanna planning agent offering the user a quiz on what landed on main: five multiple-choice questions about the codebase, asked one at a time, each answer explained with the code opened at the line.
+description: Use when you've been told you're the Kanna quiz agent (the agent of a Quiz window) or the Kanna quiz writer (writing a round ahead for the phone), or as the Kanna planning agent offering the user a quiz on what landed on main: five multiple-choice questions about the codebase, each answer explained with the code at the line.
 ---
 
 # Kanna quiz
 
 Agents write code faster than the user can read it. A quiz is a short break that keeps them up with what landed: five multiple-choice questions about main's last day of commits, asked one at a time, each answer explained, with the code shown beside you on a miss. About two minutes. No score to protect.
 
-Two parts: the planning agent **offers** a round and opens the Quiz window; the agent there, told it's the Kanna quiz agent in its first message, **asks** it.
+Three parts: the planning agent **offers** a round and opens the Quiz window; the agent there, told it's the Kanna quiz agent in its first message, **asks** it; and on the phone rounds are played from what the Kanna quiz writer **writes ahead**.
 
 ## Offering (the planning agent)
 
@@ -85,6 +85,36 @@ Write each question just before you ask it:
 
 Kanna keeps every round and answer (in its database, through `kanna quiz`), so misses come back and the next round starts from what's new since this one.
 
+## Writing ahead (the quiz writer)
+
+You're the Kanna quiz writer: told so in your first message, with a subject if there is one. There's no window, nobody is watching and nobody can answer you: never ask anything. You're in the repo's main checkout. Change nothing there: no edits, commits or branches. Put your own files in `$TMPDIR`. Be quick: every run costs the user's agent usage, so read what the round needs and no more. When the round is in, end your turn; Kanna quits you.
+
+1. **Read what's there:** `kanna quiz history --json`, `kanna quiz history --misses --json`, `kanna quiz map --json` and `kanna quiz notes`.
+2. **No map yet, or a new top folder that belongs to no subsystem:** write one, 6 to 12 subsystems, each a plain name and the paths of its code and specs, and hand it in with `kanna quiz map FILE`. The first match wins; `**` crosses folders, `*` doesn't. A tile's size is the lines in its files, so leave out `references/`, generated files and anything vendored, and don't make a subsystem of nothing but docs. Nothing else makes the map: without one the user sees none.
+
+   ```json
+   {"subsystems": [{"name": "Machines", "paths": ["crates/kanna-net/**", "docs/specs/machine*.md"]}]}
+   ```
+
+3. **Choose five questions:** with a subject, all five on it. Otherwise what's new since the last round's `head` first (`git log --stat LAST..main`, at most 30 commits), then older code, weak subsystems (the map's low numbers, the notes) and up to two misses, so there's always something to ask. Read with `git show main:PATH`: only what's true on main. The kinds, and what makes a good question, are in [The kinds](#the-kinds) and [One question at a time](#one-question-at-a-time): four choices (three for a drawing), one right, the wrong ones plausible, no trick questions. Broadest first, spread across files. Vary the position of the right answer.
+4. **Write the round** to a file. `head` is `git rev-parse main`, and the lines you name must exist there. Kanna cuts each question's lines from that commit, so a miss shows them offline.
+
+   ```json
+   {"head": "FULL SHA", "title": "Two to four words", "says": "about the relay and pairing", "commits": ["67b287c"], "agent": "claude",
+    "questions": [
+      {"kind": "behaviour", "file": "crates/kanna-net/src/node.rs", "line": 161, "last": 175, "source": "67b287c",
+       "text": "When does a machine use a relay?", "topic": "When the relay's used",
+       "choices": [{"label": "Only when the LAN fails", "why": "Direct first"}, {"label": "…"}, {"label": "…"}, {"label": "…"}],
+       "answer": 0, "why": "Why that's right, in a sentence or two; `code` in backticks.", "again": "a7"}]}
+   ```
+
+   - `kind` is one of the table's; `answer` is the right one's index from 0; `topic` is a few words for the end of the round; `source` is a short hash or a spec's path; `again` only on a miss brought back, with its `answer` ID. `why` in a choice is a short line under it that mustn't give the answer away; leave it out if you've nothing to add.
+   - **Spot the bug:** no `choices`; `"lines": [{"n": 521, "text": "…"}, …]`, four lines with their numbers, exactly one changed to put a bug in.
+   - **Pick the drawing:** no `choices`; `"drawings": ["flowchart LR\n  A[daemon] --> B[keeper]", …]`, three short flowcharts of up to six boxes, with labels of one to three words and few arrow labels: a phone screen is small. They draw top to bottom whatever you write, so no more than two boxes side by side. Only `flowchart` draws on the phone, and `kanna quiz ready` refuses one too wide to read.
+
+5. **Your notes:** `kanna quiz notes FILE` with `{"notes": {"Machines": "A few plain lines: where they're strong, where they slip."}}`, for the subsystems the new answers in the history tell you about. Facts from their answers, no praise.
+6. **Hand it in, last:** `kanna quiz ready FILE`. It prints the round's ID, or everything wrong with it: fix those and run it again. With nothing left to do, end your turn.
+
 ## Commands
 
 Run the `kanna` on your PATH, from this terminal: its `KANNA_*` variables tell Kanna which pane is asking, so what you open goes in a tab beside you.
@@ -100,3 +130,7 @@ Run the `kanna` on your PATH, from this terminal: its `KANNA_*` variables tell K
 | `kanna quiz start [--json DOC]` | Start a round on main's commit; prints its ID (`r12`) |
 | `kanna quiz answer ROUND --kind KIND --file FILE:LINE --right\|--wrong [--again ANSWER] [--json DOC]` | Record an answer; prints its ID (`a7`) |
 | `kanna quiz history [--misses] [--json]` | This repo's rounds and answers, newest first; `--misses`: the misses not asked again |
+| `kanna quiz ready FILE` | The quiz writer: hand in a round; prints its ID, or everything wrong with it |
+| `kanna quiz map [FILE] [--json]` | With FILE, keep the subsystems; without, each one's numbers |
+| `kanna quiz notes [FILE]` | With FILE, keep the notes on what the user knows; without, print them |
+| `kanna quiz ahead [--about TEXT]` | Queue a writer for a round, on a subject |

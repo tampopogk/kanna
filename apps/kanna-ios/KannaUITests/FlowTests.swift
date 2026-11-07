@@ -134,6 +134,189 @@ final class FlowTests: XCTestCase {
         see("Working")
     }
 
+    private func quiz(_ more: [String] = []) {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"] + more
+        app.launch()
+        tabBar("Quiz")
+        see("What you know")
+    }
+
+    private func play(rightOnce first: Bool = true) {
+        XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 8))
+        app.buttons["next-round"].tap()
+        see("1 of 5")
+        shot("drawing")
+        app.buttons["drawing-1"].tap()
+        see("Right.")
+        app.buttons["next-question"].tap()
+        tap("With `--no-daemon`".replacingOccurrences(of: "`", with: ""))
+        app.buttons["next-question"].tap()
+    }
+
+    func testQuizRoundWithAMiss() {
+        quiz(["-slowWriter", "YES"])
+        shot("map")
+        play()
+        tap("In the kanna CLI")
+        see("Not quite.")
+        shot("miss")
+        XCTAssertTrue(app.buttons["code-card"].waitForExistence(timeout: 3))
+        app.buttons["code-card"].tap()
+        see("at ad2317c")
+        shot("code-from-quiz")
+        app.buttons["close-code"].tap()
+        app.buttons["next-question"].tap()
+        tap("The app")
+        app.buttons["next-question"].tap()
+        tap("526")
+        app.buttons["next-question"].tap()
+        see("4 of 5")
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "days")).firstMatch.exists, "no streak")
+        see("The map moved")
+        see("72% →")
+        shot("end")
+        app.buttons["round-done"].tap()
+        see("Writing your next round")
+        shot("writing")
+    }
+
+    func testQuizMeLandsInChat() {
+        quiz()
+        tap("41 commits")
+        app.buttons["quiz-me"].tap()
+        see("Writing it now")
+        shot("quiz-me")
+        see("Round ready: Machines", 10)
+        tabBar("Chat")
+        XCTAssertTrue(app.buttons["round-card"].waitForExistence(timeout: 5))
+        shot("card")
+        app.buttons["round-card"].tap()
+        see("1 of 5")
+    }
+
+    func testARoundResumesAndAMissComesBack() {
+        quiz()
+        XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 8))
+        app.buttons["next-round"].tap()
+        app.buttons["drawing-1"].tap()
+        app.buttons["next-question"].tap()
+        app.buttons["close-round"].tap()
+        tap("Back to your round")
+        see("2 of 5")
+        tap("With --no-daemon")
+        app.buttons["next-question"].tap()
+        tap("In the kanna CLI")
+        app.buttons["next-question"].tap()
+        tap("The app")
+        app.buttons["next-question"].tap()
+        tap("526")
+        app.buttons["next-question"].tap()
+        see("4 of 5")
+        app.buttons["round-done"].tap()
+        XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 8))
+        see("1 miss back")
+        app.buttons["next-round"].tap()
+        see("A miss, back again")
+        shot("miss-back")
+    }
+
+    func testARoundPlaysOfflineAndItsAnswersSyncLater() {
+        quiz(["-slowWriter", "YES"])
+        XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 8))
+        app.buttons["chip"].tap()
+        app.buttons["fixture-link"].tap()
+        see("A round already on the phone still plays")
+        shot("offline")
+        play()
+        tap("In the daemon")
+        app.buttons["next-question"].tap()
+        tap("The app")
+        app.buttons["next-question"].tap()
+        tap("526")
+        app.buttons["next-question"].tap()
+        see("5 of 5")
+        see("These answers sync when studio is back")
+        XCTAssertFalse(app.staticTexts["The map moved"].exists)
+        shot("offline-end")
+        app.buttons["round-done"].tap()
+        see("Writing your next round")
+        see("72%")
+        app.buttons["chip"].tap()
+        app.buttons["fixture-link"].tap()
+        see("80%", 10)
+    }
+
+    func testAnEmptyStoreStartsTheWriterAndAFailureSaysSo() {
+        quiz(["-emptyQuiz", "YES", "-writerFails", "YES"])
+        see("Writing your next round")
+        see("Couldn't write your next round", 12)
+        shot("writer-failed")
+        app.buttons["try-writing"].tap()
+        see("Writing your next round")
+    }
+
+    private func chip(_ link: String, more: [String] = []) {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-link", link] + more
+        app.launch()
+    }
+
+    func testTheChipSaysEachPath() {
+        chip("lan")
+        see("Direct · LAN")
+        app.terminate()
+        chip("net")
+        see("Direct · internet")
+        shot("direct-internet")
+        app.buttons["chip"].tap()
+        see("A direct path across the internet")
+        see("41 ms")
+        app.terminate()
+        chip("relay")
+        see("Relayed")
+        app.buttons["chip"].tap()
+        see("Through your relay")
+        see("Trying")
+        shot("relayed")
+    }
+
+    func testTheChipMovesWhenAHolePunchWorks() {
+        chip("relay,net")
+        see("Relayed")
+        see("Direct · internet", 12)
+    }
+
+    func testTheChipTellsNoNetworkFromAMachineAsleep() {
+        chip("lan", more: ["-noNetwork", "YES"])
+        see("Offline")
+        app.buttons["chip"].tap()
+        see("This phone has no network")
+        shot("no-network")
+    }
+
+    func testADayOldMessageAsksBeforeItGoes() {
+        chip("lan", more: ["-dayOld", "kanna"])
+        see("A day old, not sent")
+        shot("day-old")
+        tap("Keep waiting")
+        XCTAssertTrue(app.staticTexts["A day old, not sent"].waitForNonExistence(timeout: 10))
+        see("Written yesterday")
+        app.terminate()
+        chip("lan", more: ["-dayOld", "kanna"])
+        see("A day old, not sent")
+        tap("Discard")
+        XCTAssertTrue(app.staticTexts["Written yesterday"].waitForNonExistence(timeout: 10))
+    }
+
+    func testADayOldTaskMessageAsksBeforeItGoes() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-dayOld", "kanna", "-dayOldTask", "Review build output"]
+        app.launch()
+        tabBar("Shelf")
+        tap("Review build output")
+        see("A day old, not sent")
+        tap("Discard")
+        XCTAssertTrue(app.staticTexts["Written yesterday"].waitForNonExistence(timeout: 10))
+    }
+
     private func stats() {
         app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna"]
         app.launch()
@@ -276,10 +459,37 @@ final class FlowTests: XCTestCase {
         tabBar("Machines")
         see("Asking")
         tap("mbp")
+        XCTAssertTrue(app.buttons["run-here"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["Offline"].exists)
         tap("Run the planner here")
         XCTAssertTrue(app.staticTexts["Direct · LAN"].waitForExistence(timeout: 10))
         tabBar("Chat")
         see("Planner")
+    }
+
+    func testLeavingTheAppWhileItRedialsDoesNotStrandIt() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-slowDial", "YES"]
+        app.launch()
+        see("Planner · idle", 10)
+        app.buttons["chip"].tap()
+        app.buttons["fixture-link"].tap()
+        XCTAssertTrue(app.staticTexts["Planner · idle"].waitForNonExistence(timeout: 10))
+        Thread.sleep(forTimeInterval: 4)
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 1)
+        app.activate()
+        Thread.sleep(forTimeInterval: 2)
+        if !app.buttons["fixture-link"].exists { app.buttons["chip"].tap() }
+        XCTAssertTrue(app.buttons["fixture-link"].waitForExistence(timeout: 5))
+        app.buttons["fixture-link"].tap()
+        see("Planner · idle", 15)
+    }
+
+    func testThePhoneTriesItsPlannerItselfWhenAnotherMachineSaysItIsDown() {
+        app.launchArguments = ["-fixture", "YES", "-paired", "YES", "-repo", "kanna", "-planner", "away", "-plannerWakes", "YES"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["Offline"].waitForExistence(timeout: 10))
+        see("Planner · idle", 20)
     }
 
     func testPairingThenChat() {

@@ -348,6 +348,8 @@ fn told_task(message: Option<&str>) -> String {
 
 pub const QUIZ_ROLE: &str = "You are the Kanna quiz agent, on main: quiz me on what landed on main.";
 
+pub const WRITER_ROLE: &str = "You are the Kanna quiz writer, on main: write the next round ahead, as the kanna-quiz skill's Writing ahead says, then end your turn.";
+
 /// How an agent Kanna starts in a role starts: as you'd start it yourself, with its first message saying its role.
 pub fn started_as(program: &str, role: &str, context: Option<u64>, prompts: Prompts) -> String {
     started_in(program, role, context, prompts, None)
@@ -953,6 +955,7 @@ pub struct Tasks {
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
+    pub age: RefCell<Option<Box<dyn Fn(&str) -> Option<Duration>>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     pub background: RefCell<Option<Box<dyn Fn(&str) -> Option<Vec<Process>>>>>,
@@ -1137,6 +1140,7 @@ impl Tasks {
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
             on_delivered: RefCell::default(),
+            age: RefCell::default(),
             warned: RefCell::default(),
             delivering: RefCell::default(),
             posting: RefCell::default(),
@@ -2923,8 +2927,8 @@ impl Tasks {
             None if recipient == PLANNER => "no-planner".into(),
             None => "stopped".into(),
         };
-        let warning = match pane.and_then(|pane| self.channel(&pane)) {
-            Some(channel) => self.undeliverable(&channel),
+        let warning = match pane.and_then(|pane| self.channel(&pane).map(|channel| (pane, channel))) {
+            Some((pane, channel)) => self.undeliverable(&channel).filter(|_| self.coming_up(&pane, &channel).is_none()),
             None => agent.filter(|agent| !messages::AGENTS.contains(&agent.as_str())).map(|agent| format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))),
         };
         if let Some(why) = &warning {
@@ -3075,7 +3079,7 @@ impl Tasks {
     }
 
     fn has_mail(&self, pane: &str) -> bool {
-        self.task_of(pane).is_some_and(|id| self.waiting.borrow().iter().any(|m| m.recipient == id)) && self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none())
+        self.task_of(pane).is_some_and(|id| self.waiting.borrow().iter().any(|m| m.recipient == id)) && self.channel(pane).is_some_and(|channel| self.undeliverable(&channel).is_none() || self.coming_up(pane, &channel).is_some())
     }
 
     fn deliver(self: &Rc<Self>, core: &CoreHandle, now: Instant) -> Option<Instant> {
@@ -3109,8 +3113,12 @@ impl Tasks {
             match at {
                 Some(at) if at <= now => match self.undeliverable(&channel) {
                     Some(why) => {
-                        self.warn(&pane, why);
-                        next = Some(next.map_or(now + messages::RETRY, |n: Instant| n.min(now + messages::RETRY)));
+                        let coming_up = self.coming_up(&pane, &channel);
+                        let retry = now + coming_up.map_or(messages::RETRY, |left| left.min(messages::RETRY));
+                        if coming_up.is_none() {
+                            self.warn(&pane, why);
+                        }
+                        next = Some(next.map_or(retry, |n: Instant| n.min(retry)));
                     }
                     None => self.hand_over(pane, list, channel),
                 },
@@ -3123,6 +3131,12 @@ impl Tasks {
 
     fn channel(&self, pane: &str) -> Option<Channel> {
         self.channel.borrow().as_ref().and_then(|channel| channel(pane))
+    }
+
+    fn coming_up(&self, pane: &str, channel: &Channel) -> Option<Duration> {
+        channel.socket()?.err()?;
+        let age = self.age.borrow().as_ref().and_then(|age| age(pane))?;
+        messages::GRACE.checked_sub(age).filter(|left| !left.is_zero())
     }
 
     fn permissions(&self, pane: &str) -> Option<&'static str> {

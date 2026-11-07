@@ -1097,6 +1097,10 @@ impl LayoutHost for Model {
             self.workspaces[s].left_at = None;
             return Ok(None);
         }
+        if at.quiz {
+            self.dock_workspace(pane, Edge::Left, Where::Quiz(at.app.clone().unwrap_or_else(|| MAC_APP.into())), false);
+            return Ok(None);
+        }
         if let Some(edge) = at.dock {
             let place = if at.shelf { Where::Shelf } else { Where::Desk(at.app.clone().unwrap_or_else(|| MAC_APP.into())) };
             self.dock_workspace(pane, edge, place, at.frozen);
