@@ -98,6 +98,8 @@ pub const RETRY: Duration = Duration::from_secs(5);
 
 pub const AGAIN: Duration = Duration::from_secs(3);
 
+pub const GRACE: Duration = Duration::from_secs(20);
+
 pub fn permissions(argv: &[Vec<String>]) -> Option<&'static str> {
     let unprompted = |args: &Vec<String>| args.iter().enumerate().any(|(at, arg)| UNPROMPTED.contains(&arg.as_str()) || (arg == "--permission-mode" && args.get(at + 1).is_some_and(|mode| mode == "bypassPermissions")));
     (!argv.is_empty()).then(|| if argv.iter().any(unprompted) { BYPASS } else { PROMPTING })

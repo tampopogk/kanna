@@ -358,6 +358,8 @@ fn run() -> Result<(), String> {
             other => messages::Channel::Other(other.to_string()),
         })
     }));
+    let (ages, run) = (Rc::downgrade(&detector), run_of.clone());
+    *tasks.age.borrow_mut() = Some(Box::new(move |pane| lifeline::age_of(ages.upgrade()?.program(&run(pane)?)?.pid)));
     let (modes, run) = (Rc::downgrade(&detector), run_of.clone());
     *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().zip(run(pane)).is_some_and(|(detector, terminal)| detector.line_mode(&terminal))));
     let (trees, run) = (Rc::downgrade(&detector), run_of.clone());
