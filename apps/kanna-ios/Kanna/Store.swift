@@ -135,7 +135,6 @@ final class Store {
     }
 
     func foreground(_ on: Bool) {
-        Trace.note("foreground \(on) waking \(waking) linked \(linked?.name ?? "-")")
         active = on
         if on {
             watchNetwork()
@@ -170,7 +169,6 @@ final class Store {
             let up = path.status == .satisfied
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    Trace.note("network \(up)")
                     self?.noNetwork = !up
                     if up {
                         self?.triedPlanner = nil
@@ -184,7 +182,6 @@ final class Store {
     }
 
     private func wake() {
-        Trace.note("wake active \(active) linked \(linked?.name ?? "-") waking \(waking)")
         guard active, backend.paired != nil, linked == nil, !waking else { return }
         waking = true
         generation += 1
@@ -192,7 +189,6 @@ final class Store {
         Task {
             try? await Task.sleep(for: .seconds(40))
             guard mine == generation, waking, linked == nil else { return }
-            Trace.note("wake gave up after 40 s")
             generation += 1
             waking = false
             wake()
@@ -203,7 +199,6 @@ final class Store {
                 let target = reach(repo.plannerKey)
                 let hello = try await dial(target, mine)
                 guard mine == generation else { return }
-                Trace.note("linked \(hello.name)")
                 arrived(hello, on: hello.key)
                 await measure()
                 try await catchUp(currentID)
@@ -213,7 +208,6 @@ final class Store {
             } catch let refused as Refused where refused.code == "revoked" {
                 forgetPairing()
             } catch {
-                Trace.note("wake failed \(error)")
                 guard mine == generation else { return }
                 unlinked()
                 retry()
@@ -274,7 +268,6 @@ final class Store {
         if let triedPlanner, Date().timeIntervalSince(triedPlanner) < 30 { return }
         guard mine == generation, let target = reach(repo.plannerKey) else { return }
         triedPlanner = Date()
-        Trace.note("trying the planner \(target.name)")
         if await backend.reaches(target), mine == generation { relink() }
     }
 
@@ -295,7 +288,6 @@ final class Store {
     }
 
     private func lost() {
-        Trace.note("lost")
         unlinked()
         retry()
     }
@@ -1067,22 +1059,6 @@ final class Store {
                     rebuild(repo)
                 }
             }
-        }
-    }
-}
-
-enum Trace {
-    private static let file = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("link-trace.log")
-
-    @MainActor static func note(_ text: String) {
-        let line = "\(Date().formatted(.iso8601)) \(text)\n"
-        guard let data = line.data(using: .utf8) else { return }
-        if let handle = try? FileHandle(forWritingTo: file) {
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: data)
-            try? handle.close()
-        } else {
-            try? data.write(to: file)
         }
     }
 }
