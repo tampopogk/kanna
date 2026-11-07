@@ -441,6 +441,7 @@ final class FixtureBackend: Backend {
     func close() {}
 
     func networkChanged() {}
+    func askLocalNetwork() {}
 
     func forget() { paired = nil }
 
