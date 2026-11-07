@@ -3523,13 +3523,20 @@ impl Tasks {
             .filter(|r| repo.is_none() || (project.is_some() && r.text("project") == project.as_deref()))
             .collect();
         records.sort_by_key(|r| r.born());
-        let elsewhere = records
+        let row = |r: &replica::Record| {
+            let mut value = r.to_value();
+            value["id"] = json!(r.task);
+            value["machine"] = json!(machines.name_of(r.text("owner").unwrap_or_default()));
+            value["madeAt"] = num(r.born().ms as f64 / 1000.0);
+            value
+        };
+        let (mine, others): (Vec<&replica::Record>, Vec<&replica::Record>) = records.into_iter().partition(|r| r.text("claim") == Some(machines.me.name.as_str()));
+        let elsewhere = others.into_iter().map(row).collect();
+        let claimed = mine
             .into_iter()
             .map(|r| {
-                let mut value = r.to_value();
-                value["id"] = json!(r.task);
-                value["machine"] = json!(machines.name_of(r.text("owner").unwrap_or_default()));
-                value["madeAt"] = num(r.born().ms as f64 / 1000.0);
+                let mut value = row(r);
+                value["leftAt"] = r.since("claim").map_or(Value::Null, |at| num((at.ms / 1000) as f64));
                 value
             })
             .collect();
@@ -3538,7 +3545,7 @@ impl Tasks {
             .filter(|r| r.runs().len() > 1 && r.text("state") != Some("done"))
             .map(|r| (r.task.clone(), json!(r.runs().into_iter().map(|device| machines.name_of(device)).collect::<Vec<_>>())))
             .collect();
-        let mut reply = Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("agent".to_string(), json!(agent)), ("elsewhere".to_string(), Value::Array(elsewhere)), ("twice".to_string(), Value::Object(twice))]);
+        let mut reply = Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("agent".to_string(), json!(agent)), ("elsewhere".to_string(), Value::Array(elsewhere)), ("claimed".to_string(), Value::Array(claimed)), ("twice".to_string(), Value::Object(twice))]);
         if args.get("done").and_then(Value::as_bool) == Some(true) {
             let done = self.db.done_tasks().unwrap_or_else(|error| {
                 eprintln!("kanna-daemon: can't read the done tasks in {}: {error}", db::FILE);

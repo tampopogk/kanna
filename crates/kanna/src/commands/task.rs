@@ -238,6 +238,7 @@ fn after(request: &Value, reply: &mut Value, mux: &mut Session, call: &mut Call)
             reply["twice"] = found["twice"].clone();
             reply["agent"] = found["agent"].clone();
             name_out(reply, &found["desk"]);
+            split_desks(reply, &found["claimed"]);
             if asked["repo"].is_string() {
                 keep_named(reply);
             }
@@ -290,14 +291,14 @@ fn done_line(task: &Value) -> String {
 
 /// The task ID a query is, when it's only that and nothing listed matches it: a task that's done, or never was.
 pub fn lone_task(reply: &Value, query: &str) -> Option<String> {
-    let none = ["tasks", "shelf", "done"].iter().all(|list| reply[list].as_array().is_none_or(Vec::is_empty));
+    let none = ["tasks", "shelf", "otherDesks", "done"].iter().all(|list| reply[list].as_array().is_none_or(Vec::is_empty));
     let id = query.trim().to_lowercase();
     id_start(&id).filter(|_| none && !id.contains(char::is_whitespace))
 }
 
 pub fn keep_matching(reply: &mut Value, query: &str) {
     let words: Vec<&str> = query.split_whitespace().collect();
-    for list in ["tasks", "shelf", "elsewhere", "done"] {
+    for list in ["tasks", "shelf", "otherDesks", "elsewhere", "done"] {
         if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
             tasks.retain(|task| words.iter().all(|word| task_matches(task, word)));
         }
@@ -322,9 +323,29 @@ pub fn task_matches(task: &Value, word: &str) -> bool {
 }
 
 pub fn keep_named(reply: &mut Value) {
-    if let Some(tasks) = reply["tasks"].as_array_mut() {
-        tasks.retain(|task| task["task"].is_string());
+    for list in ["tasks", "otherDesks"] {
+        if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
+            tasks.retain(|task| task["task"].is_string());
+        }
     }
+}
+
+pub fn split_desks(reply: &mut Value, claimed: &Value) {
+    let Some(tasks) = reply["tasks"].as_array_mut() else { return };
+    let (mut mine, others): (Vec<Value>, Vec<Value>) = std::mem::take(tasks).into_iter().partition(|t| t["where"]["desk"].as_str().is_none_or(|app| app == MAC_APP));
+    let others: Vec<Value> = others.into_iter().map(|mut t| {
+        t["desk"] = t["where"]["desk"].clone();
+        t
+    }).collect();
+    for task in claimed.as_array().into_iter().flatten() {
+        let mut task = task.clone();
+        task["task"] = task["id"].clone();
+        let left = task["leftAt"].as_f64().unwrap_or(0.0);
+        let at = mine.iter().position(|t| t["leftAt"].as_f64().unwrap_or(0.0) < left).unwrap_or(mine.len());
+        mine.insert(at, task);
+    }
+    reply["tasks"] = Value::Array(mine);
+    reply["otherDesks"] = Value::Array(others);
 }
 
 pub fn keep_recent_done(reply: &mut Value) {
@@ -337,6 +358,8 @@ pub fn keep_recent_done(reply: &mut Value) {
 }
 
 pub const RECENT_DONE: usize = 5;
+
+const MAC_APP: &str = "mac";
 
 pub fn name_out(reply: &mut Value, out: &Value) {
     let Some(tasks) = reply["tasks"].as_array_mut() else { return };
@@ -390,13 +413,14 @@ pub fn show(request: &Value, reply: &Value) -> String {
             let waiting = reply["shelf"].as_array().cloned().unwrap_or_default();
             let done = reply["done"].as_array().cloned().unwrap_or_default();
             let elsewhere = reply["elsewhere"].as_array().cloned().unwrap_or_default();
-            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty(), request["query"].as_str()) {
+            let lent = reply["otherDesks"].as_array().cloned().unwrap_or_default();
+            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() && lent.is_empty(), request["query"].as_str()) {
                 return match &reply["found"] {
                     found if found["place"] == "done" => done_line(found),
                     _ => format!("no task matches \"{query}\""),
                 };
             }
-            if tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() {
+            if tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() && lent.is_empty() {
                 return "no tasks: add one with `kanna task new NAME \"FIRST MESSAGE\"`".into();
             }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
@@ -437,7 +461,15 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 let tail: Vec<String> = [agent(t), repo(t), waits(t).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last), twice(id)].into_iter().flatten().collect();
                 [id.into(), t["name"].as_str().unwrap_or("").into(), state(t), tail.join("  ")]
             };
-            let desk: Vec<[String; 4]> = tasks.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)))).collect();
+            let desk: Vec<[String; 4]> = tasks.iter().map(|t| {
+                let mut row = row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)));
+                if let Some(machine) = t["machine"].as_str() {
+                    row[2] = t["state"].as_str().unwrap_or("").into();
+                    row[3] = [row[3].as_str(), &format!("on {machine}")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("  ");
+                }
+                row
+            }).collect();
+            let lent: Vec<[String; 4]> = lent.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["desk"].as_str().map(|desk| format!("on {desk}'s Desk")))).collect();
             let shelf: Vec<[String; 4]> = waiting.iter().map(|t| row(t, t["id"].as_str().unwrap_or("?"), None)).collect();
             let others: Vec<[String; 4]> = elsewhere.iter().map(|t| {
                 let mut row = row(t, t["id"].as_str().unwrap_or("?"), t["machine"].as_str().map(|m| format!("on {m}")));
@@ -448,7 +480,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 let tail: Vec<String> = [agent(t), repo(t), t["doneAt"].as_f64().map(|at| format!("done {}", ago(now - at)))].into_iter().flatten().collect();
                 [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), String::new(), tail.join("  ")]
             }).collect();
-            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).chain(others.iter()).chain(finished.iter()).collect();
+            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).chain(lent.iter()).chain(others.iter()).chain(finished.iter()).collect();
             let width = |i: usize| all.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
             let line = |r: &[String; 4]| format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = width(0), w1 = width(1), w2 = width(2)).trim_end().to_string();
             let section = |head: &str, rows: &[[String; 4]]| match (rows.is_empty(), request["query"].is_string()) {
@@ -458,7 +490,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
             };
             let more = reply["moreDone"].as_u64().map(|n| format!("\n… {n} more done: add words to search them"));
             let finished = Some(&finished).filter(|_| request["done"] == true).and_then(|rows| section("Done", rows)).map(|s| s + more.as_deref().unwrap_or(""));
-            [section("Desk", &desk), section("Shelf", &shelf), Some(&others).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other machines", rows)), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
+            [section("Desk", &desk), section("Shelf", &shelf), Some(&lent).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other Desks", rows)), Some(&others).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other machines", rows)), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}: {} shows the Desk view, and {id} stays active", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} isn't shown: its Desk shows the Desk view already"),
@@ -680,5 +712,28 @@ mod list_tests {
         name_out(&mut reply, &json!([{ "id": "t1", "pane": "p1", "repo": "/r", "merged": true, "replied": false }]));
         keep_named(&mut reply);
         assert_eq!(reply["tasks"], json!([{ "id": "p1", "task": "t1", "repo": "/r", "merged": true, "replied": false }]));
+    }
+
+    #[test]
+    fn the_desk_is_this_app_s_wherever_its_tasks_run_and_other_apps_desks_say_whose() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let mut reply = json!({
+            "agent": "claude",
+            "tasks": [
+                { "id": "p1", "task": "t1", "name": "Newest here", "running": true, "status": "idle", "where": { "desk": "mac" }, "leftAt": now - 60.0 },
+                { "id": "p2", "task": "t2", "name": "Lent", "running": true, "status": "working", "where": { "desk": "mbp" }, "leftAt": now - 90.0 },
+                { "id": "p3", "task": "t3", "name": "Oldest here", "running": true, "status": "idle", "where": { "desk": "mac" }, "leftAt": now - 600.0 }
+            ],
+            "shelf": []
+        });
+        split_desks(&mut reply, &json!([{ "id": "t4", "name": "On the Studio", "state": "started", "machine": "studio", "leftAt": now - 300.0 }]));
+        let order: Vec<&str> = reply["tasks"].as_array().unwrap().iter().map(|t| t["task"].as_str().unwrap()).collect();
+        assert_eq!(order, ["t1", "t4", "t3"], "the Desk's order, last claimed first, wherever each runs");
+        assert_eq!(reply["otherDesks"][0]["desk"], "mbp");
+        let text = show(&json!({ "action": "list" }), &reply);
+        assert_eq!(
+            text,
+            "Desk\nt1  Newest here    idle     1m ago\nt4  On the Studio  started  5m ago  on studio\nt3  Oldest here    idle     10m ago\n\nShelf\n(empty)\n\nOther Desks\nt2  Lent           working  on mbp's Desk"
+        );
     }
 }
