@@ -1278,15 +1278,11 @@ impl Tasks {
                 }
             }
         }
-        if let Some(row) = self.db.task(reference).ok().flatten() {
-            return Ok(Some(row.id));
+        let elsewhere: Vec<String> = self.replica.borrow().records().filter(|r| r.text("state").is_some_and(|s| s != "done")).map(|r| r.task.clone()).filter(|id| id == reference || (!start.is_empty() && id.strip_prefix(db::TASK).is_some_and(|hex| hex.starts_with(start)))).collect();
+        if let [one] = elsewhere.as_slice() {
+            return Ok(Some(one.clone()));
         }
-        let replica = self.replica.borrow();
-        let elsewhere: Vec<String> = replica.records().filter(|r| r.text("state").is_some_and(|s| s != "done")).map(|r| r.task.clone()).filter(|id| id == reference || (!start.is_empty() && id.strip_prefix(db::TASK).is_some_and(|hex| hex.starts_with(start)))).collect();
-        Ok(match elsewhere.as_slice() {
-            [one] => Some(one.clone()),
-            _ => None,
-        })
+        Ok(self.db.task(reference).ok().flatten().map(|row| row.id))
     }
 
     pub fn agent(&self, reference: &str, then: impl FnOnce(Result<String, KmuxError>) + 'static) {
@@ -4023,14 +4019,27 @@ impl Tasks {
 
     fn pick(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(id) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
-        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(id))) };
+        let app = string(args, "desk").map(|desk| self.app_of(desk)).or_else(|| string(args, "app").map(String::from)).unwrap_or_else(|| self.claimant.borrow().clone());
+        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else {
+            let on_desk = self.running.borrow().iter().find(|r| r.entry.id == id && r.place == Place::Desk).map(|r| (r.pane.clone(), r.entry.clone()));
+            let Some((pane, entry)) = on_desk else { return responder.reply(Err(not_found(id))) };
+            let desk = self.desk_of(&app);
+            if entry.claim.as_deref() == Some(desk.as_str()) {
+                return responder.reply(Ok(Self::reply_out(&entry.id, &pane, entry.folder.as_deref(), Some(&app))));
+            }
+            let mut args = args.clone();
+            args["desk"] = json!(desk);
+            return self.hold(pane, entry, Place::Desk, who(&args).map(String::from), false, move |this, held| match held {
+                Ok(_) => this.pick(&args, responder),
+                Err(error) => responder.reply(Err(error)),
+            });
+        };
         if self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
             return responder.reply(Err(bad(format!("{id} is starting"))));
         }
         if let Err(error) = self.startable(&entry) {
             return responder.reply(Err(error));
         }
-        let app = string(args, "desk").map(|desk| self.app_of(desk)).or_else(|| string(args, "app").map(String::from)).unwrap_or_else(|| self.claimant.borrow().clone());
         let freed = string(args, "room").map(String::from);
         self.room(entry, app, who(args).map(String::from), freed, Answer::To(responder));
     }
@@ -4595,26 +4604,35 @@ impl Tasks {
         let recorded = self.running.borrow().iter().find(|r| r.pane == pane.id).map(|r| (r.entry.clone(), r.place));
         let Some((entry, from)) = recorded else { return responder.reply(Err(KmuxError::new("not_found", format!("no running task \"{reference}\"")))) };
         let by = who(args).map(String::from);
-        let this = Rc::downgrade(self);
         let id = pane.id.clone();
+        self.hold(id.clone(), entry, from, by, true, move |this, held| {
+            let value = match held {
+                Ok(entry) => entry.to_value(),
+                Err(error) => return responder.reply(Err(error)),
+            };
+            let running = this.core.upgrade().is_some_and(|core| alive(&core, &id));
+            responder.reply(Ok(Map::from_iter([("task".to_string(), value), ("pane".to_string(), json!(id)), ("running".to_string(), json!(running))])));
+        });
+    }
+
+    fn hold(self: &Rc<Self>, id: String, entry: Entry, from: Place, by: Option<String>, tell: bool, then: impl FnOnce(&Rc<Self>, Result<Entry, KmuxError>) + 'static) {
+        let Some(core) = self.core.upgrade() else { return };
+        let this = Rc::downgrade(self);
         core.handle(json!({ "cmd": "task", "args": { "action": "hold", "task": id } }), move |reply| {
             let Some(this) = this.upgrade() else { return };
             if let Some(error) = failed(&reply) {
-                return responder.reply(Err(error));
+                return then(&this, Err(error));
             }
             this.running.borrow_mut().retain(|r| r.pane != id);
             let entry = Entry { held: Some(id.clone()), claim: None, ..entry };
             let change = Change { from: Some(from), to: Some(Place::Shelf), ..Change::new("shelved") }.by(by.as_deref());
             let saved = this.store(&entry, Place::Shelf, Some(&id), Some(change));
-            this.tell_planner(&entry, What::Shelved, by.as_deref());
-            let value = entry.to_value();
-            insert_in_order(&mut this.entries.borrow_mut(), entry);
-            this.changed();
-            if let Err(error) = saved {
-                return responder.reply(Err(error));
+            if tell {
+                this.tell_planner(&entry, What::Shelved, by.as_deref());
             }
-            let running = this.core.upgrade().is_some_and(|core| alive(&core, &id));
-            responder.reply(Ok(Map::from_iter([("task".to_string(), value), ("pane".to_string(), json!(id)), ("running".to_string(), json!(running))])));
+            insert_in_order(&mut this.entries.borrow_mut(), entry.clone());
+            this.changed();
+            then(&this, saved.map(|_| entry));
         });
     }
 

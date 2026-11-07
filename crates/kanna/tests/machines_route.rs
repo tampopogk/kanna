@@ -119,6 +119,14 @@ fn a_task_on_another_machine_is_read_screenshot_messaged_and_stopped_by_its_id_a
     let messages = mbp.kanna(&["task", "messages", &short]).ok();
     assert!(messages.contains("from a task on mbp") && messages.contains("mock: say hi"), "{messages}");
 
+    vm.kanna(&["task", "pick", &task]).ok();
+    within(15, "mbp to see the task on vm's Desk", || record(&mbp, &task)["claim"] == "vm");
+    mbp.kanna(&["task", "pick", &short]).ok();
+    within(15, "the task to move to mbp's Desk", || record(&mbp, &task)["claim"] == "mbp");
+    mbp.kanna(&["task", "pick", &short]).ok();
+    mbp.kanna(&["task", "shelve", &short]).ok();
+    within(15, "the task to go back to vm's Shelf", || record(&mbp, &task)["claim"].is_null());
+
     mbp.kanna(&["send-key", &short, "ctrl+l"]).ok();
     mbp.kanna(&["read", &short, "--lines", "5"]).ok();
     mbp.kanna(&["task", "stop", &short]).ok();
