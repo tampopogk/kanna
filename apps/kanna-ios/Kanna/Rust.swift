@@ -45,6 +45,11 @@ enum Rust {
         }
     }
 
+    static func drawing(_ source: String) -> DrawingScene? {
+        guard let data = try? source.withCString({ try take(kanna_phone_drawing($0)) }), let raw = object(data)["drawing"], !(raw is NSNull), let body = try? JSONSerialization.data(withJSONObject: raw) else { return nil }
+        return try? JSONDecoder().decode(DrawingScene.self, from: body)
+    }
+
     static func read(_ stream: UInt64) throws -> Data {
         try take(kanna_phone_read(stream))
     }
@@ -59,6 +64,10 @@ enum Rust {
 
     static func key(secret: String) -> String? {
         (try? secret.withCString { try take(kanna_phone_key($0)) }).map(object)?["key"] as? String
+    }
+
+    static func networkChanged() {
+        kanna_phone_network_changed()
     }
 
     static func stop() {

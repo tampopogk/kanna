@@ -209,6 +209,7 @@ struct Label2: View {
 
 struct ThreadRow: View {
     var message: Message
+    @Environment(Store.self) private var store
 
     var body: some View {
         if !message.said.isEmpty {
@@ -225,6 +226,13 @@ struct ThreadRow: View {
                 Text("you · \(message.time)").font(.system(size: 12)).foregroundStyle(K.muted)
                 MyBubble(text: message.text)
                 ReceiptLine(receipt: message.receipt).padding(.top, 2)
+                if message.receipt == .dayOld {
+                    HStack(spacing: 12) {
+                        Button("Discard") { store.resendAged(message.id, keep: false) }
+                        Button("Keep waiting") { store.resendAged(message.id, keep: true) }
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {

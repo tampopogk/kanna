@@ -28,7 +28,7 @@ and target/PROFILE/kanna-build (debug in a worktree, release in the main checkou
   KANNA_STATE_DIR  where the daemon, keeper and app keep their files
                    (the keeper writes keeper.pid there)
   KANNA_KEEPER     the keeper binary the daemon starts (once it uses one)
-real_agent_tasks, real_agent_planners, real_agent_last_words, real_agent_program_status and keeper_upgrade run the real claude and codex (on PATH,
+real_agent_tasks, real_agent_messages, real_agent_planners, real_agent_last_words, real_agent_program_status and keeper_upgrade run the real claude and codex (on PATH,
 or $KANNA_E2E_CLAUDE / $KANNA_E2E_CODEX) against tools/agent-harness's mock
 model, each in a HOME of its own. A planning terminal
 offers no agent (KANNA_PLANNING_AGENTS=none) unless a scenario gives it some. Shelf tasks
@@ -1627,12 +1627,14 @@ comment_agents() {
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/bin/claude"
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/copilot"
   printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/claude" && chmod +x "$comment_fake/claude"
+  mkdir -p "$comment_fake/slow"
+  printf '#!/bin/sh\nKANNA_MOCK_INBOX_DELAY=10 KANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/slow/claude" && chmod +x "$comment_fake/slow/claude"
 }
 comment_held() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
 print((t.get("held") or "-") if t.get("running") else "stopped")' "$1"; }
 comment_claude() {
-  comment_task="$(cd "$comment_repo" && kanna --json task new "$1" "work 12" --agent "$comment_fake/claude" | field task.id)" || return 1
+  comment_task="$(cd "$comment_repo" && kanna --json task new "$1" "work ${3:-12}" --agent "${2:-$comment_fake/claude}" | field task.id)" || return 1
   check wait_for 15 eval '[[ "$(comment_held "$comment_task")" == term-* ]]' || { comment_held "$comment_task"; return 1; }
   comment_term="$(comment_held "$comment_task")"
   check wait_for 10 is "$comment_term" status working || { kanna status explain "$comment_term"; return 1; }
@@ -1652,6 +1654,23 @@ comment_arrived() {
   screen="$(kanna read "$comment_term")"
   [[ "$(grep -F "kanna comment" <<<"$screen" | grep -cv "peer: ")" == 0 ]] || { echo "a comment went into the prompt's draft"; echo "$screen"; return 1; }
   [[ "$(cd "$comment_repo" && kanna task messages "$comment_task")" == *"user"*"kanna comment $thread"* ]] || { echo "task messages should list the comment from you"; (cd "$comment_repo" && kanna task messages "$comment_task"); return 1; }
+}
+
+scenario comment_before_socket M4
+comment_before_socket() {
+  start_daemon && start_app || return 1
+  comment_agents && comment_claude "No socket yet" "$comment_fake/slow/claude" 18 || return 1
+  comment_program() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$comment_term\"}}" | field agent; }
+  check wait_for 5 eval '[[ "$(comment_program)" == claude ]]' || { kanna status explain "$comment_term"; return 1; }
+  local doc="$comment_repo/notes.md" said
+  mkdir -p "$comment_repo/.kanna/docs"
+  printf '# Notes\n\nThe strip scrolls.\n' >"$doc"
+  printf '{"file":"%s","agent":null,"socket":null,"next":2,"threads":[{"id":"c1","quote":"The strip scrolls.","line":3,"state":"open","status":"waiting","messages":[{"who":"you","text":"Say when","at":"2026-01-01T00:00:00Z"}]}]}\n' "$doc" >"$comment_repo/.kanna/docs/notes.md.json"
+  comment_status() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["threads"][0]["status"])' "$comment_repo/.kanna/docs/notes.md.json"; }
+  said="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"comment\",\"pane\":\"$comment_term\",\"text\":\"[kanna comment c1 · notes.md:3]\\nSay when\",\"doc\":\"$doc\",\"thread\":\"c1\"}}")"
+  check test "$(field state <<<"$said")" == waiting || { echo "$said"; kanna read "$comment_term"; return 1; }
+  comment_waits c1 comment_status || return 1
+  comment_arrived c1 comment_status || return 1
 }
 
 scenario md_comments M4
@@ -4424,6 +4443,85 @@ send_key() {
   [[ "$(kanna send-key agent cmd+c 2>&1)" == *"cmd+c only means something to Kanna.app"* ]] || { echo "cmd+c wasn't refused"; return 1; }
 }
 
+scenario real_agent_messages M4
+real_agent_messages() {
+  local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
+  [[ -x "$claude" && -x "$codex" ]] || { echo "real_agent_messages: claude or codex isn't installed (or set KANNA_E2E_CLAUDE, KANNA_E2E_CODEX)"; return 1; }
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
+  CODEX_HOME="$agents/codex-home/.codex" start_daemon && start_app || { echo "real_agent_messages line $LINENO"; return 1; }
+  mkdir -p "$agents" "$repo/.kanna" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "real_agent_messages line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
+  check wait_for 10 eval '[[ -s "$agents/port" ]]' || { echo "real_agent_messages: the mock model didn't start"; return 1; }
+  local port agent real; port="$(cat "$agents/port")"
+  for agent in claude codex; do
+    [[ $agent == claude ]] && real="$claude" || real="$codex"
+    python3 -I "$harness/isolate.py" --agent $agent --real "$real" --home "$agents/$agent-home" --port "$port" --trust "$repo" --out "$agents/bin/$agent" || { echo "real_agent_messages line $LINENO"; return 1; }
+  done
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  heard() { python3 -c 'import json, sys
+print(sum(1 for l in map(json.loads, open(sys.argv[1])) if sys.argv[2] in l.get("last", "") + l.get("prompt", "")))' "$agents/mock.jsonl" "$1"; }
+  state_of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
+  local id said term list
+  in_repo task new "claude busy" "LONG_SLEEP one" --agent "$agents/bin/claude" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  id="$(tid 1)"
+  check wait_for 60 eval '[[ "$(heard "LONG_SLEEP one")" -ge 1 ]]' || { echo "real_agent_messages: claude's first message didn't reach the mock model"; return 1; }
+  term="$(state_of "$id" | cut -d' ' -f2)"
+  check wait_for 10 is "$term" status working || { echo "real_agent_messages: claude never showed as working"; kanna read "$term"; return 1; }
+  said="$(in_repo task send "$id" "PEER_NOTE_ONE")"
+  [[ "$said" == *"it reads it at the next step of its turn" ]] || { echo "real_agent_messages: send said: $said"; return 1; }
+  check wait_for 5 shows "$term" "Message from @peer" || { echo "real_agent_messages: claude didn't show the message mid-turn"; kanna read "$term"; tail -5 "$out/daemon.log"; return 1; }
+  list="$(in_repo task messages "$id")"
+  [[ "$list" == *"waiting  PEER_NOTE_ONE"* ]] || { echo "real_agent_messages: mid-turn, task messages shows: $list"; return 1; }
+  check wait_for 40 eval '[[ "$(state_of "$id")" == stopped* ]]' || { echo "real_agent_messages: the runner didn't stop claude after its turn: $(state_of "$id")"; kanna read "$term"; return 1; }
+  [[ "$(heard PEER_NOTE_ONE)" == 1 ]] || { echo "real_agent_messages: the model heard the message $(heard PEER_NOTE_ONE) times"; return 1; }
+  [[ "$(in_repo task messages "$id")" == *delivered* ]] || { echo "real_agent_messages: not delivered: $(in_repo task messages "$id")"; return 1; }
+  in_repo task new "claude stopped" "LONG_SLEEP two" --agent "$agents/bin/claude" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  id="$(tid 2)"
+  check wait_for 60 eval '[[ "$(heard "LONG_SLEEP two")" -ge 1 ]]' || { echo "real_agent_messages: the second task didn't start"; return 1; }
+  term="$(state_of "$id" | cut -d' ' -f2)"
+  check wait_for 10 is "$term" status working || { echo "real_agent_messages: the second task never showed as working"; return 1; }
+  in_repo task send "$id" "PEER_NOTE_TWO" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  check wait_for 5 shows "$term" "Message from @peer" || { echo "real_agent_messages: the second message didn't show"; kanna read "$term"; return 1; }
+  in_repo task stop "$id" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  check wait_for 60 eval '[[ "$(heard PEER_NOTE_TWO)" -ge 1 && "$(in_repo task messages "$id")" == *delivered* ]]' || { echo "real_agent_messages: a message Claude held when it was stopped was lost: $(state_of "$id"), $(in_repo task messages "$id")"; tail -8 "$out/daemon.log"; return 1; }
+  check wait_for 40 eval '[[ "$(state_of "$id")" == stopped* ]]' || { echo "real_agent_messages: the woken task wasn't stopped: $(state_of "$id")"; return 1; }
+  in_repo task new "claude killed" "LONG_SLEEP three" --agent "$agents/bin/claude" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  id="$(tid 3)"
+  check wait_for 60 eval '[[ "$(heard "LONG_SLEEP three")" -ge 1 ]]' || { echo "real_agent_messages: the third task didn't start"; return 1; }
+  term="$(state_of "$id" | cut -d' ' -f2)"
+  check wait_for 10 is "$term" status working || { echo "real_agent_messages: the third task never showed as working"; return 1; }
+  in_repo task send "$id" "PEER_NOTE_THREE" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  check wait_for 5 shows "$term" "Message from @peer" || { echo "real_agent_messages: the third message didn't show"; kanna read "$term"; return 1; }
+  [[ "$(heard PEER_NOTE_THREE)" == 0 ]] || { echo "real_agent_messages: the model already had the third message"; return 1; }
+  local victim; victim="$(cd "$agents/claude-home/.claude/sessions" && ls -t | head -1)"; victim="${victim%.json}"
+  [[ "$victim" =~ ^[0-9]+$ ]] || { echo "real_agent_messages: no claude to kill: $victim"; return 1; }
+  kill -9 "$victim" || { echo "real_agent_messages line $LINENO"; return 1; }
+  check wait_for 60 eval '[[ "$(heard PEER_NOTE_THREE)" -ge 1 && "$(in_repo task messages "$id")" == *delivered* ]]' || { echo "real_agent_messages: a message Claude held when it was killed was lost: $(state_of "$id"), $(in_repo task messages "$id")"; tail -8 "$out/daemon.log"; return 1; }
+  check wait_for 40 eval '[[ "$(state_of "$id")" == stopped* ]]' || { echo "real_agent_messages: the woken task wasn't stopped: $(state_of "$id")"; return 1; }
+  in_repo task new "codex busy" "PLAIN_TURN codex" --agent "$agents/bin/codex" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  id="$(tid 4)"
+  check wait_for 60 eval '[[ "$(heard "PLAIN_TURN codex")" -ge 1 ]]' || { echo "real_agent_messages: codex's first message didn't reach the mock model"; return 1; }
+  term="$(state_of "$id" | cut -d' ' -f2)"
+  in_repo task send "$id" "PEER_NOTE_CODEX" | grep -q "gets it when its turn is over" || { echo "real_agent_messages: send to a busy codex didn't say it waits"; return 1; }
+  check wait_for 40 shows "$term" "PEER_NOTE_CODEX" || { echo "real_agent_messages: codex didn't get its message"; kanna read "$term"; return 1; }
+  check shows "$term" "Line 12 of a slow streamed answer" || { echo "real_agent_messages: the message cut codex's answer short"; kanna read "$term"; return 1; }
+  check wait_for 15 eval '[[ "$(in_repo task messages "$id")" == *delivered* ]]' || { echo "real_agent_messages: codex's message left the queue but isn't delivered: $(in_repo task messages "$id")"; return 1; }
+  check wait_for 40 eval '[[ "$(state_of "$id")" == stopped* ]]' || { echo "real_agent_messages: the runner didn't stop codex: $(state_of "$id")"; return 1; }
+  in_repo task new "codex esc" "PLAIN_TURN esc" --agent "$agents/bin/codex" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  id="$(tid 5)"
+  check wait_for 60 eval '[[ "$(heard "PLAIN_TURN esc")" -ge 1 ]]' || { echo "real_agent_messages: the esc task didn't start"; return 1; }
+  term="$(state_of "$id" | cut -d' ' -f2)"
+  in_repo task send "$id" "PEER_NOTE_ESC" >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  sleep 1
+  kanna send-key "$term" escape >/dev/null || { echo "real_agent_messages line $LINENO"; return 1; }
+  check wait_for 20 shows "$term" "PEER_NOTE_ESC" || { echo "real_agent_messages: a message left queued by Esc never ran"; kanna read "$term"; return 1; }
+  check wait_for 15 eval '[[ "$(in_repo task messages "$id")" == *delivered* ]]' || { echo "real_agent_messages: the esc message isn't delivered: $(in_repo task messages "$id")"; return 1; }
+}
+
 scenario real_agent_last_words M4
 real_agent_last_words() {
   local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}" codex="${KANNA_E2E_CODEX:-$(command -v codex)}"
@@ -5770,7 +5868,7 @@ print(len(w["tabs"]), w.get("focused"), w.get("zoomed"))' "$presenter"; }
   check test "$most" -le 1 || { echo "shelf_runners: $most ran at once with one runner"; return 1; }
   check test "${seen# }" == "$(tid 9) $(tid 10) $(tid 11) $(tid 12)" || { echo "shelf_runners: they didn't take their turn by age: $seen, not $(tid 9) $(tid 10) $(tid 11) $(tid 12)"; shelf; return 1; }
   for t in $(tid 9) $(tid 11); do
-    in_repo task messages $t | grep -q delivered || { echo "shelf_runners: $t didn't get its message"; in_repo task messages $t; return 1; }
+    check wait_for 8 eval 'in_repo task messages '"$t"' | grep -q delivered' || { echo "shelf_runners: $t didn't get its message"; in_repo task messages $t; return 1; }
   done
   ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/claude"
   clock() { python3 -c 'import time; print(time.time())'; }
@@ -5795,6 +5893,42 @@ print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"]
   local wakes; wakes="$(of $(tid 14) 3)"
   check wait_for 30 eval '[[ "$(of $(tid 14) 2)" == stopped:finished ]]' || { echo "shelf_runners: the task woken by its background command didn't stop"; shelf; kanna read "$wakes"; return 1; }
   shows "$wakes" WOKE_DONE || { echo "shelf_runners: the task that worked again within the grace was stopped mid-turn"; kanna read "$wakes"; return 1; }
+}
+
+scenario message_unknown_status M4
+message_unknown_status() {
+  start_daemon && start_app || { echo "message_unknown_status line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake/bin" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "message_unknown_status line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/codex"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  local opened; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "message_unknown_status line $LINENO: $opened"; return 1; }
+  local window="${BASH_REMATCH[1]}"
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$window\"}}" | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { desk lead; return 1; }
+  local planner; planner="$(desk lead)"
+  wait_for 10 shows "$planner" "Install Kanna's skills? \[Y/n\]" && kanna send "$planner" "n" >/dev/null
+  check wait_for 10 shows "$planner" "No agent Kanna knows is installed" || { kanna read "$planner"; return 1; }
+  kanna send "$planner" "KANNA_MOCK_REPORTS=0 $fake/claude" >/dev/null || { echo "message_unknown_status line $LINENO"; return 1; }
+  check wait_for 10 shows "$planner" "mock-agent:" || { kanna read "$planner"; return 1; }
+  check wait_for 10 eval 'kanna status explain "$planner" | grep -q claude' || { kanna status explain "$planner"; return 1; }
+  kanna status explain "$planner" | grep -q "^status: none" || { echo "message_unknown_status: the mock reported a status"; kanna status explain "$planner"; return 1; }
+  local said; said="$(in_repo task send planner "mock: say hello")"
+  [[ "$said" != *warning* ]] || { echo "message_unknown_status: a Claude with no status warned: $said"; return 1; }
+  check wait_for 10 shows "$planner" "peer: \[message from user\] mock: say hello" || { echo "message_unknown_status: the message sat with a Claude whose status is unknown"; kanna read "$planner"; in_repo task messages; return 1; }
+  check wait_for 5 eval '[[ "$(in_repo task messages planner 2>/dev/null || in_repo task messages)" == *delivered* ]]' || { echo "message_unknown_status: not marked delivered"; in_repo task messages; return 1; }
+  kanna send "$planner" "exit" >/dev/null || { echo "message_unknown_status line $LINENO"; return 1; }
+  check wait_for 10 eval '! kanna read "$planner" | tail -3 | grep -q "? for shortcuts"' || { kanna read "$planner"; return 1; }
+  kanna send "$planner" "KANNA_MOCK_REPORTS=0 $bin/kanna-daemon --codex-remote $KANNA_STATE_DIR $fake/codex" >/dev/null || { echo "message_unknown_status line $LINENO"; return 1; }
+  check wait_for 15 eval 'kanna read "$planner" | tail -5 | grep -q "? for shortcuts"' || { kanna read "$planner"; return 1; }
+  check wait_for 10 eval 'kanna status explain "$planner" | grep -q codex' || { kanna status explain "$planner"; return 1; }
+  said="$(in_repo task send planner "for codex")"
+  [[ "$said" != *warning* ]] || { echo "message_unknown_status: a Codex with no status warned: $said"; return 1; }
+  check wait_for 10 shows "$planner" "peer: \[message from user\] for codex" || { echo "message_unknown_status: the message sat with a Codex whose status is unknown"; kanna read "$planner"; in_repo task messages; return 1; }
+  check wait_for 10 eval '[[ "$(in_repo task messages)" != *waiting* && "$(in_repo task messages)" != *held* ]]' || { echo "message_unknown_status: it left the queue but isn't delivered: $(in_repo task messages)"; return 1; }
 }
 
 scenario message_past_the_limit M4
@@ -5878,8 +6012,9 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   (cd "$repo" && KANNA_TERMINAL="$planner" kanna task send "$busy" "from the planner") >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
   term="$(task_state $busy | cut -d' ' -f2)"
   check wait_for 20 eval 'term="$(task_state $busy | cut -d" " -f2)"; shows "$term" "peer: \[message from planner\] from the planner"' || { echo "agent_messaging: the task didn't get the planner's message"; kanna read "$term"; return 1; }
-  local list; list="$(in_repo task messages "$busy")"
-  [[ "$(grep -c delivered <<<"$list")" == 4 && "$list" == *"user"*"hello while busy"* ]] || { echo "agent_messaging: task messages shows: $list"; return 1; }
+  local list
+  check wait_for 8 eval 'list="$(in_repo task messages "$busy")"; [[ "$(grep -c delivered <<<"$list")" == 4 ]]' || { echo "agent_messaging: task messages shows: $list"; return 1; }
+  [[ "$list" == *"user"*"hello while busy"* ]] || { echo "agent_messaging: task messages shows: $list"; return 1; }
   in_repo task done "$other" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
   said="$(in_repo task send "$other" "too late" 2>&1)" && { echo "agent_messaging: a done task took a message"; return 1; }
   [[ "$said" == *"is done, so it takes no messages"* ]] || { echo "agent_messaging: send to a done task said: $said"; return 1; }
@@ -5906,6 +6041,15 @@ print(" ".join(t["about"] + ":" + (t.get("detail") or "") for t in json.load(sys
   sleep 3
   check test "$(task_state "$(tid 4)" | cut -d' ' -f1)" == stopped || { echo "agent_messaging: the agy task was woken for a message it can't take"; return 1; }
   [[ "$(in_repo task messages "$(tid 4)")" == *"waiting  can you hear me"* ]] || { echo "agent_messaging: task messages shows: $(in_repo task messages "$(tid 4)")"; return 1; }
+  mkdir -p "$fake/slow" && printf '#!/bin/sh\nKANNA_MOCK_INBOX_DELAY=6 KANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/slow/claude" && chmod +x "$fake/slow/claude"
+  in_repo task new "Slow" "work 1" --agent "$fake/slow/claude" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  local slow sterm; slow="$(tid 5)"
+  check wait_for 30 eval '[[ "$(task_state $slow)" == stopped* ]]' || { echo "agent_messaging: the slow claude task didn't run and stop"; task_state "$slow"; return 1; }
+  local logged; logged="$(wc -l <"$out/daemon.log")"
+  in_repo task send "$slow" "while you start" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 30 eval 'sterm="$(task_state $slow | cut -d" " -f2)"; [[ "$sterm" == term-* ]] && shows "$sterm" "peer: \[message from user\] while you start"' || { echo "agent_messaging: the woken claude task didn't get its message once it made its socket"; tail -5 "$out/daemon.log"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts"}' | grep -q "Messages wait for Slow" && { echo "agent_messaging: a claude still starting raised a toast"; return 1; }
+  ! tail -n +"$((logged + 1))" "$out/daemon.log" | grep -q "messages for $sterm wait" || { echo "agent_messaging: a claude still starting was warned about"; return 1; }
 }
 
 scenario agent_too_old M4
@@ -6614,9 +6758,147 @@ print([r.get("claim") for r in json.load(sys.stdin)["records"] if r["task"].star
   kill -0 "$daemon_pid" 2>/dev/null
 }
 
+scenario phone_relay M4
+phone_relay() {
+  (cd "$repo_root" && cargo build -q -p kanna-net --example test-relay) || { echo "phone_relay: the test relay didn't build"; return 1; }
+  phone_rig claude || { echo "phone_relay line $LINENO"; return 1; }
+  local me="$bin/kanna"
+  local relay_out="$KANNA_STATE_DIR/relay.out" token="$KANNA_STATE_DIR/relay.token"
+  printf 's3cret-phone' >"$token"
+  "$rust_dir/examples/test-relay" s3cret-phone >"$relay_out" &
+  local relay=$!
+  trap "kill $relay 2>/dev/null" RETURN
+  check wait_for 10 test -s "$relay_out" || { echo "phone_relay: the relay didn't start"; return 1; }
+  local url; url="$(cat "$relay_out")"
+  ! PHONE_RELAY_ONLY=1 phone hello >/dev/null 2>&1 || { echo "phone_relay: reached it with no relay"; return 1; }
+  kanna machine relay "$url" --token-file "$token" >/dev/null || { echo "phone_relay line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ -n "$(kanna machine list --json | field home_relay)" ]]' || { echo "phone_relay: the daemon never reached the relay"; kanna machine list; return 1; }
+  check test "$(phone hello | field relay)" == "$url" || { echo "phone_relay: hello didn't refresh the relay"; return 1; }
+  check test "$(phone path | field path)" == direct || { echo "phone_relay: with a relay set the LAN isn't direct: $(phone path)"; return 1; }
+  check test "$(phone path | field lan)" == True || { echo "phone_relay: the LAN doesn't read as LAN: $(phone path)"; return 1; }
+  ! PHONE_RELAY_ONLY=1 PHONE_RELAY_TOKEN=wrong phone hello >/dev/null 2>&1 || { echo "phone_relay: a wrong token got through"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone path | field path)" == relay || { echo "phone_relay: not through the relay: $(PHONE_RELAY_ONLY=1 phone path)"; return 1; }
+  PHONE_RELAY_ONLY=1 phone send repo r1 "mock: run $me phone say answered through the relay" >/dev/null || { echo "phone_relay line $LINENO"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone wait repo say 30 | field doc.text)" == "answered through the relay" || { echo "phone_relay: no answer through the relay"; phone read repo; return 1; }
+  phone_dir="$KANNA_STATE_DIR/phone2"
+  mkdir -p "$phone_dir"
+  phone_pair || { echo "phone_relay: a second phone didn't pair"; return 1; }
+  check test "$(field relay <"$phone_dir/machine.json")" == "$url" || { echo "phone_relay: the handoff had no relay"; return 1; }
+  check test "$(field relay_token <"$phone_dir/machine.json")" == s3cret-phone || { echo "phone_relay: the handoff had no token"; return 1; }
+  check test "$(PHONE_RELAY_ONLY=1 phone path | field path)" == relay || { echo "phone_relay: a new phone can't use the relay before its first hello"; return 1; }
+  ! grep -q s3cret-phone "$KANNA_STATE_DIR/offer" || { echo "phone_relay: the token is in the QR"; return 1; }
+}
+
 scenario phone_chat_codex M4
 phone_chat_codex() {
   phone_chat_with codex
+}
+
+scenario phone_quiz M4
+phone_quiz() {
+  phone_rig claude || { echo "phone_quiz line $LINENO"; return 1; }
+  local me="$bin/kanna" round_file="$KANNA_STATE_DIR/round.json" map_file="$KANNA_STATE_DIR/map.json" bad_file="$KANNA_STATE_DIR/bad.json" lines
+  mkdir -p "$phone_repo/net" "$phone_repo/desk" "$(dirname "$KANNA_AGENTS_HOME/.kanna-v4/config.json")" || return 1
+  printf '{"version": 1, "shelf": {"runners": 0}, "tasks": {"agent": "%s"}, "agents": {"prompts": "skip"}}\n' "$phone_fake/claude" >"$KANNA_AGENTS_HOME/.kanna-v4/config.json" || return 1
+  seq 1 40 >"$phone_repo/net/a.rs"; seq 1 10 >"$phone_repo/desk/b.rs"
+  git -C "$phone_repo" add . && git -C "$phone_repo" -c user.email=e@e -c user.name=e commit -qm code || return 1
+  local head; head="$(git -C "$phone_repo" rev-parse main)"
+  python3 - "$head" "$round_file" "$map_file" "$bad_file" <<'PY' || return 1
+import json, sys
+head, round_file, map_file, bad_file = sys.argv[1:5]
+choices = [{"label": "A"}, {"label": "B"}, {"label": "C"}, {"label": "D"}]
+q = lambda kind, f, n: {"kind": kind, "file": f, "line": n, "text": f"What is at {f}:{n}?", "why": "It says so", "topic": f"line {n}", "source": head[:7], "choices": choices, "answer": 1}
+bug = dict(q("bug", "net/a.rs", 3), lines=[{"n": n, "text": str(n)} for n in (1, 2, 3, 4)])
+del bug["choices"]
+qs = [q("architecture", "net/a.rs", 2), q("behaviour", "net/a.rs", 5), q("why", "desk/b.rs", 1), q("where", "desk/b.rs", 2), bug]
+json.dump({"head": head, "title": "Today", "commits": [head], "questions": qs}, open(round_file, "w"))
+bad = dict(q("why", "net/a.rs", 999))
+json.dump({"head": head, "questions": [bad] * 5}, open(bad_file, "w"))
+json.dump({"subsystems": [{"name": "Net", "paths": ["net/**"]}, {"name": "Desk", "paths": ["desk/**"]}, {"name": "S1", "paths": ["s1/**"]}, {"name": "S2", "paths": ["s2/**"]}, {"name": "S3", "paths": ["s3/**"]}, {"name": "S4", "paths": ["s4/**"]}]}, open(map_file, "w"))
+PY
+  writer() { kanna workspace list --all --json | python3 -c 'import json, sys
+w = [w for w in json.load(sys.stdin)["workspaces"] if (w.get("where") or {}).get("quiz")]
+print(w[0]["dock"]["pane"] if w else "")'; }
+  type_in() { kanna send "$1" "$2" >/dev/null && kanna send-key "$1" enter >/dev/null; }
+  check test "$(phone quiz-rounds repo | field rounds)" == "[]" || { echo "phone_quiz: a new repo has rounds: $(phone quiz-rounds repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems)" == "[]" || { echo "phone_quiz: a new repo has a map"; return 1; }
+
+  check test "$(phone quiz-ahead repo | field writing.about)" == None || { echo "phone_quiz: an empty store started no writer: $(phone quiz-rounds repo)"; return 1; }
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: no writer"; kanna workspace list --all; return 1; }
+  local pane; pane="$(writer)"
+  check wait_for 10 unwrapped "$pane" "You are the Kanna quiz writer" || { echo "phone_quiz: the writer wasn't told"; kanna read "$pane"; return 1; }
+  [[ "$(phone_planner)" == "" ]] || { echo "phone_quiz: the writer started a planner"; return 1; }
+  check test "$(cd "$phone_repo" && kanna task list --json | field tasks)" == "[]" || { echo "phone_quiz: the writer is a task"; return 1; }
+  phone quiz-ahead repo >/dev/null
+  check test "$(kanna workspace list --all --json | python3 -c 'import json, sys
+print(len([w for w in json.load(sys.stdin)["workspaces"] if (w.get("where") or {}).get("quiz")]))')" == 1 || { echo "phone_quiz: a second writer started"; return 1; }
+
+  type_in "$pane" "run cd $phone_repo; $me quiz map $map_file"
+  check wait_for 10 shows "$pane" "6 subsystems" || { echo "phone_quiz: the map wasn't kept"; kanna read "$pane"; return 1; }
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $bad_file"
+  check wait_for 10 unwrapped "$pane" "no line 999" || { echo "phone_quiz: a bad round wasn't told"; kanna read "$pane"; return 1; }
+  check test "$(phone quiz-rounds repo | field rounds)" == "[]" || { echo "phone_quiz: a bad round was kept"; return 1; }
+  phone listen 12 >"$KANNA_STATE_DIR/quiz-notices" &
+  local listening=$!
+  sleep 0.5
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $round_file"
+  check wait_for 10 eval '[[ "$(phone quiz-rounds repo | field rounds.0.round)" == r1 ]]' || { echo "phone_quiz: no round: $(phone quiz-rounds repo)"; kanna read "$pane"; return 1; }
+  check wait_for 15 eval '[[ -z "$(writer)" ]]' || { echo "phone_quiz: the writer didn't quit"; kanna read "$pane"; return 1; }
+  wait "$listening"
+  grep -q '"notice":"quiz".*"ready":"r1"' "$KANNA_STATE_DIR/quiz-notices" || { echo "phone_quiz: no ready notice: $(cat "$KANNA_STATE_DIR/quiz-notices")"; return 1; }
+  local rounds; rounds="$(phone quiz-rounds repo)"
+  check test "$(field rounds.0.questions.0.subsystem <<<"$rounds")" == Net && check test "$(field rounds.0.questions.0.code.lines.1 <<<"$rounds")" == 2 && check test "$(field rounds.0.questions.0.code.commit <<<"$rounds")" == "$head" || { echo "phone_quiz: the round reads $rounds"; return 1; }
+  check test "$(field writing <<<"$rounds")" == None || { echo "phone_quiz: a written round still reads writing"; return 1; }
+
+  check test "$(phone quiz-map repo | field subsystems.0.mastery)" == None || { echo "phone_quiz: mastery before any answer: $(phone quiz-map repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.0.lines)" == 40 || { echo "phone_quiz: lines: $(phone quiz-map repo)"; return 1; }
+  phone quiz-answer r1 0 1 >/dev/null || { echo "phone_quiz line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: the first answer started no writer"; return 1; }
+  pane="$(writer)"
+  phone quiz-answer r1 0 1 >/dev/null
+  phone quiz-answer r1 1 1 >/dev/null
+  phone quiz-answer r1 2 0 >/dev/null
+  phone quiz-answer r1 3 1 >/dev/null
+  phone quiz-answer r1 4 1 >/dev/null
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*), sum(right) from quiz_answers")" == "5|4" || { echo "phone_quiz: a resend counted: $(sqlite3 "$KANNA_STATE_DIR/kanna.db" "select * from quiz_answers")"; return 1; }
+  local map; map="$(phone quiz-map repo)"
+  check test "$(field subsystems.0.mastery <<<"$map")" == 60 && check test "$(field subsystems.1.mastery <<<"$map")" == 25 || { echo "phone_quiz: the map didn't move: $map"; return 1; }
+  check test "$(field subsystems.1.misses.0.file <<<"$map")" == "desk/b.rs:1" || { echo "phone_quiz: the miss isn't on its subsystem: $map"; return 1; }
+  check test "$(cd "$phone_repo" && kanna quiz history --misses --json | field rounds.0.answers.0.answer)" == a3 || { echo "phone_quiz: a phone miss doesn't come back on the Mac"; return 1; }
+  check test "$(cd "$phone_repo" && kanna stats --json | python3 -c 'import json, sys
+print([t for s in json.load(sys.stdin)["sections"] if s["id"] == "quiz" for t in s["tiles"] if t["id"] == "right"][0]["value"])')" == 80 || { echo "phone_quiz: Stats doesn't count phone answers"; return 1; }
+
+  (cd "$phone_repo" && kanna quiz start >/dev/null && kanna quiz answer r2 --kind why --file desk/b.rs:3 --right >/dev/null) || { echo "phone_quiz line $LINENO"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.1.answers)" == 3 || { echo "phone_quiz: a Mac round doesn't count: $(phone quiz-map repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.1.mastery)" == 40 || { echo "phone_quiz: a Mac round didn't move the map: $(phone quiz-map repo)"; return 1; }
+  check test "$(phone quiz-map repo | field subsystems.1.moved)" == 0 || { echo "phone_quiz: moved since the last right answer: $(phone quiz-map repo)"; return 1; }
+  printf 'x\n' >>"$phone_repo/desk/b.rs"
+  git -C "$phone_repo" -c user.email=e@e -c user.name=e commit -qam "desk moved" || return 1
+  check test "$(phone quiz-map repo | field subsystems.1.moved)" == 1 && check test "$(phone quiz-map repo | field subsystems.1.commits.0.subject)" == "desk moved" || { echo "phone_quiz: a commit didn't move its subsystem: $(phone quiz-map repo)"; return 1; }
+
+  type_in "$pane" "run cd $phone_repo; $me quiz ahead --about 'the relay'"
+  check wait_for 10 eval 'phone quiz-rounds repo | grep -q "\"queued\":\[\"the relay\"\]"' || { echo "phone_quiz: the subject wasn't queued: $(phone quiz-rounds repo)"; return 1; }
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $round_file"
+  check wait_for 15 eval '[[ "$(writer)" != "" && "$(writer)" != "$pane" ]]' || { echo "phone_quiz: the queued writer didn't start: $(kanna read "$pane")"; return 1; }
+  pane="$(writer)"
+  check wait_for 10 unwrapped "$pane" "Its subject: the relay" || { echo "phone_quiz: the subject wasn't told"; kanna read "$pane"; return 1; }
+  type_in "$pane" "run cd $phone_repo; $me quiz ready $round_file"
+  local card; card="$(phone wait repo round 15)" || { echo "phone_quiz: no round card in the chat"; phone read repo; return 1; }
+  check test "$(field doc.about <<<"$card")" == "the relay" || { echo "phone_quiz: the card was $card"; return 1; }
+  check wait_for 15 eval '[[ -z "$(writer)" ]]' || { echo "phone_quiz: the second writer didn't quit"; return 1; }
+  check test "$(phone quiz-rounds repo | python3 -c 'import json, sys
+print([r["about"] for r in json.load(sys.stdin)["rounds"]])')" == "[None, 'the relay']" || { echo "phone_quiz: the rounds: $(phone quiz-rounds repo)"; return 1; }
+
+  sqlite3 "$KANNA_STATE_DIR/kanna.db" "update quiz_ready set taken = 1" || return 1
+  phone quiz-ahead repo >/dev/null
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: no writer for the failure"; return 1; }
+  pane="$(writer)"
+  type_in "$pane" "exit"
+  check wait_for 15 eval 'phone quiz-rounds repo | grep -q "quit without writing"' || { echo "phone_quiz: a failed writer wasn't told: $(phone quiz-rounds repo)"; return 1; }
+  phone quiz-ahead repo >/dev/null
+  check test "$(phone quiz-rounds repo | field writing)" == None || { echo "phone_quiz: a failure retried at once"; return 1; }
+  check test "$(phone quiz-again repo | field writing.about)" == None || { echo "phone_quiz: Try again didn't start one: $(phone quiz-rounds repo)"; return 1; }
+  check wait_for 10 eval '[[ -n "$(writer)" ]]' || { echo "phone_quiz: no writer after Try again"; return 1; }
 }
 
 phone_chat_with() {
@@ -6653,6 +6935,8 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   check phone status repo elsewhere 5 >/dev/null || { echo "phone_chat: a busy planner isn't Working on something else"; phone read repo 1000; return 1; }
   ! shows "$planner" "after the busy turn" || { echo "phone_chat: the phone interrupted the turn"; return 1; }
   check wait_for 3 eval 'sleep 8; phone read repo | grep -q "\"text\":\"after the busy turn"' || { echo "phone_chat: the waiting message never got its answer"; kanna read "$planner"; return 1; }
+  sleep 5
+  ! shows "$planner" "The phone is waiting" || { echo "phone_chat: an answer given before the turn's end was taken for silence"; kanna read "$planner"; return 1; }
   phone send repo m6 "mock: work 0" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check wait_for 25 shows "$planner" "peer: \[message from kanna\] The phone is waiting" || { echo "phone_chat: a silent turn wasn't nudged"; kanna read "$planner"; return 1; }
   check wait_for 25 eval 'phone read repo | grep -q "The planner finished without answering"' || { echo "phone_chat: a second silent turn wasn't told"; phone read repo; return 1; }
@@ -6954,6 +7238,27 @@ project_import() {
   (cd "$there" && kanna task new "Next" "hi") >/dev/null || { echo "project_import: a task in the copy"; return 1; }
   refused="$(cd / && kanna project import "$there" 2>&1)"; [[ "$refused" == *"is in its place already"* ]] || { echo "project_import: $refused"; return 1; }
   refused="$(cd / && kanna project import "$repo" 2>&1)"; [[ "$refused" == *"is already there"* || "$refused" == *"both clones of example.com/team/app"* ]] || { echo "project_import: importing the original again: $refused"; return 1; }
+}
+
+scenario machine_shelf_order M4
+machine_shelf_order() {
+  local vm vm_pid
+  machine_vm machine_shelf_order || return 1
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/notes"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "machine_shelf_order line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  local opened; opened="$(cd / && kanna "$repo")" && [[ "$opened" == "opened d1 on $repo" ]] || { echo "machine_shelf_order: a Desk on the project: $opened"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  (cd "$repo" && kanna task new "Mac first") >/dev/null || { echo "machine_shelf_order line $LINENO"; return 1; }
+  (cd "$repo" && vmk task new "VM second") >/dev/null || { echo "machine_shelf_order line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Mac third") >/dev/null || { echo "machine_shelf_order line $LINENO"; return 1; }
+  (cd "$repo" && vmk task new "VM fourth") >/dev/null || { echo "machine_shelf_order line $LINENO"; return 1; }
+  local mac vms ordered
+  mac=($(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id from tasks order by made_at"))
+  vms=($(sqlite3 -readonly "$vm/state/kanna.db" "select id from tasks order by made_at"))
+  ordered="[\"${mac[0]}\", \"${vms[0]}@vm\", \"${mac[1]}\", \"${vms[1]}@vm\"]"
+  check wait_for 10 eval '[[ "$(desk shelf)" == "$ordered" ]]' || { echo "machine_shelf_order: the Desk view's Shelf isn't oldest first across machines: want $ordered"; desk shelf; return 1; }
+  check wait_for 10 eval '(cd "$repo" && kanna task list) | grep -q "VM second.* on vm"' || { echo "machine_shelf_order: kanna task list doesn't keep vm's tasks in their own section"; (cd "$repo" && kanna task list); return 1; }
 }
 
 scenario machine_remote_files M4
