@@ -1,6 +1,6 @@
 # Phone: Quiz
 
-**Status:** built on the LAN; not yet tried on a real iPhone · **Tests:** `scripts/e2e-kanna.sh` `phone_quiz`, `quiz_map.rs`, `quiz_round.rs`, `FlowTests`, `DeviceTests.testQuizRound` · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [quiz](quiz.md), [quiz results](database.md#quiz-results), [Stats](stats.md)
+**Status:** built on the LAN; rounds written and played on a real iPhone against the real daemon · **Tests:** `scripts/e2e-kanna.sh` `phone_quiz`, `quiz_map.rs`, `quiz_round.rs`, `FlowTests`, `DeviceTests.testQuizRound` · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [quiz](quiz.md), [quiz results](database.md#quiz-results), [Stats](stats.md)
 
 On the Mac a quiz is a conversation with an agent. On the phone it's a round you can start at once: its questions were written ahead into the daemon, the app renders them, and a map of the code shows what you know. Rounds on the phone play offline. The kinds, the explanations and the misses coming back are [the Mac's](quiz.md#3-questions). There's no streak and no points: the map is the score.
 

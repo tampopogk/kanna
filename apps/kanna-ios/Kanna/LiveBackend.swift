@@ -136,6 +136,36 @@ final class LiveBackend: Backend {
         guard var saved = paired else { throw Refused(code: "unpaired", message: "not paired") }
         let machine = wanted ?? Reach(name: saved.machine, key: saved.key, addrs: saved.addrs, good: saved.good)
         try await started()
+        let key = machine.key
+        let opened = try await dial(machine)
+        stream = opened
+        linked = key
+        listen(opened)
+        let hello = try await hello()
+        let good = (await Task.detached { Rust.path(key) }.value)["remote"] as? String
+        if let relay = hello.relay {
+            saved.relay = relay
+            Keychain.keepRelayToken(hello.relay_token)
+        }
+        if key == saved.key {
+            saved.addrs = hello.addrs
+            saved.good = good ?? saved.good
+        }
+        var reached = hello.machines ?? []
+        for index in reached.indices {
+            reached[index].good = reached[index].key == key ? good : saved.known?.first { $0.key == reached[index].key }?.good
+        }
+        saved.known = reached
+        paired = saved
+        save()
+        return hello
+    }
+
+    func reaches(_ machine: Reach) async -> Bool {
+        (try? await dial(machine)) != nil
+    }
+
+    private func dial(_ machine: Reach) async throws -> UInt64 {
         let known = [machine.good].compactMap { $0 } + machine.addrs
         let instance = Rust.instance(machine.key)
         let (key, lookup) = (machine.key, self.lookup)
@@ -159,27 +189,7 @@ final class LiveBackend: Backend {
         }
         if let refused { throw refused }
         guard let opened else { throw Refused(code: "unreachable", message: "Can't reach \(machine.name)") }
-        stream = opened
-        linked = key
-        listen(opened)
-        let hello = try await hello()
-        let good = (await Task.detached { Rust.path(key) }.value)["remote"] as? String
-        if let relay = hello.relay {
-            saved.relay = relay
-            Keychain.keepRelayToken(hello.relay_token)
-        }
-        if key == saved.key {
-            saved.addrs = hello.addrs
-            saved.good = good ?? saved.good
-        }
-        var reached = hello.machines ?? []
-        for index in reached.indices {
-            reached[index].good = reached[index].key == key ? good : saved.known?.first { $0.key == reached[index].key }?.good
-        }
-        saved.known = reached
-        paired = saved
-        save()
-        return hello
+        return opened
     }
 
     func networkChanged() {

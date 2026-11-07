@@ -234,6 +234,7 @@ protocol Backend: AnyObject {
     func connect(to machine: Reach?) async throws -> Hello
     func networkChanged()
     func hello() async throws -> Hello
+    func reaches(_ machine: Reach) async -> Bool
     func read(repo: String, after: Int) async throws -> Page
     func send(repo: String, id: String, text: String) async throws -> Item
     func choose(repo: String, id: String, seq: Int, choice: String) async throws -> Item
