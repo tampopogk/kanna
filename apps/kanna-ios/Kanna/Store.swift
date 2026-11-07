@@ -33,6 +33,7 @@ final class Store {
     @ObservationIgnored private var syncing = false
     @ObservationIgnored private var askedStats = Date.distantPast
     @ObservationIgnored private var asleep: Set<String> = []
+    @ObservationIgnored private var triedPlanner: Date?
 
     let fixture: Bool
     var paired: Bool
@@ -122,6 +123,7 @@ final class Store {
     }
 
     func path(_ machine: String) -> LinkPath {
+        guard linked != nil else { return .off }
         if machine == linked?.name { return linkPath }
         guard let found = machinesPage?.machines.first(where: { $0.name == machine }), found.up else { return .off }
         switch (found.path, found.lan) {
@@ -139,6 +141,7 @@ final class Store {
             wake()
         } else {
             generation += 1
+            waking = false
             backend.close()
             unlinked()
         }
@@ -167,7 +170,10 @@ final class Store {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self?.noNetwork = !up
-                    if up { self?.wake() }
+                    if up {
+                        self?.triedPlanner = nil
+                        self?.wake()
+                    }
                 }
             }
         }
@@ -180,6 +186,13 @@ final class Store {
         waking = true
         generation += 1
         let mine = generation
+        Task {
+            try? await Task.sleep(for: .seconds(40))
+            guard mine == generation, waking, linked == nil else { return }
+            generation += 1
+            waking = false
+            wake()
+        }
         Task {
             defer { if mine == generation { waking = false } }
             do {
@@ -251,9 +264,11 @@ final class Store {
 
     private func comeBack(_ mine: Int) async {
         let id = repo.id
-        guard let page = try? await backend.machines(repo: id), mine == generation else { return }
-        applyMachines(page, repo: id)
-        if page.machines.contains(where: { $0.key == repo.plannerKey && $0.up }) { relink() }
+        if let page = try? await backend.machines(repo: id), mine == generation { applyMachines(page, repo: id) }
+        if let triedPlanner, Date().timeIntervalSince(triedPlanner) < 30 { return }
+        guard mine == generation, let target = reach(repo.plannerKey) else { return }
+        triedPlanner = Date()
+        if await backend.reaches(target), mine == generation { relink() }
     }
 
     private func measure() async {
