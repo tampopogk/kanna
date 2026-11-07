@@ -2,7 +2,7 @@
 
 **Status:** built · **Tests:** `stats.rs`, `tasks.rs`, `AgentStatusesTests`, `StatsFormatTests`, e2e `stats_tab` · **Mockup:** [`references/mockups/stats.html`](../../references/mockups/stats.html) (`#picture,agents`) · **Builds on:** [Stats](stats.md), [agent status](agent-status.md) and its [stored status](agent-status.md#5-across-a-daemon-restart), [task history](database.md)
 
-**The Agents section of the Stats tab:** how long task agents worked, how long they waited on you, how long finished work sat unlooked at, and how their turns went, over the last 30 days. Agents do the work, so the time that matters is theirs and the time they spend on you.
+**The Agents section of the Stats tab:** how long task agents worked, how long they waited on you, how long finished work sat unlooked at, and how their turns went, over the last 30 days. It shows whether you are holding agents up: how much of their time went on work, and how much on waiting for you.
 
 The numbers come from a row in `task_events` for each change of a task agent's status. The planner, a run's stages and plain terminals have no rows. Only the Stats tab, on the Mac and the [phone](mobile-machines.md#7-stats), and `kanna stats` show them: `kanna task list` and the Desk's rows have no per-task numbers yet.
 
