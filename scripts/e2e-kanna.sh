@@ -6304,7 +6304,7 @@ print(" ".join(v["stage"] + ":" + (v["verdict"] or "open") + ("(" + v["doc"]["by
   [[ "$picked" =~ (term-[0-9]+) ]] || { echo "pipeline_gates: pick said: $picked"; return 1; }
   local agent="${BASH_REMATCH[1]}"
   check wait_for 15 is "$agent" state running || { echo "pipeline_gates: the task's agent didn't start on the Desk"; return 1; }
-  check wait_for 15 shows "$agent" "›" || { echo "pipeline_gates: the task's agent isn't ready"; kanna read "$agent"; return 1; }
+  check wait_for 15 shows "$agent" "❯" || { echo "pipeline_gates: the task's agent isn't ready"; kanna read "$agent"; return 1; }
   kanna send "$agent" "run $bin/kanna run answer $run yes Go ahead." >/dev/null || { echo "pipeline_gates line $LINENO"; return 1; }
   check wait_for 20 eval '[[ "$(runs why)" == *"build stopped without reporting"* ]]' || { echo "pipeline_gates: the agent's answer didn't carry the run to build: $(runs state) $(runs why)"; kanna read "$agent"; kanna run log "$run"; return 1; }
   steer() { said="$(kanna run "$1" "$run" 2>&1)"; }
