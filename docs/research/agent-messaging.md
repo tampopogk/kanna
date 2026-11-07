@@ -154,7 +154,17 @@ flowchart TD
 | Approval prompt | Accepted; prompt untouched; goes with the next request after you approve |
 | Question (`request_user_input`) | Accepted; question untouched; goes with the next request after you answer |
 
-**So:** Claude queues safely, and the two exceptions are a working Claude's memory, which a kill empties, and the permission dialog. `turn/start` is safe on Codex only between steps, and no report tells those from streaming. Kanna could stop waiting for Codex at a tool call if a later protocol said which step it's on. [The rules Kanna took from this](../specs/agent-messaging.md#2-delivery).
+**So:** Claude queues safely, and the two exceptions are a working Claude's memory, which a kill empties, and the permission dialog. `turn/start` is safe on Codex only between steps, and no report tells those from streaming. Its app-server has a queue for this, an experimental API read from Codex's source (`ext/queue`, `thread_queue_processor.rs`, tag `rust-v0.166.0`) and tested below. [The rules Kanna took from this](../specs/agent-messaging.md#2-delivery).
+
+| Codex: `thread/queue/add` | What happened |
+|---|---|
+| Idle | A turn starts at once; the queue is empty again |
+| Streaming an answer | The answer finishes whole; then one turn each, three in order. A draft stays |
+| During a long tool call | Held; runs after the turn |
+| Approval prompt | Held; prompt untouched; runs after the turn, once you've approved |
+| Esc | Stays queued: the idle dispatch skips an interrupted turn. It ran after the next turn, or `thread/queue/start` runs it |
+| `kill -9` of the app-server | Kept in SQLite: a new server lists it, and it runs on `thread/resume` |
+| Without `experimentalApi` | Refused |
 
 ## 8. Glossary
 

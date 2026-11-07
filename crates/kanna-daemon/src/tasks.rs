@@ -924,6 +924,11 @@ fn main_key(repo: &str) -> String {
     format!("main:{repo}")
 }
 
+struct Queued {
+    thread: String,
+    list: Vec<Message>,
+}
+
 pub struct Tasks {
     state: PathBuf,
     db: Rc<Db>,
@@ -960,6 +965,9 @@ pub struct Tasks {
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>, Channel)>>,
     unread: RefCell<HashMap<String, (Channel, Vec<Message>)>>,
+    queued: RefCell<HashMap<String, Queued>>,
+    checks: RefCell<HashMap<String, Instant>>,
+    stalled: RefCell<HashSet<String>>,
     pub on_change: RefCell<Option<Box<dyn Fn(Value)>>>,
     pub claimant: RefCell<String>,
     revision: Cell<u64>,
@@ -1142,6 +1150,9 @@ impl Tasks {
             delivering: RefCell::default(),
             posting: RefCell::default(),
             unread: RefCell::default(),
+            queued: RefCell::default(),
+            checks: RefCell::default(),
+            stalled: RefCell::default(),
             on_change: RefCell::default(),
             replica: RefCell::new(replica),
             roster: RefCell::default(),
@@ -2901,9 +2912,9 @@ impl Tasks {
         let running = pane.is_some();
         let status = pane.as_deref().and_then(|pane| self.core.upgrade()?.pane(pane)?.status).as_deref().and_then(Status::parse);
         let channel = pane.as_deref().and_then(|pane| self.channel(pane));
-        let soon = channel.as_ref().zip(pane.as_deref()).is_some_and(|(channel, pane)| self.undeliverable(channel).is_none() && messages::mid_turn(channel, status, self.attested(pane, std::slice::from_ref(&message))));
+        let soon = channel.as_ref().zip(pane.as_deref()).is_some_and(|(channel, pane)| matches!(channel, Channel::Claude(_)) && self.undeliverable(channel).is_none() && messages::mid_turn(channel, status, self.attested(pane, std::slice::from_ref(&message))));
         let warning = match channel {
-            Some(channel) => self.undeliverable(&channel).or_else(|| (!soon && status.is_none()).then(|| messages::UNKNOWN_STATUS.to_string())),
+            Some(channel) => self.undeliverable(&channel),
             None => agent.filter(|agent| !messages::AGENTS.contains(&agent.as_str())).map(|agent| format!("{agent} can't take messages: only {} can", messages::AGENTS.join(" and "))).or_else(|| (running && status.is_none()).then(|| messages::UNKNOWN_STATUS.to_string())),
         };
         if let Some(why) = &warning {
@@ -3091,6 +3102,7 @@ impl Tasks {
                 }
                 continue;
             };
+            self.check_queue(&pane, &channel, &list, now, &mut next);
             let list = self.not_posted(&pane, list);
             if list.is_empty() {
                 continue;
@@ -3101,7 +3113,7 @@ impl Tasks {
                         self.warn(&pane, why);
                         next = Some(next.map_or(now + messages::RETRY, |n: Instant| n.min(now + messages::RETRY)));
                     }
-                    None => self.hand_over(pane, list, channel),
+                    None => self.hand_over(pane, list, channel, true),
                 },
                 Some(at) => next = Some(next.map_or(at, |n: Instant| n.min(at))),
                 None => match self.undeliverable(&channel) {
@@ -3112,16 +3124,12 @@ impl Tasks {
                     }
                     None if messages::mid_turn(&channel, ready.status(), self.attested(&pane, &list)) => {
                         if ready.since() <= now {
-                            self.hand_over(pane, list, channel);
+                            self.hand_over(pane, list, channel, false);
                         } else {
                             next = Some(next.map_or(ready.since(), |n: Instant| n.min(ready.since())));
                         }
                     }
-                    None => {
-                        if let Some(at) = ready.unknown() {
-                            self.unknown(&pane, messages::UNKNOWN_STATUS, at, now, &mut next);
-                        }
-                    }
+                    None => {}
                 },
             }
         }
@@ -3138,8 +3146,59 @@ impl Tasks {
 
     fn not_posted(&self, pane: &str, list: Vec<Message>) -> Vec<Message> {
         let unread = self.unread.borrow();
-        let Some((_, posted)) = unread.get(pane) else { return list };
-        list.into_iter().filter(|m| !posted.iter().any(|p| p.id == m.id)).collect()
+        let queued = self.queued.borrow();
+        let posted = unread.get(pane).map_or(&[][..], |(_, posted)| posted);
+        list.into_iter().filter(|m| !posted.iter().chain(queued.values().flat_map(|q| &q.list)).any(|p| p.id == m.id)).collect()
+    }
+
+    fn check_queue(self: &Rc<Self>, pane: &str, channel: &Channel, list: &[Message], now: Instant, next: &mut Option<Instant>) {
+        let mine: Vec<(String, String)> = self.queued.borrow().iter().filter(|(_, q)| q.list.iter().any(|m| list.iter().any(|l| l.id == m.id))).map(|(submission, q)| (submission.clone(), q.thread.clone())).collect();
+        if mine.is_empty() {
+            return;
+        }
+        let Channel::Codex(Ok(socket)) = channel.clone() else {
+            self.queued.borrow_mut().retain(|submission, _| !mine.iter().any(|(s, _)| s == submission));
+            return log!("kanna-daemon: {pane} no longer runs the Codex that queued its messages, so they go again");
+        };
+        let at = self.checks.borrow().get(pane).copied().unwrap_or(now);
+        *next = Some(next.map_or(at.max(now + messages::CHECK), |n| n.min(at.max(now + messages::CHECK))));
+        if at > now {
+            return;
+        }
+        self.checks.borrow_mut().insert(pane.to_string(), now + messages::TURN_TIMEOUT);
+        let start = self.stalled.borrow().contains(pane);
+        let (pane, this) = (pane.to_string(), Rc::downgrade(self));
+        crate::runtime::spawn("codex's queue", async move {
+            let asked = mine.clone();
+            let state = crate::runtime::off_loop(move || messages::codex_queue(&socket, &asked, start)).await.unwrap_or_else(|| Err("asking stopped before it was done".into()));
+            if let Some(this) = this.upgrade() {
+                this.checked(&pane, &mine, state);
+            }
+        });
+    }
+
+    fn checked(self: &Rc<Self>, pane: &str, mine: &[(String, String)], state: Result<messages::QueueState, String>) {
+        self.checks.borrow_mut().insert(pane.to_string(), Instant::now() + messages::CHECK);
+        let state = match state {
+            Ok(state) => state,
+            Err(why) => return log!("kanna-daemon: couldn't read {pane}'s queue ({why})"),
+        };
+        for (submission, _) in mine {
+            if state.moved.contains(submission) {
+                self.queued.borrow_mut().remove(submission);
+                log!("kanna-daemon: {pane} runs another Codex session than the one that queued its message, so it goes again");
+            } else if !state.queued.contains(submission) {
+                let left = self.queued.borrow_mut().remove(submission);
+                if let Some(queued) = left {
+                    self.took(pane, &queued.list);
+                }
+            }
+        }
+        if state.idle && !state.queued.is_empty() {
+            self.stalled.borrow_mut().insert(pane.to_string());
+        } else {
+            self.stalled.borrow_mut().remove(pane);
+        }
     }
 
     fn read_up(self: &Rc<Self>) {
@@ -3193,44 +3252,56 @@ impl Tasks {
         }
     }
 
-    fn hand_over(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel) {
+    fn hand_over(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel, idle: bool) {
         let named = |who: &str| if db::is_task_id(who) { self.label(who) } else { who.to_string() };
         let text = messages::prompt(&list.iter().map(|m| (m.comment.is_none().then(|| named(&m.sender)), m.text.clone())).collect::<Vec<_>>());
         let mode = self.mode(&pane, &list);
+        let first = list.first().map_or(0, |m| m.id);
         self.delivering.borrow_mut().insert(pane.clone());
         let token = self.next.get() + 1;
         self.next.set(token);
         self.posting.borrow_mut().insert(token, (pane, list, channel.clone()));
         let this = Rc::downgrade(self);
         crate::runtime::spawn("messages to an agent", async move {
-            let result = crate::runtime::off_loop(move || messages::deliver(&channel, &text, mode)).await.unwrap_or_else(|| Err("delivering them stopped before it was done".to_string()));
+            let result = crate::runtime::off_loop(move || messages::deliver(&channel, &text, mode, first, idle)).await.unwrap_or_else(|| Err("delivering them stopped before it was done".to_string()));
             if let Some(this) = this.upgrade() {
                 this.posted(token, result);
             }
         });
     }
 
-    pub fn posted(self: &Rc<Self>, token: u64, result: Result<(), String>) {
+    pub fn posted(self: &Rc<Self>, token: u64, result: Result<messages::Posted, String>) {
         let posted = self.posting.borrow_mut().remove(&token);
         if let Some((pane, list, channel)) = posted {
             self.handed(pane, list, channel, result);
         }
     }
 
-    fn handed(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel, result: Result<(), String>) {
+    fn handed(self: &Rc<Self>, pane: String, list: Vec<Message>, channel: Channel, result: Result<messages::Posted, String>) {
         self.delivering.borrow_mut().remove(&pane);
         let now = Instant::now();
         if let Some(ready) = self.ready.borrow_mut().get_mut(&pane) {
             ready.sent(now);
         }
-        if let Err(error) = result {
-            return log!("kanna-daemon: couldn't give {pane} its messages ({error}); they wait");
-        }
+        let posted = match result {
+            Ok(posted) => posted,
+            Err(error) => {
+                log!("kanna-daemon: couldn't give {pane} its messages ({error}); they wait");
+                if matches!(channel, Channel::Codex(_)) {
+                    self.warn(&pane, error);
+                }
+                return;
+            }
+        };
         self.warned.borrow_mut().remove(&pane);
         let status = self.core.upgrade().and_then(|core| core.pane(&pane)).and_then(|p| p.status).as_deref().and_then(Status::parse);
         if let Some(turn) = self.turns.borrow_mut().get_mut(&pane) {
             *turn = Turn::underway();
             turn.see(status, now + messages::PICKUP);
+        }
+        if let messages::Posted::Queued { thread, submission } = posted {
+            self.queued.borrow_mut().insert(submission, Queued { thread, list });
+            return;
         }
         if status == Some(Status::Working) {
             let mut unread = self.unread.borrow_mut();
@@ -6214,20 +6285,53 @@ mod tests {
         assert!(t.warned.borrow().is_empty());
     }
 
+    fn queued(t: &Inbox, submission: &str) -> Message {
+        t.leave("hello", None);
+        let message = t.tasks.waiting.borrow().last().cloned().unwrap();
+        t.tasks.handed("term-7".into(), vec![message.clone()], Channel::Codex(Ok(t.socket.clone())), Ok(messages::Posted::Queued { thread: "session".into(), submission: submission.into() }));
+        message
+    }
+
+    fn holds(queued: &[&str], moved: &[&str], idle: bool) -> Result<messages::QueueState, String> {
+        Ok(messages::QueueState { queued: queued.iter().map(|s| s.to_string()).collect(), moved: moved.iter().map(|s| s.to_string()).collect(), idle })
+    }
+
     #[test]
-    fn a_codex_waits_for_its_prompt_and_an_unknown_status_warns_instead_of_going_silent() {
+    fn a_message_in_codexs_queue_counts_as_delivered_once_it_has_left_it() {
+        let t = Inbox::new("codex", Some("working"), messages::BYPASS);
+        *t.door.borrow_mut() = Channel::Codex(Ok(t.socket.clone()));
+        let message = queued(&t, "q1");
+        let mine = [("q1".to_string(), "session".to_string())];
+        assert_eq!(t.tasks.not_posted("term-7", vec![message]), vec![], "it isn't queued twice");
+        t.tasks.checked("term-7", &mine, holds(&["q1"], &[], false));
+        assert_eq!(t.delivered(), 0);
+        t.tasks.checked("term-7", &mine, holds(&[], &[], false));
+        assert_eq!(t.delivered(), 1);
+        assert!(t.tasks.queued.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_queue_left_idle_after_esc_is_started_and_a_new_session_gets_the_message_again() {
+        let t = Inbox::new("codex", Some("idle"), messages::BYPASS);
+        *t.door.borrow_mut() = Channel::Codex(Ok(t.socket.clone()));
+        let message = queued(&t, "q1");
+        let mine = [("q1".to_string(), "session".to_string())];
+        t.tasks.checked("term-7", &mine, holds(&["q1"], &[], true));
+        assert!(t.tasks.stalled.borrow().contains("term-7"), "idle with a message queued: the next look starts it");
+        t.tasks.checked("term-7", &mine, holds(&[], &["q1"], false));
+        assert_eq!(t.delivered(), 0);
+        assert_eq!(t.tasks.not_posted("term-7", vec![message.clone()]), vec![message], "the new session never saw it");
+        assert!(!t.tasks.stalled.borrow().contains("term-7"));
+    }
+
+    #[test]
+    fn a_codex_that_refuses_the_queue_mid_turn_warns_the_sender() {
         let t = Inbox::new("codex", Some("working"), messages::BYPASS);
         *t.door.borrow_mut() = Channel::Codex(Ok(t.socket.clone()));
         t.leave("hello", None);
-        t.tasks.tick();
-        assert!(t.tasks.delivering.borrow().is_empty() && t.warned.borrow().is_empty(), "a turn on a busy Codex drops the answer it's streaming");
-        t.status(None);
-        t.tasks.tick();
-        assert!(t.warned.borrow().is_empty(), "a Codex still starting has a moment to report");
-        t.tasks.ready.borrow_mut().insert("term-7".into(), Ready::new(Instant::now() - messages::UNKNOWN));
-        t.tasks.tick();
-        t.tasks.tick();
-        assert_eq!(*t.warned.borrow(), [messages::UNKNOWN_STATUS], "and then the sender hears, once");
+        let message = t.tasks.waiting.borrow().last().cloned().unwrap();
+        t.tasks.handed("term-7".into(), vec![message], Channel::Codex(Ok(t.socket.clone())), Err("codex's app-server refused thread/queue/add: unknown variant".into()));
+        assert_eq!(*t.warned.borrow(), ["codex's app-server refused thread/queue/add: unknown variant"]);
         assert_eq!(t.delivered(), 0);
     }
 
