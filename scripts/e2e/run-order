@@ -72,6 +72,7 @@ desk_scrolls
 desk_times
 shelf_search
 task_start_stop
+task_quit_at_rest
 pick_at_once
 perf_intervals
 pick_keeper_paused

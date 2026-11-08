@@ -401,6 +401,48 @@ task_start_stop() {
   check wait_for 5 is side4 state running || { echo "task_start_stop: a hung-up terminal didn't run again after a restart"; kanna workspace list --all; return 1; }
 }
 
+scenario task_quit_at_rest M4
+task_quit_at_rest() {
+  local logged; logged="$(cat "$out/daemon.log" 2>/dev/null | wc -l)"
+  start_daemon && start_app || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude"
+  mkdir -p "$repo/.kanna" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  logs() { tail -n +"$((logged + 1))" "$out/daemon.log" | grep -F -- "$1"; }
+  status() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$1\"}}" | field status; }
+  local id pane
+  id="$(cd "$repo" && kanna task new "Ends itself" "say hi" --agent "$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+  kanna task start "$id" >/dev/null && check wait_for 10 shows "Ends itself" SAID || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(status "$(pane "Ends itself" id)")" == idle ]]' || { echo "task_quit_at_rest: the agent didn't report idle"; return 1; }
+  kanna send "Ends itself" "run $bin/kanna task done && sleep 1" || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  check wait_for 10 eval 'logs "ends its own task, so it quits when its turn ends" >/dev/null' || { echo "task_quit_at_rest: its own Done didn't wait for its turn"; return 1; }
+  pane="$(logs "ends its own task" | sed -n 's/.* in \(term-[0-9]*\) ends its own task.*/\1/p' | tail -1)"
+  check wait_for 15 eval '[[ "$(cd "$repo" && kanna task list "$id")" == *"is done"* ]]' || { echo "task_quit_at_rest: the task that ran its own Done isn't done"; (cd "$repo" && kanna task list "$id"); return 1; }
+  ! logs "$pane isn't at rest" || { echo "task_quit_at_rest: its own Done interrupted it"; return 1; }
+  ! logs "in $pane didn't" || { echo "task_quit_at_rest: its own Done didn't quit it by /exit"; return 1; }
+  ! logs "box in $pane" || { echo "task_quit_at_rest: its own Done didn't quit it by /exit"; return 1; }
+  id="$(cd "$repo" && kanna task new "Works" "say hi" --agent "$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+  kanna task start "$id" >/dev/null && check wait_for 10 shows "Works" SAID || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  pane="$(pane "Works" id)"
+  kanna send "Works" "work 60" && check wait_for 10 eval '[[ "$(status "$pane")" == working ]]' || { echo "task_quit_at_rest: it didn't start working"; return 1; }
+  local started=$SECONDS
+  [[ "$(kanna task stop "$id")" == "stopped $id on the Shelf; "* ]] || { echo "task_quit_at_rest: the working task didn't stop"; return 1; }
+  check is "Works" state exited || { echo "task_quit_at_rest: the working agent is still running"; return 1; }
+  (( SECONDS - started < 5 )) || { echo "task_quit_at_rest: stopping the working agent took $((SECONDS - started))s"; return 1; }
+  shows "Works" INTERRUPTED && unwrapped "Works" "--resume" || { echo "task_quit_at_rest: Esc didn't bring it to rest before it quit"; kanna read "Works"; return 1; }
+  logs "$pane isn't at rest, so it gets esc" >/dev/null && logs "in $pane is at rest, so it's told to exit" >/dev/null || { echo "task_quit_at_rest: the working agent wasn't brought to rest"; return 1; }
+  ! logs "in $pane didn't" || { echo "task_quit_at_rest: the working agent got its keys"; return 1; }
+  machine_runners 1
+  id="$(cd "$repo" && kanna task new "Asks" "turn" --agent "$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+  check wait_for 20 eval 'raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"events\",\"task\":\"$id\"}}" | grep -q "\"why\": *\"needs-you\""' || { echo "task_quit_at_rest: the asking task wasn't stopped as needs you"; return 1; }
+  pane="$(pane "Asks" id)"
+  check is "Asks" state exited || { echo "task_quit_at_rest: the asking agent is still running"; return 1; }
+  shows "Asks" "Declined." && unwrapped "Asks" "--resume" || { echo "task_quit_at_rest: Esc didn't answer its question before it quit"; kanna read "Asks"; return 1; }
+  logs "$pane isn't at rest, so it gets esc" >/dev/null && logs "in $pane is at rest, so it's told to exit" >/dev/null || { echo "task_quit_at_rest: the asking agent wasn't brought to rest"; return 1; }
+  ! logs "in $pane didn't" || { echo "task_quit_at_rest: the asking agent got its keys"; return 1; }
+}
+
 scenario pick_at_once M4
 pick_at_once() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" task seen took card
