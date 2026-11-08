@@ -715,7 +715,7 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   check test "$(in_repo task messages "$busy" | grep -c 'main conflicts')" -eq 1 || { echo "task_events: a second move left a second message"; in_repo task messages "$busy"; return 1; }
   shows "$term" "main conflicts with" && { echo "task_events: the message went in mid-turn"; kanna read "$term"; return 1; }
   check wait_for 30 unwrapped "$term" "peer: [message from kanna] main conflicts with your branch in shared: merge or rebase main, rerun your tests" || { echo "task_events: the message didn't arrive at the turn's end"; kanna read "$term"; in_repo task messages "$busy"; return 1; }
-  in_repo task events "$busy" | grep -qE 'main-conflicts +delivered +main conflicts with your branch in shared' || { echo "task_events: events doesn't list what was sent"; in_repo task events "$busy"; return 1; }
+  check wait_for 5 eval 'in_repo task events "$busy" | grep -qE "main-conflicts +delivered +main conflicts with your branch in shared"' || { echo "task_events: events doesn't list what was sent"; in_repo task events "$busy"; return 1; }
 
   said="$(in_repo task subscribe main-moved "$busy")"
   [[ "$said" == *"hears main-moved" ]] || { echo "task_events: subscribe said $said"; return 1; }
