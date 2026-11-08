@@ -144,6 +144,7 @@ pub enum Event {
     MachinesSave(Value),
     PeerRequest { from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send> },
     AccountBroken(Value),
+    AccountUnreadable(Value),
     Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
@@ -169,7 +170,7 @@ impl Event {
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppUsed { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
-            Event::PeerRequest { .. } | Event::AccountBroken(_) => "loop.accounts",
+            Event::PeerRequest { .. } | Event::AccountBroken(_) | Event::AccountUnreadable(_) => "loop.accounts",
             Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
         }
     }
@@ -433,6 +434,10 @@ fn run() -> Result<(), String> {
     let broken = events.clone();
     accounts.on_broken(Box::new(move |account| {
         let _ = broken.send(Event::AccountBroken(account));
+    }));
+    let unreadable = events.clone();
+    accounts.on_unreadable(Box::new(move |account| {
+        let _ = unreadable.send(Event::AccountUnreadable(account));
     }));
     accounts.install(&core);
     if let Some(machines) = &machines {
@@ -951,6 +956,16 @@ fn run() -> Result<(), String> {
                 let toast = toasts::Toast { title: format!("Sign in to {agent} again"), detail: Some(format!("{}: {}. Add it again with kanna accounts add {}.", account["label"].as_str().unwrap_or(agent), account["why"].as_str().unwrap_or("it stopped working"), account["agent"].as_str().unwrap_or("codex"))), key: Some(format!("account:{}", account["id"].as_str().unwrap_or_default())), ..Default::default() };
                 if let Err(error) = toasts.raise(toast) {
                     log!("kanna-daemon: can't raise a toast for a broken account: {}", error.message);
+                }
+            }
+            Event::AccountUnreadable(account) => {
+                let agent = match account["agent"].as_str() {
+                    Some("claude") => "Claude",
+                    _ => "Codex",
+                };
+                let toast = toasts::Toast { title: format!("{agent} started without your account"), detail: Some(format!("{}. It runs on this machine's own sign-in.", account["why"].as_str().unwrap_or("its secret couldn't be read"))), key: Some(format!("account-unreadable:{}", account["agent"].as_str().unwrap_or_default())), ..Default::default() };
+                if let Err(error) = toasts.raise(toast) {
+                    log!("kanna-daemon: can't raise a toast for an unreadable account: {}", error.message);
                 }
             }
             Event::Replica { token, reply } => tasks.replied(token, reply),
