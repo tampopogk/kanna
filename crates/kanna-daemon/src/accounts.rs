@@ -950,6 +950,36 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_the_keychain_will_not_delete_keeps_its_account() {
+        struct Stuck(Files);
+        impl Secrets for Stuck {
+            fn read(&self, name: &str) -> Option<String> {
+                self.0.read(name)
+            }
+            fn write(&self, name: &str, value: &str) -> Result<(), String> {
+                self.0.write(name, value)
+            }
+            fn delete(&self, name: &str) -> Result<(), String> {
+                match self.0.read(name).is_some_and(|v| v.starts_with("sk-ant-api03-old")) {
+                    true => Err("refused".into()),
+                    false => self.0.delete(name),
+                }
+            }
+        }
+        let dir = folder("stuck");
+        let refresher = Fake { calls: Arc::default(), fail: false, slow: Duration::ZERO };
+        let accounts = Accounts::open(&dir, Arc::new(Stuck(Files::new(dir.join(SECRETS)))), Box::new(refresher));
+        accounts.add(Kind::ClaudeApiKey, "sk-ant-api03-old", None, None, "k").unwrap();
+        let version = accounts.version();
+        assert_eq!(accounts.remove("claude").unwrap_err().message, "refused");
+        assert_eq!(accounts.add(Kind::ClaudeApiKey, "sk-ant-api03-new", None, None, "k").unwrap_err().message, "refused");
+        assert_eq!(accounts.version(), version);
+        assert_eq!(accounts.credential("claude"), Some(Credential::Env("ANTHROPIC_API_KEY", "sk-ant-api03-old".into())));
+        assert_eq!(std::fs::read_dir(dir.join(SECRETS)).unwrap().count(), 1, "the new secret is taken back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn workers_get_lasting_secrets_and_only_the_holder_of_a_chatgpt_login() {
         let mac = folder("supply-mac");
         let vm = folder("supply-vm");
