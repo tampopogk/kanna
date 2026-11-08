@@ -1,5 +1,6 @@
 import AppKit
 import KannaCode
+import KannaOverview
 
 @MainActor
 public final class LogPaneView: NSView {
@@ -343,9 +344,9 @@ public final class LogPaneView: NSView {
     }
 
     func matches(_ text: String) -> [String] {
-        let needle = text.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !needle.isEmpty, let result else { return [] }
-        return result.rows.filter { $0.subject.lowercased().contains(needle) || $0.hash.hasPrefix(needle) }.map(\.hash)
+        let query = FindQuery(text.trimmingCharacters(in: .whitespaces))
+        guard !query.isEmpty, let result else { return [] }
+        return result.rows.filter { query.matches($0.subject) || $0.hash.hasPrefix(query.text.lowercased()) }.map(\.hash)
     }
 
     var findLabel: String {
