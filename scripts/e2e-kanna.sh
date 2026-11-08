@@ -35,7 +35,7 @@ real_agent_tasks, real_agent_messages, real_agent_planners, real_agent_last_word
 or $KANNA_E2E_CLAUDE / $KANNA_E2E_CODEX) against tools/agent-harness's mock
 model, each in a HOME of its own. A planning terminal
 offers no agent (KANNA_PLANNING_AGENTS=none) unless a scenario gives it some. Shelf tasks
-don't run by themselves (shelf.runners is 0) unless a scenario's repo sets it.
+don't run by themselves (shelf.runners is 0) unless a scenario sets it (machine_runners).
 USAGE
 }
 
@@ -358,6 +358,10 @@ for k in sys.argv[2].split("."): v = v[int(k)] if k.isdigit() else v.get(k)
 print(json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v)' "$1" "$2"
 }
 placed() { awk -F'  +' 'BEGIN { OFS = "  " } /^(Desk|Shelf)$/ { where = $1; next } NF > 1 { $2 = $2 OFS where; print }'; }
+machine_runners() {
+  local mine="$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  sed -E 's/"shelf": \{"runners": [0-9]+\}/"shelf": {"runners": '"$1"'}/' "$mine" >"$mine.new" && mv "$mine.new" "$mine"
+}
 tid() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id from tasks order by rowid limit 1 offset $(($1 - 1))"; }
 sid() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id from tasks where place != 'done'" | python3 -c 'import sys
 id, others = sys.argv[1], [o[5:] for o in sys.stdin.read().split() if o != sys.argv[1]]

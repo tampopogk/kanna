@@ -17,7 +17,7 @@ comment_agents() {
   comment_repo="$(e2e_repo comments)" || return 1
   comment_fake="$KANNA_STATE_DIR/comment-agents"
   mkdir -p "$comment_fake/bin" "$comment_repo/.kanna" || return 1
-  printf '{"version": 1, "shelf": {"runners": 2}}\n' >"$comment_repo/.kanna/config.json"
+  machine_runners 2
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/bin/claude"
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/copilot"
   printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/claude" && chmod +x "$comment_fake/claude"
