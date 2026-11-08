@@ -6411,7 +6411,8 @@ verdict=pass; [ "\$n" -eq 1 ] && verdict=fail
 printf 'Looked.\n\`\`\`json name=findings\n[{"severity": "bug", "file": "a", "line": 1, "what": "x"}, {"severity": "nit", "what": "y"}]\n\`\`\`\n' >"\$KANNA_ANSWER"
 "\$KANNA_CLI" run done "\$verdict"
 REVIEW
-  printf '{"version": 1, "shelf": {"runners": 1}, "pipelines": {"pricing": {"mock-model": {"in": 2, "out": 10}}}}\n' >"$repo/.kanna/config.json"
+  printf '{"version": 1, "pipelines": {"pricing": {"mock-model": {"in": 2, "out": 10}}}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   printf 'budget = 9 sessions, 30m\nbuild  = claude\ncheck  = run sh check.sh\n\nbuild -> check\ncheck -[fail, max 2]-> build\ncheck -> done\n' >"$repo/.kanna/pipelines/alpha.kojo"
   printf 'budget = 9 sessions, 30m\nbuild  = claude\nreview = claude verdict\n\nbuild -> review\nreview -[fail, max 2]-> build\nreview -> done\n' >"$repo/.kanna/pipelines/beta.kojo"
   printf 'Build it.\nmock: run sh %s 3000 700 && echo "$KANNA_RUN $KANNA_STAGE" >>"built-$KANNA_RUN.txt" && git add -A . && git commit -qm build && echo Built. >"$KANNA_ANSWER" && "$KANNA_CLI" run done\n' "$fake/usage.sh" >"$repo/.kanna/prompts/build.md"
