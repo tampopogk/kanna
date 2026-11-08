@@ -136,9 +136,11 @@ impl Keychain {
 fn keychain_error(doing: &str, error: security_framework::base::Error) -> String {
     const INTERACTION_NOT_ALLOWED: i32 = -25308;
     const AUTH_FAILED: i32 = -25293;
+    const INVALID_OWNER_EDIT: i32 = -25244;
     match error.code() {
         INTERACTION_NOT_ALLOWED => format!("can't {doing}: the Keychain wants a dialog answered (it's locked, or asks to allow this build), and Kanna never shows one"),
         AUTH_FAILED => format!("can't {doing}: the Keychain refused this build"),
+        INVALID_OWNER_EDIT => format!("can't {doing}: the Keychain lets only a program named as the one that made it delete it; delete it in Keychain Access (service \"{KEYCHAIN_SERVICE}\"), then try again"),
         _ => format!("can't {doing}: {error}"),
     }
 }
@@ -367,10 +369,12 @@ impl Accounts {
         std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, &self.path)).map_err(|e| KmuxError::new("failed", format!("can't save {}: {e}", self.path.display())))
     }
 
-    fn forget(&self, name: &str) {
-        if let Err(why) = self.secrets.delete(name) {
-            log!("kanna-daemon: {why}");
+    fn delete_secrets(&self, accounts: &[Value]) -> Result<(), KmuxError> {
+        for id in accounts.iter().filter_map(|a| string(a, "id")) {
+            self.secrets.delete(id).map_err(|e| KmuxError::new("failed", e))?;
+            self.broken.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
         }
+        Ok(())
     }
 
     pub fn version(&self) -> u64 {
@@ -421,6 +425,10 @@ impl Accounts {
         let mut book = self.book();
         let mut own: Vec<Value> = book["own"].as_array().cloned().unwrap_or_default();
         let (replaced, kept): (Vec<Value>, Vec<Value>) = own.drain(..).partition(|a| a["agent"] == kind.agent());
+        if let Err(e) = self.delete_secrets(&replaced) {
+            let _ = self.secrets.delete(&id);
+            return Err(e);
+        }
         let account = json!({ "id": id, "agent": kind.agent(), "kind": kind.name(), "label": label.unwrap_or(kind.name()), "added_at": now(), "holder": kind.held().then_some(me), "program": program });
         let mut own = kept;
         own.push(account.clone());
@@ -428,12 +436,6 @@ impl Accounts {
         book["version"] = json!(book["version"].as_u64().unwrap_or(0) + 1);
         self.save(&book)?;
         drop(book);
-        for old in &replaced {
-            if let Some(old) = string(old, "id") {
-                self.forget(old);
-                self.broken.lock().unwrap_or_else(|p| p.into_inner()).remove(old);
-            }
-        }
         Ok(json!({ "account": account, "replaced": replaced }))
     }
 
@@ -444,16 +446,11 @@ impl Accounts {
         if gone.is_empty() {
             return Err(KmuxError::new("not_found", format!("no account \"{which}\" was added on this machine (kanna accounts lists them)")));
         }
+        self.delete_secrets(&gone)?;
         book["own"] = json!(kept);
         book["version"] = json!(book["version"].as_u64().unwrap_or(0) + 1);
         self.save(&book)?;
         drop(book);
-        for account in &gone {
-            if let Some(id) = string(account, "id") {
-                self.forget(id);
-                self.broken.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
-            }
-        }
         Ok(json!({ "removed": gone }))
     }
 
@@ -1410,6 +1407,35 @@ pub(crate) mod tests {
         let supply = json!({ "version": 1, "accounts": [{ "id": "acct-1", "agent": "claude", "kind": "claude-subscription", "label": "Max", "secret": "sk-ant-oat01-x", "added_at": 1 }, { "id": "acct-2", "agent": "codex", "kind": "codex-chatgpt", "holder": "mac-key", "added_at": 1 }] });
         worker.supply("mac-key", &supply, &trusted_mac()).unwrap();
         vm
+    }
+
+    #[test]
+    fn a_secret_the_keychain_will_not_delete_keeps_its_account() {
+        struct Stuck(Files);
+        impl Secrets for Stuck {
+            fn read(&self, name: &str) -> Result<Option<String>, String> {
+                self.0.read(name)
+            }
+            fn write(&self, name: &str, value: &str) -> Result<(), String> {
+                self.0.write(name, value)
+            }
+            fn delete(&self, name: &str) -> Result<(), String> {
+                match self.0.read(name)?.is_some_and(|v| v.starts_with("sk-ant-api03-old")) {
+                    true => Err("refused".into()),
+                    false => self.0.delete(name),
+                }
+            }
+        }
+        let dir = folder("stuck");
+        let accounts = reopened(&dir, Arc::new(Stuck(Files::new(dir.join(SECRETS)))));
+        accounts.add(Kind::ClaudeApiKey, "sk-ant-api03-old", None, None, "k").unwrap();
+        let version = accounts.version();
+        assert_eq!(accounts.remove("claude").unwrap_err().message, "refused");
+        assert_eq!(accounts.add(Kind::ClaudeApiKey, "sk-ant-api03-new", None, None, "k").unwrap_err().message, "refused");
+        assert_eq!(accounts.version(), version);
+        assert_eq!(accounts.credential("claude").unwrap(), Some(Credential::Env("ANTHROPIC_API_KEY", "sk-ant-api03-old".into())));
+        assert_eq!(std::fs::read_dir(dir.join(SECRETS)).unwrap().count(), 1, "the new secret is taken back");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
