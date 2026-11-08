@@ -1,8 +1,8 @@
 # Privacy Prompts
 
-**Status:** built (2026-10-30) · **Related:** [release](release.md), [build channels](build-channels.md), [build targets](build-targets.md), [instances](instances.md)
+**Status:** built (2026-10-30; Apple Development signing 2026-11-08) · **Related:** [release](release.md), [build channels](build-channels.md), [build targets](build-targets.md), [instances](instances.md)
 
-macOS asks before a program reads a protected folder or device (TCC, its privacy controls), and it asks on behalf of the app that started the program. Every program in a Kanna terminal asks as Kanna. Dev builds used to be signed ad hoc, so each rebuild was a new app to macOS: it asked again for everything, and a grant given in System Settings went to a build that was already gone. Dev builds are now signed with a stable identity, so an answer lasts across rebuilds, as a release's does.
+macOS asks before a program reads a protected folder or device (TCC, its privacy controls), and it asks on behalf of the app that started the program. Every program in a Kanna terminal asks as Kanna. Dev builds used to be signed ad hoc, so each rebuild was a new app to macOS: it asked again for everything, and a grant given in System Settings went to a build that was already gone. Dev builds are now signed with a stable identity, so an answer lasts across rebuilds, as a release's does, and so does the Keychain's: the daemon reads agent-account secrets from it ([agent sign-in](agent-sign-in.md)), and an ad-hoc daemon met a Keychain prompt after every build, which froze a headless one.
 
 ## Contents
 
@@ -51,13 +51,42 @@ A grant stores the app's bundle ID and its **designated requirement**: the rule 
 | Signed | Designated requirement | After a rebuild |
 |---|---|---|
 | ad hoc (`codesign -s -`, and what the linker does) | `cdhash H"…"`: these exact bytes | a new app: it asks again. A No given to the current build fails silently ("Operation not permitted") until the next build |
-| with a certificate | `identifier "dev.kanna.app.dev" and certificate leaf = H"…"` | the same app: the answer stands |
+| with Apple Development (dev) | `identifier "dev.kanna.app.dev" and anchor apple generic and certificate leaf[subject.OU] = TEAMID` | the same app: the answer stands, and stands through a renewed or different certificate of the team |
+| with Developer ID (release) | codesign's default, which names the Team ID too | the same app |
+| with Kanna Dev Signing | `identifier "dev.kanna.app.dev" and certificate leaf = H"…"` | the same app to TCC; the Keychain still asks ([§4](#4-how-dev-builds-are-signed)) |
 
 Before this, the build never signed the bundle: the main executable kept the linker's ad-hoc signature with a made-up identifier (`Kanna-5555…`), the Info.plist wasn't bound, and the helpers were `kanna_daemon-98480b85…`. Signing the bundle binds the Info.plist and seals its resources too.
 
 ## 4. How dev builds are signed
 
-`scripts/build-kanna-app.sh` signs with **Kanna Dev Signing**, a self-signed code-signing certificate in the login keychain, or ad hoc when there is none and says so. `scripts/dev-signing-identity.sh` makes it once per Mac: an RSA key and a 20-year certificate made with `/usr/bin/openssl`, imported with `codesign` allowed to use the key, so builds sign without a keychain prompt. Nothing has to trust it: `codesign` signs by its hash, and the requirement names the certificate itself.
+`scripts/build-kanna-app.sh` signs dev builds, the main checkout's and every worktree's, with the first of these the Mac has (`kanna_dev_identity` in `scripts/env.sh`):
+
+| Identity | Picked | Designated requirement | Keychain after a rebuild |
+|---|---|---|---|
+| **Apple Development** of the team in `~/.kanna/developer/signing.json` | the valid identity whose certificate's OU is the team, lowest SHA-1 hash first when there are several | set explicitly on the Team ID (`-r`) | reads and updates without asking |
+| **Kanna Dev Signing**, self-signed (`scripts/dev-signing-identity.sh`) | by name | codesign's default: this certificate's hash | asks: a self-signed signature has no Team ID |
+| ad hoc (`-`) | neither: the build says so | the cdhash | asks |
+
+```mermaid
+flowchart TD
+    F["security find-identity -v -p codesigning"] --> A{"Apple Development,<br/>certificate OU = the team<br/>in signing.json?"}
+    A -->|"yes: lowest hash"| T["sign with it<br/>-r team requirement"]
+    A -->|no| K{"Kanna Dev Signing?"}
+    K -->|yes| S["sign with it"]
+    K -->|no| H["ad hoc, with a warning"]
+```
+
+- **The team is the developer's,** not the repo's: `team` in `~/.kanna/developer/signing.json`, beside the release settings `scripts/release.sh` reads from `~/.kanna`, outside every checkout, so it's never committed and every worktree reads the same one:
+
+  ```json
+  { "team": "TEAMID" }
+  ```
+
+  Unset, the build skips Apple Development and signs as below.
+- **The team, not the person.** An Apple Development certificate's name and hash differ between Macs and change on renewal; its OU is the team. A certificate of another team (say, an employer's) isn't picked. Developer ID stays for releases ([release](release.md#signing-and-the-dmg)).
+- **The Keychain trusts the team.** An item the daemon makes is open to code with its Team ID (partition `teamid:TEAMID`) meeting its designated requirement, so a rebuilt daemon reads and updates it silently; an ad-hoc daemon is a new program each time, and the Keychain asks. Deleting an item still takes the exact binary that made it (`errSecInvalidOwnerEdit`): open on the Shelf as "Keychain secrets can be deleted after a rebuild".
+- **Kanna Dev Signing** is for a Mac without `signing.json` or a certificate of its team: an RSA key and a 20-year certificate made once with `/usr/bin/openssl`, imported with `codesign` allowed to use the key, so builds sign without a keychain prompt. Nothing has to trust it: `codesign` signs by its hash, and the requirement names the certificate itself. The script says it isn't needed when the Mac has an Apple Development identity.
+- **The sandbox hides identities.** Inside an agent's sandbox `security find-identity` finds none, so a build there is ad hoc; build outside it.
 
 ```mermaid
 flowchart LR
@@ -66,8 +95,8 @@ flowchart LR
     H --> B["sign the bundle<br/>-i BUNDLE_ID + Kanna.entitlements"]
 ```
 
-- **One signing step for dev and release:** `kanna_sign_app` in `scripts/env.sh` signs each helper with `--identifier BUNDLE_ID.HELPER` (`dev.kanna.app.dev.kanna-keeper`), then the bundle with `--identifier BUNDLE_ID` and `apps/kanna/Resources/Kanna.entitlements`. A release passes `--options runtime --timestamp` and its Developer ID ([release](release.md#signing-and-the-dmg)). A dev build has neither: no hardened runtime, so a debugger can attach, and no timestamp, which needs Apple's server.
-- **Unchanged code keeps its bytes.** Kanna tells builds apart by the SHA-256 of the binary ([daemon build](daemon-build.md)), and a certificate signature carries its signing time, so re-signing an unchanged daemon would make the app replace it after every build. The signed helpers are kept in `target/signed/` with a stamp of the unsigned binary's hash, its identifier and the identity, and signed again only when one changes.
+- **One signing step for dev and release:** `kanna_sign_app` in `scripts/env.sh` signs each helper with `--identifier BUNDLE_ID.HELPER` (`dev.kanna.app.dev.kanna-keeper`), then Sparkle's `Autoupdate`, `Updater.app` and framework, then the bundle with `--identifier BUNDLE_ID` and `apps/kanna/Resources/Kanna.entitlements`, all with the same identity. With an Apple Development identity the build exports `KANNA_SIGN_TEAM`, and each of them gets the team requirement for its own identifier. A release passes `--options runtime --timestamp` and its Developer ID ([release](release.md#signing-and-the-dmg)). A dev build has neither: no hardened runtime, so a debugger can attach, and no timestamp, which needs Apple's server.
+- **Unchanged code keeps its bytes.** Kanna tells builds apart by the SHA-256 of the binary ([daemon build](daemon-build.md)), and a certificate signature carries its signing time, so re-signing an unchanged daemon would make the app replace it after every build. The signed helpers are kept in `target/signed/` with a stamp of the unsigned binary's hash, its identifier, the identity and the team, and signed again only when one changes; `kanna_signed` also checks the helper's requirement and leaf certificate.
 - **Signatures stay out of the Rust profile folder** (`target/release`, or `target/debug` in a worktree: [build store](build-store.md#3-one-rust-profile-per-worktree)): cargo links its binaries there again on every build, even a no-op one. So the bundle's helpers aren't the profile folder's: the e2e scenarios and `scripts/run-kanna.sh` run the bundle's (`Contents/Helpers`).
 
 ## 5. Watching and resetting
@@ -80,7 +109,7 @@ Run it outside the sandbox (`log` won't run inside it; in zsh, `log` alone is a 
 
 - **To grant a service:** System Settings › Privacy & Security › Files & Folders (or the service's own page) › Kanna Dev.
 - **To forget an answer,** so macOS asks again: `tccutil reset SystemPolicyRemovableVolumes dev.kanna.app.dev` (or `All` for every service).
-- **The first signed build** doesn't match answers given to ad-hoc builds, so macOS asks once more for each service; from then on the answers last.
+- **The first signed build** doesn't match answers given to ad-hoc or Kanna Dev Signing builds, so macOS asks once more for each service, and the Keychain once for each item (Always Allow); from then on the answers last.
 
 ## 6. Glossary
 
@@ -89,3 +118,4 @@ Run it outside the sandbox (`log` won't run inside it; in zsh, `log` alone is a 
 - **Designated requirement:** a code-signing rule (`codesign -d -r- APP`) that says which code counts as this app.
 - **cdhash:** the hash of a signature's code directory, which changes with any change to the code or Info.plist.
 - **Ad hoc:** signed without a certificate, identified only by its cdhash.
+- **Team ID:** the Apple developer team a certificate belongs to, in its subject's OU.
