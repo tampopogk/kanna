@@ -6392,13 +6392,13 @@ scenario pipeline_gates M4
 pipeline_gates() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/gates" fake="$KANNA_STATE_DIR/agents"
   mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
-  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s KANNA_MOCK_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
   python3 -c 'import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["pipelines"] = {"agents": {"claude": sys.argv[2]}}; json.dump(c, open(p, "w"))' "$KANNA_AGENTS_HOME/.kanna-v4/config.json" "$fake/claude" || { echo "pipeline_gates line $LINENO"; return 1; }
   start_daemon && start_app || { echo "pipeline_gates line $LINENO"; return 1; }
   mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_gates line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
-  printf '{"version": 1, "shelf": {"runners": 1}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
   cat >"$repo/.kanna/pipelines/gates.kojo" <<'PIPE'
 plan  = claude
 ok    = ask "Is the plan right?"
@@ -6430,7 +6430,7 @@ print(json.dumps(task[0] if task else {}))' "$task"; }
 r = json.load(sys.stdin)["runs"]; print(" ".join(x[sys.argv[1]] if isinstance(x[sys.argv[1]], str) else json.dumps(x[sys.argv[1]]) for x in r))' "$1"; }
   visits() { kanna run show "$1" --json | python3 -c 'import json, sys
 print(" ".join(v["stage"] + ":" + (v["verdict"] or "open") + ("(" + v["doc"]["by"] + ")" if v["doc"].get("by") else "") for v in json.load(sys.stdin)["visits"]))'; }
-  check wait_for 20 eval '[[ "$(runs run)" == run-* ]]' || { echo "pipeline_gates: the task's agent didn't start a run"; kanna read "$(task_field held)"; tail -20 "$out/daemon.log"; return 1; }
+  check wait_for 20 eval '[[ "$(runs run)" == run-* ]]' || { echo "pipeline_gates: the task's agent didn't start a run"; (cd "$repo" && kanna task list); task_json; kanna read "$(task_field held)"; return 1; }
   local run worker; run="$(runs run)"; worker="$repo/.kanna-worktrees/$task-run-1"
   check wait_for 15 eval '[[ "$(task_field running) $(runs state)" == "false running" ]]' || { echo "pipeline_gates: the Shelf runner didn't stop the task's agent while the run went on: $(task_field running) $(runs state)"; return 1; }
   check wait_for 30 eval '[[ "$(runs state)" == waiting ]]' || { echo "pipeline_gates: the ask didn't make the run wait: $(runs state) $(runs why)"; kanna run show "$run"; tail -20 "$out/daemon.log"; return 1; }
