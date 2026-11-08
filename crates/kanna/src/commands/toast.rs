@@ -1,4 +1,4 @@
-use super::{usage, Command, Flow};
+use super::{from_caller, usage, Command, Flow};
 use crate::args::Argv;
 use kanna_client::Failure;
 use serde_json::{json, Value};
@@ -33,6 +33,9 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
     out["title"] = json!(args.positional().filter(|t| !t.trim().is_empty()).ok_or_else(|| usage("toast", "missing TITLE"))?);
     if let Some(detail) = args.rest() {
         out["detail"] = json!(detail);
+    }
+    if let Some(fields) = out.as_object_mut() {
+        from_caller(fields);
     }
     Ok(out)
 }

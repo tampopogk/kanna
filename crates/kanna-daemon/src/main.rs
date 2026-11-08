@@ -142,6 +142,7 @@ pub enum Event {
     MachinesSave(Value),
     PeerRequest { from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send> },
     AccountBroken(Value),
+    AccountUnreadable(Value),
     Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
@@ -167,7 +168,7 @@ impl Event {
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppUsed { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
-            Event::PeerRequest { .. } | Event::AccountBroken(_) => "loop.accounts",
+            Event::PeerRequest { .. } | Event::AccountBroken(_) | Event::AccountUnreadable(_) => "loop.accounts",
             Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
         }
     }
@@ -378,7 +379,7 @@ fn run() -> Result<(), String> {
     let warnings = Rc::downgrade(&toasts);
     *tasks.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
         let Some(toasts) = warnings.upgrade() else { return };
-        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
+        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")), from: None };
         if let Err(error) = toasts.raise(toast) {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
@@ -429,6 +430,10 @@ fn run() -> Result<(), String> {
     let broken = events.clone();
     accounts.on_broken(Box::new(move |account| {
         let _ = broken.send(Event::AccountBroken(account));
+    }));
+    let unreadable = events.clone();
+    accounts.on_unreadable(Box::new(move |account| {
+        let _ = unreadable.send(Event::AccountUnreadable(account));
     }));
     accounts.install(&core);
     if let Some(machines) = &machines {
@@ -623,16 +628,17 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
         Rc::new(move |args, responder| {
             if let Some(link) = screenshot.upgrade() {
-                screenshot::take(&link, args, responder);
+                screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
     );
     let front = link.clone();
-    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers()) {
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers_for(&args)) {
         Some(app) => app.forward("app.front", args, responder),
         None => responder.reply(Ok(Map::new())),
     }));
@@ -654,6 +660,9 @@ fn run() -> Result<(), String> {
                 }
                 return app.forward("desk", args, responder);
             };
+            if task.contains('@') {
+                return app.forward("desk", args, responder);
+            }
             tasks.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -783,7 +792,7 @@ fn run() -> Result<(), String> {
                     reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "stopping", "message": "this Kanna is stopping" } }))
                 }
                 Some("capabilities") => {
-                    let attached = app.answers();
+                    let attached = app.attached();
                     let build = build_id.clone();
                     core.handle(request, move |mut answer| {
                         if answer.get("ok") == Some(&Value::Bool(true)) {
@@ -827,7 +836,7 @@ fn run() -> Result<(), String> {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     let refused = tasks.too_old(&pane, &why).or_else(|| runs.too_old(&pane, &why).then(|| "a run's stage".to_string()));
                     if let Some(name) = refused {
-                        let toast = toasts::Toast { title: format!("Kanna can't run {name}'s agent"), detail: Some(why), pane: Some(pane.clone()), task: None, key: Some(format!("too-old:{pane}")) };
+                        let toast = toasts::Toast { title: format!("Kanna can't run {name}'s agent"), detail: Some(why), pane: Some(pane.clone()), task: None, key: Some(format!("too-old:{pane}")), from: None };
                         if let Err(error) = toasts.raise(toast) {
                             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
                         }
@@ -943,6 +952,16 @@ fn run() -> Result<(), String> {
                 let toast = toasts::Toast { title: format!("Sign in to {agent} again"), detail: Some(format!("{}: {}. Add it again with kanna accounts add {}.", account["label"].as_str().unwrap_or(agent), account["why"].as_str().unwrap_or("it stopped working"), account["agent"].as_str().unwrap_or("codex"))), key: Some(format!("account:{}", account["id"].as_str().unwrap_or_default())), ..Default::default() };
                 if let Err(error) = toasts.raise(toast) {
                     log!("kanna-daemon: can't raise a toast for a broken account: {}", error.message);
+                }
+            }
+            Event::AccountUnreadable(account) => {
+                let agent = match account["agent"].as_str() {
+                    Some("claude") => "Claude",
+                    _ => "Codex",
+                };
+                let toast = toasts::Toast { title: format!("{agent} started without your account"), detail: Some(format!("{}. It runs on this machine's own sign-in.", account["why"].as_str().unwrap_or("its secret couldn't be read"))), key: Some(format!("account-unreadable:{}", account["agent"].as_str().unwrap_or_default())), ..Default::default() };
+                if let Err(error) = toasts.raise(toast) {
+                    log!("kanna-daemon: can't raise a toast for an unreadable account: {}", error.message);
                 }
             }
             Event::Replica { token, reply } => tasks.replied(token, reply),

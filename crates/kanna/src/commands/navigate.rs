@@ -1,4 +1,4 @@
-use super::{absolute, file_line, is_markdown, pane, usage, Command, Flow};
+use super::{absolute, file_line, is_markdown, pane, usage, Command, Flow, PANE};
 use crate::output;
 use serde_json::json;
 
@@ -42,7 +42,7 @@ pub const COMMAND: Command = Command {
         }
     },
     show: |_, reply| output::pane_state(reply),
-    flow: Flow::PLAIN,
+    flow: Flow { panes: PANE, ..Flow::PLAIN },
 };
 
 pub fn is_source(target: &str) -> bool {
