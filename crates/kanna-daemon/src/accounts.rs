@@ -25,6 +25,8 @@ const RETRY_BROKEN: Duration = Duration::from_secs(60);
 
 const SECRETS_WAIT: Duration = Duration::from_secs(5);
 
+pub const OWN_LOGIN_WAIT: Duration = Duration::from_secs(5);
+
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Kanna agent accounts";
 
@@ -1013,12 +1015,46 @@ pub fn started_without(state: &Path, agent: &str, why: &str) {
     let _ = ask_daemon_within(&daemon_socket(state), json!({ "action": "unreadable", "agent": agent, "why": why }), Duration::from_secs(2));
 }
 
-pub fn run_with_account(state: &Path, program: &str, args: &[String]) -> i32 {
-    use std::os::unix::process::CommandExt;
-    let accounts = Accounts::open(state, secrets(state), Box::new(CodexRefresher));
+pub fn status_of(program: &str, args: &[String], wait: Duration) -> Option<(bool, String)> {
+    let mut child = Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (sender, received) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("kanna.own-login".into())
+        .spawn(move || {
+            let mut out = String::new();
+            let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+            let _ = sender.send(out);
+        })
+        .ok()?;
+    let deadline = Instant::now() + wait;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = received.recv_timeout(deadline.saturating_duration_since(Instant::now()).max(Duration::from_millis(100))).ok()?;
+    Some((status.success(), out))
+}
+
+pub fn claude_signed_in(program: &str, wait: Duration) -> bool {
+    let Some((_, out)) = status_of(program, &["auth".into(), "status".into()], wait) else { return false };
+    serde_json::from_str::<Value>(&out).is_ok_and(|status| status["loggedIn"] == true)
+}
+
+pub fn claude_command(state: &Path, program: &str, args: &[String], wait: Duration, accounts: impl FnOnce() -> Accounts) -> Command {
     let mut command = Command::new(program);
     command.args(args);
-    match accounts.credential("claude") {
+    if claude_signed_in(program, wait) {
+        return command;
+    }
+    match accounts().credential("claude") {
         Ok(Some(Credential::Env(name, value))) => {
             command.env(name, value);
             for other in ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"].into_iter().filter(|other| *other != name) {
@@ -1028,13 +1064,18 @@ pub fn run_with_account(state: &Path, program: &str, args: &[String]) -> i32 {
         Ok(_) => {}
         Err(why) => started_without(state, "claude", &why),
     }
-    let error = command.exec();
+    command
+}
+
+pub fn run_with_account(state: &Path, program: &str, args: &[String]) -> i32 {
+    use std::os::unix::process::CommandExt;
+    let error = claude_command(state, program, args, OWN_LOGIN_WAIT, || Accounts::open(state, secrets(state), Box::new(CodexRefresher))).exec();
     eprintln!("kanna: couldn't run {program}: {error}");
     127
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1465,6 +1506,69 @@ mod tests {
         service.unreadable(&json!({ "agent": "codex", "why": why })).unwrap();
         assert_eq!(told.lock().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(&mac);
+    }
+
+    pub(crate) fn status_program(dir: &Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n[ \"$1\" = ready ] && exit 0\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Command::new(&path).arg("ready").status().is_err() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn claude_signed_in_on_this_machine_starts_on_its_own_login_and_reads_no_secret() {
+        let mac = folder("own-login");
+        let (accounts, _) = accounts(&mac, false, Duration::ZERO);
+        accounts.add(Kind::ClaudeSubscription, "sk-ant-oat01-shared", None, None, "mac-key").unwrap();
+        let env = |command: &Command| command.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect::<BTreeMap<_, _>>();
+        let shared = BTreeMap::from([("ANTHROPIC_API_KEY".to_string(), None), ("CLAUDE_CODE_OAUTH_TOKEN".to_string(), Some("sk-ant-oat01-shared".to_string()))]);
+        let cases = [
+            ("signed-in", r#"echo '{"loggedIn": true, "authMethod": "claude.ai"}'"#, false),
+            ("signed-out", r#"echo '{"loggedIn": false, "authMethod": "none"}'; exit 1"#, true),
+            ("garbage", "echo 'not json'", true),
+            ("hung", r#"sleep 10; echo '{"loggedIn": true}'"#, true),
+        ];
+        for (name, body, falls_back) in cases {
+            let program = status_program(&mac, name, body);
+            let reads = Arc::new(AtomicUsize::new(0));
+            let counted = reads.clone();
+            let started = Instant::now();
+            let command = claude_command(&mac, &program, &["--dangerously-skip-permissions".into()], Duration::from_millis(500), || reopened(&mac, Arc::new(Counting(Files::new(mac.join(SECRETS)), counted))));
+            assert!(started.elapsed() < Duration::from_secs(3), "{name}: the status check is bounded");
+            assert_eq!(command.get_program(), program.as_str());
+            assert_eq!(command.get_args().collect::<Vec<_>>(), ["--dangerously-skip-permissions"]);
+            match falls_back {
+                false => {
+                    assert_eq!(reads.load(Ordering::SeqCst), 0, "{name}: no secret read");
+                    assert!(env(&command).is_empty(), "{name}: its environment is left alone");
+                }
+                true => {
+                    assert_eq!(reads.load(Ordering::SeqCst), 1, "{name}: the shared account is read");
+                    assert_eq!(env(&command), shared, "{name}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&mac);
+    }
+
+    pub(crate) struct Counting(pub(crate) Files, pub(crate) Arc<AtomicUsize>);
+
+    impl Secrets for Counting {
+        fn read(&self, name: &str) -> Result<Option<String>, String> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            self.0.read(name)
+        }
+        fn write(&self, name: &str, value: &str) -> Result<(), String> {
+            self.0.write(name, value)
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.0.delete(name)
+        }
     }
 
     #[test]
