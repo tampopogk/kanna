@@ -316,11 +316,11 @@ kanna_team_identity() {
 }
 
 kanna_signing_team() {
-  kanna_targets_setting "$1" signing_team
+  [ -f "$HOME/.kanna/developer/signing.json" ] && plutil -extract team raw -o - "$HOME/.kanna/developer/signing.json" 2>/dev/null
 }
 
 kanna_dev_identity() {
-  if dev_team="$(kanna_signing_team "$1")" && [ -n "$dev_team" ]; then
+  if dev_team="$(kanna_signing_team)" && [ -n "$dev_team" ]; then
     dev_hash="$(kanna_team_identity "Apple Development" "$dev_team")"
     if [ -n "$dev_hash" ]; then echo "$dev_hash $dev_team"; return 0; fi
   fi

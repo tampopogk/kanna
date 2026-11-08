@@ -66,11 +66,11 @@ product_dir="$("${build[@]}" --show-bin-path)"
 [[ "$rust_dir/libkanna_ffi.a" -nt "$product_dir/Kanna" ]] && rm -f "$product_dir/Kanna"
 "${build[@]}"
 
-read -r identity KANNA_SIGN_TEAM <<<"$(kanna_dev_identity "$repo_root")" || true
+read -r identity KANNA_SIGN_TEAM <<<"$(kanna_dev_identity)" || true
 export KANNA_SIGN_TEAM
 if [[ -n "$KANNA_SIGN_TEAM" ]]; then signing="signed with Apple Development ($identity, team $KANNA_SIGN_TEAM)"
 elif [[ -n "$identity" ]]; then signing="signed as Kanna Dev Signing"
-else identity=-; signing="ad-hoc signed: macOS and the Keychain ask for permissions again after each build; signing_team in build.local.json with an Apple Development certificate of that team, or scripts/dev-signing-identity.sh, makes an identity that keeps them"; fi
+else identity=-; signing="ad-hoc signed: macOS and the Keychain ask for permissions again after each build; team in ~/.kanna/developer/signing.json with an Apple Development certificate of that team, or scripts/dev-signing-identity.sh, makes an identity that keeps them"; fi
 signed="$arch_dir/signed"
 mkdir -p "$signed"
 for helper in kanna-daemon kanna-keeper kanna; do

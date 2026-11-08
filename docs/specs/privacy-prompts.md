@@ -63,29 +63,29 @@ Before this, the build never signed the bundle: the main executable kept the lin
 
 | Identity | Picked | Designated requirement | Keychain after a rebuild |
 |---|---|---|---|
-| **Apple Development** of the team `signing_team` names | the valid identity whose certificate's OU is the team, lowest SHA-1 hash first when there are several | set explicitly on the Team ID (`-r`) | reads and updates without asking |
+| **Apple Development** of the team in `~/.kanna/developer/signing.json` | the valid identity whose certificate's OU is the team, lowest SHA-1 hash first when there are several | set explicitly on the Team ID (`-r`) | reads and updates without asking |
 | **Kanna Dev Signing**, self-signed (`scripts/dev-signing-identity.sh`) | by name | codesign's default: this certificate's hash | asks: a self-signed signature has no Team ID |
 | ad hoc (`-`) | neither: the build says so | the cdhash | asks |
 
 ```mermaid
 flowchart TD
-    F["security find-identity -v -p codesigning"] --> A{"Apple Development,<br/>certificate OU = signing_team?"}
+    F["security find-identity -v -p codesigning"] --> A{"Apple Development,<br/>certificate OU = the team<br/>in signing.json?"}
     A -->|"yes: lowest hash"| T["sign with it<br/>-r team requirement"]
     A -->|no| K{"Kanna Dev Signing?"}
     K -->|yes| S["sign with it"]
     K -->|no| H["ad hoc, with a warning"]
 ```
 
-- **The team is this Mac's setting,** not the repo's: `signing_team` in the main checkout's `build.local.json` (ignored by git, [build targets](build-targets.md#1-where-target-lives)), read for every worktree:
+- **The team is the developer's,** not the repo's: `team` in `~/.kanna/developer/signing.json`, beside the release settings `scripts/release.sh` reads from `~/.kanna`, outside every checkout, so it's never committed and every worktree reads the same one:
 
   ```json
-  { "signing_team": "TEAMID" }
+  { "team": "TEAMID" }
   ```
 
   Unset, the build skips Apple Development and signs as below.
 - **The team, not the person.** An Apple Development certificate's name and hash differ between Macs and change on renewal; its OU is the team. A certificate of another team (say, an employer's) isn't picked. Developer ID stays for releases ([release](release.md#signing-and-the-dmg)).
 - **The Keychain trusts the team.** An item the daemon makes is open to code with its Team ID (partition `teamid:TEAMID`) meeting its designated requirement, so a rebuilt daemon reads and updates it silently; an ad-hoc daemon is a new program each time, and the Keychain asks. A rebuilt daemon deletes it too, since it keeps the file name `kanna-daemon` ([agent sign-in §4](agent-sign-in.md#4-keeping-and-removing-secrets)).
-- **Kanna Dev Signing** is for a Mac without `signing_team` or a certificate of that team: an RSA key and a 20-year certificate made once with `/usr/bin/openssl`, imported with `codesign` allowed to use the key, so builds sign without a keychain prompt. Nothing has to trust it: `codesign` signs by its hash, and the requirement names the certificate itself. The script says it isn't needed when the Mac has an Apple Development identity.
+- **Kanna Dev Signing** is for a Mac without `signing.json` or a certificate of its team: an RSA key and a 20-year certificate made once with `/usr/bin/openssl`, imported with `codesign` allowed to use the key, so builds sign without a keychain prompt. Nothing has to trust it: `codesign` signs by its hash, and the requirement names the certificate itself. The script says it isn't needed when the Mac has an Apple Development identity.
 - **The sandbox hides identities.** Inside an agent's sandbox `security find-identity` finds none, so a build there is ad hoc; build outside it.
 
 ```mermaid
