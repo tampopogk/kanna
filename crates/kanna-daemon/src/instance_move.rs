@@ -1,20 +1,24 @@
+use kanna_keeper::paths as keeper_paths;
 use kanna_mux::json::{json, Value};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const MOVING_DB: &str = "kanna.db.moving";
 pub const MOVING_KEY: &str = "device.key.moving";
 pub const LEAVING: &str = "moving.json";
 pub const MOVED_FROM: &str = "moved_from";
-pub const RESUMING: &str = "move_resume";
 pub const SCHEMA_FLAG: &str = "--schema";
+pub const TERMINALS: &str = "terminals";
+pub const APP_FILES: [&str; 2] = ["app-state.json", "app.key"];
+const MOVING: &str = ".moving";
 const LOCK: &str = "daemon.lock";
 const DB: &str = crate::db::FILE;
 const KEY: &str = crate::machines::KEY;
 const LIVE: &str = "place in ('shelf', 'desk', 'backlog')";
+const KEEPER_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Moved {
@@ -33,12 +37,23 @@ fn stamp() -> String {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string()
 }
 
-fn now() -> f64 {
+pub fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
 fn say(message: String) {
     log!("kanna-daemon: {message}");
+}
+
+fn moving(name: &str) -> String {
+    format!("{name}{MOVING}")
+}
+
+fn staged() -> Vec<(String, String)> {
+    let mut staged = vec![(moving(TERMINALS), TERMINALS.to_string())];
+    staged.extend(APP_FILES.iter().map(|f| (moving(f), f.to_string())));
+    staged.push((MOVING_KEY.to_string(), KEY.to_string()));
+    staged
 }
 
 pub fn resolve(to: &str, support: &Path) -> PathBuf {
@@ -52,17 +67,32 @@ pub fn label(folder: &Path) -> String {
     folder.file_name().map_or_else(|| folder.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-pub fn lock(folder: &Path) -> Result<fs::File, String> {
+fn flock(path: &Path, create: bool) -> Result<Option<fs::File>, String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
+    let file = match fs::OpenOptions::new().read(true).write(true).create(create).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path) {
+        Ok(file) => file,
+        Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("can't open {}: {e}", path.display())),
+    };
+    match unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } {
+        0 => Ok(Some(file)),
+        _ => Err(format!("{} is held", path.display())),
+    }
+}
+
+pub fn lock(folder: &Path) -> Result<fs::File, String> {
     fs::create_dir_all(folder).map_err(|e| format!("can't make {}: {e}", folder.display()))?;
     let _ = fs::set_permissions(folder, fs::Permissions::from_mode(0o700));
-    let path = folder.join(LOCK);
-    let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&path).map_err(|e| format!("can't open {}: {e}", path.display()))?;
-    match unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } {
-        0 => Ok(file),
-        _ => Err(format!("{}'s Kanna is running: quit it (or stop its served daemon) first; its terminals stay", label(folder))),
+    match flock(&folder.join(LOCK), true) {
+        Ok(Some(file)) => Ok(file),
+        Ok(None) => Err(format!("can't lock {}", folder.display())),
+        Err(_) => Err(format!("{}'s Kanna is running: quit it (or stop its served daemon) first", label(folder))),
     }
+}
+
+pub fn keeper_running(folder: &Path) -> bool {
+    flock(&keeper_paths::lock(folder), false).is_err()
 }
 
 pub fn receiving_daemon(folder: &Path) -> Option<PathBuf> {
@@ -82,7 +112,7 @@ pub fn reads_up_to(daemon: &Path) -> Option<i64> {
 
 fn open_quiet(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.busy_timeout(Duration::from_secs(5))?;
     Ok(conn)
 }
 
@@ -110,86 +140,76 @@ pub fn own_accounts(state: &Path) -> Vec<String> {
 }
 
 pub fn moved_from(folder: &Path) -> Option<Value> {
-    let conn = open_quiet(&folder.join(DB)).ok()?;
-    let value: String = conn.query_row("select value from meta where key = ?1", [MOVED_FROM], |r| r.get(0)).optional().ok()??;
-    serde_json::from_str(&value).ok()
-}
-
-fn receiver_layout(folder: &Path) -> Option<String> {
     let path = folder.join(DB);
     if !path.exists() {
         return None;
     }
     let conn = open_quiet(&path).ok()?;
-    if !has_table(&conn, "layout").ok()? {
-        return None;
-    }
-    conn.query_row("select doc from layout where id = 1", [], |r| r.get(0)).optional().ok()?
+    let value: String = conn.query_row("select value from meta where key = ?1", [MOVED_FROM], |r| r.get(0)).optional().ok()??;
+    serde_json::from_str(&value).ok()
 }
 
-pub struct Prepared {
-    pub id: String,
-    pub from: String,
-    pub to: String,
-    pub resume: Vec<String>,
-}
-
-pub fn prepare(copy: &Path, receiver: &Path, move_: &Prepared) -> rusqlite::Result<Moved> {
-    let layout = receiver_layout(receiver);
-    let mut conn = open_quiet(copy)?;
+pub fn prepare(copy: &Path, mark: &Value) -> rusqlite::Result<Moved> {
+    let conn = open_quiet(copy)?;
     conn.pragma_update(None, "journal_mode", "delete")?;
-    let tx = conn.transaction()?;
     let live: Vec<(String, String, String)> = {
-        let mut query = tx.prepare(&format!("select id, place, doc from tasks where {LIVE} order by made_at"))?;
+        let mut query = conn.prepare(&format!("select id, place, doc from tasks where {LIVE} order by made_at"))?;
         let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
     let mut moved = Moved::default();
-    let at = now();
     for (id, place, doc) in live {
-        let mut doc: Value = serde_json::from_str(&doc).unwrap_or_else(|_| json!({}));
-        let started = doc.get("folder").and_then(Value::as_str).is_some_and(|f| !f.is_empty());
-        if let Some(fields) = doc.as_object_mut() {
-            fields.remove("workspace");
-            fields.remove("claim");
-            if started && fields.get("stopped").is_none_or(Value::is_null) {
-                fields.insert("stopped".into(), json!(format!("moved from {}", move_.from)));
-            }
-        }
-        tx.execute("update tasks set place = 'shelf', terminal = null, doc = ?2 where id = ?1", params![id, doc.to_string()])?;
-        let event = json!({ "from": move_.from, "to": move_.to, "move": move_.id });
-        tx.execute("insert into task_events (task, at, what, from_place, to_place, by, doc) values (?1, ?2, 'moved', ?3, 'shelf', 'daemon', ?4)", params![id, at, place, event.to_string()])?;
-        match (place.as_str(), started) {
+        let doc: Value = serde_json::from_str(&doc).unwrap_or_else(|_| json!({}));
+        match (place.as_str(), doc.get("folder").and_then(Value::as_str).is_some_and(|f| !f.is_empty())) {
             ("desk", _) => moved.desk.push(id),
             (_, true) => moved.started.push(id),
             _ => moved.waiting.push(id),
         }
     }
-    tx.execute("update planners set doc = json_set(json_remove(doc, '$.pane'), '$.running', json('false'))", [])?;
-    tx.execute("delete from layout", [])?;
-    if let Some(layout) = layout {
-        tx.execute("insert into layout (id, doc) values (1, ?1)", [layout])?;
-    }
-    tx.execute("delete from crashes", [])?;
-    tx.execute("delete from meta where key = ?1", [RESUMING])?;
-    let mark = json!({ "id": move_.id, "from": move_.from, "to": move_.to, "at": at, "resume": move_.resume });
-    tx.execute("insert into meta (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value", params![MOVED_FROM, mark.to_string()])?;
-    tx.commit()?;
+    conn.execute("insert into meta (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value", params![MOVED_FROM, mark.to_string()])?;
     conn.close().map_err(|(_, e)| e)?;
     let _ = fs::set_permissions(copy, fs::Permissions::from_mode(0o600));
     Ok(moved)
 }
 
-fn copy_key(from: &Path, to: &Path) -> Result<(), String> {
+fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let key = fs::read(from).map_err(|e| format!("can't read {}: {e}", from.display()))?;
+    let bytes = fs::read(from).map_err(|e| format!("can't read {}: {e}", from.display()))?;
     let _ = fs::remove_file(to);
     let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(to).map_err(|e| format!("can't write {}: {e}", to.display()))?;
-    file.write_all(&key).and_then(|_| file.sync_all()).map_err(|e| format!("can't write {}: {e}", to.display()))
+    file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|e| format!("can't write {}: {e}", to.display()))
 }
 
-fn quiet_receiver_db(folder: &Path) -> Result<(), String> {
+fn copy_folder(from: &Path, to: &Path) -> Result<(), String> {
+    let _ = fs::remove_dir_all(to);
+    fs::create_dir_all(to).map_err(|e| format!("can't make {}: {e}", to.display()))?;
+    let _ = fs::set_permissions(to, fs::Permissions::from_mode(0o700));
+    for entry in fs::read_dir(from).map_err(|e| format!("can't read {}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| format!("can't read {}: {e}", from.display()))?;
+        if entry.file_type().is_ok_and(|t| t.is_file()) {
+            copy_file(&entry.path(), &to.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn stage_files(state: &Path, receiver: &Path) -> Result<(), String> {
+    let terminals = state.join(TERMINALS);
+    if terminals.is_dir() {
+        copy_folder(&terminals, &receiver.join(moving(TERMINALS)))?;
+    }
+    for name in APP_FILES.iter().copied().chain([KEY]) {
+        let from = state.join(name);
+        if from.is_file() {
+            let to = if name == KEY { receiver.join(MOVING_KEY) } else { receiver.join(moving(name)) };
+            copy_file(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn quiet_receiver_db(folder: &Path, stamp: &str) -> Result<(), String> {
     let path = folder.join(DB);
     if !path.exists() {
         return Ok(());
@@ -201,7 +221,7 @@ fn quiet_receiver_db(folder: &Path) -> Result<(), String> {
         return Err(format!("{} stays in {mode} mode", path.display()));
     }
     drop(conn);
-    let kept = folder.join(format!("{DB}.before-move-{}", stamp()));
+    let kept = folder.join(format!("{DB}.before-move-{stamp}"));
     fs::copy(&path, &kept).map_err(|e| format!("can't keep {} as {}: {e}", path.display(), kept.display()))?;
     let _ = fs::set_permissions(&kept, fs::Permissions::from_mode(0o600));
     for extra in ["-wal", "-shm"] {
@@ -210,48 +230,73 @@ fn quiet_receiver_db(folder: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn stage_key(state: &Path, receiver: &Path) -> Result<(), String> {
-    let key = state.join(KEY);
-    match key.exists() {
-        true => copy_key(&key, &receiver.join(MOVING_KEY)),
-        false => Ok(()),
-    }
-}
-
 pub fn commit(receiver: &Path) -> Result<(), String> {
-    quiet_receiver_db(receiver)?;
+    let stamp = stamp();
+    quiet_receiver_db(receiver, &stamp)?;
     fs::rename(receiver.join(MOVING_DB), receiver.join(DB)).map_err(|e| format!("can't put the records in place in {}: {e}", receiver.display()))?;
-    install_key(receiver);
+    install_staged(receiver, &stamp);
     Ok(())
 }
 
-fn install_key(folder: &Path) {
-    let moving = folder.join(MOVING_KEY);
-    if !moving.exists() {
-        return;
-    }
-    let key = folder.join(KEY);
-    if key.exists() {
-        let _ = fs::rename(&key, folder.join(format!("{KEY}.before-move-{}", stamp())));
-    }
-    if let Err(error) = fs::rename(&moving, &key) {
-        say(format!("can't put the moved machine key in place in {}: {error}", folder.display()));
+fn install_staged(folder: &Path, stamp: &str) {
+    for (staged, live) in staged() {
+        let from = folder.join(&staged);
+        if !from.exists() {
+            continue;
+        }
+        let to = folder.join(&live);
+        if to.exists() {
+            let _ = fs::rename(&to, folder.join(format!("{live}.before-move-{stamp}")));
+        }
+        if let Err(error) = fs::rename(&from, &to) {
+            say(format!("can't put the moved {live} in place in {}: {error}", folder.display()));
+        }
     }
 }
 
 pub fn abandon(receiver: &Path) {
     let _ = fs::remove_file(receiver.join(MOVING_DB));
     let _ = fs::remove_file(receiver.join(format!("{MOVING_DB}-journal")));
-    let _ = fs::remove_file(receiver.join(MOVING_KEY));
+    for (staged, _) in staged() {
+        let path = receiver.join(staged);
+        let _ = fs::remove_dir_all(&path);
+        let _ = fs::remove_file(&path);
+    }
 }
 
-pub fn leaving(state: &Path, id: &str, to: &Path) -> Result<(), String> {
+pub fn leaving(state: &Path, id: &str, to: &Path, socket: &Path) -> Result<(), String> {
     let path = state.join(LEAVING);
-    fs::write(&path, json!({ "id": id, "to": to }).to_string()).map_err(|e| format!("can't write {}: {e}", path.display()))
+    fs::write(&path, json!({ "id": id, "to": to, "socket": socket }).to_string()).map_err(|e| format!("can't write {}: {e}", path.display()))
+}
+
+fn leaving_id(state: &Path) -> Option<Value> {
+    serde_json::from_str(&fs::read_to_string(state.join(LEAVING)).ok()?).ok()
 }
 
 pub fn stay(state: &Path) {
     let _ = fs::remove_file(state.join(LEAVING));
+}
+
+pub fn move_keeper(from: &Path, to: &Path) -> Result<bool, String> {
+    let mut client = match kanna_keeper::client::Client::connect(&keeper_paths::socket(from)) {
+        Ok(client) => client,
+        Err(_) => return Ok(false),
+    };
+    client.set_timeout(Some(KEEPER_WAIT)).map_err(|e| e.to_string())?;
+    client.move_to(to).map(|_| true).map_err(|e| format!("the keeper of {} didn't move to {}: {e}", from.display(), to.display()))
+}
+
+pub fn link_socket(at: &Path, to: &Path) -> Result<(), String> {
+    if fs::read_link(at).is_ok_and(|now| now == to) {
+        return Ok(());
+    }
+    let temporary = at.with_file_name(format!(".{}.link-{}", label(at), std::process::id()));
+    let _ = fs::remove_file(&temporary);
+    std::os::unix::fs::symlink(to, &temporary).map_err(|e| format!("can't make a link to {} at {}: {e}", to.display(), temporary.display()))?;
+    fs::rename(&temporary, at).map_err(|e| {
+        let _ = fs::remove_file(&temporary);
+        format!("can't link {} to {}: {e}", at.display(), to.display())
+    })
 }
 
 fn aside(state: &Path, name: &str, to: &str) {
@@ -270,21 +315,60 @@ fn retire(state: &Path, to: &str) -> PathBuf {
     aside(state, &format!("{DB}.bak"), &format!("{kept}.bak"));
     aside(state, "backlog.json.imported", &format!("backlog.json.imported.moved-{stamp}"));
     aside(state, KEY, &format!("{KEY}.moved-{stamp}"));
+    aside(state, TERMINALS, &format!("{TERMINALS}.moved-{stamp}"));
+    aside(state, APP_FILES[0], &format!("{}.moved-{stamp}", APP_FILES[0]));
     let _ = fs::remove_file(state.join(LEAVING));
     say(format!("this Kanna moved to {to}: it starts again empty, with a machine key of its own; its records are in {}", state.join(&kept).display()));
     state.join(kept)
 }
 
-pub fn settle(state: &Path) -> Option<PathBuf> {
+fn finish_leaving(state: &Path, leaving: &Value, to: &Path) {
+    match move_keeper(state, to) {
+        Ok(true) => say(format!("its keeper moved to {}, after the move", to.display())),
+        Ok(false) => {}
+        Err(error) => say(error),
+    }
+    if let Some(socket) = leaving.get("socket").and_then(Value::as_str).map(Path::new).filter(|s| fs::read_link(s).is_err()) {
+        if let Err(error) = link_socket(socket, &to.join(kanna_build::SOCKET)) {
+            say(error);
+        }
+    }
+}
+
+fn finish_arriving(state: &Path, socket: &Path, mark: &Value) {
+    let Some(from) = mark.get("from_dir").and_then(Value::as_str).map(PathBuf::from) else { return };
+    let id = mark.get("id").and_then(Value::as_str);
+    if leaving_id(&from).and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_string)).as_deref() != id || id.is_none() {
+        return;
+    }
+    if !keeper_running(state) {
+        match move_keeper(&from, state) {
+            Ok(true) => say(format!("took the keeper from {}, after the move", from.display())),
+            Ok(false) => {}
+            Err(error) => say(error),
+        }
+    }
+    if let Some(old) = mark.get("socket").and_then(Value::as_str) {
+        if let Err(error) = link_socket(Path::new(old), socket) {
+            say(error);
+        }
+    }
+}
+
+pub fn settle(state: &Path, socket: &Path) -> Option<PathBuf> {
     if state.join(MOVING_DB).exists() {
         abandon(state);
         say(format!("a move into {} didn't finish, so it's as it was", state.display()));
     } else {
-        install_key(state);
+        install_staged(state, &stamp());
+        if let Some(mark) = moved_from(state) {
+            finish_arriving(state, socket, &mark);
+        }
     }
-    let leaving: Value = serde_json::from_str(&fs::read_to_string(state.join(LEAVING)).ok()?).ok()?;
+    let leaving = leaving_id(state)?;
     let (id, to) = (leaving.get("id").and_then(Value::as_str)?, PathBuf::from(leaving.get("to").and_then(Value::as_str)?));
     if moved_from(&to).is_some_and(|m| m.get("id").and_then(Value::as_str) == Some(id)) {
+        finish_leaving(state, &leaving, &to);
         return Some(retire(state, &to.display().to_string()));
     }
     stay(state);
@@ -295,7 +379,6 @@ pub fn settle(state: &Path) -> Option<PathBuf> {
 pub fn keep_from(conn: &Connection, old: &Path) -> rusqlite::Result<()> {
     conn.execute("attach database ?1 as old", [old.to_string_lossy()])?;
     let copied = (|| {
-        conn.execute("insert or replace into layout (id, doc) select id, doc from old.layout", [])?;
         conn.execute("insert or replace into projects (path, at, seq) select path, at, seq from old.projects", [])?;
         conn.execute("insert or replace into never_import (path, at) select path, at from old.never_import", [])
     })();
@@ -321,107 +404,105 @@ mod tests {
             "insert into tasks (id, repo, place, terminal, made_at, doc) values
                ('task-00000001', '/r', 'shelf', null, 1, '{\"name\":\"Waiting\",\"message\":\"do it\",\"after\":[\"task-00000002\"],\"on\":[\"mbp\"]}'),
                ('task-00000002', '/r', 'shelf', 'term-4', 2, '{\"name\":\"Started\",\"folder\":\"/r/.kanna-worktrees/task-00000002\",\"session\":\"s-2\",\"workspace\":\"ws-3\"}'),
-               ('task-00000003', '/r', 'desk', 'term-9', 3, '{\"name\":\"Desk\",\"folder\":\"/r/.kanna-worktrees/task-00000003\",\"session\":\"s-3\",\"workspace\":\"ws-4\",\"claim\":\"mbp\"}'),
+               ('task-00000003', '/r', 'desk', 'term-9', 3, '{\"name\":\"Desk\",\"folder\":\"/r/.kanna-worktrees/task-00000003\",\"session\":\"s-3\",\"workspace\":\"ws-4\"}'),
                ('task-00000004', '/r', 'done', null, 4, '{\"name\":\"Done\"}');
              insert into messages (recipient, repo, sender, at, delivered, text) values ('task-00000001', '/r', 'user', 5, null, 'later');
              insert into planners (path, doc) values ('/r', '{\"agent\":\"claude\",\"session\":\"p-1\",\"pane\":\"term-6\",\"running\":true}');
-             insert into layout (id, doc) values (1, '{\"workspaces\":[\"source\"]}');",
+             insert into layout (id, doc) values (1, '{\"workspaces\":[\"source\"]}');
+             insert into projects (path, at, seq) values ('/r', 1, 1);",
         )
         .unwrap();
+        fs::create_dir_all(dir.join(TERMINALS)).unwrap();
+        fs::write(dir.join(TERMINALS).join("terminals.json"), "{\"terminals\":[\"term-4\"]}").unwrap();
+        fs::write(dir.join(TERMINALS).join("term-4.snap"), "screen").unwrap();
+        fs::write(dir.join("app-state.json"), "{\"windows\":1}").unwrap();
+        fs::write(dir.join(KEY), "key").unwrap();
         db
     }
 
-    fn moving(dir: &Path) -> Prepared {
-        Prepared { id: "m-1".into(), from: "kanna-dev".into(), to: label(dir), resume: vec!["task-00000002".into()] }
+    fn mark(source: &Path, receiver: &Path) -> Value {
+        json!({ "id": "m-1", "from": label(source), "from_dir": source, "to": label(receiver), "at": 1.0, "socket": source.join("kanna.sock") })
+    }
+
+    fn staged_move(source: &Path, receiver: &Path) -> (crate::db::Db, Moved) {
+        let db = records(source);
+        leaving(source, "m-1", receiver, &source.join("kanna.sock")).unwrap();
+        db.backup_to(&receiver.join(MOVING_DB)).unwrap();
+        let moved = prepare(&receiver.join(MOVING_DB), &mark(source, receiver)).unwrap();
+        stage_files(source, receiver).unwrap();
+        (db, moved)
     }
 
     #[test]
-    fn the_copy_puts_every_live_task_on_the_shelf_without_the_old_keepers_terminals() {
+    fn the_copy_keeps_every_task_where_it_was_with_its_terminals_and_layout() {
         let (source, receiver) = (scratch("src"), scratch("dst"));
-        let db = records(&source);
-        db.backup_to(&receiver.join(MOVING_DB)).unwrap();
-        let moved = prepare(&receiver.join(MOVING_DB), &receiver, &moving(&receiver)).unwrap();
+        let (_db, moved) = staged_move(&source, &receiver);
         assert_eq!(moved, Moved { waiting: vec!["task-00000001".into()], started: vec!["task-00000002".into()], desk: vec!["task-00000003".into()] });
         commit(&receiver).unwrap();
         let conn = Connection::open(receiver.join(DB)).unwrap();
         let rows: Vec<(String, String, Option<String>, String)> = conn.prepare("select id, place, terminal, doc from tasks order by id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(Result::unwrap).collect();
-        let doc = |n: usize| serde_json::from_str::<Value>(&rows[n].3).unwrap();
-        assert_eq!(rows.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["shelf", "shelf", "shelf", "done"]);
-        assert!(rows.iter().all(|r| r.2.is_none()), "no terminal: they were the old keeper's");
-        assert_eq!((doc(0)["message"].clone(), doc(0)["after"].clone(), doc(0)["on"].clone(), doc(0)["stopped"].clone()), (json!("do it"), json!(["task-00000002"]), json!(["mbp"]), Value::Null), "a waiting task as it was");
-        assert_eq!((doc(1)["session"].clone(), doc(1)["workspace"].clone(), doc(1)["stopped"].clone()), (json!("s-2"), Value::Null, json!("moved from kanna-dev")));
-        assert_eq!((doc(2)["session"].clone(), doc(2)["claim"].clone()), (json!("s-3"), Value::Null), "the Desk task is on the Shelf, its session kept");
-        let events: i64 = conn.query_row("select count(*) from task_events where what = 'moved' and to_place = 'shelf'", [], |r| r.get(0)).unwrap();
-        assert_eq!(events, 3);
-        let desk_from: String = conn.query_row("select from_place from task_events where what = 'moved' and task = 'task-00000003'", [], |r| r.get(0)).unwrap();
-        assert_eq!(desk_from, "desk");
-        let waiting: i64 = conn.query_row("select count(*) from messages where delivered is null", [], |r| r.get(0)).unwrap();
-        assert_eq!(waiting, 1, "a message still waiting goes with it");
+        assert_eq!(rows.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["shelf", "shelf", "desk", "done"]);
+        assert_eq!(rows.iter().map(|r| r.2.as_deref()).collect::<Vec<_>>(), [None, Some("term-4"), Some("term-9"), None], "each keeps its terminal: the keeper moves too");
+        let waiting: Value = serde_json::from_str(&rows[0].3).unwrap();
+        assert_eq!((waiting["message"].clone(), waiting["after"].clone(), waiting["on"].clone()), (json!("do it"), json!(["task-00000002"]), json!(["mbp"])));
         let planner: String = conn.query_row("select doc from planners", [], |r| r.get(0)).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&planner).unwrap(), json!({ "agent": "claude", "session": "p-1", "running": false }));
-        let layout: i64 = conn.query_row("select count(*) from layout", [], |r| r.get(0)).unwrap();
-        assert_eq!(layout, 0, "the old keeper's layout stays behind");
-        let mark = moved_from(&receiver).unwrap();
-        assert_eq!((mark["id"].clone(), mark["resume"].clone()), (json!("m-1"), json!(["task-00000002"])));
-        drop(conn);
-        assert_eq!(crate::db::Db::open(&receiver).tasks().unwrap().len(), 3, "the receiving daemon opens the live ones");
+        assert_eq!(serde_json::from_str::<Value>(&planner).unwrap()["pane"], json!("term-6"));
+        let layout: String = conn.query_row("select doc from layout", [], |r| r.get(0)).unwrap();
+        assert_eq!(layout, "{\"workspaces\":[\"source\"]}", "its windows come with it");
+        let waiting: i64 = conn.query_row("select count(*) from messages where delivered is null", [], |r| r.get(0)).unwrap();
+        assert_eq!(waiting, 1);
+        assert_eq!(moved_from(&receiver).unwrap()["id"], json!("m-1"));
+        assert_eq!(fs::read_to_string(receiver.join(TERMINALS).join("term-4.snap")).unwrap(), "screen");
+        assert_eq!(fs::read_to_string(receiver.join("app-state.json")).unwrap(), "{\"windows\":1}");
+        assert_eq!(fs::read_to_string(receiver.join(KEY)).unwrap(), "key");
+        assert!(staged().iter().all(|(s, _)| !receiver.join(s).exists()));
     }
 
     #[test]
-    fn a_receiver_keeps_its_own_layout_and_a_copy_of_its_own_records() {
+    fn a_receiver_keeps_a_copy_of_its_own_records_and_terminals() {
         let (source, receiver) = (scratch("src2"), scratch("dst2"));
-        let db = records(&source);
-        let own = crate::db::Db::open(&receiver);
-        Connection::open(receiver.join(DB)).unwrap().execute("insert into layout (id, doc) values (1, '{\"workspaces\":[\"receiver\"]}')", []).unwrap();
-        drop(own);
+        drop(crate::db::Db::open(&receiver));
+        fs::create_dir_all(receiver.join(TERMINALS)).unwrap();
+        fs::write(receiver.join(KEY), "own").unwrap();
         assert!(live_tasks(&receiver).unwrap().is_empty());
-        db.backup_to(&receiver.join(MOVING_DB)).unwrap();
-        prepare(&receiver.join(MOVING_DB), &receiver, &moving(&receiver)).unwrap();
+        staged_move(&source, &receiver);
         commit(&receiver).unwrap();
-        let conn = Connection::open(receiver.join(DB)).unwrap();
-        let layout: String = conn.query_row("select doc from layout", [], |r| r.get(0)).unwrap();
-        assert_eq!(layout, "{\"workspaces\":[\"receiver\"]}");
-        let kept: Vec<_> = fs::read_dir(&receiver).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("kanna.db.before-move-")).collect();
-        assert_eq!(kept.len(), 1, "its own records are kept beside");
-        assert!(!receiver.join("kanna.db-wal").exists(), "no WAL of the old records beside the new ones");
+        let kept: Vec<String> = fs::read_dir(&receiver).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".before-move-")).collect();
+        assert_eq!(kept.len(), 3, "its records, terminals and key are kept beside: {kept:?}");
+        assert!(!receiver.join("kanna.db-wal").exists());
     }
 
     #[test]
     fn a_move_stopped_before_its_commit_leaves_both_sides_as_they_were() {
         let (source, receiver) = (scratch("src3"), scratch("dst3"));
-        let db = records(&source);
-        fs::write(source.join(KEY), "key").unwrap();
-        leaving(&source, "m-1", &receiver).unwrap();
-        db.backup_to(&receiver.join(MOVING_DB)).unwrap();
-        stage_key(&source, &receiver).unwrap();
+        let (db, _) = staged_move(&source, &receiver);
         drop(db);
-        assert_eq!(settle(&receiver), None);
-        assert!(!receiver.join(MOVING_DB).exists() && !receiver.join(MOVING_KEY).exists() && !receiver.join(KEY).exists(), "the receiver throws the half-made copy away");
-        assert_eq!(settle(&source), None);
-        assert!(source.join(KEY).exists() && source.join(DB).exists() && !source.join(LEAVING).exists(), "the source is as it was");
+        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), None);
+        assert!(fs::read_dir(&receiver).unwrap().next().is_none(), "the receiver throws the half-made copy away");
+        assert_eq!(settle(&source, &source.join("kanna.sock")), None);
+        assert!(source.join(KEY).exists() && source.join(DB).exists() && source.join(TERMINALS).exists() && !source.join(LEAVING).exists(), "the source is as it was");
     }
 
     #[test]
-    fn a_source_stopped_after_the_commit_finishes_its_move_when_it_starts() {
+    fn a_move_stopped_after_its_commit_links_the_old_socket_and_retires_the_source() {
         let (source, receiver) = (scratch("src4"), scratch("dst4"));
-        let db = records(&source);
-        fs::write(source.join(KEY), "key").unwrap();
-        leaving(&source, "m-1", &receiver).unwrap();
-        db.backup_to(&receiver.join(MOVING_DB)).unwrap();
-        prepare(&receiver.join(MOVING_DB), &receiver, &moving(&receiver)).unwrap();
-        stage_key(&source, &receiver).unwrap();
+        let (db, _) = staged_move(&source, &receiver);
         fs::rename(receiver.join(MOVING_DB), receiver.join(DB)).unwrap();
         drop(db);
-        assert_eq!(settle(&receiver), None);
-        assert_eq!(fs::read_to_string(receiver.join(KEY)).unwrap(), "key", "the receiver takes the machine key when it starts");
-        let old = settle(&source).expect("the source retires");
-        assert!(!source.join(KEY).exists() && !source.join(DB).exists() && !source.join(LEAVING).exists());
+        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), None);
+        assert_eq!(fs::read_to_string(receiver.join(KEY)).unwrap(), "key", "the receiver finishes putting things in place");
+        assert!(receiver.join(TERMINALS).join("term-4.snap").exists());
+        assert_eq!(fs::read_link(source.join("kanna.sock")).unwrap(), receiver.join("kanna.sock"), "the old socket leads to the receiver");
+        let old = settle(&source, &source.join("kanna.sock")).expect("the source retires");
+        assert!(!source.join(KEY).exists() && !source.join(DB).exists() && !source.join(TERMINALS).exists() && !source.join(LEAVING).exists());
         let fresh = crate::db::Db::open(&source);
         fresh.keep_from_moved(&old).unwrap();
         assert!(fresh.tasks().unwrap().is_empty(), "it starts again empty");
         let conn = Connection::open(source.join(DB)).unwrap();
-        let layout: String = conn.query_row("select doc from layout", [], |r| r.get(0)).unwrap();
-        assert_eq!(layout, "{\"workspaces\":[\"source\"]}", "its windows stay, for its terminals");
+        let projects: i64 = conn.query_row("select count(*) from projects", [], |r| r.get(0)).unwrap();
+        let layout: i64 = conn.query_row("select count(*) from layout", [], |r| r.get(0)).unwrap();
+        assert_eq!((projects, layout), (1, 0), "its recent projects stay, its windows went with the terminals");
+        assert_eq!(kanna_build::own_socket(&source.join("kanna.sock")), source.join(kanna_build::OWN_SOCKET));
     }
 
     #[test]
@@ -437,5 +518,9 @@ mod tests {
         assert!(lock(&dir).unwrap_err().contains("is running"));
         drop(held);
         assert!(lock(&dir).is_ok());
+        assert!(!keeper_running(&dir));
+        let keeper = flock(&keeper_paths::lock(&dir), true).unwrap();
+        assert!(keeper_running(&dir));
+        drop(keeper);
     }
 }

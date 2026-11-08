@@ -232,7 +232,8 @@ fn run() -> Result<(), String> {
     let _ = Brand::set_current(Brand::new("kanna", "Kanna"));
     let build_id = kanna_build::own_build_id();
     let build = Build::current();
-    let socket = env_path("KANNA_SOCKET").unwrap_or_else(|| build.instance_folder(&support_folder(), &build.default_instance()).join(kanna_build::SOCKET));
+    let given = env_path("KANNA_SOCKET").unwrap_or_else(|| build.instance_folder(&support_folder(), &build.default_instance()).join(kanna_build::SOCKET));
+    let socket = kanna_build::own_socket(&given);
     if socket.to_string_lossy().to_lowercase() == app_socket().to_string_lossy().to_lowercase() {
         return Err(format!("{} belongs to Kanna.app; use another KANNA_SOCKET", socket.display()));
     }
@@ -245,7 +246,6 @@ fn run() -> Result<(), String> {
         tasks::serve_codex_remotely(&helper, &state_dir);
     }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
-    let socket_path = socket.to_string_lossy().into_owned();
     let (_lock, waited) = lock(&state_dir)?;
     let marker = state_dir.join(SHUTDOWN_MARKER);
     if marker.exists() && (waited || started_before(&marker)) {
@@ -266,7 +266,9 @@ fn run() -> Result<(), String> {
     }
 
     let (events, mut inbox) = runtime::channel();
-    let retired = instance_move::settle(&state_dir);
+    let retired = instance_move::settle(&state_dir, &socket);
+    let socket = kanna_build::own_socket(&given);
+    let socket_path = socket.to_string_lossy().into_owned();
     let db = Rc::new(db::Db::open(&state_dir));
     if let Some(old) = &retired {
         if let Err(error) = db.keep_from_moved(old) {
@@ -480,14 +482,6 @@ fn run() -> Result<(), String> {
         }));
     }
     tasks.join();
-    if let Some(machines) = &machines {
-        let closing = Rc::downgrade(machines);
-        *tasks.close_endpoint.borrow_mut() = Some(Box::new(move || {
-            if let Some(machines) = closing.upgrade() {
-                machines.close_from_loop();
-            }
-        }));
-    }
     let moving = Rc::downgrade(&tasks);
     let support = support_folder();
     core.add_command(
@@ -568,7 +562,6 @@ fn run() -> Result<(), String> {
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     tasks.repair_comment_targets();
     tasks.settle_statuses();
-    tasks.resume_moved();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -577,6 +570,32 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let closing = machines.as_ref().map(Rc::downgrade);
+    let (counting, stopping_terminals, moving_keeper, quitting, attached) = (Rc::downgrade(&terminals), Rc::downgrade(&terminals), Rc::downgrade(&keeper), Rc::downgrade(&app), Rc::downgrade(&app));
+    *tasks.move_hooks.borrow_mut() = Some(tasks::MoveHooks {
+        socket: socket.clone(),
+        terminals: Box::new(move || counting.upgrade().map_or(0, |t| t.running().len())),
+        close_endpoint: Box::new(move || {
+            if let Some(machines) = closing.as_ref().and_then(std::rc::Weak::upgrade) {
+                machines.close_from_loop();
+            }
+        }),
+        stop_terminals: Box::new(move || {
+            if let Some(terminals) = stopping_terminals.upgrade() {
+                terminals.shutdown();
+            }
+        }),
+        move_keeper: Box::new(move |dir| match moving_keeper.upgrade() {
+            Some(keeper) => keeper.move_to(dir).map_err(|e| format!("the keeper didn't move to {}: {e}", dir.display())),
+            None => Err("the keeper is gone".into()),
+        }),
+        quit_app: Box::new(move || {
+            if let Some(app) = quitting.upgrade() {
+                app.quit();
+            }
+        }),
+        app_attached: Box::new(move || attached.upgrade().is_some_and(|app| app.attached_here())),
+    });
     let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);

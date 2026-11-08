@@ -30,7 +30,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 
 - The user works in Kanna Staging, on the MacBook Pro and on the Studio (its served daemon). A change reaches them by a staging release, not by rebuilding the dev app: when main has moved since the last `v*-staging.*` tag and the user wants it, the planner offers `scripts/release.sh --staging`. It runs on the MacBook Pro, the machine with the release credentials (`~/.kanna/.env.release.local`), and Sparkle updates both machines' Kanna Staging from it.
 - `scripts/build.sh dev` in the main checkout is for trying a change on main before it ships, in Kanna Dev; a task tries its own change in its worktree's dev build.
-- Moving a Kanna's work between folders on one Mac: `kanna instances move` ([instance move](docs/specs/instance-move.md)). Never on the user's own Kanna unless they ask; show them `--dry-run` first.
+- Moving a Kanna's work between folders on one Mac: `scripts/move-instance.sh` ([instance move](docs/specs/instance-move.md)). Never on the user's own Kanna unless they ask; show them `--dry-run` first.
 
 ## Tests
 

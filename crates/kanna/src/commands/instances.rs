@@ -9,7 +9,6 @@ pub const HELP: &str = "kanna instances — List the running Kanna instances.\n\
 usage: kanna instances [--json]\n\
        kanna instances prune\n\
        kanna [--instance NAME] instances stop [--json]\n\
-       kanna instances move TO [--dry-run] [--json]\n\
 \n\
 Instances are a tool for developing and testing Kanna, not a user feature: the app\n\
 doesn't offer them. To work on another project, open a Desk on it (kanna PATH, or\n\
@@ -39,18 +38,6 @@ is gone, once nothing runs in them. kanna instances stop quits an instance: its 
 saves its windows and quits, its terminals are hung up (a task's resume when it starts\n\
 again), and its keeper and daemon exit. It waits until they have, and never starts one.\n\
 \n\
-kanna instances move TO moves this Kanna's work to the instance folder TO (a folder name in\n\
-your application support folder, such as kanna-staging, or a path): every task, its history\n\
-and messages, the schedules, the phone's chat and quiz, and this machine's key, so TO is\n\
-the same machine to your other machines. Desk tasks go to the Shelf; started tasks keep their\n\
-worktree, branch and conversation, and those whose agent was running start again when TO's\n\
-Kanna starts. TO's Kanna must not be running, must be a build that reads these records,\n\
-and must have no tasks of its own. No task starts meanwhile, and each agent quits at its\n\
-turn's end (it waits up to 10 minutes for them). Then this Kanna stops, and starts again empty\n\
-with a key of its own; its records are kept beside, as kanna.db.moved-TIME. Agent accounts\n\
-don't move: add them again in TO's Kanna. --dry-run says what would move, which agents would\n\
-quit, and why it would be refused, and changes nothing.\n\
-\n\
 examples:\n  \
   kanna instances\n      \
       Which instances are running, and which one commands go to.\n  \
@@ -61,9 +48,7 @@ examples:\n  \
   kanna instances prune\n      \
       Clean up after worktrees you've removed.\n  \
   kanna --instance test instances stop\n      \
-      Quit the scratch instance test: its app, daemon, keeper and terminals.\n  \
-  kanna instances move kanna-staging --dry-run\n      \
-      What moving this Kanna to Kanna Staging would move, and what stops it.";
+      Quit the scratch instance test: its app, daemon, keeper and terminals.";
 
 pub fn run(args: &mut Argv, invocation: &Invocation, wants_help: bool) -> Result<(), Failure> {
     let (target, json_output, env) = (invocation.target, invocation.json_output, invocation.env);
@@ -74,11 +59,6 @@ pub fn run(args: &mut Argv, invocation: &Invocation, wants_help: bool) -> Result
     match args.positional().as_deref() {
         Some("prune") => prune(env),
         Some("stop") => stop(target, json_output),
-        Some("move") => {
-            let dry = args.flag("--dry-run");
-            let to = args.positional().ok_or_else(|| fail(exit::USAGE, "usage: kanna instances move TO [--dry-run]".to_string()))?;
-            move_to(target, &to, dry, json_output)
-        }
         _ => list(target, json_output, env),
     }
 }
@@ -187,73 +167,4 @@ fn prune(env: Env) -> Result<(), Failure> {
         println!("Nothing to prune: every dev instance's worktree is still there, or it's still running.");
     }
     Ok(())
-}
-
-fn move_to(target: &Target, to: &str, dry: bool, json_output: bool) -> Result<(), Failure> {
-    let Some(mut mux) = target.try_connect() else {
-        return Err(fail(exit::FAILED, format!("{} ({}) isn't running: run this from the Kanna you're moving", target.instance, target.socket.display())));
-    };
-    if !dry {
-        eprintln!("moving to {to}: no task starts now, and each agent quits at its turn's end…");
-    }
-    let reply = mux.call("instance", json!({ "action": "move", "to": to, "dry": dry })).map_err(Failure::from)?;
-    if json_output {
-        println!("{reply}");
-        return Ok(());
-    }
-    print!("{}", described(&reply, dry));
-    Ok(())
-}
-
-fn described(reply: &Value, dry: bool) -> String {
-    let plural = |n: u64, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
-    let count = |key: &str| reply["tasks"][key].as_u64().unwrap_or(0);
-    let names = |key: &str| reply[key].as_array().map_or(vec![], |list| list.iter().map(|t| t["name"].as_str().map_or_else(|| t["id"].as_str().unwrap_or("?").to_string(), |n| format!("\"{n}\""))).collect::<Vec<_>>());
-    let (from, to) = (reply["from"].as_str().unwrap_or("this Kanna"), reply["to"].as_str().unwrap_or("?"));
-    let mut out = String::new();
-    let tasks = format!("{} waiting, {} started, {} from the Desk onto the Shelf", plural(count("waiting"), "task"), count("started"), count("desk"));
-    match dry {
-        true => out += &format!("Moving {from} to {to} ({}) would move:\n  {tasks}\n  their history, {} waiting, the schedules, the phone's chat and quiz\n  this machine's key: {to} is the same machine to your others\n", reply["folder"].as_str().unwrap_or("?"), plural(reply["messages"].as_u64().unwrap_or(0), "message")),
-        false => out += &format!("Moved {from} to {to}: {tasks}.\n"),
-    }
-    let quit = names(if dry { "quit" } else { "resume" });
-    if !quit.is_empty() {
-        let lead = if dry { "These agents would quit at their turn's end and start again in" } else { "These agents quit and start again when you open" };
-        out += &format!("{lead} {to}: {}\n", quit.join(", "));
-    }
-    let busy = names("busy");
-    if dry && !busy.is_empty() {
-        out += &format!("In the middle of a turn now (the move waits for them): {}\n", busy.join(", "));
-    }
-    let accounts: Vec<&str> = reply["accounts"].as_array().map_or(vec![], |a| a.iter().filter_map(Value::as_str).collect());
-    if !accounts.is_empty() {
-        out += &format!("Agent accounts stay here; add them again in {to}: {}\n", accounts.join(", "));
-    }
-    let refused = reply["refused"].as_array().cloned().unwrap_or_default();
-    if dry && refused.is_empty() {
-        out += &format!("Nothing stops it: run kanna instances move {to} without --dry-run.\n");
-    }
-    for why in &refused {
-        out += &format!("Refused ({}): {}\n", why["code"].as_str().unwrap_or("?"), why["message"].as_str().unwrap_or("?"));
-    }
-    if !dry {
-        out += &format!("This Kanna stops now and starts again empty. Quit it, then open {to}'s Kanna and your projects.\n");
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_dry_run_says_what_moves_what_quits_and_what_stops_it() {
-        let reply = json!({ "from": "kanna-dev", "to": "kanna-staging", "folder": "/S/kanna-staging", "tasks": { "waiting": 2, "started": 1, "desk": 1 }, "quit": [{ "id": "task-1", "name": "Fix" }], "busy": [], "messages": 1, "accounts": ["claude (Claude subscription)"], "refused": [{ "code": "running", "message": "kanna-staging's Kanna is running" }] });
-        let text = described(&reply, true);
-        assert!(text.contains("2 tasks waiting, 1 started, 1 from the Desk onto the Shelf"), "{text}");
-        assert!(text.contains("\"Fix\""), "{text}");
-        assert!(text.contains("add them again in kanna-staging: claude (Claude subscription)"), "{text}");
-        assert!(text.contains("Refused (running)"), "{text}");
-        assert!(!text.contains("Nothing stops it"), "{text}");
-    }
 }

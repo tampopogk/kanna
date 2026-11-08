@@ -127,7 +127,11 @@ impl Daemon {
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.dir.join("kanna.sock")
+        let given = self.dir.join("kanna.sock");
+        match std::fs::symlink_metadata(&given) {
+            Ok(meta) if meta.file_type().is_symlink() => self.dir.join("kanna.own.sock"),
+            _ => given,
+        }
     }
 
     pub fn kanna(&self, args: &[&str]) -> Run {

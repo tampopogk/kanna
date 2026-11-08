@@ -26,7 +26,7 @@ What each one is for (decided with the user, 2026-11-08):
 | Kanna Dev (the main checkout) | trying a change on main before it ships: `scripts/build.sh dev`. It's ad-hoc signed, so every rebuild is a new app to macOS and asks again for the Keychain and privacy prompts |
 | Kanna Dev task-… (a worktree) | a task trying its own change |
 
-So a change reaches the user's Kanna by a staging release (`scripts/release.sh --staging`, [release](release.md#the-staging-channel)), not by rebuilding the dev app. A Kanna's work moves from one folder to another, its Shelf and its machine key included, with `kanna instances move` ([instance move](instance-move.md)).
+So a change reaches the user's Kanna by a staging release (`scripts/release.sh --staging`, [release](release.md#the-staging-channel)), not by rebuilding the dev app. A Kanna's work moves from one folder to another, its Shelf and its machine key included, live, its terminals and agents running on, with `scripts/move-instance.sh` ([instance move](instance-move.md)).
 
 ```text
 ~/Library/Application Support/
@@ -77,13 +77,13 @@ So in production's terminals every `kanna` talks to production; to reach the wor
 | `scripts/run-kanna.sh` | opens this checkout's `target/Kanna.app` |
 | `scripts/run-kanna.sh COMMAND …` | runs this checkout's CLI against this checkout's Kanna (starting it if needed), from anywhere, a production terminal included |
 | `kanna instances` | the running instances of every channel: name, channel, windows and panes, and the worktree a dev build came from (`(gone)` once it's removed) |
-| `kanna instances move TO [--dry-run]` | moves this Kanna's work and machine key to the instance folder TO, on this Mac ([instance move](instance-move.md)) |
 | `kanna instances prune` | deletes the folders of instances whose worktree is gone, keeping any that still answer or whose keeper still runs |
+| `scripts/move-instance.sh TO [--dry-run] [--serve]` | moves the Kanna this terminal runs in to the instance folder TO, on this Mac: its records, machine key, windows, and keeper with every terminal ([instance move](instance-move.md)) |
 | `kanna --version` | the CLI's version and which app it is, e.g. `kanna 4.1.1-dev (Kanna Dev task-3f9a1c2e)` |
 
 Any build can run with `KANNA_DEBUG=1` (the planner's dev Kanna does): it answers `debug.*` and shows **Debug** in its title bars, and is otherwise the same, its clipboard included ([terminal](terminal.md#5-debug-mode)).
 
-Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry a Kanna's work to another build (its Shelf, history, schedules and machine key), run `kanna instances move TO` in it ([instance move](instance-move.md)): the receiving folder needs no stopped keeper, and the old one's terminals stay with the old keeper.
+Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry a Kanna's work to another build (its Shelf, history, schedules and machine key), run `scripts/move-instance.sh TO` in one of its terminals ([instance move](instance-move.md)): the receiving Kanna must be quit, and its terminals closed; the old one's terminals and agents move with its keeper.
 
 ## 5. Open questions
 

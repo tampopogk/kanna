@@ -24,6 +24,7 @@ mod instance;
 mod moving;
 mod phone;
 
+pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
 
 const WORKTREES: &str = ".kanna-worktrees";
@@ -1002,7 +1003,7 @@ pub struct Tasks {
     news: RefCell<News>,
     ending: RefCell<HashMap<String, Option<String>>>,
     moving_instance: RefCell<Option<String>>,
-    pub close_endpoint: RefCell<Option<Box<dyn Fn()>>>,
+    pub move_hooks: RefCell<Option<instance::MoveHooks>>,
 }
 
 #[derive(Clone)]
@@ -1188,7 +1189,7 @@ impl Tasks {
             news: RefCell::default(),
             ending: RefCell::default(),
             moving_instance: RefCell::default(),
-            close_endpoint: RefCell::default(),
+            move_hooks: RefCell::default(),
         }
     }
 
