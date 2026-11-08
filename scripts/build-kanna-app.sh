@@ -66,12 +66,15 @@ product_dir="$("${build[@]}" --show-bin-path)"
 [[ "$rust_dir/libkanna_ffi.a" -nt "$product_dir/Kanna" ]] && rm -f "$product_dir/Kanna"
 "${build[@]}"
 
-identity="$(kanna_dev_identity)"
-if [[ -n "$identity" ]]; then signing="signed as Kanna Dev Signing"; else identity=-; signing="ad-hoc signed: macOS asks for privacy permissions again after each build; scripts/dev-signing-identity.sh makes an identity that keeps them"; fi
+read -r identity KANNA_SIGN_TEAM <<<"$(kanna_dev_identity)" || true
+export KANNA_SIGN_TEAM
+if [[ -n "$KANNA_SIGN_TEAM" ]]; then signing="signed with Apple Development ($identity, team $KANNA_SIGN_TEAM)"
+elif [[ -n "$identity" ]]; then signing="signed as Kanna Dev Signing"
+else identity=-; signing="ad-hoc signed: macOS and the Keychain ask for permissions again after each build; an Apple Development certificate of team $KANNA_TEAM_ID, or scripts/dev-signing-identity.sh, makes an identity that keeps them"; fi
 signed="$arch_dir/signed"
 mkdir -p "$signed"
 for helper in kanna-daemon kanna-keeper kanna; do
-  stamp="$(shasum -a 256 "$rust_dir/$helper" | cut -d' ' -f1) $bundle_id.$helper $identity"
+  stamp="$(shasum -a 256 "$rust_dir/$helper" | cut -d' ' -f1) $bundle_id.$helper $identity $KANNA_SIGN_TEAM"
   if [[ ! -f "$signed/$helper" || "$(cat "$signed/$helper.stamp" 2>/dev/null)" != "$stamp" ]]; then
     cp "$rust_dir/$helper" "$signed/$helper"
     kanna_sign_helper "$bundle_id" "$identity" "$signed/$helper"
