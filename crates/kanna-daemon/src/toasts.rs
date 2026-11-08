@@ -21,6 +21,7 @@ pub struct Toast {
     pub pane: Option<String>,
     pub task: Option<String>,
     pub key: Option<String>,
+    pub from: Option<String>,
 }
 
 pub struct Toasts {
@@ -68,7 +69,10 @@ impl Toasts {
         let id = format!("toast-{}", self.next.get() + 1);
         self.next.set(self.next.get() + 1);
         let detail = toast.detail.as_deref().map(|d| clean(d, DETAIL_MAX)).filter(|d| !d.is_empty());
-        let record = json!({ "id": id, "title": title, "detail": detail, "pane": pane, "task": task, "about": about });
+        let mut record = json!({ "id": id, "title": title, "detail": detail, "pane": pane, "task": task, "about": about });
+        if let Some(from) = toast.from.filter(|_| pane.is_none()) {
+            record["from"] = json!(from);
+        }
         let shown = self.on_toast.borrow().as_ref().is_some_and(|show| show(&record));
         if !shown {
             let mut held = self.held.borrow_mut();
@@ -124,7 +128,7 @@ impl Toasts {
 
     fn command(&self, args: &Value) -> Result<Map, KmuxError> {
         let text = |key: &str| string(args, key).map(String::from);
-        let toast = Toast { title: text("title").unwrap_or_default(), detail: text("detail"), pane: text("pane"), task: text("task"), key: text("key").filter(|k| !k.is_empty()) };
+        let toast = Toast { title: text("title").unwrap_or_default(), detail: text("detail"), pane: text("pane"), task: text("task"), key: text("key").filter(|k| !k.is_empty()), from: text("from") };
         let key = toast.key.clone();
         let mut out = Map::new();
         match self.raise(toast)? {
