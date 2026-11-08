@@ -57,6 +57,7 @@ flowchart TB
 - **A task's windows show in an app while its task is on one of that app's Desks,** and are hidden there otherwise; free windows show in every app.
 - **A Desk's planner is a workspace with no task,** its planning terminal docked, made when the app asks for a planning terminal (`tasks plan`) and closed when the app closes that Desk. Its ID is the Desk's, kept by the app.
 - **A task reaches a Desk only from the Shelf,** with `kanna task pick` (claimed for the CLI's instance's app) or Move to Desk; `open` docks nothing ([every task starts on the Shelf](tasks-start-on-the-shelf.md)). `kanna task activate` shows it.
+- **Picking a task that is starting waits for it:** a pick that lands while a Shelf runner, a message or another `start` is making its worktree or opening its agent is held until that start ends, then moves the running task to the Desk (or starts it, if that start failed). The Shelf's Move to Desk, the phone's pick and `kanna task pick` straight after `kanna task new` all mean the same thing whether a runner got there first or not.
 - **`activate`, `park` and `kanna PATH` reply with the Desk's ID** (`d1`, `d2`, …, the app's own), as in `term-3 is active on d1`.
 - **A Desk is a window to the CLI,** by that ID: the app tells the daemon its Desks and what each shows, and `--window d1` reaches the workspace it shows ([Desk windows](desk-windows.md)).
 - **The task list says Desk or Shelf,** and which app has it out; never which Desk window.

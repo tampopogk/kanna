@@ -9,6 +9,8 @@ struct File {
     agent: String,
     #[serde(default)]
     exit: Option<ExitFile>,
+    #[serde(default)]
+    rest: Option<String>,
     keys: Vec<String>,
     #[serde(default)]
     session: Option<String>,
@@ -32,6 +34,7 @@ pub struct Exit {
 pub struct Quit {
     pub agent: String,
     pub exit: Option<Exit>,
+    pub rest: Option<String>,
     pub keys: Vec<String>,
     pub session: Option<Regex>,
 }
@@ -44,7 +47,7 @@ impl Quit {
             return Err("session needs a group that captures the ID".into());
         }
         let exit = file.exit.map(|exit| Regex::new(&exit.shown).map(|shown| Exit { text: exit.text, shown }).map_err(|e| format!("exit: {e}"))).transpose()?;
-        Ok(Quit { agent: file.agent, exit, keys: file.keys, session })
+        Ok(Quit { agent: file.agent, exit, rest: file.rest, keys: file.keys, session })
     }
 
     pub fn of(agent: &str) -> Option<Quit> {
@@ -68,6 +71,7 @@ mod tests {
         for (name, text) in BUNDLED_QUIT.iter().copied() {
             let quit = Quit::parse(text).unwrap_or_else(|e| panic!("{name}.json: {e}"));
             assert_eq!(quit.agent, name);
+            assert_eq!(quit.rest.as_deref(), Some("esc"), "{name} rests with esc");
             assert!(crate::program::known_agents().contains(&name), "{name} isn't an agent Kanna knows");
         }
     }

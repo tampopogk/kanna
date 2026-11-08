@@ -90,6 +90,10 @@ impl Caller {
         self.node.log()
     }
 
+    pub fn relay_token(&self) -> Option<String> {
+        self.node.relay_token()
+    }
+
     pub fn phone_offer(&self) -> Result<Value, KmuxError> {
         self.node.offer_phone().map_err(error)
     }
@@ -326,6 +330,15 @@ impl Machines {
             Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities(), "relay_token": node.relay_token() }),
             Err(_) => json!({ "name": hostname(), "capabilities": capabilities() }),
         }
+    }
+
+    pub fn close_from_loop(&self) {
+        let Ok(node) = &self.node else { return };
+        let (handle, node) = (self.runtime.handle().clone(), node.clone());
+        let closing = std::thread::spawn(move || {
+            let _ = handle.block_on(async { tokio::time::timeout(Duration::from_secs(1), node.close()).await });
+        });
+        let _ = closing.join();
     }
 
     pub fn stop(&self) {

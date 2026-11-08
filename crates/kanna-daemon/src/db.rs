@@ -552,6 +552,15 @@ pub struct Sample {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct AgentRow {
+    pub task: String,
+    pub name: String,
+    pub at: f64,
+    pub what: String,
+    pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Life {
     pub task: String,
     pub name: String,
@@ -1242,6 +1251,33 @@ impl Db {
         rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
     }
 
+    pub fn agent_rows(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<AgentRow>> {
+        let mut statement = self.conn.prepare(
+            "select e.task, coalesce(json_extract(t.doc, '$.name'), t.id), e.at, e.what, json_extract(e.doc, '$.status')
+             from task_events e join tasks t on t.id = e.task
+             where t.repo = ?1
+               and e.what in ('status', 'stopped', 'started', 'picked', 'activated', 'looked', 'done')
+               and e.task in (select task from task_events where what = 'status')
+               and (t.place <> 'done' or exists (select 1 from task_events d where d.task = t.id and d.at >= ?2))
+             order by e.task, e.at, e.id",
+        )?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(AgentRow { task: r.get(0)?, name: r.get(1)?, at: r.get(2)?, what: r.get(3)?, status: r.get(4)? }))?;
+        rows.collect()
+    }
+
+    pub fn last_status(&self, task: &str) -> rusqlite::Result<Option<String>> {
+        let found: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "select case what when 'status' then json_extract(doc, '$.status') end from task_events
+                 where task = ?1 and what in ('status', 'stopped', 'started') order by at desc, id desc limit 1",
+                [task],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.flatten())
+    }
+
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
         let mut statement = self.conn.prepare(
             "select id, name, made, started, done from (
@@ -1381,6 +1417,21 @@ impl Db {
     pub fn firing_reply(&self, firing: i64, text: &str, at: f64) -> rusqlite::Result<()> {
         self.conn.execute("update schedule_firings set reply = ?2, replied_at = ?3 where id = ?1", params![firing, text, at])?;
         Ok(())
+    }
+
+    pub fn backup_to(&self, path: &Path) -> rusqlite::Result<()> {
+        let _ = fs::remove_file(path);
+        self.conn.backup(rusqlite::MAIN_DB, path, None)?;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        Ok(())
+    }
+
+    pub fn keep_from_moved(&self, old: &Path) -> rusqlite::Result<()> {
+        crate::instance_move::keep_from(&self.conn, old)
+    }
+
+    pub fn records_version(&self) -> rusqlite::Result<i64> {
+        self.conn.query_row("pragma user_version", [], |row| row.get(0))
     }
 
     pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {

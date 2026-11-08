@@ -4,8 +4,10 @@ extension WorkItem {
     func line(_ overrideNeed: Bool = true) -> AttributedString {
         var parts: [String] = []
         switch status {
-        case .ready: parts = ["ready", after.isEmpty ? "" : "merges after \(after)"]
+        case .ready: parts = ["ready"]
+        case .conflicts: parts = ["conflicts"]
         case .stale: parts = ["stale", "behind \(after)"]
+        case .idle where !after.isEmpty, .stopped where !after.isEmpty: parts = [status.words.lowercased(), "merges after \(after)", machine ?? ""]
         case .blocked: parts = ["blocked by \(after)"]
         case .waiting: parts = ["not started"]
         case .needs: parts = ["needs you", age, machine ?? ""]
@@ -209,6 +211,7 @@ struct Label2: View {
 
 struct ThreadRow: View {
     var message: Message
+    @Environment(Store.self) private var store
 
     var body: some View {
         if !message.said.isEmpty {
@@ -225,6 +228,13 @@ struct ThreadRow: View {
                 Text("you · \(message.time)").font(.system(size: 12)).foregroundStyle(K.muted)
                 MyBubble(text: message.text)
                 ReceiptLine(receipt: message.receipt).padding(.top, 2)
+                if message.receipt == .dayOld {
+                    HStack(spacing: 12) {
+                        Button("Discard") { store.resendAged(message.id, keep: false) }
+                        Button("Keep waiting") { store.resendAged(message.id, keep: true) }
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {

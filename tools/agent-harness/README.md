@@ -33,7 +33,7 @@ Needs `claude` and `codex` on `PATH`, Python 3.9+, and permission to open a pty 
 ## What it records
 
 - `out/<dir>/<agent>-<terminal>-<setting>-<focus>.jsonl`: one line per event: `o` (output bytes, base64), `i` (keys sent), `answer` (replies to terminal queries: DA1, cursor position, XTVERSION as Ghostty, kitty keyboard, DECRQM, OSC 10/11 colours, window size), `mark` (the phases above), `matched` / `timeout`, `exit`. `t` is seconds since start.
-- `out/<dir>/mock-requests.jsonl`: every request the agents made to the mock, with its last user message (`prompt`) and every user message in it (`history`), leaving out `<system-reminder>` blocks. `turn` is what the mock answered an agent's turn with; it's null for a request that offers no tools, such as codex's task title, whose prompt quotes the user's message.
+- `out/<dir>/mock-requests.jsonl`: every request the agents made to the mock, with its last user message (`prompt`) and every user message in it (`history`), leaving out `<system-reminder>` blocks, and its last item as sent (`last`), which shows text Claude puts beside a tool result. `turn` is what the mock answered an agent's turn with; it's null for a request that offers no tools, such as codex's task title, whose prompt quotes the user's message.
 - `out/<dir>/runs/<name>/`: the run's HOME, working folder and script.
 
 Codex starts a detached `codex app-server --managed-daemon` from its CODEX_HOME that outlives the TUI; `run.py` stops any process running from the run's HOME when the run ends.
@@ -58,4 +58,4 @@ Codex starts a detached `codex app-server --managed-daemon` from its CODEX_HOME 
 python3 tools/agent-harness/isolate.py --agent codex --home /tmp/h --port 8123 --trust ~/repo --out /tmp/bin/codex
 ```
 
-The executable is named after the agent, so Kanna treats it as one. An agent installed as a script for an interpreter beside it but not on PATH (codex from nvm, `#!/usr/bin/env node`) gets that folder on its PATH, so it runs from a terminal whose PATH has no nvm. `scripts/e2e-kanna.sh real_agent_tasks` uses it to check that claude and codex tasks come back to their conversation after Move to Backlog, Stop and Start: the mock's log shows the next message carrying the first.
+`--cli PATH` exports it as `KANNA_CLI`, the CLI the mock's `OWN_STOP` and `OWN_DONE` turns run (`"$KANNA_CLI" task stop`, `task done`), so the agent stops or ends its own task mid-turn. The executable is named after the agent, so Kanna treats it as one. An agent installed as a script for an interpreter beside it but not on PATH (codex from nvm, `#!/usr/bin/env node`) gets that folder on its PATH, so it runs from a terminal whose PATH has no nvm. `scripts/e2e-kanna.sh real_agent_tasks` uses it to check that claude and codex tasks come back to their conversation after Move to Backlog, Stop and Start: the mock's log shows the next message carrying the first.

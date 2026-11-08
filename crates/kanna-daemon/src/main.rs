@@ -5,10 +5,12 @@ macro_rules! log {
 }
 
 mod accounts;
+mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
 mod guests;
+mod instance_move;
 mod tasks;
 mod db;
 mod desk_news;
@@ -88,7 +90,8 @@ running in the keeper; it saves them in that folder (terminals/), and the
 next daemon takes them back. With $KANNA_LISTEN_FD (Kanna.app sets it), it
 serves on that listening socket, which the app keeps, instead of binding one.
 
-  --uses-keeper   exits 0: this daemon gets its ptys from a keeper";
+  --uses-keeper   exits 0: this daemon gets its ptys from a keeper
+  --schema        prints the highest records version this daemon reads";
 
 const APP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -141,6 +144,7 @@ pub enum Event {
     MachinesSave(Value),
     PeerRequest { from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send> },
     AccountBroken(Value),
+    AccountUnreadable(Value),
     Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
@@ -166,7 +170,7 @@ impl Event {
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppUsed { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
-            Event::PeerRequest { .. } | Event::AccountBroken(_) => "loop.accounts",
+            Event::PeerRequest { .. } | Event::AccountBroken(_) | Event::AccountUnreadable(_) => "loop.accounts",
             Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
         }
     }
@@ -177,6 +181,7 @@ fn main() {
     match args.first().map(String::as_str) {
         None => {}
         Some("--uses-keeper") => std::process::exit(0),
+        Some(instance_move::SCHEMA_FLAG) => return println!("{}", db::version()),
         Some(codex_remote::FLAG) if args.len() >= 3 => std::process::exit(codex_remote::run(Path::new(&args[1]), &args[2], &args[3..])),
         Some(accounts::FLAG) if args.len() >= 3 => std::process::exit(accounts::run_with_account(Path::new(&args[1]), &args[2], &args[3..])),
         Some("-h" | "--help") => return println!("{USAGE}"),
@@ -227,7 +232,8 @@ fn run() -> Result<(), String> {
     let _ = Brand::set_current(Brand::new("kanna", "Kanna"));
     let build_id = kanna_build::own_build_id();
     let build = Build::current();
-    let socket = env_path("KANNA_SOCKET").unwrap_or_else(|| build.instance_folder(&support_folder(), &build.default_instance()).join(kanna_build::SOCKET));
+    let given = env_path("KANNA_SOCKET").unwrap_or_else(|| build.instance_folder(&support_folder(), &build.default_instance()).join(kanna_build::SOCKET));
+    let socket = kanna_build::own_socket(&given);
     if socket.to_string_lossy().to_lowercase() == app_socket().to_string_lossy().to_lowercase() {
         return Err(format!("{} belongs to Kanna.app; use another KANNA_SOCKET", socket.display()));
     }
@@ -240,7 +246,6 @@ fn run() -> Result<(), String> {
         tasks::serve_codex_remotely(&helper, &state_dir);
     }
     std::fs::create_dir_all(&state_dir).map_err(|e| format!("can't make {}: {e}", state_dir.display()))?;
-    let socket_path = socket.to_string_lossy().into_owned();
     let (_lock, waited) = lock(&state_dir)?;
     let marker = state_dir.join(SHUTDOWN_MARKER);
     if marker.exists() && (waited || started_before(&marker)) {
@@ -249,7 +254,9 @@ fn run() -> Result<(), String> {
     }
     let _ = std::fs::remove_file(&marker);
     kanna_crash::install("daemon", state_dir.clone());
-    let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
+    let mut record = build.record(app_bundle().as_deref());
+    record["daemon"] = json!(std::env::current_exe().ok());
+    let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{record:#}\n"));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
     unsafe {
@@ -259,7 +266,15 @@ fn run() -> Result<(), String> {
     }
 
     let (events, mut inbox) = runtime::channel();
+    let retired = instance_move::settle(&state_dir, &socket);
+    let socket = kanna_build::own_socket(&given);
+    let socket_path = socket.to_string_lossy().into_owned();
     let db = Rc::new(db::Db::open(&state_dir).map_err(|error| format!("can't keep the records in {}: {error}", state_dir.display()))?);
+    if let Some(old) = &retired {
+        if let Err(error) = db.keep_from_moved(old) {
+            log!("kanna-daemon: couldn't keep the windows of {}: {error}", old.display());
+        }
+    }
     content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
     let core = Core::with_link(layout.clone());
@@ -358,6 +373,8 @@ fn run() -> Result<(), String> {
             other => messages::Channel::Other(other.to_string()),
         })
     }));
+    let (ages, run) = (Rc::downgrade(&detector), run_of.clone());
+    *tasks.age.borrow_mut() = Some(Box::new(move |pane| lifeline::age_of(ages.upgrade()?.program(&run(pane)?)?.pid)));
     let (modes, run) = (Rc::downgrade(&detector), run_of.clone());
     *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().zip(run(pane)).is_some_and(|(detector, terminal)| detector.line_mode(&terminal))));
     let (trees, run) = (Rc::downgrade(&detector), run_of.clone());
@@ -375,7 +392,7 @@ fn run() -> Result<(), String> {
     let warnings = Rc::downgrade(&toasts);
     *tasks.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
         let Some(toasts) = warnings.upgrade() else { return };
-        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
+        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")), from: None };
         if let Err(error) = toasts.raise(toast) {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
@@ -386,6 +403,17 @@ fn run() -> Result<(), String> {
     *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = closing.upgrade() {
             runs.task_closed(task);
+        }
+    }));
+    let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
+    *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = stopping.upgrade() {
+            runs.task_stopped(task);
+        }
+    }));
+    *tasks.on_start.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = starting.upgrade() {
+            runs.task_started(task);
         }
     }));
     let writers = {
@@ -427,6 +455,10 @@ fn run() -> Result<(), String> {
     accounts.on_broken(Box::new(move |account| {
         let _ = broken.send(Event::AccountBroken(account));
     }));
+    let unreadable = events.clone();
+    accounts.on_unreadable(Box::new(move |account| {
+        let _ = unreadable.send(Event::AccountUnreadable(account));
+    }));
     accounts.install(&core);
     if let Some(machines) = &machines {
         let withdrawing = Arc::downgrade(&accounts);
@@ -461,6 +493,23 @@ fn run() -> Result<(), String> {
         }));
     }
     tasks.join();
+    let moving = Rc::downgrade(&tasks);
+    let support = support_folder();
+    core.add_command(
+        "instance",
+        Rc::new(move |args, responder| {
+            let Some(tasks) = moving.upgrade() else { return responder.reply(Err(kanna_mux::KmuxError::new("app_gone", "the daemon is stopping"))) };
+            match args.get("action").and_then(Value::as_str) {
+                Some("move") => {
+                    let mut args = args;
+                    let to = args.get("to").and_then(Value::as_str).unwrap_or_default().to_string();
+                    args["folder"] = json!(instance_move::resolve(&to, &support));
+                    tasks.move_instance(&args, responder)
+                }
+                _ => responder.reply(Err(kanna_mux::KmuxError::new("bad_request", "instance needs an action: move"))),
+            }
+        }),
+    );
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
@@ -523,6 +572,7 @@ fn run() -> Result<(), String> {
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     tasks.repair_comment_targets();
+    tasks.settle_statuses();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -531,6 +581,38 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let closing = machines.as_ref().map(Rc::downgrade);
+    let (counting, stopping_terminals, moving_keeper, quitting, attached) = (Rc::downgrade(&terminals), Rc::downgrade(&terminals), Rc::downgrade(&keeper), Rc::downgrade(&app), Rc::downgrade(&app));
+    *tasks.move_hooks.borrow_mut() = Some(tasks::MoveHooks {
+        socket: socket.clone(),
+        terminals: Box::new(move || counting.upgrade().map_or(0, |t| t.running().len())),
+        close_endpoint: Box::new(move || {
+            if let Some(machines) = closing.as_ref().and_then(std::rc::Weak::upgrade) {
+                machines.close_from_loop();
+            }
+        }),
+        stop_terminals: Box::new(move || {
+            if let Some(terminals) = stopping_terminals.upgrade() {
+                terminals.shutdown();
+            }
+        }),
+        move_keeper: Box::new(move |dir| match moving_keeper.upgrade() {
+            Some(keeper) => keeper.move_to(dir).map_err(|e| format!("the keeper didn't move to {}: {e}", dir.display())),
+            None => Err("the keeper is gone".into()),
+        }),
+        quit_app: Box::new(move || {
+            if let Some(app) = quitting.upgrade() {
+                app.quit();
+            }
+        }),
+        app_attached: Box::new(move || attached.upgrade().is_some_and(|app| app.attached_here())),
+    });
+    let (shown, statuses) = (core.weak(), Rc::downgrade(&app));
+    *runs.on_status.borrow_mut() = Some(Box::new(move |pane| {
+        if let (Some(core), Some(app)) = (shown.upgrade(), statuses.upgrade()) {
+            app.status(pane, core.pane(pane).and_then(|p| p.status().map(String::from)).as_deref());
+        }
+    }));
     let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
@@ -619,16 +701,17 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
         Rc::new(move |args, responder| {
             if let Some(link) = screenshot.upgrade() {
-                screenshot::take(&link, args, responder);
+                screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
     );
     let front = link.clone();
-    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers()) {
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers_for(&args)) {
         Some(app) => app.forward("app.front", args, responder),
         None => responder.reply(Ok(Map::new())),
     }));
@@ -650,6 +733,9 @@ fn run() -> Result<(), String> {
                 }
                 return app.forward("desk", args, responder);
             };
+            if task.contains('@') {
+                return app.forward("desk", args, responder);
+            }
             tasks.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -779,7 +865,7 @@ fn run() -> Result<(), String> {
                     reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "stopping", "message": "this Kanna is stopping" } }))
                 }
                 Some("capabilities") => {
-                    let attached = app.answers();
+                    let attached = app.attached();
                     let build = build_id.clone();
                     core.handle(request, move |mut answer| {
                         if answer.get("ok") == Some(&Value::Bool(true)) {
@@ -808,7 +894,7 @@ fn run() -> Result<(), String> {
             Event::Status { terminal, serial, status, ended } => {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
-                    app.status(&pane, status);
+                    app.status(&pane, core.pane(&pane).and_then(|p| p.status().map(String::from)).as_deref());
                     tasks.status(&pane, status, ended);
                     runs.status(&pane, ended);
                 }
@@ -823,7 +909,7 @@ fn run() -> Result<(), String> {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     let refused = tasks.too_old(&pane, &why).or_else(|| runs.too_old(&pane, &why).then(|| "a run's stage".to_string()));
                     if let Some(name) = refused {
-                        let toast = toasts::Toast { title: format!("Kanna can't run {name}'s agent"), detail: Some(why), pane: Some(pane.clone()), task: None, key: Some(format!("too-old:{pane}")) };
+                        let toast = toasts::Toast { title: format!("Kanna can't run {name}'s agent"), detail: Some(why), pane: Some(pane.clone()), task: None, key: Some(format!("too-old:{pane}")), from: None };
                         if let Err(error) = toasts.raise(toast) {
                             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
                         }
@@ -941,6 +1027,16 @@ fn run() -> Result<(), String> {
                     log!("kanna-daemon: can't raise a toast for a broken account: {}", error.message);
                 }
             }
+            Event::AccountUnreadable(account) => {
+                let agent = match account["agent"].as_str() {
+                    Some("claude") => "Claude",
+                    _ => "Codex",
+                };
+                let toast = toasts::Toast { title: format!("{agent} started without your account"), detail: Some(format!("{}. It runs on this machine's own sign-in.", account["why"].as_str().unwrap_or("its secret couldn't be read"))), key: Some(format!("account-unreadable:{}", account["agent"].as_str().unwrap_or_default())), ..Default::default() };
+                if let Err(error) = toasts.raise(toast) {
+                    log!("kanna-daemon: can't raise a toast for an unreadable account: {}", error.message);
+                }
+            }
             Event::Replica { token, reply } => tasks.replied(token, reply),
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
@@ -986,7 +1082,8 @@ fn ended(terminals: &Terminals, tasks: &Rc<tasks::Tasks>, app: &AppLink, termina
     app.exited(terminal, code);
     if let Some(pane) = terminals.pane_of(terminal) {
         tasks.exited(&pane, code);
-        app.status(&pane, Some("exited"));
+        let waits = tasks.waits_on_you(&pane);
+        app.status(&pane, Some(if waits { "needs-you" } else { "exited" }));
     }
 }
 

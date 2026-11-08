@@ -72,7 +72,7 @@ A repo has one planner machine for the phone. It holds the chat, the quiz and St
 
 **Rules:**
 
-- **No interrupting.** A message waits for the turn's end like any other, and shows *Waiting for its turn to end*. A Stop button could end work you started at the Desk and can't see from here.
+- **No interrupting.** A message [reaches the agent](agent-messaging.md#2-delivery) like any other, and shows *Waiting for its turn to end* until it's delivered. An answer the planner gave before then counts: the chat doesn't nudge it for silence. A Stop button could end work you started at the Desk and can't see from here.
 - **Sent by the phone, delivered as `phone`:** `messages.from` is `phone`, the prompt reads `[message from phone] TEXT`, and its permission class is the recipient's, [as for a message from you](agent-messaging.md#2-delivery).
 - **Once:** `chat.send` carries the phone's UUID, and a repeat is answered with the same item.
 - **Receipts** are the phone's item against `messages.delivered`: *Read* means the agent took it.

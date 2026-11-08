@@ -16,13 +16,17 @@ final class FixtureBackend: Backend {
     private let writerSeconds: Double?
     private let emptyQuiz: Bool
     private let writerFails: Bool
+    private var unseen: Set<String> = []
+    private let slowDial = UserDefaults.standard.bool(forKey: "slowDial")
     private var missed = false
     private var written = 0
+    private var paths: [LinkPath]
 
     private static let machine = Paired(name: "iphone-fix1", machine: "studio", key: "fixture", addrs: [])
 
-    init(paired: Bool, planner: String) {
+    init(paired: Bool, planner: String, paths: String? = nil) {
         self.paired = paired ? Self.machine : nil
+        self.paths = (paths ?? "").split(separator: ",").compactMap { ["lan": LinkPath.lan, "net": .net, "relay": .relay][String($0)] }
         self.paired?.known = Self.names.map(Self.reach)
         busy = planner == "busy"
         statuses = ["kanna": planner == "busy" ? "elsewhere" : "idle", "kmux": "not_running"]
@@ -34,6 +38,7 @@ final class FixtureBackend: Backend {
         if planner == "away" {
             ups["studio"] = false
             ups["tests-1"] = true
+            if defaults.bool(forKey: "plannerWakes") { unseen = ["studio"] }
         }
     }
 
@@ -56,6 +61,7 @@ final class FixtureBackend: Backend {
     }
 
     func connect(to machine: Reach?) async throws -> Hello {
+        if down, slowDial { try? await Task.sleep(for: .seconds(4)) }
         if down { throw Refused(code: "unreachable", message: "down") }
         let name = machine?.name ?? "studio"
         guard ups[name] == true else { throw Refused(code: "unreachable", message: "Can't reach \(name)") }
@@ -66,10 +72,15 @@ final class FixtureBackend: Backend {
 
     func hello() async throws -> Hello { helloNow() }
 
+    func reaches(_ machine: Reach) async -> Bool {
+        if unseen.contains(machine.name) { ups[machine.name] = true }
+        return !down && ups[machine.name] == true
+    }
+
     func machines(repo: String) async throws -> MachinesPage {
         let has: Set<String> = repo == "kanna" ? ["studio", "mbp", "dev-1", "tests-1"] : ["studio", "dev-1"]
         func one(_ name: String, os: String, arch: String, cores: Int, ms: Double, path: String, lan: Bool) -> MachineInfo {
-            let up = ups[name] == true
+            let up = ups[name] == true && !unseen.contains(name)
             let me = name == linked
             return MachineInfo(name: name, key: "key-\(name)", me: me, os: os, arch: arch, cores: cores, version: "4.2.0", has: has.contains(name), planner: planners[repo] == name, up: up, path: up && !me ? path : nil, lan: lan, ms: up && !me ? ms : nil, since: up ? Date().timeIntervalSince1970 - 3600 : nil, seen: Date().timeIntervalSince1970 - 2400)
         }
@@ -225,7 +236,7 @@ final class FixtureBackend: Backend {
         task("Fix the page_comments pinch", "idle", desk: "mbp", machine: "mbp", ago: 180, message: "A pinch over a comment shouldn't zoom the page's comments away."),
         task("Shelf trailing edge", "working", desk: "mbp", machine: "mbp", ago: 1, message: "The Shelf's last row is cut off at some widths."),
         task("Polish project search", "working", machine: "studio", ago: 4, branch: "project-search", message: "Rank a project's exact name above a fuzzy match."),
-        task("Agent prompts setting", "ready", machine: "dev-1", after: "Task events", message: "Let a project set the prompts its agents start with."),
+        task("Agent prompts setting", "idle", machine: "dev-1", after: "Task events", message: "Let a project set the prompts its agents start with."),
         task("Pane titles in tooltips", "stale", machine: "dev-1", after: "Restore task tabs", message: "Show a pane's whole title in its tab's tooltip."),
         task("Document reconnect behavior", "stopped", machine: "dev-1", ago: 1500, message: "Write down what the app does while the daemon restarts."),
         task("Native diff viewer", "waiting", message: "Show a task's branch diff in a tab, side by side, with comments like doc markup."),
@@ -429,10 +440,17 @@ final class FixtureBackend: Backend {
 
     func close() {}
 
+    func networkChanged() {}
+    func askLocalNetwork() {}
+
     func forget() { paired = nil }
 
     func link() async -> Link {
         if down { return Link(path: .off, milliseconds: 0) }
+        if let path = paths.first {
+            if paths.count > 1 { paths.removeFirst() }
+            return Link(path: path, milliseconds: path == .lan ? 9 : path == .net ? 41 : 184)
+        }
         return Link(path: linked == "dev-1" ? .relay : .lan, milliseconds: linked == "dev-1" ? 184 : 9)
     }
 

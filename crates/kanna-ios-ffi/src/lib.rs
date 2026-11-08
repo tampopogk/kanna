@@ -163,6 +163,14 @@ pub extern "C" fn kanna_phone_path(key: *const c_char) -> *mut c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn kanna_phone_network_changed() {
+    let client = phone().client.clone();
+    if let (Some(client), Ok(runtime)) = (client, runtime()) {
+        runtime.block_on(client.network_changed());
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn kanna_phone_highlight(file: *const c_char, source: *const c_char) -> *mut c_char {
     let (file, source) = (text(file).unwrap_or_default(), text(source).unwrap_or_default());
     let first = source.lines().next().unwrap_or_default();

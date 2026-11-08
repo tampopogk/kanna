@@ -41,12 +41,13 @@ sequenceDiagram
 
 | Step | JSON-RPC over a WebSocket on the socket |
 |---|---|
-| Hello | `initialize`, then `initialized` |
+| Hello | `initialize` with `experimentalApi`, then `initialized` |
 | Find the session | `thread/loaded/list`, then `thread/read` each: the one that isn't `ephemeral` (Codex also loads a thread to title the session) |
-| Deliver | `turn/start` with the message as text input |
+| Deliver | `thread/queue/add` with the message as text input; `turn/start` at its prompt if Codex refuses the queue |
+| Follow | `thread/queue/list`, every 2s while a message is queued; `thread/queue/start` when it's stuck after Esc |
 
 - **Kanna finds the socket** from the arguments of the pane's Codex: the `--remote unix://SOCKET` its TUI was started with.
-- **Only at its prompt:** Kanna starts the turn once the agent is idle, as for any message.
+- **Queued at any time:** on a busy Codex, `turn/start` [drops the answer it's streaming](agent-messaging.md#2-delivery), and the queue doesn't.
 
 ## 3. Costs
 
@@ -64,4 +65,4 @@ sequenceDiagram
 |---|---|
 | **App-server** | Codex's JSON-RPC server: it runs sessions, and TUIs and other clients attach to it |
 | **Helper** | `kanna-daemon --codex-remote`: starts the server, runs the TUI attached to it, stops the server after. On SIGHUP (its terminal closed), SIGTERM or SIGINT it sends both SIGTERM, SIGKILLs whichever is left after 5 s, and exits, so no server outlives its terminal. A signal thread waits for those signals (retrying `sigwait` if it fails) and ends the helper with `_exit`, so it never runs `exit` alongside the main thread |
-| **Session thread** | The thread a Codex session runs in; `turn/start` on it is a new prompt |
+| **Session thread** | The thread a Codex session runs in; a queued message runs on it as a new prompt |
