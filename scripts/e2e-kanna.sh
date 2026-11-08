@@ -4261,7 +4261,7 @@ task_restart_no_conversation() {
   check wait_for 5 shows Wizard "--session-id" || { echo "task_restart_no_conversation: restart didn't start it fresh"; kanna read Wizard; return 1; }
   rm "$wizard"
   kanna task stop Wizard >/dev/null && check wait_for 5 is Wizard state exited || { echo "task_restart_no_conversation: Wizard didn't stop"; return 1; }
-  kanna task start Wizard >/dev/null && check wait_for 5 shows Wizard "echo: " || { echo "task_restart_no_conversation: starting it again didn't give the first message"; kanna read Wizard; return 1; }
+  kanna task start Wizard >/dev/null && check wait_for 5 shows Wizard "SAID" || { echo "task_restart_no_conversation: starting it again didn't give the first message"; kanna read Wizard; return 1; }
   kanna read Wizard | grep -q -- "--session-id" || { echo "task_restart_no_conversation: task start didn't start it fresh"; kanna read Wizard; return 1; }
   kanna restart Wizard >/dev/null
   check wait_for 5 shows Wizard "--resume" || { echo "task_restart_no_conversation: with a conversation, restart didn't resume"; kanna read Wizard; return 1; }
