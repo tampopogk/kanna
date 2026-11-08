@@ -1,6 +1,6 @@
 # Remote Terminals
 
-**Status:** built, measuring · **Part of:** [your machines §7](machines.md#7-terminals-and-panes) · **Slice:** [build order, slice 8](machines-build-order.md#your-machines) · **Builds on:** [app link](app-link.md), [one link per machine](machine-links.md) · **Model:** [fleet-net](../../references/prototypes/fleet-net/README.md)
+**Status:** built, measured, relay deployed · **Part of:** [your machines §7](machines.md#7-terminals-and-panes) · **Slice:** [build order, slice 8](machines-build-order.md#your-machines) · **Builds on:** [app link](app-link.md), [one link per machine](machine-links.md) · **Model:** [fleet-net](../../references/prototypes/fleet-net/README.md)
 
 A terminal on another machine keeps the app link's byte stream: a snapshot, then output. What slice 8 changes are the units: an attach sends the screen and a page of scrollback instead of up to 10 MB, a reconnect sends only the bytes the app missed, and your own relay carries the link when you're away. The echo-delay table below decides whether Kanna needs mosh-style local echo.
 
@@ -58,7 +58,7 @@ sequenceDiagram
 - **Peers are dialed with the relay set now and the one in their peer-log entry,** so moving every machine to a new relay works without pairing again.
 - **The app's endpoint** gets the relay from the local daemon's peer list and adds it before dialing; port tunnels use it too.
 - **Only your machines use it:** the relay admits clients that present its shared token (iroh-relay's `access.shared_token`), a 256-bit secret, rather than a list of keys that would need editing for every machine and app. A relay forwards only ciphertext and can't add a device; the token keeps strangers from using its bandwidth.
-- **The token is local:** it's kept with the relay setting in kanna.db and sent to the relay by the daemon's endpoint, the app's and every tunnel. It never goes in the peer log; `kanna machine list` says only whether one is set; the app asks for it with `machine.relay_token`, which the daemon answers only on its own socket, never on a remote app's link or for `kanna --host`.
+- **The token is local:** it's kept with the relay setting in kanna.db and sent to the relay by the daemon's endpoint, the app's and every tunnel. It never goes in the peer log; `kanna machine list` says only whether one is set; the app asks for it with `machine.relay_token`, which the daemon answers only on its own socket, never on a remote app's link or for `kanna --host`. A phone is the one exception: it gets the token sealed at pairing and in its `hello` ([phone link §1](mobile-link.md#1-a-phone-in-the-peer-log)).
 
 **Setting one up:** `sudo scripts/machines/relay-setup.sh --cert FILE --key FILE` on any Linux server with a stable address and a TLS certificate:
 
@@ -73,9 +73,27 @@ sequenceDiagram
 
 **Yours:** `https://relay.kanna.build:8444` on the GCP e2-micro `kanna-relay-vm` (project `kanna-build`, us-central1-a), using Caddy's Let's Encrypt certificate for relay.kanna.build; firewall rule `kanna-iroh-relay` opens TCP 8444 and UDP 7843 to the instance's `kanna-relay` tag. The model's relay (`fleet-net-relay`, 8443/7842, allowlisted to the model's two keys) is untouched beside it. The token is read with `sudo cat /etc/kanna-relay/token` there; each machine then runs `kanna machine relay https://relay.kanna.build:8444 --token-file FILE`.
 
+| Instance | Relay since 6 November 2026 | Checked |
+|---|---|---|
+| MacBook Pro, `kanna-prod` and `kanna-dev` | yes | connected; `kanna machine ping` to the Mac Studio relayed, 338 ms, every stream kind |
+| Mac Studio, `kanna-prod` | yes | connected; ping back relayed, 336 ms, every stream kind |
+| r720-1 | no | its Kanna isn't paired with these; only private test daemons used the relay from it |
+
+**Caddy stays for the certificate.** Kanna v2's relay, the container that Caddy fronted, was removed on 6 November 2026, so `https://relay.kanna.build/` answers 502. Caddy still renews the certificate this relay reads, and needs firewall rule `kanna-relay-allow-web` (TCP 80 and 443) for that. Removing either stops renewal; the certificate in use runs to 6 January 2027. `docker compose up` in `/opt/kanna-relay` would bring v2's relay back, from the image still in Artifact Registry.
+
+**The e2-micro's limits:**
+
+| | Published or configured | Measured, three flooded runs |
+|---|---|---|
+| CPU | 2 vCPUs at 12.5% each, bursting for about 30 s at 100% | 2% of the VM busy, the relay under 2% of one core, steal at most 0.3% |
+| Memory | 969 MiB in total, no swap; 256 MB cap on the unit | relay 6 MB, 435 MiB available on the VM |
+| Network | up to 1 Gbps egress | 1.7 Mbps each way, set by the terminal's flow control |
+
+Nothing here reached a limit. Scaling that CPU cost linearly, the sustained 25% of a vCPU would carry about 20 Mbps each way, which is an estimate, not a measurement, and in line with the 14–20 Mbps the model measured relayed. The limit you feel is distance: Iowa adds about 320 ms.
+
 ## 4. Echo delay
 
-**Method:** `crates/kanna-net/examples/terminal-echo.rs`, run by `scripts/machines/terminal-echo.sh DIR LABEL [--remote HOST [--lan-proxy]] [--relay URL [--relay-token-file FILE] [--relay-only]]`. Two private daemons are paired; the tool is an app-link client certified by the first and dials the second over kanna-net, like Kanna.app. On a `cat` terminal it sends one key and times until that key comes back as `output`: keystroke → link → pty → the daemon's screen → link. Ten warm-ups, then 100 samples 10 ms apart, idle and while another terminal on the same link floods output (`seq` in a loop). The link round trip is a `capabilities` request. The app's drawing is the same on every path and isn't in these numbers (at most a frame, 8 ms at 120 Hz). Raw reports: `references/measurements/remote-terminals/`.
+**Method:** `crates/kanna-net/examples/terminal-echo.rs`, run by `scripts/machines/terminal-echo.sh DIR LABEL [--remote HOST [--lan-proxy]] [--relay URL [--relay-token-file FILE] [--relay-only]]`. Two private daemons are paired; the tool is an app-link client certified by the first and dials the second over kanna-net, like Kanna.app. On a `cat` terminal it sends one key and times until that key comes back as `output`: keystroke → link → pty → the daemon's screen → link. Ten warm-ups, then 100 samples 10 ms apart, idle and while another terminal on the same link floods output (`seq` in a loop). Like the app, the tool answers every `output` with `taken`, and a read that waits 45 s fails the run. The link round trip is a `capabilities` request. The app's drawing is the same on every path and isn't in these numbers (at most a frame, 8 ms at 120 Hz). Raw reports: `references/measurements/remote-terminals/`. DIR needs a short path: the daemons' sockets live under it.
 
 **Rig, 2 November 2026:** the M5 MacBook Pro on Wi-Fi; r720-1 (Ubuntu 26.04.1, x86_64, 172.16.0.11) on the same LAN, running this branch's Linux build in a private daemon beside its own; the relay in Iowa, measured from Japan. macOS Local Network privacy refuses LAN sends from a binary built in an agent's shell ("No route to host"), so LAN runs 1 and 3 went through a python UDP forwarder on loopback (`--lan-proxy`); run 2's iroh found the direct LAN address. Relayed runs are relay-only on the Mac's side (no IP transports), the floor for when hole punching fails.
 
@@ -83,7 +101,10 @@ sequenceDiagram
 |---|---:|---:|---:|---:|---:|---:|
 | Loopback (this Mac, 1 run) | 0.4 / 1.5 | 0.5 / 1.9 | 0.5 / 1.7 | 169 KB, 21 ms | 19 KB, 14 ms | 121 B, 0.6 ms |
 | LAN, MBP → r720-1 | 4.7–21.6 / 25–127 | 5.3–5.5 / 24–30 | 6.5–7.5 / 32–40 | 162 KB, 23–58 ms | 23 KB, 17–19 ms | 121 B, 4–5 ms |
-| Relayed, your relay (Iowa) | 313–323 / 338–399 | 313–321 / 343–349 | 678–1102 / 3887–4288 | 162 KB, 821–998 ms | 23 KB, 334–359 ms | 121 B, 318–341 ms |
+| Relayed, your relay (Iowa), 6 November | 319–330 / 339–358 | 319–331 / 339–358 | 521–558 / 550–625 | 162 KB, 853–874 ms | 23 KB, 381–386 ms | 121 B, 320–337 ms |
+| Relayed, 2 November, tool without `taken` | 313–323 / 338–399 | 313–321 / 343–349 | 678–1102 / 3887–4288 | 162 KB, 821–998 ms | 23 KB, 334–359 ms | 121 B, 318–341 ms |
+
+**Rig, 6 November 2026:** as above, with relay-only runs `relay-4` to `relay-6` from `main` at 99abfbaf, and the path checked as `relay` on each. The loopback and LAN rows are still 2 November's, so their flood columns come from the tool without `taken`.
 
 The full attach is `seq 1 200000` (1.5 MB written); the reconnect is after 36 bytes typed while detached. The model's transport-only echo on the same machines was 5.4–7.9 ms p50 on the LAN and 332–340 ms p50 relayed, and 39–40 ms p50 direct from away after hole punching ([fleet-net](../../references/prototypes/fleet-net/README.md#results-and-slice-contract)).
 
@@ -92,15 +113,15 @@ The full attach is `seq 1 200000` (1.5 MB written); the reconnect is after 36 by
 - **The terminal adds nothing measurable** over the transport: echo idle equals the link round trip on every path, and both match the model's transport echo. The pty, the daemon's screen and the JSON lines cost under a millisecond.
 - **Bounded snapshots and offsets work over distance:** relayed, a reconnect costs one round trip and 121 bytes instead of a snapshot, and an attach sends 23 KB instead of 162 KB here (10 MB on a full scrollback).
 - **The relay's idle round trip is distance:** ~320 ms is Japan to Iowa and back twice through the relay. A relay in the user's region (GCP asia-northeast1, Tokyo) would cut it to roughly the 40 ms the model measured direct from away.
-- **Under load, keystrokes wait behind output.** While another terminal floods, relayed echo is p50 0.7–1.1 s and p95 3.9–4.3 s: the flood fills the path's buffers (relayed throughput was 14–20 Mbps in the model) and a keystroke's echo queues behind up to 16 MiB of output on the same control stream before the daemon gives up and resnapshots. On the LAN the same flood costs 1–2 ms.
+- **Under load, a keystroke waits about 200 ms more.** While another terminal floods, relayed echo is p50 0.52–0.56 s and p95 0.55–0.63 s: `taken` allows each terminal one 64 KiB chunk per round trip, so little queues ahead of the keystroke. The 2 November runs, whose tool never sent `taken`, showed p95 of 3.9–4.3 s.
+- **That flow control sets a terminal's relayed speed:** 64 KiB per 320 ms is the 1.7 Mbps measured, so a flooding program's output arrives far slower than it is written.
 
 ## 5. Local echo
 
 **Recommendation: don't build mosh-style local echo now.** Ask before building it.
 
 - **On the paths you use it isn't needed:** LAN echo is 5 ms; direct from away (hole punching, the usual case) the model measured 40 ms, under the ~100 ms where typing starts to feel late.
-- **Where it would help, the cause is elsewhere:** relayed idle echo (320 ms) is the relay's distance, fixed by putting your relay near you; relayed echo under load (seconds) is a queue, which prediction would only paint over, since a full-screen program's echo can't be predicted and the screen would still lag.
+- **Where it would help, the cause is elsewhere:** relayed idle echo (320 ms) is the relay's distance, fixed by putting your relay near you; relayed echo under load (0.5 s) is mostly that same distance, and prediction couldn't help a full-screen program, whose echo can't be predicted.
 - **What to build instead, in this order:**
   1. **Your relay near you:** a second `relay-setup.sh` on a small VM in asia-northeast1, and `kanna machine relay` pointing at it. No code.
-  2. **Bounded output on remote links:** keep a remote link's unsent output to about one bandwidth-delay product (a few hundred KB, not 16 MiB) and, past it, send the screen instead of the bytes, as mosh's state sync does and as the daemon already does at 16 MiB. A keystroke then waits behind at most one screen. This is the part of mosh that matters here, and it's a daemon change only.
-  3. **Then measure again;** local echo only if relayed use turns out common and still feels slow.
+  2. **Then measure again;** local echo only if relayed use turns out common and still feels slow.

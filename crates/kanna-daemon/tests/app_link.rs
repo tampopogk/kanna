@@ -111,7 +111,7 @@ fn a_replica_misses_nothing_and_repeats_nothing() {
         }
         done = replica.text(Lines::Screen).contains("DONE");
     }
-    let daemon = instance.call("read", json!({"pane": pane, "lines": 2000}))["text"].as_str().unwrap().to_string();
+    let daemon = instance.call("read", json!({"pane": instance.pane_of(&pane), "lines": 2000}))["text"].as_str().unwrap().to_string();
     assert_eq!(replica.text(Lines::Last(2000)), daemon);
     assert!(daemon.ends_with("199999\n200000\nDONE"), "{}", &daemon[daemon.len() - 40..]);
 }
@@ -171,7 +171,7 @@ fn a_reconnect_from_an_offset_replays_only_the_gap() {
     }
     drop(app);
 
-    instance.call("send", json!({"pane": pane, "text": "while away"}));
+    instance.call("send", json!({"pane": instance.pane_of(&pane), "text": "while away"}));
     wait_for("the input while away", || instance.screen(&pane).matches("while away").count() == 2);
 
     let mut app = instance.app();
@@ -184,7 +184,7 @@ fn a_reconnect_from_an_offset_replays_only_the_gap() {
     while !replica.text(Lines::Screen).contains("after\nafter") {
         apply(&mut replica, &app.until("the echo", |m| m["args"]["terminal"] == pane.as_str()));
     }
-    let daemon = instance.call("read", json!({"pane": pane, "lines": 30}))["text"].as_str().unwrap().to_string();
+    let daemon = instance.call("read", json!({"pane": instance.pane_of(&pane), "lines": 30}))["text"].as_str().unwrap().to_string();
     assert_eq!(replica.text(Lines::Last(30)), daemon);
     drop(app);
 
@@ -216,7 +216,7 @@ fn a_snapshot_mid_sequence_waits_for_more_output() {
         assert!(!is(&message, "snapshot", &pane) && !is(&message, "output", &pane), "sent mid-sequence: {message}");
     }
     app.stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    instance.call("send", json!({"pane": pane, "text": "go"}));
+    instance.call("send", json!({"pane": instance.pane_of(&pane), "text": "go"}));
     let snapshot = app.until("the snapshot", |m| m["args"]["terminal"] == pane.as_str());
     assert_eq!(snapshot["cmd"], "snapshot", "{snapshot}");
     let replica = Terminal::from_snapshot(&data(&snapshot)).unwrap();
@@ -272,7 +272,7 @@ fn exited_comes_after_the_last_output() {
         let screen = replica.expect("no snapshot").text(Lines::Screen);
         assert!(screen.ends_with("END"), "round {round}: exited came before the last output (the screen ends {:?})", &screen[screen.len().saturating_sub(20)..]);
         drop(app);
-        instance.call("close", json!({"pane": pane}));
+        instance.call("close", json!({"pane": instance.pane_of(&pane)}));
     }
 }
 
@@ -326,7 +326,7 @@ fn pixel_sizes_reach_the_pty() {
     app.tell("resize", json!({"terminal": pane, "cols": 90, "rows": 30, "width": 1800, "height": 1200}));
     app.until("the grid", |m| is(m, "grid", &pane));
     let probe = "python3 -c 'import fcntl,termios,struct;print(\"size\",*struct.unpack(\"HHHH\",fcntl.ioctl(0,termios.TIOCGWINSZ,bytes(8))))'";
-    instance.call("send", json!({"pane": pane, "text": probe}));
+    instance.call("send", json!({"pane": instance.pane_of(&pane), "text": probe}));
     wait_for("the probe", || instance.screen(&pane).contains("size "));
     let screen = instance.screen(&pane);
     assert!(screen.contains("size 30 90 1800 1200"), "{screen}");
@@ -341,7 +341,7 @@ fn a_closed_pane_lets_go_of_its_pty() {
     wait_for("the orphan", || std::fs::read_to_string(&pidfile).is_ok_and(|p| !p.is_empty()));
     let orphan: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
     assert!(instance.ptys_open() > 0);
-    instance.call("close", json!({"pane": pane}));
+    instance.call("close", json!({"pane": instance.pane_of(&pane)}));
     let deadline = Instant::now() + Duration::from_secs(5);
     while instance.ptys_open() > 0 && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
@@ -376,7 +376,7 @@ fn output_inside_an_open_sequence_leaves_the_daemon_responsive() {
 fn an_attach_that_comes_before_the_terminal_starts_gets_its_output() {
     let instance = Instance::start();
     let mut app = instance.app();
-    app.tell("attach", json!({"terminal": "term-1"}));
+    app.tell("attach", json!({"terminal": "pty-1"}));
     let socket = instance.socket();
     let opening = std::thread::spawn(move || common::call(&socket, "open", json!({"type": "term", "name": "early", "cmd": "sleep 0.5; echo EARLY-READY; exec cat"})));
     let mut seen = Vec::new();
@@ -384,7 +384,7 @@ fn an_attach_that_comes_before_the_terminal_starts_gets_its_output() {
         let Some(m) = app.next() else {
             panic!("no output; open answered {:?}; log:\n{}", opening.join().ok(), instance.log());
         };
-        if is(&m, "output", "term-1") {
+        if is(&m, "output", "pty-1") {
             seen.extend(data(&m));
         }
     }

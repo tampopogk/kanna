@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 const WARMUP: usize = 10;
 
 const GAP: Duration = Duration::from_millis(10);
+const READ_LIMIT: Duration = Duration::from_secs(45);
 
 struct Args {
     socket: String,
@@ -58,10 +59,14 @@ impl Link {
 
     fn line(&mut self) -> (Value, usize) {
         let mut text = String::new();
-        let n = self.reader.read_line(&mut text).unwrap();
+        let n = self.reader.read_line(&mut text).unwrap_or_else(|e| panic!("no message from the link: {e}"));
         assert!(n > 0, "the link closed");
         self.received += n as u64;
-        (serde_json::from_str(&text).unwrap(), n)
+        let message: Value = serde_json::from_str(&text).unwrap();
+        if message["cmd"] == "output" {
+            self.send(json!({ "cmd": "taken", "args": { "terminal": message["args"]["terminal"] } }));
+        }
+        (message, n)
     }
 
     fn until(&mut self, mut wanted: impl FnMut(&Value) -> bool) -> (Value, usize) {
@@ -200,6 +205,7 @@ fn main() {
     let dialed = Instant::now();
     let relay = args.relay.as_deref().map(|url| Relay::new(url, args.relay_token.as_deref()).unwrap());
     let stream = runtime.block_on(client.link(&args.peer, &args.addrs, relay.as_ref(), &cert)).unwrap_or_else(|f| panic!("can't link: {}: {}", f.code, f.message));
+    stream.set_read_timeout(Some(READ_LIMIT)).unwrap();
     let reader = BufReader::new(stream.try_clone().unwrap());
     let mut link = Link { stream, reader, next: 0, received: 0 };
     link.send(json!({ "id": 0, "cmd": "app.hello", "args": { "client": "terminal-echo", "protocol": kanna_build::PROTOCOL } }));
@@ -208,20 +214,26 @@ fn main() {
     let linked_ms = dialed.elapsed().as_secs_f64() * 1000.0;
     let run = hello["daemon"]["run"].clone();
 
+    eprintln!("hello");
     let (echo_pane, terminal) = link.open("echo-bench", "cat");
     link.tell("attach", json!({ "terminal": terminal }));
     link.until(|m| is(m, "grid", &terminal));
+    eprintln!("attached");
     let rtt = round_trips(&mut link, args.samples);
+    eprintln!("round trips");
     let idle = echo(&mut link, &terminal, args.samples, b'k');
     let path_idle = client.path(&args.peer);
 
+    eprintln!("idle echo");
     let (flood_pane, flood) = link.open("flood-bench", "while :; do seq 1 2000; done");
     link.tell("attach", json!({ "terminal": flood }));
     let loaded = echo(&mut link, &terminal, args.samples, b'j');
+    eprintln!("loaded echo");
     link.call("close", json!({ "pane": flood_pane }));
 
     let (long_pane, long) = link.open("scrollback-bench", "seq 1 200000; exec cat");
     std::thread::sleep(Duration::from_secs(2));
+    eprintln!("scrollback");
     let full = attach(&mut link, &long, json!({}));
     link.tell("detach", json!({ "terminal": long }));
     let bounded = attach(&mut link, &long, json!({ "scrollback": 1000 }));
@@ -231,6 +243,7 @@ fn main() {
     let replayed = attach(&mut link, &long, json!({ "scrollback": 1000, "from": bounded["offset"], "run": run }));
     link.call("close", json!({ "pane": long_pane }));
     link.call("close", json!({ "pane": echo_pane }));
+    eprintln!("closed");
     let path = client.path(&args.peer);
 
     let report = json!({

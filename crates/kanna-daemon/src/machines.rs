@@ -58,6 +58,11 @@ impl Host for DaemonHost {
         Some(self.2.clone())
     }
 
+    fn phone(&self, from: String, _key: String, stream: std::os::unix::net::UnixStream) {
+        let events = self.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let _ = std::thread::Builder::new().name("kanna.phone.read".into()).spawn(move || crate::phone::serve(events, stream, from));
+    }
+
     fn job(&self, from: String, stream: std::os::unix::net::UnixStream) {
         let state_dir = self.3.clone();
         let _ = std::thread::Builder::new().name("kanna.build.relay".into()).spawn(move || crate::builds::relay(&state_dir, &from, stream));
@@ -79,6 +84,23 @@ impl Caller {
 
     pub fn status(&self) -> Value {
         self.node.status()
+    }
+
+    pub fn log(&self) -> Option<Value> {
+        self.node.log()
+    }
+
+    pub fn relay_token(&self) -> Option<String> {
+        self.node.relay_token()
+    }
+
+    pub fn phone_offer(&self) -> Result<Value, KmuxError> {
+        self.node.offer_phone().map_err(error)
+    }
+
+    pub fn phone_wait(&self, responder: Responder) {
+        let node = self.node.clone();
+        self.handle.spawn(async move { responder.reply(node.wait_phone().await.map_err(error).and_then(object)) });
     }
 
     pub fn call(&self, host: &str, cmd: &str, args: Value) -> Result<Value, KmuxError> {

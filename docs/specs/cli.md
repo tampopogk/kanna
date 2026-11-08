@@ -11,16 +11,17 @@
 3. [Reaching Kanna](#3-reaching-kanna)
 4. [With the app closed](#4-with-the-app-closed)
 5. [Output, errors and exit codes](#5-output-errors-and-exit-codes)
-6. [Checked by](#6-checked-by)
+6. [Where a command lives](#6-where-a-command-lives)
+7. [Checked by](#7-checked-by)
 
 ## 1. A port of kmux's CLI
 
-kmux's CLI is one table of commands (name, group, summary, usage, options, notes, examples, how its arguments become a request, how its reply prints); help, `commands --json`, parsing and output all come from it. `kanna` has the same table, ported into `crates/kanna/src/commands.rs` (with `output.rs`, and `lib.rs` for help, `commands`, `instances`, `raw` and errors; provenance in NOTICE), and `crates/kanna/tests/kmux_reference.rs` compiles kmux's own `commands.rs` and `output.rs`, unchanged, beside it and checks one against the other.
+kmux's CLI is one table of commands (name, group, summary, usage, options, notes, examples, how its arguments become a request, how its reply prints); help, `commands --json`, parsing and output all come from it. `kanna` has the same table, ported and spread by command ([where a command lives](#6-where-a-command-lives); provenance in NOTICE), and `crates/kanna/tests/kmux_reference.rs` compiles kmux's own `commands.rs` and `output.rs`, unchanged, beside it and checks one against the other.
 
 ```mermaid
 flowchart LR
     KSRC["kmux's CLI source<br/>commands.rs · output.rs<br/>(unchanged, references/kmux)"] -->|"compiled into"| REF["kmux_reference.rs<br/>(conformance test)"]
-    TABLE["kanna's command table<br/>crates/kanna/src/commands.rs"] --> REF
+    TABLE["kanna's command table<br/>crates/kanna/src/commands/"] --> REF
     TABLE --> HELP["help · commands --json"]
     TABLE --> PARSE["arguments → request"]
     TABLE --> OUT["reply → text"]
@@ -61,7 +62,7 @@ Decided; everything else is kmux's.
 | `task new\|start\|list\|pick\|shelve\|move\|activate\|park\|name\|done`; `open` with no placement from a task's terminal | — | makes Shelf tasks and starts them (the daemon's `tasks` command, the Shelf's: a worktree `.kanna-worktrees/NAME` on branch NAME, on an empty branch in a repo with no commits yet; a folder that isn't a git repo is refused, and the agent docked by the daemon), lists, moves to the Desk (`pick`) or back to the Shelf (`shelve`: its panes still running, off the Desk and the limit) or to another of your machines (`move`, [task transfer](task-transfer.md)), names or ends tasks; `activate` and `park` are relayed to the app, whose Desks they are ([each app's Desks](app-desk.md)); `done` is a `close` of the task's panes; `open` from a task's terminal opens a tab in its workspace, and from a terminal in a plain window splits beside that terminal, in its window, not the key window's focused pane; `park` with no task shows the Desk view of the caller's task's Desk, and `activate` makes a task active on the caller's Desk, else on a Desk on its project; `defer` and `pull` are hidden aliases of `shelve` and `activate` ([Desk view §3](desk-view.md#3-cli-verbs)); a fourth running task in one repo (a worktree counts as its main repo) is refused ([tasks](tasks.md), [Desk](desk.md)) | the Desk is Kanna's |
 | `window assign WINDOW TASK\|WORKSPACE`, `window free WINDOW`; replies to `open`, `focus`, `zoom`, `comment` and `move-tab` that name a workspace | `window assign WINDOW WORKSPACE` puts a window in a kmux workspace, which `workspace new\|hide\|show\|close` makes and moves; replies name it `ws-1's win-2 (hidden)` | `workspace` has only `list`, since tasks make, show and hide workspaces; `window` makes a window one of a task's, shown with the task and hidden, its panes running, while it isn't active or is on the Shelf, or frees it; a Desk, a window with a lead and a task not started are refused. A reply about a pane in a workspace names it, and its task and where it is: `opened term-5 in ws-3 (task-1dfb, on the Desk), tab-9` ([workspaces](workspaces.md)) | a task's work is presented together, and an agent should know where its pane went |
 | `open --dock [--frozen]`, `markup --dock` | docks the new pane in its window | refused with a usage error that says to make a task (`task new`, then `task pick` or `task start`); the daemon docks a task's agent itself, and a docked `open` that doesn't name the task it's starting is refused (`not_a_task`); `kmux_reference` lists the two options as kmux's own ([every task starts on the Shelf](tasks-start-on-the-shelf.md)) | every task starts on the Shelf, with a record and a creation time |
-| `schedule add\|list\|remove` | — | schedules that leave a task or the planner a message at set times, delivered at its turn's end as any message ([agent messaging](agent-messaging.md)); kept by the daemon in its database ([scheduler](scheduler.md)) | agents left open for days still get their morning prompts |
+| `schedule add\|list\|remove` | — | schedules that leave a task or the planner a message at set times, delivered as any message ([agent messaging](agent-messaging.md)); kept by the daemon in its database ([scheduler](scheduler.md)) | agents left open for days still get their morning prompts |
 | `move PANE --dock` | docks any pane | moves only the docked pane (to the other edge or another window) unless it's frozen, as every task's agent is, so in practice it's refused; any other pane is refused (`not_a_task`), and the three protocol cases that dock one are skipped by name | a docked pane is a running task, so docking one would start a task outside the Shelf and the limit ([tasks](tasks.md)) |
 | `move PANE --background` | — | puts a terminal of a task's workspace in that workspace's background: running, its task's, in no tab; `move PANE --tab` shows it again; `kmux_reference` lists the option as Kanna's own ([workspaces](workspaces.md#1-the-model)) | a run's stage terminals are the task's, shown only when you look |
 | Tab titles (`list`, `rename-tab`) | `Tab 1`, `Tab 2`, … | named after the pane each tab was made with (its name, file or page title) until renamed; `Tab N` only for an unnamed terminal ([tab names](tab-names.md)) | agents open most tabs, and a numbered tab says nothing about what it shows |
@@ -108,6 +109,18 @@ sequenceDiagram
     D->>C: ok
 ```
 
+### A task where a pane goes
+
+Every command that takes a pane (`read`, `screenshot`, `send`, `send-key`, `close`, `focus`, `zoom`, `restart`, `resize`, `rename-pane`, `navigate`, `status explain`, `move` and its `--to`, `markup PANE --to`) also takes a task, in any form `kanna task list` takes (`task-ac2b`, `ac2b`), and acts on its agent's pane. `lib.rs` runs `route::panes` over the fields a command's `Flow.panes` names, before `before`: for each that could be a task ID (`task-` and hex, or 4 to 8 hex digits) it asks the daemon `tasks locate`, which answers from the replicated Shelf with the task's pane here, or the machine that owns it. A task on another machine sends the whole command there, as `--host` does, with that machine's pane for it ([machines §5](machines.md#5-the-app-link-over-the-network)); naming panes of two machines in one command is refused. A pane ID (`term-21`) or a pane name is never looked up: it's this machine's (or `--host`'s). `kanna task` routes the same way in its `before` (`route::task`), for every action that names a task: the request goes to the task's machine with the task's full ID, the sender of `task send` is resolved here first (`tasks sender`) and goes as `sender`, `pick` names this machine's Desk (and takes the task off another app's Desk), and `activate` and `park` stay here with the pane as `term-5@vm`, which Kanna.app shows from its link to vm.
+
+| Situation | Says | Exit |
+|---|---|---|
+| The task's machine doesn't answer | `task-ac2b "Fix" runs on vm, which is unreachable: can't reach vm within 10s (…)` | 3 |
+| Its machine was revoked | `… runs on vm, which is unreachable: it isn't one of your machines any more` | 3 |
+| Any other error there | the remote daemon's own, starting `vm: ` | its own |
+| The task hasn't started | `task-ac2b "Fix" has no agent pane: it hasn't started (kanna task start ac2b)` | 4 |
+| `--host vm` with a task another machine runs | `… runs on mbp, not vm` | 4 |
+
 ## 4. With the app closed
 
 | Works | Needs the app (`no_app`: started, or exit 6 with `KANNA_SOCKET`) |
@@ -125,7 +138,7 @@ sequenceDiagram
 | 0 | Success |
 | 1 | The command failed (for example, the pane failed to start) |
 | 2 | Bad usage (unknown flag, invalid layout expression) |
-| 3 | The mux isn't running and couldn't be started (for Kanna: nothing answers, and Kanna.app couldn't be started or its daemon didn't answer within 20 s; or `KANNA_SOCKET` is set and nothing answers there) |
+| 3 | The mux isn't running and couldn't be started (for Kanna: nothing answers, and Kanna.app couldn't be started or its daemon didn't answer within 20 s; or `KANNA_SOCKET` is set and nothing answers there), or the machine running a task you named is unreachable |
 | 4 | Pane not found |
 | 5 | Not supported by this backend |
 | 6 | The command needs Kanna.app, which isn't attached and wasn't started (`KANNA_SOCKET` is set, or it didn't start or attach within 20 s) |
@@ -140,6 +153,45 @@ sequenceDiagram
 | `KANNA_SOCKET` is set and nothing answers there | Exits 3. kanna never starts an app for a socket it was pointed at. |
 | A command that needs Kanna.app and it isn't attached | kanna starts Kanna.app and retries; with `KANNA_SOCKET` set, exits 6 (`no_app`). |
 
-## 6. Checked by
+## 6. Where a command lives
 
-`crates/kanna/tests/kmux_reference.rs` (against kmux's source), the unit tests in `crates/kanna/src` (kmux's CLI tests, ported; target and instance resolution; the app started), `crates/kanna/tests/cli.rs` (every command through a real daemon with a test app answering through `LayoutOwner`, and without it; help, marks and `commands --json`; errors and exit codes; instances; the kmux backend), `crates/kanna/tests/no_launch.rs` (nothing starts with `KANNA_SOCKET`; a missing app is exit 3), `crates/kanna-daemon/tests/app_link.rs` (`debug.*` and `capabilities`), and `cli_commands` (every command against the real app), `cli_without_app`, `instances` and `screenshot` of `scripts/e2e-kanna.sh`.
+Every command is one file, `crates/kanna/src/commands/<command>.rs` (`send-key` is `send_key.rs`): its help, its parsing, how its reply prints, its own tests and anything only it uses. Adding or changing a command edits that file, so two tasks working on different commands don't meet.
+
+```mermaid
+flowchart LR
+    LIB["lib.rs<br/>main, run: the steps every command goes through"] --> TABLE["commands/mod.rs<br/>Command, Flow, COMMANDS"]
+    TABLE --> CMD["commands/&lt;command&gt;.rs<br/>COMMAND, parse, show, its Flow"]
+    CMD --> SHARED["commands/shared.rs<br/>Argv helpers, usage, git helpers, paths"]
+    CMD --> OUT["output.rs<br/>printers two or more commands use"]
+    classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
+    class LIB,TABLE,CMD,SHARED,OUT kmux
+```
+
+| File | Holds |
+|---|---|
+| `commands/<command>.rs` | `pub const COMMAND: Command`, the row of the table, with `parse`, `show` and whatever only this command uses |
+| `commands/mod.rs` | `Command`, `Flow`, `COMMANDS` (one line per command: the order help prints), lookup, and the tests that span commands (kmux's `requests`, `usage_errors_say_what_to_do`, every documented example parses) |
+| `commands/shared.rs` | what several commands' parsing uses: `usage`, `pane`, `target`, `caller`, `repo_here`, `absolute`, `file_line` |
+| `output.rs` | what several commands' printing uses: `join`, `label`, `state`, `whose`, `moved`, `tilde`, `ago`, `expression`, task ID shortening |
+| `commands/help.rs`, `config.rs`, `completions.rs`, `instances.rs`, `raw.rs`, `build.rs`, `guests.rs` | commands outside the table, which `lib.rs` or `main` calls by name |
+| `threads.rs`, `complete.rs`, `target.rs`, `args.rs`, `route.rs` | not one command's: comment threads, tab completion, reaching a Kanna, argument words, which machine a task's command goes to |
+
+Something moves to `shared.rs` or `output.rs` when a second command needs it, and back when only one does.
+
+**`run` has no branch on a command's name.** A command that does more than send its request and print the reply says so in its row's `flow`, which `lib.rs` runs in this order. Each is optional; `Flow::PLAIN` is none of them.
+
+| `Flow` field | When | Used by |
+|---|---|---|
+| `offline` | before connecting; returning a result ends the command | `workspace`'s refusal, `diagrams`, `pipeline`, `accounts` sign-in, `markup`'s thread actions |
+| `unplaced` | before connecting: what to add when run outside a Kanna terminal | `open`, `markup`, `comment`, `arrange`, `screenshot` |
+| `online` | connected; returning a result ends the command | `serial`, `machine offer`, `agents` setup, `comment` on a doc |
+| `wire` | which control-protocol command the request is sent as, when it isn't the command's name | `task`, `markup`, `workspace` |
+| `panes` | before `before`: the request's fields that name a pane, where a task may stand for its agent's pane, here or on its machine (`route.rs`) | `read`, `screenshot`, `send`, `send-key`, `close`, `focus`, `zoom`, `restart`, `resize`, `rename-pane`, `navigate`, `status`, `move`, `markup` |
+| `before` | before the request goes out; its `Call` carries through to `after` and the printing | `task` |
+| `after` | once the reply is in, before it prints | `task`, `workspace`, `open` |
+
+To add a command: write `commands/<command>.rs`, then add one `pub mod` line and one `COMMANDS` line in `commands/mod.rs`, and its completions in `complete.rs` if it takes more than the table says.
+
+## 7. Checked by
+
+`crates/kanna/tests/kmux_reference.rs` (against kmux's source), the unit tests in `crates/kanna/src` (kmux's CLI tests, ported; target and instance resolution; the app started), `crates/kanna/tests/cli.rs` (every command through a real daemon with a test app answering through `LayoutOwner`, and without it; help, marks and `commands --json`; errors and exit codes; instances; the kmux backend), `crates/kanna/tests/no_launch.rs` (nothing starts with `KANNA_SOCKET`; a missing app is exit 3), `crates/kanna/tests/machines_route.rs` (a task on another machine read, screenshot, messaged and stopped by its ID, and the unreachable error), `crates/kanna-daemon/tests/app_link.rs` (`debug.*` and `capabilities`), and `cli_commands` (every command against the real app), `cli_without_app`, `instances`, `screenshot` and `machine_task_by_id` of `scripts/e2e-kanna.sh`.
