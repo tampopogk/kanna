@@ -68,8 +68,8 @@ sequenceDiagram
     Note over C: prints the path (--json: the reply)
 ```
 
-- **The daemon passes it on** as it passes `debug.*`, with the pane's name turned into its ID (`crates/kanna-daemon/src/main.rs`); with no app attached it's `no_app`. The app always answers it, `KANNA_DEBUG` or not (`apps/kanna/Sources/Kanna/Screenshot.swift`).
-- **The daemon writes the file** from the PNG the app sends back (`crates/kanna-daemon/src/screenshot.rs`), so a shot of another machine's pane lands on that machine. A picture over 11 MiB is refused (`too_big`), so the reply fits the link's 16 MiB lines.
+- **The daemon passes it on** as it passes `debug.*`, with the pane's name turned into its ID (`crates/kanna-daemon/src/main.rs`), to the app showing the pane's workspace, on this machine or another ([remote workspaces](remote-workspaces.md#2-which-app-answers)); with no app attached it's `no_app`. The app always answers it, `KANNA_DEBUG` or not (`apps/kanna/Sources/Kanna/Screenshot.swift`).
+- **The daemon writes the file** from the PNG the app sends back (`crates/kanna-daemon/src/screenshot.rs`), so the file lands on the machine whose CLI asked for it. A picture over 11 MiB is refused (`too_big`), so the reply fits the link's 16 MiB lines.
 - **Capture is `CGWindowListCreateImage`**, looked up at run time: obsoleted in the macOS 15 SDK but still exported, and an app may capture its own windows without the screen-recording permission ScreenCaptureKit needs. It copies what the window server has.
 - **Occluded terminals are drawn first.** A window behind others (every `--bg` window, or one you've covered) is occluded, so its terminals are hidden from Ghostty, which stops drawing them: one resized while hidden (by a split) holds a frame never drawn, and comes out as blocks of colour. Before capturing, each such terminal is shown to Ghostty until its layer has a new frame (at most 1 s), and hidden again after.
 - **`debug.snapshot` shares the capture** (`Snapshot.swift`), for the tests: every pane of a window as its own PNG.
