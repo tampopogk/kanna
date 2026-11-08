@@ -3,7 +3,9 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo="tampopogk/kanna"
+feed_repo="tampopogk/kanna-web"
 release_env="$HOME/.kanna/.env.release.local"
+update_key="$HOME/.kanna/secrets/kanna-update-ed25519.key"
 archs=(arm64 x86_64)
 
 usage() { echo "usage: scripts/release.sh [--major|--minor|--patch | VERSION] [--staging] [--dry-run]" >&2; exit 2; }
@@ -63,9 +65,14 @@ xcrun notarytool history "${notary[@]}" >/dev/null 2>&1 ||
   fail "notarytool can't use profile \"$notary_profile\" in $notary_keychain: unlock that keychain, or save the credential again with xcrun notarytool store-credentials"
 echo "    notarizing with profile $notary_profile"
 
+[[ -f "$update_key" ]] || fail "the update key $update_key is missing: see docs/specs/auto-update.md#6-the-update-key"
+[[ "$(stat -f %Lp "$update_key")" == 600 ]] || fail "$update_key must be mode 600"
+[[ "$(swift "$repo_root/scripts/update-public-key.swift" "$update_key")" == "$KANNA_UPDATE_PUBLIC_KEY" ]] || fail "$update_key doesn't match KANNA_UPDATE_PUBLIC_KEY in scripts/env.sh"
+
 gh_status="$(gh auth status --active 2>&1)" || fail "gh can't reach GitHub as a signed-in account (run gh auth login if it isn't signed in):
 $(grep -v -i token <<<"$gh_status")"
 command -v claude >/dev/null || fail "the claude CLI isn't installed: it writes the release notes"
+[[ "$(gh api "repos/$feed_repo" --jq .permissions.push)" == true ]] || fail "this gh account can't push to $feed_repo, which holds the update feeds"
 
 release_tags() { git tag -l 'v*' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V; }
 last_tag="$(release_tags | tail -1)"
@@ -103,6 +110,11 @@ fi
 [[ "$(gh api "repos/$repo" --jq .full_name)" == "$repo" ]] || fail "$repo resolves to another repo"
 gh release view "$tag" --repo "$repo" >/dev/null 2>&1 && fail "$repo already has a release $tag"
 build_number="$(git rev-list --count HEAD)"
+for arch in "${archs[@]}"; do
+  feed="$(curl -fsSL "$KANNA_UPDATE_FEEDS/$channel-$arch.xml" 2>/dev/null || true)"
+  published="$(sed -n 's#.*<sparkle:version>\([0-9]*\)</sparkle:version>.*#\1#p' <<<"$feed" | head -1)"
+  [[ -z "$published" || "$build_number" -gt "$published" ]] || fail "build $build_number isn't above $channel-$arch's published build $published: Sparkle would never offer it"
+done
 echo "    $app_name $version (build $build_number) from ${last_tag:-the start} to $(git rev-parse --short HEAD)"
 
 dist="$repo_root/target/release-dmg/$tag"
@@ -152,15 +164,15 @@ for arch in "${archs[@]}"; do
     mkdir -p "$dist/dSYMs/$arch/$(dirname "$rel")"
     dsymutil "$binary" -o "$dist/dSYMs/$arch/$rel.dSYM"
     stripped="$(strip -S "$binary" 2>&1)" || fail "strip -S $binary failed: $stripped"
-    [[ "$(dsymutil -s "$binary" | grep -c N_OSO)" == 0 ]] || fail "$binary still has a debug map after strip -S"
+    [[ "$(dsymutil -s "$binary" | grep -Ec '^\[ *[0-9]+\] [0-9a-f]+ [0-9a-f]+ \(N_OSO ')" == 0 ]] || fail "$binary still has a debug map after strip -S"
   done
   zip="$dist/$dmg_prefix-$version-$arch-dSYMs.zip"
   ditto -c -k --norsrc --noextattr "$dist/dSYMs/$arch" "$zip"
   symbols+=("$zip")
 
   step "Sign $arch"
-  stray="$(find "$app/Contents" -type f ! -regex '.*/Contents/Helpers/[^/]*' ! -path "*/Contents/MacOS/Kanna" -exec sh -c 'file -b "$1" | grep -q Mach-O && echo "$1"' _ {} \;)"
-  [[ -z "$stray" ]] || fail "Mach-O files other than Contents/MacOS/Kanna and those directly in Contents/Helpers would go unsigned: $stray"
+  stray="$(find "$app/Contents" -type f ! -regex '.*/Contents/Helpers/[^/]*' ! -path "*/Contents/MacOS/Kanna" ! -path "*/Contents/Frameworks/Sparkle.framework/*" -exec sh -c 'file -b "$1" | grep -q Mach-O && echo "$1"' _ {} \;)"
+  [[ -z "$stray" ]] || fail "Mach-O files other than Contents/MacOS/Kanna, Sparkle.framework and those directly in Contents/Helpers would go unsigned: $stray"
   kanna_sign_app "$repo_root" "$app" "$sign_hash" --options runtime --timestamp || fail "signing $app failed"
   codesign --verify --strict --deep --verbose=2 "$app"
 
@@ -195,6 +207,23 @@ linux="$dist/$dmg_prefix-$version-linux-x86_64.tar.gz"
 [[ "$(tar -xzOf "$linux" kanna/release.json | jq -r .commit)" == "$head" ]] || fail "$(basename "$linux") isn't built from $head"
 dmgs+=("$linux")
 
+step "Update feeds"
+update_tools="$(dirname "$(find "$repo_root/target/" -path '*/artifacts/sparkle/Sparkle/bin/sign_update' -print -quit)")"
+[[ -x "$update_tools/sign_update" ]] || fail "the build left no Sparkle sign_update under target/"
+update_protocol="$(tar -xzOf "$linux" kanna/release.json | jq -r .protocol)"
+[[ "$update_protocol" =~ ^[0-9]+$ ]] || fail "$(basename "$linux") names no protocol"
+macos_target="$(kanna_macos_target "$repo_root")"
+mkdir -p "$dist/feeds"
+for arch in "${archs[@]}"; do
+  dmg="$dist/$dmg_prefix-$version-$arch.dmg"
+  signature="$("$update_tools/sign_update" --ed-key-file "$update_key" -p "$dmg")"
+  [[ -n "$signature" ]] || fail "sign_update gave no signature for $(basename "$dmg")"
+  "$repo_root/scripts/write-appcast.sh" --title "$app_name" --version "$version" --build "$build_number" --minimum "$macos_target.0" --protocol "$update_protocol" \
+    --url "https://github.com/$repo/releases/download/$tag/$(basename "$dmg")" --length "$(stat -f %z "$dmg")" --signature "$signature" >"$dist/feeds/$channel-$arch.xml"
+  "$update_tools/sign_update" --ed-key-file "$update_key" "$dist/feeds/$channel-$arch.xml"
+  "$update_tools/sign_update" --ed-key-file "$update_key" --verify "$dist/feeds/$channel-$arch.xml" || fail "$channel-$arch.xml didn't verify"
+done
+
 step "Release notes"
 if [[ -n "$last_tag" ]]; then range="$last_tag..HEAD"; else range="HEAD"; fi
 subjects="$(git log --merges --first-parent --pretty=format:'%s' "$range")"
@@ -216,11 +245,10 @@ echo "---"
 printf '%s\n' "$notes"
 echo "---"
 
-for dmg in "${dmgs[@]}" "${symbols[@]}"; do [[ "$(basename "$dmg")" != latest.json ]] || fail "refusing to publish an asset named latest.json"; done
-
 if $dry_run; then
   step "Dry run: built, signed, notarized and verified; nothing tagged, pushed or published"
   for dmg in "${dmgs[@]}" "${symbols[@]}"; do echo "    $dmg"; done
+  echo "    feeds: $dist/feeds"
   echo "    verification: $verify_output"
   exit 0
 fi
@@ -236,7 +264,8 @@ flags=(--repo "$repo" --verify-tag --title "Kanna $tag" --notes-file "$dist/note
 $staging && flags+=(--prerelease)
 gh release create "$tag" "${dmgs[@]}" "${symbols[@]}" "${flags[@]}" >/dev/null
 assets="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')"
-! grep -qx latest.json <<<"$assets" || fail "$tag has an asset named latest.json: delete it now, Kanna v2 installs read it"
 url="$(gh release view "$tag" --repo "$repo" --json url --jq .url)"
 step "Published $url"
 printf '%s\n' "$assets" | sed 's/^/    /'
+step "Publish the update feeds"
+"$repo_root/scripts/publish-appcast.sh" "$dist/feeds" "$build_number"

@@ -58,4 +58,4 @@ sequenceDiagram
 ## 5. Not yet
 
 - **`close`, `ack` and `adopt` still wait** for their reply. The keeper answers them at once, but a paused keeper holds them for up to the 10 s reply timeout, after which the daemon treats the keeper as lost and stops. `adopt` runs only at the daemon's start.
-- **No stop for a starting spawn:** the keeper refuses `close` of a pty still starting, so the daemon closes it once the reply comes. Every start has a new terminal ID, so a restart meanwhile doesn't collide with it.
+- **No stop for a starting spawn:** the keeper refuses `close` of a pty still starting, so the daemon closes it once the reply comes. Every start has a new pty ID, so a restart meanwhile doesn't collide with it.

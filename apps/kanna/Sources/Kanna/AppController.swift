@@ -60,6 +60,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var agentMenu: (pane: String, choices: [AgentChoice])?
     var starting: Set<String> = []
     let toasts = ToastStack()
+    var updates: Updates?
     var toastShowing: (pane: String, desk: String?)?
     var statsTimer: Timer?
 
@@ -204,12 +205,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             signalSources.append(source)
         }
         watchOwner()
+        if !echo, Updates.enabled { updates = Updates(self) }
         installMenu()
         if echo {
             render(["windows": [["id": "win-1", "tabs": [["id": "tab-1", "title": "Tab 1", "panes": ["term-1"]]], "tab": "tab-1", "title": "Tab 1",
                                                "focused": "term-1", "root": ["pane": "term-1", "type": "term"]]]])
         }
         daemon?.start()
+        updates?.start()
     }
 
     private func watchOwner() {
@@ -260,6 +263,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
+        link.onSchedules = { [weak self] in self?.schedulesChanged(on: machine) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
             self?.contents.update(pane)
@@ -326,6 +330,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.subscribeLogs(on: machine)
         contents.subscribeFiles(on: machine)
         contents.subscribeSerials(on: machine)
+        schedulesChanged(on: machine)
         loadRecent()
         layoutChanged()
         if machine == nil {
@@ -350,7 +355,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         views.removeValue(forKey: machine)
         shelves.removeValue(forKey: machine)
         deskMade.removeValue(forKey: machine)
-        shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
+        mergeShelves()
         published = merged()
         restate()
         layoutChanged()
@@ -358,6 +363,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func peersChanged() {
         refresh()
+        updates?.machinesChanged()
     }
 
     func claimName(_ machine: String?) -> String {
@@ -632,6 +638,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
             controller.machines = rows
+            controller.phones = phoneNames
             controller.stale = staleText(docked ?? lead)
             controller.headerTip = (docked ?? lead).map(placeText)
             controller.render(window, panes)
@@ -663,6 +670,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let frame = NSRect(x: x, y: y, width: w, height: h)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { controller.window.setFrame(frame, display: false) }
         }
+        controller.machinesPage.pair = { [weak self, weak controller] in self?.pairPhone(over: controller?.window) }
+        controller.machinesPage.revoke = { [weak self, weak controller] name in self?.revokePhone(name, over: controller?.window) }
         controller.onFrameChange = { [weak self] in
             self?.recordFrame(id)
         }
@@ -691,6 +700,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.page = page
             if page == WindowController.pages[1] { links?.refresh() }
             if page == WindowController.pages[2] { loadStats(controller) }
+            if page == WindowController.pages[3] { loadSchedules(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
