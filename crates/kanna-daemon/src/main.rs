@@ -10,6 +10,7 @@ mod agents;
 mod app_link;
 mod builds;
 mod guests;
+mod instance_move;
 mod tasks;
 mod db;
 mod desk_news;
@@ -89,7 +90,8 @@ running in the keeper; it saves them in that folder (terminals/), and the
 next daemon takes them back. With $KANNA_LISTEN_FD (Kanna.app sets it), it
 serves on that listening socket, which the app keeps, instead of binding one.
 
-  --uses-keeper   exits 0: this daemon gets its ptys from a keeper";
+  --uses-keeper   exits 0: this daemon gets its ptys from a keeper
+  --schema        prints the highest records version this daemon reads";
 
 const APP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -179,6 +181,7 @@ fn main() {
     match args.first().map(String::as_str) {
         None => {}
         Some("--uses-keeper") => std::process::exit(0),
+        Some(instance_move::SCHEMA_FLAG) => return println!("{}", db::version()),
         Some(codex_remote::FLAG) if args.len() >= 3 => std::process::exit(codex_remote::run(Path::new(&args[1]), &args[2], &args[3..])),
         Some(accounts::FLAG) if args.len() >= 3 => std::process::exit(accounts::run_with_account(Path::new(&args[1]), &args[2], &args[3..])),
         Some("-h" | "--help") => return println!("{USAGE}"),
@@ -251,7 +254,9 @@ fn run() -> Result<(), String> {
     }
     let _ = std::fs::remove_file(&marker);
     kanna_crash::install("daemon", state_dir.clone());
-    let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{:#}\n", build.record(app_bundle().as_deref())));
+    let mut record = build.record(app_bundle().as_deref());
+    record["daemon"] = json!(std::env::current_exe().ok());
+    let _ = std::fs::write(state_dir.join(kanna_build::RECORD), format!("{record:#}\n"));
 
     let stop_signals = signal_set(&[libc::SIGTERM, libc::SIGINT, libc::SIGHUP]);
     unsafe {
@@ -261,7 +266,13 @@ fn run() -> Result<(), String> {
     }
 
     let (events, mut inbox) = runtime::channel();
+    let retired = instance_move::settle(&state_dir);
     let db = Rc::new(db::Db::open(&state_dir));
+    if let Some(old) = &retired {
+        if let Err(error) = db.keep_from_moved(old) {
+            log!("kanna-daemon: couldn't keep the windows of {}: {error}", old.display());
+        }
+    }
     content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
     let core = Core::with_link(layout.clone());
@@ -469,6 +480,31 @@ fn run() -> Result<(), String> {
         }));
     }
     tasks.join();
+    if let Some(machines) = &machines {
+        let closing = Rc::downgrade(machines);
+        *tasks.close_endpoint.borrow_mut() = Some(Box::new(move || {
+            if let Some(machines) = closing.upgrade() {
+                machines.close_from_loop();
+            }
+        }));
+    }
+    let moving = Rc::downgrade(&tasks);
+    let support = support_folder();
+    core.add_command(
+        "instance",
+        Rc::new(move |args, responder| {
+            let Some(tasks) = moving.upgrade() else { return responder.reply(Err(kanna_mux::KmuxError::new("app_gone", "the daemon is stopping"))) };
+            match args.get("action").and_then(Value::as_str) {
+                Some("move") => {
+                    let mut args = args;
+                    let to = args.get("to").and_then(Value::as_str).unwrap_or_default().to_string();
+                    args["folder"] = json!(instance_move::resolve(&to, &support));
+                    tasks.move_instance(&args, responder)
+                }
+                _ => responder.reply(Err(kanna_mux::KmuxError::new("bad_request", "instance needs an action: move"))),
+            }
+        }),
+    );
     let agents = agents::Agents::new(agents::home(), agents::skills(), socket_path.clone(), agents::keys(&support_folder(), &state_dir));
     agents.refresh();
     agents.install(&core);
@@ -532,6 +568,7 @@ fn run() -> Result<(), String> {
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     tasks.repair_comment_targets();
     tasks.settle_statuses();
+    tasks.resume_moved();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();

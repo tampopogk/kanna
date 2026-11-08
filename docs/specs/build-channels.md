@@ -17,6 +17,17 @@ Channels and instances are for developing and testing Kanna, not a user feature:
 
 The dev build in the main checkout is the Kanna that came before channels: same bundle ID, same `kanna-dev` folder, same terminals and layout.
 
+What each one is for (decided with the user, 2026-11-08):
+
+| Build | For |
+|---|---|
+| Kanna (production) | users: the release on kanna.build |
+| Kanna Staging | the Kanna the user works in, on every machine of theirs (the MacBook Pro's app, the Studio's served daemon): Developer ID signed and notarized, so macOS keeps its Keychain and privacy grants across updates, and updated by Sparkle from each staging release |
+| Kanna Dev (the main checkout) | trying a change on main before it ships: `scripts/build.sh dev`. It's ad-hoc signed, so every rebuild is a new app to macOS and asks again for the Keychain and privacy prompts |
+| Kanna Dev task-… (a worktree) | a task trying its own change |
+
+So a change reaches the user's Kanna by a staging release (`scripts/release.sh --staging`, [release](release.md#the-staging-channel)), not by rebuilding the dev app. A Kanna's work moves from one folder to another, its Shelf and its machine key included, with `kanna instances move` ([instance move](instance-move.md)).
+
 ```text
 ~/Library/Application Support/
 ├── kanna-prod/                  production's default instance
@@ -24,7 +35,7 @@ The dev build in the main checkout is the Kanna that came before channels: same 
 ├── kanna-staging/               staging's
 ├── kanna-dev/                   the main checkout's dev build
 ├── kanna-dev-task-3f9a1c2e/     the dev build of worktree task-3f9a1c2e
-│   └── instance.json            {channel, name, bundle, checkout, worktree, app}, written by its daemon
+│   └── instance.json            {channel, name, bundle, checkout, worktree, app, daemon}, written by its daemon
 └── kanna-dev-task-7c01d4aa/     another worktree's
 ```
 
@@ -66,12 +77,13 @@ So in production's terminals every `kanna` talks to production; to reach the wor
 | `scripts/run-kanna.sh` | opens this checkout's `target/Kanna.app` |
 | `scripts/run-kanna.sh COMMAND …` | runs this checkout's CLI against this checkout's Kanna (starting it if needed), from anywhere, a production terminal included |
 | `kanna instances` | the running instances of every channel: name, channel, windows and panes, and the worktree a dev build came from (`(gone)` once it's removed) |
+| `kanna instances move TO [--dry-run]` | moves this Kanna's work and machine key to the instance folder TO, on this Mac ([instance move](instance-move.md)) |
 | `kanna instances prune` | deletes the folders of instances whose worktree is gone, keeping any that still answer or whose keeper still runs |
 | `kanna --version` | the CLI's version and which app it is, e.g. `kanna 4.1.1-dev (Kanna Dev task-3f9a1c2e)` |
 
 Any build can run with `KANNA_DEBUG=1` (the planner's dev Kanna does): it answers `debug.*` and shows **Debug** in its title bars, and is otherwise the same, its clipboard included ([terminal](terminal.md#5-debug-mode)).
 
-Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry the main checkout's dev Kanna over (layout, Shelf, terminals), quit it, stop its keeper (`kill $(cat ~/Library/Application\ Support/kanna-dev/keeper.pid)`, which ends its terminals) and move `kanna-dev` to `kanna-prod`.
+Production is the build that goes in /Applications (`ditto target/Kanna.app /Applications/Kanna.app`); its folder starts empty. To carry a Kanna's work to another build (its Shelf, history, schedules and machine key), run `kanna instances move TO` in it ([instance move](instance-move.md)): the receiving folder needs no stopped keeper, and the old one's terminals stay with the old keeper.
 
 ## 5. Open questions
 
