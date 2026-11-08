@@ -165,6 +165,7 @@ Every command an agent uses on its workspace, run from a task on another machine
 - **`KannaLinksTests` `MachineFileURLTests`**: the mapping both ways, relative files, only the page's folder, other URLs left alone, the types.
 - **`KannaDocsTests` `PageForTests`**: a page is marked by its path from the scheme URL, never a `file:` URL or a file that isn't HTML.
 - `machine_two_apps`, `machine_remote_task`, `machine_remote_files`, `machine_remote_web`, `screenshot`, `web_md_ios_panes`, `code_tour`, `cli_caller`, `path_last_in_front` and `file_panes` pass unchanged; `toasts`, `page_comments` and `md_comments` fail at the same step with and without this change (2026-11-08, main at c58fcde0).
+- With this Mac's file pages on `kanna-file:` too, `web_md_ios_panes` and `remote_workspace` pass; `page_comments` fails at `box_fits` as it does on main (2026-11-08, main at 65bc5b8b).
 
 ## 6. Not in this change
 
