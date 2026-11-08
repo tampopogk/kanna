@@ -23,12 +23,12 @@ Without this, an ordinary task only learned main had moved when a schedule woke 
 |---|---|---|---|
 | `main-conflicts` | yes | every started, unmerged task with a branch, not stacked, whose branch conflicts with main | `main conflicts with your branch in FILES: merge or rebase main, rerun your tests, then carry on with what you were doing.` |
 | `main-moved` | no | every started, unmerged task with a branch that subscribed, stacked ones too | how many commits main has that its branch hasn't, and the latest 20 |
-| `base-merged` | yes | a stacked task whose base landed in main | merge main; you're an ordinary task again, or what you still merge after |
-| `base-moved` | yes | a stacked task whose base moved, went stale, or is ready again | merge it, or wait for it |
+| `base-merged` | yes | a stacked task whose base landed in main | nothing it builds on is outside main now, so it can merge once it's done; or what it still merges after |
+| `base-moved` | yes | a stacked task whose base's head isn't in its branch any more, or whose base is claimed again at a new commit | merge it (`git merge COMMIT`), rerun the tests, then `kanna task ready` |
 
 **Main** is the branch the repo's main checkout is on, as for [stacked tasks](stacked-tasks.md). Messages use its real name.
 
-`base-merged` and `base-moved` are what the stacked-task ripple always sent, now under a name. Not hearing one stops the message only: the task still goes stale, and `kanna task ready set` still refuses it until it has merged.
+`base-merged` and `base-moved` are what the stacked-task ripple always sent, now under a name. Not hearing one stops the message only: the task still goes stale, and `kanna task ready` still refuses it until it has merged.
 
 ## 2. Main moving
 
@@ -49,7 +49,7 @@ sequenceDiagram
 
 - **Watching:** the daemon's heads watcher ([stacked tasks](stacked-tasks.md)) follows every repo with a started task. Any ref moving makes it read main again.
 - **A move** is main's branch at a new commit. The last one seen is kept per repo in the database, so a move made while Kanna wasn't running is caught when it comes back. The first look at a repo only records it. Switching the main checkout to another branch isn't a move.
-- **The check** is `git merge-tree --write-tree --name-only --no-messages -z MAIN TIP`, run in the repo: it needs no worktree and leaves the task's alone. It compares commits, so uncommitted work isn't in it.
+- **The check** is the [conflict check](stacked-tasks.md#the-conflict-check) that ready uses: one `git merge-tree --stdin --name-only --no-messages -z` for every task whose tip or main changed, with a throwaway object folder, run in the repo. It needs no worktree and leaves the task's alone. It compares commits, so uncommitted work isn't in it. A task it didn't cover is checked on its own.
 - **Skipped:** a task mid-rebase (no branch), a merged task, a task on another machine (no folder here).
 - **A task's own merge** isn't told to it: merged means its branch's tip is in main, whoever moved main.
 - **Off the loop:** the git runs in `runtime::off_loop`, one task after another, and a move during a check runs another afterwards ([the 20ms rule](daemon-runtime.md#2-rules)).
@@ -103,7 +103,7 @@ The `kanna-tasks` skill says when an agent subscribes.
 ### Rejected
 
 - **A subscriptions table.** The task's `doc` already saves, moves and ends with the task.
-- **The one-waiting rule on `base-moved`.** It would lose "ready again" behind a waiting "stale", and a stale task would never hear it could catch up.
+- **The one-waiting rule on `base-moved`.** It would lose "claimed again" behind a waiting "stale", and a stale task would never hear its base's newest commit.
 
 ## 8. Glossary
 

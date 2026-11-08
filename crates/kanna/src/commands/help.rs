@@ -80,7 +80,8 @@ pub fn overview(target: &Target) -> String {
     };
     out += &format!(
         "\nReferring to things:\n  \
-         PANE    a pane's name (set with `open --name`) or its ID, e.g. p1\n  \
+         PANE    a pane's name (set with `open --name`) or its ID, e.g. p1, on this machine;\n  \
+         \x20       or a task (task-ac2b, ac2b) for its agent's pane, on whichever machine runs it\n  \
          TAB     a tab ID, e.g. t1;  WINDOW  a window ID, e.g. w1  (all shown by `kanna workspace list --all`)\n  \
          FRACTION  1/3, 25% or 0.25\n\
          \n\
