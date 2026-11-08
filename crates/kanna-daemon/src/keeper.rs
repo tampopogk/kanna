@@ -112,6 +112,10 @@ impl Keeper {
         Ok(())
     }
 
+    pub fn move_to(&self, dir: &Path) -> io::Result<()> {
+        self.request(|client| client.move_to(dir)).map(|_| ())
+    }
+
     pub fn stop(&self) -> io::Result<()> {
         self.request(|client| client.stop())
     }
