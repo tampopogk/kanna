@@ -61,7 +61,7 @@ sequenceDiagram
     participant M as Kanna.app on mbp
     A->>D: screenshot {pane: page, from: term-12, dir: $TMPDIR}
     Note over D: page is in ws-3, where {desk: mbp}<br/>the link whose client is mbp
-    D->>M: screenshot {pane: page}
+    D->>M: screenshot {pane: page} (the app's iroh link)
     M-->>D: {png, window, pane, width, height}
     Note over D: writes the PNG on studio
     D-->>A: {path: /var/…/kanna-page-…png}
@@ -69,6 +69,8 @@ sequenceDiagram
     D->>M: toast (about ws-3's pane)
     Note over S: gets neither
 ```
+
+- **The request goes to the app itself**, on the iroh link it holds to studio's daemon ([links §1](machine-links.md)); mbp's own daemon is not in the path.
 
 - **`kanna toast` sends its caller** (`from`, as other commands do), so a toast from an agent shows where its workspace is, not on its machine's own screen. A toast about a `--pane` or `--task` goes to the app showing that pane's workspace.
 - **`kanna capabilities`** says `Kanna.app: attached` when any app is attached to the daemon, this machine's or another's.
