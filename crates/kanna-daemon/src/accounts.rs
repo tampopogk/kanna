@@ -511,7 +511,7 @@ impl Accounts {
         let _ = self.save(&book);
     }
 
-    pub fn supply(&self, source: &str, payload: &Value) -> Result<Value, KmuxError> {
+    pub fn supply(&self, source: &str, payload: &Value, trusted: &BTreeSet<String>) -> Result<Value, KmuxError> {
         let version = payload["version"].as_u64().ok_or_else(|| bad("accounts supply needs a version"))?;
         let accounts = payload["accounts"].as_array().ok_or_else(|| bad("accounts supply needs accounts"))?;
         let mut kept = vec![];
@@ -526,6 +526,7 @@ impl Accounts {
         if received.get(source).and_then(|s| s["version"].as_u64()).is_some_and(|v| v > version) {
             return Ok(json!({ "version": received[source]["version"] }));
         }
+        received.retain(|from, _| trusted.contains(from));
         match kept.is_empty() {
             true => received.remove(source),
             false => received.insert(source.to_string(), json!({ "version": version, "accounts": kept })),
@@ -534,31 +535,27 @@ impl Accounts {
         Ok(json!({ "version": version, "accounts": kept.len() }))
     }
 
-    pub fn prune(&self, trusted: &BTreeSet<String>, me_revoked: bool) -> bool {
-        let keeps = |source: &String| !me_revoked && trusted.contains(source);
-        let held = self.received();
-        let mut sources: BTreeSet<String> = self.listed().map(|listed| listed.keys().cloned().collect()).unwrap_or_default();
-        match &held {
-            Ok(received) => sources.extend(received.keys().cloned()),
-            Err(_) if me_revoked => {
-                sources.insert(RECEIVED.to_string());
+    pub fn prune(&self, trusted: &BTreeSet<String>, me_revoked: bool) -> Result<bool, String> {
+        let listed: BTreeSet<String> = self.listed().map(|listed| listed.keys().cloned().collect()).unwrap_or_default();
+        let changed = match me_revoked {
+            true => {
+                let any = !listed.is_empty() || self.book()["received"].as_array().is_some_and(|r| !r.is_empty());
+                if any {
+                    self.keep_received(&Map::new()).map_err(|e| e.message)?;
+                }
+                any
             }
-            Err(why) => log!("kanna-daemon: {why}"),
-        }
-        let mut changed = false;
-        if sources.iter().any(|source| !keeps(source)) {
-            let kept = match (sources.iter().all(|source| !keeps(source)), held) {
-                (true, _) => Ok(Map::new()),
-                (false, held) => held.map(|mut received| {
-                    received.retain(|source, _| keeps(source));
-                    received
-                }),
-            };
-            match kept.map_err(|why| KmuxError::new("failed", why)).and_then(|kept| self.keep_received(&kept)) {
-                Ok(()) => changed = true,
-                Err(error) => log!("kanna-daemon: can't drop the accounts of machines you revoked: {}", error.message),
+            false => {
+                let mut received = self.received()?;
+                let sources: BTreeSet<String> = listed.into_iter().chain(received.keys().cloned()).collect();
+                let gone = sources.iter().any(|source| !trusted.contains(source));
+                if gone {
+                    received.retain(|source, _| trusted.contains(source));
+                    self.keep_received(&received).map_err(|e| e.message)?;
+                }
+                gone
             }
-        }
+        };
         let mut book = self.book();
         let delivered = book["delivered"].as_object().cloned().unwrap_or_default();
         let kept: Map = delivered.iter().filter(|(peer, _)| trusted.contains(peer.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -566,7 +563,7 @@ impl Accounts {
             book["delivered"] = Value::Object(kept);
             let _ = self.save(&book);
         }
-        changed
+        Ok(changed)
     }
 
     fn account_for(&self, agent: &str) -> Result<Option<(Value, Option<String>)>, String> {
@@ -830,7 +827,7 @@ impl Service {
                 Some("supply") => {
                     let peers = service.peers();
                     match peers.names.iter().find(|(key, name)| **name == from && peers.trusted.contains(*key)) {
-                        Some((source, _)) => service.accounts.supply(source, &args),
+                        Some((source, _)) => service.accounts.supply(source, &args, &peers.trusted),
                         None => Err(KmuxError::new("unpaired", format!("{from} isn't one of your machines"))),
                     }
                 }
@@ -856,6 +853,7 @@ impl Service {
 
 fn supply(service: std::sync::Weak<Service>, woken: Receiver<()>) {
     let mut waits: BTreeMap<String, (Instant, Duration)> = BTreeMap::new();
+    let mut pruned: Option<(BTreeSet<String>, bool)> = None;
     loop {
         match woken.recv_timeout(SUPPLY_EVERY) {
             Ok(()) => waits.clear(),
@@ -865,7 +863,13 @@ fn supply(service: std::sync::Weak<Service>, woken: Receiver<()>) {
         let Some(service) = service.upgrade() else { return };
         let Some(caller) = service.caller.clone() else { continue };
         let peers = peers(&caller.status());
-        service.accounts.prune(&peers.trusted, peers.me_revoked);
+        let trust = (peers.trusted.clone(), peers.me_revoked);
+        if pruned.as_ref() != Some(&trust) {
+            match service.accounts.prune(&peers.trusted, peers.me_revoked) {
+                Ok(_) => pruned = Some(trust),
+                Err(why) => log!("kanna-daemon: can't drop the accounts of machines you revoked: {why}"),
+            }
+        }
         if peers.me_revoked || service.accounts.version() == 0 {
             continue;
         }
@@ -1067,6 +1071,10 @@ mod tests {
         json!({ "tokens": { "access_token": jwt("acc-0", exp), "refresh_token": "rt-0", "id_token": "id-0", "account_id": "workspace-1" } }).to_string()
     }
 
+    fn trusted_mac() -> BTreeSet<String> {
+        BTreeSet::from(["mac-key".to_string()])
+    }
+
     fn folder(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("kanna-accounts-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1217,7 +1225,7 @@ mod tests {
         assert!(!payload.to_string().contains("rt-0"), "no refresh credential leaves the holder");
         assert!(!payload.to_string().contains("acc-0"), "no access token in the supply either");
         let (worker, _) = accounts(&vm, false, Duration::ZERO);
-        worker.supply("mac-key", &payload).unwrap();
+        worker.supply("mac-key", &payload, &trusted_mac()).unwrap();
         assert_eq!(worker.credential("claude").unwrap(), Some(Credential::Env("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-abc".into())));
         assert_eq!(worker.credential("codex").unwrap(), Some(Credential::CodexHolder { account: codex.clone(), holder: "mac-key".into() }));
         assert_eq!(worker.holder_of(&codex).as_deref(), Some("mac-key"));
@@ -1237,16 +1245,16 @@ mod tests {
         let (holder, _, _) = holder(&mac, false, Duration::ZERO, now() + 3600);
         holder.add(Kind::ClaudeSubscription, "sk-ant-oat01-abc", None, None, "mac-key").unwrap();
         let (worker, _) = accounts(&vm, false, Duration::ZERO);
-        worker.supply("mac-key", &holder.payload().unwrap()).unwrap();
+        worker.supply("mac-key", &holder.payload().unwrap(), &trusted_mac()).unwrap();
         let peers = BTreeSet::from(["vm-key".to_string()]);
         holder.delivered("vm-key", holder.version());
         holder.remove("claude").unwrap();
         assert_eq!(holder.outbox(&peers), ["vm-key"], "the removal is owed to the worker");
-        worker.supply("mac-key", &holder.payload().unwrap()).unwrap();
+        worker.supply("mac-key", &holder.payload().unwrap(), &trusted_mac()).unwrap();
         assert_eq!(worker.credential("claude").unwrap(), None);
         assert!(worker.credential("codex").unwrap().is_some());
         holder.remove("codex").unwrap();
-        worker.supply("mac-key", &holder.payload().unwrap()).unwrap();
+        worker.supply("mac-key", &holder.payload().unwrap(), &trusted_mac()).unwrap();
         assert_eq!(worker.credential("codex").unwrap(), None);
         assert!(!vm.join(SECRETS).join(RECEIVED).exists(), "nothing left on the worker");
         let _ = std::fs::remove_dir_all(&mac);
@@ -1258,8 +1266,8 @@ mod tests {
         let vm = folder("older");
         let (worker, _) = accounts(&vm, false, Duration::ZERO);
         let account = |secret: &str| json!({ "id": "acct-1", "agent": "claude", "kind": "claude-subscription", "secret": secret, "added_at": 1 });
-        worker.supply("mac-key", &json!({ "version": 5, "accounts": [account("sk-ant-oat01-new")] })).unwrap();
-        worker.supply("mac-key", &json!({ "version": 4, "accounts": [account("sk-ant-oat01-old")] })).unwrap();
+        worker.supply("mac-key", &json!({ "version": 5, "accounts": [account("sk-ant-oat01-new")] }), &trusted_mac()).unwrap();
+        worker.supply("mac-key", &json!({ "version": 4, "accounts": [account("sk-ant-oat01-old")] }), &trusted_mac()).unwrap();
         assert_eq!(worker.credential("claude").unwrap(), Some(Credential::Env("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-new".into())));
         let _ = std::fs::remove_dir_all(&vm);
     }
@@ -1269,15 +1277,15 @@ mod tests {
         let vm = folder("revoked-self");
         let (worker, _) = accounts(&vm, false, Duration::ZERO);
         let supply = json!({ "version": 1, "accounts": [{ "id": "acct-1", "agent": "claude", "kind": "claude-subscription", "secret": "sk-ant-oat01-x", "added_at": 1 }] });
-        worker.supply("mac-key", &supply).unwrap();
+        worker.supply("mac-key", &supply, &trusted_mac()).unwrap();
         let trusted = BTreeSet::from(["mac-key".to_string(), "vm-key".to_string()]);
-        assert!(!worker.prune(&trusted, false));
+        assert!(!worker.prune(&trusted, false).unwrap());
         assert!(worker.credential("claude").unwrap().is_some());
-        assert!(worker.prune(&BTreeSet::from(["mac-key".to_string()]), true), "this machine learns it was revoked");
+        assert!(worker.prune(&BTreeSet::from(["mac-key".to_string()]), true).unwrap(), "this machine learns it was revoked");
         assert_eq!(worker.credential("claude").unwrap(), None);
         assert!(!vm.join(SECRETS).join(RECEIVED).exists());
-        worker.supply("mac-key", &supply).unwrap();
-        assert!(worker.prune(&BTreeSet::from(["vm-key".to_string()]), false), "its source was revoked");
+        worker.supply("mac-key", &supply, &trusted_mac()).unwrap();
+        assert!(worker.prune(&BTreeSet::from(["vm-key".to_string()]), false).unwrap(), "its source was revoked");
         assert_eq!(worker.credential("claude").unwrap(), None);
         let _ = std::fs::remove_dir_all(&vm);
     }
@@ -1287,7 +1295,7 @@ mod tests {
         let mac = folder("revoked-peer");
         let (holder, _, _) = holder(&mac, false, Duration::ZERO, now() + 3600);
         holder.delivered("old-key", 0);
-        holder.prune(&BTreeSet::from(["vm-key".to_string()]), false);
+        holder.prune(&BTreeSet::from(["vm-key".to_string()]), false).unwrap();
         assert_eq!(holder.outbox(&BTreeSet::from(["vm-key".to_string()])), ["vm-key"]);
         assert!(holder.book()["delivered"].get("old-key").is_none());
         let _ = std::fs::remove_dir_all(&mac);
@@ -1359,7 +1367,7 @@ mod tests {
         let vm = folder(name);
         let (worker, _) = accounts(&vm, false, Duration::ZERO);
         let supply = json!({ "version": 1, "accounts": [{ "id": "acct-1", "agent": "claude", "kind": "claude-subscription", "label": "Max", "secret": "sk-ant-oat01-x", "added_at": 1 }, { "id": "acct-2", "agent": "codex", "kind": "codex-chatgpt", "holder": "mac-key", "added_at": 1 }] });
-        worker.supply("mac-key", &supply).unwrap();
+        worker.supply("mac-key", &supply, &trusted_mac()).unwrap();
         vm
     }
 
@@ -1430,7 +1438,7 @@ mod tests {
         assert_eq!(reads.load(Ordering::SeqCst), 0, "none of that needs a secret");
         assert!(started.elapsed() < Duration::from_millis(50));
         assert!(stuck.credential("claude").unwrap_err().contains("didn't answer"));
-        assert!(stuck.supply("mac-key", &json!({ "version": 2, "accounts": [] })).is_err(), "a supply can't drop what it couldn't read");
+        assert!(stuck.supply("mac-key", &json!({ "version": 2, "accounts": [] }), &trusted_mac()).is_err(), "a supply can't drop what it couldn't read");
         drop(closed);
         let _ = std::fs::remove_dir_all(&vm);
     }
@@ -1443,9 +1451,22 @@ mod tests {
         received["old-key"] = received["mac-key"].clone();
         files.write(RECEIVED, &received.to_string()).unwrap();
         let (worker, _) = accounts(&vm, false, Duration::ZERO);
-        assert!(worker.prune(&BTreeSet::from(["mac-key".to_string()]), false), "old-key was in the secret but not the book");
+        assert!(worker.prune(&BTreeSet::from(["mac-key".to_string()]), false).unwrap(), "old-key was in the secret but not the book");
         assert!(worker.received().unwrap().get("old-key").is_none());
         assert!(worker.received().unwrap().get("mac-key").is_some());
+        let _ = std::fs::remove_dir_all(&vm);
+    }
+
+    #[test]
+    fn a_supply_carries_no_untrusted_source_forward() {
+        let vm = worker_with_received("untrusted-forward");
+        let files = Files::new(vm.join(SECRETS));
+        let mut received: Value = serde_json::from_str(&files.read(RECEIVED).unwrap().unwrap()).unwrap();
+        received["old-key"] = received["mac-key"].clone();
+        files.write(RECEIVED, &received.to_string()).unwrap();
+        let (worker, _) = accounts(&vm, false, Duration::ZERO);
+        worker.supply("mac-key", &json!({ "version": 2, "accounts": [] }), &trusted_mac()).unwrap();
+        assert!(!vm.join(SECRETS).join(RECEIVED).exists(), "old-key's accounts went with mac-key's empty supply");
         let _ = std::fs::remove_dir_all(&vm);
     }
 
