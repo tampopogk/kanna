@@ -5278,7 +5278,7 @@ print("running" if t.get("running") else "stopped" if t.get("folder") else "wait
   check test "$(in_repo task messages "$busy" | grep -c 'main conflicts')" -eq 1 || { echo "task_events: a second move left a second message"; in_repo task messages "$busy"; return 1; }
   shows "$term" "main conflicts with" && { echo "task_events: the message went in mid-turn"; kanna read "$term"; return 1; }
   check wait_for 30 unwrapped "$term" "peer: [message from kanna] main conflicts with your branch in shared: merge or rebase main, rerun your tests" || { echo "task_events: the message didn't arrive at the turn's end"; kanna read "$term"; in_repo task messages "$busy"; return 1; }
-  in_repo task events "$busy" | grep -qE 'main-conflicts +delivered +main conflicts with your branch in shared' || { echo "task_events: events doesn't list what was sent"; in_repo task events "$busy"; return 1; }
+  check wait_for 5 eval 'in_repo task events "$busy" | grep -qE "main-conflicts +delivered +main conflicts with your branch in shared"' || { echo "task_events: events doesn't list what was sent"; in_repo task events "$busy"; return 1; }
 
   said="$(in_repo task subscribe main-moved "$busy")"
   [[ "$said" == *"hears main-moved" ]] || { echo "task_events: subscribe said $said"; return 1; }
@@ -7123,7 +7123,7 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   check wait_for 25 eval 'phone read repo | grep -q "The planner finished without answering"' || { echo "phone_chat: a second silent turn wasn't told"; phone read repo; return 1; }
   check test "$(cd "$phone_repo" && KANNA_TERMINAL="$planner" kanna phone history --last 1 | cut -c1-3)" == sys || { echo "phone_chat: history was wrong"; return 1; }
   check test "$(phone_place)" == daemon || { echo "phone_chat: the planner isn't windowless: $(phone_place)"; return 1; }
-  kanna send "$planner" ask >/dev/null && kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  kanna send "$planner" ask >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check wait_for 5 is "$planner" status needs-you || { echo "phone_chat: the mock didn't ask"; kanna read "$planner"; return 1; }
   check phone status repo blocked 10 >/dev/null || { echo "phone_chat: a planner that needs you reads as $(phone read repo 1000)"; return 1; }
   kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
