@@ -946,6 +946,7 @@ pub struct Tasks {
     turns: RefCell<HashMap<String, Turn>>,
     quitting: RefCell<HashMap<String, Quitting>>,
     launching: RefCell<HashSet<String>>,
+    once_started: RefCell<HashMap<String, Vec<Box<dyn FnOnce(&Rc<Tasks>)>>>>,
     finding: RefCell<HashSet<String>>,
     failed: RefCell<HashSet<String>>,
     setting_up: RefCell<HashMap<String, SettingUp>>,
@@ -1133,6 +1134,7 @@ impl Tasks {
             turns: RefCell::default(),
             quitting: RefCell::default(),
             launching: RefCell::default(),
+            once_started: RefCell::default(),
             finding: RefCell::default(),
             failed: RefCell::default(),
             setting_up: RefCell::default(),
@@ -2111,8 +2113,30 @@ impl Tasks {
             let session = entry.found_session().await;
             let Some(this) = this.upgrade() else { return };
             this.launching.borrow_mut().remove(&entry.id);
+            this.settled(&entry.id);
             entry.session = session;
             then(&this, entry);
+        });
+    }
+
+    fn is_starting(&self, id: &str) -> bool {
+        self.pending.borrow().values().any(|p| p.entry.id == id) || self.launching.borrow().contains(id)
+    }
+
+    fn settled(self: &Rc<Self>, id: &str) {
+        if !self.once_started.borrow().contains_key(id) {
+            return;
+        }
+        let (this, id) = (Rc::downgrade(self), id.to_string());
+        crate::runtime::spawn("a pick waiting for its task to start", async move {
+            let Some(this) = this.upgrade() else { return };
+            if this.is_starting(&id) {
+                return;
+            }
+            let waiting = this.once_started.borrow_mut().remove(&id).unwrap_or_default();
+            for then in waiting {
+                then(&this);
+            }
         });
     }
 
@@ -2547,6 +2571,7 @@ impl Tasks {
                 this.revive(&pane, Some(this.again(&entry)), move |result| {
                     let Some(this) = weak.upgrade() else { return };
                     this.launching.borrow_mut().remove(&id);
+                    this.settled(&id);
                     match result {
                         Ok(pane) => {
                             this.restarted(&pane);
@@ -4035,8 +4060,9 @@ impl Tasks {
                 Err(error) => responder.reply(Err(error)),
             });
         };
-        if self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
-            return responder.reply(Err(bad(format!("{id} is starting"))));
+        if self.is_starting(&entry.id) {
+            let args = args.clone();
+            return self.once_started.borrow_mut().entry(entry.id).or_default().push(Box::new(move |this| this.pick(&args, responder)));
         }
         if let Err(error) = self.startable(&entry) {
             return responder.reply(Err(error));
@@ -4051,7 +4077,7 @@ impl Tasks {
         let by = who(args).map(String::from);
         let found = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
         if let Some(entry) = found {
-            if self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
+            if self.is_starting(&entry.id) {
                 return responder.reply(Err(bad(format!("{reference} is starting"))));
             }
             if let Err(error) = self.startable(&entry) {
@@ -4572,6 +4598,7 @@ impl Tasks {
 
     pub fn worktree_made(self: &Rc<Self>, token: u64, result: Result<Made, String>) {
         let Some(mut starting) = self.pending.borrow_mut().remove(&token) else { return };
+        self.settled(&starting.entry.id);
         match result {
             Ok(Made::Worktree { folder, branch, bases }) => {
                 (starting.entry.bases, starting.entry.conflict) = (bases, None);
@@ -4658,6 +4685,7 @@ impl Tasks {
         core.handle(json!({ "cmd": "open", "args": args }), move |reply| {
             let Some(this) = this.upgrade() else { return };
             this.launching.borrow_mut().remove(&entry.id);
+            this.settled(&entry.id);
             if let Some(error) = failed(&reply) {
                 return responder.reply(Err(error));
             }
@@ -7432,6 +7460,39 @@ mod tests {
         t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
         assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
         assert_eq!(t.session(&pane).as_deref(), Some("given"));
+    }
+
+    #[test]
+    fn a_pick_of_a_task_the_shelf_is_starting_waits_for_it_and_moves_it_to_the_desk() {
+        let t = Stopping::new("pick-starting");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        let folder = t.state.to_string_lossy().to_string();
+        t.tasks.entries.borrow_mut()[0].repo = folder;
+        t.core.handle_blocking(json!({ "cmd": "task", "args": { "action": "hold", "task": pane } }));
+        t.tasks.launching.borrow_mut().insert(entry.id.clone());
+        let (responder, reply) = kanna_mux::responder();
+        t.tasks.pick(&json!({ "task": entry.id }), responder);
+        let mut reply = Box::pin(reply);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        for _ in 0..5 {
+            t.pump();
+            assert!(reply.as_mut().poll(&mut cx).is_pending(), "it waits while the task starts");
+        }
+        assert_eq!(t.tasks.entries.borrow().len(), 1, "still on the Shelf");
+        t.tasks.launching.borrow_mut().remove(&entry.id);
+        t.tasks.settled(&entry.id);
+        let by = Instant::now() + Duration::from_secs(5);
+        let answer = loop {
+            if let std::task::Poll::Ready(answer) = reply.as_mut().poll(&mut cx) {
+                break answer.unwrap();
+            }
+            assert!(Instant::now() < by, "no answer");
+            t.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(answer["pane"], pane.as_str());
+        let desk = t.tasks.running.borrow().iter().map(|r| (r.entry.id.clone(), r.place)).collect::<Vec<_>>();
+        assert_eq!(desk, [(entry.id.clone(), Place::Desk)]);
     }
 
     #[test]
