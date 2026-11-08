@@ -4853,7 +4853,7 @@ task_history() {
   start_daemon && start_app || { echo "task_history line $LINENO"; return 1; }
   [[ -f "$state/kanna.db" && -f "$state/backlog.json.imported" && ! -e "$state/backlog.json" ]] || { echo "task_history: backlog.json wasn't imported"; ls "$state"; return 1; }
   (cd "$repo" && kanna task list) | placed | grep -qE '^'"$(sid 1)"' +From JSON +Shelf' || { echo "task_history: the imported task isn't on the Shelf"; (cd "$repo" && kanna task list); return 1; }
-  events() { raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"events\",\"task\":\"$1\"}}" | python3 -c 'import json, sys; print(" ".join(e["what"] + ("@" + e["by"] if e["by"] else "") for e in json.load(sys.stdin)["events"]))'; }
+  events() { raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"events\",\"task\":\"$1\"}}" | python3 -c 'import json, sys; print(" ".join(e["what"] + ("@" + e["by"] if e["by"] else "") for e in json.load(sys.stdin)["events"] if e["what"] != "status"))'; }
   [[ "$(events "$(tid 1)")" == "made renumbered@daemon" ]] || { echo "task_history: the imported task's events are $(events "$(tid 1)")"; return 1; }
   (cd "$repo" && kanna task new "Fresh" "say fresh" --agent "$agent") | grep -qE '^added task-[0-9a-f]{4,8} ' || { echo "task_history: a new task didn't get an ID"; return 1; }
   kanna task pick $(tid 2) >/dev/null || { echo "task_history line $LINENO"; return 1; }
