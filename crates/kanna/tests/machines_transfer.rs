@@ -45,7 +45,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A clone of the team's notes repo in this machine's own home folder, with one runner.
+/// A clone of the team's notes repo in this machine's own home folder, on a machine with one runner.
 fn clone(daemon: &Daemon) -> PathBuf {
     let repo = daemon.dir.join("home/.kanna-v4/repos/team/notes");
     std::fs::create_dir_all(repo.join(".kanna")).unwrap();
@@ -54,7 +54,7 @@ fn clone(daemon: &Daemon) -> PathBuf {
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "first"]);
     git(&repo, &["remote", "add", "origin", ORIGIN]);
-    std::fs::write(repo.join(".kanna/config.json"), json!({ "version": 1, "shelf": { "runners": 1 } }).to_string()).unwrap();
+    std::fs::write(daemon.dir.join("home/.kanna-v4/config.json"), json!({ "version": 1, "shelf": { "runners": 1 } }).to_string()).unwrap();
     daemon.kanna_in(&repo, &["task", "list"]).ok();
     repo.canonicalize().unwrap()
 }

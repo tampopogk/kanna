@@ -52,8 +52,10 @@ def interpreter_dir(real):
     return str(beside) if (beside / line[1]).exists() else None
 
 
-def wrapper(agent, real, home, port, trusted, path):
+def wrapper(agent, real, home, port, trusted, path, cli=None):
     env, args = configure(agent, home, port, trusted)
+    if cli:
+        env["KANNA_CLI"] = cli
     beside = interpreter_dir(real)
     if beside:
         env["PATH"] = beside + ":" + os.environ.get("PATH", "/usr/bin:/bin")
@@ -72,11 +74,12 @@ def main():
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--trust", action="append", default=[], help="a folder the agent trusts without asking (repeatable)")
     p.add_argument("--out", required=True, help="where to write the executable")
+    p.add_argument("--cli", help="the kanna CLI the agent's commands run, as $KANNA_CLI")
     a = p.parse_args()
     real = a.real or shutil.which(a.agent)
     if not real:
         raise SystemExit(f"isolate: {a.agent} isn't installed")
-    wrapper(a.agent, real, Path(a.home).resolve(), a.port, a.trust, Path(a.out))
+    wrapper(a.agent, real, Path(a.home).resolve(), a.port, a.trust, Path(a.out), a.cli)
 
 
 if __name__ == "__main__":
