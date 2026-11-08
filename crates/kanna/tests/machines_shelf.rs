@@ -346,3 +346,39 @@ fn a_phone_reads_and_steers_tasks_on_other_machines_through_its_planner_machine(
     let pane = ask(&studio, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().find(|t| t["id"] == moved).and_then(|t| t["held"].as_str().map(String::from)).unwrap();
     within(15, "a note granted away to go with the first message", || studio.kanna(&["read", &pane]).ok().replace(['\n', '\r'], "").contains("[message from phone] and this"));
 }
+
+fn list_in(daemon: &Daemon, repo: &Path, args: &[&str]) -> String {
+    let mut all = vec!["task", "list"];
+    all.extend(args);
+    let output = cli(&daemon.dir).current_dir(repo).env("KANNA_SOCKET", daemon.socket()).args(&all).output().unwrap();
+    Run::from(&all, output).ok()
+}
+
+#[test]
+fn a_task_on_this_app_s_desk_lists_under_its_desk_wherever_it_runs_and_the_machine_running_it_says_whose_desk() {
+    let (mbp, studio) = (machine("mbp"), machine("studio"));
+    pair(&mbp, &studio);
+    let (here, there) = (clone(&mbp, 0), clone(&studio, 0));
+    let codex = agent(&studio);
+    let task = new_task(&studio, &there, &["Studio work", "work 1", "--agent", &codex]);
+    let picked = ask(&studio, "tasks", json!({ "action": "pick", "task": task, "desk": "mbp" }));
+    assert_eq!(picked["ok"], true, "{picked}");
+    within(15, "mbp to see the Studio started the task for mbp's Desk", || record(&mbp, &task)["claim"] == "mbp" && record(&mbp, &task)["state"] == "started");
+
+    let listed = list_in(&mbp, &here, &[]);
+    let desk = listed.split("\n\n").next().unwrap();
+    assert!(desk.starts_with("Desk\n") && desk.lines().any(|l| l.starts_with(&task[..9]) && l.contains("Studio work") && l.ends_with("on studio")), "mbp's Desk has the task the Studio runs: {listed}");
+    assert!(!listed.contains("Other machines"), "and not under Other machines too: {listed}");
+    let json: Value = serde_json::from_str(&list_in(&mbp, &here, &["--json"])).unwrap();
+    let on_desk = json["tasks"].as_array().unwrap().iter().find(|t| t["task"] == task.as_str()).cloned().unwrap_or(Value::Null);
+    assert_eq!(on_desk["machine"], "studio", "{json}");
+    assert!(json["elsewhere"].as_array().unwrap().iter().all(|t| t["id"] != task.as_str()), "{json}");
+
+    let there_listed = list_in(&studio, &there, &[]);
+    assert!(there_listed.starts_with("Desk\n(empty)\n"), "the Studio's own Desk doesn't have mbp's task: {there_listed}");
+    assert!(there_listed.contains("\n\nOther Desks\n") && there_listed.lines().any(|l| l.starts_with(&task[..9]) && l.ends_with("on mbp's Desk")), "it says whose Desk: {there_listed}");
+    let json: Value = serde_json::from_str(&list_in(&studio, &there, &["--json"])).unwrap();
+    assert!(json["tasks"].as_array().unwrap().is_empty(), "{json}");
+    assert_eq!(json["otherDesks"][0]["task"], task.as_str(), "{json}");
+    assert_eq!(json["otherDesks"][0]["desk"], "mbp", "{json}");
+}
