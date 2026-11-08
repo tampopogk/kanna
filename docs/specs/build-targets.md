@@ -21,7 +21,7 @@ Set `targets` in `build.local.json` at the root of the main checkout to a folder
 | File | Tracked | Holds |
 |---|---|---|
 | `build.json` | yes | the repo's defaults: `free`, the GB [eviction](build-store.md#5-eviction) keeps free (100) |
-| `build.local.json` (main checkout) | no, ignored | this Mac's: `targets`, and any key of `build.json` to override |
+| `build.local.json` (main checkout) | no, ignored | this Mac's: `targets`, `signing_team` ([how dev builds are signed](privacy-prompts.md#4-how-dev-builds-are-signed)), and any key of `build.json` to override |
 
 ```mermaid
 flowchart LR

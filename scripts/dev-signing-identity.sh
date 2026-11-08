@@ -10,14 +10,15 @@ case "${1:-}" in
 usage: scripts/dev-signing-identity.sh
 
 Makes "Kanna Dev Signing", a self-signed code-signing certificate and key in the login keychain,
-once, for a Mac without an Apple Development certificate of Kanna's team. scripts/build-kanna-app.sh
+once, for a Mac without an Apple Development certificate of the team that signing_team in
+build.local.json names. scripts/build-kanna-app.sh
 signs dev builds with it then, so macOS privacy grants survive rebuilds; Keychain grants don't.
 USAGE
     exit 0 ;;
   *) echo "usage: scripts/dev-signing-identity.sh" >&2; exit 2 ;;
 esac
-if identity="$(kanna_team_identity "Apple Development" "$KANNA_TEAM_ID")" && [[ -n "$identity" ]]; then
-  echo "Not needed: dev builds are signed with Apple Development ($identity, team $KANNA_TEAM_ID)"
+if team="$(kanna_signing_team "$repo_root")" && [[ -n "$team" ]] && identity="$(kanna_team_identity "Apple Development" "$team")" && [[ -n "$identity" ]]; then
+  echo "Not needed: dev builds are signed with Apple Development ($identity, team $team)"
   exit 0
 fi
 if identity="$(kanna_selfsigned_identity)" && [[ -n "$identity" ]]; then

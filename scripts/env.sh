@@ -3,8 +3,6 @@ KANNA_GHOSTTY_FORK="${KANNA_GHOSTTY_FORK:-https://github.com/jemdiggity/ghostty.
 KANNA_GHOSTTY_BRANCH="kanna4"
 KANNA_GHOSTTY_COMMIT="4e28443e32fe8b0f88934d6a1159c42561f1931a"
 
-KANNA_TEAM_ID="${KANNA_TEAM_ID:-EA4J68749Z}"
-
 KANNA_UPDATE_FEEDS="https://kanna.build/appcast"
 KANNA_UPDATE_PUBLIC_KEY="${KANNA_UPDATE_PUBLIC_KEY:-hjHTuszAUmqmKN6ANvmQQhTlzLs3Tm15WPEudwaMwgU=}"
 
@@ -317,9 +315,15 @@ kanna_team_identity() {
   done
 }
 
+kanna_signing_team() {
+  kanna_targets_setting "$1" signing_team
+}
+
 kanna_dev_identity() {
-  dev_hash="$(kanna_team_identity "Apple Development" "$KANNA_TEAM_ID")"
-  if [ -n "$dev_hash" ]; then echo "$dev_hash $KANNA_TEAM_ID"; return 0; fi
+  if dev_team="$(kanna_signing_team "$1")" && [ -n "$dev_team" ]; then
+    dev_hash="$(kanna_team_identity "Apple Development" "$dev_team")"
+    if [ -n "$dev_hash" ]; then echo "$dev_hash $dev_team"; return 0; fi
+  fi
   kanna_selfsigned_identity
 }
 
