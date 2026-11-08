@@ -1,4 +1,4 @@
-use super::{target, Command, Flow};
+use super::{target, Command, Flow, PANE};
 use crate::output::join;
 use serde_json::Value;
 
@@ -12,7 +12,7 @@ pub const COMMAND: Command = Command {
     examples: &[("kanna close logs", "Close the pane named logs."), ("kanna close --tab tab-2", "Close tab-2 and its panes.")],
     parse: |args| target(args, "close"),
     show,
-    flow: Flow::PLAIN,
+    flow: Flow { panes: PANE, ..Flow::PLAIN },
 };
 
 pub fn show(args: &Value, reply: &Value) -> String {

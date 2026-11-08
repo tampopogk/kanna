@@ -358,7 +358,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         views.removeValue(forKey: machine)
         shelves.removeValue(forKey: machine)
         deskMade.removeValue(forKey: machine)
-        shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
+        mergeShelves()
         published = merged()
         restate()
         layoutChanged()

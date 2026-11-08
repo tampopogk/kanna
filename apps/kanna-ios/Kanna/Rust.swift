@@ -66,6 +66,10 @@ enum Rust {
         (try? secret.withCString { try take(kanna_phone_key($0)) }).map(object)?["key"] as? String
     }
 
+    static func networkChanged() {
+        kanna_phone_network_changed()
+    }
+
     static func stop() {
         kanna_phone_stop()
     }

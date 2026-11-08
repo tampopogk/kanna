@@ -275,7 +275,7 @@ impl Phone {
         }
         let reachable: Vec<Value> = machines.iter().map(|m| json!({ "name": m["name"], "key": m["key"], "addrs": if m["key"] == me.as_str() { machine["addrs"].clone() } else { m["addrs"].clone() } })).collect();
         let log = self.caller.as_ref().and_then(Caller::log);
-        responder.reply(Ok(Map::from_iter([("name".to_string(), machine["name"].clone()), ("key".to_string(), machine["key"].clone()), ("addrs".to_string(), machine["addrs"].clone()), ("projects".to_string(), Value::Array(projects)), ("machines".to_string(), Value::Array(reachable)), ("log".to_string(), log.unwrap_or(Value::Null))])));
+        responder.reply(Ok(Map::from_iter([("name".to_string(), machine["name"].clone()), ("key".to_string(), machine["key"].clone()), ("addrs".to_string(), machine["addrs"].clone()), ("relay".to_string(), machine["relay"].clone()), ("relay_token".to_string(), json!(self.caller.as_ref().and_then(Caller::relay_token))), ("projects".to_string(), Value::Array(projects)), ("machines".to_string(), Value::Array(reachable)), ("log".to_string(), log.unwrap_or(Value::Null))])));
     }
 
     fn here_machine(&self) -> Map {
@@ -806,9 +806,12 @@ impl Phone {
             for item in self.db.phone_unread(path).unwrap_or_default() {
                 if let Some(delivered) = item.message.and_then(|id| self.db.message(id).ok().flatten()).and_then(|m| m.delivered) {
                     let _ = self.db.set_phone_read(path, item.seq);
+                    let answered = self.db.phone_items(path, item.seq).unwrap_or_default().iter().any(|later| later.kind != "me" && later.kind != "sys");
                     retell.push(item);
-                    watch.answering = Some(delivered);
-                    watch.nudged = false;
+                    if !answered {
+                        watch.answering = Some(delivered);
+                        watch.nudged = false;
+                    }
                 }
             }
             if let Some(delivered) = watch.answering.filter(|at| state.as_deref() == Some("idle") && time - at > SETTLE) {

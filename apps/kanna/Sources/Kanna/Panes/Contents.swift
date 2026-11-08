@@ -147,9 +147,10 @@ final class Contents {
         switch type {
         case "ios": return "an iOS pane runs only for this Mac's own tasks"
         case "web":
-            guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-                return "a page from \(machine) opens only over http or https"
+            guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
+                return "a page from \(machine) opens only over http or https, or from a file"
             }
+            if url.isFileURL { return MachineFileURL.page(url.absoluteString) == nil ? "\(machine)'s page has no path" : nil }
             return url.host?.isEmpty == false ? nil : "\(machine)'s page has no host"
         default: return nil
         }
@@ -330,7 +331,21 @@ final class Contents {
             var url = pane["url"]?.string ?? "about:blank"
             var unmap: (URL) -> URL = { $0 }
             var waitingFor: String?
-            if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
+            var files: MachineFiles?
+            if let machine = MachineIDs.machine(of: id), let page = MachineFileURL.page(url) {
+                url = page.absoluteString
+                unmap = MachineFileURL.file
+                files = MachineFiles(page: MachineFileURL.path(of: page) ?? "/") { [weak self] (path: String, done: @escaping @MainActor (Result<(real: String, data: Data), MachineFiles.Failure>) -> Void) in
+                    guard let self else { return done(.failure(.init(message: "Kanna.app isn't showing this page"))) }
+                    read(path, data: true, for: id) { result in
+                        switch result {
+                        case .success(let file) where file.type == "file": done(.success((real: file.path, data: file.data ?? Data())))
+                        case .success(let file): done(.failure(.init(message: "\(file.path) isn't a file")))
+                        case .failure(let failure): done(.failure(.init(message: failure.message)))
+                        }
+                    }
+                }
+            } else if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
                 switch portOpen?(tunnel.port, machine) ?? .failure(KannaError("unavailable", "this Mac has no machines endpoint")) {
                 case .success(let local):
                     url = tunnel.local(local).absoluteString
@@ -342,8 +357,9 @@ final class Contents {
                     return report(id, ["state": "failed", "error": .string(failure.message)])
                 }
             }
-            let store: WKWebsiteDataStore = if waitingFor != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
-            let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store)
+            let store: WKWebsiteDataStore = if waitingFor != nil || files != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
+            let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store, files: files)
+            if files != nil { web.pagePath = { url in MachineFileURL.path(of: url).flatMap { ["html", "htm"].contains(($0 as NSString).pathExtension.lowercased()) ? $0 : nil } } }
             web.waitingFor = waitingFor
             web.unmap = unmap
             web.onFocus = { [weak self] in self?.onFocus?(id) }
