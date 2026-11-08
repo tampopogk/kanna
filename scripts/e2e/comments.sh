@@ -21,12 +21,14 @@ comment_agents() {
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/bin/claude"
   ln -sf "$repo_root/tools/mock-agent/mock-agent" "$comment_fake/copilot"
   printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/claude" && chmod +x "$comment_fake/claude"
+  mkdir -p "$comment_fake/slow"
+  printf '#!/bin/sh\nKANNA_MOCK_INBOX_DELAY=10 KANNA_AGENTS_HOME=%s MOCK_AGENT_REPORTS=1 exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$comment_fake/bin/claude" >"$comment_fake/slow/claude" && chmod +x "$comment_fake/slow/claude"
 }
 comment_held() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
 print((t.get("held") or "-") if t.get("running") else "stopped")' "$1"; }
 comment_claude() {
-  comment_task="$(cd "$comment_repo" && kanna --json task new "$1" "work 12" --agent "$comment_fake/claude" | field task.id)" || return 1
+  comment_task="$(cd "$comment_repo" && kanna --json task new "$1" "work ${3:-12}" --agent "${2:-$comment_fake/claude}" | field task.id)" || return 1
   check wait_for 15 eval '[[ "$(comment_held "$comment_task")" == term-* ]]' || { comment_held "$comment_task"; return 1; }
   comment_term="$(comment_held "$comment_task")"
   check wait_for 10 is "$comment_term" status working || { kanna status explain "$comment_term"; return 1; }
@@ -46,6 +48,23 @@ comment_arrived() {
   screen="$(kanna read "$comment_term")"
   [[ "$(grep -F "kanna comment" <<<"$screen" | grep -cv "peer: ")" == 0 ]] || { echo "a comment went into the prompt's draft"; echo "$screen"; return 1; }
   [[ "$(cd "$comment_repo" && kanna task messages "$comment_task")" == *"user"*"kanna comment $thread"* ]] || { echo "task messages should list the comment from you"; (cd "$comment_repo" && kanna task messages "$comment_task"); return 1; }
+}
+
+scenario comment_before_socket M4
+comment_before_socket() {
+  start_daemon && start_app || return 1
+  comment_agents && comment_claude "No socket yet" "$comment_fake/slow/claude" 18 || return 1
+  comment_program() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$comment_term\"}}" | field agent; }
+  check wait_for 5 eval '[[ "$(comment_program)" == claude ]]' || { kanna status explain "$comment_term"; return 1; }
+  local doc="$comment_repo/notes.md" said
+  mkdir -p "$comment_repo/.kanna/docs"
+  printf '# Notes\n\nThe strip scrolls.\n' >"$doc"
+  printf '{"file":"%s","agent":null,"socket":null,"next":2,"threads":[{"id":"c1","quote":"The strip scrolls.","line":3,"state":"open","status":"waiting","messages":[{"who":"you","text":"Say when","at":"2026-01-01T00:00:00Z"}]}]}\n' "$doc" >"$comment_repo/.kanna/docs/notes.md.json"
+  comment_status() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["threads"][0]["status"])' "$comment_repo/.kanna/docs/notes.md.json"; }
+  said="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"comment\",\"pane\":\"$comment_term\",\"text\":\"[kanna comment c1 · notes.md:3]\\nSay when\",\"doc\":\"$doc\",\"thread\":\"c1\"}}")"
+  check test "$(field state <<<"$said")" == waiting || { echo "$said"; kanna read "$comment_term"; return 1; }
+  comment_waits c1 comment_status || return 1
+  comment_arrived c1 comment_status || return 1
 }
 
 scenario md_comments M4
@@ -589,4 +608,72 @@ sys.exit(0 if ok else 1)'
   sleep 0.5
   check wait_for 5 eval 'fits $other' || { fits $other; return 1; }
   code_comment_box_shot code_comment_box-dark
+}
+
+durable_same() {
+  local id="$1" name="$2" when="$3" task
+  task="$(raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+for t in json.load(sys.stdin)["shelf"]:
+    if t["id"] == sys.argv[1]: print(t.get("held") or "")' "$comment_task" 2>/dev/null)"
+  [[ "$(pane "$name" id)" == "$id" ]] || { echo "$when: $name's pane should still be $id, not $(pane "$name" id)"; return 1; }
+  [[ -z "$task" || "$task" == "$id" ]] || { echo "$when: the task should hold $id, not $task"; return 1; }
+}
+
+scenario task_pane_keeps_comments M4
+task_pane_keeps_comments() {
+  start_daemon && start_app || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  comment_agents && comment_claude "Durable" || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  local id="$comment_term" first second third
+  printf '<!doctype html><title>Page</title><button id="one">One</button><p><button id="two">Two</button></p><p><button id="three">Three</button></p>\n' >"$comment_repo/page.html"
+  KANNA_TERMINAL="$id" kanna markup --name page --tab "$comment_repo/page.html" >/dev/null || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  check wait_for 5 is page agent "$id" || { kanna workspace list --all --json; return 1; }
+  durable_web() { raw "{\"id\":1,\"cmd\":\"debug.web\",\"args\":{\"pane\":\"page\"${1:-}}}"; }
+  durable_thread() { durable_web | field threads | python3 -c 'import json, sys
+print([t for t in json.load(sys.stdin) if t["id"] == sys.argv[1]][0][sys.argv[2]])' "$1" "$2"; }
+  durable_post() {
+    local xy
+    kanna focus page >/dev/null
+    check wait_for 5 eval 'durable_web ",\"find\":\"#$1\"" | grep -q at' || { durable_web; return 1; }
+    xy="$(durable_web ",\"find\":\"#$1\"" | field at)"
+    raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"pane\":\"page\",\"command\":true,\"at\":$xy}}" >/dev/null
+    check wait_for 5 eval '[[ "$(durable_web | field box)" == new ]]' || { durable_web; return 1; }
+    raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$2\"}}" >/dev/null
+    key cmd+return
+    sleep 0.2
+    key escape
+  }
+
+  check wait_for 30 eval '[[ "$(comment_held "$comment_task")" == stopped ]]' || { echo "task_pane_keeps_comments: the Shelf runner should stop the task"; comment_held "$comment_task"; return 1; }
+  check is "$id" state exited || { kanna workspace list --all --json; return 1; }
+  durable_same "$id" Durable "stopped by a Shelf runner" || return 1
+  first="$(pane "$id" terminal)"
+  kanna task pick "$comment_task" >/dev/null || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  check wait_for 10 is "$id" state running || { kanna workspace list --all --json; return 1; }
+  check wait_for 5 shows "$id" "--resume" || { kanna read "$id"; return 1; }
+  durable_same "$id" Durable "moved to the Desk" || return 1
+  second="$(pane "$id" terminal)"
+  [[ "$second" != "$first" && "$second" != "$id" ]] || { echo "task_pane_keeps_comments: a new run needs a terminal of its own ($first, $second)"; return 1; }
+  check is page agent "$id" || { pane page agent; return 1; }
+  [[ "$(cd "$comment_repo" && KANNA_TERMINAL="$id" kanna task list "$id" | placed)" == *Durable* ]] || { echo "task_pane_keeps_comments: the task should be found by its pane"; return 1; }
+  kanna task activate "$comment_task" >/dev/null || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(durable_web | field agent)" == "$id" ]]' || { durable_web; return 1; }
+  durable_post one "After the move" || return 1
+  comment_arrived c1 "durable_thread c1 status" || return 1
+
+  kanna task stop "$comment_task" >/dev/null && check wait_for 5 is "$id" state exited || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  durable_post two "While it was stopped" || return 1
+  check wait_for 5 eval '[[ "$(durable_thread c2 status)" == waiting ]]' || { durable_web; tail -5 "$out/daemon.log"; return 1; }
+  ! shows "$id" "kanna comment c2" || { echo "task_pane_keeps_comments: a comment reached a stopped task"; return 1; }
+  kanna task start "$comment_task" >/dev/null || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  comment_arrived c2 "durable_thread c2 status" || return 1
+  durable_same "$id" Durable "started on the Desk" || return 1
+
+  third="$(pane "$id" terminal)"
+  stop_app; stop_daemon; start_daemon && start_app || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  check is "$id" terminal "$third" && check is "$id" state running || { echo "task_pane_keeps_comments: the keeper's run should come back behind the pane"; kanna workspace list --all --json; return 1; }
+  durable_same "$id" Durable "after a daemon restart" || return 1
+  kanna task activate "$comment_task" >/dev/null || { echo "task_pane_keeps_comments line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(durable_web | field agent)" == "$id" ]]' || { durable_web; return 1; }
+  durable_post three "After the daemon restarted" || return 1
+  comment_arrived c3 "durable_thread c3 status" || return 1
 }

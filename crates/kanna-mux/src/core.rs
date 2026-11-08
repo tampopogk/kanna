@@ -128,7 +128,7 @@ struct Inner {
     front: RefCell<Option<CommandHandler>>,
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
-    renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
+    new_run: RefCell<Vec<Rc<dyn Fn(&str)>>>,
     ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
 }
 
@@ -178,7 +178,7 @@ impl Core {
             front: RefCell::new(None),
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
-            renamed: RefCell::new(vec![]),
+            new_run: RefCell::new(vec![]),
             ended: RefCell::new(vec![]),
         })))
     }
@@ -257,8 +257,8 @@ impl CoreHandle {
         self.state().panes.use_content_ids();
     }
 
-    pub fn on_renamed(&self, renamed: Rc<dyn Fn(&str, &str)>) {
-        self.0.renamed.borrow_mut().push(renamed);
+    pub fn on_new_run(&self, new_run: Rc<dyn Fn(&str)>) {
+        self.0.new_run.borrow_mut().push(new_run);
     }
 
     pub fn on_ended(&self, ended: Rc<dyn Fn(&str)>) {
@@ -437,6 +437,19 @@ impl CoreHandle {
         }
     }
 
+    pub fn set_agent(&self, id: &str, agent: &str) {
+        let updated = self.with_pane_mut(id, |pane| {
+            pane.agent = Some(agent.to_string());
+            pane.clone()
+        });
+        if let Some(pane) = updated {
+            self.changed();
+            if let Some(host) = self.host() {
+                host.update(&pane);
+            }
+        }
+    }
+
     pub fn set_command(&self, id: &str, command: String) {
         if self.with_pane_mut(id, |pane| pane.command = Some(command)).is_some() {
             self.changed();
@@ -581,7 +594,7 @@ impl CoreHandle {
         self.state().panes.note_numbers(numbers);
     }
 
-    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize, ptys: usize) {
         {
             let mut s = self.state();
             let mut all: Vec<Pane> = s.panes.iter().cloned().collect();
@@ -589,7 +602,7 @@ impl CoreHandle {
                 known.tour = panes.iter().find(|p| p.id == known.id).and_then(|p| p.tour.clone());
             }
             all.extend(panes.into_iter().filter(|p| s.panes.get(&p.id).is_none()));
-            s.panes.install(all, counter, terminals);
+            s.panes.install(all, counter, terminals, ptys);
         }
         self.changed();
     }
@@ -884,7 +897,7 @@ impl CoreHandle {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
         };
-        let placed = ["window", "workspace", "dock", "lead", "planner"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
+        let placed = ["window", "workspace", "dock", "lead", "planner", "quiz"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
         if let Some(from) = string(args, "from").filter(|from| !placed && self.state().panes.pane(from).is_none()) {
             return Err(KmuxError::new("no_caller", format!("{from} isn't one of this Kanna's panes, so there's no window of yours here: say where with --window WINDOW (or --window new)")));
         }
@@ -926,29 +939,30 @@ impl CoreHandle {
         let shelf = is_true(args, "shelf");
         let claimed = string(args, "claim").map(String::from);
         let planner = is_true(args, "planner");
+        let quiz = is_true(args, "quiz");
         if dock.is_some() && args.get("window").is_some() {
             return Err(bad_request("a docked pane is a task's agent, in its own workspace, not in a window"));
         }
-        if shelf && dock.is_none() || claimed.is_some() && dock.is_none() && !planner {
-            return Err(bad_request("claim is for a docked pane or a planner, and shelf for a docked pane"));
+        if shelf && dock.is_none() || claimed.is_some() && dock.is_none() && !planner && !quiz {
+            return Err(bad_request("claim is for a docked pane, a planner or a quiz writer, and shelf for a docked pane"));
         }
         if shelf && claimed.is_some() {
             return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
         let background = is_true(args, "background");
-        if background && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || shelf || claimed.is_some() || string(args, "workspace").is_none() || ["window", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
+        if background && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || quiz || shelf || claimed.is_some() || string(args, "workspace").is_none() || ["window", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
             return Err(bad_request("a background terminal is in its task's workspace and nowhere else: it takes a workspace, and no window, dock, split, size or tab"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
             return Err(bad_request("a window's lead is a terminal in a window, with no dock, split, size or tab"));
         }
-        if planner && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
-            return Err(bad_request("a planner is a terminal of its own, with no dock, split, size, tab or window"));
+        if (planner || quiz) && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
+            return Err(bad_request("a planner or a quiz writer is a terminal of its own, with no dock, split, size, tab or window"));
         }
         let app = match (dock, shelf) {
             (Some(_), false) => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
-            _ if planner => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
+            _ if planner || quiz => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
             _ => None,
         };
 
@@ -968,12 +982,12 @@ impl CoreHandle {
             self.room_for_task(string(args, "cwd"), app).await?;
         }
         let id = self.state().panes.next_id(kind);
-        let placeless = !new_tab && !lead && !planner && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() && args.get("workspace").is_none();
-        let opener = string(args, "from").filter(|_| !lead && !planner && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
+        let placeless = !new_tab && !lead && !planner && !quiz && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() && args.get("workspace").is_none();
+        let opener = string(args, "from").filter(|_| !lead && !planner && !quiz && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
         let from = opener.clone().filter(|_| placeless);
         let cwd = match string(args, "cwd") {
             Some(cwd) => Some(cwd.to_string()),
-            None if kind == PaneType::Term && dock.is_none() && !lead && !planner => self.task_folder(opener.as_deref(), string(args, "window"), string(args, "workspace")).await,
+            None if kind == PaneType::Term && dock.is_none() && !lead && !planner && !quiz => self.task_folder(opener.as_deref(), string(args, "window"), string(args, "workspace")).await,
             None => None,
         };
         let at = Placement {
@@ -990,6 +1004,7 @@ impl CoreHandle {
             shelf,
             lead,
             planner,
+            quiz,
             background,
         };
         let placed = self.layout(place_request(&Pane::new(&id, name.clone(), kind), &at)).await?;
@@ -1335,18 +1350,12 @@ impl CoreHandle {
         if let Some(host) = self.host() {
             host.stop(&pane);
         }
-        let renamed = self.state().panes.renew_terminal(id);
-        let id = match &renamed {
-            Some(to) => {
-                let _ = self.layout(json!({ "op": "rename", "from": id, "to": to })).await;
-                let hooks: Vec<Rc<dyn Fn(&str, &str)>> = self.0.renamed.borrow().clone();
-                for hook in hooks {
-                    hook(id, to);
-                }
-                to.as_str()
+        if pane.terminal.is_some() {
+            let hooks: Vec<Rc<dyn Fn(&str)>> = self.0.new_run.borrow().clone();
+            for hook in hooks {
+                hook(id);
             }
-            None => id,
-        };
+        }
         if let Some(pane) = self.state().panes.get_mut(id) {
             pane.state = PaneState::Starting;
             pane.pid = None;
@@ -1609,7 +1618,7 @@ impl CoreHandle {
             let mut s = self.state();
             let restored: Vec<Pane> = panes.into_iter().filter(|p| placed.contains(p.id.as_str())).collect();
             let ids = restored.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0));
+            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0), 0);
             s.panes.note_numbers(&numbers);
             ids
         };

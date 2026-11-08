@@ -307,8 +307,9 @@ assert rows[current] == json.loads(sys.argv[3]), (rows[current], sys.argv[3])' "
   check test "$(diffpane stale)" == False || { echo "changed after a re-diff with nothing new"; return 1; }
   diffpane view ',"keys":"g"' >/dev/null
   raw '{"id":1,"cmd":"debug.key","args":{"key":"cmd+f"}}' >/dev/null
-  local typed; typed=$(raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"2000"}}')
-  check eval '[[ "$typed" == *NSFindPatternFieldEditor* ]]' || { echo "⌘F showed no find field: $typed"; return 1; }
+  check wait_for 5 eval '[[ "$(diffpane columns.0.find_bar)" == 1 ]]' || { echo "⌘F showed no find bar: $(diffpane columns)"; return 1; }
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"2000"}}' >/dev/null
+  check wait_for 5 eval '(( $(diffpane columns.0.find_matches) > 0 ))' || { echo "⌘F found no 2000: $(diffpane columns)"; return 1; }
   raw '{"id":1,"cmd":"debug.key","args":{"key":"return"}}' >/dev/null
   raw '{"id":1,"cmd":"debug.key","args":{"key":"escape"}}' >/dev/null
   raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"diff_pane-unified.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/diff_pane-unified.png" "$out/diff_pane-unified.png" 2>/dev/null
@@ -664,6 +665,26 @@ print(next(p["id"] for p in json.load(sys.stdin)["panes"] if (p.get("path") or "
   press $id next >/dev/null
   check wait_for 5 eval '[[ "$(KANNA_TERMINAL=$agent kanna tour)" == "no tour" && "$(code $id tour)" == None ]]' || return 1
   [[ -z "$(kanna read "$agent" | tr -d '[:space:]')" ]] || { echo "code_tour_steps: stepping sent the agent: $(kanna read "$agent")"; return 1; }
+}
+
+scenario code_find_case M4
+code_find_case() {
+  start_daemon && start_app || return 1
+  local file="$KANNA_STATE_DIR/code_find_case.rs"
+  printf '%s\n' 'enum Shutdown { Now, Later }' 'fn shutdown(reason: Shutdown) {' '    log("shutdown requested");' '    if reason == Shutdown::Now { SHUTDOWN.store(true) }' '    let shutdowns = 0;' '}' >"$file"
+  code() { raw "{\"id\":1,\"cmd\":\"debug.code\",\"args\":{\"pane\":\"$1\"}}" | field "$2"; }
+  key() { raw "{\"id\":1,\"cmd\":\"debug.key\",\"args\":{\"key\":\"$1\"}}" >/dev/null; }
+  seek() { key cmd+f; key cmd+a; raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"focused\":true,\"text\":\"$1\"}}" >/dev/null; }
+  kanna open --window new code --name src "$file" >/dev/null || return 1
+  check wait_for 5 eval '(( $(code src lines) >= 6 ))' || return 1
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"src","at":[300,300]}}' >/dev/null; sleep 0.3
+  seek Shutdown
+  check wait_for 5 eval '[[ "$(code src find_matches)" == 3 ]]' || { echo "Shutdown: $(code src find_matches) matches, not the 3 with that case"; return 1; }
+  seek shutdown
+  check wait_for 5 eval '[[ "$(code src find_matches)" == 7 ]]' || { echo "shutdown: $(code src find_matches) matches, not all 7"; return 1; }
+  raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"code_find_case.png"}}' >/dev/null; cp "$KANNA_STATE_DIR/code_find_case.png" "$out/" 2>/dev/null
+  key escape
+  check wait_for 5 eval '[[ "$(code src find_bar)" == 0 && "$(code src find_matches)" == 0 ]]' || { echo "Esc left the find bar $(code src find_bar), $(code src find_matches) matches"; return 1; }
 }
 
 scenario code_pinned_line M4

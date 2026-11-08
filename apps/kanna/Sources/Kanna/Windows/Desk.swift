@@ -1,4 +1,5 @@
 import AppKit
+import KannaWindows
 
 struct GitPlace: Equatable {
     let root: String
@@ -263,8 +264,13 @@ extension AppController {
         for entry in shelves[machine ?? ""] ?? [] {
             if let location = location(ofEntry: entry), let project = entry["project"]?.string { identities[location] = project }
         }
-        shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
+        mergeShelves()
         refreshSoon()
+    }
+
+    func mergeShelves() {
+        let merged: [JSON] = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
+        shelf = DeskOrder.byAge(merged, made: { (entry: JSON) -> Double in entry["madeAt"]?.number ?? 0 }, tie: { (entry: JSON) -> String in MachineIDs.bare(entry["id"]?.string ?? "") })
     }
 
     func location(ofEntry entry: JSON) -> String? {

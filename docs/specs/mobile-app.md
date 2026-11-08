@@ -1,6 +1,6 @@
 # Kanna on the Phone
 
-**Status:** planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
+**Status:** slices 1 to 4 and A built, the rest planned · **Parts:** [link and pairing](mobile-link.md), [chat and the planner](mobile-chat.md), [Shelf](mobile-shelf.md), [Machines and Stats](mobile-machines.md), [quiz](mobile-quiz.md) · **Mockup:** [`references/mockups/mobile.html`](../../references/mockups/mobile.html) · **Prototype:** [`references/prototypes/mobile`](../../references/prototypes/mobile/README.md) · **Builds on:** [your machines](machines.md), [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md)
 
 A native SwiftUI iPhone app that lets you steer a repo from your pocket by talking to its planning agent. You chat with **the repo's planner, one repo at a time**, and it answers through the `kanna` CLI, so there is one agent and never a second cook in the kitchen. You see only what it chooses to tell you: no tool calls, no terminal, no noise.
 
@@ -25,7 +25,7 @@ Pictures are the prototype's, on fixtures, in dark mode; `screenshots/` there co
 ## 1. Rules
 
 - **One agent.** The chat is with the repo's planner. Everything risky goes through it: it can say no, and the Mac's terminal shows the whole exchange.
-- **No noise.** Only what the planner sends with `kanna phone` shows in the chat.
+- **No noise.** Only what the planner sends with `kanna phone` shows in the chat, and a task's page shows what it sends the same way, or its last words.
 - **One repo at a time.** Every tab belongs to the repo named at the top.
 - **The phone runs nothing.** It's a device in your peer log with a narrow role: it holds no tasks and has no terminals.
 - **What's new shows when you open it.** No push notifications in the first version.
@@ -60,8 +60,8 @@ flowchart LR
 | Chat | The conversation, the planner's status, code cards, questions, round cards | [chat](mobile-chat.md) |
 | Shelf | The repo's tasks; a task's messages, last words and Pick | [Shelf](mobile-shelf.md) |
 | Quiz | The mastery map, subsystems, rounds | [quiz](mobile-quiz.md) |
-| Stats | The daemon's `stats` reply for the repo, redrawn for a thumb | [Stats §2](stats.md#2-the-numbers) |
-| Machines | The repo's machines, each one's path from the planner machine and what's on it; *Run the planner here* | [chat §1](mobile-chat.md#1-the-planner-machine) |
+| Stats | The daemon's `stats` reply for the repo, redrawn for a thumb | [Machines and Stats §7](mobile-machines.md#7-stats), [Stats §2](stats.md#2-the-numbers) |
+| Machines | The repo's machines, each one's path from the planner machine and what's on it; *Run the planner here* | [Machines and Stats](mobile-machines.md) |
 
 ![The Shelf: the list, a task to pick, a running task, a task that needs you, Pick](mobile-shelf.png)
 
@@ -97,14 +97,14 @@ D1 to D13 are the mockup's; the [prototype's README](../../references/prototypes
 
 ## 5. What depends on a real iPhone
 
-Nobody has run the prototype on a real iPhone yet, and it has no networking at all. Slice 1 starts with these, and a failure in the first three changes the design.
+Nobody has run the prototype on a real iPhone, and it has no networking at all. Slice 1 started with these, on [a probe](../../references/prototypes/phone-probe/README.md#results): iroh runs on an iPhone (with `fast-apple-datapath` off there, since it calls a private API), the app comes back in under 100 ms, the camera scans, and the LAN is reached with a [Bonjour service of our own](mobile-link.md#4-the-path), because iroh's records don't resolve.
 
 | Depends on a phone | Why the Simulator can't say | If it fails |
 |---|---|---|
 | iroh and `kanna-net` built for `aarch64-apple-ios` | The Simulator is a Mac process with a Mac network stack. `fast-apple-datapath` has only run on Macs here | Drop that feature; then a thin native transport |
-| Reaching the LAN without multicast | Raw multicast on iOS takes an entitlement Apple must grant, and iroh's mDNS uses raw multicast. The design uses addresses plus `NWBrowser` ([link §4](mobile-link.md#4-the-path)), and whether `NWBrowser` reads iroh's records is untested | Publish a plain Bonjour service from the daemon beside iroh's |
+| Reaching the LAN without multicast | Raw multicast on iOS takes an entitlement Apple must grant, and iroh's mDNS uses raw multicast. The design uses addresses plus `NWBrowser` on a service the daemon publishes ([link §4](mobile-link.md#4-the-path)). Publishing with `mdns-sd` from Linux is untested | Addresses only, until the relay |
 | Coming back from the background | iOS suspends the app and its sockets. The target is a usable link within a second on the LAN | A longer visible reconnect; the chat still reads from cache |
-| Hole punching from cellular | [fleet-net](../../references/prototypes/fleet-net/README.md#results-and-slice-contract) measured a laptop. Carrier NAT may leave a phone always relayed | Relayed is the normal path away; put a relay near you ([remote terminals §5](remote-terminals.md#5-local-echo)) |
+| Hole punching from cellular | [Measured on an iPhone](../../references/prototypes/phone-probe/README.md#cellular): direct came and went, and relayed carried the link in between. Another carrier may leave a phone always relayed | Relayed is the normal path away; put a relay near you ([remote terminals §5](remote-terminals.md#5-local-echo)) |
 | The Local Network prompt | Only shows on a device, and a refusal has to leave relay working | Say so on the chip, and offer Settings |
 | Scanning, and a refused camera | No camera in the Simulator | |
 | The feel | Dragging the keyboard away, the floating tab bar, haptics, press-and-drag on charts, hanging indents at real size | Adjust in the app, port to the prototype |
@@ -115,13 +115,13 @@ Signing needs a team set in Xcode and `CODE_SIGNING_ALLOWED` removed ([README](.
 ## 6. Risks
 
 - **A phone can instruct an agent that skips permission prompts.** The stream is narrow, but a message to the planner is as strong as typing at it. So the device key needs the phone unlocked, and any machine can revoke it ([link §1](mobile-link.md#1-a-phone-in-the-peer-log)).
-- **Agent usage:** each round the phone plays costs an agent run to write the next one, on your account ([quiz §1](mobile-quiz.md#1-rounds-written-ahead)).
+- **Agent usage:** each round the phone plays costs an agent run to write the next one, on your account: about $1 at API rates ([quiz §4](mobile-quiz.md#4-what-a-round-costs)).
 - **Session files:** last words read a format each agent owns and can change ([Shelf §3](mobile-shelf.md#3-last-words)).
 - **A sleeping planner machine:** the phone connects to nothing else for that repo, so it shows what's cached and queues, even with your other machines awake. A machine that stays awake is the better planner machine, and *Run the planner here* moves it.
 
 ## 7. Rejected
 
-- **The app link on the phone:** it carries terminals and layouts the phone never shows, it's one app per daemon, and it would give a phone `send`.
+- **The app link on the phone:** it carries terminals and layouts the phone never shows, and it would give a phone `send`.
 - **A second agent for the phone:** two agents would disagree about the repo, which is the problem this app's one-agent rule exists to avoid.
 - **Showing the planner's terminal or transcript:** that's the noise. The planner says what matters.
 - **An app key certified by one machine** (the stopgap for D13): it needs pairing with each machine, and dies with that machine.
@@ -154,6 +154,20 @@ Each slice is one task, is usable alone, and leaves `main` releasable. Each goes
 | A | **Away from the LAN** | The relay, its token, `NWPathMonitor`, the queue's day limit | Everything already built works from a café and from cellular, and the chip tells the truth | 1, and [Relay: run ours on the e2-micro](remote-terminals.md#3-your-relay) |
 
 Slice A can land any time after slice 1; the rest go in order.
+
+**Building the app:**
+
+```sh
+scripts/build-ios-ffi.sh
+cd apps/kanna-ios && xcodegen generate
+xcodebuild test -project Kanna.xcodeproj -scheme Kanna -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
+- **The version** is [the last tag's](release.md#versions): a build phase, `scripts/ios-version.sh`, writes `CFBundleShortVersionString` (`X.Y.Z`), `CFBundleVersion` (the commit count) and `KannaVersion` (all of it, `X.Y.Z-dev`) into the built Info.plist on every build, so `project.yml` sets none. With no tag to read, the build fails and says why.
+- **`FlowTests`** run the prototype's flows against `FixtureBackend`, with `-fixture YES`.
+- **`DeviceTests`** run on a real iPhone against a real daemon. `testScanAskAnswer` skips without `TEST_RUNNER_KANNA_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`; the answer must be words the question doesn't contain, or the test finds its own bubble. `testPair` skips without `TEST_RUNNER_KANNA_PAIR`, and scans a code the Mac shows. `testAway` is for a paired phone with its Wi-Fi off, skips without `TEST_RUNNER_KANNA_AWAY_ASK`, `TEST_RUNNER_KANNA_ANSWER` and `TEST_RUNNER_KANNA_REPO`, fails if the chip says LAN, and prints its timings on lines starting `kanna-away`. `testQuizRound` skips without `TEST_RUNNER_KANNA_QUIZ_REPO`, and plays a round that's ready to the end. `testShelf` skips without `TEST_RUNNER_KANNA_TASK` and `TEST_RUNNER_KANNA_REPO`, and with `TEST_RUNNER_KANNA_TELL` and `TEST_RUNNER_KANNA_DESK` also messages and picks that task. `testMachinesAndStats` skips without `TEST_RUNNER_KANNA_REPO` and `TEST_RUNNER_KANNA_MACHINE`, and with `TEST_RUNNER_KANNA_MOVE_TO` also moves the planner.
+- **The icon** is drawn in [iPhone app icon](ios-app-icon.md).
+- **`Store`** holds what the views read, over a `Backend`: `LiveBackend` on the Rust library, `FixtureBackend` for tests. SwiftData keeps the chat and the queue.
 
 **Where the code goes:**
 

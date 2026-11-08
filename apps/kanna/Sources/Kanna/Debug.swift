@@ -58,6 +58,11 @@ extension AppController {
             if let title = args["item"]?.string { try choose(menuItem: title) }
             return ["items": .array(menuItems)]
         }
+        commands["debug.about"] = { _ in
+            func lines(_ view: NSView) -> [String] { ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(lines) }
+            let shown = NSApp.windows.filter(\.isVisible).compactMap { $0.contentView.map(lines) }
+            return ["lines": .array((shown.first { $0.contains { $0.hasPrefix("Version ") } } ?? []).map { .string($0) })]
+        }
         commands["debug.rename"] = { [weak self] args in
             guard let tab = args["tab"]?.string, let title = args["title"]?.string else { throw KannaError("bad_request", "debug.rename needs a tab and a title") }
             self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)])
@@ -191,6 +196,15 @@ extension AppController {
                     "keyboard": Self.paneHolding(controller.window.firstResponder).map { .string($0) } ?? .null,
                     "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow)]
         }
+        commands["debug.pairPhone"] = { [weak self] args in
+            guard let self else { return [:] }
+            if args["cancel"]?.bool == true {
+                PhonePairing.shown?.cancelled()
+            } else if PhonePairing.shown == nil {
+                controllers.values.first?.machinesPage.pair?()
+            }
+            return ["sheet": .bool(PhonePairing.shown?.attached == true), "code": PhonePairing.shown?.scanned.map { .string($0) } ?? .null]
+        }
         commands["debug.web"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let web = contents.web(id) else { throw KannaError("wrong_type", "not a web pane") }
             if let script = args["js"]?.string {
@@ -205,7 +219,7 @@ extension AppController {
                 return ["editor": .string(shown)]
             }
             let text = try? await web.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String
-            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)), "page_width": .number(Double(web.webView.frame.width)),
+            var reply: [String: JSON] = ["url": web.webView.url.map { .string(web.unmap($0).absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)), "page_width": .number(Double(web.webView.frame.width)),
                                          "notice": web.shownNotice.map { .string($0) } ?? .null, "markup": .bool(web.markable),
                                          "view": .string(Self.identity(web)), "web_view": .string(Self.identity(web.webView)), "loads": .number(Double(web.loads))]
             guard let markup = web.markup else { return reply }

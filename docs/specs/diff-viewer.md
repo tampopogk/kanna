@@ -103,7 +103,7 @@ sequenceDiagram
 | Click a line | makes it the current line |
 | Click a file in the list | goes to it |
 | Click, ⌥-click a file's header | folds it, folds or unfolds every file |
-| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane (each column owns an `NSTextFinder`, so its matches can be marked in the overview); opening or closing the bar leaves the view where it is |
+| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane: case-insensitive unless the search has a capital ([find bar](find-bar.md); each column has its own, so its matches can be marked in the overview); opening or closing the bar leaves the view where it is |
 | ⌘= ⌘− ⌘0 | font size |
 
 ## 4. CLI

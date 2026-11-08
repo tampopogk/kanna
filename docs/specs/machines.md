@@ -112,11 +112,31 @@ sequenceDiagram
 | Transport | unix socket | iroh, through `kanna-net` in `kanna-ffi` for the app |
 | Version check | binary hash; another build is replaced ([daemon build](daemon-build.md)) | the same protocol; `other_protocol` when it isn't |
 | Who starts it | the app; on a Mac that serves your other machines, launchd | systemd (Linux), launchd (Macs) |
-| Apps | one (`app_attached`) | one; a phone has [a stream of its own](mobile-link.md#3-the-phone-stream) and doesn't count |
+| Apps | any number: its own and any remote ([links §2](machine-links.md#2-the-hello)) | any number; a phone has [a stream of its own](mobile-link.md#3-the-phone-stream) and doesn't count |
 
 - **One link per machine.** Every view is keyed by (machine, content ID), since `term-41` exists on every daemon. Built: [one link per machine](machine-links.md).
 - **The CLI:** `kanna --host NAME` (or `KANNA_HOST`) sends any command to that machine: the local daemon dials it and forwards the command as `machine call` over a control stream, and the reply is the remote daemon's own. Inside a remote terminal nothing changes: the CLI there uses its own unix socket. Commands that read local files (`diagrams`, doc comments) still run on this machine.
-- **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`), a LaunchAgent pointed at the installed app's `Contents/Helpers/kanna-daemon`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
+- **A task finds its machine:** where a command takes a pane, a task does too, in any form `kanna task list` takes (`task-ac2b`, `ac2b`), and means its agent's pane. `kanna read ac2b` asks this daemon `tasks locate`, which answers from the [replicated Shelf](machine-tasks.md#1-the-replicated-shelf): a task here gives its pane; one another machine owns gives that machine (the record's `owner`), and the CLI sends the command there by the same `machine call` as `--host`, after asking that daemon for the task's pane. `kanna task` does the same for every action that names a task (`send`, `messages`, `start`, `stop`, `pick`, `shelve`, `done`, …): the action runs on the task's machine, a message carries the task or planner it's from (`sender`), and `pick` claims this machine's Desk, taking the task off the Desk of whichever app had it (it goes by the Shelf, so its tabs come along). A short ID means a task some machine is running before a done task of this machine's that starts the same way. `activate` and `park` stay with this machine's Kanna.app, which shows the other machine's pane as `term-5@vm`. A plain pane ID (`term-21`) and a pane name are always this machine's, and `--host` still reaches any machine for everything else.
+
+```mermaid
+sequenceDiagram
+    participant C as kanna (mbp)
+    participant M as daemon (mbp)
+    participant V as daemon (vm)
+    C->>M: tasks locate ac2b
+    M-->>C: task-ac2b "Fix", machine vm (its owner in the replicated Shelf)
+    C->>M: machine call vm: tasks locate task-ac2b
+    M->>V: tasks locate task-ac2b (control stream)
+    V-->>M: pane term-5
+    M-->>C: pane term-5
+    C->>M: machine call vm: read term-5
+    M->>V: read term-5 (control stream)
+    V-->>M: the screen
+    M-->>C: vm's own reply
+```
+
+- **What comes back here:** errors from the other machine start with its name (`vm: …`). When it can't be reached, the command exits 3 with `task-ac2b "Fix" runs on vm, which is unreachable: can't reach vm within 10s (…)`; a machine you've revoked is unreachable at once. A `screenshot` of a pane there (by task, or with `--host`) is taken by that machine's app and sent back as PNG bytes in the reply (`png: true`), and this daemon saves it here, at `-o FILE` or in `$TMPDIR`.
+- **A Mac that serves your other machines** (a Mac whose tasks you reach from elsewhere) runs its daemon from launchd (`kanna machine serve`, undone by `--stop`), a LaunchAgent, `BUNDLE.daemon`, pointed at the `kanna-daemon` beside that `kanna`: the installed app's `Contents/Helpers`. The app's replace rule still holds: on `other_build` the daemon exits, and launchd starts it again from the updated bundle.
 - **Streams:** one ALPN, `kanna/1`. Each stream opens with a header line naming its kind (`control`, `file`, `port`, `sync`, `job`, `transfer`, and planned [`phone`](mobile-link.md#3-the-phone-stream)) and the protocol the opener speaks, answered by `{ok: true, kind, name, protocol, release}` or a refusal (`unpaired`, `revoked`, `unknown_stream`, `other_protocol`), and its bytes follow ([versions §2](machine-versions.md#2-protocols)). A `control` stream carries JSON-line requests and replies, as on the unix socket. One more kind isn't checked: `pair`, the only one an unknown key may open ([identity §2](machine-identity.md#2-pairing)). A `port` stream carries one TCP connection to the machine's loopback ([port tunnels](port-tunnels.md)). A `sync` stream is a daemon's only (an app's certificate is refused) and carries the replicated Shelf's requests ([tasks §2](machine-tasks.md#2-owners-and-grants)), each stamped with the asking daemon's key. A `transfer` stream is a daemon's only and carries one task moving here, a header line and its bytes ([task transfer §6](task-transfer.md#6-interfaces)). Until their slices, `file` and `job` are acknowledged and closed; `job` is used by services built on top, such as [Kanna Cloud](kanna-cloud.md).
 
 ## 6. One app, several machines
@@ -159,7 +179,7 @@ A Linux machine is set up with `scripts/server-setup.sh` and a systemd user unit
 
 ## 11. Open questions
 
-- **The user's GCP e2-micro** runs the relay slice 8 measures through. **Proposed:** it is the user's own relay, the example of "your own relay"; Kanna Cloud's relays are a separate deployment.
+- **The user's GCP e2-micro** is the user's own relay, the example of "your own relay" ([deployed](remote-terminals.md#3-your-relay)). **Proposed:** Kanna Cloud's relays are a separate deployment.
 
 ## 12. Rejected
 

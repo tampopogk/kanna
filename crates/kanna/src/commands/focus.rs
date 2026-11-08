@@ -1,4 +1,4 @@
-use super::{target, Command, Flow};
+use super::{target, Command, Flow, PANE};
 use crate::output::{tagged, whose};
 use serde_json::Value;
 
@@ -12,7 +12,7 @@ pub const COMMAND: Command = Command {
     examples: &[("kanna focus server", "Focus the pane named server."), ("kanna focus --tab tab-1", "Switch to tab-1.")],
     parse: |args| target(args, "focus"),
     show,
-    flow: Flow::PLAIN,
+    flow: Flow { panes: PANE, ..Flow::PLAIN },
 };
 
 pub fn show(args: &Value, reply: &Value) -> String {

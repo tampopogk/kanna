@@ -32,6 +32,18 @@ struct DeskOrderTests {
         #expect(DeskOrder.byAge(tasks, made: \.madeAt).map(\.id) == ["b", "a", "c"])
     }
 
+    @Test func tasksMadeAtTheSameMomentOnDifferentMachinesKeepOneOrderHoweverTheyArrive() {
+        let tasks = [Task(id: "c", madeAt: 5), Task(id: "a", madeAt: 5), Task(id: "b", madeAt: 5), Task(id: "z", madeAt: 1)]
+        let order = ["z", "a", "b", "c"]
+        #expect(DeskOrder.byAge(tasks, made: \.madeAt, tie: \.id).map(\.id) == order)
+        #expect(DeskOrder.byAge(tasks.reversed(), made: \.madeAt, tie: \.id).map(\.id) == order)
+    }
+
+    @Test func aTieInBothKeepsItsOrder() {
+        let tasks = [Task(id: "a", madeAt: 5, needsYou: true), Task(id: "a", madeAt: 5)]
+        #expect(DeskOrder.byAge(tasks, made: \.madeAt, tie: \.id) == tasks)
+    }
+
     @Test func commandOneIsTheTaskLeftLastAndCommandTwoTheOneLeftLongestAgo() {
         let desk = Desk(active: "a", recent: ["c", "b"])
         #expect(DeskOrder.task(desk.keyed, key: 1) == "c")

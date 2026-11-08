@@ -31,7 +31,7 @@ and target/PROFILE/kanna-build (debug in a worktree, release in the main checkou
   KANNA_STATE_DIR  where the daemon, keeper and app keep their files
                    (the keeper writes keeper.pid there)
   KANNA_KEEPER     the keeper binary the daemon starts (once it uses one)
-real_agent_tasks, real_agent_planners, real_agent_program_status and keeper_upgrade run the real claude and codex (on PATH,
+real_agent_tasks, real_agent_messages, real_agent_planners, real_agent_last_words, real_agent_program_status and keeper_upgrade run the real claude and codex (on PATH,
 or $KANNA_E2E_CLAUDE / $KANNA_E2E_CODEX) against tools/agent-harness's mock
 model, each in a HOME of its own. A planning terminal
 offers no agent (KANNA_PLANNING_AGENTS=none) unless a scenario gives it some. Shelf tasks
@@ -423,6 +423,42 @@ drag() { last_drag="$1 → $(raw "{\"id\":1,\"cmd\":\"debug.drag\",\"args\":$1}"
 near() { python3 -c 'import sys
 a, b = (bytes.fromhex(x.lstrip("#")) for x in sys.argv[1:3])
 sys.exit(0 if max(abs(x - y) for x, y in zip(a, b)) <= 16 else 1)' "$1" "$2"; }
+
+phone() { "$rust_dir/phone-client" "$phone_dir" "$@"; }
+
+machine_paired_vm() {
+  export KANNA_MACHINE_MDNS=0 KANNA_MACHINE_PORT=0
+  start_daemon || { echo "$1 line $LINENO"; return 1; }
+  vm="$KANNA_STATE_DIR/machine-vm"
+  mkdir -p "$vm/state" && chmod 700 "$vm"
+  vmk() { KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" "$bin/kanna" "$@"; }
+  vraw() { KANNA_SOCKET="$vm/kanna.sock" raw "$@"; }
+  KANNA_AGENTS_HOME="${2:-$KANNA_AGENTS_HOME}" KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  vm_pid=$!
+  wait_for 5 test -S "$vm/kanna.sock" || { echo "$1: the second daemon didn't open its socket"; return 1; }
+  kanna machine name mbp >/dev/null && vmk machine name vm >/dev/null || { echo "$1 line $LINENO"; return 1; }
+  python3 - "$KANNA_SOCKET" "$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")" >"$KANNA_STATE_DIR/confirmed" <<'PY' &
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); f = s.makefile("rw")
+f.write(json.dumps({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocol": int(sys.argv[2])}}) + "\n"); f.flush()
+for line in f:
+    m = json.loads(line)
+    if m.get("cmd") == "app.machine.confirm":
+        f.write(json.dumps({"id": m["id"], "ok": True, "confirmed": True}) + "\n"); f.flush()
+        print(m["args"]["name"], flush=True)
+        break
+PY
+  local confirmer=$!
+  vmk machine pair --json >"$KANNA_STATE_DIR/offer" &
+  local waiting=$!
+  check wait_for 5 test -s "$KANNA_STATE_DIR/offer" || { echo "$1: no pairing code"; return 1; }
+  local code peer
+  code="$(head -1 "$KANNA_STATE_DIR/offer" | field code)"
+  peer="$(head -1 "$KANNA_STATE_DIR/offer" | python3 -c 'import json, sys; o = json.load(sys.stdin); print("%s@127.0.0.1:%s" % (o["key"], o["port"]))')"
+  expected="added vm to your machines"; says kanna machine pair "$code" --peer "$peer" || return 1
+  wait "$waiting" "$confirmer"
+  check test "$(cat "$KANNA_STATE_DIR/confirmed")" == vm || { echo "$1: the pairing wasn't confirmed in an app"; return 1; }
+}
 
 for area in "$repo_root"/scripts/e2e/*.sh; do . "$area"; done
 in_run_order() {
