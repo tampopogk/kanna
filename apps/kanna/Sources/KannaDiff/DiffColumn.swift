@@ -128,9 +128,7 @@ final class DiffTextView: NSTextView {
     var onLink: ((String) -> Void)?
     var contextMenu: (() -> NSMenu?)?
     var onMatches: (() -> Void)?
-    let finder = NSTextFinder()
-    private lazy var finderClient = TextFinderClient(textView: self)
-    private var matchObserver: NSKeyValueObservation?
+    let finder = PaneFinder()
 
     var starts: [Int] = []
     var height: CGFloat = 0
@@ -140,19 +138,14 @@ final class DiffTextView: NSTextView {
     }
 
     func startFinder(in container: NSScrollView) {
-        finder.client = finderClient
-        finder.findBarContainer = container
-        finder.isIncrementalSearchingEnabled = true
-        finder.incrementalSearchingShouldDimContentView = false
-        matchObserver = finder.observe(\.incrementalMatchRanges) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.needsDisplay = true
-                self?.onMatches?()
-            }
+        finder.attach(self, in: container)
+        finder.onMatches = { [weak self] in
+            self?.needsDisplay = true
+            self?.onMatches?()
         }
     }
 
-    var matches: [NSRange] { finder.incrementalMatchRanges.map(\.rangeValue) }
+    var matches: [NSRange] { finder.matches }
 
     override func performTextFinderAction(_ sender: Any?) {
         guard let tag = (sender as? NSValidatedUserInterfaceItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return }

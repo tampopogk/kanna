@@ -3,6 +3,8 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+pub mod tags;
+
 pub const DEFAULT_INSTANCE: &str = "default";
 
 pub const SOCKET: &str = "kanna.sock";

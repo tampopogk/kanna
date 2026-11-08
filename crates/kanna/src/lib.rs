@@ -2,6 +2,7 @@ pub mod args;
 pub mod commands;
 pub mod complete;
 pub mod output;
+pub mod route;
 pub mod target;
 pub mod threads;
 
@@ -126,13 +127,20 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if target.backend == Backend::Kanna && commands::caller().is_none() && matches!(command.wire(&request), "focus" | "open" | "move" | "move-tab" | "desk") {
         request["user"] = json!(true);
     }
+    let routed = route::panes(command.flow.panes, &mut request, &mut mux)?;
     let mut call = match command.flow.before {
         Some(before) => before(&mut request, &mut mux)?,
         None => Call::default(),
     };
+    if routed.is_some() {
+        call.remote = routed;
+    }
     let mut reply = match mux.call(command.wire(&request), request.clone()) {
         Ok(reply) => reply,
         Err(mut failure) => {
+            if let Some(remote) = &call.remote {
+                return Err(remote.explain(failure));
+            }
             if failure.message.contains("task-") {
                 let shorts = mux.call("tasks", json!({ "action": "list" })).map(|b| output::shorts(&b)).unwrap_or_default();
                 failure.message = output::short_text(&failure.message, &shorts);

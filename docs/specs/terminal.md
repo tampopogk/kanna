@@ -102,7 +102,7 @@ sequenceDiagram
 
 `KANNA_TEST_EFFECTS=1`, which only `scripts/e2e-kanna.sh` sets, makes a surface act on nothing outside the app: the clipboard is a private pasteboard (`dev.kanna.debug.<pid>`), and links, bells and notifications are recorded, not opened, rung or posted; confirmation sheets are answered no. It's one variable for all of these, since each would reach the user's desktop from a test. The app reads it; the daemon doesn't need it.
 
-`debug.terminal {pane, clipboard?, action?, zoom?, click?, appearance?}` sets them up and reports the surface: grid and cell size, title, hovered link, selection, background colour, clipboard, links with their decisions, what was opened, bells, notifications, progress, settings and focus.
+`debug.terminal {pane, clipboard?, action?, zoom?, scroll?, click?, appearance?}` sets them up (`scroll` counts as use, as a scroll gesture does, [pane sizes §3](pane-sizes.md#3-several-apps)) and reports the surface: the view's grid (`cols`, `rows`), the terminal's as the daemon last set it (`grid`), cell size, title, hovered link, selection, background colour, clipboard, links with their decisions, what was opened, bells, notifications, progress, settings and focus.
 
 ## 6. Decided
 

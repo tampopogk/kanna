@@ -126,7 +126,8 @@ public final class DiffPaneView: NSView {
             let clip = column.scrollView.contentView
             return ["x": clip.bounds.minX, "y": clip.bounds.minY, "inset_left": clip.contentInsets.left, "inset_top": clip.contentInsets.top,
                     "gutter": column.gutter.ruleThickness, "clip_x": clip.frame.minX, "frame_x": column.scrollView.frame.minX, "text_x": column.textView.frame.minX,
-                    "text_height": column.textView.frame.height]
+                    "text_height": column.textView.frame.height,
+                    "find_bar": column.textView.finder.isVisible ? 1 : 0, "find_matches": Double(column.textView.matches.count)]
         }
     }
 
