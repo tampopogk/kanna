@@ -7234,7 +7234,7 @@ machine_remote_task() {
   local agent; agent="$(desk tasks.0.task)"
   [[ "$agent" == term-*@vm ]] || { echo "machine_remote_task: the task's agent isn't vm's: $agent"; return 1; }
   check test "$(desk places.0)" == "vm · Direct · LAN" || { echo "machine_remote_task: the Shelf's tooltips"; desk places; return 1; }
-  check test "$(vmk task list --all --json | python3 -c 'import json, sys; print([t.get("where") for t in json.load(sys.stdin)["tasks"]])')" == "[{'desk': 'mbp'}]" || { vmk task list --json; return 1; }
+  check test "$(vmk task list --all --json | python3 -c 'import json, sys; r = json.load(sys.stdin); print(len(r["tasks"]), [(t.get("where"), t.get("desk")) for t in r["otherDesks"]])')" == "0 [({'desk': 'mbp'}, 'mbp')]" || { echo "machine_remote_task: on vm, the task isn't under Other Desks on mbp's Desk"; vmk task list --all --json; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"task":"'"$agent"'","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk window.dock.pane)" == "$agent" ]]' || { echo "machine_remote_task: pulling vm's task didn't dock its agent"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}'; return 1; }
   check wait_for 10 eval 'vmk read "${agent%@vm}" | grep -q mock-agent' || { vmk read "${agent%@vm}"; return 1; }
@@ -7323,7 +7323,7 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
   [[ "$opened" == *"kanna project import $clone"* ]] || { echo "machine_remote_task: a clone of vm's project outside repos on this Mac: $opened"; return 1; }
 
   kanna task list --all >/dev/null || return 1
-  check test "$(kanna task list --all --json | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["tasks"]))')" == 0 || { echo "machine_remote_task: vm's task leaked into this Mac's Shelf"; return 1; }
+  check test "$(kanna task list --all --json | python3 -c 'import json, sys; r = json.load(sys.stdin); print(len(r["shelf"]), [(t.get("id"), t.get("machine")) for t in r["tasks"]])')" == "0 [('${task%@vm}', 'vm')]" || { echo "machine_remote_task: vm's task isn't on this Mac's Desk on vm, or leaked into this Mac's Shelf"; kanna task list --all --json; return 1; }
 }
 
 scenario machine_task_by_id M4
