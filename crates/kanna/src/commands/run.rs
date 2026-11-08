@@ -7,20 +7,22 @@ use serde_json::{json, Value};
 pub const COMMAND: Command = Command {
     name: "run",
     group: "Information",
-    summary: "Build a task's change through a pipeline: start a run from the task's terminal, list runs, show one, read its log, resume a paused one, or stop it.",
-    usage: "kanna run start PIPELINE [--request FILE|TEXT]\n       kanna run list [--all]\n       kanna run show [RUN] [--json]\n       kanna run log [RUN]\n       kanna run stop [RUN]\n       kanna run resume [RUN] [TEXT]\n       kanna run done [pass|fail] [--answer FILE]\n       kanna run need TEXT",
+    summary: "Build a task's change through a pipeline: start a run from the task's terminal, list runs, show one, read its log, answer its ask, pause, resume, skip or retry its stage, or stop it.",
+    usage: "kanna run start PIPELINE [--request FILE|TEXT]\n       kanna run list [--all]\n       kanna run show [RUN] [--json]\n       kanna run log [RUN]\n       kanna run answer [RUN] yes|no [NOTE]\n       kanna run pause|skip|retry|stop [RUN]\n       kanna run resume [RUN] [TEXT]\n       kanna run done [pass|fail] [--answer FILE]\n       kanna run need TEXT",
     options: &[
         ("--request FILE|TEXT", "start: what the run builds, given to every agent stage: a file's text, or the text itself. Default: the task's first message."),
         ("--all", "list: every repo's runs, not only this repo's."),
         ("--answer FILE", "done: the stage's final answer. Default: the file in $KANNA_ANSWER, which the stage's prompt names."),
     ],
-    notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal in the task's workspace's background, in no tab until you show it with kanna move PANE --tab (kanna move PANE --background puts it back). The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: it removes its worktree, keeps its branch and tells the task's agent the branch is ready, with how to take it (git merge --ff-only run/TASK-N in the task's worktree), as it tells it when the run is stuck, waits on you or stops. The task's agent decides whether to merge it; from the task's worktree the change goes to main as any task's work. Closing the task stops its live runs.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run. Agent stages take any of Kanna's agents (claude, codex, opencode, agy), which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, show and log take the latest run of the task the terminal is in, and stop and resume its live run, refusing with the list when it has several. A task can have any number of runs at once, each on its own branch and worktree; each run's budget is its own, and a run over it waits and tells the task's agent. Fan-out, ask, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
+    notes: "A run builds the change of the task whose terminal starts it, on a branch of its own (run/TASK-N) from the task's branch as it is, in a worker: a worktree (.kanna-worktrees/TASK-run-N) and a terminal in the task's workspace's background, in no tab until you show it with kanna move PANE --tab (kanna move PANE --background puts it back). The daemon runs the pipeline's stages there one at a time: an agent stage as a fresh session with its prompt (.kanna/prompts/NAME.md, the request and the last failure's feedback, written to the worker's .kanna/tmp/stage-N.md), a run stage as a command whose exit 0 passes. It picks each arrow by the stage's verdict, as kanna pipeline check describes. The task's own agent and worktree are left alone while it runs. At done the run hands back: it removes its worktree, keeps its branch and tells the task's agent the branch is ready, with how to take it (git merge --ff-only run/TASK-N in the task's worktree), as it tells it when the run is stuck, waits on you or stops. The task's agent decides whether to merge it; from the task's worktree the change goes to main as any task's work. Closing the task stops its live runs.\ndone and need are for a stage's agent, in its worker's terminal, as its prompt says: done ends its visit (with pass or fail for a stage that gives a verdict), and Kanna quits the agent once its turn ends; need pauses the run, tells the task's agent what the stage needs, and quits the agent keeping its session. A stage whose turn ends without either pauses the run the same way, and the task's agent is told what its screen said. resume carries a paused stage on: its session starts again with TEXT (an answer, or what to do) as its next message. A stage's visit ends only when it reports done (or a command exits); an agent that exits without reporting stops the run.\nAn ask stage runs nothing: the run waits, the task's agent gets its question as a message from the run, and the task shows needs you until answer gives yes (pass) or no (fail), from the task's agent when you tell it to or from you; the NOTE goes to the next stage as feedback, and who answered is recorded. pause lets the current stage finish and starts no other; resume carries the run on. skip ends the current stage's visit as a pass by you (its agent or command stopped); retry stops it and runs the stage again. Each of answer, pause, resume, skip and retry is a run event and counted as an intervention (kanna run show). Stopping the task (kanna task stop) stops the run's stage with it, keeping an agent's session, and starts no other until the task starts again, when the run carries on; a Shelf runner stopping the task's agent at its turn's end leaves the run going, and the run's next message starts the task again. Agent stages take any of Kanna's agents (claude, codex, opencode, agy), which report their status (OSC 7501), so Kanna knows when a turn ends. RUN is a run's ID (run-7f3a1c2e, or a unique start of it); without one, show and log take the latest run of the task the terminal is in, and stop and resume its live run, refusing with the list when it has several. A task can have any number of runs at once, each on its own branch and worktree; each run's budget is its own, and a run over it waits and tells the task's agent. Fan-out, guard, emits and on another machine aren't built yet: a pipeline using them is refused. docs/specs/software-factory.md.",
     examples: &[
         ("kanna run start feature", "Build this task's change through .kanna/pipelines/feature.kojo."),
         ("kanna run start bugfix --request notes/bug.md", "Run bugfix.kojo with the bug's write-up as the request."),
         ("kanna run show --json", "This task's latest run: its revision, every visit with its verdict and answer, and the worker running now."),
         ("kanna run log run-7f3a", "What happened in run-7f3a, oldest first."),
         ("kanna run resume \"Use blue.\"", "Answer the stage this task's run paused on; its agent carries on with that."),
+        ("kanna run answer no \"Split the plan in two.\"", "Answer the ask this task's run waits on: no, with a note for the next stage."),
+        ("kanna run skip run-7f3a", "End run-7f3a's current stage as a pass and go on."),
         ("kanna run stop", "Stop this task's run where it is; its branch is kept."),
     ],
     parse,
@@ -32,7 +34,7 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
     let request = args.option("--request")?;
     let answer = args.option("--answer")?;
     let all = args.flag("--all");
-    let action = args.positional().ok_or_else(|| usage("run", "say what: start, list, show, log, resume or stop"))?;
+    let action = args.positional().ok_or_else(|| usage("run", "say what: start, list, show, log, answer, pause, resume, skip, retry or stop"))?;
     let mut out = json!({ "action": action });
     if let Some(by) = caller() {
         out["by"] = json!(by);
@@ -86,12 +88,27 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
                 out["text"] = json!(words.join(" "));
             }
         }
-        "show" | "log" | "stop" => {
+        "answer" => {
+            let mut words = args.positionals();
+            if words.first().is_some_and(|w| w.starts_with("run-")) {
+                out["run"] = json!(words.remove(0));
+            }
+            let said = if words.is_empty() { None } else { Some(words.remove(0)) };
+            match said.as_deref() {
+                Some("yes" | "no") => out["answer"] = json!(said),
+                Some(other) => return Err(usage("run", &format!("answer is yes or no, not \"{other}\""))),
+                None => return Err(usage("run", "answer needs yes or no: kanna run answer [RUN] yes|no [NOTE]")),
+            }
+            if !words.is_empty() {
+                out["note"] = json!(words.join(" "));
+            }
+        }
+        "show" | "log" | "stop" | "pause" | "skip" | "retry" => {
             if let Some(run) = args.positional() {
                 out["run"] = json!(run);
             }
         }
-        other => return Err(usage("run", &format!("unknown action \"{other}\" (start, list, show, log, stop, resume, done or need)"))),
+        other => return Err(usage("run", &format!("unknown action \"{other}\" (start, list, show, log, answer, pause, resume, skip, retry, stop, done or need)"))),
     }
     Ok(out)
 }
@@ -112,6 +129,13 @@ pub fn show(request: &Value, reply: &Value) -> String {
         Some("done") => format!("{}: {} reported {}; Kanna ends this session now", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?"), reply["verdict"].as_str().unwrap_or("done")),
         Some("need") => format!("{}: {} is paused; the task's agent is told what it needs, and Kanna ends this session once your turn ends, keeping it to resume", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
         Some("resume") => format!("{}: {} carries on", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("answer") => format!("{}: {} is answered {}", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?"), reply["answer"].as_str().unwrap_or("?")),
+        Some("pause") => match (reply["state"].as_str(), reply["stage"].as_str()) {
+            (Some("pausing"), Some(stage)) => format!("{} pauses once {stage} ends; `kanna run resume` carries it on", reply["run"].as_str().unwrap_or("?")),
+            _ => format!("{} is paused; `kanna run resume` carries it on", reply["run"].as_str().unwrap_or("?")),
+        },
+        Some("skip") => format!("{}: {} is skipped, as a pass", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
+        Some("retry") => format!("{}: {} runs again", reply["run"].as_str().unwrap_or("?"), reply["stage"].as_str().unwrap_or("?")),
         Some("list") => {
             let runs = reply["runs"].as_array().cloned().unwrap_or_default();
             if runs.is_empty() {
@@ -131,6 +155,8 @@ pub fn show(request: &Value, reply: &Value) -> String {
                     Some("verdict") => format!("{} {} → {}", doc["stage"].as_str().unwrap_or("?"), doc["verdict"].as_str().unwrap_or("?"), doc["next"].as_str().unwrap_or("no arrow")),
                     Some("started") => format!("{} on {}", doc["pipeline"].as_str().unwrap_or("?"), doc["branch"].as_str().unwrap_or("?")),
                     Some("handed_back") => doc["note"].as_str().unwrap_or("").to_string(),
+                    Some("answered") => format!("{} {} by the {}{}", doc["stage"].as_str().unwrap_or("?"), doc["answer"].as_str().unwrap_or("?"), e["by"].as_str().unwrap_or("user"), doc["note"].as_str().filter(|n| !n.is_empty()).map_or(String::new(), |n| format!(": {n}"))),
+                    Some("skipped" | "retried") => format!("{} (visit {}) by the {}", doc["stage"].as_str().unwrap_or("?"), doc["visit"], e["by"].as_str().unwrap_or("user")),
                     _ => doc["why"].as_str().unwrap_or("").to_string(),
                 };
                 format!("{}  {:<11} {detail}", ago(now - at), e["what"].as_str().unwrap_or("?"))
@@ -144,10 +170,16 @@ pub fn show(request: &Value, reply: &Value) -> String {
             if let Some(note) = run["note"].as_str() {
                 out.push(format!("handed back: {note}"));
             }
+            if let Some(kinds) = run["interventions"].as_object().filter(|k| !k.is_empty()) {
+                out.push(format!("interventions: {}", kinds.iter().map(|(k, n)| format!("{n} {k}")).collect::<Vec<_>>().join(", ")));
+            }
             for visit in reply["visits"].as_array().into_iter().flatten() {
                 let ended = visit["endedAt"].as_f64().unwrap_or(now);
                 let took = span(ended - visit["startedAt"].as_f64().unwrap_or(ended));
-                let verdict = visit["verdict"].as_str().unwrap_or("running");
+                let verdict = match (visit["verdict"].as_str(), visit["doc"]["by"].as_str()) {
+                    (Some(verdict), Some(by)) => format!("{verdict} ({by})"),
+                    (verdict, _) => verdict.unwrap_or(if visit["kind"] == "ask" { "asking" } else { "running" }).to_string(),
+                };
                 let answer = visit["doc"]["answer"].as_str().or(visit["doc"]["feedback"].as_str()).unwrap_or("").lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(72).collect::<String>();
                 out.push(format!("  {:<10} {:<2} {:<8} {:<11} {took:>8}  {answer}", visit["stage"].as_str().unwrap_or("?"), visit["visit"], visit["kind"].as_str().unwrap_or("?"), verdict));
             }
