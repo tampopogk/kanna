@@ -2050,7 +2050,6 @@ dependencies = [
  "regex",
  "rusqlite",
  "security-framework",
- "security-framework-sys",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
