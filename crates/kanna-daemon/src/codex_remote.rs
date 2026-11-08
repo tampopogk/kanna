@@ -104,7 +104,7 @@ pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
     }
     sweep(&folder);
     let listen = format!("unix://{}", socket.display());
-    let daemon = std::env::var_os("KANNA_SOCKET").filter(|s| !s.is_empty()).map_or_else(|| dir.join(kanna_build::SOCKET), PathBuf::from);
+    let daemon = accounts::daemon_socket(dir);
     let supplied = supplied(dir, &daemon);
     let server = children.spawn(Command::new(program).args(server_args(args, &listen, supplied.is_some())).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()));
     let mut server = match server {
@@ -145,12 +145,19 @@ enum Supplied {
 
 fn supplied(dir: &Path, daemon: &Path) -> Option<Supplied> {
     let accounts = Accounts::open(dir, accounts::secrets(dir), Box::new(accounts::CodexRefresher));
-    match accounts.credential("codex")? {
+    let credential = match accounts.credential("codex") {
+        Ok(credential) => credential?,
+        Err(why) => {
+            accounts::started_without(dir, "codex", &why);
+            return None;
+        }
+    };
+    match credential {
         Credential::CodexApiKey(key) => Some(Supplied::ApiKey(key)),
         Credential::CodexHolder { account, .. } => match accounts::ask_daemon(daemon, json!({ "action": "token", "account": account })) {
             Ok(reply) => Some(Supplied::Tokens { account, tokens: reply["tokens"].clone() }),
             Err(why) => {
-                eprintln!("kanna: couldn't get your Codex account's token ({why}), so Codex uses this machine's own sign-in");
+                accounts::started_without(dir, "codex", &format!("couldn't get your Codex account's token: {why}"));
                 None
             }
         },
