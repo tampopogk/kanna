@@ -1,4 +1,4 @@
-use super::{pane, usage, Command, Flow};
+use super::{pane, usage, Command, Flow, PANE};
 use crate::output;
 use serde_json::json;
 
@@ -16,5 +16,5 @@ pub const COMMAND: Command = Command {
         Ok(json!({ "pane": pane, "size": size }))
     },
     show: |_, reply| output::moved(reply),
-    flow: Flow::PLAIN,
+    flow: Flow { panes: PANE, ..Flow::PLAIN },
 };
