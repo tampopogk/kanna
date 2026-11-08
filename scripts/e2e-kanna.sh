@@ -6420,6 +6420,7 @@ CHECK
   printf 'needy = claude\nneedy -> done\n' >"$repo/.kanna/pipelines/needy.kojo"
   printf 'Ask first.\nmock: run "$KANNA_CLI" run need "Which colour?"\n' >"$repo/.kanna/prompts/needy.md"
   printf 'wait = run sleep 300\nwait -> done\n' >"$repo/.kanna/pipelines/slow.kojo"
+  printf 'ok = ask "Ship it?"\nok -> done\n' >"$repo/.kanna/pipelines/asky.kojo"
   git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "pipeline_tab line $LINENO"; return 1; }
   (cd "$repo" && kanna task new "Counter" "run $bin/kanna run start demo --request 'Count the visits'" --agent "$fake/claude") >/dev/null || { echo "pipeline_tab line $LINENO"; return 1; }
   local task; task="$(tid 1)"
@@ -6507,15 +6508,25 @@ assert rows[0][5] == "—" and rows[0][6] == "—" and rows[1][5] == "", rows' "
   check wait_for 30 eval '[[ "$(runs state)" == "done done" ]]' || { echo "pipeline_tab: the resumed run didn't hand back: $(runs state) $(runs why)"; return 1; }
   [[ "$(kanna run log "$needy" --json | python3 -c 'import json, sys; print([e["by"] for e in json.load(sys.stdin)["events"] if e["what"] == "resumed"])')" == "['user']" ]] || { echo "pipeline_tab: the card's answer wasn't recorded as yours"; kanna run log "$needy"; return 1; }
 
+  again="$(here run start asky 2>&1)" || { echo "pipeline_tab: the asky run didn't start: $again"; return 1; }
+  local asky="${again%% *}"
+  opened="$(here open run "$asky")" && [[ "$opened" =~ ^opened\ (runview-[0-9]+) ]] || { echo "pipeline_tab: open run said: $opened"; return 1; }
+  tab="${BASH_REMATCH[1]}"
+  check wait_for 30 eval '[[ "$(shown card)" == "Ship it?" && "$(shown cardShown)" == True ]]' || { echo "pipeline_tab: the ask shows no card: $(shown card)"; return 1; }
+  note="$(python3 -c 'import json; print(json.dumps({"pane": "'"$tab"'", "press": "yes", "note": "Looks right."}))')"
+  check wait_for 20 resume_card || { echo "pipeline_tab: Yes on the card was refused: $(shown flash)"; return 1; }
+  check wait_for 30 eval '[[ "$(runs state)" == "done done done" ]]' || { echo "pipeline_tab: the answered run didn't hand back: $(runs state) $(runs why)"; return 1; }
+  [[ "$(kanna run log "$asky" --json | python3 -c 'import json, sys; print([(e["by"], e["doc"]["answer"], e["doc"]["note"]) for e in json.load(sys.stdin)["events"] if e["what"] == "answered"])')" == "[('user', 'yes', 'Looks right.')]" ]] || { echo "pipeline_tab: the card's yes wasn't recorded as yours"; kanna run log "$asky"; return 1; }
+
   again="$(here run start slow 2>&1)" || { echo "pipeline_tab: the slow run didn't start: $again"; return 1; }
   local slow="${again%% *}"
   opened="$(here open run "$slow")" && [[ "$opened" =~ ^opened\ (runview-[0-9]+) ]] || { echo "pipeline_tab: open run said: $opened"; return 1; }
   tab="${BASH_REMATCH[1]}"
   check wait_for 20 eval '[[ "$(shown enabled.stop)" == True ]]' || { echo "pipeline_tab: the slow run's Stop is $(shown enabled.stop)"; return 1; }
-  shown flash ',"press":"pause"' >/dev/null
-  check wait_for 10 eval '[[ -n "$(shown flash)" || "$(runs state)" == *paused ]]' || { echo "pipeline_tab: Pause did nothing"; return 1; }
+  check test "$(shown flash ',"press":"pause"')" == None || { echo "pipeline_tab: Pause was refused: $(shown flash)"; return 1; }
+  check wait_for 10 eval '[[ "$(kanna run log "$slow" --json | python3 -c '"'"'import json, sys; print([e["by"] for e in json.load(sys.stdin)["events"] if e["what"] == "paused"])'"'"')" == "['"'"'user'"'"']" ]]' || { echo "pipeline_tab: Pause wasn't recorded as yours"; kanna run log "$slow"; return 1; }
   shown state ',"press":"stop"' >/dev/null
-  check wait_for 10 eval '[[ "$(runs state)" == "done done stopped" ]]' || { echo "pipeline_tab: Stop on the Run tab didn't stop the run: $(runs state)"; return 1; }
+  check wait_for 10 eval '[[ "$(runs state)" == "done done done stopped" ]]' || { echo "pipeline_tab: Stop on the Run tab didn't stop the run: $(runs state)"; return 1; }
   [[ "$(kanna run log "$slow" --json | python3 -c 'import json, sys; print([e["by"] for e in json.load(sys.stdin)["events"] if e["what"] == "stopped"])')" == "['user']" ]] || { echo "pipeline_tab: the Stop wasn't recorded as yours"; return 1; }
   check wait_for 10 eval '[[ "$(shown state)" == stopped ]]' || { echo "pipeline_tab: the stopped run's tab says $(shown state)"; return 1; }
 }

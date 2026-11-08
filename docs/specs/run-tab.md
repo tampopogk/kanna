@@ -91,10 +91,10 @@ The app turns the grid into points (`RunGraph.lay`) with the mockup's sizes and 
 
 - **`kanna task list`:** a task with a live run adds the run's stage after its state: `idle · run: review 5/9`.
 - **`debug.run {pane, press?, note?}`:** what the tab shows (badge, subtitle, buttons, card, tiles, rows, workers, legend, node frames, edges), and presses a button; e2e uses it.
-- **e2e `pipeline_tab`:** a two-stage fixture with the mock agent whose check fails once: the tab, its badge and the task list line; `--watch` and the tab passing to the next worker; a keystroke counted; the screenshots above checked against the mockup; a `need` card answered with Resume; Pause and Stop pressed.
+- **e2e `pipeline_tab`:** a two-stage fixture with the mock agent whose check fails once: the tab, its badge and the task list line; `--watch` and the tab passing to the next worker; a keystroke counted; the screenshots above checked against the mockup; a `need` card answered with Resume; an `ask` card answered Yes with a note, recorded as yours; Pause and Stop pressed and recorded as yours.
 
 ## 7. Not built yet
 
-- **Pause, Skip stage, Retry stage, the ask card's answer** are Factory 3's verbs and **Edit pipeline** Factory 6's: until they land, the daemon refuses them and the tab flashes the refusal.
+- **Edit pipeline** is Factory 6's verb: until it lands, the daemon refuses it and the tab flashes the refusal.
 - **The watch scene's header bar** (`watch · review · codex · 2nd visit · 4m … follows the run`) above the shown terminal.
 - **A visit opening to its answer, output or diff.**
