@@ -2,7 +2,7 @@
 
 **Status:** built (2026-11-08) · **Builds on:** [presentation layers](presentation-layers.md), [one link per machine](machine-links.md), [files and threads](files-and-threads.md), [port tunnels](port-tunnels.md) · **Tested:** e2e `remote_workspace`, `cargo test -p kanna --test machine`
 
-An agent's calls to `kanna` are the same whether the app showing its task runs on its own machine or on another. The agent acts only on its own workspace, which its daemon keeps (the logical layer); whichever app has the task on its Desk, on this machine or another, draws it. The agent never knows or names where the user is looking: there is no `--app` or machine argument for it. The workspace is the abstraction, and the daemon closes every place it leaks.
+An agent's calls to `kanna` are the same whether the app showing its task runs on its own machine or on another. The agent acts only on its own workspace, which its daemon keeps (the logical layer); whichever app has the task on its Desk, on this machine or another, draws it. The agent never knows or names where the user is looking: there is no `--app` or machine argument for it.
 
 ## Contents
 
