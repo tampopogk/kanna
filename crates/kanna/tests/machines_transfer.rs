@@ -147,7 +147,10 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
     assert!(shelf_task(&mbp, &task).is_null(), "the task left mbp's Shelf");
     assert!(!Path::new(&folder).exists(), "and its worktree there");
     within(10, "mbp to see vm own it", || record(&mbp, &task)["owner"].as_str() == Some(key(&vm).as_str()));
-    mbp.kanna(&["task", "start", &task]).fails(4, "no task");
+    mbp.kanna(&["task", "start", &task]).fails(1, &format!("vm: {task} is running"));
+    mbp.kanna(&["task", "send", &task[..9], "after the move"]).ok();
+    let held = vm.kanna(&["task", "messages", &task]).ok();
+    assert!(held.contains("after the move"), "the done row mbp kept doesn't stop a message reaching vm: {held}");
 
     let codex = mock(&mbp, "codex");
     let (task, folder, session) = started_task(&mbp, &here, &codex);

@@ -2,8 +2,11 @@ use crate::stacks::{self, Where};
 use crate::task_scripts;
 use crate::tasks::git;
 use kanna_mux::json::{json, num, string, Value};
+use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const COMMITS_SHOWN: usize = 20;
 
@@ -135,6 +138,14 @@ pub struct TaskProbe {
     pub folder: PathBuf,
     pub conflicts: bool,
     pub commits: bool,
+    pub checked: Option<Check>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Check {
+    pub main: String,
+    pub tip: String,
+    pub conflicts: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -143,6 +154,7 @@ pub struct Seen {
     pub main: Main,
     pub moved: bool,
     pub tasks: Vec<SeenTask>,
+    pub checks: Vec<(String, Option<Check>)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -160,13 +172,108 @@ pub fn look(probes: Vec<Probe>) -> Vec<Seen> {
         .filter_map(|probe| {
             let main = main_of(&probe.repo)?;
             let moved = probe.last.as_ref().is_some_and(|last| last.branch == main.branch && last.head != main.head);
+            let checks = check_merges(&probe, &main);
             let tasks = match moved {
-                true => probe.tasks.iter().filter_map(|task| check(&probe.repo, &main, task)).collect(),
+                true => probe.tasks.iter().filter_map(|task| check(&probe.repo, &main, task, checks.iter().find(|(id, _)| *id == task.id).and_then(|(_, c)| c.as_ref()))).collect(),
                 false => vec![],
             };
-            Some(Seen { repo: probe.repo, main, moved, tasks })
+            Some(Seen { repo: probe.repo, main, moved, tasks, checks })
         })
         .collect()
+}
+
+fn check_merges(probe: &Probe, main: &Main) -> Vec<(String, Option<Check>)> {
+    let wanted: Vec<&TaskProbe> = probe.tasks.iter().collect();
+    if wanted.is_empty() {
+        return vec![];
+    }
+    let tips = worktree_tips(&probe.repo);
+    let merged: HashSet<String> = git(&probe.repo, &["for-each-ref", &format!("--merged={}", main.head), "--format=%(objectname)", "refs/heads"]).map(|out| out.lines().map(String::from).collect()).unwrap_or_default();
+    let mut checks = vec![];
+    let mut due: Vec<(&TaskProbe, String)> = vec![];
+    for task in wanted {
+        match tips.get(&canonical(&task.folder)).cloned().flatten().filter(|tip| !merged.contains(tip)) {
+            None if task.checked.is_some() => checks.push((task.id.clone(), None)),
+            None => {}
+            Some(tip) if task.checked.as_ref().is_some_and(|c| c.main == main.head && c.tip == tip) => {}
+            Some(tip) => due.push((task, tip)),
+        }
+    }
+    if due.is_empty() {
+        return checks;
+    }
+    let heads: Vec<String> = due.iter().map(|(_, tip)| tip.clone()).collect();
+    match conflicts_all(&probe.repo, &main.head, &heads) {
+        Ok(found) => checks.extend(due.into_iter().zip(found).map(|((task, tip), conflicts)| (task.id.clone(), Some(Check { main: main.head.clone(), tip, conflicts })))),
+        Err(error) => log!("kanna-daemon: can't check {}'s tasks against {}: {error}", probe.repo.display(), main.branch),
+    }
+    checks
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn worktree_tips(repo: &Path) -> HashMap<PathBuf, Option<String>> {
+    let Ok(out) = git(repo, &["worktree", "list", "--porcelain"]) else { return HashMap::new() };
+    let mut tips = HashMap::new();
+    for block in out.split("\n\n") {
+        let field = |name: &str| block.lines().find_map(|l| l.strip_prefix(name));
+        let Some(path) = field("worktree ") else { continue };
+        let tip = field("branch ").and(field("HEAD ")).map(String::from);
+        tips.insert(canonical(Path::new(path)), tip);
+    }
+    tips
+}
+
+static QUARANTINES: AtomicU64 = AtomicU64::new(0);
+
+pub fn conflicts_all(repo: &Path, main: &str, tips: &[String]) -> Result<Vec<Vec<String>>, String> {
+    let objects = git(repo, &["rev-parse", "--path-format=absolute", "--git-path", "objects"])?;
+    let quarantine = std::env::temp_dir().join(format!("kanna-merge-tree-{}-{}", std::process::id(), QUARANTINES.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&quarantine).map_err(|e| format!("can't make {}: {e}", quarantine.display()))?;
+    let out = merge_trees(repo, &quarantine, &objects, main, tips);
+    let _ = std::fs::remove_dir_all(&quarantine);
+    let out = out?;
+    let mut fields = out.split(|b| *b == 0).map(|f| String::from_utf8_lossy(f).into_owned());
+    let mut found = vec![];
+    while found.len() < tips.len() {
+        let status = fields.next().ok_or("merge-tree stopped early")?;
+        fields.next().ok_or("merge-tree gave no tree")?;
+        let mut files: Vec<String> = fields.by_ref().take_while(|f| !f.is_empty()).collect();
+        files.sort();
+        files.dedup();
+        found.push(match status.as_str() {
+            "1" => vec![],
+            "0" => files,
+            other => return Err(format!("merge-tree said {other:?}")),
+        });
+    }
+    Ok(found)
+}
+
+fn merge_trees(repo: &Path, quarantine: &Path, objects: &str, main: &str, tips: &[String]) -> Result<Vec<u8>, String> {
+    let mut child = Command::new("git")
+        .args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"])
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-tree", "--stdin", "--name-only", "--no-messages", "-z"])
+        .env("GIT_OBJECT_DIRECTORY", quarantine)
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", objects)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("can't run git: {e}"))?;
+    let lines: String = tips.iter().map(|tip| format!("{main} {tip}\n")).collect();
+    let mut stdin = child.stdin.take().ok_or("no stdin for git")?;
+    let writer = std::thread::spawn(move || stdin.write_all(lines.as_bytes()));
+    let out = child.wait_with_output().map_err(|e| format!("git stopped: {e}"))?;
+    let _ = writer.join();
+    match out.status.success() {
+        true => Ok(out.stdout),
+        false => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+    }
 }
 
 fn main_of(repo: &Path) -> Option<Main> {
@@ -175,16 +282,17 @@ fn main_of(repo: &Path) -> Option<Main> {
     Some(Main { branch, head })
 }
 
-fn check(repo: &Path, main: &Main, task: &TaskProbe) -> Option<SeenTask> {
+fn check(repo: &Path, main: &Main, task: &TaskProbe, checked: Option<&Check>) -> Option<SeenTask> {
     git(&task.folder, &["branch", "--show-current"]).ok().filter(|b| !b.is_empty())?;
     if task_scripts::merged(repo, &task.folder) {
         return None;
     }
     let tip = stacks::head(repo, &Where::Folder(task.folder.clone()))?;
     let base = git(repo, &["merge-base", &main.head, &tip]).ok()?;
-    let conflicts = match task.conflicts {
-        true => conflicts(repo, &main.head, &tip).inspect_err(|error| log!("kanna-daemon: can't check {} against {}: {error}", task.id, main.branch)).ok()?,
-        false => vec![],
+    let conflicts = match (task.conflicts, checked.filter(|c| c.tip == tip)) {
+        (true, Some(checked)) => checked.conflicts.clone(),
+        (true, None) => conflicts(repo, &main.head, &tip).inspect_err(|error| log!("kanna-daemon: can't check {} against {}: {error}", task.id, main.branch)).ok()?,
+        (false, _) => vec![],
     };
     let since = format!("{base}..{}", main.head);
     let (ahead, commits) = match task.commits {
@@ -291,6 +399,10 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "y\n");
         sh(&dir, "git checkout -q -b clean main~1 && echo z >z && git add z && git commit -q -m z && git checkout -q main");
         assert_eq!(conflicts(&dir, "main", "clean").unwrap(), Vec::<String>::new());
+        let rev = |what: &str| git(&dir, &["rev-parse", what]).unwrap();
+        let main = rev("main");
+        assert_eq!(conflicts_all(&dir, &main, &[rev("t"), rev("clean"), rev("t")]).unwrap(), vec![vec!["a file".to_string(), "b".to_string()], vec![], vec!["a file".to_string(), "b".to_string()]], "one git for every task");
+        assert!(conflicts_all(&dir, &main, &[]).unwrap().is_empty());
         assert!(conflicts(&dir, "main", "no-such-commit").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -299,7 +411,7 @@ mod tests {
     fn a_move_is_the_same_branch_at_a_new_commit_and_the_first_look_only_records() {
         let dir = scratch("moves");
         sh(&dir, "git init -q -b main && git config user.name e && git config user.email e@e && git commit -q --allow-empty -m first && git worktree add -q -b t wt && git -C wt commit -q --allow-empty -m t");
-        let probe = |last: Option<Main>| Probe { repo: dir.clone(), last, tasks: vec![TaskProbe { id: "t".into(), folder: dir.join("wt"), conflicts: true, commits: true }] };
+        let probe = |last: Option<Main>| Probe { repo: dir.clone(), last, tasks: vec![TaskProbe { id: "t".into(), folder: dir.join("wt"), conflicts: true, commits: true, checked: None }] };
         let first = look(vec![probe(None)]).remove(0);
         assert!(!first.moved && first.tasks.is_empty(), "{first:?}");
         assert_eq!(first.main.branch, "main");
