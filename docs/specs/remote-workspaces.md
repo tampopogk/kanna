@@ -77,6 +77,28 @@ sequenceDiagram
 - **`kanna capabilities`** says `Kanna.app: attached` when any app is attached to the daemon, this machine's or another's.
 - **Why the place, not the last app used:** the place is the logical layer's own record of who presents the workspace ([presentation layers §1](presentation-layers.md#1-the-three-layers)); the app last used is a physical accident, and on a machine with its own app it was always that app, which shows nothing of a task on another Mac's Desk.
 
+### Screenshots render where an app is (planned)
+
+On main a screenshot captures what an app has on screen, so a pane that isn't showing (another tab, a Desk task that isn't active, the Shelf) is `not_shown`, and an unattended task on a Linux VM can rarely get one. The Shelf task "Screenshots of hidden panes" draws such a pane off screen in the app ([screenshot](screenshot.md), on its branch `screenshot-hidden-panes`, not yet in main). Planned on top of it: a screenshot is a render of the pane, not a capture of a screen, made by an app chosen from where the request comes from:
+
+```mermaid
+flowchart TD
+    R["screenshot PANE<br/>at the requester's daemon"] --> Q{"this machine has<br/>its own app attached?"}
+    Q -- yes --> L["its own app renders the pane<br/>(a Mac asking about a VM's pane<br/>draws it from the link)"]
+    Q -- "no (a Linux VM)" --> P{"a peer's app<br/>attached?"}
+    P -- yes --> M["that app renders it: the one whose Desk<br/>holds the workspace, else the target,<br/>else any attached"]
+    P -- no --> N["no_app"]
+    L --> O["on screen: cut from the window<br/>not on screen: drawn in an off-screen window"]
+    M --> O
+    O --> W["PNG written on the requester's machine"]
+```
+
+- **The requester's own app first.** A Mac renders its own agents' panes, and a VM's panes when it asks about them (once [another machine's task by ID](#6-not-in-this-change) lands), from what the link already carries: no PNG crosses the network.
+- **Else a Mac peer's app.** A Linux VM has no app, so its daemon sends the request to an attached app, the viewer first (§2). From the VM's side that app is just "the app": the agent's command is the same.
+- **Off screen, never shown.** A pane that isn't on screen is drawn in an off-screen window of its own at its last size, then dropped. The Desk, the shown tab and focus never change, as now.
+- **No renderer on Linux.** With no app attached anywhere, `no_app`, as a Mac with its app closed.
+- **Built by** "Screenshots of hidden panes" (the off-screen drawing) and, after it, the choice of app above in the daemon's routing (`app_link.rs`).
+
 ## 3. Pages from another machine's files
 
 `kanna open web page.html` (or a `file:` URL) from a task on another machine used to be refused ("a page from studio opens only over http or https"), so an agent served the folder itself and opened `http://172.16.0.102:8765/…` on the LAN. Now the page comes through the daemon as markdown and code do.
@@ -123,7 +145,7 @@ Every command an agent uses on its workspace, run from a task on another machine
 | `comment`, `tour` | **fixed** | `app.snap` needed this machine's own app, `no_app` without it; now any attached app snaps (§2) |
 | `markup` (a doc), `markup reply` | yes | nothing: threads are kept by the daemon |
 | `markup` (an HTML page) | **fixed** | had no page to mark up; the pane now takes comments on another machine's page and sends them to the agent, its threads kept by the daemon as a doc's are |
-| `screenshot` | **fixed** | asked only this machine's own app, which doesn't show the workspace (`not_shown`, or `no_app` with it closed); now the app showing the workspace, and the PNG is written on the agent's machine |
+| `screenshot` | **fixed** | asked only this machine's own app, which doesn't show the workspace (`not_shown`, or `no_app` with it closed); now the app showing the workspace, and the PNG is written on the agent's machine; a pane not on screen is still `not_shown` until [rendering off screen](#screenshots-render-where-an-app-is-planned) |
 | `focus` | **fixed** | the window was brought forward by this machine's own app; now by the app showing the workspace |
 | `zoom`, `close`, `rename-tab`, `move`, `move-tab`, `resize`, `arrange` | yes | nothing: logical, in the daemon |
 | `workspace list` | yes | nothing: the daemon's view |
@@ -146,4 +168,5 @@ Every command an agent uses on its workspace, run from a task on another machine
 
 - **iOS panes for a task on another machine:** the Shelf task "Cloud 12: Build jobs and iOS from remote tasks".
 - **This Mac's file pages through the daemon too.** A page from this Mac's disk still loads from `file:` directly; moving it onto `kanna-file:` makes one path for every machine, at the cost of a page's origin changing from `file://` (its `localStorage`, and what page comments key on): the Shelf task "File pages on this Mac through the daemon".
+- **Screenshots of panes not on screen:** [planned in §2](#screenshots-render-where-an-app-is-planned).
 - **Reaching another machine's task by ID** from the user or planner (task-6ac8), and machine-qualified pane IDs on the CLI (`term-21@studio`).
