@@ -51,7 +51,8 @@ A request for "the app" (`screenshot`, `app.front` after a `focus`, a `toast`, `
 
 1. **The app holding the workspace.** The daemon finds the workspace from the request's `workspace`, its `window`, or its pane (`pane`, `from`, `task`), and the attached app whose `client` its place names. `mac`, this machine's own app's client, matches only the app on the local socket, so a remote app can't pass for it by naming itself `mac`.
 2. **Else the target app**, as before ([app link §3](app-link.md#3-rules)): this machine's own app; on a machine that has never had one, the remote app last used. That covers free windows, the Shelf (the target answers `not_shown`), and requests about no workspace (`kanna PATH`, a toast from outside any terminal).
-3. **`app.snap` needs no view:** snapping a comment to its scope works from the file's text, which the daemon sends, so with no viewer and no target it goes to the app last used, else the last attached.
+3. **The viewing app closed, its daemon running:** the place still names it, so the target app answers. With this machine's own app open, `screenshot` is `not_shown` (that app doesn't hold the Desk) and a toast shows there; with no app attached, `screenshot` is `no_app` and a toast is held for up to a minute for the next app to attach. The app becomes the viewer again when it reopens.
+4. **`app.snap` needs no view:** snapping a comment to its scope works from the file's text, which the daemon sends, so with no viewer and no target it goes to the app last used, else the last attached.
 
 ```mermaid
 sequenceDiagram
