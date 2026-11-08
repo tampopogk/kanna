@@ -50,7 +50,7 @@ The mockup's scenes:
 - **Text / Hex** shows the same bytes as lines or as a hex dump (offset, 16 bytes, ASCII).
 - **Pause** stops the view following, not the recording; a pill counts new lines and resumes on click. Scrolling up pauses the same way.
 - **Clear** empties this view only; the log and other views keep everything.
-- **Find** (⌘F, or the magnifier) is the text view's find bar: it marks every match; Return and ⇧Return step.
+- **Find** (⌘F, or the magnifier) is the [find bar](find-bar.md): it marks every match, case-insensitive unless the search has a capital; Return and ⇧Return step.
 - **Send line:** Return sends the text plus the line ending, ⌥Return without it; ↑ and ↓ walk this port's history (kept in the state folder, shared by the CLI's `send`). Disabled while the port is unplugged or lent.
 - **Baud and line ending** change from their pickers, for every pane on the port; a baud change applies at once, without closing the port.
 - **Reset** pulses the device's reset (§4).

@@ -1,4 +1,5 @@
 import AppKit
+import KannaLinks
 import WebKit
 
 @MainActor
@@ -24,10 +25,8 @@ public final class PageMarkupView: NSView {
     }
 
     public static func page(for url: URL?) -> String? {
-        guard let url, url.isFileURL, ["html", "htm"].contains(url.pathExtension.lowercased()) else { return nil }
-        var directory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), !directory.boolValue else { return nil }
-        return url.path
+        guard let path = MachineFileURL.path(of: url), ["html", "htm"].contains((path as NSString).pathExtension.lowercased()) else { return nil }
+        return path
     }
 
     public let path: String

@@ -33,7 +33,6 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     private(set) var loads = 0
 
     private let files: MachineFiles?
-    var pagePath: @MainActor (URL?) -> String? = { PageMarkupView.page(for: $0) }
 
     init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default(), files: MachineFiles? = nil) {
         markable = markup
@@ -77,7 +76,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     }
 
     private func markUp(_ url: URL?) {
-        let local = pagePath(url)
+        let local = PageMarkupView.page(for: url)
         showBar(markable ? nil : local)
         let page = markable ? local : nil
         guard page != markup?.path else { return }
