@@ -43,7 +43,7 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(dir).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success(), "git {args:?}");
 }
 
-/// A clone of the team's notes repo where this machine's Kanna keeps its projects, with this many runners.
+/// A clone of the team's notes repo where this machine's Kanna keeps its projects, and this machine's runners.
 fn clone(daemon: &Daemon, runners: usize) -> PathBuf {
     let repo = daemon.dir.join("home/.kanna-v4/repos/team/notes");
     std::fs::create_dir_all(repo.join(".kanna")).unwrap();
@@ -56,7 +56,8 @@ fn clone(daemon: &Daemon, runners: usize) -> PathBuf {
 }
 
 fn set_runners(repo: &Path, runners: usize) {
-    std::fs::write(repo.join(".kanna/config.json"), json!({ "version": 1, "shelf": { "runners": runners } }).to_string()).unwrap();
+    let mine = repo.ancestors().nth(3).unwrap().join("config.json");
+    std::fs::write(mine, json!({ "version": 1, "shelf": { "runners": runners } }).to_string()).unwrap();
 }
 
 fn agent(daemon: &Daemon) -> String {
@@ -104,6 +105,29 @@ fn worktrees(repo: &Path) -> Vec<String> {
 
 fn log_says(daemon: &Daemon, text: &str) -> bool {
     std::fs::read_to_string(daemon.dir.join("daemon.log")).unwrap_or_default().contains(text)
+}
+
+#[test]
+fn a_machine_full_with_one_repo_asks_for_no_task_in_another() {
+    let (mbp, vm) = (machine("mbp"), machine("vm"));
+    pair(&mbp, &vm);
+    let (here, there) = (clone(&mbp, 0), clone(&vm, 0));
+    let codex = agent(&mbp);
+    let other = vm.dir.join("home/.kanna-v4/repos/team/other");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&other, &["remote", "add", "origin", "https://example.com/team/other.git"]);
+    let other = other.canonicalize().unwrap();
+
+    let local = new_task(&vm, &other, &["Local", "work 15", "--agent", &agent(&vm)]);
+    set_runners(&there, 1);
+    within(15, "vm to run its own repo's task", || started(&vm).contains(&local));
+    let far = new_task(&mbp, &here, &["Far", "work 1", "--agent", &codex]);
+    within(10, "vm to know the task", || record(&vm, &far)["state"] == "waiting");
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(holds(&mbp, &far) && !started(&vm).contains(&far), "the one runner is taken, by a task in another repo");
+    within(60, "vm to ask for the task once its runner is free", || started(&vm).contains(&far));
 }
 
 #[test]
@@ -345,4 +369,40 @@ fn a_phone_reads_and_steers_tasks_on_other_machines_through_its_planner_machine(
     within(60, "studio to take vm's task over and run it", || started(&studio).contains(&moved));
     let pane = ask(&studio, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().find(|t| t["id"] == moved).and_then(|t| t["held"].as_str().map(String::from)).unwrap();
     within(15, "a note granted away to go with the first message", || studio.kanna(&["read", &pane]).ok().replace(['\n', '\r'], "").contains("[message from phone] and this"));
+}
+
+fn list_in(daemon: &Daemon, repo: &Path, args: &[&str]) -> String {
+    let mut all = vec!["task", "list"];
+    all.extend(args);
+    let output = cli(&daemon.dir).current_dir(repo).env("KANNA_SOCKET", daemon.socket()).args(&all).output().unwrap();
+    Run::from(&all, output).ok()
+}
+
+#[test]
+fn a_task_on_this_app_s_desk_lists_under_its_desk_wherever_it_runs_and_the_machine_running_it_says_whose_desk() {
+    let (mbp, studio) = (machine("mbp"), machine("studio"));
+    pair(&mbp, &studio);
+    let (here, there) = (clone(&mbp, 0), clone(&studio, 0));
+    let codex = agent(&studio);
+    let task = new_task(&studio, &there, &["Studio work", "work 1", "--agent", &codex]);
+    let picked = ask(&studio, "tasks", json!({ "action": "pick", "task": task, "desk": "mbp" }));
+    assert_eq!(picked["ok"], true, "{picked}");
+    within(15, "mbp to see the Studio started the task for mbp's Desk", || record(&mbp, &task)["claim"] == "mbp" && record(&mbp, &task)["state"] == "started");
+
+    let listed = list_in(&mbp, &here, &[]);
+    let desk = listed.split("\n\n").next().unwrap();
+    assert!(desk.starts_with("Desk\n") && desk.lines().any(|l| l.starts_with(&task[..9]) && l.contains("Studio work") && l.ends_with("on studio")), "mbp's Desk has the task the Studio runs: {listed}");
+    assert!(!listed.contains("Other machines"), "and not under Other machines too: {listed}");
+    let json: Value = serde_json::from_str(&list_in(&mbp, &here, &["--json"])).unwrap();
+    let on_desk = json["tasks"].as_array().unwrap().iter().find(|t| t["task"] == task.as_str()).cloned().unwrap_or(Value::Null);
+    assert_eq!(on_desk["machine"], "studio", "{json}");
+    assert!(json["elsewhere"].as_array().unwrap().iter().all(|t| t["id"] != task.as_str()), "{json}");
+
+    let there_listed = list_in(&studio, &there, &[]);
+    assert!(there_listed.starts_with("Desk\n(empty)\n"), "the Studio's own Desk doesn't have mbp's task: {there_listed}");
+    assert!(there_listed.contains("\n\nOther Desks\n") && there_listed.lines().any(|l| l.starts_with(&task[..9]) && l.ends_with("on mbp's Desk")), "it says whose Desk: {there_listed}");
+    let json: Value = serde_json::from_str(&list_in(&studio, &there, &["--json"])).unwrap();
+    assert!(json["tasks"].as_array().unwrap().is_empty(), "{json}");
+    assert_eq!(json["otherDesks"][0]["task"], task.as_str(), "{json}");
+    assert_eq!(json["otherDesks"][0]["desk"], "mbp", "{json}");
 }

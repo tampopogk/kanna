@@ -332,7 +332,7 @@ final class Contents {
             var unmap: (URL) -> URL = { $0 }
             var waitingFor: String?
             var files: MachineFiles?
-            if let machine = MachineIDs.machine(of: id), let page = MachineFileURL.page(url) {
+            if let page = MachineFileURL.page(url) {
                 url = page.absoluteString
                 unmap = MachineFileURL.file
                 files = MachineFiles(page: MachineFileURL.path(of: page) ?? "/") { [weak self] (path: String, done: @escaping @MainActor (Result<(real: String, data: Data), MachineFiles.Failure>) -> Void) in
@@ -359,7 +359,6 @@ final class Contents {
             }
             let store: WKWebsiteDataStore = if waitingFor != nil || files != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
             let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store, files: files)
-            if files != nil { web.pagePath = { url in MachineFileURL.path(of: url).flatMap { ["html", "htm"].contains(($0 as NSString).pathExtension.lowercased()) ? $0 : nil } } }
             web.waitingFor = waitingFor
             web.unmap = unmap
             web.onFocus = { [weak self] in self?.onFocus?(id) }

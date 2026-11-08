@@ -2,13 +2,13 @@
 
 **Status:** proposed · **Part of:** [software factory](software-factory.md), [Kojo](kojo.md)
 
-The tasks that build the factory, in order; each builds on the ones before and is testable alone. Tasks 1 and 2 are built; the rest are not.
+The tasks that build the factory, in order; each builds on the ones before and is testable alone. Tasks 1 to 3 are built; the rest are not.
 
 For the planner, in order; each builds on the ones before and is testable alone.
 
 1. **Built.** **Kojo crate** (`kanna-pipe`): parser, validator, worst case, `pick`, revisions; port of kojo's `factory_spec.py` with the licence settled and `NOTICE` written; `kanna pipeline check` and `list`. Tests on the two example files and every rule.
 2. **Built** ([software factory §6.1](software-factory.md#61-sequential-runs-as-built)). **Runs in the daemon, sequential stages:** `runs` tables and migration; `kanna run start` from a task's terminal, the run's branch and first worker (a worktree and a terminal with no pane); `runs.rs` starts agent and `run` stages in the worker, reads answers from session files, picks arrows, bounds loops, `progress`, `reset`, the budget, hands back to the task's branch and messages the task's agent; `kanna run list`, `show`, `log`, `stop`. e2e `pipeline_run` with the mock agent: the task's docked pane untouched, one Shelf row throughout.
-3. **Gates and steering:** `ask` stages as a message to the task's agent and a waiting run, `kanna run answer` from you or the agent, `pause`, `resume`, `skip`, `retry`; a Shelf runner stopping the agent while the run goes on, the end-of-run message waking it; stop and start of the task mid-stage; daemon restart mid-stage; the `kanna-tasks` skill's section on building with the pipeline.
+3. **Built** ([software factory §6.2](software-factory.md#62-gates-and-steering-as-built)). **Gates and steering:** `ask` stages as a message to the task's agent and a waiting run, `kanna run answer` from you or the agent, `pause`, `resume`, `skip`, `retry`; a Shelf runner stopping the agent while the run goes on, the end-of-run message waking it; stop and start of the task mid-stage; daemon restart mid-stage; the `kanna-tasks` skill's section on building with the pipeline. e2e `pipeline_gates`.
 4. **The Run tab** (built, [run tab](run-tab.md)): `kanna open run`: graph, numbers, revision, visits, workers; its buttons and the `ask` card; its offer to show the current stage's terminal in a tab (`kanna move TERMINAL --tab`), the tab passing to the next stage's terminal, typing recorded as an intervention; `kanna task list` saying the run's stage.
 5. **Fan-out and join:** `each`, workers from a stage's named output, each a worktree and a background terminal of the task's, `pipelines.workers`, `merge STAGE`, conflicts as a fail, `xN by`, `guard`; `on` parsed, resolved to `here` only, and the visit's `machine` recorded; the Shelf, Desk view, strip and `kanna task list` checked to show one row for the run throughout.
 6. **Revisions:** `emits` blocks merged and validated, `kanna run edit` in a code pane, revisions on the Run tab with diffs.
