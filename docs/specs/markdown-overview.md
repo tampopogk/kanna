@@ -74,7 +74,7 @@ flowchart LR
 | The pane's side of the overview: the picture, the marks, the viewport, `onScroll`, the side-panel rule | `apps/kanna/Sources/KannaMarkdown/MarkdownPaneView.swift` and a new `MarkdownOverview.swift` |
 | Drawing the page at the thumbnail's scale | `MarkdownLayoutManager.swift`: the backgrounds, blocks, comment highlights, change bars and glyphs (attachments with them) of the whole text, into a bitmap context scaled to the thumbnail |
 | Comment marks: the open comments' ranges | `MarkdownPaneComments.swift`, from `KannaDocs` as the highlights are now |
-| Find hits | the pane owns an `NSTextFinder`, as the code and diff panes do, instead of `usesFindBar`, so it has the matches; the three panes share its client, `TextFinderClient` (`KannaOverview`) |
+| Find hits | the pane owns a `PaneFinder` (`KannaOverview`), as the code and diff panes do, instead of `usesFindBar`, so it has the matches ([find bar](find-bar.md)) |
 | The column count | `OverviewLayout.shown` (`KannaOverview`), given the text column as the measure of the room beside the overview, which wants 80 columns in the text column (`MarkdownOverviewLayout`) |
 | `KannaMarkdown` depends on `KannaOverview` | `apps/kanna/Package.swift` |
 

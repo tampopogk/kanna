@@ -8,7 +8,7 @@ An agent's calls to `kanna` are the same whether the app showing its task runs o
 
 1. [The rule](#1-the-rule)
 2. [Which app answers](#2-which-app-answers)
-3. [Pages from another machine's files](#3-pages-from-another-machines-files)
+3. [File pages, from any machine](#3-file-pages-from-any-machine)
 4. [The audit](#4-the-audit)
 5. [Tests](#5-tests)
 6. [Not in this change](#6-not-in-this-change)
@@ -99,9 +99,9 @@ flowchart TD
 - **No renderer on Linux.** With no app attached anywhere, `no_app`, as a Mac with its app closed.
 - **Built by** "Screenshots of hidden panes" (the off-screen drawing) and, after it, the choice of app above in the daemon's routing (`app_link.rs`).
 
-## 3. Pages from another machine's files
+## 3. File pages, from any machine
 
-`kanna open web page.html` (or a `file:` URL) from a task on another machine used to be refused ("a page from studio opens only over http or https"), so an agent served the folder itself and opened `http://172.16.0.102:8765/…` on the LAN. Now the page comes through the daemon as markdown and code do.
+`kanna open web page.html` (or a `file:` URL) from a task on another machine used to be refused ("a page from studio opens only over http or https"), so an agent served the folder itself and opened `http://172.16.0.102:8765/…` on the LAN. Now the page comes through the daemon as markdown and code do, and so does a page from this Mac's own disk: every machine's file pages take the same path, and the app reads none of them from its own disk.
 
 ```mermaid
 sequenceDiagram
@@ -119,13 +119,14 @@ sequenceDiagram
     H-->>W: 200, text/css
 ```
 
-- **A scheme of the app's own,** `kanna-file://files/PATH`, served by a `WKURLSchemeHandler` (`MachineFiles`) with `file.read` on the pane's link. Relative images, stylesheets, scripts and fetches resolve against it, so they come from the same machine's folder.
+- **A scheme of the app's own,** `kanna-file://files/PATH`, served by a `WKURLSchemeHandler` (`MachineFiles`) with `file.read` on the pane's link (this Mac's own daemon for a local task). Relative images, stylesheets, scripts and fetches resolve against it, so they come from the same machine's folder.
 - **The URL both ways.** The daemon, `kanna` and the agent only ever see `file:///PATH`; the app maps it to the scheme to load and back when the page navigates (`MachineFileURL`).
-- **Only the page's folder.** Each pane's handler serves files under the folder of the page it opened, checked on the path's text (`.` and `..` resolved without touching this Mac's disk, components compared byte for byte) and on the real path the daemon reports, against the page's real folder learned from the page's own load (nothing else loads before it), so a symlink can't lead out; anything else fails to load. A page could otherwise read any file of its machine through `file.read` (`~/.ssh`) and send it anywhere, which a `file:` page on this Mac can't: WebKit keeps it from reading other files. A page that uses files above its folder (`../shared.css`) is opened from that higher folder instead.
-- **A data store per machine,** the one its tunnelled pages use, so another machine's file pages share no storage with this Mac's.
+- **Only the page's folder.** Each pane's handler serves files under the folder of the page it opened, checked on the path's text (`.` and `..` resolved without touching this Mac's disk, components compared byte for byte) and on the real path the daemon reports, against the page's real folder learned from the page's own load (nothing else loads before it), so a symlink can't lead out; anything else fails to load. A page could otherwise read any file of its machine through `file.read` (`~/.ssh`) and send it anywhere, as a `file:` page couldn't: WebKit kept it from reading other files. A page that uses files above its folder (`../shared.css`) is opened from that higher folder instead.
+- **A data store per machine,** the one its tunnelled pages use, so another machine's file pages share no storage with this Mac's. This Mac's file pages keep the default store.
+- **The origin is `kanna-file://files`,** one for all of a machine's file pages, as `file://` was. A page on this Mac lost what it had kept in `localStorage`, IndexedDB or cookies under `file://` once, when it moved (2026-11-08, decided with the user). Page comments didn't move: their threads are kept under the file's path, and a comment's place on the page is its `#hash`, selector and box (`PageMarkupView.page(for:)` takes the path from the scheme URL).
 - **Types** from the file's extension (`text/html`, `text/css`, `text/javascript`, images, `application/wasm`, …); `Cache-Control: no-store`, so a reload reads the file again.
-- **A dev server is not a file page.** `vite` (or any server on the machine's loopback) opens as `http://localhost:5173`, through the [port tunnel](port-tunnels.md), HMR included. A built app opens from its `dist/index.html` here only when its asset paths are relative (Vite's `base: './'`): the default `base: '/'` writes `/assets/…`, which is above the page's folder and refused, as it fails from a `file:` URL on this Mac too.
-- **Limits** are `file.read`'s: a file over 8 MiB, a folder or a network path fails that load. A page on this Mac still loads from its `file:` URL directly (§6).
+- **A dev server is not a file page.** `vite` (or any server on the machine's loopback) opens as `http://localhost:5173`, through the [port tunnel](port-tunnels.md), HMR included. A built app opens from its `dist/index.html` here only when its asset paths are relative (Vite's `base: './'`): the default `base: '/'` writes `/assets/…`, which is above the page's folder and refused, as it failed from a `file:` URL.
+- **Limits** are `file.read`'s: a file over 8 MiB, a folder or a network path fails that load.
 
 ## 4. The audit
 
@@ -162,11 +163,12 @@ Every command an agent uses on its workspace, run from a task on another machine
 - **`cargo test -p kanna --test machine`**, `a_request_for_a_view_goes_to_the_app_that_shows_the_workspace_on_this_machine_or_another`: vm with its own app and a remote app `mbp` attached; a screenshot of a workspace placed `{planner: mbp}` reaches `mbp` and is written on vm; a pane in a free window reaches vm's own app; a toast about the workspace reaches `mbp`; with vm's own app gone the screenshot still reaches `mbp`, `debug.app` is still `no_app`, and a comment is snapped by `mbp`.
 - **e2e `remote_workspace`**: this Mac's daemon and a second private instance, vm, paired over iroh loopback, vm with its own app attached beside this Mac's. One task on each, both on this Mac's Desks. The same command set runs from each task's agent (`open md`, `open code`, `open diff`, `open web` of an HTML file with a stylesheet, an image and a script, refused a file outside its folder, `markup` on the doc and on the page, `comment`, `focus`, `zoom`, `screenshot` with and without `--force` over a file, `toast`, `read`, `close`, `workspace list`) and the two transcripts must be the same as each other and as the one written in the scenario; vm's own app gets no toast; with vm's app gone the screenshot still works; parked, the pane is refused as not showing.
 - **`KannaLinksTests` `MachineFileURLTests`**: the mapping both ways, relative files, only the page's folder, other URLs left alone, the types.
+- **`KannaDocsTests` `PageForTests`**: a page is marked by its path from the scheme URL, never a `file:` URL or a file that isn't HTML.
 - `machine_two_apps`, `machine_remote_task`, `machine_remote_files`, `machine_remote_web`, `screenshot`, `web_md_ios_panes`, `code_tour`, `cli_caller`, `path_last_in_front` and `file_panes` pass unchanged; `toasts`, `page_comments` and `md_comments` fail at the same step with and without this change (2026-11-08, main at c58fcde0).
+- With this Mac's file pages on `kanna-file:` too, `web_md_ios_panes` and `remote_workspace` pass; `page_comments` fails at `box_fits` as it does on main (2026-11-08, main at 65bc5b8b).
 
 ## 6. Not in this change
 
 - **iOS panes for a task on another machine:** the Shelf task "Cloud 12: Build jobs and iOS from remote tasks".
-- **This Mac's file pages through the daemon too.** A page from this Mac's disk still loads from `file:` directly; moving it onto `kanna-file:` makes one path for every machine, at the cost of a page's origin changing from `file://` (its `localStorage`, and what page comments key on): the Shelf task "File pages on this Mac through the daemon".
 - **Screenshots of panes not on screen:** [planned in §2](#screenshots-render-where-an-app-is-planned).
 - **Reaching another machine's task by ID** from the user or planner (task-6ac8), and machine-qualified pane IDs on the CLI (`term-21@studio`).
