@@ -63,7 +63,7 @@ sequenceDiagram
 - **Terms** (checked 2026-10-26; these pages change):
   - **Anthropic** ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)): "developers may not collect, store, or intermediate Claude.ai credentials or session tokens — sign-in to a Claude account must complete through Anthropic's own flow." API keys kept in "a development environment, secrets manager, or machine image for use by the customer's own authorized users" are allowed, and so is "an end user … signing in to the unmodified Claude Code binary with their own Claude subscription". Pro and Max limits "assume ordinary, individual usage". So a Claude API key may be shared; Kanna keeping and handing out a subscription's setup token is what that sentence forbids. The per-machine sign-in is allowed. **Decided (2026-11-03):** Kanna shares the setup token anyway, because a sign-in per machine is worse to use; the per-machine sign-in stays as the fallback.
   - **OpenAI** ([app-server](https://learn.chatgpt.com/docs/app-server), [auth](https://learn.chatgpt.com/docs/auth)): external tokens are "experimental and intended for host apps that already own the user's ChatGPT auth lifecycle". App-server auth "has never been permitted for commercial or hosted services", while a local or open-source app may keep using it (OpenAI recommends Sign in with ChatGPT). One refresher per login, never one `auth.json` on several machines, matches the auth guide. The [Terms of Use](https://openai.com/policies/terms-of-use/) forbid making an account available to others and bypassing limits; that page refused automated reads (403).
-- **Secrets** are kept in the Mac's Keychain, and in the state folder's `agent-secrets/` (0700, files 0600) on a machine without one ([§4](#4-keeping-and-removing-secrets)). A holder is always one of your devices. Kanna Cloud keeps no copy (proposed: [Cloud §11](kanna-cloud.md#11-open-questions)).
+- **Secrets** are kept in the Mac's Keychain, and in the state folder's `agent-secrets/` (0700, files 0600) on a machine without one ([§4](#4-keeping-and-removing-secrets)). A holder is always one of your devices. Kanna Cloud keeps no copy (proposed: [Cloud §11](kanna-cloud.md#11-open-questions)). What isn't secret (which accounts there are, their agent, kind, label and holder, own and received) is in the book, `agent-accounts.json`; a secret is read only when it's handed to an agent, supplied to a machine, or refreshed. When the Keychain can't answer, see [§4.1](#41-when-the-keychain-doesnt-answer).
 - **Login files are never copied** between machines (`~/.claude/.credentials.json`, `~/.codex/auth.json`): their refresh tokens rotate, so two machines sharing one sign each other out.
 - **Removing an account** removes it from every machine. **Revoking a machine** ([identity §3](machine-identity.md#3-the-peer-log)) first tells it to drop what it was given, then revokes it; a machine that learns it's revoked drops everything, and every machine drops what a revoked machine gave it. A setup token or key it held is worth rotating, and `kanna machine revoke` says so.
 - **An agent sees only its own credential,** in its environment or its Codex's private app-server connection. Access JWTs carry identity claims; withholding a separate email or ID token does not hide those claims. The secrets folder is on Claude's sandbox deny list with `device.key` ([agent setup](agent-setup.md)); Codex, run with `--yolo`, can read it, as it can read `device.key` ([identity §4](machine-identity.md#4-risks)).
@@ -73,7 +73,7 @@ sequenceDiagram
 - **One item per secret.** The daemon keeps each secret as a generic password in the login Keychain: service "Kanna agent accounts", account `STATE_DIR/NAME`, where NAME is the account's ID, or `received` for what other machines gave this one. Each Kanna (production, staging, dev, a test instance) has its own items. Without a Keychain (Linux, or `KANNA_KEYCHAIN=0`) a secret is a file in `agent-secrets/`.
 - **The partition decides who reads.** macOS makes an item with the daemon as its trusted app and the signer's partition: `teamid:TEAMID` for an Apple Development or Developer ID daemon, `cdhash:…` for an ad-hoc or Kanna Dev Signing one ([privacy prompts](privacy-prompts.md#4-how-dev-builds-are-signed)).
 - **Deleting takes the same partition and file name.** macOS lets a process delete an item when it is in the item's partition and its executable has the file name of the one that made it. The daemon is always `kanna-daemon`, so a rebuild or a release update deletes what an earlier build made. A binary of the same team under another name reads and updates the item, and its delete fails with `errSecInvalidOwnerEdit` (-25244).
-- **Removing deletes first.** `remove`, and `add` replacing an agent's account, delete the old secret before the book changes. If the Keychain refuses, the command fails naming the item, the account stays listed and a new one isn't added, so no secret is left behind unnoticed: delete the item in Keychain Access and run it again. A secret that is already gone counts as deleted.
+- **Removing deletes first.** `remove`, and `add` replacing an agent's account, delete the old secret before the book changes. If the Keychain refuses, or doesn't answer within `Bounded`'s 5 seconds ([§4.1](#41-when-the-keychain-doesnt-answer)), the command fails naming the item, the account stays listed and a new one isn't added, so no secret is left behind unnoticed: delete the item in Keychain Access and run it again. A secret that is already gone counts as deleted.
 
 | Daemon using the item | Read | Update | Delete |
 |---|---|---|---|
@@ -87,11 +87,34 @@ Measured on 2026-11-08 (macOS 26.2) with a C program calling `SecItemAdd`, `SecI
 - **Rejected: the data protection Keychain.** It needs a `keychain-access-groups` entitlement, which a helper without a provisioning profile can't have: `SecItemAdd` returns `errSecMissingEntitlement` (-34018).
 - **Rejected: an ACL of our own** (`SecAccessCreate` granting delete to the team). Deleting already works for the daemon, and the `SecAccess` API is deprecated.
 
+### 4.1 When the Keychain doesn't answer
+
+On 2026-11-08 the Studio's daemon froze for nine hours: deciding how to start a task's Claude, its main loop read the received accounts' secret from the Keychain, and the Keychain waited on an "allow" dialog nobody could click on the headless Studio. Stable signing ([build channels](build-channels.md)) stops the prompts; this keeps the daemon safe whatever the Keychain does, a locked login keychain after a reboot included.
+
+```mermaid
+flowchart LR
+    L[daemon loop: start an agent] -->|book only| B[(agent-accounts.json)]
+    L --> T[agent's terminal: kanna-daemon --with-account / --codex-remote]
+    T -->|read, bounded| S[Bounded secrets thread]
+    S -->|no dialog| K[(Keychain)]
+    S -- "error or no answer in 5s" --> T
+    T -- "unreadable {agent, why}" --> D[daemon: log, one toast]
+    T --> A[agent on this machine's own sign-in]
+```
+
+- **The loop reads no secret.** Whether a Claude start goes through `--with-account` comes from the book (`has_credential`); an old book that lists received sources without their accounts counts as having one, which costs nothing: the helper then runs Claude as it is.
+- **No dialog, ever.** The daemon and its helpers turn off Keychain user interaction for their process (`SecKeychainSetUserInteractionAllowed(false)`), so a locked keychain or an "allow" prompt fails at once with `errSecInteractionNotAllowed` instead of waiting.
+- **Every read, write and delete is bounded.** `Bounded` runs it on a thread of its own and waits 5 seconds. Past that it fails with what it was asked and why ("can't read acct-… : the Keychain didn't answer in 5s (a dialog nobody can click, or a locked login keychain)"), and while that call is still stuck every other call fails at once, naming it, rather than piling up threads.
+- **An agent whose secret can't be read starts anyway,** on the machine's own sign-in. Its helper prints why in the agent's terminal and sends `accounts unreadable` to the daemon, which logs it each time and toasts once per agent ("Claude started without your account") until the account is added again.
+- **An unreadable secret is never taken for a missing one.** A supply isn't sent when an own secret can't be read (it would remove that account from the other machines), a received supply is refused when the received set can't be read (it would drop the other sources' accounts), and a Codex token request answers `failed` with the reason.
+- **No read on a timer.** The supply thread checks your machines every minute but prunes what revoked machines gave only when the machines you trust change, reading the received set once then; a failed prune is tried again the next minute. A supply drops any source that isn't trusted when it writes, so nothing a revoked machine gave is carried forward between prunes.
+- **What needs no secret keeps working:** `kanna accounts` lists own and received accounts from the book, and the holder of a ChatGPT login is found there.
+
 ## 5. How it's built
 
 | Part | Where |
 |---|---|
-| Accounts, secrets, the holder | `crates/kanna-daemon/src/accounts.rs`: `Accounts` (the book in `agent-accounts.json`, secrets behind `Secrets`: `Keychain` or `Files`), `Service` (the `accounts` command, peers' requests, the supply thread), `CodexRefresher` (runs `codex app-server` over stdio on the login in a private folder, `account/read {refreshToken: true}`) |
+| Accounts, secrets, the holder | `crates/kanna-daemon/src/accounts.rs`: `Accounts` (the book in `agent-accounts.json`, secrets behind `Secrets`: `Keychain` or `Files`, each wrapped in `Bounded`), `Service` (the `accounts` command, peers' requests, the supply thread), `CodexRefresher` (runs `codex app-server` over stdio on the login in a private folder, `account/read {refreshToken: true}`) |
 | Peers' requests | `machines.rs`: a peer's `accounts` request arrives as `Event::PeerRequest` with the peer's name; peers may only `supply` and ask for a `token`. `Caller` makes a call to a peer from a plain thread; revoking runs `Service::withdraw` first |
 | Codex | `codex_remote.rs`: `supplied`, `sign_in`, `renew`; `messages::Rpc` is the WebSocket client both use |
 | CLI | `crates/kanna/src/accounts.rs`: the sign-ins in a pty, the token read from Claude's output, hidden prompts, the fallback |
@@ -104,6 +127,7 @@ Measured on 2026-11-08 (macOS 26.2) with a C program calling `SecItemAdd`, `SecI
 | `remove {account}` | this machine | an ID, or `claude`/`codex` |
 | `token {account?, previous?}` | this machine or a peer | the Codex access token, from here if this is the holder, else from the holder |
 | `supply {version, accounts}` | a peer only | replaces what that peer gave this machine |
+| `unreadable {agent, why}` | this machine | a helper started the agent without its account: logged, and told to the user once |
 
 ## 6. Verification
 
