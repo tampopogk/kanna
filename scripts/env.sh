@@ -319,12 +319,24 @@ kanna_signing_team() {
   [ -f "$HOME/.kanna/developer/signing.json" ] && plutil -extract team raw -o - "$HOME/.kanna/developer/signing.json" 2>/dev/null
 }
 
+kanna_can_sign() {
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/kanna-sign.XXXXXX")" || return 1
+  cp /usr/bin/true "$probe_dir/probe"
+  probe_error="$(codesign --force --sign "$1" "$probe_dir/probe" 2>&1)"
+  probe_status=$?
+  rm -rf "$probe_dir"
+  [ "$probe_status" -eq 0 ] && return 0
+  echo "==> can't sign with $2 ($1): ${probe_error##*: }; over SSH the login keychain is locked until security unlock-keychain" >&2
+  return 1
+}
+
 kanna_dev_identity() {
   if dev_team="$(kanna_signing_team)" && [ -n "$dev_team" ]; then
     dev_hash="$(kanna_team_identity "Apple Development" "$dev_team")"
-    if [ -n "$dev_hash" ]; then echo "$dev_hash $dev_team"; return 0; fi
+    if [ -n "$dev_hash" ] && kanna_can_sign "$dev_hash" "Apple Development"; then echo "$dev_hash $dev_team"; return 0; fi
   fi
-  kanna_selfsigned_identity
+  dev_hash="$(kanna_selfsigned_identity)"
+  if [ -n "$dev_hash" ] && kanna_can_sign "$dev_hash" "Kanna Dev Signing"; then echo "$dev_hash"; fi
 }
 
 kanna_requirement() {
