@@ -189,6 +189,11 @@ impl Client {
         Ok(Hello::from_reply(&reply))
     }
 
+    pub fn move_to(&mut self, dir: &Path) -> io::Result<Hello> {
+        let (reply, _) = self.request(json!({"op": "move", "dir": dir.to_string_lossy()}), |_, _| {})?;
+        Ok(Hello::from_reply(&reply))
+    }
+
     pub fn spawn(&mut self, req: &SpawnRequest) -> io::Result<Pty> {
         let (reply, fds) = self.request(req.to_json(), |_, _| {})?;
         spawned(req.id.clone(), cwd_of(req), &reply, fds)

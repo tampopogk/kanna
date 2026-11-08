@@ -66,8 +66,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var buildsTimer: Timer?
 
     static var daemonSocketPath: String {
-        if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return path }
+        if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return ownSocket(path) }
         return instanceSocket(KannaBuild.defaultInstance)
+    }
+
+    static func ownSocket(_ socket: String) -> String {
+        let kind = (try? FileManager.default.attributesOfItem(atPath: socket))?[.type] as? FileAttributeType
+        return kind == .typeSymbolicLink ? ((socket as NSString).deletingLastPathComponent as NSString).appendingPathComponent("kanna.own.sock") : socket
     }
 
     static var physicalPath: String? {
@@ -97,7 +102,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     static func instanceSocket(_ name: String) -> String {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appendingPathComponent(KannaBuild.instanceFolder(name)).appendingPathComponent("kanna.sock").path
+        return ownSocket(support.appendingPathComponent(KannaBuild.instanceFolder(name)).appendingPathComponent("kanna.sock").path)
     }
 
     static var appSocketPath: String {
