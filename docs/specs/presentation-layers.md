@@ -61,6 +61,7 @@ Green: Kanna's code. Grey: the OS. Orange: clients. Clients and apps send the sa
 - **Every logical command works with no app.** A task opens a tab, shows a diff, focuses its spec, all in the daemon; an app that opens later shows the workspace as the task left it.
 - **Logical windows, physical windows.** A task may ask for an extra window (`open --window new`); that's logical, so every app shows it, and the app realizes it at a default position that the user can then move. Independently, an app may spread a workspace's tabs across more windows of its own (a tab torn off): that's physical, and the task neither sees nor cares.
 - **Physical state never leaves the app.** Pane and window IDs, frames, sizes and focus are the app's; the daemon never stores them and the CLI never sees them. The one exception is which workspace each of the app's Desks shows, which the app tells the daemon (not saved) so the CLI can name a Desk's window ([Desk windows](desk-windows.md)).
+- **An agent's commands are the same whichever machine's app shows its workspace:** [remote workspaces](remote-workspaces.md).
 - **Each app has its own Desks** ([each app's Desks](app-desk.md)). Making a task active in one app doesn't change another. The Shelf is shared: a task an app moves to its Desk is that app's claim, kept in the daemon.
 
 ## 2. Who changes what

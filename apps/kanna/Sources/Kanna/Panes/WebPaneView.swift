@@ -1,5 +1,6 @@
 import AppKit
 import KannaDocs
+import KannaLinks
 import WebKit
 
 @MainActor
@@ -31,10 +32,15 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var markable: Bool { didSet { if markable != oldValue { markUp(webView.url ?? url) } } }
     private(set) var loads = 0
 
-    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default()) {
+    private let files: MachineFiles?
+    var pagePath: @MainActor (URL?) -> String? = { PageMarkupView.page(for: $0) }
+
+    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default(), files: MachineFiles? = nil) {
         markable = markup
+        self.files = files
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
+        if let files { configuration.setURLSchemeHandler(files, forURLScheme: MachineFileURL.scheme) }
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
@@ -71,7 +77,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     }
 
     private func markUp(_ url: URL?) {
-        let local = PageMarkupView.page(for: url)
+        let local = pagePath(url)
         showBar(markable ? nil : local)
         let page = markable ? local : nil
         guard page != markup?.path else { return }
