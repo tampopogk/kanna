@@ -72,7 +72,7 @@ pub enum Credential {
 pub trait Secrets: Send + Sync {
     fn read(&self, name: &str) -> Option<String>;
     fn write(&self, name: &str, value: &str) -> Result<(), String>;
-    fn delete(&self, name: &str);
+    fn delete(&self, name: &str) -> Result<(), String>;
 }
 
 pub struct Files(PathBuf);
@@ -99,8 +99,11 @@ impl Secrets for Files {
         std::fs::rename(&temporary, self.0.join(name)).map_err(failed)
     }
 
-    fn delete(&self, name: &str) {
-        let _ = std::fs::remove_file(self.0.join(name));
+    fn delete(&self, name: &str) -> Result<(), String> {
+        match std::fs::remove_file(self.0.join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("can't delete a secret in {}: {e}", self.0.display())),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -117,8 +120,12 @@ impl Secrets for Keychain {
         security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, &format!("{}/{name}", self.0), value.as_bytes()).map_err(|e| format!("can't keep a secret in the Keychain: {e}"))
     }
 
-    fn delete(&self, name: &str) {
-        let _ = security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, &format!("{}/{name}", self.0));
+    fn delete(&self, name: &str) -> Result<(), String> {
+        let account = format!("{}/{name}", self.0);
+        match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, &account) {
+            Err(e) if e.code() != security_framework_sys::base::errSecItemNotFound => Err(format!("can't delete the secret \"{account}\" of \"{KEYCHAIN_SERVICE}\" from the Keychain ({e}); delete it in Keychain Access, then try again")),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -235,7 +242,7 @@ impl Accounts {
 
     fn keep_received(&self, received: &Map) -> Result<(), KmuxError> {
         match received.is_empty() {
-            true => self.secrets.delete(RECEIVED),
+            true => self.secrets.delete(RECEIVED).map_err(|e| KmuxError::new("failed", e))?,
             false => self.secrets.write(RECEIVED, &Value::Object(received.clone()).to_string()).map_err(|e| KmuxError::new("failed", e))?,
         }
         let mut book = self.book();
@@ -250,6 +257,10 @@ impl Accounts {
         let mut book = self.book();
         let mut own: Vec<Value> = book["own"].as_array().cloned().unwrap_or_default();
         let (replaced, kept): (Vec<Value>, Vec<Value>) = own.drain(..).partition(|a| a["agent"] == kind.agent());
+        if let Err(e) = self.delete_secrets(&replaced) {
+            let _ = self.secrets.delete(&id);
+            return Err(e);
+        }
         let account = json!({ "id": id, "agent": kind.agent(), "kind": kind.name(), "label": label.unwrap_or(kind.name()), "added_at": now(), "holder": kind.held().then_some(me), "program": program });
         let mut own = kept;
         own.push(account.clone());
@@ -257,12 +268,6 @@ impl Accounts {
         book["version"] = json!(book["version"].as_u64().unwrap_or(0) + 1);
         self.save(&book)?;
         drop(book);
-        for old in &replaced {
-            if let Some(old) = string(old, "id") {
-                self.secrets.delete(old);
-                self.broken.lock().unwrap_or_else(|p| p.into_inner()).remove(old);
-            }
-        }
         Ok(json!({ "account": account, "replaced": replaced }))
     }
 
@@ -273,17 +278,20 @@ impl Accounts {
         if gone.is_empty() {
             return Err(KmuxError::new("not_found", format!("no account \"{which}\" was added on this machine (kanna accounts lists them)")));
         }
+        self.delete_secrets(&gone)?;
         book["own"] = json!(kept);
         book["version"] = json!(book["version"].as_u64().unwrap_or(0) + 1);
         self.save(&book)?;
         drop(book);
-        for account in &gone {
-            if let Some(id) = string(account, "id") {
-                self.secrets.delete(id);
-                self.broken.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
-            }
-        }
         Ok(json!({ "removed": gone }))
+    }
+
+    fn delete_secrets(&self, accounts: &[Value]) -> Result<(), KmuxError> {
+        for id in accounts.iter().filter_map(|a| string(a, "id")) {
+            self.secrets.delete(id).map_err(|e| KmuxError::new("failed", e))?;
+            self.broken.lock().unwrap_or_else(|p| p.into_inner()).remove(id);
+        }
+        Ok(())
     }
 
     pub fn list(&self, names: &dyn Fn(&str) -> String) -> Value {
@@ -1059,8 +1067,9 @@ mod tests {
         assert_eq!(std::fs::metadata(dir.join(SECRETS)).unwrap().permissions().mode() & 0o777, 0o700);
         assert_eq!(std::fs::metadata(dir.join(SECRETS).join("one")).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(files.read("one").as_deref(), Some("secret"));
-        files.delete("one");
+        files.delete("one").unwrap();
         assert_eq!(files.read("one"), None);
+        files.delete("one").unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
