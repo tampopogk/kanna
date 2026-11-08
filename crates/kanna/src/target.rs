@@ -1,4 +1,4 @@
-use kanna_build::{Build, Channel, SOCKET};
+use kanna_build::{Build, Channel};
 use kanna_client::{exit, fail, valid_instance, Brand, Error, Failure, Kmux, DEFAULT_INSTANCE};
 use serde_json::{json, Value};
 use std::os::unix::net::UnixStream;
@@ -139,7 +139,7 @@ pub fn support_folder(env: Env) -> PathBuf {
 }
 
 pub fn instance_socket(channel: Channel, name: &str, env: Env) -> PathBuf {
-    support_folder(env).join(channel.instance_folder(name)).join(SOCKET)
+    kanna_build::instance_socket(&support_folder(env).join(channel.instance_folder(name)))
 }
 
 fn brand_socket(brand: Brand, name: &str, env: Env) -> PathBuf {
@@ -183,7 +183,7 @@ pub fn instances(env: Env) -> Vec<Instance> {
             let (channel, name) = kanna_build::parse_folder(&entry.file_name().into_string().ok()?)?;
             let folder = entry.path();
             let worktree = kanna_build::read_record(&folder).and_then(|r| r["worktree"].as_str().map(PathBuf::from));
-            Some(Instance { channel, name, socket: folder.join(SOCKET), folder, worktree })
+            Some(Instance { channel, name, socket: kanna_build::instance_socket(&folder), folder, worktree })
         })
         .collect();
     found.sort_by_key(|i| (Channel::ALL.iter().position(|c| *c == i.channel), i.name != DEFAULT_INSTANCE, i.name.clone()));

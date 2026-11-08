@@ -20,9 +20,11 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod comment_targets;
+mod instance;
 mod moving;
 mod phone;
 
+pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
 
 const WORKTREES: &str = ".kanna-worktrees";
@@ -1022,6 +1024,8 @@ pub struct Tasks {
     following: RefCell<HashSet<PathBuf>>,
     news: RefCell<News>,
     ending: RefCell<HashMap<String, Option<String>>>,
+    moving_instance: RefCell<Option<String>>,
+    pub move_hooks: RefCell<Option<instance::MoveHooks>>,
 }
 
 #[derive(Clone)]
@@ -1207,6 +1211,8 @@ impl Tasks {
             following: RefCell::default(),
             news: RefCell::default(),
             ending: RefCell::default(),
+            moving_instance: RefCell::default(),
+            move_hooks: RefCell::default(),
         }
     }
 
@@ -2559,6 +2565,9 @@ impl Tasks {
     }
 
     fn fill(self: &Rc<Self>, core: &CoreHandle) {
+        if self.moving_instance.borrow().is_some() {
+            return;
+        }
         self.adopt();
         let entries = self.entries.borrow().clone();
         let machines = self.machines();
@@ -2779,6 +2788,7 @@ impl Tasks {
         core.add_command(
             "replica",
             Rc::new(move |args, responder| match this.upgrade() {
+                Some(this) if this.holds_for_move(&args) => responder.reply(Err(this.moving_refusal())),
                 Some(this) if string(&args, "action") == Some("transfer") => this.take_transfer(&args, responder),
                 Some(this) => responder.reply(this.replica_command(&args)),
                 None => responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))),
@@ -2796,6 +2806,9 @@ impl Tasks {
                         Ok(None) => {}
                         Err(error) => return responder.reply(Err(error)),
                     }
+                }
+                if this.blocked_by_move(&args) {
+                    return responder.reply(Err(this.moving_refusal()));
                 }
                 match args.get("action").and_then(Value::as_str) {
                     Some("new") => this.adding(args, responder),
