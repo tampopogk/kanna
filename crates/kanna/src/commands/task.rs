@@ -535,6 +535,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
         Some("move") if reply["waiting"] == true => format!("{} moves to {} when it's reachable ({})", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["why"].as_str().unwrap_or("away")),
         Some("move") => format!("{} carries on on {}{}", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["folder"].as_str().map_or(String::new(), |f| format!(", in {f}"))),
+        Some("stop") if reply["after_turn"] == Value::Bool(true) => format!("{} stops when this turn ends: end your turn now, and its agent quits then", reply["task"].as_str().unwrap_or("?")),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
         Some("pick") => format!(
             "moved {} to the Desk: {} in {}{}",
@@ -543,6 +544,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
             tilde(reply["folder"].as_str().unwrap_or("?")),
             reply["branch"].as_str().map_or(String::new(), |b| format!(" ({b})"))
         ),
+        Some("done") if reply["after_turn"] == Value::Bool(true) => format!("{} is done when this turn ends: end your turn now, and its agent quits then", reply["task"].as_str().unwrap_or("?")),
         Some("done") if reply["teardown"] == Value::Bool(true) => format!("{}'s teardown runs in {}: it's done when that succeeds, and kanna task list says if it fails", reply["task"].as_str().unwrap_or("?"), reply["pane"].as_str().unwrap_or("?")),
         Some("done") if reply.get("closed").is_none() => format!("took {} off the Shelf{}", reply["task"]["id"].as_str().unwrap_or("?"), freed_lines(reply)),
         Some("desk") => format!("{} {} on {}", if reply["new"] == Value::Bool(false) { "brought forward" } else { "opened" }, reply["desk"].as_str().unwrap_or("the Desk"), tilde(reply["project"].as_str().unwrap_or("?"))),
@@ -693,6 +695,9 @@ mod blocked_tests {
         assert_eq!(freed(&listed, "t12").len(), 1);
         let done = show(&json!({ "action": "done", "task": "p40" }), &json!({ "closed": ["p40"], "freed": freed(&listed, "p40") }));
         assert_eq!(done, "p40 is done: closed p40\nt13 \"Diff viewer\" can start now: nothing it waits for is left");
+        let own = show(&json!({ "action": "done", "task": "p40" }), &json!({ "task": "t12", "pane": "p40", "after_turn": true, "freed": freed(&listed, "p40") }));
+        assert_eq!(own, "t12 is done when this turn ends: end your turn now, and its agent quits then", "nothing's freed until it's done");
+        assert_eq!(show(&json!({ "action": "stop" }), &json!({ "task": "t12", "pane": "p40", "place": "desk", "after_turn": true })), "t12 stops when this turn ends: end your turn now, and its agent quits then");
         assert_eq!(show(&json!({ "action": "edit" }), &json!({ "task": { "id": "t14", "waits": [] } })), "t14 waits for nothing: it can start");
     }
 }
