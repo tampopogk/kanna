@@ -1,5 +1,6 @@
 import AppKit
 import KannaDocs
+import KannaLinks
 import WebKit
 
 @MainActor
@@ -20,7 +21,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     private(set) var markup: PageMarkupView?
     var agent: String? { didSet { markup?.agent = agent } }
     var agentStatus: String? { didSet { markup?.agentStatus = agentStatus } }
-    var onSend: ((String, String, @escaping (String?) -> Void) -> Void)? { didSet { markup?.onSend = onSend } }
+    var onSend: DocSend? { didSet { markup?.onSend = onSend } }
     var onMarkup: ((PageMarkupView?) -> Void)?
     var onComments: ((NSView) -> Void)?
     var agentName: ((String) -> String)? { didSet { markup?.agentName = agentName } }
@@ -30,10 +31,14 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var markable: Bool { didSet { if markable != oldValue { markUp(webView.url ?? url) } } }
     private(set) var loads = 0
 
-    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default()) {
+    private let files: MachineFiles?
+
+    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default(), files: MachineFiles? = nil) {
         markable = markup
+        self.files = files
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
+        if let files { configuration.setURLSchemeHandler(files, forURLScheme: MachineFileURL.scheme) }
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
@@ -113,7 +118,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     func zoom(by step: Int) {
         let steps = Self.zoomSteps, now = webView.magnification
         let target = step == 0 ? 1 : step > 0 ? (steps.first { $0 > now + 0.001 } ?? steps.last!) : (steps.last { $0 < now - 0.001 } ?? steps.first!)
-        webView.setMagnification(target, centeredAt: NSPoint(x: webView.bounds.midX, y: webView.bounds.midY))
+        webView.zoom(to: target, around: NSPoint(x: webView.bounds.midX, y: webView.bounds.midY))
     }
 
     static let zoomSteps: [CGFloat] = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
@@ -228,6 +233,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
 final class FocusReportingWebView: WKWebView {
     var onFocus: (() -> Void)?
     var contextMenu: (() -> NSMenu?)?
+    private var pinch: Pinch?
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
@@ -240,10 +246,35 @@ final class FocusReportingWebView: WKWebView {
         }
     }
 
+    func zoom(to target: CGFloat, around point: NSPoint) {
+        let shift = magnification / target - 1
+        setMagnification(target, centeredAt: NSPoint(x: (point.x * shift).rounded(), y: (point.y * shift).rounded()))
+    }
+
     override func magnify(with event: NSEvent) {
-        let steps = WebPaneView.zoomSteps
-        let target = min(max(magnification * (1 + event.magnification), steps.first!), steps.last!)
-        setMagnification(target, centeredAt: convert(event.locationInWindow, from: nil))
+        if event.phase == .began || pinch == nil { pinch = startPinch(at: convert(event.locationInWindow, from: nil)) }
+        if let pinch {
+            let steps = WebPaneView.zoomSteps
+            let target = min(max(magnification * (1 + event.magnification), steps.first!), steps.last!)
+            if target != magnification { zoom(to: target, around: pinch.point, holding: pinch.anchor) }
+        }
+        if event.phase != .began, event.phase != .changed { pinch = nil }
+    }
+
+    private func startPinch(at point: NSPoint) -> Pinch {
+        let pinch = Pinch(point: point), scale = magnification
+        evaluateJavaScript("[visualViewport.pageLeft, visualViewport.pageTop]", in: nil, in: .defaultClient) { result in
+            guard case .success(let value) = result, let page = value as? [Double], page.count == 2 else { return }
+            pinch.anchor = NSPoint(x: page[0] + point.x / scale, y: page[1] + point.y / scale)
+        }
+        return pinch
+    }
+
+    private func zoom(to target: CGFloat, around point: NSPoint, holding anchor: NSPoint?) {
+        zoom(to: target, around: point)
+        guard let anchor else { return }
+        let left = anchor.x - point.x / target, top = anchor.y - point.y / target
+        evaluateJavaScript("scrollTo({left: \(left), top: \(top), behavior: 'instant'})", in: nil, in: .defaultClient, completionHandler: nil)
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -251,4 +282,12 @@ final class FocusReportingWebView: WKWebView {
         if result { onFocus?() }
         return result
     }
+}
+
+@MainActor
+private final class Pinch {
+    let point: NSPoint
+    var anchor: NSPoint?
+
+    init(point: NSPoint) { self.point = point }
 }

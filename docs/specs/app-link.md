@@ -16,9 +16,11 @@ The app is a client of the daemon, like the CLI, but it stays connected: it show
 
 **The control protocol's wire.** One JSON object per line, both ways. A message with `cmd` is a request, `{"id", "cmd", "args"}`; with an `id` it wants a reply, `{"id", "ok": true, …}` or `{"id", "ok": false, "error": {"code", "message"}}`, and without one it's a notice that gets none. Each side numbers its own requests, and a reply goes to the side that asked. Terminal bytes are base64 in a `data` field.
 
-**Saying it's the app.** The app's first line is `{"id": 0, "cmd": "app.hello", "args": {"pid", "build", "keepsSocket": true}}`. The daemon answers `{"id": 0, "ok": true, "listener": true, "daemon": {"pid", "build"}, "panes": [{"id", "name", "type"}, …], "layout": {…}}`, listing every pane and the layout as it is, with a copy of its listening socket on the line (`SCM_RIGHTS`) when the app keeps it ([daemon socket](daemon-socket.md)), and the connection is the app link from then on. One app at a time: a second gets `app_attached` and is closed. If the daemon goes away, the app starts the next one on the socket it keeps, and on reconnecting says hello and attaches its terminals again.
+**Saying it's the app.** The app's first line is `{"id": 0, "cmd": "app.hello", "args": {"pid", "build", "keepsSocket": true}}`. The daemon answers `{"id": 0, "ok": true, "listener": true, "daemon": {"pid", "build"}, "panes": [{"id", "name", "type"}, …], "layout": {…}}`, listing every pane and the layout as it is, with a copy of its listening socket on the line (`SCM_RIGHTS`) when the app keeps it ([daemon socket](daemon-socket.md)), and the connection is an app link from then on. A daemon takes any number of apps at once: this machine's own app and any number on other machines ([links §2](machine-links.md#2-the-hello)), each with its own link. Only a second app of this machine gets `app_attached` and is closed: it would share the first's state folder and socket. If the daemon goes away, the app starts the next one on the socket it keeps, and on reconnecting says hello and attaches its terminals again.
 
-**The daemon follows the app's build.** `build` is the SHA-256 of the daemon binary. With no app attached, a hello of another build gets `other_build` and the daemon stops as on SIGTERM; the app then starts its own, which adopts every terminal. A hello without `build` is accepted. Detail: [daemon build](daemon-build.md).
+**Several apps.** Every attached app gets the layout, panes, snapshots and notices. Each attaches the terminals it shows, gets their output on its own (§3) and has its own Desks and claims ([app Desk](app-desk.md)); the Shelf is shared. A request for "the app" goes to one of them, the **target** (§3).
+
+**The daemon follows the app's build.** `build` is the SHA-256 of the daemon binary. With no app of this machine attached, a hello of another build gets `other_build` and the daemon stops as on SIGTERM; the app then starts its own, which adopts every terminal. A hello without `build` is accepted. Detail: [daemon build](daemon-build.md).
 
 ```mermaid
 sequenceDiagram
@@ -28,14 +30,14 @@ sequenceDiagram
     A->>D: app.hello
     D->>A: ok, panes term-1 term-2, the layout
     Note over A: draw the layout's windows
-    A->>D: attach term-1
-    D->>A: snapshot term-1 (the screen, GHOSTSNP)
-    D->>A: grid term-1 80×24
-    A->>D: resize term-1 to fit the view
-    D->>A: grid term-1 (the size it now has)
+    A->>D: attach pty-1
+    D->>A: snapshot pty-1 (the screen, GHOSTSNP)
+    D->>A: grid pty-1 80×24
+    A->>D: resize pty-1 to fit the view
+    D->>A: grid pty-1 (the size it now has)
     Note over A,D: from now on, both ways
-    A->>D: input term-1 (keystrokes)
-    D->>A: output term-1 (what the program wrote)
+    A->>D: input pty-1 (keystrokes)
+    D->>A: output pty-1 (what the program wrote)
     C->>D: open --split right
     D->>C: ok, term-3 in win-1
     D->>A: layout (win-1 now splits term-1 | term-3)
@@ -49,10 +51,10 @@ sequenceDiagram
 
 | Message | From | What it says |
 |---|---|---|
-| `app.hello {pid, build, protocol, commit, client, relaunch, keepsSocket}` | app | I'm the app, of this build (and, on this Mac, I keep the socket); the reply accepts or refuses it (`app_attached`, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout, and the listener when this Mac's app keeps the socket and is accepted or refused for another build ([daemon socket](daemon-socket.md)); over the network `build` and `relaunch` are left out ([links §2](machine-links.md#2-the-hello)); `relaunch {path, args, env}` is how to start this app again after a crash ([crashes](crashes.md#3-detect-and-relaunch)) |
+| `app.hello {pid, build, protocol, commit, client, relaunch, keepsSocket}` | app | I'm the app, of this build (and, on this Mac, I keep the socket); the reply accepts or refuses it (`app_attached` for a second app of this machine, `other_build`, `other_protocol`) and has the protocol, the daemon's machine and capabilities, its panes and layout, and the listener when this Mac's app keeps the socket and is accepted or refused for another build ([daemon socket](daemon-socket.md)); over the network `build` and `relaunch` are left out ([links §2](machine-links.md#2-the-hello)); `relaunch {path, args, env}` is how to start this app again after a crash ([crashes](crashes.md#3-detect-and-relaunch)) |
 | `app.goodbye` | app | I'm quitting on purpose; sent and written before the link closes, so an app gone without it crashed or was killed ([crashes](crashes.md#3-detect-and-relaunch)) |
 | `layout {windows, …}` | daemon | the layout changed; this is the whole view to draw ([layout](layout.md)) |
-| `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its terminal ID (`term-41`, [presentation layers](presentation-layers.md#3-ids)) |
+| `attach {terminal}` / `detach {terminal}` | app | I show (or no longer show) this terminal, by its pty ID (`pty-52`, [presentation layers](presentation-layers.md#3-ids)) |
 | `snapshot {terminal, data}` | daemon | the terminal's whole screen as a GHOSTSNP snapshot; sent on attach, before anything else for that terminal |
 | `grid {terminal, cols, rows}` | daemon | the terminal's size, after a snapshot or a resize |
 | `output {terminal, data}` | daemon | bytes the program wrote since the snapshot, at most 64 KiB, and the terminal's next waits for the app's `taken` ([input latency](input-latency.md)) |
@@ -61,7 +63,8 @@ sequenceDiagram
 | `input {terminal, data}` | app | bytes the view wrote: keys, paste, mouse and focus reports; written to the pty by the link's reader thread, not the daemon's main loop |
 | `taken {terminal}` | app | the view's surface took the last `output` for this terminal, so the daemon may send the next |
 | `resize {terminal, cols, rows, width, height}` | app | the view now fits this many cells (and pixels) |
-| `settings {foreground, background, cursor, palette, scheme, cursorStyle, cursorBlink, graphemes}` | app | the terminal settings from the app's Ghostty config, sent before any attach and again when the config or appearance changes ([terminal](terminal.md#2-the-config)) |
+| `used {terminal}` | app | the user scrolled this terminal's view, at the start of a gesture; `input` says the same of typing, so this app now sets its size ([pane sizes §3](pane-sizes.md#3-several-apps)) |
+| `settings {foreground, background, cursor, palette, scheme, cursorStyle, cursorBlink, graphemes}` | app | the terminal settings from the app's Ghostty config, sent before any attach and again when the config or appearance changes ([terminal](terminal.md#2-the-config)); the daemon takes them from the target app only |
 | `app.front {window, workspace, pane?, tab?}` (with an `id`) | daemon | bring this focused pane's window forward, after a `focus`: the Desk showing the workspace, else the window; the reply's `front` is the window brought forward, or null ([physical layout §2](physical-layout.md#2-bringing-a-window-forward)) |
 | `debug.*` (with an `id`) | daemon | a request from a client, passed on; the app's reply is the client's |
 | `start`, `stop`, `pane`; `update`; the app's own requests | both | web, markdown and iOS panes ([app panes](app-panes.md)); `pane` also tells the app a terminal pane's new `terminal` when it starts again, and the app makes a new view for it |
@@ -75,15 +78,17 @@ sequenceDiagram
 ## 3. Rules
 
 - **Messages from the daemon are handled in order** on the app's main thread; `debug.*` may answer later.
-- **The daemon decides a terminal's size.** The view asks with `resize`, only for the size it has (a request Ghostty makes for another, such as its 800×600 before the view sizes it, is dropped); the daemon sets the pty's size, and the view takes the size `grid` gives it, in order with the output ([pane sizes](pane-sizes.md)). A resize beyond 1000 cells a side is refused.
-- **Requests for the app** (every `debug.*` the core doesn't answer itself, which is all but `debug.saveState` and `debug.restoreState`) can come from any client. The daemon turns a top-level pane name into its ID, passes the request on and returns the app's reply, so a debug command the app adds needs no change in the daemon. With no app attached they fail with `no_app`; if the app goes away first, `app_gone`; with no answer within 10 s, `timeout`. The app answers one it doesn't know with kmux's `unknown command`. The app's debug commands: [windows](windows.md#5-debug-commands), [terminal](terminal.md#5-debug-mode).
+- **The viewer first.** A request about a workspace (its pane, window or task) goes to the app whose place holds it, on this machine or another ([remote workspaces §2](remote-workspaces.md#2-which-app-answers)); the target below answers the rest.
+- **The target app.** A request for the app goes to this machine's own app while it's attached, never to a remote one, whichever is in use. Without it: if an app of this machine has attached since the daemon started, the machine is one with an app and the answer is `no_app`, so the CLI starts it. A machine that has had no app of its own (a Linux machine) has as its target the remote app last used, else the one that attached last. Requests are `debug.*`, `screenshot`, `app.front`, `desk`, `toast`, `kanna PATH`, and the default claimant ([links §4](machine-links.md#4-projects-desks-and-claims)). The reply goes back to whoever asked, and a request an app hasn't answered fails with `app_gone` when that app goes, leaving the others' alone.
+- **The daemon decides a terminal's size.** The view asks with `resize`, only for the size it has (a request Ghostty makes for another, such as its 800×600 before the view sizes it, is dropped); the daemon sets the pty's size, and the view takes the size `grid` gives it, in order with the output. With several apps showing a terminal, the app that last used it sets the size and the others draw it at that size ([pane sizes §3](pane-sizes.md#3-several-apps)). A resize beyond 1000 cells a side is refused.
+- **Requests for the app** (every `debug.*` the core doesn't answer itself, which is all but `debug.saveState` and `debug.restoreState`) can come from any client. The daemon turns a top-level pane name into its ID, passes the request on and returns the app's reply, so a debug command the app adds needs no change in the daemon. With no target they fail with `no_app`; if the target goes away first, `app_gone`; with no answer within 10 s, `timeout`. The app answers one it doesn't know with kmux's `unknown command`. The app's debug commands: [windows](windows.md#5-debug-commands), [terminal](terminal.md#5-debug-mode).
 - **`screenshot` is passed on the same way**, but isn't a debug command, so the app always answers it ([screenshot](screenshot.md)).
 - **Debug commands are off by default.** The app answers `debug.*` only when started with `KANNA_DEBUG=1` (the test scripts set it). `debug.snapshot` takes a plain file name and writes a new file in `$KANNA_STATE_DIR` (or `$TMPDIR`); it never overwrites one.
-- **Limits:** a line over 16 MiB drops the app; a terminal whose outbox passes 4 MiB before it's sent (an app slower than the program, past the 1s its pty is held for, [input latency §3](input-latency.md#3-the-byte-path)) gets a new snapshot in place of that output, then live output again, so the app may see a terminal's last output in a snapshot just before `exited`; an app that falls 16 MiB behind on output stops getting it and starts its terminals over (snapshot, grid) once it has caught up, and one 64 MiB behind is dropped.
+- **Limits:** a line over 16 MiB drops the app; a terminal whose outbox passes 4 MiB before it's sent (an app slower than the program, past the 1s its pty is held for, [input latency §3](input-latency.md#3-the-byte-path)) gets a new snapshot in place of that output, then live output again, so the app may see a terminal's last output in a snapshot just before `exited`; an app that falls 16 MiB behind on output stops getting it and starts its terminals over (snapshot, grid) once it has caught up, and one 64 MiB behind is dropped. All of it is per app: each has its own outbox for a terminal, its own chunk in flight and its own place behind, so a slow app costs only itself. The pty is held only while every app showing the terminal is behind, so a fast app keeps its output live, and the slow one catches up by snapshot.
 - **The layout is the daemon's:** it applies every command, from the app as from the CLI, and sends the app the new view ([layout](layout.md)).
 - **Screens:** the daemon keeps each terminal's screen with libghostty-vt (`crates/kanna-vt`), fed from the pty, with up to 10 MB of scrollback. `read` answers from it, so it works with the app closed.
 - **Queries are answered once, by the daemon.** Cursor position, device status and attributes, modes, size reports and XTVERSION are answered by the daemon's screen, written back to the pty as they're parsed, whether or not the app is attached. The app's surfaces parse the same output but drop their replies, so the program never gets two. Colour queries and scheme reports are answered from the app's `settings` ([terminal](terminal.md)).
-- **Attaching:** the daemon takes the snapshot on its main loop under the lock the pty reader feeds the screen and the outbox with, empties the outbox and queues the snapshot and `grid` for the app before letting go of it: what the snapshot has isn't sent again, and every later byte follows as `output`. A `grid` after a resize and `exited` are queued the same way, after any output still waiting. The app loads the snapshot (`ghostty_surface_load_snapshot`), then applies the `grid` that follows; both go through the same queue as output, in order. A terminal started again (`restart`, a task started again) is a new terminal with a new ID: the daemon tells the app with `pane`, and the app stops the old surface and attaches a new one to the new ID ([terminal](terminal.md#4-the-apps-terminal-views)).
+- **Attaching:** the daemon takes the snapshot on its main loop under the lock the pty reader feeds the screen and the outbox with, empties that app's outbox and queues the snapshot and `grid` for the app before letting go of it: what the snapshot has isn't sent again, and every later byte follows as `output`. A `grid` after a resize and `exited` are queued the same way, after any output still waiting. The app loads the snapshot (`ghostty_surface_load_snapshot`), then applies the `grid` that follows; both go through the same queue as output, in order. A terminal started again (`restart`, a task started again) is a new terminal with a new ID: the daemon tells the app with `pane`, and the app stops the old surface and attaches a new one to the new ID ([terminal](terminal.md#4-the-apps-terminal-views)).
 - **When a snapshot fails:** inside some unfinished sequences (an APC holding a C1 byte) libghostty-vt can't encode one. The daemon then sends nothing for that pane and tries again after the terminal's next output, or when it exits. If the app's surface refuses a snapshot (a full mailbox), it retries every 2 ms; after 250 refusals it goes on with the live output.
 
 ## 4. The app starts the daemon
@@ -102,7 +107,8 @@ Kanna.app carries the daemon, the keeper and the `kanna` CLI in `Contents/Helper
 
 | Term | Meaning |
 |---|---|
-| **App link** | The app's one connection to the daemon, on the daemon's socket. |
+| **App link** | One app's connection to a daemon: on the daemon's socket for this machine's app, over the network for another's. |
+| **Target app** | The app that gets a request for "the app": this machine's own, or on a machine without one the remote app last used (§3). |
 | **Snapshot** | A terminal's whole screen (grid, scrollback, modes, colours, an unfinished sequence) as bytes (GHOSTSNP), sent on attach and saved on disk. |
 | **Surface** | One terminal view's Ghostty terminal in the app (GhosttyKit): it draws the screen and handles keys, mouse, selection and clipboard. |
-| **Outbox** | The daemon's queue of output not yet sent to the app. |
+| **Outbox** | The daemon's queue of a terminal's output not yet sent to one app. |

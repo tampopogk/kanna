@@ -45,11 +45,11 @@
       "additionalProperties": false
     },
     "shelf": {
-      "description": "A repo's Shelf: the tasks Kanna has brought in that aren't on the Desk.",
+      "description": "The Shelf: the tasks Kanna has brought in that aren't on the Desk.",
       "type": "object",
       "properties": {
         "runners": {
-          "description": "How many of a repo's Shelf tasks run at once. Waiting tasks start by themselves, oldest first, skipping blocked ones, and Kanna stops each when its agent's turn ends (it asks you something or it's finished), freeing its place for the next; move a stopped task to the Desk to resume it. 0 turns this off: Kanna starts and stops none. Read every few seconds.",
+          "description": "In ~/.kanna-v4/config.json, how many Shelf tasks run at once on this machine, across all repos; it isn't synced, so each machine has its own. In a repo's .kanna/config.json, a lower cap for that repo: it can't raise the machine's number. Waiting tasks start by themselves, oldest first across all repos, skipping blocked ones, and Kanna stops each when its agent's turn ends (it asks you something or it's finished), freeing its place for the next; move a stopped task to the Desk to resume it. Desk tasks don't count. 0 turns this off, for the machine in your file and for the repo in a repo's: Kanna starts and stops none. Read every few seconds.",
           "type": "integer",
           "minimum": 0,
           "maximum": 10,

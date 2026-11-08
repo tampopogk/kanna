@@ -53,9 +53,11 @@ final class Contents {
     var agentStatus: ((String) -> String?)?
     var agentName: ((String) -> String)?
     var onComments: ((String, NSView) -> Void)?
-    private var markdownSpots: [String: [String: (y: CGFloat, zoom: CGFloat)]] = [:]
+    private var markdownSpots: [String: [String: (y: CGFloat, textSize: CGFloat, pageZoom: CGFloat)]] = [:]
     var textSize: ((String) -> CGFloat?)?
     var onTextSize: ((String, CGFloat) -> Void)?
+    var pageZoom: ((String) -> CGFloat?)?
+    var onPageZoom: ((String, CGFloat) -> Void)?
     private var diffSources: [String: (path: String, args: [String])] = [:]
     private var diffContents: [String: String] = [:]
     private var diffLatest: [String: JSON] = [:]
@@ -120,11 +122,12 @@ final class Contents {
     func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? log(id)?.keyView ?? serial(id)?.keyView }
     func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
-    private func send(_ text: String, to agent: String, done: @escaping (String?) -> Void) {
-        guard let onCall else { return done("not connected to the daemon") }
-        onCall("send", ["pane": .string(agent), "text": .string(text)]) { answer in
-            guard answer["ok"]?.bool == true else { return done(answer["error"]?["message"]?.string ?? "send failed") }
-            done(nil)
+    private func send(_ text: String, to agent: String, doc: String, thread: String, done: @escaping (DocDelivery) -> Void) {
+        guard let onCall else { return done(.failed("not connected to the daemon")) }
+        let args: [String: JSON] = ["action": .string("comment"), "pane": .string(agent), "text": .string(text), "doc": .string(doc), "thread": .string(thread)]
+        onCall("tasks", args) { answer in
+            guard answer["ok"]?.bool == true else { return done(.failed(answer["error"]?["message"]?.string ?? "send failed")) }
+            done(answer["state"]?.string == "waiting" ? .waiting : .sent)
         }
     }
 
@@ -139,9 +142,10 @@ final class Contents {
         switch type {
         case "ios": return "an iOS pane runs only for this Mac's own tasks"
         case "web":
-            guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-                return "a page from \(machine) opens only over http or https"
+            guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
+                return "a page from \(machine) opens only over http or https, or from a file"
             }
+            if url.isFileURL { return MachineFileURL.page(url.absoluteString) == nil ? "\(machine)'s page has no path" : nil }
             return url.host?.isEmpty == false ? nil : "\(machine)'s page has no host"
         default: return nil
         }
@@ -178,7 +182,7 @@ final class Contents {
             let machine = MachineIDs.machine(of: id)
             let path = machine == nil ? Self.absolute(pane["path"]?.string ?? "") : pane["path"]?.string ?? ""
             let spot = markdownSpots[id]?[path]
-            let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
+            let markdown = MarkdownPaneView(path: path, textSize: spot?.textSize ?? textSize?(id) ?? 1, pageZoom: spot?.pageZoom ?? pageZoom?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
             markdown.canReveal = machine == nil
             markdown.readFile = { [weak self] path, data, done in self?.read(path, data: data, for: id, done: done) }
             markdown.changeThreads = changer(for: id, path: path)
@@ -186,12 +190,13 @@ final class Contents {
             markdown.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
             markdown.onZoom = { [weak self, weak markdown] in
                 guard let markdown else { return }
-                self?.onTextSize?(id, markdown.zoom)
+                self?.onTextSize?(id, markdown.textSize)
+                self?.onPageZoom?(id, markdown.pageZoom)
             }
             markdown.onFocus = { [weak self] in self?.onFocus?(id) }
             markdown.agent = pane["agent"]?.string
             markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
-            markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            markdown.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
             markdown.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             markdown.onComments = { [weak self] button in self?.onComments?(id, button) }
             if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
@@ -305,7 +310,21 @@ final class Contents {
             var url = pane["url"]?.string ?? "about:blank"
             var unmap: (URL) -> URL = { $0 }
             var waitingFor: String?
-            if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
+            var files: MachineFiles?
+            if let page = MachineFileURL.page(url) {
+                url = page.absoluteString
+                unmap = MachineFileURL.file
+                files = MachineFiles(page: MachineFileURL.path(of: page) ?? "/") { [weak self] (path: String, done: @escaping @MainActor (Result<(real: String, data: Data), MachineFiles.Failure>) -> Void) in
+                    guard let self else { return done(.failure(.init(message: "Kanna.app isn't showing this page"))) }
+                    read(path, data: true, for: id) { result in
+                        switch result {
+                        case .success(let file) where file.type == "file": done(.success((real: file.path, data: file.data ?? Data())))
+                        case .success(let file): done(.failure(.init(message: "\(file.path) isn't a file")))
+                        case .failure(let failure): done(.failure(.init(message: failure.message)))
+                        }
+                    }
+                }
+            } else if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
                 switch portOpen?(tunnel.port, machine) ?? .failure(KannaError("unavailable", "this Mac has no machines endpoint")) {
                 case .success(let local):
                     url = tunnel.local(local).absoluteString
@@ -317,8 +336,8 @@ final class Contents {
                     return report(id, ["state": "failed", "error": .string(failure.message)])
                 }
             }
-            let store: WKWebsiteDataStore = if waitingFor != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
-            let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store)
+            let store: WKWebsiteDataStore = if waitingFor != nil || files != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
+            let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store, files: files)
             web.waitingFor = waitingFor
             web.unmap = unmap
             web.onFocus = { [weak self] in self?.onFocus?(id) }
@@ -328,7 +347,7 @@ final class Contents {
             web.onTitleChange = { [weak self] title in self?.onUpdate?(id, ["title": .string(title)]) }
             web.agent = pane["agent"]?.string
             web.agentStatus = web.agent.flatMap { self.agentStatus?($0) }
-            web.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            web.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
             web.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             web.onComments = { [weak self] button in self?.onComments?(id, button) }
             web.onMarkup = { [weak self] markup in self?.marked(markup, in: id) }
@@ -415,7 +434,7 @@ final class Contents {
         }
         if let markdown = content as? MarkdownPaneView {
             markdown.stop()
-            markdownSpots[id, default: [:]][markdown.path] = (markdown.scrollTop, markdown.zoom)
+            markdownSpots[id, default: [:]][markdown.path] = (markdown.scrollTop, markdown.textSize, markdown.pageZoom)
         }
         slot.content = nil
         states.removeValue(forKey: id)

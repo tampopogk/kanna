@@ -13,7 +13,6 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use usb::Found;
 
@@ -72,7 +71,7 @@ struct Waiter {
 }
 
 pub struct Serial {
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     core: RefCell<Option<WeakCore>>,
     folder: PathBuf,
     ports: RefCell<HashMap<String, Port>>,
@@ -185,7 +184,7 @@ impl Port {
 }
 
 impl Serial {
-    pub fn new(events: Sender<Event>, state_dir: &Path) -> Serial {
+    pub fn new(events: crate::runtime::Events, state_dir: &Path) -> Serial {
         Serial {
             events,
             core: RefCell::new(None),

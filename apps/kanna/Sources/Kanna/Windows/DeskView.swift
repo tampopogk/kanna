@@ -75,12 +75,13 @@ struct ShelfTask: Equatable {
             return list.compactMap { $0["name"]?.string.map { "\u{201C}\($0)\u{201D}" } ?? $0["id"]?.string }.joined(separator: ", ")
         }
         if entry["conflict"]?.string != nil { return "its blockers' branches conflict" }
-        let stale = names("stale"), bases = names("bases")
-        if !stale.isEmpty { return "stale · behind " + stale }
-        let ready: String? = entry["ready"]?["head"]?.string != nil ? "ready" : nil
-        let after: String? = bases.isEmpty ? nil : "merges after " + bases
-        let said = [ready, after].compactMap { $0 }
-        return said.isEmpty ? nil : said.joined(separator: " · ")
+        switch entry["merge"]?.string {
+        case "stale": return "stale · behind " + names("stale")
+        case "after": return "merges after " + names("bases")
+        case "conflicts": return "conflicts"
+        case "ready": return "ready"
+        default: return nil
+        }
     }
 
     static func program(_ command: String?) -> String? {

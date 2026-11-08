@@ -5,7 +5,7 @@ use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, PaneState, Responder, WeakCore};
 use kanna_pipe::{Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -48,11 +48,12 @@ pub struct Ended {
     pub full: String,
     pub failures: Option<Vec<String>>,
     pub note: Option<String>,
+    pub by: Option<String>,
 }
 
 impl Ended {
     fn to_value(&self) -> Value {
-        json!({ "verdict": self.shown, "answer": self.answer, "feedback": self.feedback, "full": self.full, "failures": self.failures, "note": opt(self.note.as_deref()) })
+        json!({ "verdict": self.shown, "answer": self.answer, "feedback": self.feedback, "full": self.full, "failures": self.failures, "note": opt(self.note.as_deref()), "by": opt(self.by.as_deref()) })
     }
 
     fn from_value(value: &Value) -> Ended {
@@ -61,6 +62,7 @@ impl Ended {
         ended.full = string(value, "full").unwrap_or("").to_string();
         ended.failures = value.get("failures").and_then(Value::as_array).map(|l| l.iter().filter_map(Value::as_str).map(String::from).collect());
         ended.note = string(value, "note").map(String::from);
+        ended.by = string(value, "by").map(String::from);
         ended
     }
 }
@@ -161,6 +163,9 @@ pub struct Doc {
     pub note: Option<String>,
     pub step: Option<Step>,
     pub parts: BTreeMap<String, Vec<Item>>,
+    pub pausing: bool,
+    pub held: bool,
+    pub interventions: BTreeMap<String, u32>,
 }
 
 impl Doc {
@@ -183,6 +188,9 @@ impl Doc {
             "note": opt(self.note.as_deref()),
             "step": self.step.as_ref().map_or(Value::Null, Step::to_value),
             "parts": self.parts.iter().map(|(k, v)| (k.clone(), Value::Array(v.iter().map(Item::to_value).collect()))).collect::<Map>(),
+            "pausing": self.pausing,
+            "held": self.held,
+            "interventions": self.interventions,
         })
     }
 
@@ -209,6 +217,9 @@ impl Doc {
             note: string(value, "note").map(String::from),
             step: value.get("step").filter(|s| s.is_object()).map(Step::from_value),
             parts: value.get("parts").and_then(Value::as_object).map_or_else(BTreeMap::new, |m| m.iter().map(|(k, v)| (k.clone(), items_of(Some(v)))).collect()),
+            pausing: value.get("pausing").and_then(Value::as_bool).unwrap_or(false),
+            held: value.get("held").and_then(Value::as_bool).unwrap_or(false),
+            interventions: value.get("interventions").and_then(Value::as_object).map_or_else(BTreeMap::new, |m| m.iter().map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32)).collect()),
         }
     }
 }
@@ -254,23 +265,19 @@ pub fn unbuilt(pipeline: &Pipeline, host: &str) -> Vec<String> {
     for stage in &pipeline.stages {
         let line = stage.line;
         let mut say = |what: &str| out.push(format!("{line}: {} uses {what}, which runs can't do yet", stage.name));
-        match &stage.kind {
-            Kind::Agent(agent) => {
-                if agent.each.is_some() && agent.attempts.is_some() {
-                    say("each with xN");
-                }
-                if agent.guard.is_some() && (agent.each.is_some() || agent.attempts.is_some()) {
-                    say("guard with each or xN");
-                }
-                if agent.emits {
-                    say("emits");
-                }
-                if agent.resume.is_some() {
-                    say("resume");
-                }
+        if let Kind::Agent(agent) = &stage.kind {
+            if agent.each.is_some() && agent.attempts.is_some() {
+                say("each with xN");
             }
-            Kind::Ask { .. } => say("ask"),
-            _ => {}
+            if agent.guard.is_some() && (agent.each.is_some() || agent.attempts.is_some()) {
+                say("guard with each or xN");
+            }
+            if agent.emits {
+                say("emits");
+            }
+            if agent.resume.is_some() {
+                say("resume");
+            }
         }
         if let Some(on) = stage.on.as_deref().filter(|on| *on != "here" && *on != host) {
             out.push(format!("{line}: {} is on {on}: no such machine: stages run on this machine (here, or {host}) until machines are built", stage.name));
@@ -493,7 +500,7 @@ fn reported(value: &Value) -> Ended {
         _ => None,
     };
     let answer = string(value, "answer").unwrap_or("").to_string();
-    Ended { verdict, shown, answer: answer.clone(), feedback: answer, full: String::new(), failures: None, note: None }
+    Ended { verdict, shown, answer: answer.clone(), feedback: answer, full: String::new(), failures: None, note: None, by: None }
 }
 
 fn bad(message: impl Into<String>) -> KmuxError {
@@ -511,6 +518,7 @@ fn alive(core: &CoreHandle, pane: &str) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 enum Work {
     Agent { agent: String },
+    Ask { question: String },
     Command { log: PathBuf, exit: PathBuf },
 }
 
@@ -597,6 +605,32 @@ fn patch(doc: &mut Value, with: Value) {
     }
 }
 
+fn carried(next: &Next, ended: &Ended, stage: &str, ask: bool) -> Option<Feedback> {
+    let noted = ask && !ended.feedback.trim().is_empty();
+    match (next, ended.verdict) {
+        (Next::Stage { reset: false, .. }, Some(Verdict::Fail)) => Some(Feedback { stage: stage.to_string(), text: ended.feedback.clone(), full: ended.full.clone() }),
+        (Next::Stage { reset: false, .. }, _) if noted => Some(Feedback { stage: stage.to_string(), text: ended.feedback.clone(), full: String::new() }),
+        _ => None,
+    }
+}
+
+fn held(live: &mut Live, next: &str) {
+    if live.doc.held {
+        live.row.state = "paused".into();
+        live.doc.why = Some("the task is stopped".into());
+    } else if live.doc.pausing {
+        live.row.state = "paused".into();
+        live.doc.why = Some(format!("paused by you before {next}"));
+    } else {
+        live.row.state = "running".into();
+        live.doc.why = None;
+    }
+}
+
+fn intervene(live: &mut Live, kind: &str) {
+    *live.doc.interventions.entry(kind.to_string()).or_default() += 1;
+}
+
 struct Live {
     row: RunRow,
     doc: Doc,
@@ -613,7 +647,7 @@ impl Live {
         self.visits.iter_mut().find(|v| v.n == n)
     }
 
-    fn held(&self) -> bool {
+    fn holding(&self) -> bool {
         self.visits.iter().any(|v| v.paused || v.needs.is_some())
     }
 
@@ -647,6 +681,10 @@ pub struct Runs {
     live: RefCell<Vec<Live>>,
     soon: Cell<bool>,
     host: String,
+    flagged: RefCell<HashSet<String>>,
+    asks_changed: Cell<bool>,
+    carrying: RefCell<Vec<String>>,
+    pub on_status: RefCell<Option<Box<dyn Fn(&str)>>>,
 }
 
 impl Runs {
@@ -667,6 +705,7 @@ impl Runs {
             for row in open {
                 let work = match row.kind.as_str() {
                     "agent" => Work::Agent { agent: row.agent.clone().unwrap_or_default() },
+                    "ask" => Work::Ask { question: string(&row.doc, "question").unwrap_or("").to_string() },
                     _ => Work::Command { log: PathBuf::from(string(&row.doc, "log").unwrap_or("")), exit: PathBuf::from(string(&row.doc, "exit").unwrap_or("")) },
                 };
                 let role = row.doc.get("role").map_or(Role::Main(None), Role::from_value);
@@ -677,7 +716,7 @@ impl Runs {
                 let needs = (!paused && reported.is_none() && matches!(work, Work::Agent { .. }) && row.doc.get("needs").is_some_and(|n| !n.is_null())).then(now);
                 entry.visits.push(Visit { n, role, row, work, within, opening: false, ending: false, reported, needs, paused });
             }
-            if entry.row.state == "paused" && !entry.held() {
+            if entry.row.state == "paused" && !entry.holding() {
                 for visit in entry.visits.iter_mut().filter(|v| v.reported.is_none() && matches!(v.work, Work::Agent { .. })) {
                     visit.needs = Some(now());
                 }
@@ -689,7 +728,7 @@ impl Runs {
             log!("kanna-daemon: {} carries on ({}, {at})", entry.row.id, entry.row.state);
             live.push(entry);
         }
-        Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine() }
+        Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default() }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -722,7 +761,11 @@ impl Runs {
             Some("done") => self.done(args),
             Some("need") => self.need(args),
             Some("resume") => self.resume_run(args),
-            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, resume, done or need)"))),
+            Some("answer") => self.answer(args),
+            Some("pause") => self.pause_run(args),
+            Some("skip") => self.skip(args),
+            Some("retry") => self.retry(args),
+            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, resume, answer, pause, skip, retry, done or need)"))),
         }
     }
 
@@ -860,6 +903,9 @@ impl Runs {
             "note": opt(doc.note.as_deref()),
             "worktree": doc.worker,
             "request": doc.request,
+            "pausing": doc.pausing,
+            "held": doc.held,
+            "interventions": doc.interventions,
         })
     }
 
@@ -945,7 +991,7 @@ impl Runs {
             (Some(_), false) => return Err(bad(format!("{stage} gives no verdict: kanna run done"))),
         };
         let answer = string(args, "answer").unwrap_or("").to_string();
-        let ended = Ended { verdict, shown: verdict.map_or("done", Verdict::name), answer: answer.clone(), feedback: answer.clone(), full: String::new(), failures: None, note: None };
+        let ended = Ended { verdict, shown: verdict.map_or("done", Verdict::name), answer: answer.clone(), feedback: answer.clone(), full: String::new(), failures: None, note: None, by: None };
         let mut row = visit.row.clone();
         row.doc = json!({ "reported": { "verdict": ended.shown, "answer": answer } });
         let _ = self.db.put_stage(&row);
@@ -956,7 +1002,7 @@ impl Runs {
                 visit.reported = Some((ended.clone(), now()));
                 visit.needs = None;
             }
-            if (state == "waiting" || state == "paused") && !live.held() {
+            if (state == "waiting" || state == "paused") && !live.holding() && !live.doc.held && !live.doc.pausing {
                 live.row.state = "running".into();
                 live.doc.why = None;
                 return Some(("resumed", None, json!({ "stage": stage })));
@@ -985,6 +1031,15 @@ impl Runs {
     }
 
     pub fn tick(self: &Rc<Self>) -> Option<Instant> {
+        if self.asks_changed.replace(false) {
+            self.sync_asks();
+        }
+        let carrying = std::mem::take(&mut *self.carrying.borrow_mut());
+        for id in carrying {
+            if let Err(error) = self.carry_on(&id, CARRY_ON, "task") {
+                log!("kanna-daemon: {id} couldn't carry on once its task started: {}", error.message);
+            }
+        }
         if self.soon.replace(false) || self.deadline().is_some_and(|at| at <= now()) {
             let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.state == "running" || l.visits.iter().any(|v| !v.paused)).map(|l| l.row.id.clone()).collect();
             for id in &ids {
@@ -1021,6 +1076,61 @@ impl Runs {
         if let Err(error) = self.db.put_run(&row, event) {
             log!("kanna-daemon: couldn't save {id} in kanna.db: {error}");
         }
+        self.asks_changed.set(true);
+    }
+
+    fn sync_asks(&self) {
+        let (Some(core), Some(tasks)) = (self.core.upgrade(), self.tasks.upgrade()) else { return };
+        let asking: Vec<String> = self.live.borrow().iter().filter(|l| l.row.state == "waiting" && l.visits.iter().any(|v| matches!(v.work, Work::Ask { .. }) && !v.ending)).map(|l| l.row.task.clone()).collect();
+        let want: HashSet<String> = asking.iter().filter_map(|task| tasks.agent_pane(task)).collect();
+        let had = self.flagged.replace(want.clone());
+        for pane in had.union(&want) {
+            let waits = want.contains(pane);
+            if core.pane(pane).is_some_and(|p| p.waits_on_you != waits) {
+                core.with_pane_mut(pane, |p| p.waits_on_you = waits);
+                if let Some(on_status) = self.on_status.borrow().as_ref() {
+                    on_status(pane);
+                }
+            }
+        }
+    }
+
+    pub fn task_stopped(self: &Rc<Self>, task: &str) {
+        let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.task == task && (l.row.state == "running" || l.row.state == "waiting")).map(|l| l.row.id.clone()).collect();
+        for id in ids {
+            log!("kanna-daemon: {task} is stopped, so {id} stops its stages and starts no other until it starts");
+            self.update(&id, |live| {
+                live.doc.held = true;
+                if live.row.state == "running" {
+                    live.row.state = "paused".into();
+                    live.doc.why = Some("the task is stopped".into());
+                }
+                Some(("paused", Some("task".into()), json!({ "why": "the task is stopped" })))
+            });
+        }
+        self.soon.set(true);
+    }
+
+    pub fn task_started(self: &Rc<Self>, task: &str) {
+        self.asks_changed.set(true);
+        let found: Vec<(String, bool, Vec<Visit>)> = self.live.borrow().iter().filter(|l| l.row.task == task && l.doc.held).map(|l| (l.row.id.clone(), l.doc.pausing, l.visits.clone())).collect();
+        for (id, pausing, visits) in found {
+            log!("kanna-daemon: {task} started again, so {id} carries on");
+            let parked = visits.iter().filter(|v| v.paused && v.row.doc["paused"]["task"] == true).count();
+            if parked > 0 && !pausing {
+                self.carrying.borrow_mut().extend(std::iter::repeat_n(id.clone(), parked));
+                continue;
+            }
+            self.update(&id, |live| {
+                live.doc.held = false;
+                if live.row.state == "paused" && !pausing && !live.holding() {
+                    live.row.state = "running".into();
+                    live.doc.why = None;
+                }
+                Some(("resumed", Some("task".into()), json!({ "why": "the task started" })))
+            });
+        }
+        self.soon.set(true);
     }
 
     fn state(&self, id: &str) -> Option<String> {
@@ -1047,9 +1157,27 @@ impl Runs {
         if visit.opening || visit.ending || visit.paused {
             return;
         }
-        let Some(pane) = visit.row.terminal.clone() else { return };
         let late = visit.due().is_some_and(|due| now() >= due);
         let n = visit.n;
+        if let Work::Ask { .. } = &visit.work {
+            if late && self.mark_ending(id, n) {
+                self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None });
+            }
+            return;
+        }
+        let Some(pane) = visit.row.terminal.clone() else { return };
+        let stopped = self.live.borrow().iter().any(|l| l.row.id == id && l.doc.held);
+        if stopped && visit.reported.is_none() && visit.needs.is_none() {
+            match &visit.work {
+                Work::Agent { .. } => self.park(id, n),
+                _ if self.mark_ending(id, n) => {
+                    let (id, ended) = (id.to_string(), visit.clone());
+                    self.end_visit(visit, move |this| this.rerun(&id, &ended, "interrupted"));
+                }
+                _ => {}
+            }
+            return;
+        }
         match &visit.work {
             Work::Agent { agent } => {
                 if let Some((ended, at)) = visit.reported.clone() {
@@ -1088,6 +1216,7 @@ impl Runs {
                     self.command_ended(id, n, &pane, log, exit);
                 }
             }
+            Work::Ask { .. } => {}
         }
     }
 
@@ -1118,7 +1247,7 @@ impl Runs {
         if visit.needs.is_some() {
             return self.park(&id, n);
         }
-        if state != "running" && state != "paused" {
+        if state != "running" && !(state == "paused" && self.live.borrow().iter().any(|l| l.row.id == id && !l.doc.held)) {
             return;
         }
         let Some(core) = self.core.upgrade() else { return };
@@ -1173,16 +1302,19 @@ impl Runs {
         if visit.paused || visit.reported.is_some() || !self.mark_ending(id, n) {
             return;
         }
+        let by_task = visit.needs.is_none() && self.live.borrow().iter().any(|l| l.row.id == id && l.doc.held);
         let (this, id) = (Rc::downgrade(self), id.to_string());
         let closing = pane.clone();
         let finish = move |said: Option<String>| {
             let Some(this) = this.upgrade() else { return };
             this.close(&closing);
             let mut parked = None;
+            let mut started = false;
             this.update(&id, |live| {
+                started = live.doc.held != by_task && !live.doc.pausing;
                 if let Some(visit) = live.visit_mut(n) {
                     let session = visit.row.session.clone().or(said);
-                    patch(&mut visit.row.doc, json!({ "paused": { "at": now(), "session": session } }));
+                    patch(&mut visit.row.doc, json!({ "paused": { "at": now(), "session": session, "task": by_task } }));
                     visit.paused = true;
                     visit.ending = false;
                     visit.needs = None;
@@ -1196,6 +1328,10 @@ impl Runs {
                 saved.doc = json!({ "paused": row.doc["paused"].clone(), "needs": null });
                 let _ = this.db.put_stage(&saved);
             }
+            if by_task && started {
+                this.carrying.borrow_mut().push(id.clone());
+                this.soon.set(true);
+            }
         };
         match self.tasks.upgrade() {
             Some(tasks) => tasks.end_agent(&pane, &agent, finish),
@@ -1203,23 +1339,75 @@ impl Runs {
         }
     }
 
+    fn live_of(&self, row: &RunRow) -> Result<(String, Doc, Vec<Visit>, Pipeline), KmuxError> {
+        let live = self.live.borrow();
+        let live = live.iter().find(|l| l.row.id == row.id).ok_or_else(|| KmuxError::new("ended", format!("{} has ended ({})", row.id, row.outcome.as_deref().unwrap_or(&row.state))))?;
+        Ok((live.row.state.clone(), live.doc.clone(), live.visits.clone(), live.pipeline.clone()))
+    }
+
+    fn who(&self, args: &Value, task: &str) -> String {
+        let agent = string(args, "by").zip(self.tasks.upgrade()).and_then(|(by, tasks)| tasks.task_of(by)).is_some_and(|of| of == task);
+        if agent { "agent" } else { "user" }.to_string()
+    }
+
     fn resume_run(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
         let row = self.find_live(args)?;
         let text = string(args, "text").map(str::trim).filter(|t| !t.is_empty()).unwrap_or(CARRY_ON).to_string();
+        let by = self.who(args, &row.task);
+        let (state, doc, visits, _) = self.live_of(&row)?;
+        let reply = |stage: &str, state: &str| Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage)), ("state".to_string(), json!(state))]));
+        if let Some(asking) = visits.iter().find(|v| matches!(v.work, Work::Ask { .. })) {
+            return Err(KmuxError::new("asking", format!("{} asks: answer it with `kanna run answer {} yes|no [NOTE]`", asking.row.stage, row.id)));
+        }
+        if visits.iter().any(|v| v.paused) && state == "paused" {
+            let stage = self.carry_on(&row.id, &text, &by)?;
+            return reply(&stage, &self.state(&row.id).unwrap_or_default());
+        }
+        if let Some(visit) = visits.iter().find(|v| !v.paused && !v.ending).filter(|_| doc.pausing || doc.held) {
+            let stage = visit.label();
+            self.update(&row.id, |live| {
+                live.doc.pausing = false;
+                live.doc.held = false;
+                if live.row.state == "paused" && !live.holding() {
+                    live.row.state = "running".into();
+                }
+                if live.row.state == "running" {
+                    live.doc.why = None;
+                }
+                intervene(live, "resumed");
+                Some(("resumed", Some(by.clone()), json!({ "stage": stage })))
+            });
+            self.soon.set(true);
+            return reply(&stage, &self.state(&row.id).unwrap_or_default());
+        }
+        if visits.iter().any(|v| v.ending || v.opening || v.needs.is_some()) {
+            return Err(KmuxError::new("busy", "its stage's agent is still stopping: try again in a moment"));
+        }
+        if visits.is_empty() && state == "paused" {
+            let next = doc.next.clone().or_else(|| doc.step.as_ref().map(|s| s.stage.clone())).unwrap_or_default();
+            self.update(&row.id, |live| {
+                live.row.state = "running".into();
+                live.doc.why = None;
+                live.doc.pausing = false;
+                live.doc.held = false;
+                intervene(live, "resumed");
+                Some(("resumed", Some(by.clone()), json!({ "next": next })))
+            });
+            self.soon.set(true);
+            return reply(&next, "running");
+        }
+        Err(KmuxError::new("not_paused", format!("{} isn't paused ({})", row.id, state)))
+    }
+
+    fn carry_on(self: &Rc<Self>, id: &str, text: &str, by: &str) -> Result<String, KmuxError> {
         let (run, doc, visit, stage) = {
             let live = self.live.borrow();
-            let live = live.iter().find(|l| l.row.id == row.id).ok_or_else(|| KmuxError::new("ended", format!("{} has ended ({})", row.id, row.outcome.as_deref().unwrap_or(&row.state))))?;
-            if live.row.state != "paused" {
-                return Err(KmuxError::new("not_paused", format!("{} isn't paused ({})", row.id, live.row.state)));
-            }
-            let visit = match live.visits.iter().find(|v| v.paused) {
-                Some(visit) => visit.clone(),
-                None if live.visits.iter().any(|v| v.needs.is_some()) => return Err(KmuxError::new("busy", "its stage's agent is still stopping: try again in a moment")),
-                None => return Err(KmuxError::new("not_paused", format!("{} has no stage paused", row.id))),
-            };
+            let live = live.iter().find(|l| l.row.id == id).ok_or_else(|| KmuxError::new("ended", format!("{id} has ended")))?;
+            let visit = live.visits.iter().find(|v| v.paused).cloned().ok_or_else(|| KmuxError::new("not_paused", format!("{id} has no stage to carry on")))?;
             let stage = live.pipeline.stage(&visit.row.stage).cloned().ok_or_else(|| failed(format!("{} isn't in the pipeline any more", visit.row.stage)))?;
             (live.row.clone(), live.doc.clone(), visit, stage)
         };
+        let (text, by) = (text.to_string(), by.to_string());
         let Kind::Agent(agent) = &stage.kind else { return Err(failed(format!("{} isn't an agent stage", stage.name))) };
         let n = visit.n;
         let replies = visit.row.doc.get("replies").and_then(Value::as_u64).unwrap_or(0) + 1;
@@ -1237,16 +1425,20 @@ impl Runs {
         let first = format!("\"$(cat {})\"", quote(&reply));
         let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), true, &first));
         let paused_at = visit.row.doc["paused"]["at"].as_f64().unwrap_or_else(now);
-        let by = string(args, "by").unwrap_or("user").to_string();
         let label = visit.label();
         self.update(&run.id, |live| {
+            live.doc.held = false;
+            live.doc.pausing = false;
+            if by != "task" {
+                intervene(live, "resumed");
+            }
             if let Some(visit) = live.visit_mut(n) {
                 let waited = visit.waited() + (now() - paused_at).max(0.0);
                 patch(&mut visit.row.doc, json!({ "paused": null, "waited": waited, "replies": replies }));
                 visit.paused = false;
                 visit.opening = true;
             }
-            if !live.held() {
+            if !live.holding() {
                 live.row.state = "running".into();
                 live.doc.why = None;
             }
@@ -1268,7 +1460,133 @@ impl Runs {
                 let _ = this.db.put_stage(&row);
             }
         });
-        Ok(Map::from_iter([("run".to_string(), json!(run.id)), ("stage".to_string(), json!(stage.name)), ("state".to_string(), json!(self.state(&run.id).unwrap_or_default()))]))
+        Ok(stage.name.clone())
+    }
+
+    fn answer(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let row = self.find_live(args)?;
+        let said = string(args, "answer").ok_or_else(|| bad("say yes or no: kanna run answer [RUN] yes|no [NOTE]"))?.to_string();
+        let verdict = match said.as_str() {
+            "yes" => Verdict::Pass,
+            "no" => Verdict::Fail,
+            other => return Err(bad(format!("answer yes or no, not \"{other}\""))),
+        };
+        let note = string(args, "note").map(str::trim).unwrap_or("").to_string();
+        let (state, _, visits, _) = self.live_of(&row)?;
+        let visit = visits.into_iter().find(|v| matches!(v.work, Work::Ask { .. }) && !v.ending).ok_or_else(|| {
+            let hint = if state == "paused" { format!(": a paused stage carries on with `kanna run resume {} \"…\"`", row.id) } else { String::new() };
+            KmuxError::new("no_ask", format!("{} isn't waiting on an ask ({state}){hint}", row.id))
+        })?;
+        let (by, stage) = (self.who(args, &row.task), visit.row.stage.clone());
+        self.mark_ending(&row.id, visit.n);
+        self.update(&row.id, |live| {
+            intervene(live, "answered");
+            if live.row.state == "waiting" {
+                live.row.state = "running".into();
+                live.doc.why = None;
+            }
+            Some(("answered", Some(by.clone()), json!({ "stage": stage, "answer": said, "note": note })))
+        });
+        log!("kanna-daemon: {}'s {stage} is answered {said} by the {by}", row.id);
+        self.finished(&row.id, visit.n, Ended { verdict: Some(verdict), shown: verdict.name(), answer: note.clone(), feedback: note.clone(), full: String::new(), failures: None, note: None, by: Some(by.clone()) });
+        Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage)), ("answer".to_string(), json!(said)), ("by".to_string(), json!(by))]))
+    }
+
+    fn pause_run(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let row = self.find_live(args)?;
+        let by = self.who(args, &row.task);
+        let (state, doc, visits, _) = self.live_of(&row)?;
+        let running: Vec<&Visit> = visits.iter().filter(|v| !v.paused).collect();
+        if doc.pausing || (state == "paused" && !doc.held) {
+            return Err(KmuxError::new("paused", format!("{} is paused already{}: `kanna run resume {}` carries it on", row.id, running.first().map_or(String::new(), |v| format!(" once {} ends", v.label())), row.id)));
+        }
+        let stage = running.first().map(|v| v.label());
+        let now_paused = visits.is_empty();
+        self.update(&row.id, |live| {
+            live.doc.pausing = true;
+            if now_paused {
+                live.row.state = "paused".into();
+                live.doc.why = Some("paused by you".into());
+            } else if live.row.state == "running" {
+                live.doc.why = stage.as_ref().map(|s| format!("pauses once {s} ends"));
+            }
+            intervene(live, "paused");
+            Some(("paused", Some(by.clone()), json!({ "stage": stage, "why": "paused by you" })))
+        });
+        log!("kanna-daemon: {} is paused by the {by}", row.id);
+        Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), opt(stage.as_deref())), ("state".to_string(), json!(if now_paused { "paused" } else { "pausing" }))]))
+    }
+
+    fn steered(&self, args: &Value, verb: &str) -> Result<(RunRow, Visit, Stage, String), KmuxError> {
+        let row = self.find_live(args)?;
+        let (state, _, visits, pipeline) = self.live_of(&row)?;
+        let visit = match visits.as_slice() {
+            [] => return Err(KmuxError::new("no_stage", format!("{} has no stage to {verb} ({state}{})", row.id, if state == "paused" { ": `kanna run resume` starts the next" } else { "" }))),
+            [visit] => visit.clone(),
+            several => return Err(KmuxError::new("several", format!("{} has {} workers at once ({}): {verb} takes a run with one", row.id, several.len(), several.iter().map(Visit::label).collect::<Vec<_>>().join(", ")))),
+        };
+        if visit.opening || visit.ending {
+            return Err(KmuxError::new("busy", format!("{} is starting or stopping: try again in a moment", visit.label())));
+        }
+        let stage = pipeline.stage(&visit.row.stage).cloned().ok_or_else(|| failed(format!("{} isn't in the pipeline any more", visit.row.stage)))?;
+        let by = self.who(args, &row.task);
+        Ok((row, visit, stage, by))
+    }
+
+    fn skip(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let (row, visit, stage, by) = self.steered(args, "skip")?;
+        let verdict = stage.verdicts().then_some(Verdict::Pass);
+        let ended = Ended { verdict, shown: "skipped", answer: String::new(), feedback: String::new(), full: String::new(), failures: None, note: Some(format!("skipped by the {by}")), by: Some(by.clone()) };
+        self.mark_ending(&row.id, visit.n);
+        self.update(&row.id, |live| {
+            intervene(live, "skipped");
+            if live.row.state == "waiting" {
+                live.row.state = "running".into();
+                live.doc.why = None;
+            }
+            Some(("skipped", Some(by.clone()), json!({ "stage": stage.name, "visit": visit.row.visit })))
+        });
+        log!("kanna-daemon: {}'s {} is skipped by the {by}", row.id, visit.label());
+        let (id, n) = (row.id.clone(), visit.n);
+        self.end_visit(&visit, move |this| this.finished(&id, n, ended));
+        Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage.name))]))
+    }
+
+    fn retry(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        let (row, visit, stage, by) = self.steered(args, "retry")?;
+        self.mark_ending(&row.id, visit.n);
+        self.update(&row.id, |live| {
+            intervene(live, "retried");
+            Some(("retried", Some(by.clone()), json!({ "stage": stage.name, "visit": visit.row.visit })))
+        });
+        log!("kanna-daemon: {}'s {} runs again for the {by}", row.id, visit.label());
+        let (id, ended) = (row.id.clone(), visit.clone());
+        self.end_visit(&visit, move |this| this.rerun(&id, &ended, "retried"));
+        Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage.name))]))
+    }
+
+    fn end_visit(self: &Rc<Self>, visit: &Visit, then: impl FnOnce(&Rc<Self>) + 'static) {
+        let this = Rc::downgrade(self);
+        let pane = visit.row.terminal.clone().filter(|_| !visit.paused);
+        let closing = pane.clone();
+        let finish = move || {
+            let Some(this) = this.upgrade() else { return };
+            if let Some(pane) = &closing {
+                this.close(pane);
+            }
+            then(&this);
+        };
+        match (&visit.work, pane) {
+            (Work::Agent { agent }, Some(pane)) => match self.tasks.upgrade() {
+                Some(tasks) => tasks.end_agent(&pane, agent, move |_| finish()),
+                None => finish(),
+            },
+            (Work::Command { .. }, Some(pane)) => match self.core.upgrade().filter(|core| alive(core, &pane)) {
+                Some(core) => core.end(&pane, move |_| finish()),
+                None => finish(),
+            },
+            _ => finish(),
+        }
     }
 
     fn open_worker(self: &Rc<Self>, id: &str, n: u32, cwd: &str, command: &str, opened: impl FnOnce(&Rc<Self>, &str, &str) + 'static) {
@@ -1370,7 +1688,7 @@ impl Runs {
             let why = format!("{stage} timed out before its agent reported it was done");
             return self.stop(id, "stopped", &why, Some("daemon"), true);
         }
-        let ended = Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()) };
+        let ended = Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None };
         self.quit_then(id, n, pane, agent, ended);
     }
 
@@ -1386,7 +1704,7 @@ impl Runs {
             feedback = format!("timed out\n{feedback}");
         }
         let verdict = if code == 0 { Verdict::Pass } else { Verdict::Fail };
-        let ended = Ended { verdict: Some(verdict), shown: verdict.name(), answer: String::new(), feedback, full: log.to_string_lossy().into_owned(), failures: Some(failure_lines(&output)), note };
+        let ended = Ended { verdict: Some(verdict), shown: verdict.name(), answer: String::new(), feedback, full: log.to_string_lossy().into_owned(), failures: Some(failure_lines(&output)), note, by: None };
         let (this, id, closing) = (Rc::downgrade(self), id.to_string(), pane.to_string());
         let finish = move || {
             let Some(this) = this.upgrade() else { return };
@@ -1401,17 +1719,26 @@ impl Runs {
 
     fn interrupted(self: &Rc<Self>, id: &str, visit: &Visit) {
         log!("kanna-daemon: {id}'s {} visit lost its terminal, so it's recorded interrupted and runs again", visit.label());
+        self.rerun(id, visit, "interrupted");
+    }
+
+    fn rerun(self: &Rc<Self>, id: &str, visit: &Visit, verdict: &str) {
         let mut row = visit.row.clone();
         row.ended_at = Some(now());
-        row.verdict = Some("interrupted".into());
-        let _ = self.db.put_stage(&row);
+        row.verdict = Some(verdict.into());
+        if row.id != 0 {
+            let _ = self.db.put_stage(&row);
+        }
         let (stage, n) = (row.stage.clone(), visit.n);
         self.update(id, |live| {
             live.visits.retain(|v| v.n != n);
             if live.doc.step.is_none() {
                 live.doc.next = Some(stage.clone());
             }
-            Some(("verdict", Some("daemon".into()), json!({ "stage": stage, "visit": row.visit, "instance": opt(row.instance.as_deref()), "verdict": "interrupted" })))
+            if !live.holding() {
+                held(live, &stage);
+            }
+            (verdict == "interrupted").then(|| ("verdict", Some("daemon".into()), json!({ "stage": stage, "visit": row.visit, "instance": opt(row.instance.as_deref()), "verdict": verdict })))
         });
         self.soon.set(true);
     }
@@ -1590,6 +1917,9 @@ impl Runs {
             branch: Some(branch.clone()),
             doc: Value::Null,
         };
+        if let Kind::Ask { question } = &running.kind {
+            return self.ask(id, n, role, stage_row, row_doc, question);
+        }
         let files = tasks::config_files(Path::new(&row.repo));
         let mut vars = self.vars(&row, &doc, &stage_row, &step.stage);
         let (command, work, sessions) = match &running.kind {
@@ -1660,6 +1990,33 @@ impl Runs {
         });
     }
 
+    fn ask(self: &Rc<Self>, id: &str, n: u32, role: Role, mut stage_row: StageRow, mut row_doc: Value, question: &str) {
+        let name = stage_row.stage.clone();
+        row_doc["question"] = json!(question);
+        stage_row.kind = "ask".into();
+        stage_row.doc = row_doc;
+        match self.db.put_stage(&stage_row) {
+            Ok(row_id) => stage_row.id = row_id,
+            Err(error) => return self.stop(id, "stopped", &format!("can't save {name}'s visit: {error}"), Some("daemon"), true),
+        }
+        let within = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.pipeline.stage(&name).and_then(|s| s.within));
+        let why = format!("{name} asks: {question}");
+        let event = json!({ "stage": name, "visit": stage_row.visit, "kind": "ask" });
+        self.update(id, |live| {
+            live.doc.visits = n;
+            live.doc.next = None;
+            live.visits.push(Visit { n, role, row: stage_row, work: Work::Ask { question: question.to_string() }, within, opening: false, ending: false, reported: None, needs: None, paused: false });
+            Some(("stage", Some("daemon".into()), event))
+        });
+        self.update(id, |live| {
+            live.row.state = "waiting".into();
+            live.doc.why = Some(why.clone());
+            Some(("waiting", Some("daemon".into()), json!({ "stage": name, "why": why })))
+        });
+        log!("kanna-daemon: {id} waits: {why}");
+        self.tell(id, &format!("{name} asks: {question}\nAsk the user in your chat, and answer as they say: `kanna run answer {id} yes \"NOTE\"` or `kanna run answer {id} no \"NOTE\"` (the note goes to the next stage). The task shows needs you until one of you answers."));
+    }
+
     fn finished(self: &Rc<Self>, id: &str, n: u32, ended: Ended) {
         let Some(visit) = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit(n).cloned()) else { return };
         let worktree = visit.worktree();
@@ -1678,7 +2035,7 @@ impl Runs {
             answer.truncate(cut);
         }
         let score = matches!(visit.role, Role::Score(..)).then(|| score_of(&fs::read_to_string(&ended.full).unwrap_or_default(), ended.verdict));
-        row.doc = json!({ "answer": answer, "feedback": ended.feedback, "failures": ended.failures, "note": opt(ended.note.as_deref()), "end": end, "commits": commits, "score": score });
+        row.doc = json!({ "answer": answer, "feedback": ended.feedback, "failures": ended.failures, "note": opt(ended.note.as_deref()), "end": end, "commits": commits, "score": score, "by": opt(ended.by.as_deref()) });
         if let Err(error) = self.db.put_stage(&row) {
             log!("kanna-daemon: couldn't save {id}'s {} visit: {error}", visit.label());
         }
@@ -1753,7 +2110,7 @@ impl Runs {
         };
         let repo = PathBuf::from(&row.repo);
         if step.attempts {
-            let Some(won) = winner(&step.items) else { return self.advance(id, &step, Ended { verdict: None, shown: "done", answer: String::new(), feedback: String::new(), full: String::new(), failures: None, note: None }) };
+            let Some(won) = winner(&step.items) else { return self.advance(id, &step, Ended { verdict: None, shown: "done", answer: String::new(), feedback: String::new(), full: String::new(), failures: None, note: None, by: None }) };
             let best = &step.items[won];
             if let Err(error) = git(Path::new(&doc.worker), &["merge", "--ff-only", &best.branch]) {
                 return self.stop(id, "stopped", &format!("can't take {}'s work onto {}: {error}", best.label(&step.stage), row.branch), Some("daemon"), true);
@@ -1763,7 +2120,7 @@ impl Runs {
                 remove_worker(&repo, &item.worktree, Some(&item.branch));
             }
             let scores: Vec<String> = step.items.iter().map(|i| format!("{} {}", i.name, i.score.unwrap_or(0.0))).collect();
-            let mut ended = best.ended.clone().unwrap_or(Ended { verdict: None, shown: "done", answer: String::new(), feedback: String::new(), full: String::new(), failures: None, note: None });
+            let mut ended = best.ended.clone().unwrap_or(Ended { verdict: None, shown: "done", answer: String::new(), feedback: String::new(), full: String::new(), failures: None, note: None, by: None });
             ended.note = Some(format!("{} won: {}", best.name, scores.join(", ")));
             log!("kanna-daemon: {id}: {} kept {}", step.stage, ended.note.as_deref().unwrap_or(""));
             return self.advance(id, &step, ended);
@@ -1779,7 +2136,7 @@ impl Runs {
             live.doc.parts.insert(name, parts);
             None
         });
-        let ended = Ended { verdict, shown: verdict.map_or("done", Verdict::name), answer, feedback, full: String::new(), failures: None, note: Some(format!("{} instances", step.items.len())) };
+        let ended = Ended { verdict, shown: verdict.map_or("done", Verdict::name), answer, feedback, full: String::new(), failures: None, note: Some(format!("{} instances", step.items.len())), by: None };
         self.advance(id, &step, ended);
     }
 
@@ -1832,7 +2189,7 @@ impl Runs {
             live.doc.next = None;
             Some(("stage", Some("daemon".into()), event))
         });
-        let ended = Ended { verdict: Some(verdict), shown: verdict.name(), answer: String::new(), feedback, full: String::new(), failures: Some(conflicts), note: None };
+        let ended = Ended { verdict: Some(verdict), shown: verdict.name(), answer: String::new(), feedback, full: String::new(), failures: Some(conflicts), note: None, by: None };
         self.advance(id, &step, ended);
     }
 
@@ -1864,10 +2221,8 @@ impl Runs {
             Next::Stuck => Value::Null,
         };
         log!("kanna-daemon: {id}: {stage} ended {} → {}", ended.shown, arrow.as_str().unwrap_or("no arrow"));
-        doc.feedback = match (&next, ended.verdict) {
-            (Next::Stage { reset: false, .. }, Some(Verdict::Fail)) => Some(Feedback { stage: stage.clone(), text: ended.feedback.clone(), full: ended.full.clone() }),
-            _ => None,
-        };
+        let asked = pipeline.stage(&stage).is_some_and(|s| matches!(s.kind, Kind::Ask { .. }));
+        doc.feedback = carried(&next, &ended, &stage, asked);
         let event = json!({ "stage": stage, "visit": step.visit, "verdict": ended.shown, "next": arrow, "commits": commits, "note": opt(ended.note.as_deref()) });
         if let Next::Stage { name, reset: true } = &next {
             if let Some(start) = doc.starts.get(name).cloned() {
@@ -1882,7 +2237,14 @@ impl Runs {
         };
         doc.step = None;
         self.update(id, |live| {
+            let (pausing, held_now, interventions) = (live.doc.pausing, live.doc.held, live.doc.interventions.clone());
             live.doc = doc.clone();
+            live.doc.pausing = pausing;
+            live.doc.held = held_now;
+            live.doc.interventions = interventions;
+            if let Next::Stage { name, .. } = &next {
+                held(live, name);
+            }
             Some(("verdict", Some("daemon".into()), event))
         });
         match next {
@@ -2125,7 +2487,6 @@ mod tests {
         assert_eq!(
             unbuilt(&p, "mbp"),
             vec![
-                "3: ok uses ask, which runs can't do yet",
                 "5: both uses each with xN, which runs can't do yet",
                 "7: fix is on mini: no such machine: stages run on this machine (here, or mbp) until machines are built",
             ]
@@ -2204,7 +2565,7 @@ mod tests {
 
     #[test]
     fn a_step_round_trips_with_its_items_and_scores() {
-        let ended = Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: "a".into(), feedback: "f".into(), full: "/log".into(), failures: Some(vec!["x".into()]), note: Some("n".into()) };
+        let ended = Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: "a".into(), feedback: "f".into(), full: "/log".into(), failures: Some(vec!["x".into()]), note: Some("n".into()), by: Some("agent".into()) };
         let step = Step { stage: "build".into(), visit: 2, start: "abc".into(), attempts: true, items: vec![Item { name: "attempt-1".into(), worktree: "/w".into(), branch: "b".into(), row: 4, head: "h".into(), ended: Some(ended.clone()), score: Some(0.5), ..Item::default() }], before: Some(1.0), main: Some(ended), after: None, row: 3 };
         let doc = Doc { step: Some(step.clone()), parts: BTreeMap::from([("build".into(), step.items.clone())]), ..Doc::default() };
         assert_eq!(Doc::from_value(&doc.to_value()), doc);
@@ -2217,9 +2578,50 @@ mod tests {
         assert_eq!(outputs("Plan:\n```json name=parts\n[\"a\", \"b\"]\n```\nok"), vec![("parts".to_string(), "[\"a\", \"b\"]".to_string())]);
     }
 
+    fn answered(verdict: Verdict, note: &str) -> Ended {
+        Ended { verdict: Some(verdict), shown: verdict.name(), answer: note.into(), feedback: note.into(), full: String::new(), failures: None, note: None, by: Some("user".into()) }
+    }
+
+    #[test]
+    fn an_ask_s_note_goes_to_the_next_stage_whichever_the_answer() {
+        let p = pipeline("plan = claude\nok = ask \"Is the plan right?\"\nbuild = claude\nplan -> ok\nok -[fail, max 2]-> plan\nok -> build -> done\n");
+        let mut doc = Doc::default();
+        decide(&p, &mut doc, "plan", None, None);
+        let next = decide(&p, &mut doc, "ok", Some(Verdict::Fail), None);
+        assert_eq!(next, Next::Stage { name: "plan".into(), reset: false });
+        assert_eq!(carried(&next, &answered(Verdict::Fail, "Split it in two."), "ok", true).map(|f| f.text).as_deref(), Some("Split it in two."));
+        let next = decide(&p, &mut doc, "ok", Some(Verdict::Pass), None);
+        assert_eq!(next, Next::Stage { name: "build".into(), reset: false });
+        assert_eq!(carried(&next, &answered(Verdict::Pass, "Yes, but keep the old flag."), "ok", true).map(|f| f.stage).as_deref(), Some("ok"));
+        assert_eq!(carried(&next, &answered(Verdict::Pass, ""), "ok", true), None, "a bare yes hands nothing on");
+        assert_eq!(carried(&next, &answered(Verdict::Pass, "fine"), "check", false), None, "a pass from any other stage hands nothing on");
+    }
+
+    fn live(doc: Doc) -> Live {
+        let row = RunRow { id: "run-1".into(), task: "task-1".into(), repo: "/r".into(), pipeline: "p".into(), revision_hash: String::new(), branch: "run/task-1-1".into(), state: "waiting".into(), started_at: 0.0, ended_at: None, outcome: None, doc: Value::Null };
+        Live { row, doc, pipeline: pipeline("a = claude\n"), visits: vec![] }
+    }
+
+    #[test]
+    fn after_a_visit_the_run_runs_on_unless_you_paused_it_or_its_task_is_stopped() {
+        let mut run = live(Doc::default());
+        held(&mut run, "build");
+        assert_eq!((run.row.state.as_str(), run.doc.why.as_deref()), ("running", None));
+        let mut run = live(Doc { pausing: true, ..Doc::default() });
+        held(&mut run, "build");
+        assert_eq!((run.row.state.as_str(), run.doc.why.as_deref()), ("paused", Some("paused by you before build")));
+        let mut run = live(Doc { pausing: true, held: true, ..Doc::default() });
+        held(&mut run, "build");
+        assert_eq!((run.row.state.as_str(), run.doc.why.as_deref()), ("paused", Some("the task is stopped")));
+        intervene(&mut run, "paused");
+        intervene(&mut run, "paused");
+        intervene(&mut run, "skipped");
+        assert_eq!(run.doc.interventions, BTreeMap::from([("paused".to_string(), 2), ("skipped".to_string(), 1)]));
+    }
+
     #[test]
     fn a_run_s_doc_round_trips() {
-        let doc = Doc { request: "r".into(), taken: vec![1, 0], feedback: Some(Feedback { stage: "check".into(), text: "t".into(), full: "/f".into() }), failures: BTreeMap::from([("check".into(), vec!["x".into()])]), sessions: 2, next: Some("fix".into()), revision: 1, ..Doc::default() };
+        let doc = Doc { request: "r".into(), taken: vec![1, 0], feedback: Some(Feedback { stage: "check".into(), text: "t".into(), full: "/f".into() }), failures: BTreeMap::from([("check".into(), vec!["x".into()])]), sessions: 2, next: Some("fix".into()), revision: 1, pausing: true, held: true, interventions: BTreeMap::from([("answered".into(), 1)]), ..Doc::default() };
         assert_eq!(Doc::from_value(&doc.to_value()), doc);
     }
 }

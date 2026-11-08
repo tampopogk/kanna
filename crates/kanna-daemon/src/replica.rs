@@ -73,6 +73,14 @@ impl Record {
         self.fields.keys().filter_map(|field| field.strip_prefix(RUN)).collect()
     }
 
+    pub fn keys_after(&self, prefix: &str) -> Vec<&str> {
+        self.fields.iter().filter(|(_, (_, value))| !value.is_null()).filter_map(|(field, _)| field.strip_prefix(prefix)).collect()
+    }
+
+    pub fn since(&self, field: &str) -> Option<&Hlc> {
+        self.fields.get(field).map(|(at, _)| at)
+    }
+
     pub fn born(&self) -> Hlc {
         Hlc::parse(&self.birth).unwrap_or(Hlc { ms: 0, n: 0, device: self.birth.clone() })
     }

@@ -14,7 +14,7 @@ pub struct Keeper {
     client: RefCell<Client>,
     pid: i32,
     received: RefCell<Vec<Heard>>,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
     lost: RefCell<Option<String>>,
     resume_watch: Sender<()>,
     watch_resumed: RefCell<Option<Receiver<()>>>,
@@ -64,7 +64,7 @@ fn upgrade(client: &mut Client, bin: &Path) -> io::Result<Hello> {
 }
 
 impl Keeper {
-    pub fn connect(state_dir: &Path, bin: &Path, events: Sender<Event>) -> io::Result<Keeper> {
+    pub fn connect(state_dir: &Path, bin: &Path, events: crate::runtime::Events) -> io::Result<Keeper> {
         let mut client = Client::connect_or_start(state_dir, bin)?;
         client.set_timeout(Some(REPLY_TIMEOUT))?;
         let hello = upgrade(&mut client, bin)?;
@@ -239,7 +239,7 @@ mod tests {
             let reply = serde_json::json!({"ok": true, "version": 999, "pid": 4242, "req": req["req"]});
             (&stream).write_all(format!("{reply}\n").as_bytes()).unwrap();
         });
-        let (events, _rx) = mpsc::channel();
+        let (events, _rx) = crate::runtime::channel();
         let error = Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events).err().expect("refused");
         let message = error.to_string();
         assert!(message.contains("999") && message.contains(&kanna_keeper::PROTOCOL_VERSION.to_string()), "{message}");

@@ -5,6 +5,7 @@ macro_rules! log {
 }
 
 mod accounts;
+mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
@@ -19,21 +20,29 @@ mod crashes;
 mod layout;
 mod lifeline;
 mod perf;
+mod phone;
 mod pty;
 mod codex_remote;
 mod messages;
 mod project_import;
 mod projects;
 mod quiz;
+mod quiz_map;
+mod quiz_round;
+mod quiz_writer;
 mod replica;
+mod reports;
+mod stamped;
 mod stats;
 mod quality;
 mod coverage;
 mod reader;
+mod runtime;
 mod runs;
 mod schedule;
 mod settings;
 mod shell;
+mod sizes;
 mod status;
 mod status_command;
 mod diffs;
@@ -45,6 +54,7 @@ mod screenshot;
 mod serial;
 mod store;
 mod stacks;
+mod task_events;
 mod task_scripts;
 mod terminals;
 mod transfer;
@@ -61,7 +71,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use pty::Spawner;
@@ -88,7 +97,6 @@ const LOCK_WAIT: Duration = Duration::from_secs(5);
 const LISTEN_FD: &str = "KANNA_LISTEN_FD";
 
 const STOP_GRACE: libc::c_uint = 5;
-const SLOW_REQUEST: Duration = Duration::from_millis(50);
 
 const SHUTDOWN_MARKER: &str = "daemon.shutdown";
 
@@ -104,18 +112,15 @@ enum Shutdown {
 
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
-    Wake,
     Output { terminal: String, serial: u64 },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
-    Worktree { token: u64, result: Result<stacks::Made, String> },
+    Reported { terminal: String, serial: u64, kept: reports::Kept },
+    Unreported { terminal: String },
     Stacks { seen: Vec<stacks::Seen> },
     Heads,
-    Branch { token: u64, branch: String },
     Turn { token: u64 },
-    Posted { token: u64, result: Result<(), String> },
-    Finished { task: String, changes: Vec<db::Change> },
     Merged { task: String, merge: desk_news::Merge },
     Diff { id: String, diff: Value },
     DiffUpdating { id: String },
@@ -130,12 +135,14 @@ pub enum Event {
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppBehind { conn: u64, queued: usize },
+    AppUsed { conn: u64, terminal: String },
     AppMessage { conn: u64, message: Value },
     AppGone { conn: u64 },
     MachineConfirm { question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send> },
     MachinesSave(Value),
     PeerRequest { from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send> },
     AccountBroken(Value),
+    AccountUnreadable(Value),
     Replica { token: u64, reply: Result<Value, String> },
     Quit(i32),
     Shutdown(String),
@@ -145,12 +152,12 @@ impl Event {
     fn kind(&self) -> &'static str {
         match self {
             Event::Request(..) => "loop.request",
-            Event::Wake => "loop.wake",
             Event::Output { .. } => "loop.output",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
-            Event::Worktree { .. } | Event::Stacks { .. } | Event::Heads | Event::Branch { .. } | Event::Turn { .. } | Event::Posted { .. } | Event::Finished { .. } | Event::Merged { .. } => "loop.tasks",
+            Event::Reported { .. } | Event::Unreported { .. } => "loop.reported",
+            Event::Stacks { .. } | Event::Heads | Event::Turn { .. } | Event::Merged { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
             Event::Log { .. } => "loop.log",
             Event::File { .. } => "loop.file",
@@ -158,10 +165,10 @@ impl Event {
             Event::Sampled(_) => "loop.stats",
             Event::Covered(_) => "loop.coverage",
             Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
-            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppGone { .. } => "loop.app",
+            Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppUsed { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
-            Event::PeerRequest { .. } | Event::AccountBroken(_) => "loop.accounts",
+            Event::PeerRequest { .. } | Event::AccountBroken(_) | Event::AccountUnreadable(_) => "loop.accounts",
             Event::Quit(_) | Event::Shutdown(_) => "loop.stop",
         }
     }
@@ -253,7 +260,7 @@ fn run() -> Result<(), String> {
         libc::pthread_sigmask(libc::SIG_UNBLOCK, &signal_set(&[libc::SIGALRM]), std::ptr::null_mut());
     }
 
-    let (events, inbox) = mpsc::channel::<Event>();
+    let (events, mut inbox) = runtime::channel();
     let db = Rc::new(db::Db::open(&state_dir));
     content_ids::migrate(&state_dir, &db);
     let layout = layout::DaemonLayout::open(db.clone(), &state_dir);
@@ -262,10 +269,8 @@ fn run() -> Result<(), String> {
     core.use_content_ids();
     let instance = instance_name(&socket);
     core.set_instance(Instance::with_socket(&instance, Some(socket_path.clone())));
-    let wake = events.clone();
-    core.set_wakeup(Some(Arc::new(move || {
-        let _ = wake.send(Event::Wake);
-    })));
+    let _on_the_loop = core.enter();
+    core.set_timing(Some(Rc::new(runtime::timed)));
 
     let mut server = SocketServer::new(
         &socket_path,
@@ -314,12 +319,6 @@ fn run() -> Result<(), String> {
     }
     let terminals = Rc::new(Terminals::new(keeper.clone(), store, events.clone(), env, wire.clone()));
     *terminals.core.borrow_mut() = Some(core.weak());
-    let renaming = Rc::downgrade(&terminals);
-    core.on_renamed(Rc::new(move |from, to| {
-        if let Some(terminals) = renaming.upgrade() {
-            terminals.renamed(from, to);
-        }
-    }));
     let detector = Rc::new(status::Detector::start(events.clone()));
     *terminals.detector.borrow_mut() = Some(detector.clone());
     let status_commands = Rc::new(status_command::StatusCommand::new(detector.clone()));
@@ -334,24 +333,44 @@ fn run() -> Result<(), String> {
         let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
         workspaces.iter().filter(|w| w["where"].get("planner").is_some()).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
     }));
+    let planners = Rc::downgrade(&layout);
+    *tasks.windowless.borrow_mut() = Some(Box::new(move || {
+        let Some(layout) = planners.upgrade() else { return vec![] };
+        let view = layout.view();
+        let workspaces = view["workspaces"].as_array().cloned().unwrap_or_default();
+        workspaces.iter().filter(|w| w["where"]["planner"] == tasks::WINDOWLESS).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+    }));
+    let run_of = {
+        let core = core.weak();
+        Rc::new(move |pane: &str| core.upgrade()?.pane(pane)?.terminal)
+    };
     let programs = Rc::downgrade(&detector);
+    let run = run_of.clone();
     *tasks.channel.borrow_mut() = Some(Box::new(move |pane| {
         let detector = programs.upgrade()?;
-        let program = detector.program(pane)?;
+        let terminal = run(pane)?;
+        let program = detector.program(&terminal)?;
         Some(match program.agent.as_str() {
             "claude" => {
                 let config = kanna_detect::program::environment(program.pid, "CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).unwrap_or_else(|| agents::home().join(".claude"));
                 messages::Channel::Claude(messages::inbox(&config, program.pid))
             }
-            "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(pane))),
+            "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(&terminal))),
             "antigravity" => messages::Channel::Other("agy".to_string()),
             other => messages::Channel::Other(other.to_string()),
         })
     }));
-    let modes = Rc::downgrade(&detector);
-    *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().is_some_and(|detector| detector.line_mode(pane))));
+    let (ages, run) = (Rc::downgrade(&detector), run_of.clone());
+    *tasks.age.borrow_mut() = Some(Box::new(move |pane| lifeline::age_of(ages.upgrade()?.program(&run(pane)?)?.pid)));
+    let (modes, run) = (Rc::downgrade(&detector), run_of.clone());
+    *tasks.line_mode.borrow_mut() = Some(Box::new(move |pane| modes.upgrade().zip(run(pane)).is_some_and(|(detector, terminal)| detector.line_mode(&terminal))));
+    let (trees, run) = (Rc::downgrade(&detector), run_of.clone());
+    *tasks.background.borrow_mut() = Some(Box::new(move |pane| {
+        let program = trees.upgrade()?.program(&run(pane)?)?;
+        kanna_detect::agents::idle_with_background(&program.agent).then(|| kanna_detect::program::background(program.pid))
+    }));
     let argvs = Rc::downgrade(&detector);
-    *tasks.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(pane))));
+    *tasks.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(&run_of(pane)?))));
     let projects = Rc::new(projects::Projects::new(db.clone(), std::env::var_os("HOME").map(std::path::PathBuf::from), Some(projects::repos())));
     projects.install(&core);
     let toasts = Rc::new(toasts::Toasts::new(core.weak()));
@@ -360,7 +379,7 @@ fn run() -> Result<(), String> {
     let warnings = Rc::downgrade(&toasts);
     *tasks.on_warn.borrow_mut() = Some(Box::new(move |pane, name, why| {
         let Some(toasts) = warnings.upgrade() else { return };
-        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")) };
+        let toast = toasts::Toast { title: format!("Messages wait for {name}"), detail: Some(why.to_string()), pane: Some(pane.to_string()), task: None, key: Some(format!("messages:{pane}:{why}")), from: None };
         if let Err(error) = toasts.raise(toast) {
             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
         }
@@ -373,10 +392,30 @@ fn run() -> Result<(), String> {
             runs.task_closed(task);
         }
     }));
-    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak())));
+    let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
+    *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = stopping.upgrade() {
+            runs.task_stopped(task);
+        }
+    }));
+    *tasks.on_start.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = starting.upgrade() {
+            runs.task_started(task);
+        }
+    }));
+    let writers = {
+        let layout = Rc::downgrade(&layout);
+        quiz_writer::Writers::install(db.clone(), tasks.clone(), &core, Box::new(move || {
+            let Some(layout) = layout.upgrade() else { return vec![] };
+            let view = layout.view();
+            view["workspaces"].as_array().into_iter().flatten().filter(|w| w["where"]["quiz"] == tasks::WINDOWLESS).filter_map(|w| w["dock"]["pane"].as_str().map(String::from)).collect()
+        }))
+    };
+    let quiz = Rc::new(quiz::Quiz::new(db.clone(), Some(core.weak()), Some(writers)));
     quiz.install(&core);
     let scheduler = Rc::new(schedule::Scheduler::new(db.clone(), tasks.clone()));
     scheduler.install(&core, std::env::var("KANNA_DEBUG").is_ok_and(|v| v == "1"));
+    scheduler.watch_deliveries(&tasks);
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
     if cfg!(target_os = "macos") {
@@ -402,6 +441,10 @@ fn run() -> Result<(), String> {
     let broken = events.clone();
     accounts.on_broken(Box::new(move |account| {
         let _ = broken.send(Event::AccountBroken(account));
+    }));
+    let unreadable = events.clone();
+    accounts.on_unreadable(Box::new(move |account| {
+        let _ = unreadable.send(Event::AccountUnreadable(account));
     }));
     accounts.install(&core);
     if let Some(machines) = &machines {
@@ -483,7 +526,8 @@ fn run() -> Result<(), String> {
             return Err(format!("can't take the terminals back from the keeper: {error}"));
         }
     };
-    let restored = terminals.restore(adopted);
+    let restored = terminals.restore(adopted, reports::load(&db));
+    reports::keep_only(&db, &terminals.running());
     if restored != Restored::default() {
         log!(
             "kanna-daemon: took back {} terminal(s) from the keeper ({} the disk didn't know), {} that had exited; {} gone",
@@ -494,9 +538,11 @@ fn run() -> Result<(), String> {
         );
     }
     core.note_numbers(&layout.content_numbers());
-    core.install_panes(layout.saved_panes(), 0, 0);
+    core.install_panes(layout.saved_panes(), 0, 0, 0);
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
+    tasks.repair_comment_targets();
+    tasks.settle_statuses();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -505,10 +551,27 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let (shown, statuses) = (core.weak(), Rc::downgrade(&app));
+    *runs.on_status.borrow_mut() = Some(Box::new(move |pane| {
+        if let (Some(core), Some(app)) = (shown.upgrade(), statuses.upgrade()) {
+            app.status(pane, core.pane(pane).and_then(|p| p.status().map(String::from)).as_deref());
+        }
+    }));
+    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
     }
+    let (found_tasks, found_app) = (Rc::downgrade(&tasks), Rc::downgrade(&app));
+    projects::on_found(Rc::new(move || {
+        if let Some(tasks) = found_tasks.upgrade() {
+            tasks.mark_changed();
+        }
+        if let Some(app) = found_app.upgrade() {
+            app.project_found();
+        }
+    }));
+    tasks.prime_projects();
     let view_link = Rc::downgrade(&app);
     *layout.on_view.borrow_mut() = Some(Box::new(move |view| {
         if let Some(app) = view_link.upgrade() {
@@ -517,6 +580,7 @@ fn run() -> Result<(), String> {
     }));
     *app.logs.borrow_mut() = Some(logs.clone());
     app.connect_tasks(&tasks);
+    app.connect_schedules(&scheduler);
     let shown = tasks.on_change.borrow_mut().take();
     let logs_told = Rc::downgrade(&logs);
     *tasks.on_change.borrow_mut() = Some(Box::new(move |view| {
@@ -527,11 +591,10 @@ fn run() -> Result<(), String> {
             shown(view);
         }
     }));
-    let (folder_link, folder_core) = (Rc::downgrade(&app), core.weak());
-    core.on_renamed(Rc::new(move |_, to| {
-        let cwd = folder_core.upgrade().and_then(|core| core.pane(to)).and_then(|pane| pane.cwd);
-        if let (Some(app), Some(cwd)) = (folder_link.upgrade(), cwd) {
-            app.folder(to, &cwd);
+    let run_link = Rc::downgrade(&app);
+    core.on_new_run(Rc::new(move |pane| {
+        if let Some(app) = run_link.upgrade() {
+            app.status(pane, None);
         }
     }));
     let toast_link = Rc::downgrade(&app);
@@ -582,16 +645,17 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
         Rc::new(move |args, responder| {
             if let Some(link) = screenshot.upgrade() {
-                screenshot::take(&link, args, responder);
+                screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
     );
     let front = link.clone();
-    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.attached()) {
+    core.on_front(Rc::new(move |args, responder| match front.upgrade().filter(|app| app.answers_for(&args)) {
         Some(app) => app.forward("app.front", args, responder),
         None => responder.reply(Ok(Map::new())),
     }));
@@ -605,10 +669,17 @@ fn run() -> Result<(), String> {
                     if let Err(error) = projects::desk_here(folder) {
                         return responder.reply(Err(error));
                     }
-                    args["place"] = projects::place(folder);
+                    let folder = folder.to_string();
+                    return runtime::spawn("the Desk's place", async move {
+                        args["place"] = projects::place_now(&folder).await;
+                        app.forward("desk", args, responder);
+                    });
                 }
                 return app.forward("desk", args, responder);
             };
+            if task.contains('@') {
+                return app.forward("desk", args, responder);
+            }
             tasks.agent(&task, move |found| match found {
                 Ok(pane) => {
                     args["task"] = Value::String(pane);
@@ -666,15 +737,16 @@ fn run() -> Result<(), String> {
         crashes.stopping();
         app.quit();
     };
-    loop {
+    core.block_on(async { loop {
+        tokio::task::yield_now().await;
         let signal = stopping.load(Ordering::SeqCst);
         if signal != 0 {
             log!("kanna-daemon: stopping (signal {signal})");
             break;
         }
         if let Some(Shutdown::App(by)) = shutdown {
-            if !app.attached() || Instant::now() >= by {
-                if app.attached() {
+            if !app.attached_here() || Instant::now() >= by {
+                if app.attached_here() {
                     log!("kanna-daemon: the app didn't quit in {}s; going on without it", APP_QUIT_WAIT.as_secs());
                     app.close();
                 }
@@ -704,26 +776,31 @@ fn run() -> Result<(), String> {
         terminals.save_if_changed();
         layout.flush();
         let ticks = if shutdown.is_none() {
-            crashes.tick(Instant::now(), app.attached());
+            crashes.tick(Instant::now(), app.attached_here());
             tasks.sweep();
             [tasks.tick(), scheduler.tick(), runs.tick()].into_iter().flatten().min()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
-        let deadline = [core.poll(), app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
+        let deadline = [app.next_deadline(), ticks, layout.next_deadline(), crashes.next_deadline()].into_iter().flatten().min();
         perf::since("loop.chores", chores);
+        runtime::check("the loop's chores", chores.elapsed());
         let event = match deadline {
-            Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => match tokio::time::timeout_at(at.into(), inbox.recv()).await {
+                Ok(event) => event,
+                Err(_) => continue,
+            },
+            None => inbox.recv().await,
         };
-        let event = match event {
-            Ok(event) => event,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
+        let Some(event) = event else { break };
         let (kind, handling) = (event.kind(), Instant::now());
+        let asked = match &event {
+            Event::Request(request, _) => Some(format!("{} from a client", request_name(request))),
+            Event::AppMessage { message, .. } => Some(format!("{} from the app", request_name(message))),
+            _ => None,
+        };
         match event {
-            Event::Request(request, reply) => timed(request_name(&request), "a client", || match request.get("cmd").and_then(Value::as_str) {
+            Event::Request(request, reply) => match request.get("cmd").and_then(Value::as_str) {
                 Some("shutdown") => {
                     begin("asked to", &mut shutdown);
                     reply(json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": true, "stopping": true, "pid": std::process::id() }))
@@ -743,15 +820,14 @@ fn run() -> Result<(), String> {
                     })
                 }
                 _ => core.handle(request, reply),
-            }),
-            Event::Wake => {}
+            },
             Event::Output { terminal, serial } => {
                 let Some(noticed) = terminals.noticed(&terminal, serial) else { continue };
                 if let (Some(cwd), Some(pane)) = (noticed.cwd, terminals.pane_of(&terminal)) {
                     app.folder(&pane, &cwd);
                 }
-                if noticed.overflowed {
-                    app.resync(&terminal);
+                for conn in noticed.overflowed {
+                    app.resync(conn, &terminal);
                 }
             }
             Event::Drained { terminal, serial } => {
@@ -762,29 +838,31 @@ fn run() -> Result<(), String> {
             Event::Status { terminal, serial, status, ended } => {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
-                    app.status(&pane, status);
+                    app.status(&pane, core.pane(&pane).and_then(|p| p.status().map(String::from)).as_deref());
                     tasks.status(&pane, status, ended);
                     runs.status(&pane, ended);
                 }
             }
+            Event::Reported { terminal, serial, kept } => {
+                if terminals.current(&terminal, serial) {
+                    reports::save(&db, &[(terminal, Some(kept))]);
+                }
+            }
+            Event::Unreported { terminal } => reports::save(&db, &[(terminal, None)]),
             Event::TooOld { terminal, serial, why } => {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     let refused = tasks.too_old(&pane, &why).or_else(|| runs.too_old(&pane, &why).then(|| "a run's stage".to_string()));
                     if let Some(name) = refused {
-                        let toast = toasts::Toast { title: format!("Kanna can't run {name}'s agent"), detail: Some(why), pane: Some(pane.clone()), task: None, key: Some(format!("too-old:{pane}")) };
+                        let toast = toasts::Toast { title: format!("Kanna can't run {name}'s agent"), detail: Some(why), pane: Some(pane.clone()), task: None, key: Some(format!("too-old:{pane}")), from: None };
                         if let Err(error) = toasts.raise(toast) {
                             log!("kanna-daemon: can't raise a toast for {pane}: {}", error.message);
                         }
                     }
                 }
             }
-            Event::Worktree { token, result } => tasks.worktree_made(token, result),
             Event::Stacks { seen } => tasks.watched(seen),
             Event::Heads => tasks.heads_moved(),
-            Event::Branch { token, branch } => tasks.branch_found(token, branch),
             Event::Turn { token } => tasks.next_turn(token),
-            Event::Posted { token, result } => tasks.posted(token, result),
-            Event::Finished { task, changes } => tasks.finished(&task, changes),
             Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
             Event::DiffUpdating { id } => diffs.updating(&id),
@@ -846,17 +924,15 @@ fn run() -> Result<(), String> {
                             args.remove(kanna_net::PEER);
                         }
                     }
-                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.attached_here()) {
+                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.is_here(conn)) {
                         app.answer_app(conn, refused);
                         continue;
                     }
                     let link = Rc::downgrade(&app);
-                    timed(request_name(&request), "the app", || {
-                        core.handle(request, move |reply| {
-                            if let Some(link) = link.upgrade() {
-                                link.answer_app(conn, reply);
-                            }
-                        })
+                    core.handle(request, move |reply| {
+                        if let Some(link) = link.upgrade() {
+                            link.answer_app(conn, reply);
+                        }
                     });
                 }
             }
@@ -870,9 +946,10 @@ fn run() -> Result<(), String> {
             Event::AppCaughtUp { conn } => app.caught_up(conn),
             Event::AppBehind { conn, queued } => {
                 if app.is_current(conn) {
-                    app.fell_behind(queued);
+                    app.fell_behind(conn, queued);
                 }
             }
+            Event::AppUsed { conn, terminal } => app.used(conn, &terminal),
             Event::MachineConfirm { question, answer } => match &machines {
                 Some(machines) => machines.confirm(&app, question, answer),
                 None => answer(Err("this daemon has no endpoint".into())),
@@ -894,18 +971,31 @@ fn run() -> Result<(), String> {
                     log!("kanna-daemon: can't raise a toast for a broken account: {}", error.message);
                 }
             }
+            Event::AccountUnreadable(account) => {
+                let agent = match account["agent"].as_str() {
+                    Some("claude") => "Claude",
+                    _ => "Codex",
+                };
+                let toast = toasts::Toast { title: format!("{agent} started without your account"), detail: Some(format!("{}. It runs on this machine's own sign-in.", account["why"].as_str().unwrap_or("its secret couldn't be read"))), key: Some(format!("account-unreadable:{}", account["agent"].as_str().unwrap_or_default())), ..Default::default() };
+                if let Err(error) = toasts.raise(toast) {
+                    log!("kanna-daemon: can't raise a toast for an unreadable account: {}", error.message);
+                }
+            }
             Event::Replica { token, reply } => tasks.replied(token, reply),
             Event::Quit(_) => continue,
             Event::Shutdown(why) => begin(&why, &mut shutdown),
         }
         perf::since(kind, handling);
-    }
+        runtime::check(asked.as_deref().unwrap_or(kind), handling.elapsed());
+    } });
+    core.turn();
 
     let keep_socket = shutdown.is_none() && app.holds_socket();
     app.close();
     layout.flush();
     layout.save_now();
     terminals.shutdown();
+    reports::save(&db, &detector.kept());
     if let Some(machines) = &machines {
         machines.stop();
     }
@@ -924,15 +1014,6 @@ fn run() -> Result<(), String> {
     }
 }
 
-fn timed(name: String, from: &str, handle: impl FnOnce()) {
-    let started = Instant::now();
-    handle();
-    let took = started.elapsed();
-    if took > SLOW_REQUEST {
-        log!("kanna-daemon: {name} from {from} took {}ms", took.as_millis());
-    }
-}
-
 fn request_name(request: &Value) -> String {
     let cmd = request.get("cmd").and_then(Value::as_str).unwrap_or("?");
     match request.get("args").and_then(|args| args.get("action")).and_then(Value::as_str) {
@@ -945,7 +1026,8 @@ fn ended(terminals: &Terminals, tasks: &Rc<tasks::Tasks>, app: &AppLink, termina
     app.exited(terminal, code);
     if let Some(pane) = terminals.pane_of(terminal) {
         tasks.exited(&pane, code);
-        app.status(&pane, Some("exited"));
+        let waits = tasks.waits_on_you(&pane);
+        app.status(&pane, Some(if waits { "needs-you" } else { "exited" }));
     }
 }
 

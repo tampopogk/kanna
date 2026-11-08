@@ -284,6 +284,9 @@ impl App {
                     desks.push(project.clone());
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "desk": "d1", "project": project, "new": new}));
                 }
+                if message["cmd"] == "app.front" {
+                    let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "front": null}));
+                }
                 if message["cmd"] == "app.machine.confirm" {
                     heard.lock().unwrap().push(message.clone());
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "confirmed": true}));

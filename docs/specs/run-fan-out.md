@@ -73,11 +73,18 @@ sequenceDiagram
 
 - **This machine only** until [machines](software-factory.md#3-workers-fan-out-join-and-other-machines) run stages: `on here` and `on` this machine's name (its host name to the first dot) run here; anything else refuses the run at start, `FILE:LINE: far is on mini: no such machine: stages run on this machine (here, or mbp) until machines are built`. Every visit's `machine` is this machine's name.
 
-## 7. One row for the task
+## 7. Gates and steering during a step
+
+- **Pause:** finishes the whole step, every instance and scorer, and starts no stage after it ([software factory §6.2](software-factory.md#62-gates-and-steering-as-built)).
+- **The task stopped:** every working agent of the step is parked and every command stops, to run again; started again, each parked agent carries on and the step fills its slots.
+- **Skip and retry:** take a run with one worker open; with several, they refuse, naming them. A retried instance or scorer runs again in its own worktree.
+- **Ask:** an `ask` stage is a step of one visit, with no terminal.
+
+## 8. One row for the task
 
 Workers are background terminals of the task's workspace ([software factory §6.1](software-factory.md#61-sequential-runs-as-built)), so however many run, the task is one row on the Shelf, in the Desk view and in `kanna task list`, one item in the strip while another task is active, and one Shelf runner slot. e2e `pipeline_fanout` checks all four on the Shelf while two parts build at once, and on the Desk until the run hands back.
 
-## 8. Rejected
+## 9. Rejected
 
 - **Instances as visits in one terminal, one after another:** no parallelism, and an instance's worktree would carry the last one's work.
 - **A merge in a terminal, as a `run` command:** nothing to show and a slower turn; git's merge is quick and its conflicts are the stage's feedback.
