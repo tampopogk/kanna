@@ -29,6 +29,22 @@
       ]
     },
     {
+      "match": "OWN_STOP",
+      "tool": "\"$KANNA_CLI\" task stop",
+      "args": {"sandbox_permissions": "use_default"},
+      "after_tool": [
+        "OWN_STOP_DONE: the task stops when this turn ends."
+      ]
+    },
+    {
+      "match": "OWN_DONE",
+      "tool": "\"$KANNA_CLI\" task done",
+      "args": {"sandbox_permissions": "use_default"},
+      "after_tool": [
+        "OWN_DONE_DONE: the task is done when this turn ends."
+      ]
+    },
+    {
       "match": "LONG_SLEEP",
       "tool": "sleep 12",
       "args": {"sandbox_permissions": "use_default", "yield_time_ms": 30000},
