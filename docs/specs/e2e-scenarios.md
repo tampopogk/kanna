@@ -41,7 +41,7 @@ Put a function `NAME()` in the area's file, with `scenario NAME MILESTONE` on th
 
 - **Files only define.** An area file holds functions, `scenario` lines and the variables its functions read. Sourcing it starts nothing.
 - **Helpers.** A helper used by one area's scenarios lives in that area's file; one used by two areas moves to `scripts/e2e-kanna.sh`. A scenario can call any helper, wherever it is, since every file is sourced before anything runs.
-- **Full-run order.** `run-order` holds the 146 scenarios that existed when the script was split, in the order they ran, and a full run takes those first. Every other scenario follows, by area file in name order, then by its place in the file. Nobody edits `run-order`: a name in it that no longer exists is skipped. `scripts/e2e-kanna.sh NAME…` runs in the order given.
+- **Full-run order.** `run-order` holds the scenarios that existed when the script was split, in the order they ran, and a full run takes those first. Every other scenario follows, by area file in name order, then by its place in the file. Nobody edits `run-order`: a name in it that no longer exists is skipped. `scripts/e2e-kanna.sh NAME…` runs in the order given.
 - **Failure lines.** `$LINENO` in a scenario's messages counts lines of its area's file.
 
 ## Rejected
