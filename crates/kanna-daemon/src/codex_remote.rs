@@ -105,7 +105,7 @@ pub fn run(dir: &Path, program: &str, args: &[String]) -> i32 {
     sweep(&folder);
     let listen = format!("unix://{}", socket.display());
     let daemon = accounts::daemon_socket(dir);
-    let supplied = supplied(dir, &daemon);
+    let supplied = supplied(dir, &daemon, program, args, accounts::OWN_LOGIN_WAIT, || Accounts::open(dir, accounts::secrets(dir), Box::new(accounts::CodexRefresher)));
     let server = children.spawn(Command::new(program).args(server_args(args, &listen, supplied.is_some())).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()));
     let mut server = match server {
         Ok(server) => server,
@@ -143,9 +143,19 @@ enum Supplied {
     Tokens { account: String, tokens: Value },
 }
 
-fn supplied(dir: &Path, daemon: &Path) -> Option<Supplied> {
-    let accounts = Accounts::open(dir, accounts::secrets(dir), Box::new(accounts::CodexRefresher));
-    let credential = match accounts.credential("codex") {
+pub fn signed_in(program: &str, args: &[String], wait: Duration) -> bool {
+    let mut status = vec!["login".to_string(), "status".to_string()];
+    for pair in args.windows(2).filter(|pair| pair[0] == "-c" || pair[0] == "--config") {
+        status.extend(["-c".to_string(), pair[1].clone()]);
+    }
+    accounts::status_of(program, &status, wait).is_some_and(|(success, _)| success)
+}
+
+fn supplied(dir: &Path, daemon: &Path, program: &str, args: &[String], wait: Duration, accounts: impl FnOnce() -> Accounts) -> Option<Supplied> {
+    if signed_in(program, args, wait) {
+        return None;
+    }
+    let credential = match accounts().credential("codex") {
         Ok(credential) => credential?,
         Err(why) => {
             accounts::started_without(dir, "codex", &why);
@@ -289,6 +299,44 @@ mod tests {
         assert_eq!(tui_args(&args("--yolo -c model_auto_compact_token_limit=300000 resume 019f"), listen), args("-c model_auto_compact_token_limit=300000 resume 019f --remote unix:///s/codex-7.sock"));
         assert_eq!(tui_args(&args("--yolo -c resume=x resume"), listen), args("-c resume=x resume --remote unix:///s/codex-7.sock"));
         assert_eq!(tui_args(&args("-a on-request hi"), listen), args("-a on-request hi --remote unix:///s/codex-7.sock"), "a codex that asks keeps asking");
+    }
+
+    #[test]
+    fn codex_signed_in_on_this_machine_keeps_its_own_login_and_reads_no_secret() {
+        use crate::accounts::tests::{status_program, Counting};
+        use crate::accounts::{Files, Kind, SECRETS};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mac = std::env::temp_dir().join(format!("kanna-codex-own-login-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&mac);
+        std::fs::create_dir_all(&mac).unwrap();
+        let open = |reads: Arc<AtomicUsize>| Accounts::open(&mac, Arc::new(Counting(Files::new(mac.join(SECRETS)), reads)), Box::new(accounts::CodexRefresher));
+        open(Arc::default()).add(Kind::CodexApiKey, "sk-proj-shared", None, None, "mac-key").unwrap();
+        let args = ["--yolo".to_string(), "-c".to_string(), "model=\"gpt\"".to_string()];
+        let cases = [
+            ("signed-in", r#"[ "$*" = 'login status -c model="gpt"' ] || exit 2; echo 'Logged in using ChatGPT'"#, false),
+            ("api-key", "echo 'API key configured - ***'", false),
+            ("signed-out", "echo 'Not logged in'; exit 1", true),
+            ("broken", "echo 'Error checking login status: expected value at line 1 column 1' >&2; exit 1", true),
+            ("hung", "sleep 10", true),
+        ];
+        for (name, body, falls_back) in cases {
+            let program = status_program(&mac, name, body);
+            let reads = Arc::new(AtomicUsize::new(0));
+            let started = Instant::now();
+            let got = supplied(&mac, &mac.join("no.sock"), &program, &args, Duration::from_millis(500), || open(reads.clone()));
+            assert!(started.elapsed() < Duration::from_secs(3), "{name}: the status check is bounded");
+            match falls_back {
+                false => {
+                    assert!(got.is_none(), "{name}: the app-server keeps this machine's login");
+                    assert_eq!(reads.load(Ordering::SeqCst), 0, "{name}: no secret read");
+                }
+                true => {
+                    assert!(matches!(got, Some(Supplied::ApiKey(ref key)) if key == "sk-proj-shared"), "{name}: the shared account signs it in");
+                    assert_eq!(reads.load(Ordering::SeqCst), 1, "{name}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&mac);
     }
 
     #[test]
