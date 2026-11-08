@@ -3949,6 +3949,48 @@ task_start_stop() {
   check wait_for 5 is side4 state running || { echo "task_start_stop: a hung-up terminal didn't run again after a restart"; kanna workspace list --all; return 1; }
 }
 
+scenario task_quit_at_rest M4
+task_quit_at_rest() {
+  local logged; logged="$(cat "$out/daemon.log" 2>/dev/null | wc -l)"
+  start_daemon && start_app || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude"
+  mkdir -p "$repo/.kanna" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  logs() { tail -n +"$((logged + 1))" "$out/daemon.log" | grep -F -- "$1"; }
+  status() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$1\"}}" | field status; }
+  local id pane
+  id="$(cd "$repo" && kanna task new "Ends itself" "say hi" --agent "$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+  kanna task start "$id" >/dev/null && check wait_for 10 shows "Ends itself" SAID || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(status "$(pane "Ends itself" id)")" == idle ]]' || { echo "task_quit_at_rest: the agent didn't report idle"; return 1; }
+  kanna send "Ends itself" "run $bin/kanna task done && sleep 1" || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  check wait_for 10 eval 'logs "ends its own task, so it quits when its turn ends" >/dev/null' || { echo "task_quit_at_rest: its own Done didn't wait for its turn"; return 1; }
+  pane="$(logs "ends its own task" | sed -n 's/.* in \(term-[0-9]*\) ends its own task.*/\1/p' | tail -1)"
+  check wait_for 15 eval '[[ "$(cd "$repo" && kanna task list "$id")" == *"is done"* ]]' || { echo "task_quit_at_rest: the task that ran its own Done isn't done"; (cd "$repo" && kanna task list "$id"); return 1; }
+  ! logs "$pane isn't at rest" || { echo "task_quit_at_rest: its own Done interrupted it"; return 1; }
+  ! logs "in $pane didn't" || { echo "task_quit_at_rest: its own Done didn't quit it by /exit"; return 1; }
+  ! logs "box in $pane" || { echo "task_quit_at_rest: its own Done didn't quit it by /exit"; return 1; }
+  id="$(cd "$repo" && kanna task new "Works" "say hi" --agent "$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+  kanna task start "$id" >/dev/null && check wait_for 10 shows "Works" SAID || { echo "task_quit_at_rest line $LINENO"; return 1; }
+  pane="$(pane "Works" id)"
+  kanna send "Works" "work 60" && check wait_for 10 eval '[[ "$(status "$pane")" == working ]]' || { echo "task_quit_at_rest: it didn't start working"; return 1; }
+  local started=$SECONDS
+  [[ "$(kanna task stop "$id")" == "stopped $id on the Shelf; "* ]] || { echo "task_quit_at_rest: the working task didn't stop"; return 1; }
+  check is "Works" state exited || { echo "task_quit_at_rest: the working agent is still running"; return 1; }
+  (( SECONDS - started < 5 )) || { echo "task_quit_at_rest: stopping the working agent took $((SECONDS - started))s"; return 1; }
+  shows "Works" INTERRUPTED && unwrapped "Works" "--resume" || { echo "task_quit_at_rest: Esc didn't bring it to rest before it quit"; kanna read "Works"; return 1; }
+  logs "$pane isn't at rest, so it gets esc" >/dev/null && logs "in $pane is at rest, so it's told to exit" >/dev/null || { echo "task_quit_at_rest: the working agent wasn't brought to rest"; return 1; }
+  ! logs "in $pane didn't" || { echo "task_quit_at_rest: the working agent got its keys"; return 1; }
+  machine_runners 1
+  id="$(cd "$repo" && kanna task new "Asks" "turn" --agent "$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+  check wait_for 20 eval 'raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"events\",\"task\":\"$id\"}}" | grep -q "\"why\": *\"needs-you\""' || { echo "task_quit_at_rest: the asking task wasn't stopped as needs you"; return 1; }
+  pane="$(pane "Asks" id)"
+  check is "Asks" state exited || { echo "task_quit_at_rest: the asking agent is still running"; return 1; }
+  shows "Asks" "Declined." && unwrapped "Asks" "--resume" || { echo "task_quit_at_rest: Esc didn't answer its question before it quit"; kanna read "Asks"; return 1; }
+  logs "$pane isn't at rest, so it gets esc" >/dev/null && logs "in $pane is at rest, so it's told to exit" >/dev/null || { echo "task_quit_at_rest: the asking agent wasn't brought to rest"; return 1; }
+  ! logs "in $pane didn't" || { echo "task_quit_at_rest: the asking agent got its keys"; return 1; }
+}
+
 scenario pick_at_once M4
 pick_at_once() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" task seen took card
@@ -4584,7 +4626,7 @@ real_agent_tasks() {
   local agent real
   for agent in claude codex; do
     [[ $agent == claude ]] && real="$claude" || real="$codex"
-    python3 -I "$harness/isolate.py" --agent $agent --real "$real" --home "$agents/$agent-home" --port "$port" --trust "$repo" --out "$agents/bin/$agent" || { echo "real_agent_tasks line $LINENO"; return 1; }
+    python3 -I "$harness/isolate.py" --agent $agent --real "$real" --home "$agents/$agent-home" --port "$port" --trust "$repo" --out "$agents/bin/$agent" --cli "$bin/kanna" || { echo "real_agent_tasks line $LINENO"; return 1; }
   done
   asked() { python3 -c 'import json, sys
 lines = [json.loads(l) for l in open(sys.argv[1])]
@@ -4634,6 +4676,24 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
     check is "$agent task" state exited || { echo "real_agent_tasks: $agent at its prompt is still running"; return 1; }
     ! tail -n +"$((before + 1))" "$out/daemon.log" | grep -E "$agent's box in |$agent in [^ ]+ didn't (exit|quit)" || { echo "real_agent_tasks: $agent wasn't quit by /exit"; return 1; }
     ! grep -rqsE --include='*.jsonl' 'Request interrupted|turn_aborted' "$agents/$agent-home" || { echo "real_agent_tasks: $agent's transcript has an interruption"; return 1; }
+    local own own_pane
+    own="$(cd "$repo" && kanna task new "$agent own" "OWN_STOP $agent" --agent "$agents/bin/$agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+    kanna task start "$own" >/dev/null || { echo "real_agent_tasks: $agent's own task didn't start"; return 1; }
+    check wait_for 60 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"list\"}}" | python3 -c "import json, sys; print(next((t.get(\"stopped\") or \"-\") if not t.get(\"running\") else \"running\" for t in json.load(sys.stdin)[\"shelf\"] if t[\"id\"] == sys.argv[1]))" "$own")" != running ]] && is "$agent own" state exited' || { echo "real_agent_tasks: $agent's own kanna task stop didn't stop it"; grep "OWN_STOP" "$agents/mock.jsonl" | python3 -c 'import json, sys
+for l in sys.stdin: e = json.loads(l); print(json.dumps(e["turn"])[:300], e["last"][:600])'; return 1; }
+    own_pane="$(pane "$agent own" id)"
+    [[ "$(asked "OWN_STOP $agent")" -ge 2 ]] || { echo "real_agent_tasks: $agent didn't finish its turn before it quit"; kanna read "$agent own"; return 1; }
+    ! tail -n +"$((before + 1))" "$out/daemon.log" | grep -E "$own_pane isn't at rest|$agent's box in $own_pane|$agent in $own_pane didn't" || { echo "real_agent_tasks: $agent's own stop didn't wait for its turn and quit it by /exit"; return 1; }
+    ! grep -rqsE --include='*.jsonl' 'Request interrupted|turn_aborted' "$agents/$agent-home" || { echo "real_agent_tasks: $agent's own stop left an interruption in its transcript"; return 1; }
+    [[ "$(kanna task start "$own")" == "started $own again on the Shelf: "* ]] || { echo "real_agent_tasks: $agent's own task didn't start again"; return 1; }
+    check wait_for 60 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"list\"}" | python3 -c "import json, sys; print(next(p.get(\"cmd\") for p in json.load(sys.stdin)[\"panes\"] if p.get(\"name\") == sys.argv[1]))" "$agent own")" == *resume* ]] && shows "$agent own" "OWN_STOP $agent"' || { echo "real_agent_tasks: $agent didn't resume after its own stop"; kanna read "$agent own"; return 1; }
+    sleep 3
+    check wait_for 30 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$agent own\"}}" | field status)" == idle ]]' || { echo "real_agent_tasks: $agent didn't go idle after its own stop"; return 1; }
+    kanna send "$agent own" "OWN_DONE $agent" || { echo "real_agent_tasks line $LINENO"; return 1; }
+    check wait_for 60 eval '[[ "$(cd "$repo" && kanna task list "$own")" == *"is done"* ]]' || { echo "real_agent_tasks: $agent's own kanna task done didn't end it"; (cd "$repo" && kanna task list "$own"); return 1; }
+    [[ "$(asked "OWN_DONE $agent" "OWN_STOP $agent")" -ge 2 ]] || { echo "real_agent_tasks: $agent's own Done didn't carry its conversation, or its turn didn't finish"; return 1; }
+    ! tail -n +"$((before + 1))" "$out/daemon.log" | grep -E "$own_pane isn't at rest|$agent's box in $own_pane|$agent in $own_pane didn't" || { echo "real_agent_tasks: $agent's own Done didn't wait for its turn and quit it by /exit"; return 1; }
+    ! grep -rqsE --include='*.jsonl' 'Request interrupted|turn_aborted' "$agents/$agent-home" || { echo "real_agent_tasks: $agent's own Done left an interruption in its transcript"; return 1; }
     [[ "$(kanna task start "$id")" == "started $id again on the Shelf: "* ]] || { echo "real_agent_tasks: $agent's task didn't start after /exit"; return 1; }
     check wait_for 60 eval 'shows "$agent task" "Agent status probe"' || { echo "real_agent_tasks: $agent didn't come back after /exit"; kanna read "$agent task"; return 1; }
     sleep 3
