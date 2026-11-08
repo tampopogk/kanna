@@ -35,12 +35,12 @@ Both pictures were taken by the command, of a window in the background (`--bg`).
 | Command | Does |
 |---|---|
 | `kanna screenshot` | The caller's window to `$TMPDIR`; prints the path (refused outside a Kanna terminal) |
-| `kanna screenshot PANE` | That pane alone |
+| `kanna screenshot PANE` | That pane alone; PANE may be a task (`ac2b`), for its agent's pane, on whichever machine runs it |
 | `kanna screenshot --window WINDOW` | That whole window |
 | `-o FILE`, `--out FILE` | Write to FILE; with `--force`, replace it |
 | `--json` | The reply: `path`, `window`, `pane` (for a pane), `width`, `height` |
 
-Like any command that needs the app, it starts Kanna.app if it isn't running (exit 6 with `KANNA_SOCKET` set). It's in `kanna help screenshot`, `kanna commands --json` and the tab completion.
+Like any command that needs the app, it starts Kanna.app if it isn't running (exit 6 with `KANNA_SOCKET` set). A pane on another machine (a task there, or `--host`) is taken by that machine's app: its daemon replies with the PNG (`png: true`) instead of saving it, and this daemon saves it here ([machines §5](machines.md#5-the-app-link-over-the-network)). It's in `kanna help screenshot`, `kanna commands --json` and the tab completion.
 
 ## 3. How it's built
 
@@ -58,7 +58,7 @@ sequenceDiagram
     Note over C: prints the path (--json: the reply)
 ```
 
-- **The daemon passes it on** as it passes `debug.*`, with the pane's name turned into its ID (`crates/kanna-daemon/src/main.rs`); with no app attached it's `no_app`. The app always answers it, `KANNA_DEBUG` or not (`apps/kanna/Sources/Kanna/Screenshot.swift`).
+- **The daemon passes it on** as it passes `debug.*`, with the pane's name turned into its ID (`crates/kanna-daemon/src/main.rs`), to the app showing the pane's workspace, on this machine or another ([remote workspaces](remote-workspaces.md#2-which-app-answers)); with no app attached it's `no_app`. The app always answers it, `KANNA_DEBUG` or not (`apps/kanna/Sources/Kanna/Screenshot.swift`).
 - **The app writes the file**, so the image never crosses the socket, whose lines stop at 16 MiB.
 - **Capture is `CGWindowListCreateImage`**, looked up at run time: obsoleted in the macOS 15 SDK but still exported, and an app may capture its own windows without the screen-recording permission ScreenCaptureKit needs. It copies what the window server has.
 - **Hidden terminals are drawn first.** A window behind others (every `--bg` window, or one you've covered) is occluded, so its terminals are hidden from Ghostty, which stops drawing them: one resized while hidden (by a split) holds a frame never drawn, and comes out as blocks of colour. Before capturing, each such terminal is shown to Ghostty until its layer has a new frame (at most 1 s), and hidden again after.

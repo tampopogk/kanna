@@ -73,7 +73,7 @@ sequenceDiagram
 | unknown | now | now, into its queue |
 
 - **Why Claude takes it mid-turn:** Claude keeps a message that arrives during a turn and adds it to its next model request, in order, as sent "while you were working". A long tool call, your draft and an open question are left alone, and it never takes a message as the answer to a prompt.
-- **Why needs you waits:** Claude can't read it until you've answered, and a Shelf runner stops a task at that point: its quit keys would cancel the question and start the message as a new turn.
+- **Why needs you waits:** Claude can't read it until you've answered, and a Shelf runner stops a task at that point: its rest key would cancel the question and start the message as a new turn.
 - **Why approval waits:** Claude's dialog for a message from another permission class opens at once, over the turn, and reports blocked, which ends a Shelf turn. At its prompt the dialog does no harm.
 - **Why Codex's queue:** `thread/queue/add` keeps a message in Codex's own durable queue, and Codex starts a turn with it once the thread is idle: at once at its prompt, after the running turn otherwise. The answer it's streaming, an open approval and your draft are left alone. `turn/start` and `turn/steer` on a busy Codex cancel the response in flight and drop its text. The queue is an experimental API, so Kanna asks for it (`experimentalApi`); a Codex that refuses it gets a `turn/start` at its prompt, and mid-turn the sender is warned and the message tries again.
 - **After Esc:** an interrupted turn leaves Codex's queue where it is. When the queue still holds a message on two looks in a row and the thread is idle, Kanna calls `thread/queue/start`.

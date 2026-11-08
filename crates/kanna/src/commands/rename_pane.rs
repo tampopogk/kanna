@@ -1,4 +1,4 @@
-use super::{usage, Command, Flow};
+use super::{usage, Command, Flow, PANE};
 use serde_json::{json, Value};
 
 pub const COMMAND: Command = Command {
@@ -15,7 +15,7 @@ pub const COMMAND: Command = Command {
         Ok(json!({ "pane": pane, "name": name }))
     },
     show,
-    flow: Flow::PLAIN,
+    flow: Flow { panes: PANE, ..Flow::PLAIN },
 };
 
 pub fn show(_: &Value, reply: &Value) -> String {
