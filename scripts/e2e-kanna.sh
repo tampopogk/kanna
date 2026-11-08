@@ -7550,7 +7550,8 @@ machine_remote_web() {
   local local_port; local_port="$(tunnel)"
   [[ "$local_port" != "$port" ]] || { echo "machine_remote_web: the tunnel listens on the dev server's own port"; return 1; }
   check wait_for 10 eval 'web text | grep -q "hello from vm"' || { echo "machine_remote_web: the web pane didn't load vm's dev server"; web url; web text; return 1; }
-  check test "$(web url)" == "http://127.0.0.1:$local_port/" || { echo "machine_remote_web: the web pane isn't on this Mac's loopback"; web url; return 1; }
+  check test "$(web loaded)" == "http://127.0.0.1:$local_port/" || { echo "machine_remote_web: the web pane isn't on this Mac's loopback"; web loaded; return 1; }
+  check test "$(web url)" == "http://localhost:$port/" || { echo "machine_remote_web: the web pane doesn't report the dev server's own URL"; web url; return 1; }
   check web text | grep -q "served for 127.0.0.1:$local_port" || { echo "machine_remote_web: the dev server didn't see a localhost Host"; web text; return 1; }
   check wait_for 10 eval 'web text | grep -qx connected' || { echo "machine_remote_web: the page's HMR socket didn't connect"; web text; return 1; }
   vmurl() { KANNA_SOCKET="$vm/kanna.sock" pane devpage url; }
