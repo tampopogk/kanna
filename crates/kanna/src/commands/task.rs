@@ -428,7 +428,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
             let script = |t: &Value| t["script"].as_str().or_else(|| t["id"].as_str().and_then(|id| reply["script"][id].as_str())).map(String::from);
             let state = |t: &Value| match (t["running"].as_bool(), t["status"].as_str()) {
                 _ if script(t).is_some() => script(t).unwrap_or_default(),
-                (Some(true) | None, Some("needs-you")) => "needs you".to_string(),
+                (_, Some("needs-you")) => "needs you".to_string(),
                 (Some(true) | None, Some("working")) => "working".to_string(),
                 _ if t["merged"] == true => "merged".to_string(),
                 _ if t["merge"] == "stale" => "stale".to_string(),

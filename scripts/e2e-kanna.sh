@@ -6510,6 +6510,124 @@ assert "F1 is about 0.6" in shown["pipelines"]["note"], shown["pipelines"]["note
   check wait_for 5 eval '[[ "$(desk statsSections "$d")" == *"\"on\": ["*"90 days"* ]]' || { echo "pipeline_stats: 90 days didn't take"; desk statsSections "$d"; return 1; }
 }
 
+scenario pipeline_gates M4
+pipeline_gates() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/gates" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  python3 -c 'import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["pipelines"] = {"agents": {"claude": sys.argv[2]}}; json.dump(c, open(p, "w"))' "$KANNA_AGENTS_HOME/.kanna-v4/config.json" "$fake/claude" || { echo "pipeline_gates line $LINENO"; return 1; }
+  start_daemon && start_app || { echo "pipeline_gates line $LINENO"; return 1; }
+  mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_gates line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
+  machine_runners 1
+  cat >"$repo/.kanna/pipelines/gates.kojo" <<'PIPE'
+plan  = claude
+ok    = ask "Is the plan right?"
+build = claude
+check = run sh check.sh
+wrap  = run touch .kanna/tmp/wrapped
+
+plan -> ok
+ok -[fail, max 2]-> plan
+ok -> build -> check -> wrap -> done
+PIPE
+  printf 'Plan it.\nmock: run sleep 6 && echo plan >> plan.txt && git add plan.txt && git commit -qm plan && "$KANNA_CLI" run done\n' >"$repo/.kanna/prompts/plan.md"
+  printf 'Build it.\nsay: Not sure how.\n' >"$repo/.kanna/prompts/build.md"
+  cat >"$repo/check.sh" <<'CHECK'
+n=$(cat .kanna/tmp/checks 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >.kanna/tmp/checks
+touch ".kanna/tmp/check-$n"
+while [ ! -e .kanna/tmp/go ]; do sleep 0.2; done
+CHECK
+  printf 'work = claude\ntail = run touch .kanna/tmp/tailed\nwork -> tail -> done\n' >"$repo/.kanna/pipelines/slowpoke.kojo"
+  printf 'Work slowly.\nmock: run sleep 60\n' >"$repo/.kanna/prompts/work.md"
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "pipeline_gates line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Gates" "run $bin/kanna run start gates --request 'Gate it'" --agent "$fake/claude") >/dev/null || { echo "pipeline_gates line $LINENO"; return 1; }
+  local task; task="$(tid 1)"
+  task_json() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = json.load(sys.stdin); task = [x for x in t["shelf"] if x["id"] == sys.argv[1]]
+print(json.dumps(task[0] if task else {}))' "$task"; }
+  task_field() { task_json | python3 -c 'import json, sys; v = json.load(sys.stdin).get(sys.argv[1]); print(v if isinstance(v, str) else json.dumps(v))' "$1"; }
+  runs() { kanna run list --all --json | python3 -c 'import json, sys
+r = json.load(sys.stdin)["runs"]; print(" ".join(x[sys.argv[1]] if isinstance(x[sys.argv[1]], str) else json.dumps(x[sys.argv[1]]) for x in r))' "$1"; }
+  visits() { kanna run show "$1" --json | python3 -c 'import json, sys
+print(" ".join(v["stage"] + ":" + (v["verdict"] or "open") + ("(" + v["doc"]["by"] + ")" if v["doc"].get("by") else "") for v in json.load(sys.stdin)["visits"]))'; }
+  check wait_for 20 eval '[[ "$(runs run)" == run-* ]]' || { echo "pipeline_gates: the task's agent didn't start a run"; (cd "$repo" && kanna task list); task_json; kanna read "$(task_field held)"; return 1; }
+  local run worker; run="$(runs run)"; worker="$repo/.kanna-worktrees/$task-run-1"
+  check wait_for 15 eval '[[ "$(task_field running) $(runs state)" == "false running" ]]' || { echo "pipeline_gates: the Shelf runner didn't stop the task's agent while the run went on: $(task_field running) $(runs state)"; return 1; }
+  check wait_for 30 eval '[[ "$(runs state)" == waiting ]]' || { echo "pipeline_gates: the ask didn't make the run wait: $(runs state) $(runs why)"; kanna run show "$run"; tail -20 "$out/daemon.log"; return 1; }
+  [[ "$(runs why)" == "ok asks: Is the plan right?" ]] || { echo "pipeline_gates: the waiting run says: $(runs why)"; return 1; }
+  check wait_for 30 eval 'shows "$(task_field held)" "peer: \[message from $run\] ok asks: Is the plan right?"' || { echo "pipeline_gates: the run's ask didn't wake the stopped task with its question"; kanna read "$(task_field held)"; (cd "$repo" && kanna task messages "$task"); return 1; }
+  check wait_for 10 eval '[[ "$(task_field status)" == needs-you ]]' || { echo "pipeline_gates: the asking task's status is $(task_field status)"; return 1; }
+  check wait_for 20 eval '[[ "$(task_field running) $(task_field status)" == "false needs-you" ]]' || { echo "pipeline_gates: the stopped asking task is $(task_field running) $(task_field status)"; return 1; }
+  (cd "$repo" && kanna task list) | grep -q "Gates .*needs you" || { echo "pipeline_gates: task list doesn't say the task needs you"; (cd "$repo" && kanna task list); return 1; }
+  stop_daemon; start_daemon || { echo "pipeline_gates: the daemon didn't come back"; return 1; }
+  check test "$(runs state)" == waiting || { echo "pipeline_gates: the ask didn't survive a restart: $(runs state)"; return 1; }
+  check wait_for 10 eval '[[ "$(task_field status)" == needs-you ]]' || { echo "pipeline_gates: after a restart the asking task is $(task_field status)"; return 1; }
+  local said; said="$(kanna run answer "$run" no "Split it in two." 2>&1)" || { echo "pipeline_gates: answering from the CLI failed: $said"; return 1; }
+  [[ "$said" == "$run: ok is answered no" ]] || { echo "pipeline_gates: answer said: $said"; return 1; }
+  check wait_for 10 eval '[[ "$(task_field status)" != needs-you ]]' || { echo "pipeline_gates: the task still needs you after the answer"; return 1; }
+  check wait_for 30 eval 'grep -q "Split it in two." "$worker/.kanna/tmp/stage-3.md" 2>/dev/null' || { echo "pipeline_gates: plan's second visit didn't get the note"; cat "$worker/.kanna/tmp/stage-3.md"; return 1; }
+  grep -q "# Feedback from ok" "$worker/.kanna/tmp/stage-3.md" || { echo "pipeline_gates: the note isn't under ok's feedback heading"; cat "$worker/.kanna/tmp/stage-3.md"; return 1; }
+  check wait_for 30 eval '[[ "$(runs state)" == waiting ]]' || { echo "pipeline_gates: the second ask didn't come: $(runs state)"; return 1; }
+  local picked; picked="$(kanna task pick "$task")" || { echo "pipeline_gates: the task couldn't go to the Desk: $picked"; return 1; }
+  [[ "$picked" =~ (term-[0-9]+) ]] || { echo "pipeline_gates: pick said: $picked"; return 1; }
+  local agent="${BASH_REMATCH[1]}"
+  check wait_for 15 is "$agent" state running || { echo "pipeline_gates: the task's agent didn't start on the Desk"; return 1; }
+  check wait_for 15 shows "$agent" "❯" || { echo "pipeline_gates: the task's agent isn't ready"; kanna read "$agent"; return 1; }
+  kanna send "$agent" "run $bin/kanna run answer $run yes Go ahead." >/dev/null || { echo "pipeline_gates line $LINENO"; return 1; }
+  check wait_for 20 eval '[[ "$(runs why)" == *"build stopped without reporting"* ]]' || { echo "pipeline_gates: the agent's answer didn't carry the run to build: $(runs state) $(runs why)"; kanna read "$agent"; kanna run log "$run"; return 1; }
+  steer() { said="$(kanna run "$1" "$run" 2>&1)"; }
+  check wait_for 20 steer skip || { echo "pipeline_gates: skip failed: $said"; return 1; }
+  [[ "$said" == "$run: build is skipped, as a pass" ]] || { echo "pipeline_gates: skip said: $said"; return 1; }
+  check wait_for 20 test -e "$worker/.kanna/tmp/check-1" || { echo "pipeline_gates: check didn't start after the skip: $(runs state) $(runs why)"; return 1; }
+  said="$(kanna run retry "$run" 2>&1)" || { echo "pipeline_gates: retry failed: $said"; return 1; }
+  check wait_for 20 test -e "$worker/.kanna/tmp/check-2" || { echo "pipeline_gates: check didn't run again: $said"; kanna run show "$run"; return 1; }
+  said="$(kanna run pause "$run" 2>&1)" || { echo "pipeline_gates: pause failed: $said"; return 1; }
+  [[ "$said" == "$run pauses once check ends; \`kanna run resume\` carries it on" ]] || { echo "pipeline_gates: pause said: $said"; return 1; }
+  touch "$worker/.kanna/tmp/go"
+  check wait_for 20 eval '[[ "$(runs state)" == paused ]]' || { echo "pipeline_gates: the run didn't pause after check: $(runs state) $(runs why)"; return 1; }
+  [[ "$(runs why)" == "paused by you before wrap" ]] || { echo "pipeline_gates: the paused run says: $(runs why)"; return 1; }
+  sleep 2
+  check test ! -e "$worker/.kanna/tmp/wrapped" || { echo "pipeline_gates: a paused run started its next stage"; return 1; }
+  said="$(kanna run resume "$run" 2>&1)" || { echo "pipeline_gates: resume failed: $said"; return 1; }
+  check wait_for 20 eval '[[ "$(runs state)" == done ]]' || { echo "pipeline_gates: the resumed run didn't hand back: $(runs state) $(runs why)"; return 1; }
+  check test "$(git -C "$repo" show "run/$task-1:plan.txt" | grep -c plan)" -eq 2 || { echo "pipeline_gates: the run's branch doesn't have both plans"; return 1; }
+  local got; got="$(visits "$run")"
+  [[ "$got" == "plan:done ok:fail(user) plan:done ok:pass(agent) build:skipped(user) check:retried check:pass wrap:pass" ]] || { echo "pipeline_gates: the visits were: $got"; return 1; }
+  python3 -c 'import json, sys
+r = json.loads(sys.argv[1])["run"]
+assert r["interventions"] == {"answered": 2, "skipped": 1, "retried": 1, "paused": 1, "resumed": 1}, r["interventions"]' "$(kanna run show "$run" --json)" || { echo "pipeline_gates: the interventions counted"; return 1; }
+  local events; events="$(kanna run log "$run" --json | python3 -c 'import json, sys; print(" ".join(e["what"] + ":" + (e["by"] or "-") for e in json.load(sys.stdin)["events"] if e["what"] in ("answered", "skipped", "retried", "paused", "resumed")))')"
+  [[ "$events" == "answered:user answered:agent paused:daemon skipped:user retried:user paused:user resumed:user" ]] || { echo "pipeline_gates: the steering events were: $events"; return 1; }
+  kanna run show "$run" | grep -q "interventions: 2 answered" || { echo "pipeline_gates: run show doesn't list the interventions"; kanna run show "$run"; return 1; }
+  local folder="$repo/.kanna-worktrees/$task" second
+  second="$(cd "$folder" && KANNA_TERMINAL="$agent" kanna run start slowpoke 2>&1)" || { echo "pipeline_gates: the slowpoke run didn't start: $second"; return 1; }
+  second="${second%% *}"
+  local slow_worker="$repo/.kanna-worktrees/$task-run-2" sleeper=""
+  working() { sleeper="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from run_stages where run = '$second' and stage = 'work' and terminal is not null order by rowid desc limit 1")"; [[ -n "$sleeper" ]] && shows "$sleeper" "session "; }
+  check wait_for 20 working || { echo "pipeline_gates: the work stage didn't start"; return 1; }
+  stop_daemon; start_daemon || { echo "pipeline_gates: the daemon didn't come back mid-stage"; return 1; }
+  check wait_for 10 is "$sleeper" state running || { echo "pipeline_gates: the stage's agent didn't outlive the daemon"; return 1; }
+  check test "$(runs state)" == "done running" || { echo "pipeline_gates: after a restart mid-stage the runs are $(runs state)"; return 1; }
+  kanna task stop "$task" >/dev/null || { echo "pipeline_gates: the task couldn't be stopped"; return 1; }
+  check wait_for 20 eval '[[ "$(runs state)" == "done paused" ]]' || { echo "pipeline_gates: stopping the task didn't pause its run: $(runs state)"; return 1; }
+  [[ "$(runs why)" == *"the task is stopped" ]] || { echo "pipeline_gates: the held run says: $(runs why)"; return 1; }
+  check wait_for 20 eval '! is "$sleeper" state running' || { echo "pipeline_gates: the stage's terminal kept running with its task stopped"; return 1; }
+  check wait_for 10 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select json_extract(doc, \"$.paused.task\") from run_stages where run = \"$second\" order by rowid desc limit 1")" == 1 ]]' || { echo "pipeline_gates: the stopped stage wasn't kept to carry on"; return 1; }
+  kanna task start "$task" >/dev/null || { echo "pipeline_gates: the task couldn't start again"; return 1; }
+  check wait_for 20 eval '[[ "$(runs state)" == "done running" ]] || [[ "$(runs why)" == *"work stopped without reporting" ]]' || { echo "pipeline_gates: starting the task didn't carry its run on: $(runs state) $(runs why)"; return 1; }
+  check wait_for 20 test -e "$slow_worker/.kanna/tmp/reply-1-1.md" || { echo "pipeline_gates: the stage wasn't resumed in its session"; return 1; }
+  check test "$(cat "$slow_worker/.kanna/tmp/reply-1-1.md")" == "Carry on." || { echo "pipeline_gates: the resumed stage was told: $(cat "$slow_worker/.kanna/tmp/reply-1-1.md")"; return 1; }
+  check wait_for 30 eval '[[ "$(runs why)" == *"work stopped without reporting" ]]' || { echo "pipeline_gates: the resumed stage didn't run: $(runs state) $(runs why)"; return 1; }
+  local answered=""
+  resumed() { answered="$(kanna run resume "$second" "$1" 2>&1)"; }
+  check wait_for 20 resumed 'mock: run "$KANNA_CLI" run done' || { echo "pipeline_gates: the slowpoke run didn't resume: $answered"; return 1; }
+  check wait_for 30 eval '[[ "$(runs state)" == "done done" ]]' || { echo "pipeline_gates: the slowpoke run didn't hand back: $(runs state) $(runs why)"; kanna run show "$second"; return 1; }
+  events="$(kanna run log "$second" --json | python3 -c 'import json, sys; print(" ".join(e["what"] + ":" + (e["by"] or "-") for e in json.load(sys.stdin)["events"] if e["what"] in ("paused", "resumed")))')"
+  [[ "$events" == "paused:task resumed:task paused:daemon resumed:user" ]] || { echo "pipeline_gates: the slowpoke run's events were: $events"; return 1; }
+}
+
 scenario desk_news M4
 desk_news() {
   start_daemon && start_app || { echo "desk_news line $LINENO"; return 1; }

@@ -67,7 +67,7 @@ flowchart LR
 | active time | the sum of the visits, less what they waited |
 | sessions, turns, tools, tokens, cost, commits, files, lines | sums over the visits; a file changed by two visits counts twice |
 | rework loops | visits of any stage beyond its first, by stage |
-| interventions | by kind: `run_events` from anyone but the daemon or the stage's own terminal |
+| interventions | by kind: the run's own count, kept as you answer, pause, skip, retry or resume ([software factory §6.2](software-factory.md#62-gates-and-steering-as-built)); for a run from before it, `run_events` from anyone but the daemon or the stage's own terminal |
 | outcome | `landed`, `handed back`, `stopped` (why), `stuck` |
 
 - **Tokens** in a headline are in, written and out. Cache reads re-read the same context each turn and would swamp them, so they stay in the JSON.

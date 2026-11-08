@@ -986,6 +986,8 @@ pub struct Tasks {
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub on_stop: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub on_start: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
     pub age: RefCell<Option<Box<dyn Fn(&str) -> Option<Duration>>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
@@ -1178,6 +1180,8 @@ impl Tasks {
             background: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
+            on_stop: RefCell::default(),
+            on_start: RefCell::default(),
             on_delivered: RefCell::default(),
             age: RefCell::default(),
             warned: RefCell::default(),
@@ -1999,6 +2003,21 @@ impl Tasks {
         let inside = |entry: &Entry| entry.folder.as_deref().is_some_and(|f| folder.starts_with(f) || same_folder(Path::new(f), folder));
         let running: Vec<Entry> = self.running.borrow().iter().map(|r| r.entry.clone()).collect();
         running.into_iter().chain(self.entries.borrow().iter().cloned()).find(inside)
+    }
+
+    pub fn agent_pane(&self, task: &str) -> Option<String> {
+        let running = self.running.borrow().iter().find(|r| r.entry.id == task).map(|r| r.pane.clone());
+        running.or_else(|| self.entries.borrow().iter().find(|e| e.id == task).and_then(|e| e.held.clone()))
+    }
+
+    pub fn waits_on_you(&self, pane: &str) -> bool {
+        self.core.upgrade().and_then(|core| core.pane(pane)).is_some_and(|p| p.waits_on_you)
+    }
+
+    fn started_again(&self, pane: &str) {
+        if let (Some(id), Some(on_start)) = (self.task_of(pane), self.on_start.borrow().as_ref()) {
+            on_start(&id);
+        }
     }
 
     pub fn task_of(&self, pane: &str) -> Option<String> {
@@ -4319,6 +4338,9 @@ impl Tasks {
                 }
                 let session = tasks.pane_entry(&pane).and_then(|e| e.session);
                 tasks.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
+                if let (Some(id), Some(on_stop)) = (tasks.task_of(&pane), tasks.on_stop.borrow().as_ref()) {
+                    on_stop(&id);
+                }
                 tasks.refill();
                 let out = Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("place".to_string(), json!(place))]);
                 core.hang_up(&pane.clone(), move |hung_up| responder.reply(hung_up.map(|_| out)));
@@ -4368,12 +4390,12 @@ impl Tasks {
         });
     }
 
-    fn revive(&self, pane: &str, command: Option<String>, done: impl FnOnce(Result<String, KmuxError>) + 'static) {
+    fn revive(self: &Rc<Self>, pane: &str, command: Option<String>, done: impl FnOnce(Result<String, KmuxError>) + 'static) {
         let Some(core) = self.core.upgrade() else { return done(Err(gone())) };
         if let Some(command) = command {
             core.set_command(pane, command);
         }
-        let (weak, old) = (core.weak(), pane.to_string());
+        let (weak, old, this) = (core.weak(), pane.to_string(), Rc::downgrade(self));
         core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| {
             if let Some(error) = failed(&reply) {
                 return done(Err(error));
@@ -4383,6 +4405,9 @@ impl Tasks {
             core.wake(&task.clone(), move |woken| {
                 if let Err(error) = woken {
                     log!("kanna-daemon: couldn't start {task}'s terminals again: {}", error.message);
+                }
+                if let Some(this) = this.upgrade() {
+                    this.started_again(&task);
                 }
                 done(Ok(task))
             });

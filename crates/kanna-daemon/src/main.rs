@@ -394,6 +394,17 @@ fn run() -> Result<(), String> {
             runs.task_closed(task);
         }
     }));
+    let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
+    *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = stopping.upgrade() {
+            runs.task_stopped(task);
+        }
+    }));
+    *tasks.on_start.borrow_mut() = Some(Box::new(move |task| {
+        if let Some(runs) = starting.upgrade() {
+            runs.task_started(task);
+        }
+    }));
     let writers = {
         let layout = Rc::downgrade(&layout);
         quiz_writer::Writers::install(db.clone(), tasks.clone(), &core, Box::new(move || {
@@ -542,6 +553,12 @@ fn run() -> Result<(), String> {
 
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
+    let (shown, statuses) = (core.weak(), Rc::downgrade(&app));
+    *runs.on_status.borrow_mut() = Some(Box::new(move |pane| {
+        if let (Some(core), Some(app)) = (shown.upgrade(), statuses.upgrade()) {
+            app.status(pane, core.pane(pane).and_then(|p| p.status().map(String::from)).as_deref());
+        }
+    }));
     let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
@@ -823,7 +840,7 @@ fn run() -> Result<(), String> {
             Event::Status { terminal, serial, status, ended } => {
                 if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
                     core.with_pane_mut(&pane, |p| p.status = status.map(String::from));
-                    app.status(&pane, status);
+                    app.status(&pane, core.pane(&pane).and_then(|p| p.status().map(String::from)).as_deref());
                     tasks.status(&pane, status, ended);
                     runs.status(&pane, ended);
                 }
@@ -1011,7 +1028,8 @@ fn ended(terminals: &Terminals, tasks: &Rc<tasks::Tasks>, app: &AppLink, termina
     app.exited(terminal, code);
     if let Some(pane) = terminals.pane_of(terminal) {
         tasks.exited(&pane, code);
-        app.status(&pane, Some("exited"));
+        let waits = tasks.waits_on_you(&pane);
+        app.status(&pane, Some(if waits { "needs-you" } else { "exited" }));
     }
 }
 

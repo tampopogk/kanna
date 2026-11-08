@@ -161,8 +161,13 @@ pub fn numbers(row: &RunRow, stages: &[StageRow], events: &[RunEvent], revision:
         out.deleted += number(doc, "deleted");
     }
     out.at = stages.last().filter(|s| s.ended_at.is_none()).map(|s| (s.stage.clone(), seen.get(s.stage.as_str()).copied().unwrap_or(1) as i64));
-    for kind in events.iter().filter_map(|e| intervention(e, stages)) {
-        *out.interventions.entry(kind).or_insert(0) += 1;
+    let kept: BTreeMap<String, u64> = row.doc.get("interventions").and_then(Value::as_object).map_or_else(BTreeMap::new, |m| m.iter().map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0))).filter(|(_, n)| *n > 0).collect());
+    if kept.is_empty() {
+        for kind in events.iter().filter_map(|e| intervention(e, stages)) {
+            *out.interventions.entry(kind).or_insert(0) += 1;
+        }
+    } else {
+        out.interventions = kept;
     }
     out
 }
@@ -579,6 +584,13 @@ mod tests {
         assert_eq!(n.to_hand_back, Some(100.0));
         assert_eq!((n.to_land, n.outcome.as_str()), (None, "handed back"));
         assert_eq!(visit_interventions(&stages[1], &stages, &events), BTreeMap::from([("resumed".to_string(), 1)]));
+    }
+
+    #[test]
+    fn the_run_s_own_count_of_interventions_wins_over_its_events() {
+        let events = [event(1.0, "stopped", Some("user"))];
+        let n = numbers(&run("r", "p", "h", 0.0, "stopped", json!({ "interventions": { "paused": 2, "skipped": 1 } })), &[], &events, 1, 10.0);
+        assert_eq!(n.interventions, BTreeMap::from([("paused".to_string(), 2), ("skipped".to_string(), 1)]));
     }
 
     #[test]
