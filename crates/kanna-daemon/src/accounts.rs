@@ -536,19 +536,20 @@ impl Accounts {
 
     pub fn prune(&self, trusted: &BTreeSet<String>, me_revoked: bool) -> bool {
         let keeps = |source: &String| !me_revoked && trusted.contains(source);
-        let sources: Vec<String> = match self.listed() {
-            Ok(listed) => listed.keys().cloned().collect(),
-            Err(_) if me_revoked => vec![RECEIVED.to_string()],
-            Err(why) => {
-                log!("kanna-daemon: {why}");
-                vec![]
+        let held = self.received();
+        let mut sources: BTreeSet<String> = self.listed().map(|listed| listed.keys().cloned().collect()).unwrap_or_default();
+        match &held {
+            Ok(received) => sources.extend(received.keys().cloned()),
+            Err(_) if me_revoked => {
+                sources.insert(RECEIVED.to_string());
             }
-        };
+            Err(why) => log!("kanna-daemon: {why}"),
+        }
         let mut changed = false;
         if sources.iter().any(|source| !keeps(source)) {
-            let kept = match sources.iter().all(|source| !keeps(source)) {
-                true => Ok(Map::new()),
-                false => self.received().map(|mut received| {
+            let kept = match (sources.iter().all(|source| !keeps(source)), held) {
+                (true, _) => Ok(Map::new()),
+                (false, held) => held.map(|mut received| {
                     received.retain(|source, _| keeps(source));
                     received
                 }),
@@ -1431,6 +1432,20 @@ mod tests {
         assert!(stuck.credential("claude").unwrap_err().contains("didn't answer"));
         assert!(stuck.supply("mac-key", &json!({ "version": 2, "accounts": [] })).is_err(), "a supply can't drop what it couldn't read");
         drop(closed);
+        let _ = std::fs::remove_dir_all(&vm);
+    }
+
+    #[test]
+    fn a_revoked_source_the_book_missed_is_still_dropped() {
+        let vm = worker_with_received("drift");
+        let files = Files::new(vm.join(SECRETS));
+        let mut received: Value = serde_json::from_str(&files.read(RECEIVED).unwrap().unwrap()).unwrap();
+        received["old-key"] = received["mac-key"].clone();
+        files.write(RECEIVED, &received.to_string()).unwrap();
+        let (worker, _) = accounts(&vm, false, Duration::ZERO);
+        assert!(worker.prune(&BTreeSet::from(["mac-key".to_string()]), false), "old-key was in the secret but not the book");
+        assert!(worker.received().unwrap().get("old-key").is_none());
+        assert!(worker.received().unwrap().get("mac-key").is_some());
         let _ = std::fs::remove_dir_all(&vm);
     }
 
