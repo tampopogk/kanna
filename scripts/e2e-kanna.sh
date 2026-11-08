@@ -1980,7 +1980,7 @@ markup_reuse() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/reuse" mine other said kept count
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_reuse line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent" && kanna task new "Other" "say hi" --agent "$agent") >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Mine" "hello there" --agent "$agent" && kanna task new "Other" "hello there" --agent "$agent") >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null && kanna task pick "$(tid 2)" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(pane Mine id)" == term-* && "$(pane Other id)" == term-* ]]' || { kanna workspace list --all; return 1; }
   mine="$(pane Mine id)" other="$(pane Other id)"
@@ -2033,7 +2033,7 @@ markup_button() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/button" mine planner opened w
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_button line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent") >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Mine" "hello there" --agent "$agent") >/dev/null || { echo "markup_button line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null || { echo "markup_button line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(pane Mine id)" == term-* ]]' || { kanna workspace list --all; return 1; }
   mine="$(pane Mine id)"
@@ -2698,7 +2698,7 @@ task_shelf() {
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_shelf line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  local added; added="$(in_repo task new "Fix it" "say hi" --agent "$agent" 2>&1)"
+  local added; added="$(in_repo task new "Fix it" "hello there" --agent "$agent" 2>&1)"
   [[ "$added" =~ ^"added "(task-[0-9a-f]{4,8})" \"Fix it\" to the Shelf of $repo"$ && "${BASH_REMATCH[1]}" == "$(sid 1)" ]] || { echo "task_shelf line $LINENO: $added"; return 1; }
   in_repo task new "Plain" >/dev/null || { echo "task_shelf line $LINENO"; return 1; }
   [[ "$(cd "$KANNA_STATE_DIR" && kanna task new "Nowhere" 2>&1)" == *"belongs to a git repo"* ]] || { echo "task_shelf line $LINENO"; return 1; }
@@ -2923,12 +2923,12 @@ move_to_shelf() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "move_to_shelf line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "Later" "say hi" --agent "$agent") >/dev/null || { echo "move_to_shelf line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Later" "hello there" --agent "$agent") >/dev/null || { echo "move_to_shelf line $LINENO"; return 1; }
   local started wt; started="$(kanna task pick $(tid 1))" || { echo "move_to_shelf line $LINENO"; return 1; }
   [[ "$started" =~ " in "([^ ]+)" (" ]] && wt="${BASH_REMATCH[1]/#\~/$HOME}" || { echo "move_to_shelf line $LINENO: $started"; return 1; }
   check wait_for 5 eval '[[ "$(pane Later id)" == term-1 ]]' || { echo "move_to_shelf line $LINENO"; return 1; }
   touch "$wt/work-in-progress"
-  (cd "$repo" && kanna task new "Newer" "say hi" --agent "$agent") >/dev/null || { echo "move_to_shelf line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Newer" "hello there" --agent "$agent") >/dev/null || { echo "move_to_shelf line $LINENO"; return 1; }
   local pid; pid="$(pane Later pid)"
   expected="moved term-1 to the Shelf as $(sid 1), still running: \`kanna task pick $(sid 1)\` brings it back"; says kanna task shelve Later || { echo "move_to_shelf line $LINENO"; return 1; }
   check test "$(ws $(tid 1) where)" == shelf || { echo "move_to_shelf: $(sid 1)'s workspace isn't on the Shelf"; state; return 1; }
@@ -2982,7 +2982,7 @@ shelf_row_status() {
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "shelf_row_status line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  in_repo task new "Runs" "say hi" --agent "$agent" >/dev/null && in_repo task new "Waits" "say hi" --agent "$agent" --after "$(tid 1)" >/dev/null && in_repo task new "Stays" "say hi" --agent "$agent" >/dev/null || { echo "shelf_row_status line $LINENO"; return 1; }
+  in_repo task new "Runs" "hello there" --agent "$agent" >/dev/null && in_repo task new "Waits" "hello there" --agent "$agent" --after "$(tid 1)" >/dev/null && in_repo task new "Stays" "hello there" --agent "$agent" >/dev/null || { echo "shelf_row_status line $LINENO"; return 1; }
   local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "shelf_row_status line $LINENO: $opened"; return 1; }
   w="${BASH_REMATCH[1]}"
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field "$1"; }
@@ -3022,7 +3022,7 @@ shelf_and_back() {
   repo="$(cd "$repo" && pwd -P)"
   local w
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | field "$1"; }
-  (cd "$repo" && kanna task new "Later" "say hi" --agent "$agent") >/dev/null || { echo "shelf_and_back line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Later" "hello there" --agent "$agent") >/dev/null || { echo "shelf_and_back line $LINENO"; return 1; }
   kanna task pick $(tid 1) >/dev/null || { echo "shelf_and_back line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(pane Later id)" == term-* ]]' || { echo "shelf_and_back line $LINENO"; return 1; }
   local pulled; pulled="$(kanna task activate Later)" && [[ "$pulled" =~ " active on "(d[0-9]+)$ ]] || { echo "shelf_and_back line $LINENO: $pulled"; return 1; }
@@ -3903,12 +3903,12 @@ task_start_stop() {
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_start_stop line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   local n listed
-  for n in 1 2 3 4 5; do (cd "$repo" && kanna task new "Task $n" "say $n" --agent "$agent") >/dev/null || { echo "task_start_stop line $LINENO"; return 1; }; done
+  for n in 1 2 3 4 5; do (cd "$repo" && kanna task new "Task $n" "hello $n" --agent "$agent") >/dev/null || { echo "task_start_stop line $LINENO"; return 1; }; done
   for n in 1 2 3 4 5; do
     [[ "$(kanna task start "$(tid $n)")" == "started $(sid $n) on the Shelf: term-"* ]] || { echo "task_start_stop: $(sid $n) didn't start on the Shelf"; return 1; }
   done
   check wait_for 10 eval '[[ "$(cd "$repo" && kanna task list | placed | grep -cE "^task-[0-9a-f]{4,8} +Task [1-5] +Shelf +(idle|working|running)")" == 5 ]]' || { (cd "$repo" && kanna task list); return 1; }
-  for n in 1 2 3 4 5; do check wait_for 5 shows "Task $n" "say $n" || { echo "task_start_stop: Task $n's agent didn't get its first message"; return 1; }; done
+  for n in 1 2 3 4 5; do check wait_for 5 shows "Task $n" "hello $n" || { echo "task_start_stop: Task $n's agent didn't get its first message"; return 1; }; done
   [[ "$(kanna task start $(tid 1) 2>&1)" == *"$(sid 1) is running"* ]] || { echo "task_start_stop line $LINENO"; return 1; }
   for n in 1 2 3; do kanna task pick "$(tid $n)" >/dev/null || { echo "task_start_stop: $(sid $n) didn't move to the Shelf"; return 1; }; done
   [[ "$(kanna task pick $(tid 4) 2>&1)" == *"has 3 tasks on the Desk"* ]] || { echo "task_start_stop: a fourth task went to the Shelf"; return 1; }
@@ -3956,8 +3956,8 @@ pick_at_once() {
   wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
   check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "pick_at_once: no planning terminal"; return 1; }
-  (cd "$repo" && kanna task new "Line tables" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "pick_at_once line $LINENO"; return 1; }
-  check wait_for 5 shows "Line tables" "say hi" || { echo "pick_at_once: the task didn't start"; return 1; }
+  (cd "$repo" && kanna task new "Line tables" "hello there" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "pick_at_once line $LINENO"; return 1; }
+  check wait_for 5 shows "Line tables" "hello there" || { echo "pick_at_once: the task didn't start"; return 1; }
   task="$(pane "Line tables" id)"
   KANNA_TERMINAL="$task" kanna open --tab --name lines --cmd 'exec cat' >/dev/null && KANNA_TERMINAL="$task" kanna open --tab --name tables --cmd 'exec cat' >/dev/null || { echo "pick_at_once line $LINENO"; return 1; }
   kanna task stop $(tid 1) >/dev/null || { echo "pick_at_once line $LINENO"; return 1; }
@@ -4007,8 +4007,8 @@ for want in sys.argv[1:]:
     if want not in names: print("missing", want, sorted(names)); sys.exit(1)
     print(want, names[want]["last"], "ms")' "$@"; }
   check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "perf_intervals: no planning terminal"; return 1; }
-  (cd "$repo" && kanna task new "Timed" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
-  check wait_for 5 shows "Timed" "say hi" || { echo "perf_intervals: the task didn't start"; return 1; }
+  (cd "$repo" && kanna task new "Timed" "hello there" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
+  check wait_for 5 shows "Timed" "hello there" || { echo "perf_intervals: the task didn't start"; return 1; }
   kanna task stop $(tid 1) >/dev/null && check wait_for 5 is "Timed" state exited || { echo "perf_intervals: the task didn't stop"; return 1; }
   for i in $(seq 2 50); do
     (cd "$repo" && kanna task new "Shelf task $i" "$(python3 -c 'import sys
@@ -4048,8 +4048,8 @@ pick_keeper_paused() {
   wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
   check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "pick_keeper_paused: no planning terminal"; return 1; }
-  (cd "$repo" && kanna task new "Line tables" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
-  check wait_for 5 shows "Line tables" "say hi" || { echo "pick_keeper_paused: the task didn't start"; return 1; }
+  (cd "$repo" && kanna task new "Line tables" "hello there" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
+  check wait_for 5 shows "Line tables" "hello there" || { echo "pick_keeper_paused: the task didn't start"; return 1; }
   task="$(pane "Line tables" id)"
   KANNA_TERMINAL="$task" kanna open --tab --name lines --cmd 'exec cat' >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
   kanna task stop $(tid 1) >/dev/null || { echo "pick_keeper_paused line $LINENO"; return 1; }
@@ -4101,7 +4101,7 @@ task_list_speed() {
   mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "task_list_speed line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_list_speed line $LINENO"; return 1; }
   start_daemon || { echo "task_list_speed line $LINENO"; return 1; }
-  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "say hi" --agent "$agent") >/dev/null || { echo "task_list_speed line $LINENO"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "hello there" --agent "$agent") >/dev/null || { echo "task_list_speed line $LINENO"; return 1; }; done
   for ((i = 1; i <= n; i++)); do kanna task start "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't start"; return 1; }; done
   for ((i = 1; i <= n; i++)); do kanna task stop "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't stop"; return 1; }; done
   started="$(find "$repo/.kanna-worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
@@ -4132,7 +4132,7 @@ loop_latency() {
   for ((i = 0; i < 3000; i++)); do echo "$i" >"$big/$i.txt"; done
   git -C "$big" add . && git -C "$big" -c user.email=e@e -c user.name=e commit -q -m big || { echo "loop_latency line $LINENO"; return 1; }
   start_daemon && start_app || { echo "loop_latency line $LINENO"; return 1; }
-  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "say hi" --agent "$agent") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "hello there" --agent "$agent") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }; done
   for ((i = 1; i <= n; i++)); do kanna task start "$(tid $i)" >/dev/null && kanna task stop "$(tid $i)" >/dev/null || { echo "loop_latency: task $i didn't start and stop"; return 1; }; done
   mark="$(wc -l <"$out/daemon.log")"
   raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
@@ -4147,7 +4147,7 @@ loop_latency() {
   echo "yours" >>"$installed" && echo "ours" >>"$shipped/kanna-tasks/SKILL.md" || { echo "loop_latency line $LINENO"; return 1; }
   for ((i = 0; i < 10; i++)); do kanna agents >"$KANNA_STATE_DIR/agents-status" || { echo "loop_latency line $LINENO"; return 1; }; done
   grep -qi "conflict\|both\|yours" "$KANNA_STATE_DIR/agents-status" || { echo "loop_latency: agents didn't reach a merge:"; cat "$KANNA_STATE_DIR/agents-status"; return 1; }
-  (cd "$repo" && kanna task new "Codex" "say hi" --agent "$codex") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Codex" "hello there" --agent "$codex") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }
   t="$(tid $((n + 1)))"
   for i in 1 2 3 4 5; do kanna task start "$t" >/dev/null && kanna task stop "$t" >/dev/null || { echo "loop_latency: the codex task didn't start and stop, $i"; return 1; }; done
   (cd / && kanna project import "$big" >"$KANNA_STATE_DIR/import-said" 2>&1; echo "$?" >"$KANNA_STATE_DIR/import-exit") &
@@ -4230,7 +4230,7 @@ task_restart_no_conversation() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" wizard="$KANNA_STATE_DIR/mock-wizard"
   mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" && touch "$wizard" || { echo "task_restart_no_conversation line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_restart_no_conversation line $LINENO"; return 1; }
-  (cd "$repo" && kanna task new Wizard "say hi" --agent "$agent") >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new Wizard "hello there" --agent "$agent") >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null && kanna task activate "$(tid 1)" >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
   check wait_for 10 shows Wizard "--session-id" || { kanna read Wizard; return 1; }
   [[ "$(pane Wizard cmd)" == *"--resume"* ]] || { echo "task_restart_no_conversation: the pane's command isn't the resuming one: $(pane Wizard cmd)"; return 1; }
@@ -4252,9 +4252,9 @@ task_restart_typing() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude"
   mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" || { echo "task_restart_typing line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_restart_typing line $LINENO"; return 1; }
-  (cd "$repo" && kanna task new Typed "say hi" --agent "$agent") >/dev/null || { echo "task_restart_typing line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new Typed "hello there" --agent "$agent") >/dev/null || { echo "task_restart_typing line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null && kanna task activate "$(tid 1)" >/dev/null || { echo "task_restart_typing line $LINENO"; return 1; }
-  check wait_for 10 shows Typed "say hi" || { kanna read Typed; return 1; }
+  check wait_for 10 shows Typed "hello there" || { kanna read Typed; return 1; }
   local responder
   raw "{\"id\":1,\"cmd\":\"debug.type\",\"args\":{\"pane\":\"$(pane Typed id)\",\"text\":\"before\\r\"}}" >/dev/null
   check wait_for 5 shows Typed "echo: before" || { kanna read Typed; return 1; }
@@ -4346,9 +4346,9 @@ task_pane_stop_start() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" run side mark="$KANNA_STATE_DIR/ran-once"
   mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" || { echo "task_pane_stop_start line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_pane_stop_start line $LINENO"; return 1; }
-  (cd "$repo" && kanna task new OnDesk "say desk" --agent "$agent" && kanna task new OnShelf "say shelf" --agent "$agent") >/dev/null || { echo "task_pane_stop_start line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new OnDesk "hello desk" --agent "$agent" && kanna task new OnShelf "hello shelf" --agent "$agent") >/dev/null || { echo "task_pane_stop_start line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null && kanna task activate "$(tid 1)" >/dev/null || { echo "task_pane_stop_start line $LINENO"; return 1; }
-  check wait_for 10 shows OnDesk "say desk" || { kanna read OnDesk; return 1; }
+  check wait_for 10 shows OnDesk "hello desk" || { kanna read OnDesk; return 1; }
   local desk; desk="$(pane OnDesk id)"
   KANNA_TERMINAL="$desk" kanna open --tab --name side --cmd "if [ -e '$mark' ]; then echo NEW-RUN; else touch '$mark'; printf '\\033[?2004h'; echo OLD-RUN; fi; exec cat" >/dev/null || { echo "task_pane_stop_start line $LINENO"; return 1; }
   check wait_for 5 shows side OLD-RUN || { kanna read side; return 1; }
@@ -4371,7 +4371,7 @@ task_pane_stop_start() {
   ! kanna read side | grep -qF "^[[200~PASTED-TWO" || { echo "task_pane_stop_start: a mode the old run left on came back"; kanna read side; return 1; }
 
   kanna task start "$(tid 2)" >/dev/null || { echo "task_pane_stop_start line $LINENO"; return 1; }
-  check wait_for 10 shows OnShelf "say shelf" || { kanna read OnShelf; return 1; }
+  check wait_for 10 shows OnShelf "hello shelf" || { kanna read OnShelf; return 1; }
   local shelf; shelf="$(pane OnShelf id)"
   run="$(pane OnShelf terminal)"
   kanna task stop "$(tid 2)" >/dev/null && check wait_for 5 is OnShelf state exited || { echo "task_pane_stop_start line $LINENO"; return 1; }
@@ -4380,7 +4380,7 @@ task_pane_stop_start() {
   check wait_for 5 shows "$shelf" "--resume" || { kanna read "$shelf"; return 1; }
   check is OnShelf id "$shelf" || return 1
   [[ "$(pane OnShelf terminal)" != "$run" ]] || { echo "task_pane_stop_start: the new run needs its own terminal"; return 1; }
-  ! shows "$shelf" "say shelf" || { echo "task_pane_stop_start: the old run's screen came back"; kanna read "$shelf"; return 1; }
+  ! shows "$shelf" "hello shelf" || { echo "task_pane_stop_start: the old run's screen came back"; kanna read "$shelf"; return 1; }
   kanna task pick "$(tid 2)" >/dev/null || { echo "task_pane_stop_start line $LINENO"; return 1; }
   check is OnShelf id "$shelf" || return 1
   kanna task shelve "$(tid 2)" >/dev/null || { echo "task_pane_stop_start line $LINENO"; return 1; }
@@ -4809,7 +4809,7 @@ task_history() {
   (cd "$repo" && kanna task list) | placed | grep -qE '^'"$(sid 1)"' +From JSON +Shelf' || { echo "task_history: the imported task isn't on the Shelf"; (cd "$repo" && kanna task list); return 1; }
   events() { raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"events\",\"task\":\"$1\"}}" | python3 -c 'import json, sys; print(" ".join(e["what"] + ("@" + e["by"] if e["by"] else "") for e in json.load(sys.stdin)["events"]))'; }
   [[ "$(events "$(tid 1)")" == "made renumbered@daemon" ]] || { echo "task_history: the imported task's events are $(events "$(tid 1)")"; return 1; }
-  (cd "$repo" && kanna task new "Fresh" "say fresh" --agent "$agent") | grep -qE '^added task-[0-9a-f]{4,8} ' || { echo "task_history: a new task didn't get an ID"; return 1; }
+  (cd "$repo" && kanna task new "Fresh" "hello fresh" --agent "$agent") | grep -qE '^added task-[0-9a-f]{4,8} ' || { echo "task_history: a new task didn't get an ID"; return 1; }
   kanna task pick $(tid 2) >/dev/null || { echo "task_history line $LINENO"; return 1; }
   local task window; task="$(pane Fresh id)"
   window="$(KANNA_TERMINAL="$task" kanna task activate "$task")" && window="${window##* active on }" && [[ "$window" =~ ^d[0-9]+$ ]] || { echo "task_history: pull said $window"; return 1; }
@@ -5562,8 +5562,8 @@ blocked_tasks() {
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "blocked_tasks line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  in_repo task new "Screenshot command" "say hi" --agent "$agent" >/dev/null && in_repo task new "Status fix" --agent "$agent" >/dev/null || { echo "blocked_tasks line $LINENO"; return 1; }
-  local first added; first="$(tid 1)"; added="$(in_repo task new "Diff viewer" "say hi" --agent "$agent" --after "${first:5:4}" 2>&1)"
+  in_repo task new "Screenshot command" "hello there" --agent "$agent" >/dev/null && in_repo task new "Status fix" --agent "$agent" >/dev/null || { echo "blocked_tasks line $LINENO"; return 1; }
+  local first added; first="$(tid 1)"; added="$(in_repo task new "Diff viewer" "hello there" --agent "$agent" --after "${first:5:4}" 2>&1)"
   [[ "$added" == "added $(sid 3) \"Diff viewer\" to the Shelf of $repo; it waits for $(sid 1)" ]] || { echo "blocked_tasks line $LINENO: $added"; return 1; }
   added="$(in_repo task new "Release notes" --agent "$agent" --after "$(tid 1),$(tid 2)" 2>&1)"
   [[ "$added" == "added $(sid 4) \"Release notes\" to the Shelf of $repo; it waits for $(sid 1), $(sid 2)" ]] || { echo "blocked_tasks line $LINENO: $added"; return 1; }
@@ -5608,8 +5608,8 @@ stacked_tasks() {
   git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
   repo="$(cd "$repo" && pwd -P)"
   in_repo() { (cd "$repo" && kanna "$@"); }
-  in_repo task new A "say hi" --agent "$agent" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
-  in_repo task new B "say hi" --agent "$agent" --after "$(tid 1)" >/dev/null && in_repo task new C "say hi" --agent "$agent" --after "$(tid 2)" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
+  in_repo task new A "hello there" --agent "$agent" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
+  in_repo task new B "hello there" --agent "$agent" --after "$(tid 1)" >/dev/null && in_repo task new C "hello there" --agent "$agent" --after "$(tid 2)" >/dev/null || { echo "stacked_tasks line $LINENO"; return 1; }
   local a b c; a="$(tid 1)" b="$(tid 2)" c="$(tid 3)"
   folder() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
 print(next(t["folder"] for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]))' "$1"; }
@@ -5713,7 +5713,7 @@ lines = [json.loads(l) for l in open(sys.argv[1])]
 print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (len(sys.argv) < 4 or any(sys.argv[3] in h for h in l["history"]))))' "$agents/mock.jsonl" "$@"; }
   local first="UPGRADE_FIRST claude" second="UPGRADE_SECOND claude" id parked
   id="$(in_repo task new "claude task" "$first" --agent "$agents/bin/claude" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
-  parked="$(in_repo task new "Parked" "say hi" --agent "$repo_root/tools/mock-agent/mock-agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
+  parked="$(in_repo task new "Parked" "hello there" --agent "$repo_root/tools/mock-agent/mock-agent" | sed -n 's/^added \(task-[0-9a-f]*\).*/\1/p')"
   [[ "$id" =~ ^task-[0-9a-f]{4,8}$ && "$parked" =~ ^task-[0-9a-f]{4,8}$ ]] || { echo "keeper_upgrade: the tasks weren't added"; return 1; }
   kanna task pick "$id" >/dev/null && kanna task activate "claude task" >/dev/null || { echo "keeper_upgrade: the claude task didn't reach the Desk"; return 1; }
   kanna task pick "$parked" >/dev/null || { echo "keeper_upgrade: the parked task didn't go to the Shelf"; return 1; }
@@ -6486,7 +6486,7 @@ done_leaves_no_window() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "done_leaves_no_window line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "With diff" "say 1" --agent "$agent") >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "With diff" "hello 1" --agent "$agent") >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
   local task; task="$(pane "With diff" id)"
   (cd "$repo" && KANNA_TERMINAL="$task" kanna open diff --merge-base main --name changes --tab) >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
@@ -6525,7 +6525,7 @@ toasts() {
   repo="$(cd "$repo" && pwd -P)"
   start_daemon || { echo "toasts line $LINENO"; return 1; }
   check test "$(kanna toast "Early" "raised before the app")" == "raised toast-1; no app is attached, so it shows when one attaches within a minute" || return 1
-  (cd "$repo" && kanna task new "Lint fixes" "say 1" --agent "$agent" && kanna task new "Docs pass" "say 2" --agent "$agent") >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Lint fixes" "hello 1" --agent "$agent" && kanna task new "Docs pass" "hello 2" --agent "$agent") >/dev/null || { echo "toasts line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null || { echo "toasts line $LINENO"; return 1; }
   env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
   app_pid=$!
@@ -7245,9 +7245,9 @@ project_import() {
   refused="$(cd / && kanna "$outside" 2>&1)" && { echo "project_import: a Desk opened outside repos"; return 1; }
   [[ "$refused" == *"kanna project import $outside"* ]] || { echo "project_import: kanna PATH outside repos: $refused"; return 1; }
 
-  (cd "$repo" && kanna task new "Importing" "say importing" --agent "$agent") >/dev/null || { echo "project_import line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Importing" "hello importing" --agent "$agent") >/dev/null || { echo "project_import line $LINENO"; return 1; }
   [[ "$(kanna task start "$(tid 1)")" == "started $(sid 1) on the Shelf: term-"* ]] || { echo "project_import: the task didn't start"; return 1; }
-  check wait_for 5 shows "Importing" "say importing" || { echo "project_import: the agent didn't get its first message"; kanna read "Importing"; return 1; }
+  check wait_for 5 shows "Importing" "hello importing" || { echo "project_import: the agent didn't get its first message"; kanna read "Importing"; return 1; }
   local task worktree session; task="$(pane "Importing" id)"; worktree="$repo/.kanna-worktrees/$(tid 1)"
   session="$(kanna read "Importing" | tr -d '\r\n' | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*/\1/p')"
   [[ "$session" =~ ^[0-9a-f-]{36}$ ]] || { echo "project_import: the task started without a session"; kanna read "Importing"; return 1; }
