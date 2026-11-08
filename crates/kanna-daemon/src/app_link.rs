@@ -663,7 +663,7 @@ impl AppLink {
             }
             ("terminal.picture", _) => {
                 let reply = self.terminals.picture(string(&args, "terminal").unwrap_or_default());
-                self.answer_subscribe(&message, reply);
+                self.answer_subscribe(conn, &message, reply);
                 return None;
             }
             ("file.unsubscribe", Some(view)) => {
