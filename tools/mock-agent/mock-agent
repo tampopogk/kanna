@@ -44,6 +44,24 @@ def report(state):
         out(f"\x1b]7501;state={state}\x1b\\")
 
 
+AHEAD = bytearray()
+
+
+def interrupted(wait):
+    fd = sys.stdin.fileno()
+    if threading.current_thread() is not threading.main_thread() or not os.isatty(fd):
+        time.sleep(wait)
+        return False
+    if not select.select([fd], [], [], wait)[0]:
+        return False
+    data = os.read(fd, 1024)
+    if data[:1] == b"\x1b" and data[1:2] not in (b"[", b"O"):
+        AHEAD.extend(data[1:])
+        return True
+    AHEAD.extend(data)
+    return False
+
+
 def work(seconds):
     report("working")
     out("\x1b]9;4;3\x07")
@@ -53,9 +71,13 @@ def work(seconds):
         elapsed = int(time.monotonic() - start)
         out(f"\x1b[?2026h\r\x1b[2K{SPINNER[frame % len(SPINNER)]} Working ({elapsed}s • esc to interrupt)\x1b[?2026l")
         frame += 1
-        time.sleep(0.1)
+        if interrupted(0.1):
+            out("\r\x1b[2K\x1b]9;4;0\x07INTERRUPTED\r\n")
+            report("idle")
+            return False
     out("\r\x1b[2K\x1b]9;4;0\x07")
     report("idle")
+    return True
 
 
 CHOICES = ["Yes", "No"]
@@ -409,7 +431,8 @@ def typed():
         return
     line = ""
     while True:
-        data = os.read(fd, 1024)
+        data = bytes(AHEAD) or os.read(fd, 1024)
+        AHEAD.clear()
         if not data:
             return
         for c in data.decode("utf8", "replace"):
@@ -479,8 +502,8 @@ def answering(line):
     if words[:1] in (["exit"], ["/exit"]):
         return False
     if words[:1] == ["work"]:
-        work(float(words[1]) if len(words) > 1 else 2)
-        out("WORK_DONE\r\n")
+        if work(float(words[1]) if len(words) > 1 else 2):
+            out("WORK_DONE\r\n")
     elif words[:1] == ["run"] and len(words) > 1:
         out("\x1b]9;4;3\x07")
         command = line.strip().split(None, 1)[1]
@@ -491,8 +514,9 @@ def answering(line):
         work(1)
         out(f"RUN_DONE {ran.returncode}\r\n")
     elif words[:1] in (["turn"], ["ask"]):
-        if words[:1] == ["turn"]:
-            work(2)
+        if words[:1] == ["turn"] and not work(2):
+            composer()
+            return True
         choice = ask()
         reported("working")
         out("\x1b[2J\x1b[H")
