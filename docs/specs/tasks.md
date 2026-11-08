@@ -57,7 +57,7 @@ stateDiagram-v2
 - **The Desk view lists it** under the Desk's tasks: each task's name, its first message, and the task that made it.
 - **Move to Desk** (`kanna task pick`) puts a task on the Desk, starting it if it's stopped: it makes the worktree and starts the agent with the first message. When the Desk holds three, it's refused ("Desk full") until one goes back to the Shelf or is Done.
 - **`kanna task start` runs a task where it is**: a Shelf task gets its worktree and agent and stays on the Shelf, running, so you can start several and move them to the Desk later. `kanna task list` shows each one's state: working, idle, needs you, or stopped.
-- **Oldest first.** The strip under the active task shows how many wait ("N on the Shelf").
+- **Oldest first,** across every machine ([what the app sees](machine-tasks.md)). The strip under the active task shows how many wait ("N on the Shelf").
 - **Search it** with ⌘F in the Desk view, by name or first message: [Shelf search](shelf-search.md).
 - **A task can wait for others:** blocked, it can't start until they're Done ([blocked tasks](task-dependencies.md)).
 - **Shelf tasks run by themselves,** a few at a time, and Kanna stops each when its agent's turn ends ([Shelf runners](shelf-runners.md)).

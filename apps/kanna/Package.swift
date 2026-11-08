@@ -26,7 +26,7 @@ let package = Package(
         .systemLibrary(name: "KannaCrashC", path: "Sources/KannaCrashC"),
         .target(name: "KannaDiagram", dependencies: ["KannaMerman"], linkerSettings: [kannaFFI] + ["AppKit", "CoreText"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaDiagramTests", dependencies: ["KannaDiagram"]),
-        .target(name: "KannaDocs", linkerSettings: ["AppKit", "WebKit"].map { .linkedFramework($0) }),
+        .target(name: "KannaDocs", dependencies: ["KannaLinks"], linkerSettings: ["AppKit", "WebKit"].map { .linkedFramework($0) }),
         .testTarget(name: "KannaDocsTests", dependencies: ["KannaDocs"]),
         .target(name: "KannaPerf"),
         .testTarget(name: "KannaPerfTests", dependencies: ["KannaPerf"]),

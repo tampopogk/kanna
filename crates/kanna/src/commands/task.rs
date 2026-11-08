@@ -8,7 +8,7 @@ pub const COMMAND: Command = Command {
     name: "task",
     group: "Tabs and windows",
     summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-    usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready set|clear [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task subscribe|unsubscribe EVENT [TASK]\n       kanna task events [TASK]\n       kanna task done [TASK] [--keep]",
+    usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task subscribe|unsubscribe EVENT [TASK]\n       kanna task events [TASK]\n       kanna task done [TASK] [--keep]",
     options: &[
         ("--agent CMD", "new: the agent to start (default: claude)."),
         ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
@@ -17,7 +17,7 @@ pub const COMMAND: Command = Command {
         ("--keep", "done: end it without the repo's tasks.teardown, keeping its worktree and branch."),
         ("--all", "list: every repo's tasks, not only the one you're in."),
     ],
-    notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Each Kanna.app has its own Desk; the Shelf is every app's. Pick claims a task for Kanna.app's Desk, and shelve gives it back to the Shelf. A Desk holds up to three of a repo's tasks, one of them active. Activate and park are Kanna.app's, which the CLI starts if it isn't running: activating shows the task as it was on the Desk your terminal is on, else on its project's Desk (the one Kanna.app had in front last), else a new one, and the task active before stays on the Desk; activating a task a Desk shows brings that window forward instead. Parking (⌘.) shows its Desk's Desk view, the planning agent with the Desk's tasks and the Shelf, and the task stays active and running. Done closes the task's panes, ending its agent and terminals; its Desk shows the Desk view. Whether a task runs and where it is are separate. Start runs a task where it is: a Shelf task gets its worktree, branch and agent and stays on the Shelf, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Pick (Move to Desk) moves a Shelf task to the Desk, starting it if it's stopped; an app's Desk holds three tasks per repo. Shelve (Move to Shelf) moves a Desk task back to the Shelf as it is, running or stopped, freeing its place on the Desk. The old verbs defer and pull still work, as shelve and activate. A Shelf task can wait for other tasks (--after): it's blocked, and starting or picking it is refused until each is done or ready; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. Ready marks a started task's work built, its tests passing, at its worktree's head (refused with uncommitted changes), and `task ready clear` clears it. A blocked task whose blockers are ready starts stacked on them: from the one blocker's ready head, or from main with each one's merged in (if they conflict, it stays blocked). When a ready task's branch moves it stops being ready, and every task stacked on it is stale, down the chain: each gets a message from kanna to merge what moved, rerun its tests and run `task ready set` again, which is refused until its bases are in its branch and none is stale. A stacked task merges after its bases, as `task list` says; once a base is in main, the task is told to merge main. A repo's tasks.setup (`kanna config schema`) runs in a new worktree's agent terminal before the agent starts, once per worktree; if it fails the task stops, `task start` starts the agent anyway, and `task setup` runs it again (in a Setup tab of a running task). Done runs tasks.teardown in the task's agent pane, its tabs closed: the task is Done once it succeeds, and a merged task's worktree and branch are removed (an unmerged one's kept); if it fails, the task stays where it is with its pane showing why, `task done` runs it again and `task done --keep` ends the task without it. A task's name is its docked pane's name, and a Shelf task's own until it starts; `task name` sets either, and a Shelf task keeps its new name when it starts. A Shelf task's first message never changes: to change it, make a new task and take the old one off with `task done`. Send leaves a message for a task's agent, or for the repo's planning agent (planner), from the task you run it in, the planner, or else you: Kanna hands it to the agent as [message from SENDER] TEXT, never by typing into its prompt: Claude reads it at the next step of its turn, and Codex gets it once its turn is over, several at once together, oldest first; neither gets it while it asks you something. A task that hasn't started gets it with its first message, as one more [message from SENDER] after it, and doesn't start for it. A stopped Shelf task with a message runs for it, as one of the repo's shelf.runners, and a running one gets it rather than being stopped at its turn's end; a stopped Desk task gets it when you start it; a done task takes none. `task messages` lists a task's messages, sent and received, delivered or waiting, or every message. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own workspace, which a Desk shows while the task is active on it.",
+    notes: "A task is a window's docked pane (usually an agent) and its tabs. TASK is its ID as kanna task list shows it (task-1dfb: the first 4 of its 8 hex digits, more if another task starts the same way), any start of the ID that only one task has, with or without task- (1dfb), the full ID, or its agent's pane name or ID; its worktree and first branch are named after its full ID. Each Kanna.app has its own Desk; the Shelf is every app's. Pick claims a task for Kanna.app's Desk, and shelve gives it back to the Shelf. A Desk holds up to three of a repo's tasks, one of them active. Activate and park are Kanna.app's, which the CLI starts if it isn't running: activating shows the task as it was on the Desk your terminal is on, else on its project's Desk (the one Kanna.app had in front last), else a new one, and the task active before stays on the Desk; activating a task a Desk shows brings that window forward instead. Parking (⌘.) shows its Desk's Desk view, the planning agent with the Desk's tasks and the Shelf, and the task stays active and running. Done closes the task's panes, ending its agent and terminals; its Desk shows the Desk view. Whether a task runs and where it is are separate. Start runs a task where it is: a Shelf task gets its worktree, branch and agent and stays on the Shelf, running, and any number can run there; a stopped task's agent comes back, and a claude agent resumes its conversation. Stop ends a task's agent and hangs up its terminals, and leaves it where it is, its tabs, focus and zoom as they were and its worktree and branch kept; starting it again reruns the terminals that were running. Pick (Move to Desk) moves a Shelf task to the Desk, starting it if it's stopped; an app's Desk holds three tasks per repo. Shelve (Move to Shelf) moves a Desk task back to the Shelf as it is, running or stopped, freeing its place on the Desk. The old verbs defer and pull still work, as shelve and activate. A Shelf task can wait for other tasks (--after): it's blocked, and starting or picking it is refused until each is done or ready; `task edit` changes what it waits for until it starts, and `task done` names the tasks it frees. `task ready` claims a started task's work finished at its worktree's head: all that's left is to merge, the tests pass, nothing waits on you (refused with uncommitted changes, or while a base's head isn't in its branch). The claim drops by itself when its branch moves; `task ready set` and `task ready clear` are gone. Its row says ready only while Kanna sees it merge into main cleanly and it isn't stacked, conflicts when it's claimed but conflicts with main, and merges after its bases while it's stacked on work not in main. A blocked task whose blockers are claimed (and not stale) starts stacked on them: from the one blocker's claimed head, or from main with each one's merged in (if they conflict, it stays blocked). A stacked task is stale while a base's current head isn't in its branch: it gets a message from kanna to merge it, rerun its tests and run `task ready` again, and merging it clears the staleness at once. Once a base is in main, the task is told nothing it builds on is outside main any more. A repo's tasks.setup (`kanna config schema`) runs in a new worktree's agent terminal before the agent starts, once per worktree; if it fails the task stops, `task start` starts the agent anyway, and `task setup` runs it again (in a Setup tab of a running task). Done runs tasks.teardown in the task's agent pane, its tabs closed: the task is Done once it succeeds, and a merged task's worktree and branch are removed (an unmerged one's kept); if it fails, the task stays where it is with its pane showing why, `task done` runs it again and `task done --keep` ends the task without it. A task's name is its docked pane's name, and a Shelf task's own until it starts; `task name` sets either, and a Shelf task keeps its new name when it starts. A Shelf task's first message never changes: to change it, make a new task and take the old one off with `task done`. Send leaves a message for a task's agent, or for the repo's planning agent (planner), from the task you run it in, the planner, or else you: Kanna hands it to the agent as [message from SENDER] TEXT, never by typing into its prompt: Claude reads it at the next step of its turn, and Codex gets it once its turn is over, several at once together, oldest first; neither gets it while it asks you something. A task that hasn't started gets it with its first message, as one more [message from SENDER] after it, and doesn't start for it. A stopped Shelf task with a message runs for it, as one of the repo's shelf.runners, and a running one gets it rather than being stopped at its turn's end; a stopped Desk task gets it when you start it; a done task takes none. `task messages` lists a task's messages, sent and received, delivered or waiting, or every message. Run from a task's terminal, `task park`, `task name` and `task done` mean that task, and `kanna open`, `kanna comment`, `kanna focus` and `kanna zoom` act in its own workspace, which a Desk shows while the task is active on it.",
     examples: &[
         ("kanna task new \"Fix the page_comments pinch\" \"The mark drifts when you pinch; find out why and add a test\"", "Add a task to this repo's Shelf."),
         ("kanna task new \"Release notes\" \"Write the 0.9 notes\" --after 1dfb,c0ff", "Add a task that can't start until task-1dfb and task-c0ff are done."),
@@ -27,9 +27,8 @@ pub const COMMAND: Command = Command {
         ("kanna task pick 3f9a", "Pick a task off the Shelf onto the Desk, starting it if it's stopped."),
         ("kanna task stop 3f9a", "End a task's agent and hang up its terminals, leaving it and its tabs where they are; start it again to resume its conversation and rerun its terminals."),
         ("kanna task setup 3f9a", "Run the repo's tasks.setup in task-3f9a's worktree again: then its agent, if it's stopped."),
-        ("kanna task list", "This repo's tasks, the Desk's then the Shelf's, and their state: working, idle, needs you, stopped, blocked, ready, stale (with what it's behind), merged (its branch is in main) or replied (its message to the planner waits); a stacked task says what it merges after."),
-        ("kanna task ready set task-3f9a", "Its work is finished and its tests pass (from its own terminal, plain `kanna task ready set`), so the tasks waiting for it can start on its branch."),
-        ("kanna task ready clear task-3f9a", "Its work isn't finished after all: tasks already stacked on it aren't affected."),
+        ("kanna task list", "This repo's tasks, the Desk's then the Shelf's, and their state: working, idle, needs you, stopped, blocked, ready (only the merge is left), conflicts (claimed, but it doesn't merge into main cleanly), stale (with what it's behind), merged (its branch is in main) or replied (its message to the planner waits); a stacked task says what it merges after."),
+        ("kanna task ready 3f9a", "From a task's own terminal, or naming it: all that's left is to merge, at this commit, with the tests passing. Its row says ready while it merges into main cleanly, and tasks waiting for it can start on its branch. The claim drops by itself when the branch moves."),
         ("kanna task list --all", "Every repo's tasks, naming the repo of those that aren't this one's."),
         ("kanna task list resume agent", "Only the tasks with both words in their name, first message or branch."),
         ("kanna task list task-1dfb", "The task task-1dfb, found by a start of its ID (or its agent's pane ID, like term-12); if it's done, when, and its branch if that's still there."),
@@ -121,13 +120,11 @@ pub const COMMAND: Command = Command {
                 out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
             }
             "ready" => {
-                match args.positional().as_deref() {
-                    Some("set") => {}
-                    Some("clear") => out["action"] = json!("unready"),
-                    _ => return Err(usage("task", "ready needs set or clear: kanna task ready set|clear [TASK]")),
+                let task = args.positional();
+                if let Some(old @ ("set" | "clear")) = task.as_deref() {
+                    return Err(usage("task", &format!("`kanna task ready {old}` is gone: use `kanna task ready [TASK]`. A claim drops by itself when the branch moves, so there's nothing to clear.")));
                 }
-                let task = args.positional().or_else(|| caller());
-                out["task"] = json!(task.ok_or_else(|| usage("task", "ready set and ready clear need a TASK, or run them from the task's terminal"))?);
+                out["task"] = json!(task.or_else(|| caller()).ok_or_else(|| usage("task", "ready needs a TASK, or run it from the task's terminal"))?);
             }
             "setup" => {
                 let task = args.positional().or_else(|| caller());
@@ -238,6 +235,7 @@ fn after(request: &Value, reply: &mut Value, mux: &mut Session, call: &mut Call)
             reply["twice"] = found["twice"].clone();
             reply["agent"] = found["agent"].clone();
             name_out(reply, &found["desk"]);
+            split_desks(reply, &found["claimed"]);
             if asked["repo"].is_string() {
                 keep_named(reply);
             }
@@ -263,16 +261,20 @@ fn after(request: &Value, reply: &mut Value, mux: &mut Session, call: &mut Call)
 }
 
 fn before(request: &mut Value, mux: &mut Session) -> Result<Call, Failure> {
-    let located = locate(request, mux)?;
+    let remote = crate::route::task(request, mux)?;
+    let located = locate(request, mux).map_err(|f| match &remote {
+        Some(remote) => remote.explain(f),
+        None => f,
+    })?;
     let waiting = if request["action"] == "done" { mux.call("tasks", json!({ "action": "list" })).ok() } else { None };
     let (task, shorts) = located.unzip();
-    Ok(Call { task, shorts: shorts.unwrap_or_default(), waiting, ..Call::default() })
+    Ok(Call { task, shorts: shorts.unwrap_or_default(), waiting, remote, ..Call::default() })
 }
 
 fn wire(request: &Value) -> &'static str {
     let action = request["action"].as_str().unwrap_or("");
     match action {
-        "new" | "edit" | "ready" | "unready" | "start" | "stop" | "setup" | "pick" | "shelve" | "move" | "send" | "messages" | "subscribe" | "unsubscribe" | "hearing" | "done" => "tasks",
+        "new" | "edit" | "ready" | "start" | "stop" | "setup" | "pick" | "shelve" | "move" | "send" | "messages" | "subscribe" | "unsubscribe" | "hearing" | "done" => "tasks",
         "name" if request.get("task").is_some() => "tasks",
         "name" => "rename-pane",
         "park" | "activate" | "desk" => "desk",
@@ -290,14 +292,14 @@ fn done_line(task: &Value) -> String {
 
 /// The task ID a query is, when it's only that and nothing listed matches it: a task that's done, or never was.
 pub fn lone_task(reply: &Value, query: &str) -> Option<String> {
-    let none = ["tasks", "shelf", "done"].iter().all(|list| reply[list].as_array().is_none_or(Vec::is_empty));
+    let none = ["tasks", "shelf", "otherDesks", "done"].iter().all(|list| reply[list].as_array().is_none_or(Vec::is_empty));
     let id = query.trim().to_lowercase();
     id_start(&id).filter(|_| none && !id.contains(char::is_whitespace))
 }
 
 pub fn keep_matching(reply: &mut Value, query: &str) {
     let words: Vec<&str> = query.split_whitespace().collect();
-    for list in ["tasks", "shelf", "elsewhere", "done"] {
+    for list in ["tasks", "shelf", "otherDesks", "elsewhere", "done"] {
         if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
             tasks.retain(|task| words.iter().all(|word| task_matches(task, word)));
         }
@@ -322,9 +324,29 @@ pub fn task_matches(task: &Value, word: &str) -> bool {
 }
 
 pub fn keep_named(reply: &mut Value) {
-    if let Some(tasks) = reply["tasks"].as_array_mut() {
-        tasks.retain(|task| task["task"].is_string());
+    for list in ["tasks", "otherDesks"] {
+        if let Some(tasks) = reply.get_mut(list).and_then(Value::as_array_mut) {
+            tasks.retain(|task| task["task"].is_string());
+        }
     }
+}
+
+pub fn split_desks(reply: &mut Value, claimed: &Value) {
+    let Some(tasks) = reply["tasks"].as_array_mut() else { return };
+    let (mut mine, others): (Vec<Value>, Vec<Value>) = std::mem::take(tasks).into_iter().partition(|t| t["where"]["desk"].as_str().is_none_or(|app| app == MAC_APP));
+    let others: Vec<Value> = others.into_iter().map(|mut t| {
+        t["desk"] = t["where"]["desk"].clone();
+        t
+    }).collect();
+    for task in claimed.as_array().into_iter().flatten() {
+        let mut task = task.clone();
+        task["task"] = task["id"].clone();
+        let left = task["leftAt"].as_f64().unwrap_or(0.0);
+        let at = mine.iter().position(|t| t["leftAt"].as_f64().unwrap_or(0.0) < left).unwrap_or(mine.len());
+        mine.insert(at, task);
+    }
+    reply["tasks"] = Value::Array(mine);
+    reply["otherDesks"] = Value::Array(others);
 }
 
 pub fn keep_recent_done(reply: &mut Value) {
@@ -338,12 +360,14 @@ pub fn keep_recent_done(reply: &mut Value) {
 
 pub const RECENT_DONE: usize = 5;
 
+const MAC_APP: &str = "mac";
+
 pub fn name_out(reply: &mut Value, out: &Value) {
     let Some(tasks) = reply["tasks"].as_array_mut() else { return };
     for task in tasks {
         if let Some(known) = out.as_array().into_iter().flatten().find(|o| o["pane"] == task["id"]) {
             task["task"] = known["id"].clone();
-            for key in ["repo", "merged", "replied", "ready", "stale", "bases", "branch"] {
+            for key in ["repo", "merged", "replied", "ready", "claim", "merge", "mainConflicts", "stale", "bases", "branch"] {
                 if let Some(value) = known.get(key) {
                     task[key] = value.clone();
                 }
@@ -390,13 +414,14 @@ pub fn show(request: &Value, reply: &Value) -> String {
             let waiting = reply["shelf"].as_array().cloned().unwrap_or_default();
             let done = reply["done"].as_array().cloned().unwrap_or_default();
             let elsewhere = reply["elsewhere"].as_array().cloned().unwrap_or_default();
-            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty(), request["query"].as_str()) {
+            let lent = reply["otherDesks"].as_array().cloned().unwrap_or_default();
+            if let (true, Some(query)) = (tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() && lent.is_empty(), request["query"].as_str()) {
                 return match &reply["found"] {
                     found if found["place"] == "done" => done_line(found),
                     _ => format!("no task matches \"{query}\""),
                 };
             }
-            if tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() {
+            if tasks.is_empty() && waiting.is_empty() && done.is_empty() && elsewhere.is_empty() && lent.is_empty() {
                 return "no tasks: add one with `kanna task new NAME \"FIRST MESSAGE\"`".into();
             }
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
@@ -406,8 +431,9 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 (Some(true) | None, Some("needs-you")) => "needs you".to_string(),
                 (Some(true) | None, Some("working")) => "working".to_string(),
                 _ if t["merged"] == true => "merged".to_string(),
-                _ if listed(&t["stale"]) => "stale".to_string(),
-                _ if t["ready"].is_object() => "ready".to_string(),
+                _ if t["merge"] == "stale" => "stale".to_string(),
+                _ if t["merge"] == "conflicts" => "conflicts".to_string(),
+                _ if t["merge"] == "ready" => "ready".to_string(),
                 _ if t["replied"] == true => "replied".to_string(),
                 (Some(false), _) if !ids(&t["waits"]).is_empty() || t["conflict"].is_string() => "blocked".to_string(),
                 (Some(false), _) => "stopped".to_string(),
@@ -437,7 +463,15 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 let tail: Vec<String> = [agent(t), repo(t), waits(t).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last), twice(id)].into_iter().flatten().collect();
                 [id.into(), t["name"].as_str().unwrap_or("").into(), state(t), tail.join("  ")]
             };
-            let desk: Vec<[String; 4]> = tasks.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)))).collect();
+            let desk: Vec<[String; 4]> = tasks.iter().map(|t| {
+                let mut row = row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["leftAt"].as_f64().map(|at| ago(now - at)));
+                if let Some(machine) = t["machine"].as_str() {
+                    row[2] = t["state"].as_str().unwrap_or("").into();
+                    row[3] = [row[3].as_str(), &format!("on {machine}")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("  ");
+                }
+                row
+            }).collect();
+            let lent: Vec<[String; 4]> = lent.iter().map(|t| row(t, t["task"].as_str().or(t["id"].as_str()).unwrap_or("?"), t["desk"].as_str().map(|desk| format!("on {desk}'s Desk")))).collect();
             let shelf: Vec<[String; 4]> = waiting.iter().map(|t| row(t, t["id"].as_str().unwrap_or("?"), None)).collect();
             let others: Vec<[String; 4]> = elsewhere.iter().map(|t| {
                 let mut row = row(t, t["id"].as_str().unwrap_or("?"), t["machine"].as_str().map(|m| format!("on {m}")));
@@ -448,7 +482,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 let tail: Vec<String> = [agent(t), repo(t), t["doneAt"].as_f64().map(|at| format!("done {}", ago(now - at)))].into_iter().flatten().collect();
                 [t["id"].as_str().unwrap_or("?").into(), t["name"].as_str().unwrap_or("").into(), String::new(), tail.join("  ")]
             }).collect();
-            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).chain(others.iter()).chain(finished.iter()).collect();
+            let all: Vec<&[String; 4]> = desk.iter().chain(shelf.iter()).chain(lent.iter()).chain(others.iter()).chain(finished.iter()).collect();
             let width = |i: usize| all.iter().map(|r| r[i].chars().count()).max().unwrap_or(0);
             let line = |r: &[String; 4]| format!("{:w0$}  {:w1$}  {:w2$}  {}", r[0], r[1], r[2], r[3], w0 = width(0), w1 = width(1), w2 = width(2)).trim_end().to_string();
             let section = |head: &str, rows: &[[String; 4]]| match (rows.is_empty(), request["query"].is_string()) {
@@ -458,7 +492,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
             };
             let more = reply["moreDone"].as_u64().map(|n| format!("\n… {n} more done: add words to search them"));
             let finished = Some(&finished).filter(|_| request["done"] == true).and_then(|rows| section("Done", rows)).map(|s| s + more.as_deref().unwrap_or(""));
-            [section("Desk", &desk), section("Shelf", &shelf), Some(&others).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other machines", rows)), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
+            [section("Desk", &desk), section("Shelf", &shelf), Some(&lent).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other Desks", rows)), Some(&others).filter(|rows| !rows.is_empty()).and_then(|rows| section("Other machines", rows)), finished].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
         }
         Some("park") if reply["parked"] == Value::Bool(true) => format!("parked {id}: {} shows the Desk view, and {id} stays active", reply["desk"].as_str().unwrap_or("its Desk")),
         Some("park") => format!("{id} isn't shown: its Desk shows the Desk view already"),
@@ -483,8 +517,20 @@ pub fn show(request: &Value, reply: &Value) -> String {
             tilde(reply["folder"].as_str().unwrap_or("?")),
             reply["branch"].as_str().map_or(String::new(), |b| format!(" ({b})"))
         ),
-        Some("ready") => format!("{} is ready at {}{}{}", reply["task"]["id"].as_str().unwrap_or("?"), reply["task"]["ready"]["head"].as_str().map_or("?", |h| &h[..h.len().min(9)]), reply["task"]["ready"]["branch"].as_str().filter(|b| !b.is_empty()).map_or(String::new(), |b| format!(" ({b})")), freed_lines(reply)),
-        Some("unready") => format!("{} isn't ready", reply["task"]["id"].as_str().unwrap_or("?")),
+        Some("ready") => {
+            let task = &reply["task"];
+            let id = task["id"].as_str().unwrap_or("?");
+            let head = task["claim"]["head"].as_str().map_or("?", |h| &h[..h.len().min(9)]);
+            let at = format!("{head}{}", task["claim"]["branch"].as_str().filter(|b| !b.is_empty()).map_or(String::new(), |b| format!(" ({b})")));
+            let files: Vec<&str> = task["mainConflicts"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let said = match task["merge"].as_str() {
+                Some("ready") => format!("{id} is ready at {at}"),
+                Some("conflicts") => format!("{id} is claimed at {at}, but it conflicts with main in {}: it shows conflicts until you merge main and claim again", files.join(", ")),
+                Some("after") => format!("{id} is claimed at {at}: it merges after {}", names(&task["bases"])),
+                _ => format!("{id} is claimed at {at}: it shows ready once Kanna has checked it merges into main cleanly"),
+            };
+            said + &freed_lines(reply)
+        }
         Some("setup") if reply["tab"].is_string() => format!("{id}'s setup runs again in {} (a Setup tab)", reply["pane"].as_str().unwrap_or("?")),
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
         Some("move") if reply["waiting"] == true => format!("{} moves to {} when it's reachable ({})", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["why"].as_str().unwrap_or("away")),
@@ -593,11 +639,13 @@ mod tests {
     use crate::commands::tests::parse;
 
     #[test]
-    fn ready_set_and_clear_name_a_task_or_the_one_they_run_in() {
-        assert_eq!(parse("kanna task ready set 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
-        assert_eq!(parse("kanna task ready clear 3f9a").unwrap().1, json!({ "action": "unready", "task": "3f9a" }));
+    fn ready_names_a_task_or_the_one_it_runs_in_and_the_old_forms_say_so() {
+        assert_eq!(parse("kanna task ready 3f9a").unwrap().1, json!({ "action": "ready", "task": "3f9a" }));
         assert!(parse("kanna task ready").is_err(), "outside a task's terminal it needs a TASK");
-        assert!(parse("kanna task ready 3f9a").is_err(), "it says set or clear");
+        for old in ["set", "clear"] {
+            let error = parse(&format!("kanna task ready {old} 3f9a")).unwrap_err();
+            assert!(format!("{error:?}").contains("use `kanna task ready [TASK]`"), "{error:?}");
+        }
     }
 }
 
@@ -607,21 +655,26 @@ mod blocked_tests {
     use serde_json::json;
 
     #[test]
-    fn a_stacked_task_lists_as_ready_or_stale_and_says_what_it_merges_after_or_is_behind() {
+    fn a_task_lists_as_ready_conflicts_or_stale_and_a_stacked_one_says_what_it_merges_after_or_is_behind() {
         let mark = json!({ "head": "0123456789abcdef", "branch": "screenshot", "at": 1 });
         let shelf = json!([
-            { "id": "t1", "name": "A", "repo": "/r", "running": false, "waits": [], "ready": mark, "stale": [], "bases": [] },
-            { "id": "t2", "name": "B", "repo": "/r", "running": false, "waits": [], "ready": null, "stale": [{ "id": "t1", "name": "A" }], "bases": [{ "id": "t1", "name": "A" }] },
-            { "id": "t3", "name": "C", "repo": "/r", "running": false, "waits": [], "ready": mark, "stale": [], "bases": [{ "id": "t2", "name": "B" }] },
-            { "id": "t4", "name": "D", "repo": "/r", "running": false, "waits": [], "conflict": "merging t1's branch a conflicts" }
+            { "id": "t1", "name": "A", "repo": "/r", "running": false, "waits": [], "claim": mark, "ready": true, "merge": "ready", "stale": [], "bases": [] },
+            { "id": "t2", "name": "B", "repo": "/r", "running": false, "waits": [], "claim": mark, "ready": false, "merge": "stale", "stale": [{ "id": "t1", "name": "A" }], "bases": [{ "id": "t1", "name": "A" }] },
+            { "id": "t3", "name": "C", "repo": "/r", "running": false, "waits": [], "claim": mark, "ready": false, "merge": "after", "stale": [], "bases": [{ "id": "t2", "name": "B" }] },
+            { "id": "t4", "name": "D", "repo": "/r", "running": false, "waits": [], "conflict": "merging t1's branch a conflicts" },
+            { "id": "t5", "name": "E", "repo": "/r", "running": false, "waits": [], "claim": mark, "ready": false, "merge": "conflicts", "mainConflicts": ["f"], "stale": [], "bases": [] },
+            { "id": "t6", "name": "F", "repo": "/r", "running": false, "waits": [], "claim": null, "ready": false, "merge": null, "stale": [], "bases": [] }
         ]);
         let text = show(&json!({ "action": "list", "repo": "/r" }), &json!({ "tasks": [], "shelf": shelf }));
-        assert_eq!(text, "Desk\n(empty)\n\nShelf\nt1  A  ready\nt2  B  stale    behind \"A\"\nt3  C  ready    merges after \"B\"\nt4  D  blocked  its blockers' branches conflict");
-        let ready = show(&json!({ "action": "ready" }), &json!({ "task": { "id": "t1", "ready": mark }, "freed": [{ "id": "t2", "name": "B" }] }));
+        assert_eq!(text, "Desk\n(empty)\n\nShelf\nt1  A  ready\nt2  B  stale      behind \"A\"\nt3  C  stopped    merges after \"B\"\nt4  D  blocked    its blockers' branches conflict\nt5  E  conflicts\nt6  F  stopped");
+        let ready = show(&json!({ "action": "ready" }), &json!({ "task": { "id": "t1", "claim": mark, "merge": "ready" }, "freed": [{ "id": "t2", "name": "B" }] }));
         assert_eq!(ready, "t1 is ready at 012345678 (screenshot)\nt2 \"B\" can start now: nothing it waits for is left");
-        assert_eq!(show(&json!({ "action": "unready" }), &json!({ "task": { "id": "t1" } })), "t1 isn't ready");
+        let after = show(&json!({ "action": "ready" }), &json!({ "task": { "id": "t3", "claim": mark, "merge": "after", "bases": [{ "id": "t2", "name": "B" }] } }));
+        assert_eq!(after, "t3 is claimed at 012345678 (screenshot): it merges after \"B\"");
+        let conflicts = show(&json!({ "action": "ready" }), &json!({ "task": { "id": "t5", "claim": mark, "merge": "conflicts", "mainConflicts": ["f", "g"] } }));
+        assert!(conflicts.contains("conflicts with main in f, g"), "{conflicts}");
         let mut desk = json!({ "tasks": [{ "id": "p1" }] });
-        name_out(&mut desk, &json!([{ "id": "t3", "pane": "p1", "ready": mark, "stale": [], "bases": [{ "id": "t2", "name": "B" }] }]));
+        name_out(&mut desk, &json!([{ "id": "t3", "pane": "p1", "claim": mark, "merge": "after", "stale": [], "bases": [{ "id": "t2", "name": "B" }] }]));
         assert_eq!(desk["tasks"][0]["bases"][0]["name"], "B", "a Desk task's row gets its stack too");
     }
 
@@ -680,5 +733,28 @@ mod list_tests {
         name_out(&mut reply, &json!([{ "id": "t1", "pane": "p1", "repo": "/r", "merged": true, "replied": false }]));
         keep_named(&mut reply);
         assert_eq!(reply["tasks"], json!([{ "id": "p1", "task": "t1", "repo": "/r", "merged": true, "replied": false }]));
+    }
+
+    #[test]
+    fn the_desk_is_this_app_s_wherever_its_tasks_run_and_other_apps_desks_say_whose() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        let mut reply = json!({
+            "agent": "claude",
+            "tasks": [
+                { "id": "p1", "task": "t1", "name": "Newest here", "running": true, "status": "idle", "where": { "desk": "mac" }, "leftAt": now - 60.0 },
+                { "id": "p2", "task": "t2", "name": "Lent", "running": true, "status": "working", "where": { "desk": "mbp" }, "leftAt": now - 90.0 },
+                { "id": "p3", "task": "t3", "name": "Oldest here", "running": true, "status": "idle", "where": { "desk": "mac" }, "leftAt": now - 600.0 }
+            ],
+            "shelf": []
+        });
+        split_desks(&mut reply, &json!([{ "id": "t4", "name": "On the Studio", "state": "started", "machine": "studio", "leftAt": now - 300.0 }]));
+        let order: Vec<&str> = reply["tasks"].as_array().unwrap().iter().map(|t| t["task"].as_str().unwrap()).collect();
+        assert_eq!(order, ["t1", "t4", "t3"], "the Desk's order, last claimed first, wherever each runs");
+        assert_eq!(reply["otherDesks"][0]["desk"], "mbp");
+        let text = show(&json!({ "action": "list" }), &reply);
+        assert_eq!(
+            text,
+            "Desk\nt1  Newest here    idle     1m ago\nt4  On the Studio  started  5m ago  on studio\nt3  Oldest here    idle     10m ago\n\nShelf\n(empty)\n\nOther Desks\nt2  Lent           working  on mbp's Desk"
+        );
     }
 }

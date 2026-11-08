@@ -91,7 +91,7 @@ struct ChatItem: Identifiable {
 }
 
 enum Status {
-    case working, needs, idle, ready, stale, stopped, waiting, blocked
+    case working, needs, idle, ready, conflicts, stale, stopped, waiting, blocked
 
     init(wire: String) {
         switch wire {
@@ -99,6 +99,7 @@ enum Status {
         case "needs": self = .needs
         case "idle": self = .idle
         case "ready": self = .ready
+        case "conflicts": self = .conflicts
         case "stale": self = .stale
         case "waiting": self = .waiting
         case "blocked": self = .blocked
