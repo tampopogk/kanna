@@ -193,6 +193,7 @@ def stage_prompt(args):
 
 
 def stage(id, prompt):
+    saved(id)
     reported("working")
     said = []
     for line in prompt.splitlines():
