@@ -12,6 +12,7 @@ mod builds;
 mod guests;
 mod instance_move;
 mod tasks;
+mod test_results;
 mod db;
 mod desk_news;
 mod host;

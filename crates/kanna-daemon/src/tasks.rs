@@ -28,7 +28,7 @@ mod phone;
 pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
 
-const WORKTREES: &str = ".kanna-worktrees";
+pub const WORKTREES: &str = ".kanna-worktrees";
 
 const SCRATCH: &str = ".kanna/tmp";
 

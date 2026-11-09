@@ -329,6 +329,15 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         doc text not null default '{}' check (json_valid(doc))
     );
     create index merge_queue_by_repo on merge_queue (repo, state, queued_at);
+"), Step::Sql("
+    create table test_results (
+        repo text not null,
+        commit_id text not null,
+        command text not null,
+        at real not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        primary key (repo, commit_id, command)
+    );
 ")];
 
 pub const RECENT: usize = 10;
@@ -1554,6 +1563,19 @@ impl Db {
         let mut statement = self.conn.prepare(&format!("select id, repo, task, head, state, queued_at, ended_at, run, doc from merge_queue {filter} order by queued_at, id"))?;
         let rows = statement.query_map([], |r| Ok(QueueRow { id: r.get(0)?, repo: r.get(1)?, task: r.get(2)?, head: r.get(3)?, state: r.get(4)?, queued_at: r.get(5)?, ended_at: r.get(6)?, run: r.get(7)?, doc: doc_of(r.get(8)?) }))?;
         rows.collect()
+    }
+
+    pub fn test_results(&self, repo: &str, commit: &str, command: &str) -> rusqlite::Result<Option<Value>> {
+        self.conn.query_row("select doc from test_results where repo = ?1 and commit_id = ?2 and command = ?3", params![repo, commit, command], |r| Ok(doc_of(r.get(0)?))).optional()
+    }
+
+    pub fn put_test_results(&self, repo: &str, commit: &str, command: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn
+            .execute(
+                "insert into test_results (repo, commit_id, command, at, doc) values (?1, ?2, ?3, ?4, ?5) on conflict (repo, commit_id, command) do update set at = excluded.at, doc = excluded.doc",
+                params![repo, commit, command, now(), doc.to_string()],
+            )
+            .map(|_| ())
     }
 
     pub fn new_run_id(&self) -> rusqlite::Result<String> {
