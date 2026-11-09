@@ -2095,6 +2095,15 @@ impl Tasks {
         }
     }
 
+    pub fn close_ended_planners(&self) {
+        let Some(core) = self.core.upgrade() else { return };
+        let windowless = self.windowless.borrow().as_ref().map_or(vec![], |panes| panes());
+        for pane in self.planners().into_iter().filter(|pane| !windowless.contains(pane) && !alive(&core, pane)) {
+            log!("kanna-daemon: the planner in {pane} has no terminal running, so its Desk gets a new planner");
+            core.handle(json!({ "cmd": "close", "args": { "task": pane } }), |_| {});
+        }
+    }
+
     pub fn status(self: &Rc<Self>, pane: &str, status: Option<&str>, ended: bool) {
         let now = Instant::now();
         if let Some(status) = status.filter(|_| !self.ending(pane)) {

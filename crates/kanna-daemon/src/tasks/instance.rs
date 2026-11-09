@@ -10,6 +10,7 @@ type KeeperMove = Box<dyn Fn(&Path) -> Result<(), String>>;
 pub struct MoveHooks {
     pub socket: PathBuf,
     pub terminals: Box<dyn Fn() -> usize>,
+    pub keeper_moves: Box<dyn Fn() -> Result<(), String>>,
     pub close_endpoint: Box<dyn Fn()>,
     pub stop_terminals: Box<dyn Fn()>,
     pub move_keeper: KeeperMove,
@@ -71,6 +72,9 @@ impl Tasks {
             if im::keeper_running(folder) {
                 refusals.push(KmuxError::new("not_empty", format!("{shown}'s keeper still holds terminals: close them in {shown}'s Kanna first; two keepers don't merge")));
             }
+        }
+        if let Some(Err(why)) = self.move_hooks.borrow().as_ref().map(|hooks| (hooks.keeper_moves)()) {
+            refusals.push(KmuxError::new("old_keeper", why));
         }
         let transfers: Vec<String> = [moving::OUT, "in"].iter().flat_map(|role| crate::transfer::under_way(&self.db, role)).map(|t| t.task).collect();
         if !transfers.is_empty() {
