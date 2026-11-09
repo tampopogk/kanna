@@ -2,7 +2,7 @@
 
 **Status:** built · **Builds on:** [build channels](build-channels.md), [build architectures](build-architectures.md) · **Why:** people download Kanna as a signed, notarized DMG from GitHub, so one command has to take main to a published release
 
-`scripts/release.sh [--major|--minor|--patch | VERSION] [--staging] [--dry-run]` builds Kanna for arm64 and x86_64, signs and notarizes one DMG per architecture, tags the source and publishes a GitHub Release on **tampopogk/kanna**, the repo that holds both the source and the downloads. It's Kanna v2's `ship.sh` and `mirror-release.sh` without the updater, the appcast or the soak and promote gates.
+`scripts/release.sh [--major|--minor|--patch | VERSION] [--staging] [--dry-run]` builds Kanna for arm64 and x86_64, signs and notarizes one DMG per architecture, tags the source and publishes a GitHub Release on **tampopogk/kanna**, the repo that holds both the source and the downloads. It's Kanna v2's `ship.sh` and `mirror-release.sh` without the soak and promote gates. It also signs the DMGs for the updater and publishes the update feeds last ([auto update](auto-update.md#7-publishing)).
 
 - [The flow](#the-flow)
 - [Preflight](#preflight)
@@ -11,7 +11,6 @@
 - [Signing and the DMG](#signing-and-the-dmg)
 - [Publishing](#publishing)
 - [The staging channel](#the-staging-channel)
-- [Never latest.json](#never-latestjson)
 - [Glossary](#glossary)
 
 ## The flow
@@ -48,13 +47,14 @@ Every check runs before any build, and each failure says what to do.
 | A Developer ID identity | `security find-identity -v -p codesigning` has a "Developer ID Application" identity; it signs by its hash |
 | The notary credential works | `~/.kanna/.env.release.local` (shared with Kanna v2) names `APPLE_KEYCHAIN_PROFILE` and `APPLE_KEYCHAIN_PATH`; `xcrun notarytool history` with them succeeds |
 | gh and claude | `gh auth status` succeeds; `claude` is on PATH |
+| The update key and feeds | the update key file is there and matches the public key in `scripts/env.sh`; gh can push to `tampopogk/kanna-web`; the build number is above each published feed's |
 
 - **`--dry-run` only warns** about the first two, so an unmerged branch can be dry-run.
 - **No secrets:** the env file is read for those two keys only, never sourced or printed; the credential stays in its keychain.
 
 ## Versions
 
-The version comes from the tag: there are no version-bump commits.
+The last `v*` tag is the one source of the version: there are no version-bump commits, and nothing reads `Cargo.toml`'s `version`, which stays only because Cargo needs one.
 
 ```mermaid
 flowchart LR
@@ -66,9 +66,11 @@ flowchart LR
 ```
 
 - **The first release is explicit:** with no `v*` tag yet, a bump flag is an error; `scripts/release.sh 4.0.0` cut Kanna's first.
-- **Into the build:** release.sh sets `KANNA_VERSION`; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part.
+- **Into a release build:** release.sh sets `KANNA_VERSION` to the exact version; `crates/kanna-build` checks it (`X.Y.Z` or `X.Y.Z-PRERELEASE`) and bakes it in, so `kanna --version` prints it. The Info.plist's `CFBundleShortVersionString` is its `X.Y.Z` part, and `KannaVersion` is all of it, which the About panel shows.
+- **Into every other build:** without `KANNA_VERSION`, `crates/kanna-build/build.rs` reads the repo's highest `vX.Y.Z` tag, skipping staging tags as release.sh does, and the build is `X.Y.Z-dev`. A plain `cargo build` gets it too. The tag need not be an ancestor of HEAD, so every checkout of a repo agrees. It rebuilds when a tag lands, from any worktree: it watches `refs/tags` and `packed-refs` in the repo's common git folder.
+- **Scripts ask `kanna-build`:** whatever can't read the baked-in version runs the `kanna-build` binary, which prints `version=`: `scripts/build-kanna-app.sh`, `scripts/build-linux.sh` and `scripts/ios-version.sh` (the last two through `kanna_version` in `scripts/env.sh`), and `scripts/server-setup.sh`.
+- **No tag, no build:** with no `vX.Y.Z` tag to read (a shallow clone, say) the build fails and says to run `git fetch --tags` or set `KANNA_VERSION`, rather than show a made-up number. `kanna build` sends the version with its job, since a build Mac's mirror has no tags.
 - **The build number** (`CFBundleVersion`) is `git rev-list --count HEAD`, in every build.
-- **Without `KANNA_VERSION`** a build is the workspace's version, 0.1.0, as before.
 - **Re-running after a failed publish:** if the tag is already on origin at HEAD, release.sh carries on with that tag's release; at another commit it stops.
 
 ## Stripping
@@ -79,7 +81,7 @@ The workspace's release profile keeps line tables (`debug = "line-tables-only"`,
 |---|---|
 | `dsymutil BINARY -o dSYMs/ARCH/<path in Contents>.dSYM` | file:line for that exact build, not in the DMG |
 | `strip -S BINARY` | drops the debug map; the symbol table stays, so crash reports name functions as before; a failure stops the release with strip's message |
-| `dsymutil -s` has no `N_OSO` | or the release stops |
+| `dsymutil -s` lists no entry of stab type `N_OSO` | or the release stops; the check reads the `n_type` column, since a C++ symbol name can contain the letters `N_OSO` |
 
 Each architecture's dSYMs are zipped as `Kanna-X.Y.Z-ARCH-dSYMs.zip` and attached to the GitHub Release beside its DMG, so a crash report can be symbolicated after `target/` is gone. They add line numbers only: the shipped binaries already carry the symbol names.
 
@@ -95,7 +97,7 @@ flowchart LR
     N --> S["stapler staple"]
 ```
 
-- **Inside out, no `--deep`:** every Mach-O in `Contents/Helpers` first, then the app, through `kanna_sign_app` (`scripts/env.sh`), which dev builds use too ([privacy prompts](privacy-prompts.md#4-how-dev-builds-are-signed)); a Mach-O anywhere else stops the release, since it would go unsigned.
+- **Inside out, no `--deep`:** every Mach-O in `Contents/Helpers` first, then Sparkle.framework's `Autoupdate`, `Updater.app` and the framework, then the app, through `kanna_sign_app` (`scripts/env.sh`), which dev builds use too ([privacy prompts](privacy-prompts.md#4-how-dev-builds-are-signed)); a Mach-O outside those stops the release, since it would go unsigned.
 - **Explicit identifiers:** the app is its bundle ID (`dev.kanna.app`), each helper `BUNDLE_ID.HELPER` (`dev.kanna.app.kanna-keeper`), not what codesign makes up from the file name.
 - **Entitlements** (`apps/kanna/Resources/Kanna.entitlements`), on the app only. Programs in Kanna's terminals are attributed to Kanna by macOS privacy controls, and under the hardened runtime they're refused without an entitlement:
 
@@ -121,10 +123,6 @@ The tag and the release are both on **tampopogk/kanna**, which origin must point
 ## The staging channel
 
 `--staging` builds the staging channel (Kanna Staging, [build channels](build-channels.md)) and publishes a GitHub **pre-release** `vX.Y.Z-staging.N`: `X.Y.Z` is the version as above, and `N` is one past the highest `vX.Y.Z-staging.*` tag on origin. The DMGs are `Kanna-Staging-X.Y.Z-staging.N-arm64.dmg` and `…-x86_64.dmg`. There are no soak or promote gates: a production release is its own run.
-
-## Never latest.json
-
-Kanna v2 installs check `tampopogk/kanna/releases/latest/download/latest.json` for updates. That path now lands on Kanna v4's releases, so **no release may ever have an asset named `latest.json`**: v2 would install whatever it pointed at. release.sh refuses one before publishing and checks the published release's assets after.
 
 ## Glossary
 

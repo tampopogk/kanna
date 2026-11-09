@@ -1,4 +1,5 @@
-use crate::db::{self, Answer, Db, Life, Sample};
+use crate::agent_stats;
+use crate::db::{self, AgentRow, Answer, Db, Life, Sample};
 use crate::quality;
 use crate::tasks::git;
 use crate::Event;
@@ -194,6 +195,8 @@ pub struct Facts {
     pub answers: Vec<Answer>,
     pub samples: Vec<Sample>,
     pub lives: Vec<Life>,
+    pub agents: Vec<AgentRow>,
+    pub now: f64,
     pub sampling: Option<String>,
     pub coverage: Option<String>,
 }
@@ -214,7 +217,7 @@ fn percent(right: usize, all: usize) -> Value {
     }
 }
 
-fn median(values: &mut [f64]) -> Option<f64> {
+pub fn median(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -322,6 +325,38 @@ fn main_section(facts: &Facts) -> Value {
     section("main", "Main", "what landed", vec![count_tile("commits", "Commits", of("commits"), "commits"), count_tile("landed", "Tasks landed", of("merged"), "merges into main")])
 }
 
+fn open_at(lives: &[Life], at: f64) -> f64 {
+    lives.iter().filter(|life| life.made < at && life.done.is_none_or(|done| done >= at)).count() as f64
+}
+
+fn open_tile(facts: &Facts, made: &[f64], done: &[f64]) -> Value {
+    let first = facts.today - DAYS + 1;
+    let open: Vec<f64> = (first..=facts.today).map(|day| open_at(&facts.lives, day_start(day + 1))).collect();
+    let today = open.last().copied().unwrap_or(0.0);
+    let change = today - open_at(&facts.lives, day_start(first));
+    let note = if change > 0.0 {
+        format!("+{change} in 30 days")
+    } else if change < 0.0 {
+        format!("\u{2212}{} in 30 days", -change)
+    } else {
+        "no change in 30 days".to_string()
+    };
+    tile("open", "Open", json!(today), None, note, 6, json!({ "kind": "flow", "values": open, "made": made, "done": done, "what": "open at the end of the day" }))
+}
+
+pub fn median_line(points: &[(i64, f64, &str)]) -> Vec<Value> {
+    (0..DAYS)
+        .map(|day| {
+            let mut near: Vec<f64> = points.iter().filter(|(d, _, _)| *d > day - MEDIAN_DAYS && *d <= day).map(|(_, s, _)| *s).collect();
+            median(&mut near).map_or(Value::Null, |m| json!(m.round()))
+        })
+        .collect()
+}
+
+pub fn dots(points: &[(i64, f64, &str)], line: Vec<Value>, what: &str) -> Value {
+    json!({ "kind": "dots", "points": points.iter().map(|(day, seconds, name)| json!({ "day": day, "value": seconds.round(), "label": name })).collect::<Vec<_>>(), "line": line, "what": what })
+}
+
 fn tasks_section(facts: &Facts) -> Value {
     let first = facts.today - DAYS + 1;
     let at = |pick: fn(&Life) -> Option<f64>| per_day(first, facts.lives.iter().filter_map(pick).map(|at| (at, 1.0)));
@@ -334,12 +369,8 @@ fn tasks_section(facts: &Facts) -> Value {
             (0..DAYS).contains(&day).then(|| (day, (done - life.made).max(0.0), life.name.as_str()))
         })
         .collect();
-    let line: Vec<Value> = (0..DAYS)
-        .map(|day| {
-            let mut near: Vec<f64> = points.iter().filter(|(d, _, _)| *d > day - MEDIAN_DAYS && *d <= day).map(|(_, s, _)| *s).collect();
-            median(&mut near).map_or(Value::Null, |m| json!(m.round()))
-        })
-        .collect();
+    let made = at(|l| Some(l.made));
+    let ended = at(|l| l.done);
     let mut all: Vec<f64> = points.iter().map(|(_, s, _)| *s).collect();
     let middle = median(&mut all);
     let lead = tile(
@@ -349,13 +380,13 @@ fn tasks_section(facts: &Facts) -> Value {
         Some("s"),
         if points.is_empty() { String::new() } else { format!("median of {}", points.len()) },
         4,
-        json!({ "kind": "dots", "points": points.iter().map(|(day, seconds, name)| json!({ "day": day, "value": seconds.round(), "label": name })).collect::<Vec<_>>(), "line": line, "what": "7-day median" }),
+        dots(&points, median_line(&points), "7-day median"),
     );
     section(
         "tasks",
         "Tasks",
         "from the Desk's and the Shelf's events",
-        vec![count_tile("made", "Made", at(|l| Some(l.made)), "tasks made"), count_tile("started", "Started", at(|l| l.started), "tasks started"), count_tile("ended", "Ended", at(|l| l.done), "tasks ended"), lead],
+        vec![open_tile(facts, &made, &ended), count_tile("made", "Made", made, "tasks made"), count_tile("started", "Started", at(|l| l.started), "tasks started"), count_tile("ended", "Ended", ended, "tasks ended"), lead],
     )
 }
 
@@ -364,7 +395,7 @@ pub fn report(project: &str, facts: &Facts) -> Map {
     Map::from_iter([
         ("project".to_string(), json!(project)),
         ("days".to_string(), json!(days)),
-        ("sections".to_string(), json!([quiz(facts), main_section(facts), tasks_section(facts), quality::code_section(facts)])),
+        ("sections".to_string(), json!([quiz(facts), main_section(facts), tasks_section(facts), agent_stats::section_of(facts), quality::code_section(facts)])),
     ])
 }
 
@@ -477,6 +508,8 @@ impl Stats {
             answers: self.db.answers(repo, false).map_err(|e| failed("read the quiz answers", e))?,
             samples: self.db.samples(repo, since).map_err(|e| failed("read the samples", e))?,
             lives: self.db.lives(repo, since).map_err(|e| failed("read the task events", e))?,
+            agents: self.db.agent_rows(repo, since).map_err(|e| failed("read the agents' status changes", e))?,
+            now: now(),
             sampling: self.running.borrow().get(repo).cloned().flatten(),
             coverage: self.coverage.status(repo),
         };
@@ -507,7 +540,7 @@ pub mod tests {
     }
 
     pub fn facts(today: i64, answers: Vec<Answer>, samples: Vec<Sample>, lives: Vec<Life>) -> Facts {
-        Facts { today, answers, samples, lives, sampling: None, coverage: None }
+        Facts { today, answers, samples, lives, agents: vec![], now: day_start(today + 1), sampling: None, coverage: None }
     }
 
     pub fn collect(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>) -> Vec<Sample> {
@@ -522,6 +555,117 @@ pub mod tests {
 
     fn tile_of(report: &Map, section: &str, id: &str) -> Value {
         tiles(report, section).into_iter().find(|t| t["id"] == id).unwrap()
+    }
+
+    fn row(task: &str, at: f64, what: &str, status: Option<&str>) -> AgentRow {
+        AgentRow { task: task.into(), name: format!("{task} name"), at, what: what.into(), status: status.map(String::from) }
+    }
+
+    fn said(task: &str, at: f64, status: &str) -> AgentRow {
+        row(task, at, "status", Some(status))
+    }
+
+    fn agents(today: i64, rows: Vec<AgentRow>) -> Map {
+        let mut facts = facts(today, vec![], vec![], vec![]);
+        facts.agents = rows;
+        facts.now = noon(today) + 24.0 * 60.0;
+        report("/r", &facts)
+    }
+
+    #[test]
+    fn the_agents_section_comes_from_a_fixed_series_of_status_changes() {
+        let today = local_day(now());
+        let (a, b) = (noon(today - 1), noon(today));
+        const MIN: f64 = 60.0;
+        let report = agents(
+            today,
+            vec![
+                said("t1", a, "working"),
+                said("t1", a + 10.0 * MIN, "needs-you"),
+                said("t1", a + 20.0 * MIN, "working"),
+                said("t1", a + 50.0 * MIN, "idle"),
+                row("t1", a + 80.0 * MIN, "looked", None),
+                said("t2", b, "working"),
+                said("t2", b + 6.0 * MIN, "idle"),
+                row("t2", b + 6.0 * MIN + 1.0, "looked", None),
+                row("t2", b + 7.0 * MIN, "stopped", None),
+                row("t1", b, "planner", None),
+                row("t2", b + 7.0 * MIN, "done", None),
+            ],
+        );
+        let tile = |id: &str| tile_of(&report, "agents", id);
+        assert_eq!(tile("agent-time")["value"], json!(0.77), "10m + 30m + 6m");
+        assert_eq!(tile("agent-time")["unit"], json!("h"));
+        assert_eq!(tile("agent-time")["note"], json!("in 30 days · 6m today"));
+        assert_eq!(tile("agent-time")["chart"]["values"].as_array().unwrap()[29], json!(0.1));
+        assert_eq!(tile("waiting")["value"], json!(0.17), "10m");
+        assert_eq!(tile("answer")["value"], json!(600.0));
+        assert_eq!(tile("answer")["note"], json!("median of 1"));
+        assert_eq!(tile("unread")["value"], json!(1800.0), "the one looked at a second after it finished was being watched");
+        assert_eq!(tile("turns")["value"], json!(1.5));
+        assert_eq!(tile("turns")["unit"], json!("x"));
+        assert_eq!(tile("turns")["note"], json!("3 turns · 2 tasks"));
+        assert_eq!(tile("turn-length")["value"], json!(600.0), "6m, 10m, 30m");
+        assert_eq!(tile("turn-length")["note"], json!("median of 3"));
+    }
+
+    #[test]
+    fn a_restart_in_the_middle_of_a_turn_leaves_no_gap() {
+        let today = local_day(now());
+        let at = noon(today);
+        let report = agents(today, vec![said("t1", at, "working"), said("t1", at + 600.0, "working"), said("t1", at + 1200.0, "idle")]);
+        assert_eq!(tile_of(&report, "agents", "agent-time")["value"], json!(0.33), "the repeated working is one span");
+        assert_eq!(tile_of(&report, "agents", "turns")["note"], json!("1 turn · 1 task"));
+    }
+
+    #[test]
+    fn a_stopped_task_at_needs_you_waits_until_it_is_picked_or_started() {
+        let today = local_day(now());
+        let at = noon(today - 2);
+        const HOUR: f64 = 3600.0;
+        let picked = agents(today, vec![said("t1", at, "working"), said("t1", at + HOUR, "needs-you"), said("t1", at + HOUR + 1.0, "exited"), row("t1", at + HOUR + 1.0, "stopped", None), row("t1", at + 4.0 * HOUR, "picked", None)]);
+        assert_eq!(tile_of(&picked, "agents", "waiting")["value"], json!(3.0));
+        assert_eq!(tile_of(&picked, "agents", "answer")["value"], json!(10800.0));
+        let started = agents(today, vec![said("t1", at, "needs-you"), row("t1", at + 1.0, "stopped", None), row("t1", at + HOUR, "started", None)]);
+        assert_eq!(tile_of(&started, "agents", "answer")["note"], json!("median of 1"));
+        let waiting = agents(today, vec![said("t1", at, "needs-you"), said("t1", at + 1.0, "exited")]);
+        assert_eq!(tile_of(&waiting, "agents", "waiting")["value"], json!((facts_end(today) - at).div_euclid(36.0) / 100.0));
+        assert_eq!(tile_of(&waiting, "agents", "answer")["value"], Value::Null);
+        assert_eq!(tile_of(&waiting, "agents", "answer")["note"], json!("1 waiting now"));
+        let running = agents(today, vec![said("t1", at, "needs-you"), row("t1", at + HOUR, "picked", None)]);
+        assert_eq!(tile_of(&running, "agents", "answer")["note"], json!("1 waiting now"), "picking a task that's still running isn't an answer");
+        let done = agents(today, vec![said("t1", at, "needs-you"), said("t1", at + 1.0, "exited"), row("t1", at + HOUR, "done", None)]);
+        assert_eq!(tile_of(&done, "agents", "waiting")["value"], json!(1.0));
+        assert_eq!(tile_of(&done, "agents", "answer")["note"], json!(""), "done without an answer: it counts as time, never as an answer");
+    }
+
+    fn facts_end(today: i64) -> f64 {
+        noon(today) + 24.0 * 60.0
+    }
+
+    #[test]
+    fn finished_work_a_stopped_agent_left_stays_unread_until_someone_looks() {
+        let today = local_day(now());
+        let at = noon(today);
+        let rows = vec![said("t1", at, "working"), said("t1", at + 60.0, "idle"), said("t1", at + 90.0, "exited"), row("t1", at + 90.0, "stopped", None)];
+        let open = agents(today, rows.clone());
+        assert_eq!(tile_of(&open, "agents", "unread")["note"], json!("1 not looked at yet"));
+        let mut picked = rows;
+        picked.push(row("t1", at + 660.0, "picked", None));
+        assert_eq!(tile_of(&agents(today, picked), "agents", "unread")["value"], json!(600.0));
+    }
+
+    #[test]
+    fn agent_time_splits_at_midnight_and_a_project_with_no_status_says_so() {
+        let today = local_day(now());
+        let midnight = day_start(today);
+        let report = agents(today, vec![said("t1", midnight - 1800.0, "working"), said("t1", midnight + 3600.0, "idle")]);
+        let values = tile_of(&report, "agents", "agent-time")["chart"]["values"].as_array().unwrap().clone();
+        assert_eq!((values[28].clone(), values[29].clone()), (json!(0.5), json!(1.0)));
+        let empty = agents(today, vec![row("t1", midnight, "started", None)]);
+        let section = empty["sections"].as_array().unwrap().iter().find(|s| s["id"] == "agents").unwrap().clone();
+        assert_eq!(section["tiles"], json!([]));
+        assert!(section["empty"].as_str().unwrap().starts_with("No agent status"));
     }
 
     #[test]
@@ -590,11 +734,12 @@ pub mod tests {
     fn no_answers_says_how_to_get_some_and_no_code_says_so() {
         let report = report("/r", &facts(20393, vec![], vec![], vec![]));
         let sections = report["sections"].as_array().unwrap();
-        assert_eq!(sections.iter().map(|s| s["id"].as_str().unwrap()).collect::<Vec<_>>(), ["quiz", "main", "tasks", "code"]);
+        assert_eq!(sections.iter().map(|s| s["id"].as_str().unwrap()).collect::<Vec<_>>(), ["quiz", "main", "tasks", "agents", "code"]);
         assert!(sections[0]["empty"].as_str().unwrap().starts_with("No quiz answers yet"));
-        assert_eq!(sections[3]["placeholder"], Value::Null);
-        assert_eq!(sections[3]["tiles"], json!([]));
-        assert!(sections[3]["empty"].as_str().unwrap().starts_with("No Rust or Swift code"));
+        assert!(sections[3]["empty"].as_str().unwrap().starts_with("No agent status"));
+        assert_eq!(sections[4]["placeholder"], Value::Null);
+        assert_eq!(sections[4]["tiles"], json!([]));
+        assert!(sections[4]["empty"].as_str().unwrap().starts_with("No Rust or Swift code"));
         assert_eq!(report["days"].as_array().unwrap().len(), 30);
         assert_eq!(report["days"][29], json!("2025-11-01"));
     }
@@ -621,6 +766,57 @@ pub mod tests {
         assert_eq!(lead["chart"]["points"].as_array().unwrap().len(), 3);
         assert_eq!(lead["chart"]["points"][1]["label"], json!("a name"));
         assert_eq!(lead["chart"]["line"][27], json!((48.0 * 24.0 * hour).round()));
+    }
+
+    #[test]
+    fn open_tasks_at_the_end_of_each_day_come_from_made_and_done() {
+        let state = std::env::temp_dir().join(format!("kanna-stats-open-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let db = Db::open(&state);
+        let today = local_day(now());
+        let at = |day: i64, hours: f64| noon(today - day) + hours * 3600.0;
+        let mut sql = String::new();
+        for (id, repo, place, made) in [("old", "/r", "done", 50), ("stuck", "/r", "shelf", 45), ("same", "/r", "done", 5), ("new", "/r", "desk", 1), ("newer", "/r", "shelf", 0), ("legacy", "/r", "done", 60), ("elsewhere", "/o", "shelf", 3)] {
+            sql += &format!("insert into tasks (id, repo, place, made_at, doc) values ('{id}', '{repo}', '{place}', {}, '{{\"name\": \"{id}\"}}');\n", at(made, 0.0));
+            sql += &format!("insert into task_events (task, at, what) values ('{id}', {}, 'made');\n", at(made, 0.0));
+        }
+        for (id, day, hours, what) in [("old", 40, 0.0, "picked"), ("old", 2, 0.0, "done"), ("stuck", 10, 0.0, "picked"), ("stuck", 9, 0.0, "shelved"), ("same", 5, 1.0, "picked"), ("same", 5, 2.0, "done"), ("new", 0, 0.0, "picked"), ("legacy", 55, 0.0, "picked")] {
+            sql += &format!("insert into task_events (task, at, what) values ('{id}', {}, '{what}');\n", at(day, hours));
+        }
+        db.run(&sql);
+        let since = day_start(today - DAYS + 1);
+        let report = report("/r", &facts(today, vec![], vec![], db.lives("/r", since).unwrap()));
+        let open = tile_of(&report, "tasks", "open");
+        let values: Vec<f64> = open["chart"]["values"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let mut expected = vec![2.0; 30];
+        expected[27] = 1.0;
+        expected[28] = 2.0;
+        expected[29] = 3.0;
+        assert_eq!(values, expected, "old and stuck open from before the 30 days, old done two days ago, new and newer made since; same made and done in one day; legacy done with no done event");
+        assert_eq!(open["value"], json!(3.0));
+        assert_eq!(open["note"], json!("+1 in 30 days"));
+        assert_eq!(open["span"], json!(6));
+        assert_eq!(open["chart"]["kind"], json!("flow"));
+        assert_eq!(open["chart"]["made"][24], json!(1.0));
+        assert_eq!(open["chart"]["done"][24], json!(1.0));
+        assert_eq!(open["chart"]["made"], tile_of(&report, "tasks", "made")["chart"]["values"]);
+        assert_eq!(open["chart"]["done"], tile_of(&report, "tasks", "ended")["chart"]["values"]);
+        assert_eq!(tiles(&report, "tasks").iter().map(|t| t["id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), ["open", "made", "started", "ended", "lead"]);
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn open_tasks_say_their_change_over_the_30_days() {
+        let today = 20393;
+        let lives = vec![life("a", noon(today - 40), None, Some(noon(today - 3))), life("b", noon(today - 40), None, Some(noon(today))), life("c", noon(today - 40), None, None)];
+        let report = report("/r", &facts(today, vec![], vec![], lives));
+        let open = tile_of(&report, "tasks", "open");
+        assert_eq!(open["value"], json!(1.0));
+        assert_eq!(open["note"], json!("\u{2212}2 in 30 days"));
+        let none = super::report("/r", &facts(today, vec![], vec![], vec![]));
+        assert_eq!(tile_of(&none, "tasks", "open")["value"], json!(0.0));
+        assert_eq!(tile_of(&none, "tasks", "open")["note"], json!("no change in 30 days"));
     }
 
     pub fn git_in(repo: &Path, args: &[&str], at: i64) {

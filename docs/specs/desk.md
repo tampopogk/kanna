@@ -83,7 +83,7 @@ flowchart LR
 The Desk view (pictured in [Desk view](desk-view.md)) shows the window's planning terminal, where you run your planning agent, docked on the left ([planning agent](planning-agent.md)), and on the right the Desk's tasks (oldest first, the active one in its place) above the Shelf, live, under a short encouraging line. What ⌘. does there and how its tasks are numbered: [Desk view §2](desk-view.md#2--and-pull-back).
 
 - **⌘F searches the Shelf** ([Shelf search](shelf-search.md)). A blocked Shelf task shows what it waits for and can't be moved to the Desk ([blocked tasks](task-dependencies.md)). Shelf tasks run by themselves, and their rows don't show how far they got ([Shelf runners](shelf-runners.md)).
-- **It holds no tabs but the fixed Desk, Machines and Stats** ([machine links §5](machine-links.md#5-paths-the-machines-tab-and-offline)), which the active task doesn't have: New Tab and the splits are off, and a pane opened onto it gets a plain window of its own ([planning agent](planning-agent.md#1-when-it-shows)).
+- **It holds no tabs but the fixed Desk, Machines, Stats and [Schedules](schedules-tab.md)** ([machine links §5](machine-links.md#5-paths-the-machines-tab-and-offline)), which the active task doesn't have: New Tab and the splits are off, and a pane opened onto it gets a plain window of its own ([planning agent](planning-agent.md#1-when-it-shows)).
 
 ## 5. CLI
 

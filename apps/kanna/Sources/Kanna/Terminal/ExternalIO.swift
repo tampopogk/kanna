@@ -9,10 +9,12 @@ protocol TerminalLink: AnyObject {
     func closed(_ terminal: ExternalTerminal)
     func settingsChanged(_ settings: TerminalSettings)
     func scrolledToTop(_ terminal: ExternalTerminal) -> Bool
+    func used(_ terminal: ExternalTerminal)
 }
 
 extension TerminalLink {
     func scrolledToTop(_ terminal: ExternalTerminal) -> Bool { false }
+    func used(_ terminal: ExternalTerminal) {}
 }
 
 @MainActor
@@ -65,6 +67,7 @@ final class ExternalTerminal {
             pending.removeFirst()
             switch item {
             case .output(_, let done?), .snapshot(_, let done?): done()
+            case .grid(let cols, let rows): view?.grid = (cols, rows)
             default: break
             }
         }
@@ -144,6 +147,9 @@ final class ExternalIOBackend: TerminalBackend {
         }
         let terminal = ExternalTerminal(id: id, view: view)
         terminals[view.surfaceID] = terminal
+        view.scrolled = { [weak self, weak terminal] in
+            if let self, let terminal { link.used(terminal) }
+        }
         guard runtime.attach(view, options: &options) else {
             terminals.removeValue(forKey: view.surfaceID)
             return false
