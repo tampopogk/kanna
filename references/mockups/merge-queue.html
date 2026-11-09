@@ -231,7 +231,7 @@ function queueView() {
     `<span class="m">●</span> In kanna-v4: ${s.desk.length} on the Desk, ${s.queue.length} in the merge queue, ${s.shelf.length} on the Shelf.`,
   ])}
     <div class="docs">${tabs("Merge queue")}<div class="qpage"><div class="qlist">
-      <div class="group"><div class="gh"><span><b>Merging</b> into main ${s.main}, one at a time</span><span>${s.queue.length ? `${s.queue.length} in line` : ""}</span></div>${queueRows()}</div>
+      <div class="group"><div class="gh"><span><b>Merging</b> into main ${s.main}</span><span>${s.queue.length ? `${s.queue.length} in line` : ""}</span></div>${queueRows()}</div>
       ${s.recent.length ? `<div class="group"><div class="gh"><span><b>Recent</b></span><span>landed or failed</span></div>${recentRows()}</div>` : ""}
     </div><div class="detail">${detail(picked())}</div></div></div></div>`;
 }
