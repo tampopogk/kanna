@@ -106,6 +106,7 @@ flowchart TB
 | [Kanna on the phone](specs/mobile-app.md) | A native iPhone app: chat with the repo's planner, the Shelf, Stats, Machines, and a quiz map |
 | [Stats](specs/stats.md) | The project's numbers over 30 days: quiz, main, tasks |
 | [Schedules tab](specs/schedules-tab.md) | Every repo's schedules, their firings, and pause, run and remove |
+| [Merge queue tab](specs/merge-queue-tab.md) | The repo's merge queue: the entries in line and lately ended, and the picked entry's terminal or log |
 | [The database](specs/database.md) | Tasks and their history in `kanna.db` |
 | [Settings](specs/settings.md) | Kanna's own settings |
 
