@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Merge Queue Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { border-color: var(--accent); color: var(--accent); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 720px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--bg); }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { color: var(--muted); font-size: 12px; }
+.where b { color: var(--text); font-weight: 600; }
+
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 38%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; color: var(--text); }
+.term .c { color: var(--accent); } .term .p { color: var(--warn); } .term .g { color: var(--muted); } .term .m { color: var(--machine); }
+.term .ok { color: var(--ok); } .term .bad { color: var(--bad); } .term .warn { color: var(--warn); }
+
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; color: var(--muted); white-space: nowrap; }
+.dtab.on { color: var(--text); }
+.empty { flex: 1; overflow: auto; padding: 40px 48px; }
+.empty .sub { color: var(--muted); margin: 0 0 22px; }
+.group { margin-bottom: 22px; max-width: 760px; }
+.group .gh { padding: 0 0 6px; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.group .gh b { color: var(--text); }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 0 -10px; border-radius: 8px; cursor: default; }
+.row:hover { background: var(--panel); }
+.row .t { flex: 1; min-width: 0; }
+.row .t .n { font-weight: 600; }
+.row .t .s { color: var(--muted); font-size: 12px; }
+.row .go { color: var(--muted); white-space: nowrap; font-size: 12px; }
+.row .go a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.row.waiting .t .n { font-weight: 500; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.working { background: var(--accent); }
+.dot.idle { background: var(--ok); }
+.dot.needs { background: var(--warn); }
+.dot.stopped { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
+.dot.queued { background: transparent; border: 1.5px solid var(--accent); width: 9px; height: 9px; }
+.dot.failed { background: var(--bad); }
+.s .bad { color: var(--bad); } .s .warn { color: var(--warn); } .s .ok { color: var(--ok); }
+.n .pos { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; margin-right: 6px; }
+.progress { height: 3px; border-radius: 2px; background: var(--panel2); margin-top: 5px; overflow: hidden; max-width: 320px; }
+.progress i { display: block; height: 100%; background: var(--accent); }
+.log { flex: 1; overflow: auto; background: var(--term); font: 12px/1.6 var(--mono); padding: 12px 16px; white-space: pre-wrap; }
+.log .bad { color: var(--bad); } .log .g { color: var(--muted); } .log .ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Merge queue: “merge” hands the branch over, and main moves only to what was tested</h1>
+    <p>You tell a ready task's agent to merge. It runs <code>kanna task merge</code>: its agent quits, its tabs close, and the task leaves the Desk for the repo's merge queue, shown in the Desk view between the Desk and the Shelf. The queue runs one entry at a time: the branch merged onto main as it is now, in a worker, the repo's tests run there, then main fast-forwards to that merge, and the next entry is merged on top of it. A merged entry leaves the queue and its task is Done. One whose tests fail goes back to the Shelf, red, and its agent gets the log.</p>
+    <div class="controls">
+      <button id="theme">Light / dark</button>
+      <button data-scene="desk" class="on">Desk view</button>
+      <button data-scene="list">kanna task list</button>
+      <button data-scene="merge">kanna task merge</button>
+      <button data-scene="log">A failed entry's log</button>
+      <span style="width:12px"></span>
+      <button id="pass">Simulate: running entry passes</button>
+      <button id="fail">Simulate: running entry fails</button>
+      <button id="reset">Reset</button>
+    </div>
+  </div>
+  <div id="stage"></div>
+</main>
+<script>
+const MIN = 60000;
+const initial = () => ({
+  scene: "desk",
+  main: "68da99de",
+  desk: [
+    { id: "task-a3c1", name: "Pane titles follow cwd", agent: "claude", status: "working", branch: "pane-title-cwd" },
+    { id: "task-9e02", name: "Phone shows schedules", agent: "codex", status: "idle", branch: "phone-schedules" },
+  ],
+  queue: [
+    { id: "task-4f1d", name: "Code find is case-sensitive when the search has a capital", branch: "find-smart-case", stage: "test", started: Date.now() - 2.3 * MIN, took: 0, by: "you" },
+    { id: "task-77b0", name: "Agents always quit by /exit", branch: "agent-quit-by-exit", by: "you" },
+    { id: "task-188c", name: "Merge queue", branch: "merge-queue", by: "the planning agent" },
+  ],
+  shelf: [
+    { id: "task-2d6e", name: "Shelf rows say which machine", status: "failed", branch: "shelf-machine", why: "test failed: 2 of 1 214 · cargo test -p kanna-daemon", at: Date.now() - 14 * MIN },
+    { id: "task-c410", name: "Diff viewer folds moved blocks", status: "working", msg: "Fold a block moved unchanged into one line in the diff" },
+    { id: "task-51aa", name: "Release notes", status: "stopped", msg: "Write the 0.9 notes" },
+  ],
+  landed: [],
+});
+let s = initial();
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ago = at => { const m = Math.max(0, Math.round((Date.now() - at) / MIN)); return m < 1 ? "now" : m < 60 ? m + "m" : Math.round(m / 60) + "h"; };
+const clock = ms => { const sec = Math.round(ms / 1000); return `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`; };
+const ordinal = n => n + (["th", "st", "nd", "rd"][n % 10 > 3 || Math.floor(n % 100 / 10) === 1 ? 0 : n % 10] || "th");
+const hex = () => Math.random().toString(16).slice(2, 10);
+
+function render() {
+  document.querySelectorAll("[data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === s.scene));
+  const body = { desk: deskView, list: listView, merge: mergeView, log: logView }[s.scene]();
+  document.getElementById("stage").innerHTML = `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${{ log: "Shelf rows say which machine", merge: "Code find is case-sensitive when the search has a capital", list: "Terminal" }[s.scene] || "Desk"}</b></span></div>
+    <div style="flex:1;display:flex;flex-direction:column;min-height:0">${body}</div></div>`;
+}
+
+function plannerLog(lines) {
+  return `<div class="agent"><div class="head">Planning · ~/work/kanna-v4 · main ${s.main}</div><div class="term">${lines.join("\n")}</div></div>`;
+}
+
+function queueRows() {
+  return s.queue.map((e, i) => {
+    if (i === 0) {
+      const ran = Date.now() - e.started;
+      const pct = Math.min(95, Math.round(ran / (3.2 * MIN) * 100));
+      return `<div class="row"><span class="dot working" title="testing"></span><div class="t"><div class="n"><span class="pos">1</span>${esc(e.name)}</div><div class="s">${e.stage === "merge" ? "merging onto main" : `testing on main ${s.main} + ${esc(e.branch)}`} · ${clock(ran)} · usually 3m10s</div><div class="progress"><i style="width:${pct}%"></i></div></div><span class="go"><a title="kanna task merge --cancel">Take out</a> · <a title="the worker's terminal in a tab">Show</a></span></div>`;
+    }
+    return `<div class="row waiting"><span class="dot queued" title="waiting in the queue"></span><div class="t"><div class="n"><span class="pos">${i + 1}</span>${esc(e.name)}</div><div class="s">waiting · tested on top of ${esc(s.queue[i - 1].name)} · ${esc(e.branch)} · merge asked by ${esc(e.by)}</div></div><span class="go"><a>Take out</a></span></div>`;
+  }).join("") || `<div class="s" style="color:var(--muted)">Nothing waiting to merge.</div>`;
+}
+
+function shelfRows() {
+  return s.shelf.map(t => {
+    if (t.status === "failed") {
+      return `<div class="row waiting"><span class="dot failed" title="its merge failed"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s"><span class="bad">merge failed</span> · ${esc(t.why)} · ${ago(t.at)} ago · its agent has the log</div></div><span class="go"><a data-scene-link="log">Log</a> · <a>Move to Desk →</a></span></div>`;
+    }
+    return `<div class="row waiting"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s">${esc(t.msg)}</div></div><span class="go">Move to Desk →</span></div>`;
+  }).join("");
+}
+
+function deskView() {
+  const news = s.landed.map(l => `<span class="m">●</span> <span class="g">[message from desk]</span> ${esc(l)}`);
+  return `<div class="content">${plannerLog([
+    `<span class="p">&gt;</span> You are the Kanna planning agent.`, ``,
+    `<span class="m">●</span> In kanna-v4: 2 on the Desk, 3 in the merge queue, 3 on the Shelf.`, ...(news.length ? [``, ...news] : []),
+  ])}
+    <div class="docs"><div class="empty"><p class="sub">Fresh start. Pick a task when you're ready.</p>
+      <div class="group"><div class="gh"><span><b>Desk</b> · ~/work/kanna-v4</span><span>${s.desk.length} of 3 tasks</span></div>
+        ${s.desk.map(t => `<div class="row"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s">${t.agent} · ${t.status} · ${esc(t.branch)}</div></div><span class="go">Make active →</span></div>`).join("")}</div>
+      <div class="group"><div class="gh"><span><b>Merging</b> into main, one at a time</span><span>${s.queue.length ? `${s.queue.length} in line` : ""}</span></div>${queueRows()}</div>
+      <div class="group"><div class="gh"><span><b>Shelf</b></span><span>${s.shelf.length} waiting</span></div>${shelfRows()}</div>
+    </div></div></div>`;
+}
+
+function listView() {
+  const w = 52;
+  const line = (id, name, state, tail, tone) => `${id}  ${esc(name.slice(0, w).padEnd(w))}  <span class="${tone || ""}">${state.padEnd(12)}</span>  ${esc(tail)}`;
+  const q = s.queue.map((e, i) => line(e.id, e.name, i === 0 ? "testing" : "queued", i === 0 ? `1st · ${clock(Date.now() - e.started)}` : `${ordinal(i + 1)} · after "${s.queue[i - 1].name.slice(0, 24)}…"`, i === 0 ? "c" : "g"));
+  const shelf = s.shelf.map(t => t.status === "failed" ? line(t.id, t.name, "merge-failed", t.why, "bad") : line(t.id, t.name, t.status, ""));
+  const lines = [
+    `<span class="c">~/work/kanna-v4</span> <span class="p">❯</span> kanna task list`,
+    `Desk`, ...s.desk.map(t => line(t.id, t.name, t.status === "working" ? "working" : "idle", "")), ``,
+    `Merging`, ...(q.length ? q : ["(empty)"]), ``,
+    `Shelf`, ...shelf,
+  ];
+  return `<div class="content"><div class="docs" style="border:0"><div class="dtabs"><div class="dtab on">Terminal</div></div><div class="term">${lines.join("\n")}</div></div></div>`;
+}
+
+function mergeView() {
+  const lines = [
+    `<span class="p">&gt;</span> merge`, ``,
+    `<span class="m">●</span> Bash(kanna task merge -m "find is case-insensitive unless the search has a capital, in every find bar")`,
+    `  <span class="g">⎿</span> task-4f1d "Code find is case-sensitive when the search has a capital" is 2nd in the`,
+    `    merge queue, after "Agents always quit by /exit": it lands on main once the tests pass`,
+    `    on top of it. Its agent quits now and its tabs close; if the tests fail it comes back`,
+    `    to the Shelf and you get the log.`, ``,
+    `<span class="g">──────── refusals ────────</span>`, ``,
+    `<span class="c">$</span> kanna task merge`,
+    `<span class="bad">error:</span> task-2d6e conflicts with main in crates/kanna-daemon/src/tasks.rs and`,
+    `  docs/specs/tasks.md: merge main into your branch, fix them, rerun your tests and commit,`,
+    `  then kanna task merge again`, ``,
+    `<span class="c">$</span> kanna task merge`,
+    `<span class="bad">error:</span> task-8b31 merges after "Shelf rows say which machine", which isn't in main`,
+    `  yet: merge it once that lands (you're told when it does)`, ``,
+    `<span class="c">$</span> kanna task merge`,
+    `<span class="bad">error:</span> task-8b31 has uncommitted changes to 2 files (src/a.rs, src/b.rs): commit them first`, ``,
+    `<span class="c">$</span> kanna task merge`,
+    `<span class="bad">error:</span> this repo has no tests for the merge queue: set merge.test in .kanna/config.json`,
+    `  (kanna config schema), or write .kanna/pipelines/merge-queue.kojo`,
+  ];
+  return `<div class="content"><div class="agent" style="flex:1"><div class="head">.kanna-worktrees/task-4f1d · find-smart-case</div><div class="term">${lines.join("\n")}</div></div></div>`;
+}
+
+function logView() {
+  const lines = [
+    `<span class="p">&gt;</span> <span class="g">[message from queue-7f3a]</span> "Shelf rows say which machine" didn't merge: its tests failed`,
+    `  on main 5d02c1e + shelf-machine (merge commit 9a41e7c). main is unchanged and your branch`,
+    `  is as you left it. The log: .kanna/tmp/queue-7f3a/test.log. The failures:`, ``,
+    `  <span class="bad">---- tasks::tests::shelf_row_names_its_machine stdout ----</span>`,
+    `  <span class="bad">thread panicked at crates/kanna-daemon/src/tasks.rs:7120: left: "mbp" right: "mini"</span>`,
+    `  <span class="bad">test result: FAILED. 1212 passed; 2 failed</span>`, ``,
+    `  Fix it on your branch (merge main first: it moved), then kanna task merge again.`, ``,
+    `<span class="m">●</span> The test reads the machine name from the replica before it's written. Merging main`,
+    `  first, then fixing the order in shelf_row…`,
+  ];
+  return `<div class="content"><div class="agent"><div class="head">.kanna-worktrees/task-2d6e · shelf-machine</div><div class="term">${lines.join("\n")}</div></div>
+    <div class="docs"><div class="dtabs"><div class="dtab on">test.log</div></div><div class="log"><span class="g">$ cargo test -p kanna-daemon</span>
+   Compiling kanna-daemon v0.9.0
+    Finished test profile in 41.2s
+running 1214 tests
+<span class="g">…</span>
+test tasks::tests::shelf_row_names_its_machine ... <span class="bad">FAILED</span>
+test tasks::tests::shelf_rows_keep_their_order ... <span class="bad">FAILED</span>
+<span class="g">…</span>
+<span class="bad">test result: FAILED. 1212 passed; 2 failed; 0 ignored</span></div></div></div>`;
+}
+
+function pass() {
+  const e = s.queue.shift();
+  if (!e) return;
+  s.main = hex();
+  s.landed.push(`${e.id} "${e.name}" merged into main (${s.main}) and left the merge queue`);
+  if (s.queue[0]) Object.assign(s.queue[0], { stage: "test", started: Date.now() });
+  render();
+}
+function fail() {
+  const e = s.queue.shift();
+  if (!e) return;
+  s.shelf.unshift({ id: e.id, name: e.name, status: "failed", branch: e.branch, why: "test failed: 1 of 1 214 · cargo test -p kanna-daemon", at: Date.now() });
+  if (s.queue[0]) Object.assign(s.queue[0], { stage: "test", started: Date.now() });
+  render();
+}
+
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-scene]") || e.target.closest("[data-scene-link]");
+  if (b) { s.scene = b.dataset.scene || b.dataset.sceneLink; render(); }
+});
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
+document.getElementById("pass").onclick = pass;
+document.getElementById("fail").onclick = fail;
+document.getElementById("reset").onclick = () => { s = initial(); render(); };
+const hash = location.hash;
+if (hash.includes("picture")) document.body.classList.add("picture");
+if (hash.includes("light")) document.documentElement.dataset.theme = "light";
+for (const scene of ["list", "merge", "log"]) if (hash.includes(scene)) s.scene = scene;
+setInterval(render, 5000);
+render();
+</script>
+</body>
+</html>

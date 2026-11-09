@@ -39,6 +39,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var keys: [String: String] { DeskOrder.keys(others.map(\.id)) }
     var deskDocks: [JSON] = []
     var shelf: [ShelfTask] = []
+    var merging: [ShelfTask] = []
     var running = 0
     var note = ""
     var project = ""
@@ -247,7 +248,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         let below = NSRect(x: side.minX, y: side.minY, width: side.width, height: max(0, side.height - bar))
         if showsDeskView {
             deskView.frame = below
-            deskView.show(DeskPage(active: active, tasks: DeskOrder.byAge(deskTasks, made: \.made), keys: keys, shelf: shelf, running: running, project: project, cheer: cheer, note: note))
+            deskView.show(DeskPage(active: active, tasks: DeskOrder.byAge(deskTasks, made: \.made), keys: keys, shelf: shelf, merging: merging, running: running, project: project, cheer: cheer, note: note))
         } else if pageShown == Self.pages[1] {
             machinesPage.frame = below
             machinesPage.show(machines, phones: phones)

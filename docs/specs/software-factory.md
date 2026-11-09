@@ -263,6 +263,7 @@ RUN defaults to the task the terminal is in: `show`, `log` and `open run` take i
 - **Fan-out instances as Shelf tasks:** one change as many rows, eating `shelf.runners` and Desk places.
 - **A remote stage as a command over the link** (`kanna --host mini -- scripts/e2e-kanna.sh`): no terminal to watch, no worktree, nothing to resume, and no way to run an agent stage.
 - **A `merge main` stage gated by an `ask`:** the run would land on main from a branch you never had in your worktree.
+  The [merge queue](merge-queue.md) isn't that: you start the merge with `kanna task merge`, and main moves only to the merge its pipeline tested ([merge queue §1](merge-queue.md#1-why)).
 - **The run fast-forwarding the task's worktree at hand-back** (the first build): it moved the task's branch under the task's agent and had to guess what to do with local changes.
 - **YAML or JSON pipelines:** the arrows are the point, and a flow line reads as the diagram; kojo's grammar is proven on 30 factories.
 - **A run that rewrites its own file:** revisions come from a declared `emits` stage or from you, validated and bounded ([Kojo §7](kojo.md#7-changing-a-pipeline-while-it-runs)).

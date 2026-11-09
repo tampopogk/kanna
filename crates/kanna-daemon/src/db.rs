@@ -316,6 +316,19 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         text text not null,
         primary key (repo, subsystem)
     );
+"), Step::Sql("
+    create table merge_queue (
+        id text primary key,
+        repo text not null,
+        task text not null,
+        head text not null,
+        state text not null check (state in ('queued', 'testing', 'landing', 'landed', 'failed', 'cancelled')),
+        queued_at real not null,
+        ended_at real,
+        run text,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create index merge_queue_by_repo on merge_queue (repo, state, queued_at);
 ")];
 
 pub const RECENT: usize = 10;
@@ -1394,6 +1407,21 @@ impl Db {
         Ok(())
     }
 
+    pub fn backup_to(&self, path: &Path) -> rusqlite::Result<()> {
+        let _ = fs::remove_file(path);
+        self.conn.backup(rusqlite::MAIN_DB, path, None)?;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        Ok(())
+    }
+
+    pub fn keep_from_moved(&self, old: &Path) -> rusqlite::Result<()> {
+        crate::instance_move::keep_from(&self.conn, old)
+    }
+
+    pub fn records_version(&self) -> rusqlite::Result<i64> {
+        self.conn.query_row("pragma user_version", [], |row| row.get(0))
+    }
+
     pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
         self.conn.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional()
     }
@@ -1421,6 +1449,19 @@ impl Db {
         let rows = statement.query_map([], |r| r.get(0))?;
         rows.collect()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueueRow {
+    pub id: String,
+    pub repo: String,
+    pub task: String,
+    pub head: String,
+    pub state: String,
+    pub queued_at: f64,
+    pub ended_at: Option<f64>,
+    pub run: Option<String>,
+    pub doc: Value,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1505,6 +1546,32 @@ fn stage_row(r: &rusqlite::Row) -> rusqlite::Result<StageRow> {
 }
 
 impl Db {
+    pub fn new_queue_id(&self) -> rusqlite::Result<String> {
+        loop {
+            let id = format!("queue-{}", &random_id()?["task-".len()..]);
+            if self.conn.query_row("select 1 from merge_queue where id = ?1", [&id], |_| Ok(())).optional()?.is_none() {
+                return Ok(id);
+            }
+        }
+    }
+
+    pub fn put_queued(&self, row: &QueueRow) -> rusqlite::Result<()> {
+        self.conn
+            .execute(
+                "insert into merge_queue (id, repo, task, head, state, queued_at, ended_at, run, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 on conflict (id) do update set state = excluded.state, ended_at = excluded.ended_at, run = excluded.run, doc = excluded.doc",
+                params![row.id, row.repo, row.task, row.head, row.state, row.queued_at, row.ended_at, row.run, row.doc.to_string()],
+            )
+            .map(|_| ())
+    }
+
+    pub fn queued(&self, live: bool) -> rusqlite::Result<Vec<QueueRow>> {
+        let filter = if live { "where state in ('queued', 'testing', 'landing')" } else { "" };
+        let mut statement = self.conn.prepare(&format!("select id, repo, task, head, state, queued_at, ended_at, run, doc from merge_queue {filter} order by queued_at, id"))?;
+        let rows = statement.query_map([], |r| Ok(QueueRow { id: r.get(0)?, repo: r.get(1)?, task: r.get(2)?, head: r.get(3)?, state: r.get(4)?, queued_at: r.get(5)?, ended_at: r.get(6)?, run: r.get(7)?, doc: doc_of(r.get(8)?) }))?;
+        rows.collect()
+    }
+
     pub fn new_run_id(&self) -> rusqlite::Result<String> {
         loop {
             let id = format!("run-{}", &random_id()?["task-".len()..]);

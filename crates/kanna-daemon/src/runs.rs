@@ -33,6 +33,10 @@ const CARRY_ON: &str = "Carry on.";
 
 pub const LIVE: &[&str] = &["running", "waiting", "paused"];
 
+pub const QUEUE: &str = "queue";
+
+pub type OnEnd = Box<dyn Fn(&str, Result<String, String>)>;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feedback {
     pub stage: String,
@@ -57,6 +61,7 @@ pub struct Doc {
     pub next: Option<String>,
     pub why: Option<String>,
     pub note: Option<String>,
+    pub owner: Option<String>,
     pub pausing: bool,
     pub held: bool,
     pub interventions: BTreeMap<String, u32>,
@@ -80,6 +85,7 @@ impl Doc {
             "next": opt(self.next.as_deref()),
             "why": opt(self.why.as_deref()),
             "note": opt(self.note.as_deref()),
+            "owner": opt(self.owner.as_deref()),
             "pausing": self.pausing,
             "held": self.held,
             "interventions": self.interventions,
@@ -107,6 +113,7 @@ impl Doc {
             next: string(value, "next").map(String::from),
             why: string(value, "why").map(String::from),
             note: string(value, "note").map(String::from),
+            owner: string(value, "owner").map(String::from),
             pausing: value.get("pausing").and_then(Value::as_bool).unwrap_or(false),
             held: value.get("held").and_then(Value::as_bool).unwrap_or(false),
             interventions: value.get("interventions").and_then(Value::as_object).map_or_else(BTreeMap::new, |m| m.iter().map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32)).collect()),
@@ -481,6 +488,21 @@ struct Ended {
     by: Option<String>,
 }
 
+pub struct Started {
+    pub task: String,
+    pub repo: String,
+    pub worker: String,
+    pub branch: String,
+    pub base: String,
+    pub text: String,
+    pub shown: String,
+    pub name: String,
+    pub request: String,
+    pub prompts: BTreeMap<String, String>,
+    pub owner: Option<String>,
+    pub by: String,
+}
+
 pub struct Runs {
     db: Rc<Db>,
     core: WeakCore,
@@ -488,6 +510,7 @@ pub struct Runs {
     live: RefCell<Vec<Live>>,
     soon: Cell<bool>,
     host: String,
+    pub on_end: RefCell<Option<OnEnd>>,
     flagged: RefCell<HashSet<String>>,
     asks_changed: Cell<bool>,
     carrying: RefCell<Vec<String>>,
@@ -528,7 +551,7 @@ impl Runs {
             log!("kanna-daemon: {} carries on ({}, {})", row.id, row.state, visit.as_ref().map_or("between stages".to_string(), |v| format!("in {}", v.row.stage)));
             live.push(Live { row, doc, pipeline, visit });
         }
-        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default() };
+        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default(), on_end: RefCell::default() };
         for (row, repo) in this.db.unmeasured().unwrap_or_default() {
             this.measure(Measuring::of(&row, &repo, None, None));
         }
@@ -612,12 +635,7 @@ impl Runs {
             .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), fs::read_to_string(&p).ok()?)))
             .collect();
         let shown = file.display().to_string();
-        let context = Context { prompts: prompts.clone(), machine: Some(self.host.clone()), ..Context::default() };
-        let pipeline = kanna_pipe::load(&text, &context).map_err(|errors| KmuxError::new("invalid", errors.iter().map(|e| e.at(&shown)).collect::<Vec<_>>().join("\n")))?;
-        let unbuilt = unbuilt(&pipeline);
-        if !unbuilt.is_empty() {
-            return Err(KmuxError::new("unsupported", unbuilt.iter().map(|u| format!("{shown}:{u}")).collect::<Vec<_>>().join("\n")));
-        }
+        let pipeline = self.checked(&text, &shown, &prompts)?;
         let request = match string(args, "request").filter(|r| !r.trim().is_empty()) {
             Some(request) => request.to_string(),
             None => task.message.clone().unwrap_or_default(),
@@ -632,19 +650,9 @@ impl Runs {
                 Err(error) => return Err(failed(format!("can't make the run's worktree: {error}"))),
             }
         };
-        let id = self.db.new_run_id().map_err(failed)?;
-        let doc = Doc { request, file: shown.clone(), worker: worker.clone(), base: base.clone(), revision: 1, taken: vec![0; pipeline.arrows.len()], next: Some(pipeline.start.clone()), ..Doc::default() };
-        let budget = pipeline.budget.as_ref().map_or(Value::Null, |b| json!({ "sessions": b.sessions, "seconds": b.time.map(|t| t.as_secs()) }));
-        let mut value = doc.to_value();
-        value["budget"] = budget;
-        let row = RunRow { id: id.clone(), task: task.id.clone(), repo: task.repo.clone(), pipeline: name.clone(), revision_hash: hash(&text), branch: branch.clone(), state: "running".into(), started_at: now(), ended_at: None, outcome: None, doc: value };
         let by = string(args, "by").unwrap_or("user").to_string();
-        self.db.put_run(&row, Some(("started", Some(&by), &json!({ "pipeline": name, "branch": branch, "base": base })))).map_err(failed)?;
-        self.db.add_revision(&id, "file", &row.revision_hash, &json!({ "text": text, "file": shown, "prompts": prompts })).map_err(failed)?;
-        log!("kanna-daemon: {} runs {name} for {} on {branch} in {worker}", id, task.id);
-        let worst = pipeline.max_sessions(&Sizes::new());
-        self.live.borrow_mut().push(Live { row, doc, pipeline, visit: None });
-        self.soon.set(true);
+        let started = Started { task: task.id.clone(), repo: task.repo.clone(), worker: worker.clone(), branch: branch.clone(), base, text, shown, name: name.clone(), request, prompts, owner: None, by };
+        let (id, worst) = self.launch(started, pipeline)?;
         Ok(Map::from_iter([
             ("run".to_string(), json!(id)),
             ("task".to_string(), json!(task.id)),
@@ -653,6 +661,38 @@ impl Runs {
             ("worktree".to_string(), json!(worker)),
             ("worst".to_string(), json!(worst)),
         ]))
+    }
+
+    fn checked(&self, text: &str, shown: &str, prompts: &BTreeMap<String, String>) -> Result<Pipeline, KmuxError> {
+        let context = Context { prompts: prompts.clone(), machine: Some(self.host.clone()), ..Context::default() };
+        let pipeline = kanna_pipe::load(text, &context).map_err(|errors| KmuxError::new("invalid", errors.iter().map(|e| e.at(shown)).collect::<Vec<_>>().join("\n")))?;
+        let unbuilt = unbuilt(&pipeline);
+        if !unbuilt.is_empty() {
+            return Err(KmuxError::new("unsupported", unbuilt.iter().map(|u| format!("{shown}:{u}")).collect::<Vec<_>>().join("\n")));
+        }
+        Ok(pipeline)
+    }
+
+    pub fn start_owned(&self, started: Started) -> Result<String, KmuxError> {
+        let pipeline = self.checked(&started.text, &started.shown, &started.prompts)?;
+        self.launch(started, pipeline).map(|(id, _)| id)
+    }
+
+    fn launch(&self, started: Started, pipeline: Pipeline) -> Result<(String, u32), KmuxError> {
+        let Started { task, repo, worker, branch, base, text, shown, name, request, prompts, owner, by } = started;
+        let id = self.db.new_run_id().map_err(failed)?;
+        let doc = Doc { request, file: shown.clone(), worker: worker.clone(), base: base.clone(), revision: 1, taken: vec![0; pipeline.arrows.len()], next: Some(pipeline.start.clone()), owner, ..Doc::default() };
+        let budget = pipeline.budget.as_ref().map_or(Value::Null, |b| json!({ "sessions": b.sessions, "seconds": b.time.map(|t| t.as_secs()) }));
+        let mut value = doc.to_value();
+        value["budget"] = budget;
+        let row = RunRow { id: id.clone(), task: task.clone(), repo, pipeline: name.clone(), revision_hash: hash(&text), branch: branch.clone(), state: "running".into(), started_at: now(), ended_at: None, outcome: None, doc: value };
+        self.db.put_run(&row, Some(("started", Some(&by), &json!({ "pipeline": name, "branch": branch, "base": base })))).map_err(failed)?;
+        self.db.add_revision(&id, "file", &row.revision_hash, &json!({ "text": text, "file": shown, "prompts": prompts })).map_err(failed)?;
+        log!("kanna-daemon: {} runs {name} for {task} on {branch} in {worker}", id);
+        let worst = pipeline.max_sessions(&Sizes::new());
+        self.live.borrow_mut().push(Live { row, doc, pipeline, visit: None });
+        self.soon.set(true);
+        Ok((id, worst))
     }
 
     fn find(&self, args: &Value) -> Result<RunRow, KmuxError> {
@@ -904,7 +944,7 @@ impl Runs {
     }
 
     pub fn task_stopped(self: &Rc<Self>, task: &str) {
-        let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.task == task && (l.row.state == "running" || l.row.state == "waiting")).map(|l| l.row.id.clone()).collect();
+        let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.task == task && l.doc.owner.is_none() && (l.row.state == "running" || l.row.state == "waiting")).map(|l| l.row.id.clone()).collect();
         for id in ids {
             log!("kanna-daemon: {task} is stopped, so {id} stops its stage and starts no other until it starts");
             self.update(&id, |live| {
@@ -921,7 +961,7 @@ impl Runs {
 
     pub fn task_started(self: &Rc<Self>, task: &str) {
         self.asks_changed.set(true);
-        let found: Vec<(String, bool, Option<Visit>)> = self.live.borrow().iter().filter(|l| l.row.task == task && l.doc.held).map(|l| (l.row.id.clone(), l.doc.pausing, l.visit.clone())).collect();
+        let found: Vec<(String, bool, Option<Visit>)> = self.live.borrow().iter().filter(|l| l.row.task == task && l.doc.owner.is_none() && l.doc.held).map(|l| (l.row.id.clone(), l.doc.pausing, l.visit.clone())).collect();
         for (id, pausing, visit) in found {
             log!("kanna-daemon: {task} started again, so {id} carries on");
             let parked = visit.as_ref().is_some_and(|v| v.paused && v.row.doc["paused"]["task"] == true);
@@ -1662,7 +1702,7 @@ impl Runs {
         let failed_verdict = ended.verdict == Some(Verdict::Fail);
         let failing = ended.failures.as_ref().filter(|_| failed_verdict).map(|lines| failing_tests(lines));
         let mut kept = json!({ "answer": answer, "feedback": ended.feedback, "failures": ended.failures, "note": opt(ended.note.as_deref()), "end": end, "commits": commits, "by": opt(ended.by.as_deref()), "feedbackSize": ended.feedback.len(), "failing": failing, "findings": findings(&ended.answer) });
-        for key in ["question", "replies", "waited"] {
+        for key in ["question", "replies", "waited", "log"] {
             if let Some(value) = row.doc.get(key) {
                 kept[key] = value.clone();
             }
@@ -1773,20 +1813,39 @@ impl Runs {
             live.doc.next = None;
             Some(("stopped", by.clone(), json!({ "why": why_owned })))
         });
+        if self.owned(id) {
+            return self.ended(id, Err(why.to_string()));
+        }
         if tell {
             let branch = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.branch.clone()).unwrap_or_default();
             self.tell(id, &format!("{why}. The run's branch {branch} is kept for you to look at; `kanna run show {id}` has its visits."));
         }
     }
 
-    pub fn task_closed(self: &Rc<Self>, task: &str) {
-        let found: Vec<(String, String, String, Option<String>)> = self.live.borrow().iter().filter(|l| l.row.task == task && LIVE.contains(&l.row.state.as_str())).map(|l| (l.row.id.clone(), l.row.repo.clone(), l.doc.worker.clone(), l.visit.as_ref().and_then(|v| v.row.terminal.clone()))).collect();
-        for (id, repo, worker, terminal) in found {
-            self.close_run(&id, &repo, &worker, terminal);
+    fn owned(&self, id: &str) -> bool {
+        self.live.borrow().iter().any(|l| l.row.id == id && l.doc.owner.is_some())
+    }
+
+    fn ended(&self, id: &str, outcome: Result<String, String>) {
+        if let Some(on_end) = self.on_end.borrow().as_ref() {
+            on_end(id, outcome);
         }
     }
 
-    fn close_run(self: &Rc<Self>, id: &str, repo: &str, worker: &str, terminal: Option<String>) {
+    pub fn stop_owned(self: &Rc<Self>, id: &str, why: &str) {
+        let found = self.live.borrow().iter().find(|l| l.row.id == id && LIVE.contains(&l.row.state.as_str())).map(|l| (l.row.repo.clone(), l.doc.worker.clone(), l.visit.as_ref().and_then(|v| v.row.terminal.clone())));
+        let Some((repo, worker, terminal)) = found else { return };
+        self.close_run(id, &repo, &worker, terminal, why);
+    }
+
+    pub fn task_closed(self: &Rc<Self>, task: &str) {
+        let found: Vec<(String, String, String, Option<String>)> = self.live.borrow().iter().filter(|l| l.row.task == task && l.doc.owner.is_none() && LIVE.contains(&l.row.state.as_str())).map(|l| (l.row.id.clone(), l.row.repo.clone(), l.doc.worker.clone(), l.visit.as_ref().and_then(|v| v.row.terminal.clone()))).collect();
+        for (id, repo, worker, terminal) in found {
+            self.close_run(&id, &repo, &worker, terminal, "the task was closed");
+        }
+    }
+
+    fn close_run(self: &Rc<Self>, id: &str, repo: &str, worker: &str, terminal: Option<String>, why: &str) {
         self.update(id, |live| {
             if let Some(visit) = live.visit.as_mut() {
                 visit.ending = true;
@@ -1796,7 +1855,7 @@ impl Runs {
         if let Some(pane) = terminal {
             self.close(&pane);
         }
-        self.stop(id, "stopped", "the task was closed", Some("daemon"), false);
+        self.stop(id, "stopped", why, Some("daemon"), false);
         if Path::new(worker).is_dir() {
             if let Err(error) = git(Path::new(repo), &["worktree", "remove", "--force", worker]) {
                 log!("kanna-daemon: {id}'s worktree {worker} is kept: {error}");
@@ -1828,11 +1887,15 @@ impl Runs {
             None
         });
         let _ = self.db.run_event(id, "handed_back", Some("daemon"), &json!({ "note": note }));
+        if doc.owner.is_some() {
+            let head = git(Path::new(&row.repo), &["rev-parse", "--verify", &format!("refs/heads/{branch}")]).map_err(|e| format!("{branch} is gone: {e}"));
+            return self.ended(id, head);
+        }
         self.tell(id, &format!("handed back: {summary}. {note}. `kanna run show {id}` has its visits."));
     }
 
     fn tell(&self, id: &str, text: &str) {
-        let Some(row) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.clone()) else { return };
+        let Some(row) = self.live.borrow().iter().find(|l| l.row.id == id && l.doc.owner.is_none()).map(|l| l.row.clone()) else { return };
         let Ok(tasks) = self.tasks() else { return };
         if let Err(error) = tasks.post(&row.task, Some(&row.repo), id, text) {
             log!("kanna-daemon: couldn't tell {} about {id}: {}", row.task, error.message);
