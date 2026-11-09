@@ -6390,6 +6390,75 @@ assert v[0]["doc"]["replies"] == 1 and "paused" not in v[0]["doc"], v[0]["doc"]'
   check test -n "$(git -C "$repo" branch --list "run/$task-4")" -a -n "$(git -C "$repo" branch --list "run/$task-5")" || { echo "pipeline_run: the closed task's run branches are gone"; return 1; }
 }
 
+scenario merge_queue M4
+merge_queue() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/queue" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  start_daemon && start_app || { echo "merge_queue line $LINENO"; return 1; }
+  mkdir -p "$repo/.kanna" && git -C "$repo" init -q -b main || { echo "merge_queue line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
+  cat >"$repo/test.sh" <<'TEST'
+if [ -e needs-a.txt ] && [ ! -e a.txt ]; then echo "FAILED: a.txt isn't here, so this wasn't tested on top of A"; exit 1; fi
+if [ -e broken ]; then echo "FAILED: broken is here"; exit 1; fi
+if [ -e slow ] && [ ! -e .kanna/tmp/slept ]; then touch .kanna/tmp/testing; sleep 8; touch .kanna/tmp/slept; fi
+echo "all good"
+TEST
+  printf '{"version": 1, "merge": {"test": "sh test.sh"}}\n' >"$repo/.kanna/config.json"
+  echo one >"$repo/shared.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "merge_queue line $LINENO"; return 1; }
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  local n; for n in A B C D; do in_repo task new "$n" "say hi" --agent "$fake/claude" >/dev/null || { echo "merge_queue line $LINENO"; return 1; }; done
+  for n in 1 2 3 4; do kanna task start "$(tid $n)" >/dev/null || { echo "merge_queue line $LINENO"; return 1; }; done
+  local a b c d; a="$(tid 1)" b="$(tid 2)" c="$(tid 3)" d="$(tid 4)"
+  wt() { echo "$repo/.kanna-worktrees/$1"; }
+  commit() { local w; w="$(wt "$1")"; shift; (cd "$w" && "$@" && git add -A && git commit -qm "work") ; }
+  check wait_for 20 eval '[[ -d "$(wt $d)" ]]' || { echo "merge_queue: the tasks didn't start"; return 1; }
+  commit "$a" sh -c 'echo a >a.txt && touch slow' || { echo "merge_queue line $LINENO"; return 1; }
+  commit "$b" sh -c 'echo b >b.txt && touch needs-a.txt' || { echo "merge_queue line $LINENO"; return 1; }
+  commit "$c" sh -c 'echo c >c.txt && touch broken' || { echo "merge_queue line $LINENO"; return 1; }
+  commit "$d" sh -c 'echo dee >shared.txt' || { echo "merge_queue line $LINENO"; return 1; }
+  echo main >"$repo/shared.txt" && git -C "$repo" commit -qam "main moves" || { echo "merge_queue line $LINENO"; return 1; }
+  local said
+  said="$(in_repo task merge "$d" 2>&1)" && { echo "merge_queue: a conflicting branch went into the queue: $said"; return 1; }
+  [[ "$said" == *"conflicts with main in shared.txt"* ]] || { echo "merge_queue: the conflict's refusal said: $said"; return 1; }
+  echo dirty >>"$(wt $c)/c.txt"
+  said="$(in_repo task merge "$c" 2>&1)" && { echo "merge_queue: uncommitted changes went into the queue: $said"; return 1; }
+  [[ "$said" == *"uncommitted changes to 1 file (c.txt)"* ]] || { echo "merge_queue: the uncommitted refusal said: $said"; return 1; }
+  git -C "$(wt $c)" checkout -q c.txt
+  local agent_a; agent_a="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from tasks where id = '$a'")"
+  check wait_for 10 eval '[[ "$(pane "$agent_a" state)" == running ]]' || { echo "merge_queue: A's agent isn't running"; return 1; }
+  said="$(in_repo task merge "$a" -m "a: add a" 2>&1)" || { echo "merge_queue: A didn't go into the queue: $said"; return 1; }
+  [[ "$said" == *"is next in the merge queue"* ]] || { echo "merge_queue: merging A said: $said"; return 1; }
+  said="$(in_repo task merge "$b" 2>&1)" || { echo "merge_queue: B didn't go into the queue: $said"; return 1; }
+  [[ "$said" == *"is 2nd in the merge queue, after \"A\""* ]] || { echo "merge_queue: merging B said: $said"; return 1; }
+  check wait_for 20 eval '[[ "$(pane "$agent_a" state)" != running ]]' || { echo "merge_queue: A's agent didn't quit at merge"; kanna read "$agent_a"; return 1; }
+  local listed; listed="$(in_repo task list)"
+  grep -qE "^Merging$" <<<"$listed" && grep -qE " A +(queued|testing) " <<<"$listed" && grep -qE " B +queued +2nd" <<<"$listed" || { echo "merge_queue: the list doesn't show the queue:"; echo "$listed"; return 1; }
+  ! sed -n '/^Shelf/,$p' <<<"$listed" | grep -qE " (A|B) " || { echo "merge_queue: queued tasks are still on the Shelf:"; echo "$listed"; return 1; }
+  local testing; testing="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select json_extract(doc, '$.worker') from merge_queue where task = '$a'")"
+  check wait_for 30 test -e "$testing/.kanna/tmp/testing" || { echo "merge_queue: A's tests didn't start"; tail -30 "$out/daemon.log"; return 1; }
+  check test "$(git -C "$repo" log -1 --format=%s main)" == "main moves" || { echo "merge_queue: main moved before A's tests passed"; return 1; }
+  stop_daemon; start_daemon || { echo "merge_queue: the daemon didn't come back"; return 1; }
+  check wait_for 60 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select group_concat(state) from (select state from merge_queue order by queued_at)")" == landed,landed ]]' || { echo "merge_queue: A and B didn't land: $(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select task, state, doc from merge_queue")"; tail -40 "$out/daemon.log"; return 1; }
+  local subjects; subjects="$(git -C "$repo" log --first-parent --format=%s main | head -3 | tr '\n' '|')"
+  [[ "$subjects" == "Merge branch '$b': B|Merge branch '$a': a: add a|main moves|" ]] || { echo "merge_queue: main's history is $subjects"; return 1; }
+  check test -e "$repo/a.txt" -a -e "$repo/b.txt" || { echo "merge_queue: the main checkout didn't fast-forward"; return 1; }
+  check wait_for 20 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select group_concat(place) from tasks where id in ('"'$a'"', '"'$b'"')")" == done,done ]]' || { echo "merge_queue: landed tasks aren't done"; return 1; }
+  check test -z "$(git -C "$repo" branch --list "queue/*")" || { echo "merge_queue: queue branches are left: $(git -C "$repo" branch --list "queue/*")"; return 1; }
+  local before; before="$(git -C "$repo" rev-parse main)"
+  said="$(in_repo task merge "$c" 2>&1)" || { echo "merge_queue: C didn't go into the queue: $said"; return 1; }
+  check wait_for 60 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select state from merge_queue where task = '"'$c'"'")" == failed ]]' || { echo "merge_queue: C's failing tests didn't fail it"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id, task, state, run, doc from merge_queue"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id, state, outcome, doc from runs"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select run, stage, verdict, terminal, doc from run_stages"; in_repo task list; ls "$KANNA_STATE_DIR"; return 1; }
+  check test "$(git -C "$repo" rev-parse main)" == "$before" || { echo "merge_queue: main moved for a failed entry"; return 1; }
+  listed="$(in_repo task list)"
+  grep -qE " C +merge-failed +.*FAILED: broken is here|C +merge-failed" <<<"$listed" || { echo "merge_queue: C isn't back on the Shelf as merge-failed:"; echo "$listed"; return 1; }
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from messages where recipient = '$c' and sender like 'queue-%' and text like '%didn''t merge%FAILED: broken is here%kanna task merge again%'")" -eq 1 || { echo "merge_queue: C's agent wasn't sent the log"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select sender, text from messages where recipient = '$c'"; return 1; }
+  check test -e "$(wt $c)/.kanna/tmp/$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id from merge_queue where task = '$c'")/test.log" || { echo "merge_queue: the failed log wasn't kept in C's worktree"; return 1; }
+  machine_runners 3
+  check wait_for 30 eval 'shows "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from tasks where id = '"'$c'"'")" "message from queue-"' || { echo "merge_queue: C's agent didn't get the queue's message"; local ct; ct="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from tasks where id = '$c'")"; echo "terminal $ct"; kanna read "$ct"; in_repo task list; in_repo task messages "$c"; cat "$KANNA_AGENTS_HOME/.kanna-v4/config.json"; return 1; }
+}
+
 scenario pipeline_gates M4
 pipeline_gates() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/gates" fake="$KANNA_STATE_DIR/agents"
