@@ -933,6 +933,40 @@ mod tests {
         })
     }
 
+    struct NoSpawner;
+
+    impl Spawner for NoSpawner {
+        fn spawn(&self, _: &Spec) -> std::io::Result<u64> {
+            Ok(0)
+        }
+        fn close(&self, _: &str) {}
+        fn acknowledge_exit(&self, _: &str) {}
+    }
+
+    #[test]
+    fn a_started_terminal_is_told_its_daemons_kanna() {
+        let dir = std::env::temp_dir().join(format!("kdt-cli{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Helpers")).unwrap();
+        for binary in ["kanna", "kanna-daemon"] {
+            std::fs::write(dir.join("Helpers").join(binary), "").unwrap();
+        }
+        let cli = crate::cli::beside(&dir.join("Helpers/kanna-daemon"));
+        let mut env = vec![("KANNA_SOCKET".to_string(), "/s/kanna.sock".to_string())];
+        env.extend(crate::cli::env(cli.as_deref()));
+        let (events, _inbox) = crate::runtime::channel();
+        let terminals = Terminals::new(Rc::new(NoSpawner), Store::open(&dir).unwrap(), events.clone(), env, Arc::new(Wire::new(events)));
+        let spec = terminals.spec(&Pane::new("term-7", None, PaneType::Term), "t1");
+        let var = |name: &str| spec.env.iter().rev().find(|(key, _)| key == name).and_then(|(_, value)| value.clone());
+        let named = var(crate::cli::VAR).expect("KANNA_CLI is set");
+        assert_eq!(Path::new(&named), dir.join("Helpers/kanna"));
+        assert!(Path::new(&named).is_file(), "it names a kanna that exists");
+        assert_eq!(Path::new(&named).parent(), dir.join("Helpers/kanna-daemon").parent(), "beside the daemon");
+        assert_eq!((var("KANNA_SOCKET").as_deref(), var("KANNA_TERMINAL").as_deref()), (Some("/s/kanna.sock"), Some("term-7")));
+        drop(terminals);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_spawn_whose_reply_is_held_doesnt_hold_up_other_commands() {
         let dir = std::env::temp_dir().join(format!("kdt{}", std::process::id()));

@@ -69,6 +69,8 @@ flowchart TB
 
 So in production's terminals every `kanna` talks to production; to reach the worktree's own Kanna from there, use `scripts/run-kanna.sh`, which clears `KANNA_SOCKET`, `KANNA_INSTANCE` and `KANNA_TERMINAL`.
 
+Which `kanna` binary a shell runs (`KANNA_CLI` in a Kanna terminal, the global link `~/.local/bin/kanna` elsewhere): [which kanna a shell runs](cli-per-instance.md).
+
 ## 4. Running and cleaning up
 
 | Command | Does |
