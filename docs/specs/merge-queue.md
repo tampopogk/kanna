@@ -139,13 +139,15 @@ Any end other than `done` fails the entry: a merge conflict, a stage's fail with
 
 ## 8. Tests
 
-- **`queue.rs` unit tests:** order, refusals (conflict, `merges after`, uncommitted, no tests, already queued), landing only from M0, a repeated landing, main moving and the attempt count, cancel at each state.
-- **e2e `merge_queue`** on a private instance with a mock repo whose `merge.test` is a script that fails when a marker file is present:
-  1. two merges land in order, and the second is tested on top of the first (its test checks that the first's file is in its worktree);
-  2. a failing test returns the task to the Shelf as `merge-failed`, main is unchanged, and its agent (the mock agent) gets the queue's message with the log;
-  3. a conflicting branch is refused, naming the file;
-  4. the task's agent quits and its tabs close at `kanna task merge`, and its entry still lands, with the task Done after;
-  5. the daemon restarts while the test stage runs (a `sleep`), and the entry carries on and lands.
+e2e `merge_queue`, on a private instance with a mock repo whose `merge.test` is `sh test.sh`: the test fails when a `broken` file is in the merge, fails when `needs-a.txt` is there without `a.txt`, and sleeps 8s once when `slow` is there.
+
+1. **Refusals:** a branch that conflicts with main names the file; uncommitted changes name the file.
+2. **Two merges land in order, the second tested on top of the first:** A (`slow`) then B (`needs-a.txt`); main's first-parent history reads B's merge, A's merge (with A's `-m` message), then main as it was.
+3. **The agent quits while its entry still lands:** A's agent is running when it's merged; it stops, and A still lands and is Done, its queue branch removed.
+4. **A daemon restart mid-entry:** the daemon restarts while A's test sleeps; A and B both land after it.
+5. **A failure returns the task to the Shelf:** C (`broken`) fails, main doesn't move, `kanna task list` shows C as `merge-failed`, its agent is sent the log (`FAILED: broken is here`) as a message from the queue, and the log is kept in its worktree.
+
+`cargo test -p kanna-daemon` checks the `merge` settings in the schema against what the daemon reads.
 
 ## 9. Rejected
 
