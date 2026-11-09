@@ -79,7 +79,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Merge queue: “merge” hands the branch over, and main moves only to what was tested</h1>
-    <p>You tell a ready task's agent to merge. It runs <code>kanna task merge</code>: its agent quits, its tabs close, and the task leaves the Desk for the repo's merge queue, shown in the Desk view between the Desk and the Shelf. The queue runs one entry at a time: the branch merged onto main as it is now, in a worker, the repo's tests run there, then main fast-forwards to that merge, and the next entry is merged on top of it. A merged entry leaves the queue and its task is Done. One whose tests fail goes back to the Shelf, red, and its agent gets the log.</p>
+    <p>You tell a ready task's agent to merge. It runs <code>kanna task merge</code>: its agent quits, its tabs close, and the task leaves the Desk for the repo's merge queue, shown in the Desk view between the Desk and the Shelf. The queue runs one entry at a time: the branch merged onto main as it is now, in a worker, the repo's tests run there, then main fast-forwards to that merge, and the next entry is merged on top of it. A merged entry leaves the queue and its task is Done. One whose tests fail goes back to the Shelf, red, and its agent gets the log. An agent, the queue's tester, runs the tests and decides whether what fails is the branch's doing: a test that fails on main too, or passes when run again alone, doesn't keep the entry out, and one the branch breaks sends it back with the tester's reasons. Every entry is tested in the repo's one queue worktree, whose build stays warm.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button data-scene="desk" class="on">Desk view</button>
@@ -109,7 +109,7 @@ const initial = () => ({
     { id: "task-188c", name: "Merge queue", branch: "merge-queue", by: "the planning agent" },
   ],
   shelf: [
-    { id: "task-2d6e", name: "Shelf rows say which machine", status: "failed", branch: "shelf-machine", why: "test failed: 2 of 1 214 · cargo test -p kanna-daemon", at: Date.now() - 14 * MIN },
+    { id: "task-2d6e", name: "Shelf rows say which machine", status: "failed", branch: "shelf-machine", why: "shelf_row_names_its_machine fails: the branch reads the machine before the replica writes it", at: Date.now() - 14 * MIN },
     { id: "task-c410", name: "Diff viewer folds moved blocks", status: "working", msg: "Fold a block moved unchanged into one line in the diff" },
     { id: "task-51aa", name: "Release notes", status: "stopped", msg: "Write the 0.9 notes" },
   ],
@@ -139,7 +139,8 @@ function queueRows() {
     if (i === 0) {
       const ran = Date.now() - e.started;
       const pct = Math.min(95, Math.round(ran / (3.2 * MIN) * 100));
-      return `<div class="row"><span class="dot working" title="testing"></span><div class="t"><div class="n"><span class="pos">1</span>${esc(e.name)}</div><div class="s">${e.stage === "merge" ? "merging onto main" : `testing on main ${s.main} + ${esc(e.branch)}`} · ${clock(ran)} · usually 3m10s</div><div class="progress"><i style="width:${pct}%"></i></div></div><span class="go"><a title="kanna task merge --cancel">Take out</a> · <a title="the worker's terminal in a tab">Show</a></span></div>`;
+      const doing = e.stage === "merge" ? "merging onto main" : `testing on main ${s.main} + ${esc(e.branch)}`;
+      return `<div class="row"><span class="dot working" title="testing"></span><div class="t"><div class="n"><span class="pos">1</span>${esc(e.name)}</div><div class="s">${doing} · ${clock(ran)} · usually 3m10s</div><div class="progress"><i style="width:${pct}%"></i></div></div><span class="go"><a title="kanna task merge --cancel">Take out</a> · <a title="the worker's terminal in a tab">Show</a></span></div>`;
     }
     return `<div class="row waiting"><span class="dot queued" title="waiting in the queue"></span><div class="t"><div class="n"><span class="pos">${i + 1}</span>${esc(e.name)}</div><div class="s">waiting · tested on top of ${esc(s.queue[i - 1].name)} · ${esc(e.branch)} · merge asked by ${esc(e.by)}</div></div><span class="go"><a>Take out</a></span></div>`;
   }).join("") || `<div class="s" style="color:var(--muted)">Nothing waiting to merge.</div>`;
@@ -148,7 +149,7 @@ function queueRows() {
 function shelfRows() {
   return s.shelf.map(t => {
     if (t.status === "failed") {
-      return `<div class="row waiting"><span class="dot failed" title="its merge failed"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s"><span class="bad">merge failed</span> · ${esc(t.why)} · ${ago(t.at)} ago · its agent has the log</div></div><span class="go"><a data-scene-link="log">Log</a> · <a>Move to Desk →</a></span></div>`;
+      return `<div class="row waiting"><span class="dot failed" title="its merge failed"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s"><span class="bad">merge failed</span> · ${esc(t.why)} · ${ago(t.at)} ago · its agent has the tester's reasons</div></div><span class="go"><a data-scene-link="log">Log</a> · <a>Move to Desk →</a></span></div>`;
     }
     return `<div class="row waiting"><span class="dot ${t.status}"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s">${esc(t.msg)}</div></div><span class="go">Move to Desk →</span></div>`;
   }).join("");
@@ -209,26 +210,34 @@ function mergeView() {
 
 function logView() {
   const lines = [
-    `<span class="p">&gt;</span> <span class="g">[message from queue-7f3a]</span> "Shelf rows say which machine" didn't merge: its tests failed`,
-    `  on main 5d02c1e + shelf-machine (merge commit 9a41e7c). main is unchanged and your branch`,
-    `  is as you left it. The log: .kanna/tmp/queue-7f3a/test.log. The failures:`, ``,
-    `  <span class="bad">---- tasks::tests::shelf_row_names_its_machine stdout ----</span>`,
-    `  <span class="bad">thread panicked at crates/kanna-daemon/src/tasks.rs:7120: left: "mbp" right: "mini"</span>`,
-    `  <span class="bad">test result: FAILED. 1212 passed; 2 failed</span>`, ``,
+    `<span class="p">&gt;</span> <span class="g">[message from queue-7f3a]</span> "Shelf rows say which machine" didn't merge: <span class="bad">shelf_row_names_its_machine</span>`,
+    `  <span class="bad">fails: the branch reads the machine before the replica writes it</span>. It was tested on main`,
+    `  5d02c1e + shelf-machine (merge commit 9a41e7c). main is unchanged and your branch is as you`,
+    `  left it. The tests' log: .kanna/tmp/queue-7f3a/test.log. The queue's tester says it's the`,
+    `  branch's doing:`, ``,
+    `  <span class="bad">shelf_row_names_its_machine fails: the branch reads the machine before the replica writes it</span>`,
+    `  - tasks::tests::shelf_row_names_its_machine: <span class="bad">the branch's.</span> It passes on main 5d02c1e and`,
+    `    fails here, alone too (left: "mbp" right: "mini", tasks.rs:7120, a line the branch changed).`,
+    `  - app_link::tests::a_stalled_app_acks: <span class="warn">not the branch's.</span> It passes when run again alone:`,
+    `    it fails only under load.`,
+    `  - tasks::tests::a_blocked_task_waits_for_tasks and 3 more: <span class="g">not the branch's.</span> They fail on main too.`, ``,
     `  Fix it on your branch (merge main first: it moved), then kanna task merge again.`, ``,
     `<span class="m">●</span> The test reads the machine name from the replica before it's written. Merging main`,
     `  first, then fixing the order in shelf_row…`,
   ];
   return `<div class="content"><div class="agent"><div class="head">.kanna-worktrees/task-2d6e · shelf-machine</div><div class="term">${lines.join("\n")}</div></div>
-    <div class="docs"><div class="dtabs"><div class="dtab on">test.log</div></div><div class="log"><span class="g">$ cargo test -p kanna-daemon</span>
+    <div class="docs"><div class="dtabs"><div class="dtab on">test.log</div></div><div class="log"><span class="g">$ scripts/merge-test.sh</span>
    Compiling kanna-daemon v0.9.0
-    Finished test profile in 41.2s
+    Finished test profile in 41.2s <span class="g">(the queue's warm build: one crate)</span>
+     Running unittests src/lib.rs (target/debug/deps/kanna_daemon-1f2e3d4c)
 running 1214 tests
 <span class="g">…</span>
+test app_link::tests::a_stalled_app_acks ... <span class="bad">FAILED</span>
+test tasks::tests::a_blocked_task_waits_for_tasks ... <span class="bad">FAILED</span>
 test tasks::tests::shelf_row_names_its_machine ... <span class="bad">FAILED</span>
-test tasks::tests::shelf_rows_keep_their_order ... <span class="bad">FAILED</span>
 <span class="g">…</span>
-<span class="bad">test result: FAILED. 1212 passed; 2 failed; 0 ignored</span></div></div></div>`;
+<span class="bad">test result: FAILED. 1209 passed; 5 failed; 0 ignored</span>
+exit 101</div></div></div>`;
 }
 
 function pass() {
@@ -242,7 +251,7 @@ function pass() {
 function fail() {
   const e = s.queue.shift();
   if (!e) return;
-  s.shelf.unshift({ id: e.id, name: e.name, status: "failed", branch: e.branch, why: "test failed: 1 of 1 214 · cargo test -p kanna-daemon", at: Date.now() });
+  s.shelf.unshift({ id: e.id, name: e.name, status: "failed", branch: e.branch, why: "queue::tests::a_failed_stage_ends_the_entry fails: the branch drops the run's outcome", at: Date.now() });
   if (s.queue[0]) Object.assign(s.queue[0], { stage: "test", started: Date.now() });
   render();
 }

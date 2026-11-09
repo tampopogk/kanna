@@ -300,7 +300,7 @@ extension AppController {
     }
 
     func runningOnShelf(in root: String?) -> [JSON] {
-        shelf.filter { $0["running"]?.bool == true && inProject($0, root) }.compactMap { entry in
+        shelf.filter { $0["running"]?.bool == true && QueueSpot($0["queue"]) == nil && inProject($0, root) }.compactMap { entry in
             entry["held"]?.string.map { pane in
                 let ws = published["workspaces"]?.array?.first { $0["dock"]?["pane"]?.string == pane }
                 return ["task": .string(pane), "type": "term", "tabs": ws?["tabs"] ?? []]

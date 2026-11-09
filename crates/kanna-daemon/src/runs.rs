@@ -1647,6 +1647,9 @@ impl Runs {
         match next {
             Next::Stage { .. } => self.soon.set(true),
             Next::Done => self.hand_back(id),
+            Next::Stuck if doc.owner.is_some() && ended.verdict == Some(Verdict::Fail) => {
+                self.stop_as(id, "stopped", &format!("{stage} failed"), Some("daemon"), true, "failed");
+            }
             Next::Stuck => {
                 let why = format!("stuck: no arrow leaves {stage} after {}", ended.shown);
                 self.stop(id, "stopped", &why, Some("daemon"), true);
@@ -1665,6 +1668,11 @@ impl Runs {
     }
 
     fn stop(self: &Rc<Self>, id: &str, state: &str, why: &str, by: Option<&str>, tell: bool) {
+        let outcome = if why.starts_with("stuck") { "stuck" } else { "stopped" };
+        self.stop_as(id, state, why, by, tell, outcome);
+    }
+
+    fn stop_as(self: &Rc<Self>, id: &str, state: &str, why: &str, by: Option<&str>, tell: bool, outcome: &str) {
         let visit = {
             let live = self.live.borrow();
             live.iter().find(|l| l.row.id == id).and_then(|l| l.visit.clone())
@@ -1690,14 +1698,13 @@ impl Runs {
                 }
             }
         }
-        let outcome = if why.starts_with("stuck") { "stuck" } else { "stopped" };
         log!("kanna-daemon: {id} {state}: {why}");
-        let (by, why_owned, state_owned) = (by.map(String::from), why.to_string(), state.to_string());
+        let (by, why_owned, state_owned, outcome) = (by.map(String::from), why.to_string(), state.to_string(), outcome.to_string());
         self.update(id, |live| {
             live.visit = None;
             live.row.state = state_owned.clone();
             live.row.ended_at = Some(now());
-            live.row.outcome = Some(outcome.into());
+            live.row.outcome = Some(outcome.clone());
             live.doc.why = Some(why_owned.clone());
             live.doc.next = None;
             Some(("stopped", by.clone(), json!({ "why": why_owned })))
@@ -1745,7 +1752,7 @@ impl Runs {
             self.close(&pane);
         }
         self.stop(id, "stopped", why, Some("daemon"), false);
-        if Path::new(worker).is_dir() {
+        if Path::new(worker).is_dir() && !self.owned(id) {
             if let Err(error) = git(Path::new(repo), &["worktree", "remove", "--force", worker]) {
                 log!("kanna-daemon: {id}'s worktree {worker} is kept: {error}");
             }
@@ -1757,7 +1764,7 @@ impl Runs {
         let branch = &row.branch;
         let note = format!("{branch} is ready: take it with `git merge --ff-only {branch}` in your worktree, or look first with `git log HEAD..{branch}` and `git diff HEAD...{branch}`");
         let worker = Path::new(&doc.worker);
-        if worker.is_dir() {
+        if worker.is_dir() && doc.owner.is_none() {
             if let Err(error) = git(Path::new(&row.repo), &["worktree", "remove", &doc.worker]) {
                 log!("kanna-daemon: {id}'s worktree {} is kept: {error}", doc.worker);
             }
