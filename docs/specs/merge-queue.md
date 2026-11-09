@@ -85,7 +85,7 @@ sequenceDiagram
 - **The pipeline** is the repo's `.kanna/pipelines/merge-queue.kojo` if it has one. Otherwise it's Kanna's own: one agent stage, the **tester**, that runs `merge.test` and reports a verdict ([3.2](#32-the-tester-judges-the-failures)):
 
 ```
-test = <tasks.agent> prompt merge-test verdict within <merge.within, else tasks.timeout>s
+test = <tasks.agent> prompt merge-test verdict [within <merge.within>s]
 test -[pass]-> done
 ```
 
@@ -118,7 +118,7 @@ flowchart LR
 - **It needs no lock of its own:** the queue runs one entry at a time per repo, and whatever the tester runs (main's tests, a test again alone) it runs in the same worktree, within the entry. That's why one build folder works here, where a `CARGO_TARGET_DIR` shared by concurrent task worktrees was ruled out ([build store §7](build-store.md#7-rejected)): nothing else builds in it at the same time, and its source only ever moves forward from main.
 - **This repo's build store:** `merge.test` is `scripts/merge-test.sh`, which does what `build.sh` does for cargo and nothing else: `kanna_targets` links `target/` to `ROOT/kanna/merge-queue` on the build volume, `kanna_ghostty_vt` links libghostty-vt from the store, `kanna_cargo_seed` clones main's dependency seed the first time, and the compile cache serves the rest ([build store](build-store.md)). Then `cargo test --workspace --no-fail-fast`. The daemon knows nothing of this layout; it only keeps the worktree's path stable.
 - **Evicted like any build folder:** `ROOT/kanna/merge-queue` is a candidate for [eviction](build-store.md#5-eviction) when the volume runs low, except while a run is in it. The next run starts it from the seed again.
-- **Measured** (this repo, external SSD): the queue's first build, from the seed, 6m08s (28 crates); after a change to `kanna-daemon`, 12s (1 crate). Before, in a fresh worktree with no seed, one build took 38 minutes and every queue run timed out at 600s. `tasks.timeout` and `merge.within` are unchanged.
+- **Measured** (this repo, external SSD): the queue's first build, from the seed, 6m08s (28 crates); after a change to `kanna-daemon`, 12s (1 crate). Before, in a fresh worktree with no seed, one build took 38 minutes and every queue run timed out at 600s (`tasks.timeout`).
 
 ### 3.2 The tester judges the failures
 
@@ -137,7 +137,7 @@ flowchart TD
 - **Its answer:** a first line on the outcome (`every test passes`, `2 tests fail, neither is the branch's: …`, `broken_thing fails: the branch removed its fixture`), then each failure, whether it's the branch's and how it knows.
 - **A pass lands the entry** with the answer as its note: the entry's `doc.result` is `{"verdict": "pass", "note"}`, and the daemon's log has its first line.
 - **A fail fails the entry** with the answer's first line as its `why` and the whole answer as its note ([4](#4-failure)).
-- **Within:** the stage's `within` is `merge.within`, else `tasks.timeout`, as the `run` stage's was. Running out of time fails the entry as `the tests timed out`.
+- **Within:** the stage has a `within` only when the repo sets `merge.within`; `tasks.timeout` doesn't apply to the queue (it's for setup, teardown and other pipelines' `run` stages). Running out of time fails the entry as `the tests timed out`.
 - **A repo's own `merge-queue.kojo`** is judged by its arrows, as before: the tester is Kanna's pipeline's.
 
 ## 4. Failure
@@ -184,7 +184,7 @@ Any end other than `done` fails the entry: a merge conflict, a stage's fail with
 |---|---|---|
 | `tasks.agent` | either `config.json` | the tester's agent, as for tasks |
 | `merge.test` | the repo's `.kanna/config.json` | the command Kanna's own `merge-queue.kojo` has its tester run in the queue's worktree ([3.2](#32-the-tester-judges-the-failures)). This repo's: `scripts/merge-test.sh` |
-| `merge.within` | the repo's `.kanna/config.json` | the tester's `within` (default: `tasks.timeout`) |
+| `merge.within` | the repo's `.kanna/config.json` | the tester's `within` (default: none) |
 
 ## 8. Tests
 

@@ -68,8 +68,7 @@ pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     let files = tasks::config_files(repo);
     let agent = tasks::task_agent(&files);
     let agent = if kanna_pipe::AGENTS.contains(&agent.as_str()) { agent } else { tasks::DEFAULT_AGENT.to_string() };
-    let within = test_within(repo).unwrap_or_else(|| tasks::scripts(&files).timeout);
-    Some((test_pipeline(&agent, within), format!("Kanna's {PIPELINE}.kojo (merge.test, judged by {agent})")))
+    Some((test_pipeline(&agent, test_within(repo)), format!("Kanna's {PIPELINE}.kojo (merge.test, judged by {agent})")))
 }
 
 pub struct Tested<'a> {
@@ -694,8 +693,9 @@ pub fn own_pipeline(folder: &Path) -> bool {
     folder.join(format!(".kanna/pipelines/{PIPELINE}.kojo")).is_file()
 }
 
-pub fn test_pipeline(agent: &str, within: u64) -> String {
-    format!("test = {agent} prompt {PROMPT} verdict within {within}s\ntest -[pass]-> done\n")
+pub fn test_pipeline(agent: &str, within: Option<u64>) -> String {
+    let within = within.map_or(String::new(), |s| format!(" within {s}s"));
+    format!("test = {agent} prompt {PROMPT} verdict{within}\ntest -[pass]-> done\n")
 }
 
 fn patch(doc: &mut Value, with: Value) {
@@ -736,6 +736,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join(".kanna")).unwrap();
         assert_eq!(pipeline_text(&dir, &dir), None, "no merge.test and no pipeline: nothing to test with");
+        fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh"}, "tasks": {"timeout": 60}}"#).unwrap();
+        assert_eq!(pipeline_text(&dir, &dir).unwrap().0.lines().next().map(|l| l.contains("within")), Some(false), "no merge.within: the tester has no limit, whatever tasks.timeout is");
         fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh", "within": 900}}"#).unwrap();
         let (text, shown) = pipeline_text(&dir, &dir).unwrap();
         assert!(shown.starts_with("Kanna's merge-queue.kojo (merge.test, judged by "), "{shown}");

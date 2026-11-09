@@ -48,7 +48,7 @@ pub const COMMAND: Command = Command {
         ("kanna task subscribe main-moved 71af", "task-71af also hears every move of main."),
         ("kanna task events 71af", "What task-71af hears, and every event message it was sent."),
         ("kanna task done agent", "End the task docked as agent: close its agent and tabs."),
-        ("kanna task merge -m \"find is case-insensitive unless the search has a capital\"", "From a task's terminal: hand its branch to the repo's merge queue. Its agent quits and its tabs close; the queue merges it onto main, runs the repo's tests (merge.test or .kanna/pipelines/merge-queue.kojo) and moves main to that merge if they pass. If they fail, the task comes back to the Shelf and its agent gets the log."),
+        ("kanna task merge -m \"find is case-insensitive unless the search has a capital\"", "From a task's terminal: hand its branch to the repo's merge queue. Its agent quits and its tabs close; the queue merges it onto main, has an agent run the repo's tests there (merge.test, or .kanna/pipelines/merge-queue.kojo) and moves main to that merge unless a failure is the branch's doing. If one is, the task comes back to the Shelf and its agent gets the tester's reasons and the log."),
         ("kanna task merge --cancel 3f9a", "Take task-3f9a out of the merge queue: it goes back to the Shelf, stopped, and main isn't touched."),
         ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
     ],
