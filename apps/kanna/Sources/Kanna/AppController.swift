@@ -454,6 +454,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard case .array(let list)? = entry["panes"] else { continue }
             ids.formUnion(list.compactMap(\.string))
         }
+        let planners = Set(windows.compactMap { $0["planner"]?.string })
+        for workspace in state["workspaces"]?.array ?? [] where workspace["id"]?.string.map(planners.contains) == true {
+            ids.formUnion(workspace["panes"]?.array?.compactMap(\.string) ?? [])
+        }
         for window in windows {
             if let pane = window["dock"]?["pane"]?.string { ids.insert(pane) }
             if let pane = window["lead"]?["pane"]?.string { ids.insert(pane) }
