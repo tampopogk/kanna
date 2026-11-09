@@ -185,7 +185,7 @@ extension AppController {
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "queuePage": .bool(!controller.queuePage.isHidden), "queueCount": controller.tabBar.pageCounts[MergeQueuePage.title].map { .number(Double($0)) } ?? .null,
-                    "queue": .array(controller.queuePage.entries.map { ["id": .string($0.id), "task": .string($0.task), "name": .string($0.name), "state": .string($0.state), "said": .string($0.said), "terminal": $0.terminal.map { .string($0) } ?? .null] }),
+                    "queue": .array(controller.queuePage.entries.map { ["id": .string($0.id), "task": .string($0.task), "name": .string($0.name), "state": .string($0.state), "said": .string($0.said), "terminal": $0.terminal.map { .string($0) } ?? .null, "needs": $0.needs.map { .string($0) } ?? .null] }),
                     "queuePicked": controller.queuePage.selected.map { .string($0.task) } ?? .null, "queueTerminal": controller.queuePage.hostedTerminal.map { .string($0) } ?? .null,
                     "queueDetail": .string(controller.queuePage.detail), "queueLog": controller.queuePage.logShown.map { .string($0) } ?? .null, "queueWaiting": controller.queuePage.waitingText.map { .string($0) } ?? .null,
                     "schedulesPage": .bool(!controller.schedulesPage.isHidden), "scheduleGroups": .array(controller.schedulesPage.groupOrder.map { $0.map { .string($0) } ?? .null }),
@@ -565,7 +565,7 @@ extension AppController {
             point = spot
         } else if let entry = args["queue"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
-            guard let controller = controllers[id], let spot = controller.queuePage.center(of: entry, takeOut: args["takeOut"]?.bool == true) else { throw KannaError("not_found", "no \(entry) on \(id)'s Merge queue tab") }
+            guard let controller = controllers[id], let spot = controller.queuePage.center(of: entry, takeOut: args["takeOut"]?.bool == true, resume: args["resume"]?.bool == true) else { throw KannaError("not_found", "no \(entry) on \(id)'s Merge queue tab") }
             window = controller.window
             point = spot
         } else if let task = args["shelfLog"]?.string {

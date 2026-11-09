@@ -415,6 +415,14 @@ fn run() -> Result<(), String> {
     runs.install(&core);
     let queue = Rc::new(queue::Queue::open(db.clone(), Rc::downgrade(&tasks), Rc::downgrade(&runs)));
     queue.install(&core, &runs);
+    let needing = Rc::downgrade(&toasts);
+    *queue.on_needs.borrow_mut() = Some(Box::new(move |entry, title, why| {
+        let Some(toasts) = needing.upgrade() else { return };
+        let toast = toasts::Toast { title: title.to_string(), detail: Some(why.to_string()), pane: None, task: None, key: Some(format!("queue:{entry}:{why}")), from: None };
+        if let Err(error) = toasts.raise(toast) {
+            log!("kanna-daemon: can't raise a toast for {entry}: {}", error.message);
+        }
+    }));
     let closing = Rc::downgrade(&runs);
     let leaving = Rc::downgrade(&queue);
     *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {

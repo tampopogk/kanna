@@ -953,7 +953,7 @@ private final class ShelfRow: NSView {
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
         if let failed = task.failed {
             detail.append(NSAttributedString(string: "merge failed", attributes: [.font: small, .foregroundColor: NSColor.systemRed]))
-            detail.append(NSAttributedString(string: " · \(failed) · its agent has the tester's reasons · ", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+            detail.append(NSAttributedString(string: " · \(failed) · its agent has the reasons · ", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         }
         if let stack = task.stack {
             let color: NSColor = stack.hasPrefix("ready") ? .systemGreen : stack.hasPrefix("merges") ? .secondaryLabelColor : .systemOrange

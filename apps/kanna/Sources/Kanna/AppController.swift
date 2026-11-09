@@ -742,6 +742,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showQueue(controller, at: entry)
         }
         controller.queuePage.onTakeOut = { [weak self] task in self?.takeOut(task, from: id) }
+        controller.queuePage.onResume = { [weak self] run in self?.resumeQueued(run, from: id) }
         controller.queuePage.onPick = { [weak self, weak controller] in
             guard let self, let controller else { return }
             refresh()

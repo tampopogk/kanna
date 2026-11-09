@@ -27,9 +27,11 @@ const LOG_BYTES: u64 = 256 * 1024;
 
 pub const WORKER: &str = "merge-queue";
 
-pub const TEST_LOG: &str = ".kanna/tmp/merge-test.log";
+pub const PROMPT: &str = "merge-judge";
 
-pub const PROMPT: &str = "merge-test";
+pub const TEST: &str = "test";
+
+pub const JUDGE: &str = "judge";
 
 fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
@@ -68,12 +70,19 @@ pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     if let Ok(text) = fs::read_to_string(&own) {
         return Some((text, own.display().to_string()));
     }
-    test_command(repo)?;
+    let command = test_command(repo)?;
     let files = tasks::config_files(repo);
     let agent = tasks::task_agent(&files);
     let agent = if kanna_pipe::AGENTS.contains(&agent.as_str()) { agent } else { tasks::DEFAULT_AGENT.to_string() };
-    Some((test_pipeline(&agent, test_within(repo)), format!("Kanna's {PIPELINE}.kojo (merge.test, judged by {agent})")))
+    Some((test_pipeline(&command, &agent, test_within(repo)), format!("Kanna's {PIPELINE}.kojo (merge.test, a failure judged by {agent})")))
 }
+
+pub fn fits(command: &str) -> bool {
+    let text = test_pipeline(command, tasks::DEFAULT_AGENT, None);
+    kanna_pipe::parse(&text).ok().and_then(|p| p.stage(TEST).map(|s| matches!(&s.kind, kanna_pipe::Kind::Run { command: read } if read == command.trim()))).unwrap_or(false)
+}
+
+const UNFIT: &str = "merge.test can't be written as a pipeline's command (it has a #, a line break, or ends in `within N` or `on NAME`): put it in a script and name the script";
 
 pub struct Tested<'a> {
     pub command: &'a str,
@@ -85,35 +94,37 @@ pub struct Tested<'a> {
     pub queue_branch: &'a str,
 }
 
-pub fn test_prompt(t: &Tested) -> String {
+pub fn judge_prompt(t: &Tested) -> String {
     let (base, merge) = (short(t.base), short(t.merge));
     format!(
-        "You test a merge for {main}'s merge queue: \"{name}\" (the branch {branch}) merged onto {main} at {base}, as commit {merge}. This worktree is the queue's own, on {queue}. Nothing in it is yours to change: don't edit, commit, push or merge.
+        "You judge a merge for {main}'s merge queue: \"{name}\" (the branch {branch}) merged onto {main} at {base}, as commit {merge}. The queue ran the repo's tests on it (`{command}`) and they failed. The end of their output is under \"Feedback from {test}\" below, with the path of the file that has all of it. This worktree is the queue's own, on {queue}. Nothing in it is yours to change: don't edit, commit, push or merge.
 
-## Run the tests
-
-Run the repo's tests, with their whole output in the log the queue keeps:
-
-    {command} >{log} 2>&1; echo \"exit $?\" >>{log}
-
-They can take many minutes: give the command a long timeout, or run it in the background and wait for it. If they all pass, that's a pass.
-
-## If anything fails
+## Whose failure is it
 
 Decide, for each failure, whether this branch caused it, however you like: read the branch's change (`git diff {base} HEAD`, `git log --oneline {base}..HEAD`), run a failing test again on its own, or run it on {main} (`git checkout -q --detach {base}`, and `git checkout -q -f {queue}` to come back). A failure that's on {main} too, or that passes when it runs again alone (it fails only under load), isn't the branch's. A build that the branch breaks is.
+
+## A command that takes minutes
+
+Your shell stops a command after about ten minutes, and whatever you leave running in the background ends with your turn. So ask Kanna to run anything that could take more than a few minutes, such as a build on {main} or the whole suite again. Kanna runs it in this worktree and waits with you:
+
+    \"$KANNA_CLI\" run command 'COMMAND'
+
+It prints the command's exit code and the path of its output, or after 8 minutes that it's still running; then run `\"$KANNA_CLI\" run command --wait`, as often as it takes. Don't end your turn to wait for it.
+
+## Your verdict
 
 Report pass if no failure is the branch's, and fail if any is: a pass lands the merge on {main}, a fail sends the task back to its agent.
 
 ## Your answer
 
-Its first line is one line on the outcome, which the Desk shows: `every test passes`, `2 tests fail, neither is the branch's: …`, or `broken_thing fails: the branch removed its fixture`. Then each failure: its name, whether it's the branch's, and how you know. The task's agent reads it when the entry fails, and the queue keeps it when the entry lands.
+Its first line is one line on the outcome, which the Merge queue tab shows: `2 tests fail, neither is the branch's: …`, or `broken_thing fails: the branch removed its fixture`. Then each failure: its name, whether it's the branch's, and how you know. The task's agent reads it when the entry fails, and the queue keeps it when the entry lands.
 ",
         main = t.main,
         name = t.name,
         branch = t.branch,
         queue = t.queue_branch,
         command = t.command,
-        log = TEST_LOG,
+        test = TEST,
     )
 }
 
@@ -146,6 +157,7 @@ pub struct Queue {
     live: RefCell<Vec<QueueRow>>,
     soon: Cell<bool>,
     retry: Cell<Option<Instant>>,
+    pub on_needs: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
 }
 
 impl Queue {
@@ -161,7 +173,7 @@ impl Queue {
         for row in &live {
             log!("kanna-daemon: {} carries on in the merge queue ({}, {})", row.id, row.task, row.state);
         }
-        Queue { db, tasks, runs, live: RefCell::new(live), soon: Cell::new(true), retry: Cell::new(None) }
+        Queue { db, tasks, runs, live: RefCell::new(live), soon: Cell::new(true), retry: Cell::new(None), on_needs: RefCell::default() }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle, runs: &Rc<Runs>) {
@@ -169,6 +181,18 @@ impl Queue {
         *runs.on_end.borrow_mut() = Some(Box::new(move |run, outcome| {
             if let Some(this) = ending.upgrade() {
                 this.run_ended(run, outcome);
+            }
+        }));
+        let moving = Rc::downgrade(self);
+        *runs.on_moved.borrow_mut() = Some(Box::new(move |run| {
+            if let Some(this) = moving.upgrade() {
+                this.run_moved(run);
+            }
+        }));
+        let telling = Rc::downgrade(self);
+        *runs.on_tell.borrow_mut() = Some(Box::new(move |run, text| {
+            if let Some(this) = telling.upgrade() {
+                this.run_tells(run, text);
             }
         }));
         let this = Rc::downgrade(self);
@@ -240,6 +264,9 @@ impl Queue {
         }
         if pipeline_text(&folder, &repo).is_none() {
             return Err(KmuxError::new("no_tests", "this repo has no tests for the merge queue: set merge.test in .kanna/config.json (kanna config schema), or write .kanna/pipelines/merge-queue.kojo"));
+        }
+        if !own_pipeline(&folder) && !test_command(&repo).is_some_and(|c| fits(&c)) {
+            return Err(KmuxError::new("no_tests", UNFIT));
         }
         let branch = git(&folder, &["branch", "--show-current"]).unwrap_or_default();
         let name = entry.name.clone().unwrap_or_else(|| short.clone());
@@ -353,7 +380,7 @@ impl Queue {
         let Ok(common) = git(Path::new(&row.repo), &["rev-parse", "--path-format=absolute", "--git-common-dir"]) else { return };
         let dir = Path::new(&common).join("kanna/merge-queue");
         let to = dir.join(format!("{}.log", row.id));
-        if fs::create_dir_all(&dir).is_err() || fs::copy(path, &to).is_err() {
+        if fs::create_dir_all(&dir).is_err() || copy_readable(path, &to).is_err() {
             return;
         }
         patch(&mut row.doc, json!({ "kept": to.to_string_lossy() }));
@@ -456,7 +483,7 @@ impl Queue {
         };
         let worktree = Path::new(&worker);
         let message = text(&row.doc, "message");
-        patch(&mut row.doc, json!({ "worker": worker, "queueBranch": branch, "base": base, "main": main, "stage": null, "result": null, "note": null, "logs": null }));
+        patch(&mut row.doc, json!({ "worker": worker, "queueBranch": branch, "base": base, "main": main, "stage": null, "result": null, "note": null, "logs": null, "needs": null, "told": null }));
         if let Err(error) = git(worktree, &["merge", "--no-ff", "-m", &message, &row.head]) {
             let files = git(worktree, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
             let _ = git(worktree, &["merge", "--abort"]);
@@ -478,9 +505,12 @@ impl Queue {
         let mut prompts = prompts(worktree);
         if !own {
             let command = test_command(&repo).unwrap_or_default();
-            let _ = fs::remove_file(worktree.join(TEST_LOG));
+            if !fits(&command) {
+                self.save(&row);
+                return self.fail(&row.id, UNFIT, vec![]);
+            }
             let tested = Tested { command: &command, name: &text(&row.doc, "name"), branch: &text(&row.doc, "branch"), main: &main, base: &base, merge: &merge, queue_branch: &branch };
-            prompts.entry(PROMPT.to_string()).or_insert_with(|| test_prompt(&tested));
+            prompts.entry(PROMPT.to_string()).or_insert_with(|| judge_prompt(&tested));
         }
         match self.start_run(&mut row, pipeline, shown, &merge, message.clone(), prompts) {
             Ok(run) => log!("kanna-daemon: {} tests {} on {main} {} as {run}", row.id, row.task, short(&base)),
@@ -510,9 +540,36 @@ impl Queue {
         let run = runs.start_owned(started).map_err(|e| e.message)?;
         row.state = "testing".into();
         row.run = Some(run.clone());
-        patch(&mut row.doc, json!({ "stage": "test" }));
         self.save(row);
         Ok(run)
+    }
+
+    fn run_moved(&self, run: &str) {
+        let Some(mut row) = self.live.try_borrow().ok().and_then(|live| live.iter().find(|q| q.run.as_deref() == Some(run) && q.state == "testing").cloned()) else { return };
+        let Some(place) = self.runs.upgrade().and_then(|runs| runs.place_of(run)) else { return };
+        let needs = place.why.filter(|_| matches!(place.state.as_str(), "paused" | "waiting"));
+        let stage = place.stage.or_else(|| string(&row.doc, "stage").map(String::from));
+        if string(&row.doc, "stage") == stage.as_deref() && string(&row.doc, "needs") == needs.as_deref() {
+            return;
+        }
+        let told = needs.as_ref().and_then(|_| string(&row.doc, "told").map(String::from));
+        patch(&mut row.doc, json!({ "stage": opt(stage.as_deref()), "needs": opt(needs.as_deref()), "told": opt(told.as_deref()) }));
+        self.save(&row);
+    }
+
+    fn run_tells(&self, run: &str, said: &str) {
+        let Some(mut row) = self.live.borrow().iter().find(|q| q.run.as_deref() == Some(run) && q.state == "testing").cloned() else { return };
+        let why = self.runs.upgrade().and_then(|runs| runs.place_of(run)).and_then(|p| p.why).unwrap_or_else(|| said.lines().next().unwrap_or("").to_string());
+        log!("kanna-daemon: {} waits for you: {why}", row.id);
+        patch(&mut row.doc, json!({ "needs": why, "told": said }));
+        self.save(&row);
+        let name = text(&row.doc, "name");
+        if let Some(tasks) = self.tasks.upgrade() {
+            tasks.queue_needs(&row.task, &row.id, &needs_you(&name, &tasks.short_of(&row.task), said));
+        }
+        if let Some(on_needs) = self.on_needs.borrow().as_ref() {
+            on_needs(&row.id, &format!("\u{201C}{name}\u{201D} waits in the merge queue"), &why);
+        }
     }
 
     fn run_ended(self: &Rc<Self>, run: &str, outcome: Result<String, String>) {
@@ -522,33 +579,33 @@ impl Queue {
         }
         let judged = row.doc.get("own") == Some(&Value::Bool(false));
         let stages = self.db.stages(run).unwrap_or_default();
-        let last = stages.iter().rev().find(|s| matches!(s.kind.as_str(), "run" | "agent") && s.verdict.as_deref() != Some("interrupted")).cloned();
-        let log = match judged {
-            true => Some(Path::new(&text(&row.doc, "worker")).join(TEST_LOG).to_string_lossy().into_owned()),
-            false => stages.iter().rev().find(|s| s.kind == "run" && s.verdict.as_deref() != Some("interrupted")).and_then(|s| string(&s.doc, "log").map(String::from)),
-        };
+        let ended = |s: &&crate::db::StageRow| s.verdict.as_deref() != Some("interrupted");
+        let last = stages.iter().rev().find(|s| matches!(s.kind.as_str(), "run" | "agent") && ended(s)).cloned();
+        let log = stages.iter().rev().find(|s| s.kind == "run" && ended(s)).and_then(|s| string(&s.doc, "log").map(String::from));
         if let Some(log) = log.filter(|l| Path::new(l).is_file()) {
             self.keep_log(&mut row, "test", &log);
             self.keep_copy(&mut row, &log);
         }
         let failed = last.as_ref().is_some_and(|s| s.verdict.as_deref() == Some("fail"));
-        let stage = last.as_ref().map_or("test".to_string(), |s| s.stage.clone());
+        let stage = last.as_ref().map_or(TEST.to_string(), |s| s.stage.clone());
         let doc = last.as_ref().map_or(Value::Null, |s| s.doc.clone());
-        let answer = string(&doc, "answer").unwrap_or("").trim().to_string();
-        if judged && !answer.is_empty() {
+        let judge = stages.iter().rev().find(|s| judged && s.kind == "agent" && ended(s) && matches!(s.verdict.as_deref(), Some("pass" | "fail")));
+        let answer = judge.and_then(|s| string(&s.doc, "answer")).unwrap_or("").trim().to_string();
+        patch(&mut row.doc, json!({ "needs": null, "told": null }));
+        if !answer.is_empty() {
             patch(&mut row.doc, json!({ "note": answer }));
-            self.save(&row);
         }
+        self.save(&row);
         let lines: Vec<String> = string(&doc, "feedback").unwrap_or("").lines().map(String::from).collect();
         let timed_out = string(&doc, "note") == Some("timed out");
         match outcome {
             Ok(head) if !failed => {
-                let result = judged.then(|| json!({ "verdict": "pass", "note": answer }));
+                let result = judge.map(|_| json!({ "verdict": "pass", "note": answer }));
                 self.pass(row, &head, result)
             }
-            _ if timed_out => self.fail(&row.id, &format!("{} timed out", if judged { "the tests".to_string() } else { stage }), if judged { vec![] } else { lines }),
-            _ if judged && failed => {
-                let first = answer.lines().next().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("the tests failed, and its tester says it's the branch's doing").to_string();
+            _ if timed_out => self.fail(&row.id, &format!("{} timed out", if judged && stage == TEST { "the tests".to_string() } else { stage }), lines.into_iter().filter(|l| l != "timed out").collect()),
+            _ if judge.is_some() && failed => {
+                let first = answer.lines().next().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("the tests failed, and the queue's judge says it's the branch's doing").to_string();
                 patch(&mut row.doc, json!({ "result": { "verdict": "fail", "note": answer } }));
                 self.save(&row);
                 self.fail(&row.id, &first, vec![])
@@ -561,7 +618,7 @@ impl Queue {
 
     fn pass(self: &Rc<Self>, mut row: QueueRow, tested: &str, result: Option<Value>) {
         match result.as_ref().and_then(|r| r["note"].as_str()).filter(|n| !n.is_empty()) {
-            Some(note) => log!("kanna-daemon: {}'s tester passes it at {tested}, so it lands: {}", row.id, note.lines().next().unwrap_or("")),
+            Some(note) => log!("kanna-daemon: {}'s judge passes it at {tested}, so it lands: {}", row.id, note.lines().next().unwrap_or("")),
             None => log!("kanna-daemon: {}'s tests passed at {tested}, so it lands", row.id),
         }
         row.state = "landing".into();
@@ -574,7 +631,7 @@ impl Queue {
         let Some(folder) = self.tasks.upgrade().and_then(|t| t.entry(&row.task)).and_then(|e| e.folder).map(PathBuf::from) else { return };
         let dir = folder.join(format!(".kanna/tmp/{}", row.id));
         let to = dir.join(format!("{name}.log"));
-        if fs::create_dir_all(&dir).is_ok() && fs::copy(path, &to).is_ok() {
+        if fs::create_dir_all(&dir).is_ok() && copy_readable(path, &to).is_ok() {
             let mut logs = row.doc.get("logs").filter(|l| l.is_object()).cloned().unwrap_or_else(|| json!({}));
             logs[name] = json!(to.to_string_lossy());
             patch(&mut row.doc, json!({ "logs": logs }));
@@ -703,7 +760,7 @@ impl Queue {
         let note = result.and_then(|r| r["note"].as_str()).filter(|n| !n.is_empty());
         let shown: Vec<&String> = lines.iter().take(FAILURE_LINES).collect();
         if let Some(note) = note {
-            said.push_str(&format!(" The queue's tester says it's the branch's doing:\n\n{note}\n\n"));
+            said.push_str(&format!(" The queue's judge says it's the branch's doing:\n\n{note}\n\n"));
         } else if !shown.is_empty() {
             said.push_str(&format!(" The failures:\n\n{}\n\n", shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")));
         } else {
@@ -717,6 +774,14 @@ impl Queue {
         }
         self.soon.set(true);
     }
+}
+
+fn copy_readable(from: &str, to: &Path) -> std::io::Result<()> {
+    fs::write(to, readable(&String::from_utf8_lossy(&fs::read(from)?)))
+}
+
+pub fn needs_you(name: &str, task: &str, said: &str) -> String {
+    format!("\"{name}\" waits in the merge queue for you, and the entries behind it wait too. {said}\n`kanna task merge --cancel {task}` takes it out of the queue instead.")
 }
 
 fn short(commit: &str) -> &str {
@@ -752,9 +817,15 @@ pub fn own_pipeline(folder: &Path) -> bool {
     folder.join(format!(".kanna/pipelines/{PIPELINE}.kojo")).is_file()
 }
 
-pub fn test_pipeline(agent: &str, within: Option<u64>) -> String {
+pub fn test_pipeline(command: &str, agent: &str, within: Option<u64>) -> String {
     let within = within.map_or(String::new(), |s| format!(" within {s}s"));
-    format!("test = {agent} prompt {PROMPT} verdict{within}\ntest -[pass]-> done\n")
+    format!("{TEST} = run {}{within}\n{JUDGE} = {agent} prompt {PROMPT} verdict\n{TEST} -[pass]-> done\n{TEST} -[fail]-> {JUDGE}\n{JUDGE} -[pass]-> done\n", command.trim())
+}
+
+pub fn readable(output: &str) -> String {
+    let text = runs::plain(&output.replace("\r\n", "\n").replace('\r', "\u{1}"));
+    let lines: Vec<&str> = text.lines().map(|line| line.rsplit('\u{1}').find(|part| !part.is_empty()).unwrap_or("")).collect();
+    lines.join("\n") + "\n"
 }
 
 fn patch(doc: &mut Value, with: Value) {
@@ -805,24 +876,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kanna_s_pipeline_has_an_agent_run_merge_test_and_lands_only_on_its_pass() {
+    fn kanna_s_pipeline_runs_merge_test_as_a_command_and_starts_the_judge_only_when_it_fails() {
         let dir = std::env::temp_dir().join(format!("kanna-merge-queue-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join(".kanna")).unwrap();
         assert_eq!(pipeline_text(&dir, &dir), None, "no merge.test and no pipeline: nothing to test with");
         fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh"}, "tasks": {"timeout": 60}}"#).unwrap();
-        assert_eq!(pipeline_text(&dir, &dir).unwrap().0.lines().next().map(|l| l.contains("within")), Some(false), "no merge.within: the tester has no limit, whatever tasks.timeout is");
+        let pipeline = kanna_pipe::parse(&pipeline_text(&dir, &dir).unwrap().0).unwrap();
+        assert_eq!(pipeline.stage(TEST).unwrap().within, None, "no merge.within: the tests have no limit");
+        assert_eq!(runs::command_timeout(None, true, 60), 0, "and tasks.timeout doesn't bound a queue's command");
+        assert_eq!(runs::command_timeout(None, false, 60), 60, "as it bounds a task's run");
         fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh", "within": 900}}"#).unwrap();
         let (text, shown) = pipeline_text(&dir, &dir).unwrap();
-        assert!(shown.starts_with("Kanna's merge-queue.kojo (merge.test, judged by "), "{shown}");
+        assert!(shown.starts_with("Kanna's merge-queue.kojo (merge.test, a failure judged by "), "{shown}");
         let pipeline = kanna_pipe::parse(&text).unwrap();
-        let test = pipeline.stage("test").unwrap();
-        assert!(test.agent().is_some_and(|a| a.verdict && kanna_pipe::AGENTS.contains(&a.agent.as_str())), "{text}");
-        assert_eq!(test.prompt(), Some(PROMPT));
+        assert_eq!(pipeline.start, TEST);
+        let test = pipeline.stage(TEST).unwrap();
+        assert!(matches!(&test.kind, kanna_pipe::Kind::Run { command } if command == "sh test.sh"), "{text}");
         assert_eq!(test.within, Some(Duration::from_secs(900)));
-        let mut doc = runs::Doc { taken: vec![0; pipeline.arrows.len()], ..runs::Doc::default() };
-        assert_eq!(runs::decide(&pipeline, &mut doc, "test", Some(kanna_pipe::Verdict::Fail), None), runs::Next::Stuck);
-        assert_eq!(runs::decide(&pipeline, &mut doc, "test", Some(kanna_pipe::Verdict::Pass), None), runs::Next::Done);
+        assert_eq!(runs::command_timeout(test.within, true, 60), 900);
+        let judge = pipeline.stage(JUDGE).unwrap();
+        assert!(judge.agent().is_some_and(|a| a.verdict && kanna_pipe::AGENTS.contains(&a.agent.as_str())), "{text}");
+        assert_eq!((judge.prompt(), judge.within), (Some(PROMPT), None));
+        assert_eq!(pipeline.max_sessions(&kanna_pipe::Sizes::new()), 1, "at most one agent session an entry");
+        let fresh = || runs::Doc { taken: vec![0; pipeline.arrows.len()], ..runs::Doc::default() };
+        assert_eq!(runs::decide(&pipeline, &mut fresh(), TEST, Some(kanna_pipe::Verdict::Pass), Some(vec![])), runs::Next::Done, "a pass lands with no agent");
+        let mut doc = fresh();
+        assert_eq!(runs::decide(&pipeline, &mut doc, TEST, Some(kanna_pipe::Verdict::Fail), Some(vec!["FAILED a".into()])), runs::Next::Stage { name: JUDGE.into(), reset: false });
+        assert_eq!(runs::decide(&pipeline, &mut doc, JUDGE, Some(kanna_pipe::Verdict::Pass), None), runs::Next::Done);
+        let mut doc = fresh();
+        runs::decide(&pipeline, &mut doc, TEST, Some(kanna_pipe::Verdict::Fail), None);
+        assert_eq!(runs::decide(&pipeline, &mut doc, JUDGE, Some(kanna_pipe::Verdict::Fail), None), runs::Next::Stuck);
+        assert!(runs::ends_owned(true, Some("timed out")) && !runs::ends_owned(false, Some("timed out")) && !runs::ends_owned(true, None), "a queue run's stage that times out ends the entry, with no judge");
         fs::create_dir_all(dir.join(".kanna/pipelines")).unwrap();
         fs::write(dir.join(".kanna/pipelines/merge-queue.kojo"), "check = run true\ncheck -[pass]-> done\n").unwrap();
         assert!(pipeline_text(&dir, &dir).unwrap().0.starts_with("check = run true"), "the repo's own pipeline wins");
@@ -830,12 +915,40 @@ mod tests {
     }
 
     #[test]
-    fn the_tester_s_prompt_names_the_command_the_log_and_main() {
+    fn a_merge_test_that_a_pipeline_would_cut_short_is_refused() {
+        for fit in ["scripts/merge-test.sh", "cargo test --workspace -- --test-threads 4", "sh -c 'make check && make e2e'"] {
+            assert!(fits(fit), "{fit}");
+        }
+        for unfit in ["make test # the lot", "make test within 5m", "make test on mini", "make a\nmake b"] {
+            assert!(!fits(unfit), "{unfit}");
+        }
+    }
+
+    #[test]
+    fn the_judge_s_prompt_names_main_the_merge_and_how_to_run_a_long_command() {
         let tested = Tested { command: "scripts/merge-test.sh", name: "Add a", branch: "add-a", main: "main", base: "0123456789abcdef", merge: "fedcba9876543210", queue_branch: "queue/task-1-1" };
-        let said = test_prompt(&tested);
-        assert!(said.contains("    scripts/merge-test.sh >.kanna/tmp/merge-test.log 2>&1; echo \"exit $?\" >>.kanna/tmp/merge-test.log\n"), "{said}");
-        assert!(said.contains("merged onto main at 01234567, as commit fedcba98"), "{said}");
+        let said = judge_prompt(&tested);
+        assert!(said.contains("merged onto main at 01234567, as commit fedcba98. The queue ran the repo's tests on it (`scripts/merge-test.sh`) and they failed."), "{said}");
+        assert!(said.contains("under \"Feedback from test\" below"), "{said}");
         assert!(said.contains("`git checkout -q --detach 01234567`, and `git checkout -q -f queue/task-1-1` to come back"), "{said}");
+        assert!(said.contains("    \"$KANNA_CLI\" run command 'COMMAND'\n") && said.contains("Don't end your turn to wait for it."), "{said}");
+        assert!(!said.contains("in the background and wait"), "{said}");
+        let pipeline = kanna_pipe::parse(&test_pipeline("sh test.sh", "claude", None)).unwrap();
+        let feedback = runs::Feedback { stage: TEST.into(), text: "FAILED a".into(), full: "/w/.kanna/tmp/stage-1.log".into() };
+        let whole = runs::prompt(pipeline.stage(JUDGE).unwrap(), &said, "Merge branch 'add-a': Add a", Some(&feedback), &BTreeMap::new(), ".kanna/tmp/answer-2.md");
+        assert!(whole.contains("# Feedback from test\n\nFAILED a\n\nAll of its output is in `/w/.kanna/tmp/stage-1.log`.\n"), "{whole}");
+    }
+
+    #[test]
+    fn a_kept_log_reads_as_the_terminal_showed_it() {
+        let output = "Running: sh test.sh\r\n\r\n\x1b[32m   Compiling\x1b[0m a\r\n    Building [=>  ] 1/3\r    Building [==> ] 2/3\r\x1b[K    Finished\r\ntest a ... ok\r\n";
+        assert_eq!(readable(output), "Running: sh test.sh\n\n   Compiling a\n    Finished\ntest a ... ok\n");
+    }
+
+    #[test]
+    fn a_paused_entry_s_news_says_what_happened_and_both_ways_out() {
+        let said = needs_you("Add a", "task-1", "judge's turn ended without it reporting it was done or what it needs. `kanna run resume run-1 \"…\"` carries it on with your answer.");
+        assert_eq!(said, "\"Add a\" waits in the merge queue for you, and the entries behind it wait too. judge's turn ended without it reporting it was done or what it needs. `kanna run resume run-1 \"…\"` carries it on with your answer.\n`kanna task merge --cancel task-1` takes it out of the queue instead.");
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -883,7 +996,7 @@ mod tests {
         fs::write(repo.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "cargo test"}}"#).unwrap();
         let db = Rc::new(Db::open(&dir.join("state")));
         let queue = Rc::new(Queue::open(db, Weak::new(), Weak::new()));
-        let row = QueueRow { id: "queue-1".into(), repo: repo.to_string_lossy().into_owned(), task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": own, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "branch": "a", "stage": "test" }) };
+        let row = QueueRow { id: "queue-1".into(), repo: repo.to_string_lossy().into_owned(), task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": own, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "branch": "a", "stage": "test", "needs": "judge stopped without reporting", "told": "x" }) };
         queue.db.put_queued(&row).unwrap();
         let run = crate::db::RunRow { id: "run-1".into(), task: "task-1".into(), repo: row.repo.clone(), pipeline: PIPELINE.into(), revision_hash: "r".into(), branch: "queue/task-1-1".into(), state: "stopped".into(), started_at: 1.0, ended_at: Some(2.0), outcome: Some("failed".into()), doc: json!({}) };
         queue.db.put_run(&run, None).unwrap();
@@ -901,10 +1014,23 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_the_tester_says_isn_t_the_branch_s_lands_it_with_the_note() {
+    fn tests_that_pass_land_it_with_no_judge_and_no_note() {
+        let (queue, dir) = judging("passes", false);
+        visited(&queue, TEST, "run", "pass", json!({ "feedback": "test result: ok." }));
+        queue.run_ended("run-1", Ok("merge0".into()));
+        let landed = state(&queue);
+        assert_eq!(landed.state, "landing", "{:?}", landed.doc);
+        assert_eq!(landed.doc["tested"], "merge0");
+        assert_eq!((landed.doc.get("result"), landed.doc.get("note")), (None, None));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failure_the_judge_says_isn_t_the_branch_s_lands_it_with_the_note() {
         let (queue, dir) = judging("not-the-branch", false);
         let note = "1 test fails, not the branch's: known_broken\nknown_broken fails on main at base0 too.";
-        visited(&queue, "test", "agent", "pass", json!({ "answer": note }));
+        visited(&queue, TEST, "run", "fail", json!({ "feedback": "test known_broken ... FAILED" }));
+        visited(&queue, JUDGE, "agent", "pass", json!({ "answer": note }));
         queue.run_ended("run-1", Ok("merge0".into()));
         let landed = state(&queue);
         assert_eq!(landed.state, "landing", "{:?}", landed.doc);
@@ -914,11 +1040,12 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_the_tester_blames_on_the_branch_refuses_it_with_the_reason() {
+    fn a_failure_the_judge_blames_on_the_branch_refuses_it_with_the_reason() {
         let (queue, dir) = judging("the-branch", false);
         let note = "broken_thing fails: the branch removed its fixture\nbroken_thing passes on main and fails here, alone too.";
-        visited(&queue, "test", "agent", "fail", json!({ "answer": note, "feedback": note }));
-        queue.run_ended("run-1", Err("test failed".into()));
+        visited(&queue, TEST, "run", "fail", json!({ "feedback": "test broken_thing ... FAILED" }));
+        visited(&queue, JUDGE, "agent", "fail", json!({ "answer": note, "feedback": note }));
+        queue.run_ended("run-1", Err("judge failed".into()));
         let failed = state(&queue);
         assert_eq!(failed.state, "failed");
         assert_eq!(failed.doc["why"], "broken_thing fails: the branch removed its fixture");
@@ -927,11 +1054,25 @@ mod tests {
     }
 
     #[test]
-    fn a_tester_that_runs_out_of_time_fails_the_entry_as_timed_out() {
+    fn tests_that_run_out_of_time_fail_the_entry_as_timed_out_with_no_judge() {
         let (queue, dir) = judging("timed-out", false);
-        visited(&queue, "test", "agent", "fail", json!({ "answer": "", "feedback": "timed out", "note": "timed out" }));
-        queue.run_ended("run-1", Err("test failed".into()));
-        assert_eq!(state(&queue).doc["why"], "the tests timed out");
+        visited(&queue, TEST, "run", "fail", json!({ "feedback": "timed out\ntest slow_thing has been running for over 60 seconds", "note": "timed out" }));
+        queue.run_ended("run-1", Err("test timed out".into()));
+        let failed = state(&queue);
+        assert_eq!(failed.doc["why"], "the tests timed out");
+        assert_eq!(failed.doc["feedback"], "test slow_thing has been running for over 60 seconds");
+        assert_eq!(failed.doc.get("result"), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_judge_that_exits_without_a_verdict_fails_the_entry_with_why() {
+        let (queue, dir) = judging("no-verdict", false);
+        visited(&queue, TEST, "run", "fail", json!({ "feedback": "test broken_thing ... FAILED" }));
+        visited(&queue, JUDGE, "agent", "stopped", json!({}));
+        queue.run_ended("run-1", Err("judge's agent exited without reporting it was done".into()));
+        let failed = state(&queue);
+        assert_eq!((failed.state.as_str(), failed.doc["why"].as_str()), ("failed", Some("judge's agent exited without reporting it was done")));
         let _ = fs::remove_dir_all(&dir);
     }
 
