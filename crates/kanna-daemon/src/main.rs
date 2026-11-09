@@ -266,7 +266,7 @@ fn run() -> Result<(), String> {
     }
 
     let (events, mut inbox) = runtime::channel();
-    let retired = instance_move::settle(&state_dir, &socket);
+    let retired = instance_move::settle(&state_dir, &socket)?;
     let socket = kanna_build::own_socket(&given);
     let socket_path = socket.to_string_lossy().into_owned();
     let db = Rc::new(db::Db::open(&state_dir));
@@ -556,7 +556,8 @@ fn run() -> Result<(), String> {
             return Err(format!("can't take the terminals back from the keeper: {error}"));
         }
     };
-    let restored = terminals.restore(adopted, reports::load(&db));
+    let placed: Vec<String> = layout.saved_panes().into_iter().map(|p| p.id).collect();
+    let restored = terminals.restore(adopted, reports::load(&db), &placed);
     reports::keep_only(&db, &terminals.running());
     if restored != Restored::default() {
         log!(
@@ -569,10 +570,16 @@ fn run() -> Result<(), String> {
     }
     core.note_numbers(&layout.content_numbers());
     core.install_panes(layout.saved_panes(), 0, 0, 0);
+    let unbacked: Vec<String> = core.with_panes(|panes| panes.iter().filter(|p| p.kind == kanna_mux::PaneType::Term && p.state == kanna_mux::PaneState::Starting).map(|p| p.id.clone()).collect());
+    for pane in &unbacked {
+        log!("kanna-daemon: {pane} has no terminal behind it, so it's shown ended");
+        core.with_pane_mut(pane, |pane| pane.state = kanna_mux::PaneState::Exited);
+    }
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     tasks.repair_comment_targets();
     tasks.settle_statuses();
+    tasks.close_ended_planners();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -582,10 +589,11 @@ fn run() -> Result<(), String> {
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
     let closing = machines.as_ref().map(Rc::downgrade);
-    let (counting, stopping_terminals, moving_keeper, quitting, attached) = (Rc::downgrade(&terminals), Rc::downgrade(&terminals), Rc::downgrade(&keeper), Rc::downgrade(&app), Rc::downgrade(&app));
+    let (counting, stopping_terminals, asking_keeper, moving_keeper, quitting, attached) = (Rc::downgrade(&terminals), Rc::downgrade(&terminals), Rc::downgrade(&keeper), Rc::downgrade(&keeper), Rc::downgrade(&app), Rc::downgrade(&app));
     *tasks.move_hooks.borrow_mut() = Some(tasks::MoveHooks {
         socket: socket.clone(),
         terminals: Box::new(move || counting.upgrade().map_or(0, |t| t.running().len())),
+        keeper_moves: Box::new(move || asking_keeper.upgrade().map_or_else(|| Err("the keeper is gone".into()), |keeper| keeper.can_move())),
         close_endpoint: Box::new(move || {
             if let Some(machines) = closing.as_ref().and_then(std::rc::Weak::upgrade) {
                 machines.close_from_loop();
