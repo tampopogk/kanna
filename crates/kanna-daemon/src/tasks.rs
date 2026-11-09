@@ -20,10 +20,12 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod comment_targets;
+mod instance;
 mod merging;
 mod moving;
 mod phone;
 
+pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
 
 const WORKTREES: &str = ".kanna-worktrees";
@@ -991,6 +993,8 @@ pub struct Tasks {
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub on_stop: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub on_start: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
     pub age: RefCell<Option<Box<dyn Fn(&str) -> Option<Duration>>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
@@ -1031,6 +1035,8 @@ pub struct Tasks {
     following: RefCell<HashSet<PathBuf>>,
     news: RefCell<News>,
     ending: RefCell<HashMap<String, Option<String>>>,
+    moving_instance: RefCell<Option<String>>,
+    pub move_hooks: RefCell<Option<instance::MoveHooks>>,
 }
 
 #[derive(Clone)]
@@ -1183,6 +1189,8 @@ impl Tasks {
             background: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
+            on_stop: RefCell::default(),
+            on_start: RefCell::default(),
             on_delivered: RefCell::default(),
             age: RefCell::default(),
             warned: RefCell::default(),
@@ -1216,6 +1224,8 @@ impl Tasks {
             following: RefCell::default(),
             news: RefCell::default(),
             ending: RefCell::default(),
+            moving_instance: RefCell::default(),
+            move_hooks: RefCell::default(),
         }
     }
 
@@ -2012,6 +2022,21 @@ impl Tasks {
         running.into_iter().chain(self.entries.borrow().iter().cloned()).find(inside)
     }
 
+    pub fn agent_pane(&self, task: &str) -> Option<String> {
+        let running = self.running.borrow().iter().find(|r| r.entry.id == task).map(|r| r.pane.clone());
+        running.or_else(|| self.entries.borrow().iter().find(|e| e.id == task).and_then(|e| e.held.clone()))
+    }
+
+    pub fn waits_on_you(&self, pane: &str) -> bool {
+        self.core.upgrade().and_then(|core| core.pane(pane)).is_some_and(|p| p.waits_on_you)
+    }
+
+    fn started_again(&self, pane: &str) {
+        if let (Some(id), Some(on_start)) = (self.task_of(pane), self.on_start.borrow().as_ref()) {
+            on_start(&id);
+        }
+    }
+
     pub fn task_of(&self, pane: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.id.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.held.as_deref() == Some(pane)).map(|e| e.id.clone()))
@@ -2082,6 +2107,15 @@ impl Tasks {
             if !alive(&core, &pane) {
                 self.record_status(&pane, "exited");
             }
+        }
+    }
+
+    pub fn close_ended_planners(&self) {
+        let Some(core) = self.core.upgrade() else { return };
+        let windowless = self.windowless.borrow().as_ref().map_or(vec![], |panes| panes());
+        for pane in self.planners().into_iter().filter(|pane| !windowless.contains(pane) && !alive(&core, pane)) {
+            log!("kanna-daemon: the planner in {pane} has no terminal running, so its Desk gets a new planner");
+            core.handle(json!({ "cmd": "close", "args": { "task": pane } }), |_| {});
         }
     }
 
@@ -2574,6 +2608,9 @@ impl Tasks {
     }
 
     fn fill(self: &Rc<Self>, core: &CoreHandle) {
+        if self.moving_instance.borrow().is_some() {
+            return;
+        }
         self.adopt();
         let entries = self.entries.borrow().clone();
         let machines = self.machines();
@@ -2794,6 +2831,7 @@ impl Tasks {
         core.add_command(
             "replica",
             Rc::new(move |args, responder| match this.upgrade() {
+                Some(this) if this.holds_for_move(&args) => responder.reply(Err(this.moving_refusal())),
                 Some(this) if string(&args, "action") == Some("transfer") => this.take_transfer(&args, responder),
                 Some(this) => responder.reply(this.replica_command(&args)),
                 None => responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))),
@@ -2811,6 +2849,9 @@ impl Tasks {
                         Ok(None) => {}
                         Err(error) => return responder.reply(Err(error)),
                     }
+                }
+                if this.blocked_by_move(&args) {
+                    return responder.reply(Err(this.moving_refusal()));
                 }
                 match args.get("action").and_then(Value::as_str) {
                     Some("new") => this.adding(args, responder),
@@ -4332,6 +4373,9 @@ impl Tasks {
                 }
                 let session = tasks.pane_entry(&pane).and_then(|e| e.session);
                 tasks.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
+                if let (Some(id), Some(on_stop)) = (tasks.task_of(&pane), tasks.on_stop.borrow().as_ref()) {
+                    on_stop(&id);
+                }
                 tasks.refill();
                 let out = Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("place".to_string(), json!(place))]);
                 core.hang_up(&pane.clone(), move |hung_up| responder.reply(hung_up.map(|_| out)));
@@ -4381,12 +4425,12 @@ impl Tasks {
         });
     }
 
-    fn revive(&self, pane: &str, command: Option<String>, done: impl FnOnce(Result<String, KmuxError>) + 'static) {
+    fn revive(self: &Rc<Self>, pane: &str, command: Option<String>, done: impl FnOnce(Result<String, KmuxError>) + 'static) {
         let Some(core) = self.core.upgrade() else { return done(Err(gone())) };
         if let Some(command) = command {
             core.set_command(pane, command);
         }
-        let (weak, old) = (core.weak(), pane.to_string());
+        let (weak, old, this) = (core.weak(), pane.to_string(), Rc::downgrade(self));
         core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| {
             if let Some(error) = failed(&reply) {
                 return done(Err(error));
@@ -4396,6 +4440,9 @@ impl Tasks {
             core.wake(&task.clone(), move |woken| {
                 if let Err(error) = woken {
                     log!("kanna-daemon: couldn't start {task}'s terminals again: {}", error.message);
+                }
+                if let Some(this) = this.upgrade() {
+                    this.started_again(&task);
                 }
                 done(Ok(task))
             });

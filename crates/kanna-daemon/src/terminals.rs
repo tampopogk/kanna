@@ -500,7 +500,7 @@ impl Terminals {
         self.live.borrow().iter().filter(|(_, t)| t.running().is_some()).map(|(id, _)| id.clone()).collect()
     }
 
-    pub fn restore(&self, adopted: Vec<Adopted>, mut reports: HashMap<String, Kept>) -> Restored {
+    pub fn restore(&self, adopted: Vec<Adopted>, mut reports: HashMap<String, Kept>, placed: &[String]) -> Restored {
         let saved = self.store.load();
         let (mut counter, mut terminals, mut numbered) = (saved.counter, saved.terminals, saved.ptys);
         for id in saved.records.iter().flat_map(|r| [&r.id, &r.pane, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
@@ -533,8 +533,13 @@ impl Terminals {
                     restored.exited += 1;
                     self.ended(&record, self.store.snapshot(&record.id))
                 }
-                None => {
+                None if placed.contains(&record.pane) => {
                     log!("kanna-daemon: {} ended while no daemon was running, and the keeper has no exit for it", pane.label());
+                    pane.state = PaneState::Exited;
+                    restored.exited += 1;
+                    self.ended(&record, self.store.snapshot(&record.id))
+                }
+                None => {
                     restored.dropped += 1;
                     continue;
                 }
