@@ -224,6 +224,17 @@ The `kanna-tasks` skill tells agents that merging means `kanna task merge` with 
 | `kanna task list` | has the `Merging` section and the `merge-failed` state |
 | `kanna task done TASK` on a queued task | takes it out of the queue, then Done, keeping its unmerged worktree |
 
+An entry's run takes the `kanna run` commands any run does ([software factory §7](software-factory.md#7-cli)). These are the ones the queue relies on:
+
+| Command | Who | Does |
+|---|---|---|
+| `kanna run done pass` | the judge | ends the judgement: no failure is the branch's, so the merge lands, with its answer kept as the entry's note |
+| `kanna run done fail` | the judge | ends the judgement: a failure is the branch's, so the task goes back to the Shelf with its answer |
+| `kanna run command COMMAND`, `--wait` | the judge | has Kanna run a long command in the queue's worktree and waits for it ([run commands](run-commands.md)) |
+| `kanna run need TEXT` | the judge | pauses the entry as `needs you` with what it needs |
+| `kanna run resume RUN [WORDS]` | you, or the planner when you say | carries a paused entry's judge on with your words ([4.1](#41-an-entry-that-needs-you)) |
+| `kanna run show RUN`, `kanna run log RUN` | anyone | the run's stages and verdicts, and its events |
+
 | Setting | Where | Is |
 |---|---|---|
 | `tasks.agent` | either `config.json` | the judge's agent |

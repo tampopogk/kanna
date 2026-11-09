@@ -245,6 +245,7 @@ sequenceDiagram
 | `kanna run answer [RUN] yes\|no [NOTE]` | Answer the waiting `ask`; the note goes to the next stage, and who answered is kept |
 | `kanna run done [pass\|fail] [--answer FILE]` | From a stage's worker: the visit is done, with its verdict at a `verdict` stage and its answer (`$KANNA_ANSWER` by default) |
 | `kanna run need TEXT` | From a stage's worker: the stage needs something from you; the run pauses and tells the task's agent |
+| `kanna run command COMMAND`, `kanna run command --wait` | From a stage's worker: Kanna runs a long command in the run's worktree and waits for it ([run commands](run-commands.md)) |
 | `kanna run resume [RUN] [TEXT]` | Carry a paused run's stage on: its session resumes with TEXT as its next message |
 | `kanna run pause\|skip\|retry\|stop [RUN]` | The Run tab's buttons: pause once the stage ends; end the stage as a pass; run it again; end the run |
 | `kanna run edit [RUN]` | The run's current revision in a code pane; saving validates and applies it |
