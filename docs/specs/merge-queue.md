@@ -2,7 +2,7 @@
 
 **Status:** built (daemon, CLI, Desk view; the phone's Shelf doesn't show the queue yet) · **Tested:** `cargo test -p kanna-daemon queue::`, e2e `merge_queue` · **Mockup:** [`references/mockups/merge-queue.html`](../../references/mockups/merge-queue.html) (Desk view, `kanna task list`, `kanna task merge`, a failed entry's log; `#light`) · **Builds on:** [build store](build-store.md), [software factory §6.1](software-factory.md#61-sequential-runs-as-built) (runs and their agent stages), [Kojo](kojo.md), [tasks](tasks.md), [stacked tasks](stacked-tasks.md), [task events](task-events.md)
 
-When you tell a ready task's agent to merge, it runs `kanna task merge`. The task leaves the Desk for its repo's **merge queue** and its agent quits; you don't wait. The queue lands one entry at a time: it merges the branch onto main as main is now, runs the repo's tests on that merge, and moves main to it only if they pass. The next entry is merged on top of that. If an entry fails, the task goes back to the Shelf and its agent gets the log.
+When you tell a ready task's agent to merge, it runs `kanna task merge`. The task leaves the Desk for its repo's **merge queue** and its agent quits; you don't wait. The queue lands one entry at a time: it merges the branch onto main as main is now, has an agent run the repo's tests on that merge, and moves main to it unless a failure is the branch's doing. The next entry is merged on top of that. If an entry fails, the task goes back to the Shelf and its agent gets the log.
 
 The queue builds the way a task's worktree does, with the build store, the dependency seed and the compile cache. The difference is that it tests every entry in one worktree per repo, which keeps its build, so a run rebuilds only what the merge changed ([3.1](#31-one-warm-worktree-per-repo)). An agent runs the tests and judges them: when something fails, it decides whether the branch caused it, and the entry fails only if it did. A failure that's on main too, or that passes when run again alone, doesn't keep it out ([3.2](#32-the-tester-judges-the-failures)).
 
@@ -22,9 +22,9 @@ The queue builds the way a task's worktree does, with the build store, the depen
 
 ## 1. Why
 
-Before the queue, "merge" meant the task's agent merged main into its branch, rebuilt, reran its tests, then merged into main, all while you waited. A task marked ready at 10:34 was merged at 13:32, after main had moved six times, and the merge took 2m20s of rebuilding and testing. The queue tests each change once, at the point where it lands. That cost grows linearly with merges.
+Merging shouldn't take your time, and what lands on main should be what was tested. The queue tests each change once, at the point where it lands, on top of everything that landed before it, while you work on something else. Its cost grows linearly with merges.
 
-- **Ready tasks aren't re-tested in the background each time main moves.** A task already hears when main moves into a conflict with it ([`main-conflicts`](task-events.md)). Its tests run once, in the queue.
+- **Ready tasks aren't re-tested in the background each time main moves.** A task hears when main moves into a conflict with it ([`main-conflicts`](task-events.md)). Its tests run once, in the queue.
 - **You start the merge, and only tested code lands.** Main fast-forwards to the exact commit the tests passed on. This is why the queue isn't the rejected "`merge main` stage gated by an `ask`" ([software factory §8](software-factory.md#8-rejected)): that stage would land a run's branch that you never had in your worktree.
 
 ## 2. Merging a task
@@ -58,7 +58,7 @@ When the merge is accepted:
 - **The entry records the branch's head now.** That commit is what lands, even if the branch moves later. A task in the queue has no agent to move it.
 - **The task leaves the Desk or the Shelf.** Its agent quits as at Done (`Tasks::end_agent`: brought to rest, then `/exit`; its session is kept), its tabs close, and its place on the Desk frees up. Its worktree, branch and workspace stay: the queue's worker terminal lives in that workspace ([6](#6-how-its-built)).
 - **The task isn't Done yet.** Done (teardown, then removing the worktree and branch once they're merged) runs when the entry lands. Until then the task can come back to the Shelf.
-- **The merge commit's message** is `-m MESSAGE`, else `Merge branch 'BRANCH': NAME`. The `kanna-tasks` skill tells the agent to pass a one-line summary of the work, as merges on main read today.
+- **The merge commit's message** is `-m MESSAGE`, else `Merge branch 'BRANCH': NAME`. The `kanna-tasks` skill tells the agent to pass a one-line summary of the work, as merges on main read.
 - **Any number of a repo's tasks can be in its queue.** They don't count against `shelf.runners` or the Desk's three places.
 
 ## 3. An entry's run
@@ -89,16 +89,14 @@ test = <tasks.agent> prompt merge-test verdict [within <merge.within>s]
 test -[pass]-> done
 ```
 
-- **A repo's own pipeline** may have any stages runs can do (today, `run` and agent stages with their loops), for example a check, a build, then e2e, or a fix stage that commits to the merge branch before the tests run again. What lands is the run's branch at `done`, and it lands only if it's a descendant of X and the run's last visit didn't fail: a pipeline whose arrow takes a fail to `done` fails the entry instead.
+- **A repo's own pipeline** may have any stages runs can do (`run` and agent stages with their loops), for example a check, a build, then e2e, or a fix stage that commits to the merge branch before the tests run again. What lands is the run's branch at `done`, and it lands only if it's a descendant of X and the run's last visit didn't fail: a pipeline whose arrow takes a fail to `done` fails the entry instead.
 - **Main** is the branch the main checkout has checked out, as everywhere else in Kanna ([task events](task-events.md)).
 - **Landing:** at `done` the queue checks that main is still at M0 and that the run's head descends from X, then runs `git merge --ff-only` in the main checkout, so main and the checkout's files move together.
 - **Main moved under the run** (you merged by hand, or pulled): the fast-forward is refused. The entry runs again from the new main, up to 3 times. After that it fails with `main kept moving`.
 - **The main checkout's local changes stop the fast-forward** when they touch files the merge changes. The entry then waits as `landing`, naming the files, and tries again every 30s and whenever the repo's refs or index change. The queue behind it waits too, since the next entry has to be tested on top of this one.
-- **After landing:** `queue/TASK-N` is removed (the queue's worktree stays, detached), the task is Done (its teardown; its worktree and branch are removed now that they're in main), and the entry leaves the queue. The planner hears it as Desk news (`task-4f1d "Code find …" merged into main (5d02c1e) and left the merge queue`). Tasks stacked on it hear `base-merged` as before.
+- **After landing:** `queue/TASK-N` is removed (the queue's worktree stays, detached), the task is Done (its teardown; its worktree and branch are removed now that they're in main), and the entry leaves the queue. The planner hears it as Desk news (`task-4f1d "Code find …" merged into main (5d02c1e) and left the merge queue`). Tasks stacked on it hear `base-merged`.
 
 ### 3.1 One warm worktree per repo
-
-A queue run used to make a fresh worktree per entry, with an empty `target/`: a cold build of this repo took longer than the test stage's 600s, and every run stopped while it was still compiling dependencies.
 
 ```mermaid
 flowchart LR
@@ -115,14 +113,14 @@ flowchart LR
 
 - **One worktree, kept:** `.kanna-worktrees/merge-queue`, made the first time the repo's queue runs and reused by every entry after it. An entry starts with `git checkout -f -B queue/TASK-N M0` and `git clean -fd` there, then the merge. Ignored files stay: the build folder and `.kanna/tmp`. Its path never changes, so cargo's fingerprints stay valid and a run rebuilds only the crates the merge changed. At an entry's end the worktree is detached and left as it is.
 - **Not the task's own worktree, nor the main checkout:** a task's build is warm for its own branch, which may be well behind main, and checking a merge out there would move the task's own work. The main checkout's build is the user's and can be building at the same moment. The queue's build is warm for main as it last landed, which is closest to what the next merge needs.
-- **It needs no lock of its own:** the queue runs one entry at a time per repo, and whatever the tester runs (main's tests, a test again alone) it runs in the same worktree, within the entry. That's why one build folder works here, where a `CARGO_TARGET_DIR` shared by concurrent task worktrees was ruled out ([build store §7](build-store.md#7-rejected)): nothing else builds in it at the same time, and its source only ever moves forward from main.
+- **It needs no lock of its own:** the queue runs one entry at a time per repo, and whatever the tester runs (main's tests, a test again alone) it runs in the same worktree, within the entry. That's why one build folder works here, where a `CARGO_TARGET_DIR` shared by concurrent task worktrees doesn't ([build store §7](build-store.md#7-rejected)): nothing else builds in it at the same time, and its source only ever moves forward from main.
 - **This repo's build store:** `merge.test` is `scripts/merge-test.sh`, which does what `build.sh` does for cargo and nothing else: `kanna_targets` links `target/` to `ROOT/kanna/merge-queue` on the build volume, `kanna_ghostty_vt` links libghostty-vt from the store, `kanna_cargo_seed` clones main's dependency seed the first time, and the compile cache serves the rest ([build store](build-store.md)). Then `cargo test --workspace --no-fail-fast`. The daemon knows nothing of this layout; it only keeps the worktree's path stable.
 - **Evicted like any build folder:** `ROOT/kanna/merge-queue` is a candidate for [eviction](build-store.md#5-eviction) when the volume runs low, except while a run is in it. The next run starts it from the seed again.
-- **Measured** (this repo, external SSD): the queue's first build, from the seed, 6m08s (28 crates); after a change to `kanna-daemon`, 12s (1 crate). Before, in a fresh worktree with no seed, one build took 38 minutes and every queue run timed out at 600s (`tasks.timeout`).
+- **Measured** (this repo, external SSD): the queue's first build, from the seed, 6m08s (28 crates); after a change to `kanna-daemon`, 12s (1 crate).
 
 ### 3.2 The tester judges the failures
 
-Once main had any failing test, nothing could land but a commit that fixed everything on main, and the repo kept a hand-written skip list in `merge.test`. Now an agent runs the tests and decides, for whatever fails, whether the branch caused it.
+Main can have failing tests: known failures, and tests that fail only under load. An entry is judged on what it breaks, not on whether every test passes: an agent runs the tests and decides, for whatever fails, whether the branch caused it.
 
 ```mermaid
 flowchart TD
@@ -138,7 +136,7 @@ flowchart TD
 - **A pass lands the entry** with the answer as its note: the entry's `doc.result` is `{"verdict": "pass", "note"}`, and the daemon's log has its first line.
 - **A fail fails the entry** with the answer's first line as its `why` and the whole answer as its note ([4](#4-failure)).
 - **Within:** the stage has a `within` only when the repo sets `merge.within`; `tasks.timeout` doesn't apply to the queue (it's for setup, teardown and other pipelines' `run` stages). Running out of time fails the entry as `the tests timed out`.
-- **A repo's own `merge-queue.kojo`** is judged by its arrows, as before: the tester is Kanna's pipeline's.
+- **A repo's own `merge-queue.kojo`** is judged by its arrows: the tester is Kanna's pipeline's.
 
 ## 4. Failure
 
@@ -154,7 +152,7 @@ Any end other than `done` fails the entry: a merge conflict, a stage's fail with
 
 ## 5. Seeing the queue
 
-- **Desk view:** a **Merging** group between the Desk and the Shelf (picture at the top). A queued task shows there only, even while its agent is still ending its turn: it isn't also on the Desk as a task running on the Shelf. Rows are in queue order, numbered. The running entry shows its stage (`testing`), the merge it's testing and how long it has run; waiting entries say what they'll be tested on top of; a `landing` entry that waits says why. **Take out** is `kanna task merge --cancel`. A task whose merge failed is on the Shelf with a red dot and `merge failed · why`. Not built yet, from the mockup: the progress bar against the last landed entry's time, **Show** (the running stage's terminal in a tab; `kanna move TERMINAL --tab` does it today) and **Log**.
+- **Desk view:** a **Merging** group between the Desk and the Shelf (picture at the top). A queued task shows there only, even while its agent is still ending its turn: it isn't also on the Desk as a task running on the Shelf. Rows are in queue order, numbered. The running entry shows its stage (`testing`), the merge it's testing and how long it has run; waiting entries say what they'll be tested on top of; a `landing` entry that waits says why. **Take out** is `kanna task merge --cancel`. A task whose merge failed is on the Shelf with a red dot and `merge failed · why`. Not built yet, from the mockup: the progress bar against the last landed entry's time, **Show** (the running stage's terminal in a tab; `kanna move TERMINAL --tab` does it) and **Log**.
 - **`kanna task list`:** a `Merging` heading between `Desk` and `Shelf`. The states are `testing` (with the stage, if it isn't `test`), `landing` and `queued` (with its place and what it follows). A failed task is on the Shelf as `merge-failed`. `--json` adds `"queue": {"position", "state", "stage", "run", "head", "since"}`, or `"mergeFailed": {"why", "run", "log", "at", "verdict", "note"}` (`verdict` and `note` are the tester's).
 
 ![kanna task list with the Merging section](merge-queue-list.png)
@@ -166,7 +164,7 @@ Any end other than `done` fails the entry: a merge conflict, a stage's fail with
 - **`queue.rs` in the daemon** owns each repo's queue, in the same way `runs.rs` owns runs. It keeps the entries, starts the head entry's run, lands it or fails it, and tells the task. It steps on the same events as runs, plus ref changes in the repo and a 30s retry while an entry is `landing`.
 - **Table `merge_queue`** in `kanna.db` ([database](database.md)): `id` (`queue-7f3a1c2e`), `repo`, `task`, `head` (the commit that lands), `message`, `by`, `queued_at`, `state` (`queued`, `testing`, `landing`, `landed`, `failed`, `cancelled`), `run`, `attempt`, `base` (M0), `merge` (X), `ended_at`, and `doc` (why, the log's path, the failure lines). The order is `queued_at`. A daemon restart reloads the live entries. A `testing` entry's run carries on as any run does: its `run` stage's exit file and log are on disk ([software factory §6.1](software-factory.md#61-sequential-runs-as-built)). If the daemon stopped between `done` and the fast-forward, the landing runs again, and it's safe to repeat: it moves main only from M0, and it's done once main contains X.
 - **The tester's run** is an owned run of Kanna's one-stage pipeline in the queue's worktree, with its prompt passed in the run's prompts (`Started.prompts`), so a daemon restart carries it on like any run: its session's terminal is the keeper's. At its end the queue reads the stage's verdict and answer from `run_stages`, and copies `.kanna/tmp/merge-test.log` to the task's worktree.
-- **Runs gain an owner.** A run's doc has `owner`: none (a task's run, as before) or `queue`. `Runs::task_closed` stops only `task` runs: a queue run outlives the task's agent and the task's Done, and it's stopped only by `--cancel` or its own end. A queue run's messages (`tell`) go to the queue, not to a task's agent. The queue turns them into the task's message at the end. It's built through `Runs::start_owned(Started { … owner: Some("queue") })`: the queue makes the worktree and the merge, and the run takes it from there. At hand-back or stop, a queue run calls `Runs::on_end` (set by the queue) with the branch's head or why, instead of messaging an agent, and leaves its worktree alone: the queue's worktree is the queue's.
+- **Runs gain an owner.** A run's doc has `owner`: none (a task's run) or `queue`. `Runs::task_closed` stops only `task` runs: a queue run outlives the task's agent and the task's Done, and it's stopped only by `--cancel` or its own end. A queue run's messages (`tell`) go to the queue, not to a task's agent. The queue turns them into the task's message at the end. It's built through `Runs::start_owned(Started { … owner: Some("queue") })`: the queue makes the worktree and the merge, and the run takes it from there. At hand-back or stop, a queue run calls `Runs::on_end` (set by the queue) with the branch's head or why, instead of messaging an agent, and leaves its worktree alone: the queue's worktree is the queue's.
 - **The worker terminal** is a background terminal of the task's workspace, as for any run. That's why the workspace stays until the entry lands or fails.
 - **Task state:** `Entry.queued` (`Some(queue id)`): the task is held on the Shelf in the database, stopped, with its workspace, but listed under Merging, and runners, `start` and `pick` skip it. `Entry.merge_failed` holds the failure until the next `kanna task merge` or Done. The app draws the Merging group from these through the task list it already gets. `tell_planner` adds `merged` and `merge_failed` Desk news.
 - **Skills:** `kanna-tasks` says that merge means `kanna task merge` with `-m`, never merging by hand. It covers merging main first only for `conflicts`, and what to do on a queue message. `kanna-planning` says that "merge X" means `kanna task merge X`, and that queued tasks are under Merging, not finished.
@@ -206,14 +204,14 @@ e2e `merge_queue`, on a private instance with a mock agent (`tools/mock-agent`) 
 
 ## 9. Rejected
 
-- **A fresh worktree per entry** (before [3.1](#31-one-warm-worktree-per-repo)): every run was a cold build.
-- **A green main as the bar, with known failures skipped by hand in `merge.test`:** a failure on main blocked every entry but the one that fixed it, and the skip list went stale both ways.
-- **Judging per test in the daemon:** reading libtest's output into results per test, keeping main's results per commit in `kanna.db`, failing an entry on tests that fail on the merge and not on main, and running each new failure again alone as a run of its own. It was built, then dropped as too much machinery for what an agent with the log, the diff and a shell decides at once, and it read only libtest's output.
-- **Test results that never block landing:** a branch that breaks the build or a test would land, noted.
+- **A fresh worktree per entry:** every run is a cold build, of every crate, which takes longer than the tests themselves.
+- **A green main as the bar, with known failures skipped by hand in `merge.test`:** a failure on main blocks every entry but the one that fixes it, and the skip list goes stale both ways.
+- **Judging per test in the daemon:** reading libtest's output into results per test, keeping main's results per commit in `kanna.db`, failing an entry on tests that fail on the merge and not on main, and running each new failure again alone as a run of its own. It's a lot of machinery for what an agent with the log, the diff and a shell decides at once, and it reads only libtest's output.
+- **Test results that never block landing:** a branch that breaks the build or a test lands, noted.
 - **Running main's tests in the background whenever main moves:** a run started outside an entry has no task's workspace to put its terminal in; the tester runs main's tests itself when a failure needs it.
-- **The agent merging main, rebuilding and testing while you wait** (before the queue): it took minutes of your time per merge and repeated work main had already moved past.
+- **The task's agent merging main, rebuilding and testing while you wait:** minutes of your time per merge, repeated each time main moves first.
 - **Re-testing ready tasks in the background whenever main moves:** this costs tests for every ready task on every move of main, while the queue costs one run per merge. Conflicts are covered by `main-conflicts`.
 - **Done at `kanna task merge`:** a failure would then have to bring a Done task back. Its workspace, which holds the worker's terminal, would be gone, and so would its place among the Shelf's tasks. Done runs when the entry lands.
 - **The merge as a `merge-queue.kojo` stage:** a repo's pipeline could then land something other than the merge it tested, or nothing at all.
 - **Landing by moving the ref alone** (`git update-ref`): the main checkout's files would no longer match main.
-- **Queueing a stacked task behind its base:** for now, `merges after` is refused, as decided. A later change could accept it when every base is ahead of it in the queue, and fail it when its base fails.
+- **Queueing a stacked task behind its base:** `merges after` is refused. The queue could accept it when every base is ahead of it in the queue, and fail it when its base fails.
