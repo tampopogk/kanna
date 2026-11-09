@@ -59,12 +59,6 @@ pub fn test_command(repo: &Path) -> Option<String> {
     value.get("merge")?.get("test")?.as_str().map(str::trim).filter(|c| !c.is_empty()).map(String::from)
 }
 
-pub fn test_within(repo: &Path) -> Option<u64> {
-    let file = repo.join(".kanna/config.json");
-    let value: Value = serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;
-    value.get("merge")?.get("within")?.as_u64().filter(|s| *s > 0)
-}
-
 pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     let own = folder.join(format!(".kanna/pipelines/{PIPELINE}.kojo"));
     if let Ok(text) = fs::read_to_string(&own) {
@@ -74,11 +68,11 @@ pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     let files = tasks::config_files(repo);
     let agent = tasks::task_agent(&files);
     let agent = if kanna_pipe::AGENTS.contains(&agent.as_str()) { agent } else { tasks::DEFAULT_AGENT.to_string() };
-    Some((test_pipeline(&command, &agent, test_within(repo)), format!("Kanna's {PIPELINE}.kojo (merge.test, a failure judged by {agent})")))
+    Some((test_pipeline(&command, &agent), format!("Kanna's {PIPELINE}.kojo (merge.test, a failure judged by {agent})")))
 }
 
 pub fn fits(command: &str) -> bool {
-    let text = test_pipeline(command, tasks::DEFAULT_AGENT, None);
+    let text = test_pipeline(command, tasks::DEFAULT_AGENT);
     kanna_pipe::parse(&text).ok().and_then(|p| p.stage(TEST).map(|s| matches!(&s.kind, kanna_pipe::Kind::Run { command: read } if read == command.trim()))).unwrap_or(false)
 }
 
@@ -603,7 +597,7 @@ impl Queue {
                 let result = judge.map(|_| json!({ "verdict": "pass", "note": answer }));
                 self.pass(row, &head, result)
             }
-            _ if timed_out => self.fail(&row.id, &format!("{} timed out", if judged && stage == TEST { "the tests".to_string() } else { stage }), lines.into_iter().filter(|l| l != "timed out").collect()),
+            _ if timed_out => self.fail(&row.id, &format!("{stage} timed out"), lines.into_iter().filter(|l| l != "timed out").collect()),
             _ if judge.is_some() && failed => {
                 let first = answer.lines().next().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("the tests failed, and the queue's judge says it's the branch's doing").to_string();
                 patch(&mut row.doc, json!({ "result": { "verdict": "fail", "note": answer } }));
@@ -817,9 +811,8 @@ pub fn own_pipeline(folder: &Path) -> bool {
     folder.join(format!(".kanna/pipelines/{PIPELINE}.kojo")).is_file()
 }
 
-pub fn test_pipeline(command: &str, agent: &str, within: Option<u64>) -> String {
-    let within = within.map_or(String::new(), |s| format!(" within {s}s"));
-    format!("{TEST} = run {}{within}\n{JUDGE} = {agent} prompt {PROMPT} verdict\n{TEST} -[pass]-> done\n{TEST} -[fail]-> {JUDGE}\n{JUDGE} -[pass]-> done\n", command.trim())
+pub fn test_pipeline(command: &str, agent: &str) -> String {
+    format!("{TEST} = run {}\n{JUDGE} = {agent} prompt {PROMPT} verdict\n{TEST} -[pass]-> done\n{TEST} -[fail]-> {JUDGE}\n{JUDGE} -[pass]-> done\n", command.trim())
 }
 
 pub fn readable(output: &str) -> String {
@@ -882,19 +875,16 @@ mod tests {
         fs::create_dir_all(dir.join(".kanna")).unwrap();
         assert_eq!(pipeline_text(&dir, &dir), None, "no merge.test and no pipeline: nothing to test with");
         fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh"}, "tasks": {"timeout": 60}}"#).unwrap();
-        let pipeline = kanna_pipe::parse(&pipeline_text(&dir, &dir).unwrap().0).unwrap();
-        assert_eq!(pipeline.stage(TEST).unwrap().within, None, "no merge.within: the tests have no limit");
-        assert_eq!(runs::command_timeout(None, true, 60), 0, "and tasks.timeout doesn't bound a queue's command");
-        assert_eq!(runs::command_timeout(None, false, 60), 60, "as it bounds a task's run");
-        fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh", "within": 900}}"#).unwrap();
         let (text, shown) = pipeline_text(&dir, &dir).unwrap();
         assert!(shown.starts_with("Kanna's merge-queue.kojo (merge.test, a failure judged by "), "{shown}");
         let pipeline = kanna_pipe::parse(&text).unwrap();
         assert_eq!(pipeline.start, TEST);
         let test = pipeline.stage(TEST).unwrap();
         assert!(matches!(&test.kind, kanna_pipe::Kind::Run { command } if command == "sh test.sh"), "{text}");
-        assert_eq!(test.within, Some(Duration::from_secs(900)));
-        assert_eq!(runs::command_timeout(test.within, true, 60), 900);
+        assert_eq!(test.within, None, "the tests have no time limit");
+        assert_eq!(runs::command_timeout(test.within, true, 60), 0, "and tasks.timeout doesn't bound a queue's command");
+        assert_eq!(runs::command_timeout(test.within, false, 60), 60, "as it bounds a task's run");
+        assert_eq!(runs::command_timeout(Some(Duration::from_secs(900)), true, 60), 900, "a repo's own pipeline can still set within");
         let judge = pipeline.stage(JUDGE).unwrap();
         assert!(judge.agent().is_some_and(|a| a.verdict && kanna_pipe::AGENTS.contains(&a.agent.as_str())), "{text}");
         assert_eq!((judge.prompt(), judge.within), (Some(PROMPT), None));
@@ -933,7 +923,7 @@ mod tests {
         assert!(said.contains("`git checkout -q --detach 01234567`, and `git checkout -q -f queue/task-1-1` to come back"), "{said}");
         assert!(said.contains("    \"$KANNA_CLI\" run command 'COMMAND'\n") && said.contains("Don't end your turn to wait for it."), "{said}");
         assert!(!said.contains("in the background and wait"), "{said}");
-        let pipeline = kanna_pipe::parse(&test_pipeline("sh test.sh", "claude", None)).unwrap();
+        let pipeline = kanna_pipe::parse(&test_pipeline("sh test.sh", "claude")).unwrap();
         let feedback = runs::Feedback { stage: TEST.into(), text: "FAILED a".into(), full: "/w/.kanna/tmp/stage-1.log".into() };
         let whole = runs::prompt(pipeline.stage(JUDGE).unwrap(), &said, "Merge branch 'add-a': Add a", Some(&feedback), &BTreeMap::new(), ".kanna/tmp/answer-2.md");
         assert!(whole.contains("# Feedback from test\n\nFAILED a\n\nAll of its output is in `/w/.kanna/tmp/stage-1.log`.\n"), "{whole}");
@@ -1054,12 +1044,12 @@ mod tests {
     }
 
     #[test]
-    fn tests_that_run_out_of_time_fail_the_entry_as_timed_out_with_no_judge() {
-        let (queue, dir) = judging("timed-out", false);
-        visited(&queue, TEST, "run", "fail", json!({ "feedback": "timed out\ntest slow_thing has been running for over 60 seconds", "note": "timed out" }));
-        queue.run_ended("run-1", Err("test timed out".into()));
+    fn a_stage_of_a_repo_s_own_pipeline_that_runs_out_of_time_fails_the_entry_as_timed_out() {
+        let (queue, dir) = judging("timed-out", true);
+        visited(&queue, "check", "run", "fail", json!({ "feedback": "timed out\ntest slow_thing has been running for over 60 seconds", "note": "timed out" }));
+        queue.run_ended("run-1", Err("check timed out".into()));
         let failed = state(&queue);
-        assert_eq!(failed.doc["why"], "the tests timed out");
+        assert_eq!(failed.doc["why"], "check timed out");
         assert_eq!(failed.doc["feedback"], "test slow_thing has been running for over 60 seconds");
         assert_eq!(failed.doc.get("result"), None);
         let _ = fs::remove_dir_all(&dir);

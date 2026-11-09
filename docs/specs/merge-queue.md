@@ -38,7 +38,7 @@ stateDiagram-v2
     testing --> judging: a test fails
     judging --> Done: no failure is the branch's
     judging --> Shelf: a failure is the branch's (merge-failed)
-    testing --> Shelf: merge conflict, or the tests time out
+    testing --> Shelf: merge conflict
     queued --> Shelf: kanna task merge --cancel
     testing --> Shelf: kanna task merge --cancel
 ```
@@ -86,7 +86,7 @@ The daemon makes the merge, not a stage, so a pipeline can only test it and can'
 The run is the repo's `.kanna/pipelines/merge-queue.kojo` if it has one. Otherwise it's Kanna's own pipeline, a command stage and an agent stage ([3.2](#32-the-tests-and-the-judge)):
 
 ```
-test  = run <merge.test> [within <merge.within>s]
+test  = run <merge.test>
 judge = <tasks.agent> prompt merge-judge verdict
 test  -[pass]-> done
 test  -[fail]-> judge
@@ -95,7 +95,7 @@ judge -[pass]-> done
 
 A repo's own pipeline can have any stages runs support, such as a check, a build and e2e, or a fix stage that commits to the queue branch. It lands the run's branch at `done`, and only if that branch descends from X and the last stage didn't fail.
 
-Two rules hold for every queue run, Kanna's pipeline or the repo's own. A `run` stage with no `within` has no time limit: `tasks.timeout`, which bounds a task's run, doesn't apply. A stage that times out ends the entry, whatever `fail` arrow leaves it.
+Two rules hold for every queue run, Kanna's pipeline or the repo's own. A `run` stage with no `within` has no time limit: `tasks.timeout`, which bounds a task's run, doesn't apply. A stage of a repo's own pipeline that has `within` and runs out of it ends the entry, whatever `fail` arrow leaves it.
 
 To land, the queue checks that main is still M0 and runs `git merge --ff-only` in the main checkout, so main and the checkout's files move together. If main moved under the run, because you merged by hand or pulled, the entry runs again from the new main, up to 3 times, and then fails with `main kept moving`. If the main checkout has local changes to files the merge changes, the entry waits as `landing`, names the files, and tries again every 30 seconds and whenever the repo's refs change. The entries behind it wait too.
 
@@ -131,13 +131,12 @@ On this repo, the queue's first build from the seed took 6m08s for 28 crates, an
 ```mermaid
 flowchart TD
     T["test: the daemon runs merge.test<br/>in the queue's worktree"] -->|"exit 0"| P["lands"]
-    T -->|"times out (merge.within)"| F
     T -->|"fails"| J{"judge: did the branch cause it?<br/>(the log, the diff, the test alone,<br/>the test on main)"}
     J -->|"no: it fails on main too, or only under load"| P
     J -->|"yes"| F["back to the Shelf<br/>with the reasons"]
 ```
 
-**The tests.** The daemon runs `merge.test` itself, as a [`run` stage](kojo.md#2-stages): in a terminal of its own in the queue's worktree, with your login shell, its output in `.kanna/tmp/stage-1.log` there. The terminal belongs to the keeper, so the tests outlast a daemon restart. Exit 0 lands the entry. Nothing bounds the tests unless the repo sets `merge.within`; running out of it fails the entry with `the tests timed out`, and no judge starts.
+**The tests.** The daemon runs `merge.test` itself, as a [`run` stage](kojo.md#2-stages): in a terminal of its own in the queue's worktree, with your login shell, its output in `.kanna/tmp/stage-1.log` there. The terminal belongs to the keeper, so the tests outlast a daemon restart. Exit 0 lands the entry. The tests have no time limit: a hung run holds the queue until you take the entry out, and the tab shows how long it has run.
 
 **The judge.** Main can have failing tests, both known failures and tests that fail only under load, so a failing entry is judged on what it breaks. The judge is a new session of `tasks.agent` in the queue's worktree, with the merge checked out; if `tasks.agent` is a command rather than an agent's name, the judge is `claude`. It starts only when the tests fail. Its prompt is Kanna's `merge-judge` prompt, filled in with `merge.test`, main and M0, the branch, the merge X and the queue branch, followed by the end of the tests' output and the log's path. A repo can replace it with its own `.kanna/prompts/merge-judge.md`. It asks the judge to:
 
@@ -155,11 +154,11 @@ A repo's own `merge-queue.kojo` is judged by its arrows instead, and has no judg
 
 ## 4. Failure
 
-An entry fails when its branch doesn't merge, when the judge reports `fail`, when a stage times out or fails with no arrow left, when its run is stopped, or when main moves under it 3 times.
+An entry fails when its branch doesn't merge, when the judge reports `fail`, when a stage of a repo's own pipeline times out or fails with no arrow left, when its run is stopped, or when main moves under it 3 times.
 
 The run then ends with the outcome `failed`, not `stuck`, and the queue takes over. A task's own runs still stop as `stuck` when no arrow leaves a stage. Main doesn't move. The queue keeps `queue/TASK-N` for you to look at, detaches its worktree, and starts the next entry, so a failing entry never holds up the queue.
 
-The task goes back to the Shelf, stopped, as `merge-failed`, with the reason, until it's merged again or Done. Its agent gets a message from the queue (`[message from queue-7f3a]`). The message says why the entry failed and on which merge, gives the path of the tests' log, copied to the task's worktree as `.kanna/tmp/QUEUE/test.log`, includes the judge's whole answer, and says what to do next: merge main, fix it, and run `kanna task merge` again. Without a judge's answer (a timeout, a repo's own pipeline), the message has the failed stage's output tail instead ([Kojo §5](kojo.md#5-inputs-and-outputs)). A stopped Shelf task runs for a message, so a [Shelf runner](shelf-runners.md) resumes the agent and it starts on the fix.
+The task goes back to the Shelf, stopped, as `merge-failed`, with the reason, until it's merged again or Done. Its agent gets a message from the queue (`[message from queue-7f3a]`). The message says why the entry failed and on which merge, gives the path of the tests' log, copied to the task's worktree as `.kanna/tmp/QUEUE/test.log`, includes the judge's whole answer, and says what to do next: merge main, fix it, and run `kanna task merge` again. Without a judge's answer (a repo's own pipeline), the message has the failed stage's output tail instead ([Kojo §5](kojo.md#5-inputs-and-outputs)). A stopped Shelf task runs for a message, so a [Shelf runner](shelf-runners.md) resumes the agent and it starts on the fix.
 
 ![The failed task's agent, resumed with the queue's message; the tests' log in a tab](merge-queue-failed.png)
 
@@ -239,7 +238,6 @@ An entry's run takes the `kanna run` commands any run does ([software factory §
 |---|---|---|
 | `tasks.agent` | either `config.json` | the judge's agent |
 | `merge.test` | the repo's `.kanna/config.json` | the command the daemon runs on each merge; this repo's is `scripts/merge-test.sh` |
-| `merge.within` | the repo's `.kanna/config.json` | the tests' time limit in seconds, none by default |
 
 ## 8. Tests
 
@@ -261,7 +259,7 @@ The scenario checks these things:
 
 The same scenario checks the app's tab ([Merge queue tab §5](merge-queue-tab.md#5-tests)).
 
-`cargo test -p kanna-daemon queue::` checks Kanna's pipeline (a command stage that lands on a pass and reaches the judge only on a fail, `within` only from `merge.within`, no limit from `tasks.timeout`, a timeout ending the entry, and the repo's own pipeline taking precedence), a `merge.test` a pipeline would cut short, the judge's prompt, the kept log's text, the paused entry's news, the reuse of the queue's worktree and its build folder, and the outcomes: passing tests land with no note, a judge's pass lands with its note, its fail ends the entry with the answer's first line, a timeout says so, a judge that exits without a verdict fails the entry, and a repo's own pipeline fails with its failed stage's output. `runs::` checks a stage's command and the feedback's log path ([run commands](run-commands.md#5-tests)).
+`cargo test -p kanna-daemon queue::` checks Kanna's pipeline (a command stage that lands on a pass and reaches the judge only on a fail, no time limit on the tests, whatever `tasks.timeout` is, a timeout in a repo's own pipeline ending the entry, and the repo's own pipeline taking precedence), a `merge.test` a pipeline would cut short, the judge's prompt, the kept log's text, the paused entry's news, the reuse of the queue's worktree and its build folder, and the outcomes: passing tests land with no note, a judge's pass lands with its note, its fail ends the entry with the answer's first line, a timed-out stage of a repo's own pipeline says so, a judge that exits without a verdict fails the entry, and a repo's own pipeline fails with its failed stage's output. `runs::` checks a stage's command and the feedback's log path ([run commands](run-commands.md#5-tests)).
 
 `cargo test -p kanna-daemon` checks the `merge` settings in the schema against what the daemon reads.
 
@@ -269,7 +267,7 @@ The same scenario checks the app's tab ([Merge queue tab §5](merge-queue-tab.md
 
 An agent running the tests, the tester, was how the queue was first built: one agent stage ran `merge.test` and judged the result. On this repo it couldn't finish. Its prompt allowed running the tests in the background and waiting; the agent did, and ended its turn to wait. The run read that as `stopped without reporting`, quit the agent, and the build died with it. A foreground command wasn't a way out either, since an agent's shell stops one after about ten minutes, less than a build after a big merge. It also spent a session on every entry, most of which pass.
 
-A judge for a timeout too would spend a session on an entry that has already used its whole limit, and then run with no limit of its own.
+A time limit on the tests (`merge.within`) was built and taken out. A build after a big merge is long, and a limit set for the usual case fails the entry that needs the time. Tests that hang hold the queue instead, the tab shows how long they've run, and Take out ends them. A repo that wants a limit writes its own `merge-queue.kojo` with `within` on a stage.
 
 A fresh worktree for each entry would make every run a cold build of every crate, which takes longer than the tests.
 
