@@ -6476,7 +6476,8 @@ tiles = {x["id"]: x for x in r["sections"][0]["tiles"]}
 assert [c["text"] for c in tiles["pipelines"]["chart"]["rows"][1]["cells"]][:3] == ["beta rev 1", "2", "1 (50%)"], tiles["pipelines"]["chart"]["rows"]
 assert len(tiles["run-land"]["chart"]["points"]) == 3 and len(tiles["run-land"]["chart"]["medians"]) == 2, tiles["run-land"]
 assert len(tiles["run-tokens"]["chart"]["points"]) == 4, tiles["run-tokens"]' "$json" || { echo "pipeline_stats: kanna stats pipelines said: $json"; return 1; }
-  (cd "$repo" && kanna stats pipelines) | grep -qE 'alpha rev 1 +2 +2 \(100%\)' || { echo "pipeline_stats: kanna stats pipelines prints"; (cd "$repo" && kanna stats pipelines); return 1; }
+  local printed; printed="$(cd "$repo" && kanna stats pipelines)"
+  grep -qE 'alpha rev 1 +2 +2 \(100%\)' <<<"$printed" || { echo "pipeline_stats: kanna stats pipelines prints"; echo "$printed"; return 1; }
   (cd "$repo" && kanna stats pipelines --days 0 --json) | python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(0 if r["days"] is None and len(r["runs"]) == 4 else 1)' || { echo "pipeline_stats: --days 0 isn't every run"; return 1; }
   local shown; shown="$(kanna run show "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["runs"][0]["run"])' "$json")" --json)"
   python3 -c 'import json, sys
