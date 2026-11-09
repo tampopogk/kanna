@@ -151,12 +151,12 @@
       "type": "object",
       "properties": {
         "test": {
-          "description": "The shell command the merge queue's tester runs in the merge's worktree; it then judges whether what fails is the branch's doing. Without it (and without .kanna/pipelines/merge-queue.kojo), kanna task merge is refused.",
+          "description": "The shell command the merge queue runs on each merge, in the queue's worktree: exit 0 lands it, and when it fails an agent judges whether what fails is the branch's doing. Without it (and without .kanna/pipelines/merge-queue.kojo), kanna task merge is refused.",
           "type": "string",
           "minLength": 1
         },
         "within": {
-          "description": "Seconds the tester gets before Kanna stops it and the merge fails (default: no limit; tasks.timeout doesn't apply to the queue).",
+          "description": "Seconds merge.test gets before Kanna stops it and the merge fails (default: no limit; tasks.timeout doesn't apply to the queue).",
           "type": "integer",
           "minimum": 1,
           "maximum": 86400

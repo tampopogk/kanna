@@ -60,7 +60,7 @@ kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ...
 ## Merging
 
 - **"Merge" means `kanna task merge -m "SUMMARY"`,** never merging by hand: no `git merge` into main, no merging main into your branch first, no rebuild and rerun of the tests. SUMMARY is one line on what the work does (`find is case-insensitive unless the search has a capital, in every find bar`); the merge commit reads `Merge branch 'BRANCH': SUMMARY`.
-- **It hands your branch to the repo's merge queue** and returns at once: your agent quits at the end of this turn and your tabs close, so say in your chat that it's queued and end your turn. The queue merges your branch onto main, runs the repo's tests on that merge (`merge.test`, or `.kanna/pipelines/merge-queue.kojo`), and moves main to it only if they pass; then the task is Done.
+- **It hands your branch to the repo's merge queue** and returns at once: your agent quits at the end of this turn and your tabs close, so say in your chat that it's queued and end your turn. The queue merges your branch onto main, runs the repo's tests on that merge (`merge.test`, or `.kanna/pipelines/merge-queue.kojo`), and moves main to it if they pass, or if an agent judges that no failure is your branch's; then the task is Done.
 - **Refused** when your branch conflicts with main (merge main, fix, rerun your tests, commit, merge again), when it `merges after` another task, or with uncommitted changes: do what the refusal says.
 - **A message from `queue-…`** means your merge failed: it says why and where the log is, and you're back on the Shelf. Merge main into your branch, fix what failed, rerun the tests that failed, commit, then `kanna task merge` again.
 
