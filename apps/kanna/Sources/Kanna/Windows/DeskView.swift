@@ -51,6 +51,7 @@ struct DeskTask: Equatable {
         case "working": return .controlAccentColor
         case "needs-you": return .systemOrange
         case "idle": return .systemGreen
+        case "failed": return .systemRed
         default: return .tertiaryLabelColor
         }
     }
@@ -68,6 +69,8 @@ struct ShelfTask: Equatable {
     var branch: String? = nil
     var stack: String? = nil
     var status: String? = nil
+    var queue: QueueSpot? = nil
+    var failed: String? = nil
 
     static func stack(_ entry: JSON) -> String? {
         func names(_ key: String) -> String {
@@ -101,7 +104,7 @@ struct ShelfTask: Equatable {
 
     var dashed: Bool { blocked || stack?.hasPrefix("its blockers") == true }
 
-    var dot: String? { !dashed && ["working", "needs-you", "idle"].contains(status) ? status : nil }
+    var dot: String? { failed != nil && status != "working" ? "failed" : !dashed && ["working", "needs-you", "idle"].contains(status) ? status : nil }
 
     @MainActor var after: String {
         let made = "made " + DeskTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
@@ -141,11 +144,48 @@ struct ShelfTask: Equatable {
     }
 }
 
+struct QueueSpot: Equatable {
+    let position: Int
+    let state: String
+    var stage: String? = nil
+    var since: Double? = nil
+    var after: String? = nil
+    var main: String? = nil
+    var merge: String? = nil
+    var why: String? = nil
+    var by: String? = nil
+
+    init?(_ entry: JSON?) {
+        guard let entry, let state = entry["state"]?.string else { return nil }
+        position = Int(entry["position"]?.number ?? 0)
+        self.state = state
+        stage = entry["stage"]?.string
+        since = entry["since"]?.number
+        after = entry["afterName"]?.string ?? entry["after"]?.string
+        main = entry["main"]?.string
+        merge = entry["merge"]?.string
+        why = entry["why"]?.string
+        by = entry["by"]?.string
+    }
+
+    @MainActor var said: String {
+        let main = self.main ?? "main"
+        switch state {
+        case "testing":
+            let stage = self.stage.flatMap { $0 == "test" ? nil : $0 } ?? "testing"
+            return "\(stage) on \(main) + its branch · \(DeskTask.ago(since).replacingOccurrences(of: "now", with: "just started"))"
+        case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
+        default: return after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"
+        }
+    }
+}
+
 struct DeskPage: Equatable {
     var active: String?
     var tasks: [DeskTask] = []
     var keys: [String: String] = [:]
     var shelf: [ShelfTask] = []
+    var merging: [ShelfTask] = []
     var running = 0
     var project = ""
     var cheer = ""
@@ -416,6 +456,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     var onActivate: ((String) -> Void)?
     var onStart: ((String) -> Void)?
     var onShelve: ((String) -> Void)?
+    var onTakeOut: ((String) -> Void)?
     var onLeaveSearch: (() -> Void)?
     private var shown: DeskPage?
     private let scroller = NSScrollView()
@@ -487,6 +528,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     var blockedShelf: [JSON] {
         rowViews.compactMap { $0 as? ShelfRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
+    }
+
+    var mergingRows: [JSON] {
+        document.subviews.compactMap { $0 as? MergeRow }.sorted { $0.frame.minY < $1.frame.minY }.map { ["task": .string($0.task.id), "position": .number(Double($0.task.queue?.position ?? 0)), "state": .string($0.task.queue?.state ?? ""), "sub": .string($0.subText)] }
     }
 
     var shelfDots: [JSON] {
@@ -622,6 +667,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     private func lay(_ page: DeskPage, top: CGFloat) {
         let span = Perf.begin(.desk, "DeskView.lay")
         document.subviews.filter { $0 !== search && $0 !== searchKey && $0 !== zone && $0 !== dropNote && !($0 is DeskRow) && !($0 is ShelfRow) }.forEach { $0.removeFromSuperview() }
+        document.subviews.filter { $0 is MergeRow }.forEach { $0.removeFromSuperview() }
         let (deskBefore, shelfBefore) = (deskKept, shelfKept)
         (deskKept, shelfKept) = ([:], [:])
         var made = 0
@@ -655,6 +701,17 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             y += row.frame.height
         }
         y += 28
+        if !page.merging.isEmpty {
+            y = header("Merging", detail: "into main, one at a time", count: "\(page.merging.count) in line", y: y, left: left, width: width).bottom
+            for task in page.merging {
+                let row = MergeRow(task: task, width: width + 20)
+                row.onTakeOut = { [weak self] in self?.onTakeOut?(task.id) }
+                row.frame.origin = NSPoint(x: left - 10, y: y)
+                document.addSubview(row)
+                y += row.frame.height
+            }
+            y += 28
+        }
         let shelfTop = y
         let hits = page.shelf.filter { $0.matches(query) }
         selected = min(selected, max(0, hits.count - 1))
@@ -888,6 +945,10 @@ private final class ShelfRow: NSView {
     func refresh() {
         let small = NSFont.systemFont(ofSize: 12)
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
+        if let failed = task.failed {
+            detail.append(NSAttributedString(string: "merge failed", attributes: [.font: small, .foregroundColor: NSColor.systemRed]))
+            detail.append(NSAttributedString(string: " · \(failed) · its agent has the log · ", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
         if let stack = task.stack {
             let color: NSColor = stack.hasPrefix("ready") ? .systemGreen : stack.hasPrefix("merges") ? .secondaryLabelColor : .systemOrange
             detail.append(NSAttributedString(string: stack + " · ", attributes: [.font: small, .foregroundColor: color]))
@@ -934,6 +995,76 @@ private final class ShelfRow: NSView {
     }
 
     override func mouseDown(with event: NSEvent) { onPress?() }
+}
+
+@MainActor
+private final class MergeRow: NSView {
+    let task: ShelfTask
+    var onTakeOut: (() -> Void)?
+    private let sub = NSTextField(labelWithString: "")
+    private let go = NSTextField(labelWithString: "Take out")
+    private var hover = false
+
+    override var isFlipped: Bool { true }
+
+    init(task: ShelfTask, width: CGFloat) {
+        self.task = task
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 52))
+        wantsLayer = true
+        layer?.cornerRadius = 8
+        let place = NSMutableAttributedString(string: "\(task.queue?.position ?? 0)  ", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor])
+        place.append(NSAttributedString(string: task.name, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: task.queue?.state == "queued" ? .regular : .semibold), .foregroundColor: NSColor.labelColor]))
+        let name = NSTextField(labelWithAttributedString: place)
+        name.lineBreakMode = .byTruncatingTail
+        name.frame = NSRect(x: 30, y: 8, width: width - 140, height: 18)
+        sub.stringValue = [task.queue?.said, task.branch].compactMap { $0 }.joined(separator: " · ")
+        sub.font = .systemFont(ofSize: 12)
+        sub.textColor = task.queue?.why == nil ? .secondaryLabelColor : .systemOrange
+        sub.lineBreakMode = .byTruncatingTail
+        sub.frame = NSRect(x: 30, y: 27, width: width - 140, height: 17)
+        go.font = .systemFont(ofSize: 12)
+        go.textColor = .tertiaryLabelColor
+        go.sizeToFit()
+        go.frame.origin = NSPoint(x: width - go.frame.width - 10, y: (52 - go.frame.height) / 2)
+        [name, sub, go].forEach(addSubview)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    var subText: String { sub.stringValue }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let ring = NSBezierPath(ovalIn: NSRect(x: 10.5, y: bounds.midY - 4, width: 8, height: 8))
+        if task.queue?.state == "queued" {
+            NSColor.controlAccentColor.setStroke()
+            ring.lineWidth = 1.4
+            return ring.stroke()
+        }
+        DeskTask.color("working").setFill()
+        ring.fill()
+    }
+
+    private func paint() {
+        layer?.backgroundColor = hover ? resolved(.quaternaryLabelColor) : nil
+        go.textColor = hover ? .controlAccentColor : .tertiaryLabelColor
+    }
+
+    override func viewDidMoveToWindow() { paint() }
+
+    override func mouseEntered(with event: NSEvent) {
+        hover = true
+        paint()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hover = false
+        paint()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if go.frame.insetBy(dx: -6, dy: -6).contains(convert(event.locationInWindow, from: nil)) { onTakeOut?() }
+    }
 }
 
 @MainActor

@@ -27,6 +27,7 @@ mod codex_remote;
 mod messages;
 mod project_import;
 mod projects;
+mod queue;
 mod quiz;
 mod quiz_map;
 mod quiz_round;
@@ -399,10 +400,16 @@ fn run() -> Result<(), String> {
     }));
     let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks)));
     runs.install(&core);
+    let queue = Rc::new(queue::Queue::open(db.clone(), Rc::downgrade(&tasks), Rc::downgrade(&runs)));
+    queue.install(&core, &runs);
     let closing = Rc::downgrade(&runs);
+    let leaving = Rc::downgrade(&queue);
     *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = closing.upgrade() {
             runs.task_closed(task);
+        }
+        if let Some(queue) = leaving.upgrade() {
+            queue.task_closed(task);
         }
     }));
     let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
@@ -842,7 +849,7 @@ fn run() -> Result<(), String> {
         let ticks = if shutdown.is_none() {
             crashes.tick(Instant::now(), app.attached_here());
             tasks.sweep();
-            [tasks.tick(), scheduler.tick(), runs.tick()].into_iter().flatten().min()
+            [tasks.tick(), scheduler.tick(), runs.tick(), queue.tick()].into_iter().flatten().min()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
@@ -925,7 +932,10 @@ fn run() -> Result<(), String> {
                 }
             }
             Event::Stacks { seen } => tasks.watched(seen),
-            Event::Heads => tasks.heads_moved(),
+            Event::Heads => {
+                tasks.heads_moved();
+                queue.refs_moved();
+            }
             Event::Turn { token } => tasks.next_turn(token),
             Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),
