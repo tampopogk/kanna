@@ -62,13 +62,13 @@ stateDiagram-v2
     direction LR
     working --> parked: the turn ends while its command runs
     parked --> working: the command ends, the session resumes with its exit code and log
-    working --> paused: the turn ends, no command running, nothing reported
+    working --> paused: the turn ends, no command running, nothing reported (a queue run, the second time)
     paused --> working: kanna run resume
 ```
 
 - **Parked:** the agent is quit and its session kept, as at a pause, and the run stays `running` (`STAGE waits for its command`). Nobody is told, since nothing is needed.
 - **Carried on:** when the command ends, the session starts again with a message naming the command, its exit code and its log. It isn't counted as an intervention.
-- **A job in the agent's own shell** gets none of this: Kanna can't see it, the turn's end pauses the run (`STAGE stopped without reporting`), and the job ends with the agent. The pause's message says so.
+- **A job in the agent's own shell** gets none of this: Kanna can't see it, and it ends when the agent is quit at its turn's end. A task's run then pauses (`STAGE stopped without reporting`), and the pause's message says so. A merge queue's run first carries the agent on once, telling it that only its report ends the stage and that its own jobs are gone ([merge queue §4.1](merge-queue.md#41-an-entry-that-needs-you)).
 
 ## 4. How it's built
 

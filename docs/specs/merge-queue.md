@@ -145,6 +145,8 @@ flowchart TD
 2. Report `pass` if no failure is the branch's, and `fail` if any is.
 3. Write an answer whose first line sums up the outcome, such as `broken_thing fails: the branch removed its fixture`, followed by each failure, whether it's the branch's, and how it knows.
 
+**The verdict is a call.** The judge ends its judgement by running `kanna run done pass` or `kanna run done fail`, with its answer in the file its prompt names, and nothing else ends it: the queue reads no screen, and a turn that ends says nothing about the merge. A turn that ends without the call is carried on once, with a message that the judgement isn't reported and how to report it ([4.1](#41-an-entry-that-needs-you)).
+
 A pass lands the entry, and the queue keeps the judge's answer as the entry's note (`doc.result`, `{"verdict": "pass", "note"}`). A fail ends the entry, with the answer's first line as the reason ([4](#4-failure)). An entry whose tests passed has no note.
 
 **A long command.** The judge's own commands are short: one test, a diff. An agent's shell stops a command after about ten minutes, and what it leaves in the background ends with its turn. When the judge needs something longer, such as a build at M0 or the whole suite on main, it asks Kanna: `kanna run command 'COMMAND'` has the daemon run it in the queue's worktree and waits with the judge, and the judge's turn doesn't end ([run commands](run-commands.md)). The prompt says so, and never says to run something in the background.
@@ -163,7 +165,7 @@ The task goes back to the Shelf, stopped, as `merge-failed`, with the reason, un
 
 ### 4.1 An entry that needs you
 
-A queue run pauses as any run does: its judge's turn ends without a verdict, the judge asks for you (`kanna run need`), or a repo's own pipeline reaches an `ask`. A task's run tells the task's agent; a queue run has none, so the queue takes the news.
+A queue run pauses when its judge asks for you (`kanna run need`), when a repo's own pipeline reaches an `ask`, or when the judge's turn ends twice with no verdict. The first such turn doesn't pause it: nobody is watching a queue run, so Kanna starts the judge's session again itself, saying that only `kanna run done pass` or `fail` ends the judgement. A task's run tells the task's agent; a queue run has none, so the queue takes the news.
 
 ```mermaid
 sequenceDiagram
@@ -172,6 +174,8 @@ sequenceDiagram
     participant Q as queue
     participant U as you
     J->>R: its turn ends with no verdict
+    R->>J: carried on once: only run done pass or fail ends it
+    J->>R: its turn ends again with no verdict
     R->>R: paused: judge stopped without reporting, the judge quit, its session kept
     R->>Q: why, the judge's last screen, how to resume
     Q->>U: the entry shows needs you, a toast, a message to the planner
@@ -240,7 +244,7 @@ The scenario checks these things:
 6. The daemon restarts while A's tests run, and A and B both land afterwards.
 7. After main gets `known-broken`, C (`broken`) fails because the judge blames `broken_thing` on the branch. C isn't in main, `kanna task list` shows it as `merge-failed` with `broken_thing fails: the branch broke it`, `--json` has the verdict and the note, its agent gets the judge's answer and the log's path, the log is in its worktree, and its run's outcome is `failed`.
 8. C's judge waited again (`--wait`) for a command that outlasted its first wait.
-9. F (`waits`): its judge's turn ends while its command runs, the command still runs to its end, and the judge is carried on with its exit code. Its turn then ends again with no verdict, so F shows `needs you` with the reason in `kanna task list` and on the tab, its entry says what happened, and E stays queued behind it. Resumed with words, the judge passes it and F lands.
+9. F (`waits`): its judge's turn ends while its command runs, the command still runs to its end, and the judge is carried on with its exit code. Its turn then ends with no verdict, and it's carried on once more, told that only the call ends its judgement. When that turn ends with no verdict too, F shows `needs you` with the reason in `kanna task list` and on the tab, its entry says what happened, and E stays queued behind it. Resumed with words, the judge passes it and F lands.
 10. E (`flaky`) lands with the note `tests fail, none of them the branch's: known_broken fails on main too, flaky_thing passes alone`, and C's and E's runs each went from `test` to `judge`.
 11. Across every entry, the queue's worktree found `target/` cold only once.
 

@@ -85,6 +85,11 @@ pub fn ends_owned(owned: bool, note: Option<&str>) -> bool {
     owned && note == Some("timed out")
 }
 
+pub fn unreported(stage: &str, verdicts: bool) -> String {
+    let done = if verdicts { "`\"$KANNA_CLI\" run done pass` or `\"$KANNA_CLI\" run done fail`" } else { "`\"$KANNA_CLI\" run done`" };
+    format!("Your turn ended, but {stage} isn't over: only {done} ends it, and nobody reads what you wrote on screen. Finish what's left, write your answer to the file your prompt names, then run it. If you can't finish without the user, run `\"$KANNA_CLI\" run need \"WHAT YOU NEED\"`. Nothing you left running in your own shell is still running; ask Kanna for a long command with `\"$KANNA_CLI\" run command 'COMMAND'`.")
+}
+
 pub fn command_ended(job: &Job, code: i32) -> String {
     format!("The command you asked Kanna to run ended while your turn was over, so Kanna carries you on.\n\n    {}\n\nIt exited {code}, and all its output is in `{}`. Carry on from there, and report when you're done.", job.command, job.log)
 }
@@ -1013,6 +1018,36 @@ impl Runs {
         self.park(id);
     }
 
+    fn remind(self: &Rc<Self>, id: &str, stage: &str) {
+        log!("kanna-daemon: {id}'s {stage} ended its turn without reporting, so it's carried on once to report");
+        let mut saved = None;
+        self.update(id, |live| {
+            if let Some(visit) = live.visit.as_mut() {
+                patch(&mut visit.row.doc, json!({ "reminded": "due" }));
+                saved = Some(visit.row.clone()).filter(|row| row.id != 0);
+            }
+            Some(("reminded", Some("daemon".into()), json!({ "stage": stage })))
+        });
+        if let Some(row) = saved {
+            let _ = self.db.put_stage(&row);
+        }
+        self.park(id);
+    }
+
+    fn reminding(self: &Rc<Self>, id: &str, visit: &Visit) {
+        let stage = visit.row.stage.clone();
+        let verdicts = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.pipeline.stage(&stage).map(Stage::verdicts)).unwrap_or(false);
+        self.update(id, |live| {
+            if let Some(visit) = live.visit.as_mut() {
+                patch(&mut visit.row.doc, json!({ "reminded": "sent" }));
+            }
+            None
+        });
+        if let Err(error) = self.carry_on(id, &unreported(&stage, verdicts), "daemon") {
+            self.pause(id, &format!("{stage} stopped without reporting"), None, &format!("{stage}'s turn ended without it reporting, and its agent couldn't be carried on to report: {}. `kanna run resume {id} \"…\"` tries again.", error.message));
+        }
+    }
+
     fn job_ended(self: &Rc<Self>, id: &str, job: &Job, code: i32) {
         self.set_job(id, &Job { awaited: false, code: Some(code), ..job.clone() });
         if let Err(error) = self.carry_on(id, &command_ended(job, code), "daemon") {
@@ -1093,6 +1128,8 @@ impl Runs {
                 if let Some(code) = self.settle_job(id, &job) {
                     self.job_ended(id, &job, code);
                 }
+            } else if string(&visit.row.doc, "reminded") == Some("due") {
+                self.reminding(id, &visit);
             }
             return;
         }
@@ -1196,6 +1233,10 @@ impl Runs {
         if let Some(job) = job.filter(|j| self.settle_job(&id, j).is_none()) {
             return self.wait_for_job(&id, &job);
         }
+        let reminded = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref()).is_some_and(|v| v.row.doc.get("reminded").is_some());
+        if self.owned(&id) && !reminded {
+            return self.remind(&id, &stage);
+        }
         let Some(core) = self.core.upgrade() else { return };
         let (this, closing) = (Rc::downgrade(self), pane.to_string());
         core.handle(json!({ "cmd": "read", "args": { "pane": pane, "lines": SCREEN_LINES } }), move |reply| {
@@ -1206,7 +1247,7 @@ impl Runs {
                 return;
             }
             let why = format!("{stage} stopped without reporting");
-            this.pause(&id, &why, None, &format!("{stage}'s turn ended without it reporting it was done or what it needs, so the run is paused, its agent is quit and its session kept. Anything it left running in its own shell ended with it. Its screen ended:\n\n{screen}\n\n`kanna run resume {id} \"…\"` carries it on with your answer."));
+            this.pause(&id, &why, None, &format!("{stage}'s turn ended without it reporting it was done or what it needs{}, so the run is paused, its agent is quit and its session kept. Anything it left running in its own shell ended with it. Its screen ended:\n\n{screen}\n\n`kanna run resume {id} \"…\"` carries it on with your answer.", if reminded { ", again after Kanna carried it on once to report" } else { "" }));
             this.park(&id);
         });
     }
@@ -2195,6 +2236,14 @@ mod tests {
         let visit = Visit { row, work: Work::Agent { agent: "claude".into() }, within: None, opening: false, ending: false, reported: None, needs: None, paused: true };
         assert_eq!(visit.job(), Some(job.clone()));
         assert_eq!(command_ended(&job, 101), "The command you asked Kanna to run ended while your turn was over, so Kanna carries you on.\n\n    cargo test --workspace\n\nIt exited 101, and all its output is in `/w/.kanna/tmp/command-3-2.log`. Carry on from there, and report when you're done.");
+    }
+
+    #[test]
+    fn a_stage_whose_turn_ends_unreported_is_told_that_only_the_call_ends_it() {
+        let said = unreported("judge", true);
+        assert!(said.starts_with("Your turn ended, but judge isn't over: only `\"$KANNA_CLI\" run done pass` or `\"$KANNA_CLI\" run done fail` ends it"), "{said}");
+        assert!(said.contains("run need \"WHAT YOU NEED\"") && said.contains("run command 'COMMAND'"), "{said}");
+        assert!(unreported("build", false).contains("only `\"$KANNA_CLI\" run done` ends it"));
     }
 
     #[test]
