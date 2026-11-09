@@ -75,17 +75,17 @@ kanna_version() {
 kanna_cargo_stamp() {
   cargo_triple="${3:-$(kanna_host_triple)}"
   cargo_dir="$(kanna_rust_dir "$1" "$cargo_triple")" || return 1
-  stamp="$cargo_dir/macos-deployment-target"
-  [ "$(cat "$stamp" 2>/dev/null)" = "$2" ] && return
+  cargo_stamp="$cargo_dir/macos-deployment-target"
+  [ "$(cat "$cargo_stamp" 2>/dev/null)" = "$2" ] && return
   if [ -d "$cargo_dir" ]; then
-    echo "==> $cargo_dir was built for macOS $(cat "$stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
+    echo "==> $cargo_dir was built for macOS $(cat "$cargo_stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
     if [ "$cargo_triple" = "$(kanna_host_triple)" ]; then
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" >&2 || return 1
     else
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" --target "$cargo_triple" >&2 || return 1
     fi
   fi
-  mkdir -p "$cargo_dir" && echo "$2" > "$stamp"
+  mkdir -p "$cargo_dir" && echo "$2" > "$cargo_stamp"
 }
 
 kanna_zig_build() {
