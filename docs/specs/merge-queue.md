@@ -1,10 +1,10 @@
 # Merge queue
 
-Status: built in the daemon, the CLI and the Desk view; the phone's Shelf doesn't show the queue yet. Tested by `cargo test -p kanna-daemon queue::` and e2e `merge_queue`. Mockup: [`references/mockups/merge-queue.html`](../../references/mockups/merge-queue.html). Builds on the [build store](build-store.md), [runs](software-factory.md#61-sequential-runs-as-built), [Kojo](kojo.md), [tasks](tasks.md), [stacked tasks](stacked-tasks.md) and [task events](task-events.md).
+Status: built in the daemon, the CLI and the window's [Merge queue tab](merge-queue-tab.md); the phone doesn't show the queue yet. Tested by `cargo test -p kanna-daemon queue::` and e2e `merge_queue`. Mockup: [`references/mockups/merge-queue.html`](../../references/mockups/merge-queue.html). Builds on the [build store](build-store.md), [runs](software-factory.md#61-sequential-runs-as-built), [Kojo](kojo.md), [tasks](tasks.md), [stacked tasks](stacked-tasks.md) and [task events](task-events.md).
 
-When you tell a ready task's agent to merge, it runs `kanna task merge`. The task leaves the Desk for its repo's merge queue and its agent quits, so you don't wait. The queue lands one entry at a time. It merges the branch onto main as main is now, has an agent run the repo's tests on that merge, and moves main to the merge unless the agent finds a failure the branch caused. The next entry is merged on top of that. If an entry fails, the task goes back to the Shelf and its agent gets the reasons and the log.
+When you tell a ready task's agent to merge, it runs `kanna task merge`. The task leaves the Desk for its repo's merge queue, shown on the window's [Merge queue tab](merge-queue-tab.md), and its agent quits, so you don't wait. The queue lands one entry at a time. It merges the branch onto main as main is now, has an agent run the repo's tests on that merge, and moves main to the merge unless the agent finds a failure the branch caused. The next entry is merged on top of that. If an entry fails, the task goes back to the Shelf and its agent gets the reasons and the log.
 
-![The Desk view: the Desk's tasks, the merge queue (one entry testing, two waiting) and the Shelf, where a task whose merge failed shows red](merge-queue.png)
+![The Merge queue tab: one entry testing and two waiting, the entries that landed or failed lately, and the picked entry's tester at work in its terminal](merge-queue.png)
 
 ## Contents
 
@@ -156,7 +156,7 @@ The task goes back to the Shelf, stopped, as `merge-failed`, with the reason, un
 
 ## 5. Seeing the queue
 
-The Desk view has a Merging group between the Desk and the Shelf (the picture at the top). A queued task shows only there, even while its agent is still ending its turn. Entries are listed in queue order. The running one shows `testing`, the merge it's testing and how long it has run. Waiting entries say which entry they'll be tested on top of, and a `landing` entry that's waiting says why. Take out runs `kanna task merge --cancel`. A task whose merge failed is on the Shelf with a red dot and the reason. The mockup also has a progress bar, Show and Log, which aren't built yet.
+The app shows the queue on the window's [Merge queue tab](merge-queue-tab.md): the entries in line, the ones that ended lately, and the picked entry's terminal or log. The Desk tab shows no queued task. A task whose merge failed is on the Shelf with a red dot and the reason.
 
 `kanna task list` has a `Merging` section between `Desk` and `Shelf`, with the states `testing`, `landing` and `queued`, and a failed task on the Shelf as `merge-failed`. With `--json`, a queued task has `"queue": {"position", "state", "stage", "run", "head", "since"}` and a failed one has `"mergeFailed": {"why", "run", "log", "at", "verdict", "note"}`, where `verdict` and `note` are the tester's. `kanna run list` lists queue runs with the rest.
 
@@ -172,7 +172,9 @@ The tester's run is an owned run of Kanna's one-stage pipeline in the queue's wo
 
 A run's doc has an `owner`, which is empty for a task's run and `queue` for the queue's. `Runs::task_closed` stops only a task's runs, so a queue run outlives the task's agent and is stopped only by `--cancel` or its own end. A queue run's messages go to the queue rather than to an agent. The queue starts it with `Runs::start_owned`, and when it ends the run calls `Runs::on_end` with the branch's head or the reason. A queue run leaves its worktree in place, since the worktree belongs to the queue. Its terminal is a background terminal in the task's workspace, which is why the workspace stays until the entry lands or fails.
 
-A queued task has `Entry.queued` set to the queue's id. It's held on the Shelf in the database, stopped, and listed under Merging, and runners, `start` and `pick` skip it. `Entry.merge_failed` holds a failure until the next `kanna task merge` or Done. The app draws the Merging group from the task list, and the planner gets `merged` and `merge_failed` Desk news.
+A queued task has `Entry.queued` set to the queue's id. It's held on the Shelf in the database, stopped, and listed under Merging, and runners, `start` and `pick` skip it. `Entry.merge_failed` holds a failure until the next `kanna task merge` or Done. The planner gets `merged` and `merge_failed` Desk news.
+
+The `queue` command's `list` action gives a repo's entries, and with `recent: N` the live ones in order, then the last N that landed or failed, the testing one with its run's terminal. When a run ends, the queue also copies the tests' log to `kanna/merge-queue/QUEUE.log` in the repo's git folder and keeps the newest 30, so the log outlasts the task's worktree, which Done removes. The `log` action returns an entry's tester's answer and the last 256 KB of that copy. The [Merge queue tab](merge-queue-tab.md#4-how-its-built) reads both.
 
 The `kanna-tasks` skill tells agents that merging means `kanna task merge` with `-m`, never a merge by hand, and what to do when the queue's message comes. The `kanna-planning` skill says that "merge X" means `kanna task merge X` and that queued tasks aren't finished.
 
@@ -182,7 +184,7 @@ The `kanna-tasks` skill tells agents that merging means `kanna task merge` with 
 |---|---|
 | `kanna task merge [TASK] [-m MESSAGE]` | puts the task in its repo's merge queue ([2](#2-merging-a-task)) and prints its place |
 | `kanna task merge --cancel [TASK]` | takes it out of the queue and back to the Shelf, stopped; a running entry's run is stopped and main isn't touched |
-| `kanna task list` | adds the `Merging` section and the `merge-failed` state |
+| `kanna task list` | has the `Merging` section and the `merge-failed` state |
 | `kanna task done TASK` on a queued task | takes it out of the queue, then Done, keeping its unmerged worktree |
 
 | Setting | Where | Is |
@@ -206,6 +208,8 @@ The scenario checks these things:
 7. E, queued behind C, lands after C fails.
 8. E lands with the note `tests fail, none of them the branch's: known_broken fails on main too, flaky_thing passes alone`.
 9. Across every entry, the queue's worktree found `target/` cold only once.
+
+The same scenario checks the app's tab ([Merge queue tab §5](merge-queue-tab.md#5-tests)).
 
 `cargo test -p kanna-daemon queue::` checks Kanna's pipeline (an agent stage with a verdict, `within` only from `merge.within`, and the repo's own pipeline taking precedence), the tester's prompt, the reuse of the queue's worktree and its build folder, and the outcomes: a pass lands with the note, a fail ends the entry with the answer's first line, a timeout says so, and a repo's own pipeline fails with its failed stage's output.
 
