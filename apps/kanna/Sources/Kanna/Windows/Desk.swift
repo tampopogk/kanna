@@ -295,7 +295,7 @@ extension AppController {
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
             let status = offline(entry["machine"]?.string) ? nil : entry["running"]?.bool == true ? entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } : ShelfTask.last(stopped: entry["stopped"]?.string)
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status)
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status, queue: QueueSpot(entry["queue"]), failed: entry["mergeFailed"]?["why"]?.string)
         }
     }
 
@@ -323,6 +323,13 @@ extension AppController {
         controllers[window]?.note = ""
         request("tasks", ["action": "shelve", "task": .string(task)]) { [weak self] reply in
             self?.noted(window, reply, otherwise: "it didn't move")
+        }
+    }
+
+    func takeOut(_ task: String, from window: String) {
+        controllers[window]?.note = ""
+        request("queue", ["action": "cancel", "task": .string(task)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it stayed in the merge queue")
         }
     }
 
