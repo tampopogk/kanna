@@ -54,7 +54,7 @@ impl Tasks {
         self.label(id)
     }
 
-    pub fn enqueue(self: &Rc<Self>, candidate: Candidate, queue: &str, by: Option<String>) {
+    pub fn enqueue(self: &Rc<Self>, candidate: Candidate, queue: &str, by: Option<String>, settled: impl FnOnce() + 'static) {
         let id = candidate.entry.id.clone();
         let queued = queue.to_string();
         let change = Change::new("queued").by(by.as_deref()).with("queue", json!(queue));
@@ -62,38 +62,39 @@ impl Tasks {
             e.queued = Some(queued.clone());
             e.merge_failed = None;
         });
-        let Some(entry) = entry else { return };
+        let Some(entry) = entry else { return settled() };
         self.tell_planner(&entry, What::Queued, by.as_deref());
         self.changed();
-        let Some(pane) = candidate.pane.filter(|pane| self.core.upgrade().is_some_and(|core| core.pane(pane).is_some())) else { return };
+        let Some(pane) = candidate.pane.filter(|pane| self.core.upgrade().is_some_and(|core| core.pane(pane).is_some())) else { return settled() };
         if candidate.on_desk {
             let this = Rc::downgrade(self);
             return self.hold(pane.clone(), entry, Place::Desk, by.clone(), false, move |_, held| {
                 if let Err(error) = held {
                     log!("kanna-daemon: {id} went into the merge queue but stays on the Desk: {}", error.message);
                 }
-                if let Some(this) = this.upgrade() {
-                    this.quit_for_queue(&pane, by);
+                match this.upgrade() {
+                    Some(this) => this.quit_for_queue(&pane, by, settled),
+                    None => settled(),
                 }
             });
         }
-        self.quit_for_queue(&pane, by);
+        self.quit_for_queue(&pane, by, settled);
     }
 
-    fn quit_for_queue(self: &Rc<Self>, pane: &str, by: Option<String>) {
-        let Some(core) = self.core.upgrade() else { return };
+    fn quit_for_queue(self: &Rc<Self>, pane: &str, by: Option<String>, settled: impl FnOnce() + 'static) {
+        let Some(core) = self.core.upgrade() else { return settled() };
         let close_tabs = {
             let weak = core.weak();
             let pane = pane.to_string();
             move || {
-                if let Some(core) = weak.upgrade() {
-                    let closing = pane.clone();
-                    core.handle(json!({ "cmd": "close", "args": { "task": pane, "tabs": true } }), move |reply| {
-                        if let Some(error) = failed(&reply) {
-                            log!("kanna-daemon: couldn't close {closing}'s tabs for the merge queue: {}", error.message);
-                        }
-                    });
-                }
+                let Some(core) = weak.upgrade() else { return settled() };
+                let closing = pane.clone();
+                core.handle(json!({ "cmd": "close", "args": { "task": pane, "tabs": true } }), move |reply| {
+                    if let Some(error) = failed(&reply) {
+                        log!("kanna-daemon: couldn't close {closing}'s tabs for the merge queue: {}", error.message);
+                    }
+                    settled();
+                });
             }
         };
         if !alive(&core, pane) {

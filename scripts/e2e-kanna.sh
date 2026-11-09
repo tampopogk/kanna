@@ -6446,15 +6446,15 @@ TEST
   check wait_for 20 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select group_concat(place) from tasks where id in ('"'$a'"', '"'$b'"')")" == done,done ]]' || { echo "merge_queue: landed tasks aren't done"; return 1; }
   check test -z "$(git -C "$repo" branch --list "queue/*")" || { echo "merge_queue: queue branches are left: $(git -C "$repo" branch --list "queue/*")"; return 1; }
   local before; before="$(git -C "$repo" rev-parse main)"
-  machine_runners 1
   said="$(in_repo task merge "$c" 2>&1)" || { echo "merge_queue: C didn't go into the queue: $said"; return 1; }
-  check wait_for 60 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select state from merge_queue where task = '"'$c'"'")" == failed ]]' || { echo "merge_queue: C's failing tests didn't fail it"; tail -30 "$out/daemon.log"; return 1; }
+  check wait_for 60 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select state from merge_queue where task = '"'$c'"'")" == failed ]]' || { echo "merge_queue: C's failing tests didn't fail it"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id, task, state, run, doc from merge_queue"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id, state, outcome, doc from runs"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select run, stage, verdict, terminal, doc from run_stages"; in_repo task list; ls "$KANNA_STATE_DIR"; return 1; }
   check test "$(git -C "$repo" rev-parse main)" == "$before" || { echo "merge_queue: main moved for a failed entry"; return 1; }
   listed="$(in_repo task list)"
   grep -qE " C +merge-failed +.*FAILED: broken is here|C +merge-failed" <<<"$listed" || { echo "merge_queue: C isn't back on the Shelf as merge-failed:"; echo "$listed"; return 1; }
   check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from messages where recipient = '$c' and sender like 'queue-%' and text like '%didn''t merge%FAILED: broken is here%kanna task merge again%'")" -eq 1 || { echo "merge_queue: C's agent wasn't sent the log"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select sender, text from messages where recipient = '$c'"; return 1; }
   check test -e "$(wt $c)/.kanna/tmp/$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select id from merge_queue where task = '$c'")/test.log" || { echo "merge_queue: the failed log wasn't kept in C's worktree"; return 1; }
-  check wait_for 30 eval 'shows "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from tasks where id = '"'$c'"'")" "message from queue-"' || { echo "merge_queue: C's agent didn't get the queue's message"; return 1; }
+  machine_runners 3
+  check wait_for 30 eval 'shows "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from tasks where id = '"'$c'"'")" "message from queue-"' || { echo "merge_queue: C's agent didn't get the queue's message"; local ct; ct="$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select terminal from tasks where id = '$c'")"; echo "terminal $ct"; kanna read "$ct"; in_repo task list; in_repo task messages "$c"; cat "$KANNA_AGENTS_HOME/.kanna-v4/config.json"; return 1; }
 }
 
 scenario desk_news M4

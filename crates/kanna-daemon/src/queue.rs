@@ -60,7 +60,7 @@ pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     }
     let command = test_command(repo)?;
     let within = test_within(repo).map_or(String::new(), |s| format!(" within {s}s"));
-    Some((format!("test = run {command}{within}\ntest -> done\n"), format!("Kanna's {PIPELINE}.kojo (merge.test)")))
+    Some((format!("test = run {command}{within}\ntest -[pass]-> done\n"), format!("Kanna's {PIPELINE}.kojo (merge.test)")))
 }
 
 fn prompts(folder: &Path) -> BTreeMap<String, String> {
@@ -100,6 +100,10 @@ impl Queue {
             log!("kanna-daemon: can't read the merge queue in kanna.db: {error}");
             vec![]
         });
+        let mut live = live;
+        for row in live.iter_mut() {
+            patch(&mut row.doc, json!({ "settled": true }));
+        }
         for row in &live {
             log!("kanna-daemon: {} carries on in the merge queue ({}, {})", row.id, row.task, row.state);
         }
@@ -126,7 +130,8 @@ impl Queue {
 
     fn handle(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
         match string(args, "action") {
-            Some("add") => self.add(args),
+            Some("merge") if args.get("cancel") == Some(&Value::Bool(true)) => self.cancel(args),
+            Some("add" | "merge") => self.add(args),
             Some("cancel") => self.cancel(args),
             Some("list") => self.list(args),
             other => Err(bad(format!("unknown queue action {other:?} (add, cancel or list)"))),
@@ -162,9 +167,9 @@ impl Queue {
             let names: Vec<String> = entry.bases.iter().map(|b| tasks.label_for(&b.id)).collect();
             return Err(KmuxError::new("merges_after", format!("{short} merges after {}, which isn't in main yet: merge it once that lands (you're told when it does)", names.join(", "))));
         }
-        let dirty = git(&folder, &["status", "--porcelain", "--untracked-files=no"]).map_err(failed)?;
+        let dirty = git(&folder, &["diff", "--name-only", "HEAD"]).map_err(failed)?;
         if !dirty.is_empty() {
-            let files: Vec<&str> = dirty.lines().map(|l| l.get(3..).unwrap_or(l)).collect();
+            let files: Vec<&str> = dirty.lines().collect();
             return Err(KmuxError::new("uncommitted", format!("{short} has uncommitted changes to {} file{} ({}): commit them first", files.len(), if files.len() == 1 { "" } else { "s" }, files.join(", "))));
         }
         let main = main_branch(&repo).ok_or_else(|| failed(format!("{} has no branch checked out to merge into", repo.display())))?;
@@ -191,7 +196,13 @@ impl Queue {
         let ahead_of: Vec<QueueRow> = self.live.borrow().iter().filter(|q| q.repo == entry.repo).cloned().collect();
         self.live.borrow_mut().push(row);
         log!("kanna-daemon: {} goes into {}'s merge queue as {id}, at {head}", entry.id, entry.repo);
-        tasks.enqueue(candidate, &id, Some(by));
+        let weak = Rc::downgrade(self);
+        let settling = id.clone();
+        tasks.enqueue(candidate, &id, Some(by), move || {
+            if let Some(this) = weak.upgrade() {
+                this.settle(&settling);
+            }
+        });
         self.soon.set(true);
         let position = ahead_of.len() + 1;
         let after = ahead_of.last().map(|q| text(&q.doc, "name"));
@@ -211,6 +222,13 @@ impl Queue {
         self.take_out(&row.id, &by);
         tasks.unqueue(&id, Some(&by));
         Ok(Map::from_iter([("queue".to_string(), json!(row.id)), ("task".to_string(), json!(id)), ("state".to_string(), json!("cancelled"))]))
+    }
+
+    fn settle(&self, queue: &str) {
+        let Some(mut row) = self.live.borrow().iter().find(|q| q.id == queue).cloned() else { return };
+        patch(&mut row.doc, json!({ "settled": true }));
+        self.save(&row);
+        self.soon.set(true);
     }
 
     fn take_out(self: &Rc<Self>, queue: &str, why: &str) {
@@ -289,7 +307,9 @@ impl Queue {
                 continue;
             }
             if let Some(next) = mine.iter().find(|q| q.state == "queued") {
-                self.begin(&next.id);
+                if next.doc.get("settled") == Some(&Value::Bool(true)) {
+                    self.begin(&next.id);
+                }
             }
         }
     }
@@ -381,6 +401,10 @@ impl Queue {
             return;
         }
         match outcome {
+            Ok(_) if self.last_failed(run) => {
+                let log = self.last_log(run);
+                self.fail(&row.id, "its pipeline ended after a stage failed", log);
+            }
             Ok(head) => {
                 log!("kanna-daemon: {}'s tests passed at {head}, so it lands", row.id);
                 row.state = "landing".into();
@@ -390,9 +414,18 @@ impl Queue {
             }
             Err(why) => {
                 let log = self.last_log(run);
+                let why = match (self.last_failed(run), &log) {
+                    (true, Some((stage_log, _))) => format!("{} failed", stage_log.split('\n').next().unwrap_or("test")),
+                    _ => why,
+                };
                 self.fail(&row.id, &why, log);
             }
         }
+    }
+
+    fn last_failed(&self, run: &str) -> bool {
+        let stages = self.db.stages(run).unwrap_or_default();
+        stages.iter().rev().find(|s| s.verdict.as_deref() != Some("interrupted")).is_some_and(|s| s.verdict.as_deref() == Some("fail"))
     }
 
     fn last_log(&self, run: &str) -> Option<(String, String)> {
@@ -574,6 +607,26 @@ fn row_value(row: &QueueRow) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kanna_s_pipeline_runs_merge_test_and_lands_only_on_a_pass() {
+        let dir = std::env::temp_dir().join(format!("kanna-merge-queue-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".kanna")).unwrap();
+        assert_eq!(pipeline_text(&dir, &dir), None, "no merge.test and no pipeline: nothing to test with");
+        fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh", "within": 900}}"#).unwrap();
+        let (text, shown) = pipeline_text(&dir, &dir).unwrap();
+        assert_eq!(shown, "Kanna's merge-queue.kojo (merge.test)");
+        let pipeline = kanna_pipe::parse(&text).unwrap();
+        let mut doc = runs::Doc { taken: vec![0; pipeline.arrows.len()], ..runs::Doc::default() };
+        assert_eq!(runs::decide(&pipeline, &mut doc, "test", Some(kanna_pipe::Verdict::Fail), None), runs::Next::Stuck);
+        assert_eq!(runs::decide(&pipeline, &mut doc, "test", Some(kanna_pipe::Verdict::Pass), None), runs::Next::Done);
+        assert_eq!(pipeline.stage("test").and_then(|s| s.within), Some(Duration::from_secs(900)));
+        fs::create_dir_all(dir.join(".kanna/pipelines")).unwrap();
+        fs::write(dir.join(".kanna/pipelines/merge-queue.kojo"), "check = run true\ncheck -[pass]-> done\n").unwrap();
+        assert!(pipeline_text(&dir, &dir).unwrap().0.starts_with("check = run true"), "the repo's own pipeline wins");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn places_read_as_ordinals() {

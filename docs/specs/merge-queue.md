@@ -84,10 +84,10 @@ sequenceDiagram
 
 ```
 test = run <merge.test>
-test -> done
+test -[pass]-> done
 ```
 
-- **A repo's own pipeline** may have any stages runs can do (today, `run` and agent stages with their loops), for example a check, a build, then e2e, or a fix stage that commits to the merge branch before the tests run again. What lands is the run's branch at `done`, and it lands only if it's a descendant of X.
+- **A repo's own pipeline** may have any stages runs can do (today, `run` and agent stages with their loops), for example a check, a build, then e2e, or a fix stage that commits to the merge branch before the tests run again. What lands is the run's branch at `done`, and it lands only if it's a descendant of X and the run's last visit didn't fail: a pipeline whose arrow takes a fail to `done` fails the entry instead.
 - **Main** is the branch the main checkout has checked out, as everywhere else in Kanna ([task events](task-events.md)).
 - **Landing:** at `done` the queue checks that main is still at M0 and that the run's head descends from X, then runs `git merge --ff-only` in the main checkout, so main and the checkout's files move together.
 - **Main moved under the run** (you merged by hand, or pulled): the fast-forward is refused. The entry runs again from the new main, up to 3 times. After that it fails with `main kept moving`.
