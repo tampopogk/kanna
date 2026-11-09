@@ -178,7 +178,7 @@ function detail(e) {
   const at = s.queue.indexOf(e);
   if (at === 0) {
     const ran = clock(Date.now() - e.started);
-    return `<div class="head"><span><b>Tester</b> · claude · .kanna-worktrees/merge-queue · queue/${e.id}-1</span><span>running · ${ran}</span></div><div class="term"><span class="p">&gt;</span> You're the merge queue's tester. main 68da99de and ${esc(e.branch)} are merged here as 3be1f07a.
+    return `<div class="head"><span><b>Tester</b> · ${esc(e.name)} · ${esc(e.branch)}</span><span>running · ${ran}</span></div><div class="term"><span class="p">&gt;</span> You're the merge queue's tester. main 68da99de and ${esc(e.branch)} are merged here as 3be1f07a.
   Run scripts/merge-test.sh with all its output in .kanna/tmp/merge-test.log, and change nothing.
   If anything fails, say for each failure whether the branch caused it…
 
@@ -245,7 +245,7 @@ function queueRows() {
       const doing = e.stage === "merge" ? "merging onto main" : `testing on main ${s.main} + ${esc(e.branch)}`;
       return `<div class="row${pick.id === e.id ? " sel" : ""}" data-sel="${e.id}"><span class="dot working" title="testing"></span><div class="t"><div class="n">${esc(e.name)}</div><div class="s">${doing} · ${clock(ran)} · usually 3m10s</div><div class="progress"><i style="width:${pct}%"></i></div></div><span class="go"><a title="kanna task merge --cancel">Take out</a></span></div>`;
     }
-    return `<div class="row waiting${pick.id === e.id ? " sel" : ""}" data-sel="${e.id}"><span class="dot queued" title="waiting in the queue"></span><div class="t"><div class="n">${esc(e.name)}</div><div class="s">waiting · tested on top of ${esc(s.queue[i - 1].name)} · ${esc(e.branch)} · merge asked by ${esc(e.by)}</div></div><span class="go"><a>Take out</a></span></div>`;
+    return `<div class="row waiting${pick.id === e.id ? " sel" : ""}" data-sel="${e.id}"><span class="dot queued" title="waiting in the queue"></span><div class="t"><div class="n">${esc(e.name)}</div><div class="s">waiting · tested on top of ${esc(s.queue[i - 1].name)} · ${esc(e.branch)}</div></div><span class="go"><a>Take out</a></span></div>`;
   }).join("") || `<div class="s" style="color:var(--muted)">Nothing waiting to merge.</div>`;
 }
 

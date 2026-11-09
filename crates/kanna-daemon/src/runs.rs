@@ -1741,6 +1741,10 @@ impl Runs {
         }
     }
 
+    pub fn terminal_of(&self, run: &str) -> Option<String> {
+        self.live.borrow().iter().find(|l| l.row.id == run).and_then(|l| l.visit.as_ref()).and_then(|v| v.row.terminal.clone())
+    }
+
     fn close_run(self: &Rc<Self>, id: &str, repo: &str, worker: &str, terminal: Option<String>, why: &str) {
         self.update(id, |live| {
             if let Some(visit) = live.visit.as_mut() {

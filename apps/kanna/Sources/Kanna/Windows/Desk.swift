@@ -271,6 +271,7 @@ extension AppController {
     func mergeShelves() {
         let merged: [JSON] = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
         shelf = DeskOrder.byAge(merged, made: { (entry: JSON) -> Double in entry["madeAt"]?.number ?? 0 }, tie: { (entry: JSON) -> String in MachineIDs.bare(entry["id"]?.string ?? "") })
+        queueChanged()
     }
 
     func location(ofEntry entry: JSON) -> String? {
@@ -295,7 +296,7 @@ extension AppController {
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
             let status = offline(entry["machine"]?.string) ? nil : entry["running"]?.bool == true ? entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } : ShelfTask.last(stopped: entry["stopped"]?.string)
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status, queue: QueueSpot(entry["queue"]), failed: entry["mergeFailed"]?["why"]?.string)
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status, queue: QueueSpot(entry["queue"]), failed: entry["mergeFailed"]?["why"]?.string, failedEntry: entry["mergeFailed"]?["queue"]?.string)
         }
     }
 

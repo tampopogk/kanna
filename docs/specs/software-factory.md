@@ -117,6 +117,7 @@ sequenceDiagram
 - **Ask:** the task's agent relays it in its chat and runs `kanna run answer`; the Run tab shows a card with **Yes**, **No** and a note (with the Run tab, not built yet). The task shows needs you. Either answer is recorded with who gave it ([6.2](#62-gates-and-steering-as-built)).
 - **Buttons:** the CLI's verbs ([7](#7-cli)). **Pause** finishes the current stage and starts no other; **Skip stage** ends the visit as `pass` by you; **Retry stage** runs it again; **Edit pipeline** opens the run's revision in a code pane; **Stop** ends the run. Each is recorded as an intervention.
 - **Desk and Shelf:** one row, the task's agent's status; the Run tab's badge (`5/7`) is the run's only sign. `kanna task list` adds `run: review 5/7` after the state.
+- **The merge queue's runs:** a queue entry's run belongs to the queue, not to a task you're working in, so it shows on the window's Merge queue tab, with its tester's terminal, rather than in a Run tab ([merge queue §5](merge-queue.md#5-seeing-the-queue)). There's no tab listing every run of a repo: `kanna run list` does that.
 - **Result:** at hand-back the task's agent presents it ([presenting](presenting.md)): the spec, the diff, the mockup, what it built and what it cost.
 
 ## 5. Metrics

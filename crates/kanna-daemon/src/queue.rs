@@ -21,6 +21,10 @@ const LIVE: &[&str] = &["queued", "testing", "landing"];
 
 const FAILURE_LINES: usize = 40;
 
+const KEPT_LOGS: usize = 30;
+
+const LOG_BYTES: u64 = 256 * 1024;
+
 pub const WORKER: &str = "merge-queue";
 
 pub const TEST_LOG: &str = ".kanna/tmp/merge-test.log";
@@ -184,7 +188,8 @@ impl Queue {
             Some("add" | "merge") => self.add(args),
             Some("cancel") => self.cancel(args),
             Some("list") => self.list(args),
-            other => Err(bad(format!("unknown queue action {other:?} (add, cancel or list)"))),
+            Some("log") => self.log(args),
+            other => Err(bad(format!("unknown queue action {other:?} (add, cancel, list or log)"))),
         }
     }
 
@@ -302,9 +307,62 @@ impl Queue {
     }
 
     fn list(&self, args: &Value) -> Result<Map, KmuxError> {
-        let repo = string(args, "repo");
-        let rows: Vec<Value> = self.db.queued(args.get("all") != Some(&Value::Bool(true))).map_err(failed)?.iter().filter(|q| repo.is_none_or(|r| q.repo == r)).map(row_value).collect();
+        let repo = string(args, "repo").map(same_folder);
+        let recent = args.get("recent").and_then(Value::as_u64).map(|n| n as usize);
+        let live_only = recent.is_none() && args.get("all") != Some(&Value::Bool(true));
+        let rows: Vec<QueueRow> = self.db.queued(live_only).map_err(failed)?.into_iter().filter(|q| repo.as_ref().is_none_or(|r| same_folder(&q.repo) == *r)).collect();
+        let rows = match recent {
+            Some(most) => {
+                let (live, ended): (Vec<QueueRow>, Vec<QueueRow>) = rows.into_iter().partition(|q| LIVE.contains(&q.state.as_str()));
+                let mut ended: Vec<QueueRow> = ended.into_iter().filter(|q| matches!(q.state.as_str(), "landed" | "failed")).collect();
+                ended.sort_by(|a, b| b.ended_at.unwrap_or(0.0).total_cmp(&a.ended_at.unwrap_or(0.0)));
+                ended.truncate(most);
+                live.into_iter().chain(ended).collect()
+            }
+            None => rows,
+        };
+        let runs = self.runs.upgrade();
+        let rows: Vec<Value> = rows
+            .iter()
+            .map(|row| {
+                let mut value = row_value(row);
+                let terminal = row.run.as_deref().filter(|_| row.state == "testing").and_then(|run| runs.as_ref().and_then(|r| r.terminal_of(run)));
+                value["terminal"] = opt(terminal.as_deref());
+                value
+            })
+            .collect();
         Ok(Map::from_iter([("queue".to_string(), Value::Array(rows))]))
+    }
+
+    fn log(&self, args: &Value) -> Result<Map, KmuxError> {
+        let id = string(args, "queue").ok_or_else(|| bad("which entry? give its queue ID"))?;
+        let row = self.db.queued(false).map_err(failed)?.into_iter().find(|q| q.id == id).ok_or_else(|| KmuxError::new("not_found", format!("no merge queue entry {id}")))?;
+        let path = ["kept", "log"].iter().filter_map(|key| string(&row.doc, key)).find(|p| Path::new(p).is_file()).map(String::from);
+        let text = path.as_deref().and_then(|p| tail(Path::new(p), LOG_BYTES));
+        let note = row.doc.get("result").and_then(|r| r["note"].as_str()).or_else(|| string(&row.doc, "note")).filter(|n| !n.is_empty());
+        Ok(Map::from_iter([
+            ("queue".to_string(), json!(row.id)),
+            ("state".to_string(), json!(row.state)),
+            ("note".to_string(), opt(note)),
+            ("path".to_string(), opt(path.as_deref())),
+            ("text".to_string(), opt(text.as_deref())),
+        ]))
+    }
+
+    fn keep_copy(&self, row: &mut QueueRow, path: &str) {
+        let Ok(common) = git(Path::new(&row.repo), &["rev-parse", "--path-format=absolute", "--git-common-dir"]) else { return };
+        let dir = Path::new(&common).join("kanna/merge-queue");
+        let to = dir.join(format!("{}.log", row.id));
+        if fs::create_dir_all(&dir).is_err() || fs::copy(path, &to).is_err() {
+            return;
+        }
+        patch(&mut row.doc, json!({ "kept": to.to_string_lossy() }));
+        self.save(row);
+        let mut logs: Vec<(SystemTime, PathBuf)> = fs::read_dir(&dir).into_iter().flatten().flatten().filter_map(|f| Some((f.metadata().ok()?.modified().ok()?, f.path()))).collect();
+        logs.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, old) in logs.into_iter().skip(KEPT_LOGS) {
+            let _ = fs::remove_file(old);
+        }
     }
 
     fn save(&self, row: &QueueRow) {
@@ -471,6 +529,7 @@ impl Queue {
         };
         if let Some(log) = log.filter(|l| Path::new(l).is_file()) {
             self.keep_log(&mut row, "test", &log);
+            self.keep_copy(&mut row, &log);
         }
         let failed = last.as_ref().is_some_and(|s| s.verdict.as_deref() == Some("fail"));
         let stage = last.as_ref().map_or("test".to_string(), |s| s.stage.clone());
@@ -710,6 +769,21 @@ fn patch(doc: &mut Value, with: Value) {
             doc.insert(key, value);
         }
     }
+}
+
+fn same_folder(path: &str) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn tail(path: &Path, most: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(size.saturating_sub(most))).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Some(if size > most { text.split_once('\n').map_or(text.clone(), |(_, rest)| rest.to_string()) } else { text })
 }
 
 fn row_value(row: &QueueRow) -> Value {
