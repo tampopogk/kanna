@@ -172,14 +172,8 @@ struct QueueSpot: Equatable {
         let main = self.main ?? "main"
         switch state {
         case "testing":
-            let ran = DeskTask.ago(since).replacingOccurrences(of: "now", with: "just started")
-            switch self.stage {
-            case "main": return "testing \(main) first: its results aren't known yet · \(ran)"
-            case "alone": return "running its new failures again, each alone · \(ran)"
-            default:
-                let stage = self.stage.flatMap { $0 == "test" ? nil : $0 } ?? "testing"
-                return "\(stage) on \(main) + its branch · \(ran)"
-            }
+            let stage = self.stage.flatMap { $0 == "test" ? nil : $0 } ?? "testing"
+            return "\(stage) on \(main) + its branch · \(DeskTask.ago(since).replacingOccurrences(of: "now", with: "just started"))"
         case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
         default: return after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"
         }

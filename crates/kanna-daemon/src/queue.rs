@@ -2,11 +2,10 @@ use crate::db::{Db, QueueRow};
 use crate::runs::{self, Runs, Started};
 use crate::task_events;
 use crate::tasks::{self, git, Tasks};
-use crate::test_results;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -24,11 +23,9 @@ const FAILURE_LINES: usize = 40;
 
 pub const WORKER: &str = "merge-queue";
 
-const ALONE_MAX: usize = 10;
+pub const TEST_LOG: &str = ".kanna/tmp/merge-test.log";
 
-const RERUNNABLE_KEPT: usize = 50;
-
-const ALONE_SCRIPT: &str = ".kanna/tmp/merge-queue-alone.sh";
+pub const PROMPT: &str = "merge-test";
 
 fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
@@ -67,8 +64,54 @@ pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     if let Ok(text) = fs::read_to_string(&own) {
         return Some((text, own.display().to_string()));
     }
-    let command = test_command(repo)?;
-    Some((test_pipeline(&command, test_within(repo), "test"), format!("Kanna's {PIPELINE}.kojo (merge.test)")))
+    test_command(repo)?;
+    let files = tasks::config_files(repo);
+    let agent = tasks::task_agent(&files);
+    let agent = if kanna_pipe::AGENTS.contains(&agent.as_str()) { agent } else { tasks::DEFAULT_AGENT.to_string() };
+    let within = test_within(repo).unwrap_or_else(|| tasks::scripts(&files).timeout);
+    Some((test_pipeline(&agent, within), format!("Kanna's {PIPELINE}.kojo (merge.test, judged by {agent})")))
+}
+
+pub struct Tested<'a> {
+    pub command: &'a str,
+    pub name: &'a str,
+    pub branch: &'a str,
+    pub main: &'a str,
+    pub base: &'a str,
+    pub merge: &'a str,
+    pub queue_branch: &'a str,
+}
+
+pub fn test_prompt(t: &Tested) -> String {
+    let (base, merge) = (short(t.base), short(t.merge));
+    format!(
+        "You test a merge for {main}'s merge queue: \"{name}\" (the branch {branch}) merged onto {main} at {base}, as commit {merge}. This worktree is the queue's own, on {queue}. Nothing in it is yours to change: don't edit, commit, push or merge.
+
+## Run the tests
+
+Run the repo's tests, with their whole output in the log the queue keeps:
+
+    {command} >{log} 2>&1; echo \"exit $?\" >>{log}
+
+They can take many minutes: give the command a long timeout, or run it in the background and wait for it. If they all pass, that's a pass.
+
+## If anything fails
+
+Decide, for each failure, whether this branch caused it, however you like: read the branch's change (`git diff {base} HEAD`, `git log --oneline {base}..HEAD`), run a failing test again on its own, or run it on {main} (`git checkout -q --detach {base}`, and `git checkout -q -f {queue}` to come back). A failure that's on {main} too, or that passes when it runs again alone (it fails only under load), isn't the branch's. A build that the branch breaks is.
+
+Report pass if no failure is the branch's, and fail if any is: a pass lands the merge on {main}, a fail sends the task back to its agent.
+
+## Your answer
+
+Its first line is one line on the outcome, which the Desk shows: `every test passes`, `2 tests fail, neither is the branch's: …`, or `broken_thing fails: the branch removed its fixture`. Then each failure: its name, whether it's the branch's, and how you know. The task's agent reads it when the entry fails, and the queue keeps it when the entry lands.
+",
+        main = t.main,
+        name = t.name,
+        branch = t.branch,
+        queue = t.queue_branch,
+        command = t.command,
+        log = TEST_LOG,
+    )
 }
 
 fn prompts(folder: &Path) -> BTreeMap<String, String> {
@@ -356,7 +399,7 @@ impl Queue {
         };
         let worktree = Path::new(&worker);
         let message = text(&row.doc, "message");
-        patch(&mut row.doc, json!({ "worker": worker, "queueBranch": branch, "base": base, "main": main, "phase": null, "failing": null, "rerunnable": null, "new": null, "flaky": null, "known": null, "fixed": null, "result": null, "mainRun": null, "logs": null }));
+        patch(&mut row.doc, json!({ "worker": worker, "queueBranch": branch, "base": base, "main": main, "stage": null, "result": null, "note": null, "logs": null }));
         if let Err(error) = git(worktree, &["merge", "--no-ff", "-m", &message, &row.head]) {
             let files = git(worktree, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
             let _ = git(worktree, &["merge", "--abort"]);
@@ -375,8 +418,14 @@ impl Queue {
             return self.fail(&row.id, "this repo has no tests for the merge queue any more: set merge.test, or write .kanna/pipelines/merge-queue.kojo", vec![]);
         };
         patch(&mut row.doc, json!({ "since": now(), "attempt": attempt }));
-        let request = message.clone();
-        match self.start_phase(&mut row, "merge", pipeline, shown, &merge, request, prompts(worktree)) {
+        let mut prompts = prompts(worktree);
+        if !own {
+            let command = test_command(&repo).unwrap_or_default();
+            let _ = fs::remove_file(worktree.join(TEST_LOG));
+            let tested = Tested { command: &command, name: &text(&row.doc, "name"), branch: &text(&row.doc, "branch"), main: &main, base: &base, merge: &merge, queue_branch: &branch };
+            prompts.entry(PROMPT.to_string()).or_insert_with(|| test_prompt(&tested));
+        }
+        match self.start_run(&mut row, pipeline, shown, &merge, message.clone(), prompts) {
             Ok(run) => log!("kanna-daemon: {} tests {} on {main} {} as {run}", row.id, row.task, short(&base)),
             Err(error) => {
                 self.save(&row);
@@ -385,8 +434,7 @@ impl Queue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn start_phase(&self, row: &mut QueueRow, phase: &str, pipeline: String, shown: String, base: &str, request: String, prompts: BTreeMap<String, String>) -> Result<String, String> {
+    fn start_run(&self, row: &mut QueueRow, pipeline: String, shown: String, base: &str, request: String, prompts: BTreeMap<String, String>) -> Result<String, String> {
         let runs = self.runs.upgrade().ok_or("the daemon is stopping")?;
         let started = Started {
             task: row.task.clone(),
@@ -405,238 +453,66 @@ impl Queue {
         let run = runs.start_owned(started).map_err(|e| e.message)?;
         row.state = "testing".into();
         row.run = Some(run.clone());
-        let stage = if phase == "merge" { "test" } else { phase };
-        patch(&mut row.doc, json!({ "phase": phase, "stage": stage }));
+        patch(&mut row.doc, json!({ "stage": "test" }));
         self.save(row);
         Ok(run)
     }
 
     fn run_ended(self: &Rc<Self>, run: &str, outcome: Result<String, String>) {
-        let Some(row) = self.live.borrow().iter().find(|q| q.run.as_deref() == Some(run)).cloned() else { return };
+        let Some(mut row) = self.live.borrow().iter().find(|q| q.run.as_deref() == Some(run)).cloned() else { return };
         if row.state != "testing" {
             return;
         }
-        if row.doc.get("own") != Some(&Value::Bool(false)) {
-            return self.own_ended(row, run, outcome);
-        }
-        let phase = row.doc.get("phase").and_then(Value::as_str).unwrap_or("merge").to_string();
-        let stage = self.db.stages(run).unwrap_or_default().into_iter().rev().find(|s| s.kind == "run" && matches!(s.verdict.as_deref(), Some("pass" | "fail")));
-        let Some(stage) = stage else {
-            let why = outcome.err().unwrap_or_else(|| "its run ended without testing".into());
-            return self.fail(&row.id, &why, vec![]);
+        let judged = row.doc.get("own") == Some(&Value::Bool(false));
+        let stages = self.db.stages(run).unwrap_or_default();
+        let last = stages.iter().rev().find(|s| matches!(s.kind.as_str(), "run" | "agent") && s.verdict.as_deref() != Some("interrupted")).cloned();
+        let log = match judged {
+            true => Some(Path::new(&text(&row.doc, "worker")).join(TEST_LOG).to_string_lossy().into_owned()),
+            false => stages.iter().rev().find(|s| s.kind == "run" && s.verdict.as_deref() != Some("interrupted")).and_then(|s| string(&s.doc, "log").map(String::from)),
         };
-        let path = string(&stage.doc, "log").unwrap_or("").to_string();
-        let output = fs::read_to_string(&path).unwrap_or_default();
-        let mut row = row;
-        self.keep_log(&mut row, if phase == "merge" { "test" } else { &phase }, &path);
-        if string(&stage.doc, "note") == Some("timed out") {
-            let what = match phase.as_str() {
-                "main" => "main's tests",
-                "alone" => "running the new failures alone",
-                _ => "the tests",
-            };
-            let lines = feedback_lines(&stage.doc);
-            return self.fail(&row.id, &format!("{what} timed out"), lines);
+        if let Some(log) = log.filter(|l| Path::new(l).is_file()) {
+            self.keep_log(&mut row, "test", &log);
         }
-        let passed = stage.verdict.as_deref() == Some("pass");
-        match phase.as_str() {
-            "main" => self.main_tested(row, &output),
-            "alone" => self.alone_tested(row, &output),
-            _ => self.merge_tested(row, &output, passed, &stage.doc),
+        let failed = last.as_ref().is_some_and(|s| s.verdict.as_deref() == Some("fail"));
+        let stage = last.as_ref().map_or("test".to_string(), |s| s.stage.clone());
+        let doc = last.as_ref().map_or(Value::Null, |s| s.doc.clone());
+        let answer = string(&doc, "answer").unwrap_or("").trim().to_string();
+        if judged && !answer.is_empty() {
+            patch(&mut row.doc, json!({ "note": answer }));
+            self.save(&row);
         }
-    }
-
-    fn own_ended(self: &Rc<Self>, mut row: QueueRow, run: &str, outcome: Result<String, String>) {
-        let last = self.last_log(run);
-        if let Some((stage, path, _)) = &last {
-            self.keep_log(&mut row, stage, path);
-        }
-        let lines: Vec<String> = last.as_ref().map(|(_, _, feedback)| feedback.lines().map(String::from).collect()).unwrap_or_default();
+        let lines: Vec<String> = string(&doc, "feedback").unwrap_or("").lines().map(String::from).collect();
+        let timed_out = string(&doc, "note") == Some("timed out");
         match outcome {
-            Ok(_) if self.last_failed(run) => self.fail(&row.id, "its pipeline ended after a stage failed", lines),
-            Ok(head) => self.pass(row, &head, None),
-            Err(why) => {
-                let why = match (self.last_failed(run), &last) {
-                    (true, Some((stage, _, _))) => format!("{stage} failed"),
-                    _ => why,
-                };
-                self.fail(&row.id, &why, lines)
+            Ok(head) if !failed => {
+                let result = judged.then(|| json!({ "verdict": "pass", "note": answer }));
+                self.pass(row, &head, result)
             }
-        }
-    }
-
-    fn merge_tested(self: &Rc<Self>, mut row: QueueRow, output: &str, passed: bool, stage: &Value) {
-        let merge = text(&row.doc, "merge");
-        let Some(results) = test_results::parse(output) else {
-            return match passed {
-                true => self.pass(row, &merge, None),
-                false => self.fail(&row.id, "test failed", feedback_lines(stage)),
-            };
-        };
-        let failing = results.failing();
-        let worker = PathBuf::from(text(&row.doc, "worker"));
-        let rerunnable: Vec<Value> = failing.iter().take(RERUNNABLE_KEPT).filter_map(|key| results.alone(key, &worker)).map(|a| json!({ "key": a.key, "name": a.name, "source": a.source, "binary": a.binary, "path": a.path.to_string_lossy(), "cwd": a.cwd.to_string_lossy() })).collect();
-        self.put_results(&row, &merge, &results.passing(), &failing, &[]);
-        patch(&mut row.doc, json!({ "failing": failing.iter().collect::<Vec<_>>(), "rerunnable": rerunnable, "tests": results.tests.len() }));
-        if failing.is_empty() {
-            return match passed {
-                true => self.pass(row, &merge, Some(json!({ "tests": results.tests.len(), "new": [], "flaky": [], "known": 0, "fixed": [] }))),
-                false => self.fail(&row.id, "the tests failed but named no failing test", feedback_lines(stage)),
-            };
-        }
-        let base = text(&row.doc, "base");
-        if self.results_at(&row, &base).is_some() {
-            patch(&mut row.doc, json!({ "mainRun": "known" }));
-            return self.compare(row);
-        }
-        let repo = PathBuf::from(&row.repo);
-        let Some(command) = test_command(&repo) else { return self.fail(&row.id, "merge.test is gone, so main's tests can't run", vec![]) };
-        let main = text(&row.doc, "main");
-        if let Err(error) = checkout(&worker, &["--detach", &base]) {
-            return self.fail(&row.id, &format!("can't check out {main} in the queue's worktree: {error}"), vec![]);
-        }
-        log!("kanna-daemon: {}'s merge has {} failing tests and {main} {} has no results yet, so main's tests run first", row.id, failing.len(), short(&base));
-        patch(&mut row.doc, json!({ "mainRun": "ran" }));
-        let pipeline = test_pipeline(&command, test_within(&repo), "main");
-        let shown = format!("Kanna's {PIPELINE}.kojo: {main}'s tests at {}", short(&base));
-        let request = format!("{main}'s results at {}, to judge {} against", short(&base), text(&row.doc, "name"));
-        if let Err(error) = self.start_phase(&mut row, "main", pipeline, shown, &base, request, BTreeMap::new()) {
-            self.fail(&row.id, &format!("main's tests can't run: {error}"), vec![]);
-        }
-    }
-
-    fn main_tested(self: &Rc<Self>, mut row: QueueRow, output: &str) {
-        let base = text(&row.doc, "base");
-        let results = test_results::parse(output).unwrap_or_default();
-        self.put_results(&row, &base, &results.passing(), &results.failing(), &[]);
-        let worker = PathBuf::from(text(&row.doc, "worker"));
-        if let Err(error) = checkout(&worker, &[&text(&row.doc, "queueBranch")]) {
-            return self.fail(&row.id, &format!("can't check the merge out again after main's tests: {error}"), vec![]);
-        }
-        patch(&mut row.doc, json!({ "phase": "merge" }));
-        self.save(&row);
-        self.compare(row);
-    }
-
-    fn compare(self: &Rc<Self>, mut row: QueueRow) {
-        let (base, merge) = (text(&row.doc, "base"), text(&row.doc, "merge"));
-        let failing: BTreeSet<String> = strings(&row.doc, "failing");
-        let main = self.results_at(&row, &base).unwrap_or_default();
-        let on_main: BTreeSet<String> = strings(&main, "failed");
-        let passed_here: BTreeSet<String> = self.results_at(&row, &merge).map(|r| strings(&r, "passed")).unwrap_or_default();
-        let new: Vec<String> = failing.difference(&on_main).cloned().collect();
-        let known = failing.intersection(&on_main).count();
-        let fixed: Vec<String> = on_main.intersection(&passed_here).cloned().collect();
-        patch(&mut row.doc, json!({ "new": new, "known": known, "fixed": fixed }));
-        if new.is_empty() {
-            let result = json!({ "tests": row.doc.get("tests").cloned().unwrap_or(Value::Null), "new": [], "flaky": [], "known": known, "fixed": fixed });
-            return self.pass(row, &merge, Some(result));
-        }
-        if new.len() > ALONE_MAX {
-            return self.refuse(row, &new, &[], &format!("{} new failures, too many to run again alone", new.len()));
-        }
-        let rerunnable: Vec<test_results::Alone> = row.doc.get("rerunnable").and_then(Value::as_array).into_iter().flatten().filter(|a| new.iter().any(|n| Some(n.as_str()) == a["key"].as_str())).map(|a| test_results::Alone {
-            key: a["key"].as_str().unwrap_or("").into(),
-            name: a["name"].as_str().unwrap_or("").into(),
-            source: a["source"].as_str().unwrap_or("").into(),
-            binary: a["binary"].as_str().unwrap_or("").into(),
-            path: PathBuf::from(a["path"].as_str().unwrap_or("")),
-            cwd: PathBuf::from(a["cwd"].as_str().unwrap_or("")),
-        }).collect();
-        if rerunnable.is_empty() {
-            return self.refuse(row, &new, &[], "");
-        }
-        let worker = PathBuf::from(text(&row.doc, "worker"));
-        let script = worker.join(ALONE_SCRIPT);
-        if let Err(error) = fs::create_dir_all(script.parent().unwrap_or(&worker)).and_then(|_| fs::write(&script, test_results::alone_script(&rerunnable))) {
-            return self.fail(&row.id, &format!("can't write {}: {error}", script.display()), vec![]);
-        }
-        log!("kanna-daemon: {} has {} new failures, so {} of them run again alone", row.id, new.len(), rerunnable.len());
-        let within = test_within(Path::new(&row.repo)).map_or(String::new(), |s| format!(" within {s}s"));
-        let pipeline = format!("alone = run sh {ALONE_SCRIPT}{within}\nalone -[pass]-> done\n");
-        let shown = format!("Kanna's {PIPELINE}.kojo: the new failures, each alone");
-        let request = format!("run {} again alone: {}", if rerunnable.len() == 1 { "the new failure" } else { "the new failures" }, rerunnable.iter().map(|a| a.key.as_str()).collect::<Vec<_>>().join(", "));
-        if let Err(error) = self.start_phase(&mut row, "alone", pipeline, shown, &merge, request, BTreeMap::new()) {
-            self.fail(&row.id, &format!("the new failures can't run alone: {error}"), vec![]);
-        }
-    }
-
-    fn alone_tested(self: &Rc<Self>, mut row: QueueRow, output: &str) {
-        let merge = text(&row.doc, "merge");
-        let passed_alone = test_results::parse(output).map(|r| r.passing()).unwrap_or_default();
-        let new: Vec<String> = strings(&row.doc, "new").into_iter().collect();
-        let flaky: Vec<String> = new.iter().filter(|n| passed_alone.contains(*n)).cloned().collect();
-        let still: Vec<String> = new.iter().filter(|n| !passed_alone.contains(*n)).cloned().collect();
-        if let Some(results) = self.results_at(&row, &merge) {
-            let mut passed = strings(&results, "passed");
-            let mut failed = strings(&results, "failed");
-            for f in &flaky {
-                failed.remove(f);
-                passed.insert(f.clone());
+            _ if timed_out => self.fail(&row.id, &format!("{} timed out", if judged { "the tests".to_string() } else { stage }), if judged { vec![] } else { lines }),
+            _ if judged && failed => {
+                let first = answer.lines().next().map(str::trim).filter(|l| !l.is_empty()).unwrap_or("the tests failed, and its tester says it's the branch's doing").to_string();
+                patch(&mut row.doc, json!({ "result": { "verdict": "fail", "note": answer } }));
+                self.save(&row);
+                self.fail(&row.id, &first, vec![])
             }
-            self.put_results(&row, &merge, &passed, &failed, &flaky);
+            Ok(_) => self.fail(&row.id, "its pipeline ended after a stage failed", lines),
+            Err(_) if failed => self.fail(&row.id, &format!("{stage} failed"), lines),
+            Err(why) => self.fail(&row.id, &why, lines),
         }
-        patch(&mut row.doc, json!({ "flaky": flaky }));
-        if still.is_empty() {
-            log!("kanna-daemon: {}'s new failures all pass alone, so they're flaky: {}", row.id, flaky.join(", "));
-            let result = json!({ "tests": row.doc.get("tests").cloned().unwrap_or(Value::Null), "new": [], "flaky": flaky, "known": row.doc.get("known").cloned().unwrap_or(json!(0)), "fixed": row.doc.get("fixed").cloned().unwrap_or(json!([])) });
-            return self.pass(row, &merge, Some(result));
-        }
-        self.refuse(row, &still, &flaky, "");
-    }
-
-    fn refuse(self: &Rc<Self>, mut row: QueueRow, new: &[String], flaky: &[String], why: &str) {
-        let known = row.doc.get("known").and_then(Value::as_u64).unwrap_or(0);
-        let fixed = strings(&row.doc, "fixed");
-        let result = json!({ "tests": row.doc.get("tests").cloned().unwrap_or(Value::Null), "new": new, "flaky": flaky, "known": known, "fixed": fixed });
-        patch(&mut row.doc, json!({ "result": result }));
-        self.save(&row);
-        let why = match why.is_empty() {
-            true => summary(new, flaky, known, &fixed),
-            false => format!("{why}: {}", summary(new, flaky, known, &fixed)),
-        };
-        let log = row.doc.get("logs").and_then(|l| l.get("test")).and_then(Value::as_str).and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
-        let mut lines = vec![];
-        for key in new.iter().take(5) {
-            let name = row.doc.get("rerunnable").and_then(Value::as_array).and_then(|a| a.iter().find(|a| a["key"].as_str() == Some(key.as_str()))).and_then(|a| a["name"].as_str().map(String::from)).unwrap_or_else(|| key.split(" (").next().unwrap_or(key).to_string());
-            lines.extend(test_results::failure_text(&log, &name, FAILURE_LINES / 4));
-        }
-        self.fail(&row.id, &why, lines);
     }
 
     fn pass(self: &Rc<Self>, mut row: QueueRow, tested: &str, result: Option<Value>) {
-        if let Some(result) = &result {
-            let known = result["known"].as_u64().unwrap_or(0);
-            let flaky: Vec<String> = result["flaky"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
-            let fixed: BTreeSet<String> = result["fixed"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
-            if known > 0 || !flaky.is_empty() || !fixed.is_empty() {
-                log!("kanna-daemon: {}'s tests pass against main: {}", row.id, summary(&[], &flaky, known, &fixed));
-            }
+        match result.as_ref().and_then(|r| r["note"].as_str()).filter(|n| !n.is_empty()) {
+            Some(note) => log!("kanna-daemon: {}'s tester passes it at {tested}, so it lands: {}", row.id, note.lines().next().unwrap_or("")),
+            None => log!("kanna-daemon: {}'s tests passed at {tested}, so it lands", row.id),
         }
-        log!("kanna-daemon: {}'s tests passed at {tested}, so it lands", row.id);
         row.state = "landing".into();
         patch(&mut row.doc, json!({ "tested": tested, "result": result.unwrap_or(Value::Null) }));
         self.save(&row);
         self.soon.set(true);
     }
 
-    fn results_at(&self, row: &QueueRow, commit: &str) -> Option<Value> {
-        let command = test_command(Path::new(&row.repo))?;
-        self.db.test_results(&row.repo, commit, &command).ok().flatten()
-    }
-
-    fn put_results(&self, row: &QueueRow, commit: &str, passed: &BTreeSet<String>, failed: &BTreeSet<String>, flaky: &[String]) {
-        let Some(command) = test_command(Path::new(&row.repo)) else { return };
-        let doc = json!({ "passed": passed.iter().collect::<Vec<_>>(), "failed": failed.iter().collect::<Vec<_>>(), "flaky": flaky, "run": opt(row.run.as_deref()), "queue": row.id });
-        if let Err(error) = self.db.put_test_results(&row.repo, commit, &command, &doc) {
-            log!("kanna-daemon: couldn't keep the test results at {commit}: {error}");
-        }
-    }
-
     fn keep_log(&self, row: &mut QueueRow, name: &str, path: &str) {
-        if path.is_empty() {
-            return;
-        }
         let Some(folder) = self.tasks.upgrade().and_then(|t| t.entry(&row.task)).and_then(|e| e.folder).map(PathBuf::from) else { return };
         let dir = folder.join(format!(".kanna/tmp/{}", row.id));
         let to = dir.join(format!("{name}.log"));
@@ -646,19 +522,6 @@ impl Queue {
             patch(&mut row.doc, json!({ "logs": logs }));
             self.save(row);
         }
-    }
-
-    fn last_failed(&self, run: &str) -> bool {
-        let stages = self.db.stages(run).unwrap_or_default();
-        stages.iter().rev().find(|s| s.verdict.as_deref() != Some("interrupted")).is_some_and(|s| s.verdict.as_deref() == Some("fail"))
-    }
-
-    fn last_log(&self, run: &str) -> Option<(String, String, String)> {
-        let stages = self.db.stages(run).ok()?;
-        let last = stages.iter().rev().find(|s| s.kind == "run" && s.verdict.as_deref() != Some("interrupted"))?;
-        let log = string(&last.doc, "log").unwrap_or("").to_string();
-        let feedback = string(&last.doc, "feedback").unwrap_or("").to_string();
-        Some((last.stage.clone(), log, feedback))
     }
 
     fn land(self: &Rc<Self>, queue: &str) {
@@ -685,7 +548,7 @@ impl Queue {
             log!("kanna-daemon: {main} moved under {}, so it's tested again on the new {main}", row.id);
             row.state = "queued".into();
             row.run = None;
-            patch(&mut row.doc, json!({ "attempt": attempt + 1, "tested": null, "stage": null, "phase": null }));
+            patch(&mut row.doc, json!({ "attempt": attempt + 1, "tested": null, "stage": null }));
             self.save(&row);
             self.soon.set(true);
             return;
@@ -727,14 +590,6 @@ impl Queue {
         row.ended_at = Some(now());
         patch(&mut row.doc, json!({ "landed": at, "why": null }));
         self.save(row);
-        let tested = text(&row.doc, "tested");
-        if at != tested {
-            if let Some(results) = self.results_at(row, &tested) {
-                if let Some(command) = test_command(Path::new(&row.repo)) {
-                    let _ = self.db.put_test_results(&row.repo, at, &command, &results);
-                }
-            }
-        }
         self.release_worker(row, true);
         if let Some(tasks) = self.tasks.upgrade() {
             tasks.landed(&row.task);
@@ -764,7 +619,7 @@ impl Queue {
         log!("kanna-daemon: {queue} failed: {why}");
         self.release_worker(&row, false);
         let logs = row.doc.get("logs").cloned().unwrap_or(Value::Null);
-        let kept = ["test", "alone", "main"].iter().find_map(|k| logs.get(*k).and_then(Value::as_str).map(String::from)).or_else(|| logs.as_object().and_then(|o| o.values().find_map(|v| v.as_str().map(String::from))));
+        let kept = logs.get("test").and_then(Value::as_str).map(String::from);
         row.state = "failed".into();
         row.ended_at = Some(now());
         patch(&mut row.doc, json!({ "why": why, "log": opt(kept.as_deref()), "feedback": lines.join("\n") }));
@@ -782,26 +637,23 @@ impl Queue {
             }
             said.push('.');
         }
-        if let Some(result) = row.doc.get("result").filter(|r| r.is_object()) {
-            said.push_str(&result_said(result, &main, &text(&row.doc, "mainRun")));
-        }
         said.push_str(&format!(" {main} is unchanged and your branch is as you left it."));
         if let Some(kept) = &kept {
-            said.push_str(&format!(" The log: {kept}."));
+            said.push_str(&format!(" The tests' log: {kept}."));
         }
-        if let Some(main_log) = logs.get("main").and_then(Value::as_str).filter(|l| Some(*l) != kept.as_deref()) {
-            said.push_str(&format!(" {main}'s own run: {main_log}."));
-        }
+        let result = row.doc.get("result").filter(|r| r.is_object());
+        let note = result.and_then(|r| r["note"].as_str()).filter(|n| !n.is_empty());
         let shown: Vec<&String> = lines.iter().take(FAILURE_LINES).collect();
-        if !shown.is_empty() {
+        if let Some(note) = note {
+            said.push_str(&format!(" The queue's tester says it's the branch's doing:\n\n{note}\n\n"));
+        } else if !shown.is_empty() {
             said.push_str(&format!(" The failures:\n\n{}\n\n", shown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")));
         } else {
             said.push(' ');
         }
         said.push_str(&format!("Fix it on your branch (merge {main} first if it moved), then kanna task merge again."));
-        let result = row.doc.get("result").filter(|r| r.is_object());
-        let field = |key: &str| result.and_then(|r| r.get(key)).cloned().unwrap_or(Value::Null);
-        let failure = json!({ "why": why, "queue": queue, "run": opt(row.run.as_deref()), "log": opt(kept.as_deref()), "at": num(now()), "new": field("new"), "flaky": field("flaky"), "onMain": field("known"), "fixed": field("fixed") });
+        let verdict = result.and_then(|r| r["verdict"].as_str());
+        let failure = json!({ "why": why, "queue": queue, "run": opt(row.run.as_deref()), "log": opt(kept.as_deref()), "at": num(now()), "verdict": opt(verdict), "note": opt(note) });
         if let Some(tasks) = self.tasks.upgrade() {
             tasks.merge_failed(&row.task, queue, failure, &said);
         }
@@ -811,61 +663,6 @@ impl Queue {
 
 fn short(commit: &str) -> &str {
     &commit[..commit.len().min(8)]
-}
-
-fn strings(doc: &Value, key: &str) -> BTreeSet<String> {
-    doc.get(key).and_then(Value::as_array).into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect()
-}
-
-fn feedback_lines(stage: &Value) -> Vec<String> {
-    string(stage, "feedback").unwrap_or("").lines().map(String::from).collect()
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
-
-pub fn summary(new: &[String], flaky: &[String], known: u64, fixed: &BTreeSet<String>) -> String {
-    let mut parts = vec![];
-    if !new.is_empty() {
-        parts.push(format!("{}: {}", plural(new.len(), "new failure", "new failures"), new.join(", ")));
-    }
-    if !flaky.is_empty() {
-        parts.push(format!("{} (passes alone, fails under load): {}", plural(flaky.len(), "flaky test", "flaky tests"), flaky.join(", ")));
-    }
-    if known > 0 {
-        parts.push(format!("{} already on main", plural(known as usize, "failure", "failures")));
-    }
-    if !fixed.is_empty() {
-        parts.push(format!("fixes {} of main's", fixed.len()));
-    }
-    if parts.is_empty() {
-        return "every test passes".into();
-    }
-    parts.join("; ")
-}
-
-fn result_said(result: &Value, main: &str, main_run: &str) -> String {
-    let known = result["known"].as_u64().unwrap_or(0);
-    let fixed: Vec<&str> = result["fixed"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-    let mut said = String::new();
-    if known > 0 {
-        said.push_str(&format!(" {} on the merge fail on {main} too, so they don't count against it.", plural(known as usize, "test that fails", "tests that fail")));
-    }
-    if !fixed.is_empty() {
-        said.push_str(&format!(" It fixes {} that fail on {main}: {}.", fixed.len(), fixed.join(", ")));
-    }
-    if main_run == "ran" {
-        said.push_str(&format!(" {main}'s results weren't known yet, so its tests ran first, in the same worktree."));
-    }
-    said
-}
-
-fn checkout(worker: &Path, args: &[&str]) -> Result<(), String> {
-    let mut all = vec!["checkout", "-q", "-f"];
-    all.extend_from_slice(args);
-    git(worker, &all)?;
-    git(worker, &["clean", "-fdq"]).map(|_| ())
 }
 
 pub fn worker_folder(repo: &Path) -> PathBuf {
@@ -897,9 +694,8 @@ pub fn own_pipeline(folder: &Path) -> bool {
     folder.join(format!(".kanna/pipelines/{PIPELINE}.kojo")).is_file()
 }
 
-pub fn test_pipeline(command: &str, within: Option<u64>, stage: &str) -> String {
-    let within = within.map_or(String::new(), |s| format!(" within {s}s"));
-    format!("{stage} = run {command}{within}\n{stage} -[pass]-> done\n")
+pub fn test_pipeline(agent: &str, within: u64) -> String {
+    format!("test = {agent} prompt {PROMPT} verdict within {within}s\ntest -[pass]-> done\n")
 }
 
 fn patch(doc: &mut Value, with: Value) {
@@ -935,23 +731,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kanna_s_pipeline_runs_merge_test_and_lands_only_on_a_pass() {
+    fn kanna_s_pipeline_has_an_agent_run_merge_test_and_lands_only_on_its_pass() {
         let dir = std::env::temp_dir().join(format!("kanna-merge-queue-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join(".kanna")).unwrap();
         assert_eq!(pipeline_text(&dir, &dir), None, "no merge.test and no pipeline: nothing to test with");
         fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh", "within": 900}}"#).unwrap();
         let (text, shown) = pipeline_text(&dir, &dir).unwrap();
-        assert_eq!(shown, "Kanna's merge-queue.kojo (merge.test)");
+        assert!(shown.starts_with("Kanna's merge-queue.kojo (merge.test, judged by "), "{shown}");
         let pipeline = kanna_pipe::parse(&text).unwrap();
+        let test = pipeline.stage("test").unwrap();
+        assert!(test.agent().is_some_and(|a| a.verdict && kanna_pipe::AGENTS.contains(&a.agent.as_str())), "{text}");
+        assert_eq!(test.prompt(), Some(PROMPT));
+        assert_eq!(test.within, Some(Duration::from_secs(900)));
         let mut doc = runs::Doc { taken: vec![0; pipeline.arrows.len()], ..runs::Doc::default() };
         assert_eq!(runs::decide(&pipeline, &mut doc, "test", Some(kanna_pipe::Verdict::Fail), None), runs::Next::Stuck);
         assert_eq!(runs::decide(&pipeline, &mut doc, "test", Some(kanna_pipe::Verdict::Pass), None), runs::Next::Done);
-        assert_eq!(pipeline.stage("test").and_then(|s| s.within), Some(Duration::from_secs(900)));
         fs::create_dir_all(dir.join(".kanna/pipelines")).unwrap();
         fs::write(dir.join(".kanna/pipelines/merge-queue.kojo"), "check = run true\ncheck -[pass]-> done\n").unwrap();
         assert!(pipeline_text(&dir, &dir).unwrap().0.starts_with("check = run true"), "the repo's own pipeline wins");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_tester_s_prompt_names_the_command_the_log_and_main() {
+        let tested = Tested { command: "scripts/merge-test.sh", name: "Add a", branch: "add-a", main: "main", base: "0123456789abcdef", merge: "fedcba9876543210", queue_branch: "queue/task-1-1" };
+        let said = test_prompt(&tested);
+        assert!(said.contains("    scripts/merge-test.sh >.kanna/tmp/merge-test.log 2>&1; echo \"exit $?\" >>.kanna/tmp/merge-test.log\n"), "{said}");
+        assert!(said.contains("merged onto main at 01234567, as commit fedcba98"), "{said}");
+        assert!(said.contains("`git checkout -q --detach 01234567`, and `git checkout -q -f queue/task-1-1` to come back"), "{said}");
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -992,82 +800,74 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    fn judging(name: &str) -> (Rc<Queue>, PathBuf, QueueRow) {
+    fn judging(name: &str, own: bool) -> (Rc<Queue>, PathBuf) {
         let dir = scratch(name);
         let repo = dir.join("repo");
         fs::create_dir_all(repo.join(".kanna")).unwrap();
         fs::write(repo.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "cargo test"}}"#).unwrap();
         let db = Rc::new(Db::open(&dir.join("state")));
         let queue = Rc::new(Queue::open(db, Weak::new(), Weak::new()));
-        let repo_text = repo.to_string_lossy().into_owned();
-        queue.db.put_test_results(&repo_text, "base0", "cargo test", &json!({ "passed": ["steady", "fixed_here"], "failed": ["broken_on_main", "fixed_here_too"] })).unwrap();
-        let row = QueueRow { id: "queue-1".into(), repo: repo_text, task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": false, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "phase": "merge" }) };
+        let row = QueueRow { id: "queue-1".into(), repo: repo.to_string_lossy().into_owned(), task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": own, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "branch": "a", "stage": "test" }) };
         queue.db.put_queued(&row).unwrap();
-        queue.live.borrow_mut().push(row.clone());
-        (queue, dir, row)
+        let run = crate::db::RunRow { id: "run-1".into(), task: "task-1".into(), repo: row.repo.clone(), pipeline: PIPELINE.into(), revision_hash: "r".into(), branch: "queue/task-1-1".into(), state: "stopped".into(), started_at: 1.0, ended_at: Some(2.0), outcome: Some("failed".into()), doc: json!({}) };
+        queue.db.put_run(&run, None).unwrap();
+        queue.live.borrow_mut().push(row);
+        (queue, dir)
+    }
+
+    fn visited(queue: &Queue, stage: &str, kind: &str, verdict: &str, doc: Value) {
+        let row = crate::db::StageRow { id: 0, run: "run-1".into(), stage: stage.into(), visit: 1, instance: None, kind: kind.into(), agent: (kind == "agent").then(|| "claude".into()), machine: "here".into(), started_at: 1.0, ended_at: Some(2.0), verdict: Some(verdict.into()), session: None, terminal: None, worktree: None, branch: None, doc };
+        queue.db.put_stage(&row).unwrap();
     }
 
     fn state(queue: &Queue) -> QueueRow {
         queue.db.queued(false).unwrap().into_iter().find(|q| q.id == "queue-1").unwrap()
     }
 
-    const FAIL: &str = "running 4 tests\ntest steady ... ok\ntest broken_on_main ... FAILED\ntest fixed_here ... ok\ntest fixed_here_too ... ok\n\ntest result: FAILED. 3 passed; 1 failed\n";
-
     #[test]
-    fn an_entry_lands_while_main_has_a_known_failing_test() {
-        let (queue, dir, row) = judging("known");
-        queue.merge_tested(row, FAIL, false, &json!({}));
+    fn a_failure_the_tester_says_isn_t_the_branch_s_lands_it_with_the_note() {
+        let (queue, dir) = judging("not-the-branch", false);
+        let note = "1 test fails, not the branch's: known_broken\nknown_broken fails on main at base0 too.";
+        visited(&queue, "test", "agent", "pass", json!({ "answer": note }));
+        queue.run_ended("run-1", Ok("merge0".into()));
         let landed = state(&queue);
         assert_eq!(landed.state, "landing", "{:?}", landed.doc);
         assert_eq!(landed.doc["tested"], "merge0");
-        assert_eq!(landed.doc["result"]["known"], 1);
-        assert_eq!(landed.doc["result"]["fixed"], json!(["fixed_here_too"]), "the merge fixes one of main's failures");
-        let cached = queue.db.test_results(&landed.repo, "merge0", "cargo test").unwrap().unwrap();
-        assert_eq!(cached["failed"], json!(["broken_on_main"]), "the merge's own results are kept for when it's main");
+        assert_eq!(landed.doc["result"], json!({ "verdict": "pass", "note": note }));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn an_entry_that_adds_a_failure_is_refused_with_the_test_named() {
-        let (queue, dir, row) = judging("new");
-        let output = FAIL.replace("test steady ... ok", "test steady ... FAILED");
-        queue.merge_tested(row, &output, false, &json!({}));
+    fn a_failure_the_tester_blames_on_the_branch_refuses_it_with_the_reason() {
+        let (queue, dir) = judging("the-branch", false);
+        let note = "broken_thing fails: the branch removed its fixture\nbroken_thing passes on main and fails here, alone too.";
+        visited(&queue, "test", "agent", "fail", json!({ "answer": note, "feedback": note }));
+        queue.run_ended("run-1", Err("test failed".into()));
         let failed = state(&queue);
         assert_eq!(failed.state, "failed");
-        let why = failed.doc["why"].as_str().unwrap();
-        assert_eq!(why, "1 new failure: steady; 1 failure already on main; fixes 1 of main's");
-        assert_eq!(failed.doc["result"]["new"], json!(["steady"]));
-        assert_eq!(failed.doc["result"]["known"], 1);
+        assert_eq!(failed.doc["why"], "broken_thing fails: the branch removed its fixture");
+        assert_eq!(failed.doc["result"], json!({ "verdict": "fail", "note": note }));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_new_failure_that_passes_alone_is_flaky_and_lands() {
-        let (queue, dir, mut row) = judging("flaky");
-        patch(&mut row.doc, json!({ "phase": "alone", "new": ["steady", "fixed_here"], "known": 1, "fixed": [] }));
-        queue.put_results(&row, "merge0", &BTreeSet::new(), &["steady".to_string(), "fixed_here".to_string(), "broken_on_main".to_string()].into(), &[]);
-        queue.alone_tested(row.clone(), "running 1 test\ntest steady ... ok\n\ntest result: ok. 1 passed\nrunning 1 test\ntest fixed_here ... FAILED\n\ntest result: FAILED.\n");
-        let failed = state(&queue);
-        assert_eq!(failed.state, "failed", "fixed_here fails alone too");
-        assert_eq!(failed.doc["why"], "1 new failure: fixed_here; 1 flaky test (passes alone, fails under load): steady; 1 failure already on main");
-        assert_eq!(failed.doc["result"]["flaky"], json!(["steady"]));
-        let (queue, dir2, mut row) = judging("flaky-lands");
-        patch(&mut row.doc, json!({ "phase": "alone", "new": ["steady"], "known": 1, "fixed": [] }));
-        queue.alone_tested(row, "test steady ... ok\ntest result: ok.\n");
-        let landed = state(&queue);
-        assert_eq!(landed.state, "landing");
-        assert_eq!(landed.doc["result"]["flaky"], json!(["steady"]));
+    fn a_tester_that_runs_out_of_time_fails_the_entry_as_timed_out() {
+        let (queue, dir) = judging("timed-out", false);
+        visited(&queue, "test", "agent", "fail", json!({ "answer": "", "feedback": "timed out", "note": "timed out" }));
+        queue.run_ended("run-1", Err("test failed".into()));
+        assert_eq!(state(&queue).doc["why"], "the tests timed out");
         let _ = fs::remove_dir_all(&dir);
-        let _ = fs::remove_dir_all(&dir2);
     }
 
     #[test]
-    fn output_that_isn_t_libtest_s_is_judged_by_its_exit_code() {
-        let (queue, dir, row) = judging("exit");
-        queue.merge_tested(row, "FAILED: broken is here\n", false, &json!({ "feedback": "FAILED: broken is here" }));
+    fn a_repo_s_own_pipeline_fails_on_its_stage_with_the_stage_s_lines() {
+        let (queue, dir) = judging("own", true);
+        visited(&queue, "check", "run", "fail", json!({ "feedback": "FAILED: broken is here" }));
+        queue.run_ended("run-1", Err("check failed".into()));
         let failed = state(&queue);
-        assert_eq!((failed.state.as_str(), failed.doc["why"].as_str()), ("failed", Some("test failed")));
+        assert_eq!((failed.state.as_str(), failed.doc["why"].as_str()), ("failed", Some("check failed")));
         assert_eq!(failed.doc["feedback"], "FAILED: broken is here");
+        assert_eq!(failed.doc.get("result"), None);
         let _ = fs::remove_dir_all(&dir);
     }
 
