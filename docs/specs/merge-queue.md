@@ -4,7 +4,7 @@
 
 When you tell a ready task's agent to merge, it runs `kanna task merge`. The task leaves the Desk for its repo's **merge queue** and its agent quits; you don't wait. The queue lands one entry at a time: it merges the branch onto main as main is now, runs the repo's tests on that merge, and moves main to it only if they pass. The next entry is merged on top of that. If an entry fails, the task goes back to the Shelf and its agent gets the log.
 
-Every entry is tested in the repo's one queue worktree, whose build stays warm, so a run rebuilds only what the merge changed ([3.1](#31-one-warm-worktree-per-repo)). Tests are judged against main's own results, not against a green main: an entry fails only on a test that passes on main and fails on the merge, and a new failure that passes when run again alone is flaky, not a failure ([3.2](#32-judged-against-main)).
+The queue builds the way a task's worktree does, with the build store, the dependency seed and the compile cache. The difference is that it tests every entry in one worktree per repo, which keeps its build, so a run rebuilds only what the merge changed ([3.1](#31-one-warm-worktree-per-repo)). Tests are judged against main's own results, not against a green main: an entry fails only on a test that passes on main and fails on the merge, and a new failure that passes when run again alone is flaky, not a failure ([3.2](#32-judged-against-main)).
 
 ![The Desk view: the Desk's tasks, the merge queue (one entry testing, two waiting) and the Shelf, where a task whose tests failed in the queue shows red](merge-queue.png)
 
