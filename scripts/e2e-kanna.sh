@@ -5317,6 +5317,23 @@ login_shell() {
   return 0
 }
 
+scenario cli_per_instance M4
+cli_per_instance() {
+  local zdot="$KANNA_STATE_DIR/zdot" other="$KANNA_STATE_DIR/other/bin" line='[[ -n $KANNA_CLI ]] && path=(${KANNA_CLI:h} $path)'
+  mkdir -p "$zdot" "$other" && printf '#!/bin/sh\necho another kanna\n' >"$other/kanna" && chmod +x "$other/kanna" || { echo "cli_per_instance line $LINENO"; return 1; }
+  printf 'path=(%q $path)\n%s\n' "$other" "$line" >"$zdot/.zprofile"
+  printf 'path=(%q $path)\n%s\n' "$other" "$line" >"$zdot/.zshrc"
+  SHELL=/bin/zsh ZDOTDIR="$zdot" start_daemon || { echo "cli_per_instance line $LINENO"; return 1; }
+  kanna open --window new --name cli_per_instance >/dev/null || return 1
+  kanna send cli_per_instance 'echo "cli=$KANNA_CLI="; echo "which=$(which kanna)="; echo "first=$path[1]= second=$path[2]="' || return 1
+  check wait_for 5 unwrapped cli_per_instance "cli=$bin/kanna=" || { echo "cli_per_instance: KANNA_CLI isn't the instance's CLI"; kanna read cli_per_instance; return 1; }
+  check wait_for 5 unwrapped cli_per_instance "which=$bin/kanna=" || { echo "cli_per_instance: plain kanna isn't the instance's"; kanna read cli_per_instance; return 1; }
+  check unwrapped cli_per_instance "first=$bin= second=$other=" || { echo "cli_per_instance: another kanna wasn't earlier on PATH before the line"; kanna read cli_per_instance; return 1; }
+  kanna open --window win-1 --name cli_per_instance-cmd --cmd 'echo "cmd=$(which kanna)="; exec cat' >/dev/null || return 1
+  check wait_for 5 unwrapped cli_per_instance-cmd "cmd=$bin/kanna=" || { echo "cli_per_instance: a command pane's kanna isn't the instance's"; kanna read cli_per_instance-cmd; return 1; }
+  return 0
+}
+
 scenario planner_choice M4
 planner_choice() {
   local fake="$KANNA_STATE_DIR/fake" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
