@@ -75,7 +75,7 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 | `guard STAGE` | that `run` stage scores the code before and after; a result that scores lower is discarded and the code before carries on, recorded as a rollback |
 | `emits` | the stage's answer may add stages and arrows to the run ([7](#7-changing-a-pipeline-while-it-runs)) |
 | `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a worker of the run; its result comes back ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)). Until machines are built, a run takes only `here` and this machine's name, and refuses anything else with `no such machine` ([run fan-out §6](run-fan-out.md#6-on-placement)) |
-| `within DURATION` | the stage is abandoned after that long: an agent is stopped and its worktree reset to the stage's start, a command killed; the stage's verdict is fail with `timed out` as feedback |
+| `within DURATION` | without it a stage of any kind has no time limit. With it, the stage is abandoned after that long: an agent is stopped and its worktree reset to the stage's start, a command killed; the stage's verdict is fail with `timed out` as feedback |
 | `resume STAGE` | continue STAGE's last session rather than starting fresh |
 
 ## 4. Arrows
@@ -102,6 +102,8 @@ flowchart LR
 
 - **An agent stage's prompt** is, in order: the stage's prompt file, the request under `# The task`, the feedback under `# Feedback from STAGE` (a review's text, a command's output tail, your note, the conflicts), and how to report it's done (with its verdict when the stage has `verdict`). `{{STAGE.answer}}` and `{{STAGE.KEY}}` in a prompt file are replaced by that stage's last answer or named output; a prompt that names a stage that hasn't run is an error at validation.
 - **Named outputs:** a fenced block in an agent's answer whose info string is `json name=KEY` (or any fenced JSON block when the stage has one `each` consumer) is kept as `STAGE.KEY`. `each` wants a list; each item is given to the instance as `# Your part`, and an object with `name` names the worker (a string's first line names it), whose terminal has it as `KANNA_INSTANCE`.
+- **A command's whole output:** the feedback from a `run` stage ends with the path of the file that has all of its output.
+- **A long command** is the daemon's to run: `kanna run command` from the stage's agent ([run commands](run-commands.md)).
 - **The stage reports its own end:** every agent stage's prompt ends with how to report, writing its final answer to `$KANNA_ANSWER` and running `kanna run done` (with `pass` or `fail` at a `verdict` stage), or `kanna run need TEXT` when it needs you. The answer is what it wrote; the daemon reads nothing from the screen or the agent's session files ([software factory §6.1](software-factory.md#61-sequential-runs-as-built)).
 - **A command's feedback** is its last 80 lines, with lines matching the failure pattern (`FAILED|error\[|panic|✗|failed`) moved first, capped at 8000 characters; `KANNA_FEEDBACK` holds the full text for the next command.
 - **Nothing else is shared between stages but the worktree.** A stage that wants a plan reads it from the branch, or from `{{plan.answer}}`.

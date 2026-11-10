@@ -154,19 +154,13 @@
       "additionalProperties": false
     },
     "merge": {
-      "description": "The merge queue (docs/specs/merge-queue.md): kanna task merge hands a task's branch to it, and it merges the branch onto main, runs these tests on that merge and moves main to it if they pass. Read from the repo's .kanna/config.json only. A repo's .kanna/pipelines/merge-queue.kojo replaces it.",
+      "description": "The merge queue (docs/specs/merge-queue.md): kanna task merge hands a task's branch to it, and it merges the branch onto main, runs these tests on that merge and moves main to it if they pass, or if an agent judges that no failure is the branch's doing. Read from the repo's .kanna/config.json only. A repo's .kanna/pipelines/merge-queue.kojo replaces it.",
       "type": "object",
       "properties": {
         "test": {
-          "description": "The shell command the merge queue runs in the merge's worktree, as a pipeline's run stage does; exit 0 lands the merge. Without it (and without .kanna/pipelines/merge-queue.kojo), kanna task merge is refused.",
+          "description": "The shell command the merge queue runs on each merge, in the queue's worktree: exit 0 lands it, and when it fails an agent judges whether what fails is the branch's doing. Without it (and without .kanna/pipelines/merge-queue.kojo), kanna task merge is refused.",
           "type": "string",
           "minLength": 1
-        },
-        "within": {
-          "description": "Seconds the test gets before Kanna stops it and the merge fails (default: tasks.timeout).",
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 86400
         }
       },
       "additionalProperties": false

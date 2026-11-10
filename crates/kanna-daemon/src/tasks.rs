@@ -28,7 +28,7 @@ mod phone;
 pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
 
-const WORKTREES: &str = ".kanna-worktrees";
+pub const WORKTREES: &str = ".kanna-worktrees";
 
 const SCRATCH: &str = ".kanna/tmp";
 
@@ -6035,7 +6035,7 @@ mod tests {
         let workers = &schema["properties"]["pipelines"]["properties"]["workers"];
         assert_eq!((workers["default"].clone(), workers["minimum"].clone(), workers["maximum"].clone()), (json!(WORKERS), json!(1), json!(WORKERS_MAX)));
         let keys: Vec<&String> = schema["properties"]["merge"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["test", "within"]);
+        assert_eq!(keys, ["test"]);
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["pipelines"]["properties"]["agents"]["propertyNames"]["enum"], json!(names));
         assert_eq!((tasks["agent"]["default"].clone(), tasks["agent"]["examples"].clone()), (json!(DEFAULT_AGENT), json!(names)));
