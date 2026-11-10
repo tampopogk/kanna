@@ -126,15 +126,13 @@ impl Tasks {
         (hooks.close_endpoint)();
         let mark = json!({ "id": id, "from": im::label(&self.state), "from_dir": self.state, "to": im::label(&folder), "at": im::now(), "socket": hooks.socket });
         let copy = folder.join(MOVING_DB);
+        (hooks.stop_terminals)();
         let done = self
             .db
             .backup_to(&copy)
             .map_err(|e| format!("can't copy the records to {}: {e}", copy.display()))
             .and_then(|_| im::prepare(&copy, &mark).map_err(|e| format!("can't mark the copy: {e}")))
-            .and_then(|moved| {
-                (hooks.stop_terminals)();
-                im::stage_files(&self.state, &folder).map(|_| moved)
-            })
+            .and_then(|moved| im::stage_files(&self.state, &folder).map(|_| moved))
             .and_then(|moved| im::commit(&folder).map(|_| moved));
         let moved = match done {
             Ok(moved) => moved,

@@ -984,7 +984,8 @@ mod tests {
         let repo = dir.join("repo");
         fs::create_dir_all(repo.join(".kanna")).unwrap();
         fs::write(repo.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "cargo test"}}"#).unwrap();
-        let db = Rc::new(Db::open(&dir.join("state")));
+        fs::create_dir_all(dir.join("state")).unwrap();
+        let db = Rc::new(Db::open(&dir.join("state")).unwrap());
         let queue = Rc::new(Queue::open(db, Weak::new(), Weak::new()));
         let row = QueueRow { id: "queue-1".into(), repo: repo.to_string_lossy().into_owned(), task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": own, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "branch": "a", "stage": "test", "needs": "judge stopped without reporting", "told": "x" }) };
         queue.db.put_queued(&row).unwrap();

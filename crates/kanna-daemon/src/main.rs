@@ -285,7 +285,7 @@ fn run() -> Result<(), String> {
     let retired = instance_move::settle(&state_dir, &socket)?;
     let socket = kanna_build::own_socket(&given);
     let socket_path = socket.to_string_lossy().into_owned();
-    let db = Rc::new(db::Db::open(&state_dir));
+    let db = Rc::new(db::Db::open(&state_dir).map_err(|error| format!("can't keep the records in {}: {error}", state_dir.display()))?);
     if let Some(old) = &retired {
         if let Err(error) = db.keep_from_moved(old) {
             log!("kanna-daemon: couldn't keep the windows of {}: {error}", old.display());
@@ -330,7 +330,7 @@ fn run() -> Result<(), String> {
         }
     };
     log!("kanna-daemon: using the keeper of {} (pid {})", state_dir.display(), keeper.pid());
-    let store = match Store::open(&state_dir) {
+    let store = match Store::open(&state_dir, db.clone()) {
         Ok(store) => store,
         Err(error) => {
             server.stop();

@@ -266,11 +266,13 @@ impl Terminals {
                 (id.clone(), terminal.drained)
             })
         };
-        if pane.is_some() {
+        let saved = pane.is_none() || {
             self.changed.set(true);
-            self.save_if_changed();
+            self.save_if_changed()
+        };
+        if saved {
+            self.spawner.acknowledge_exit(keeper);
         }
-        self.spawner.acknowledge_exit(keeper);
         match pane {
             Some((id, true)) => self.report_exit(&id).map(|code| (id, code)),
             _ => None,
@@ -465,13 +467,17 @@ impl Terminals {
         self.changed.set(true);
     }
 
-    pub fn save_if_changed(&self) {
+    pub fn save_if_changed(&self) -> bool {
         if !self.changed.replace(false) {
-            return;
+            return true;
         }
-        let Some(saved) = self.saved() else { return };
-        if let Err(error) = self.store.save(&saved) {
-            log!("kanna-daemon: couldn't save the terminals to {}: {error}", self.store.dir().display());
+        let Some(saved) = self.saved() else { return true };
+        match self.store.save(&saved) {
+            Ok(()) => true,
+            Err(error) => {
+                log!("kanna-daemon: couldn't save the terminals to kanna.db: {error}");
+                false
+            }
         }
     }
 
@@ -1018,7 +1024,7 @@ mod tests {
         let mut env = vec![("KANNA_SOCKET".to_string(), "/s/kanna.sock".to_string())];
         env.extend(crate::cli::env(cli.as_deref()));
         let (events, _inbox) = crate::runtime::channel();
-        let terminals = Terminals::new(Rc::new(NoSpawner), Store::open(&dir).unwrap(), events.clone(), env, Arc::new(Wire::new(events)));
+        let terminals = Terminals::new(Rc::new(NoSpawner), Store::open(&dir, Rc::new(crate::db::Db::open(&dir).unwrap())).unwrap(), events.clone(), env, Arc::new(Wire::new(events)));
         let spec = terminals.spec(&Pane::new("term-7", None, PaneType::Term), "t1");
         let var = |name: &str| spec.env.iter().rev().find(|(key, _)| key == name).and_then(|(_, value)| value.clone());
         let named = var(crate::cli::VAR).expect("KANNA_CLI is set");
@@ -1041,7 +1047,7 @@ mod tests {
         let (events, _inbox) = crate::runtime::channel();
         let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
         let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
-        let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
+        let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir, Rc::new(crate::db::Db::open(&dir).unwrap())).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
         let core = kanna_mux::Core::default();
         *terminals.core.borrow_mut() = Some(core.weak());
         core.set_host(Some(Rc::new(Host::new(terminals.clone(), serial))));
@@ -1098,7 +1104,7 @@ mod tests {
         let (events, mut inbox) = crate::runtime::channel();
         let keeper = Rc::new(Keeper::connect(&dir, Path::new("/nonexistent/kanna-keeper"), events.clone()).unwrap());
         let serial = Rc::new(crate::serial::Serial::new(events.clone(), &dir));
-        let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
+        let terminals = Rc::new(Terminals::new(keeper.clone(), Store::open(&dir, Rc::new(crate::db::Db::open(&dir).unwrap())).unwrap(), events.clone(), vec![], Arc::new(Wire::new(events))));
         let core = kanna_mux::Core::default();
         *terminals.core.borrow_mut() = Some(core.weak());
         core.set_host(Some(Rc::new(Host::new(terminals.clone(), serial))));
