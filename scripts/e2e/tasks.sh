@@ -553,7 +553,7 @@ task_restart_no_conversation() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" wizard="$KANNA_STATE_DIR/mock-wizard"
   mkdir -p "$repo" "${agent%/*}" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$agent" && touch "$wizard" || { echo "task_restart_no_conversation line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_restart_no_conversation line $LINENO"; return 1; }
-  (cd "$repo" && kanna task new Wizard "hello there" --agent "$agent") >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new Wizard "say hi" --agent "$agent") >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null && kanna task activate "$(tid 1)" >/dev/null || { echo "task_restart_no_conversation line $LINENO"; return 1; }
   check wait_for 10 shows Wizard "--session-id" || { kanna read Wizard; return 1; }
   [[ "$(pane Wizard cmd)" == *"--resume"* ]] || { echo "task_restart_no_conversation: the pane's command isn't the resuming one: $(pane Wizard cmd)"; return 1; }
