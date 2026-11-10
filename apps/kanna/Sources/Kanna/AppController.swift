@@ -684,6 +684,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let frame = NSRect(x: x, y: y, width: w, height: h)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { controller.window.setFrame(frame, display: false) }
         }
+        if let desk = physical.desk(id) {
+            controller.page = desk.page
+            controller.deskTab = desk.tab
+        }
+        controller.onDeskTab = { [weak self] page, tab in self?.physical.setDeskTab(id, page: page, tab: tab) }
         controller.machinesPage.pair = { [weak self, weak controller] in self?.pairPhone(over: controller?.window) }
         controller.machinesPage.revoke = { [weak self, weak controller] name in self?.revokePhone(name, over: controller?.window) }
         controller.onFrameChange = { [weak self] in
@@ -703,7 +708,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refresh()
         }
         controller.tabBar.onSelect = { [weak self, weak controller] tab in
-            if controller?.page != nil {
+            if controller?.shownPage != nil {
                 controller?.page = nil
                 self?.refresh()
             }

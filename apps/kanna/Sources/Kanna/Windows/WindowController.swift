@@ -29,6 +29,8 @@ final class WindowController: NSObject, NSWindowDelegate {
     var schedules: [ScheduleRow]?
     var schedulesRepo: String?
     var page: String?
+    var deskTab: String?
+    var onDeskTab: ((String?, String?) -> Void)?
     var machines: [MachineRow] = []
     var phones: [String] = []
     var stale: String?
@@ -36,7 +38,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var pageShown: String?
     var shownPage: String? { pageShown }
     private(set) var pages: [String] = []
-    private var dockedTask: String?
+    private var deskViewed = false
     var deskTasks: [DeskTask] = []
     var active: String?
     var others: [DeskTask] { deskTasks.filter { $0.id != active } }
@@ -129,7 +131,6 @@ final class WindowController: NSObject, NSWindowDelegate {
     func render(_ state: JSON, _ panes: PaneViews) {
         let span = Perf.begin(.render, "WindowController.render")
         defer { Perf.end(span) }
-        let shownBefore = tab
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
@@ -137,10 +138,6 @@ final class WindowController: NSObject, NSWindowDelegate {
         window.title = named + (instance == "default" ? "" : " · \(instance)")
         let root = state["root"] ?? .null
         let task = Self.side(state["dock"])
-        if task?["pane"]?.string != dockedTask {
-            dockedTask = task?["pane"]?.string
-            if dockedTask != nil { page = nil }
-        }
         let lead = task == nil ? Self.side(state["lead"]) : nil
         let dock = task ?? lead
         let docked = dock?["pane"]?.string
@@ -149,12 +146,22 @@ final class WindowController: NSObject, NSWindowDelegate {
         shown = Self.shownPanes(state)
         emptyDesk = desk && task == nil && ids.isEmpty
         pages = desk && task == nil ? Self.pages : []
-        if !pages.isEmpty {
-            if deskTask || shownBefore == nil && page == nil {
-                page = Self.pages[0]
-            } else if let tab, tab != shownBefore {
+        if pages.isEmpty {
+            deskViewed = false
+        } else if deskTab == nil || state["planner"]?.string != nil {
+            let tabs = (state["tabs"]?.array ?? []).compactMap { $0["id"]?.string }
+            if deskViewed {
+                if let tab, tab != deskTab { page = nil }
+            } else if page.map({ !pages.contains($0) }) ?? (deskTab == nil) {
+                page = pages[0]
+            } else if let tab, tab != deskTab, deskTab.map(tabs.contains) ?? true {
                 page = nil
+            } else if page == nil, tab != deskTab {
+                page = pages[0]
             }
+            deskTab = tab
+            deskViewed = true
+            onDeskTab?(page, deskTab)
         }
         pageShown = pages.isEmpty ? nil : emptyDesk ? page ?? pages[0] : page
         tabBar.show(state, pages: pages, page: pageShown, counts: merging.isEmpty ? [:] : [MergeQueuePage.title: merging.count])

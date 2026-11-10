@@ -46,7 +46,7 @@ stateDiagram-v2
     TaskView --> DeskView: Done · Move to Shelf (no task active)
 ```
 
-- **⌘. toggles.** From the active task it shows the Desk view; the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
+- **⌘. toggles.** From the active task it shows the Desk view, on the tab it showed last ([the Desk view's tab](desk-view-tab.md)); the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
 - **"Pull back the task parked last" becomes "the active task".** With none active (it was Done or moved to the Shelf), ⌘. makes the Desk's ⌘1 task active: the one left last. That was the old "task parked last", so the key does what it did.
 - **Making a task active** (click, ⌘1, ⌘2, `kanna task activate`) leaves the one active before on the Desk, not active, as pulling parked it before. It counts as left then, even when the Desk view was showing, so it becomes ⌘1.
 - **The Desk's tasks are listed oldest first**, by when each task was made, as the Shelf sorts ([tasks](tasks.md)). The active task stays in its place in that order; only its row's highlight marks it. A task that needs you stays in its place too: its status dot shows it.

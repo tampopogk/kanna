@@ -612,6 +612,7 @@ fn run() -> Result<(), String> {
     tasks.repair_comment_targets();
     tasks.settle_statuses();
     tasks.close_ended_planners();
+    tasks.resume_lost();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();

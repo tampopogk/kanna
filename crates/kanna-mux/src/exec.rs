@@ -7,6 +7,16 @@ use std::time::{Duration, Instant};
 
 pub type Timing = Rc<dyn Fn(&str, Duration)>;
 
+struct DiesWithPanic;
+
+impl Drop for DiesWithPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::exit(101);
+        }
+    }
+}
+
 pub(crate) struct Timed {
     pub(crate) name: String,
     pub(crate) future: Pin<Box<dyn Future<Output = ()>>>,
@@ -19,7 +29,9 @@ impl Future for Timed {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = &mut *self;
         let started = Instant::now();
+        let dies = DiesWithPanic;
         let polled = this.future.as_mut().poll(cx);
+        std::mem::forget(dies);
         if let Some(timing) = &this.timing {
             timing(&this.name, started.elapsed());
         }

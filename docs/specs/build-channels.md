@@ -26,7 +26,7 @@ What each one is for (decided with the user, 2026-11-08):
 | Kanna Dev (the main checkout) | trying a change on main before it ships: `scripts/build.sh dev`. It's ad-hoc signed, so every rebuild is a new app to macOS and asks again for the Keychain and privacy prompts |
 | Kanna Dev task-… (a worktree) | a task trying its own change |
 
-So a change reaches the user's Kanna by a staging release (`scripts/release.sh --staging`, [release](release.md#the-staging-channel)), not by rebuilding the dev app. A Kanna's work moves from one folder to another, its Shelf and its machine key included, live, its terminals and agents running on, with `scripts/move-instance.sh` ([instance move](instance-move.md)).
+So a change reaches the user's Kanna by a staging release (`scripts/release.sh --staging`, [release](release.md#the-staging-channel)), not by rebuilding the dev app. Each staging release is a candidate that soaks there before the same commit is promoted to production ([release candidates](release-candidates.md)). A Kanna's work moves from one folder to another, its Shelf and its machine key included, live, its terminals and agents running on, with `scripts/move-instance.sh` ([instance move](instance-move.md)).
 
 ```text
 ~/Library/Application Support/

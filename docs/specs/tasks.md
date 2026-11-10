@@ -99,6 +99,10 @@ A session Kanna named may have no conversation yet: claude writes its transcript
 
 The commands here ask permission; with [`agents.prompts`](settings.md#agent-prompts) set to `"skip"`, each also gets its agent's flag for not asking (`--dangerously-skip-permissions`, `--yolo`), planners' too.
 
+**After the keeper is lost** (the Mac restarts), a task whose agent was running resumes the same way without being asked; one that was stopped stays stopped ([agents after the keeper is lost](keeper-loss.md)).
+
+**`kanna restart PANE`** replies with the pane's command cut to its first 80 characters on one line, so an agent's pane doesn't print its whole first message.
+
 **Tested** by e2e `task_restart_no_conversation` (the mock agent held in a wizard, refusing as claude does: `kanna restart` and `kanna task start` start it fresh, and once it has a conversation `kanna restart` resumes it) and e2e `real_agent_tasks` for claude and codex: the real agents run as tasks against a local mock model (`tools/agent-harness`), come back to their conversation after `kanna restart` on their first start (codex's pane by then resuming its own session's UUID), and after Move to Shelf, Stop and Start, the mock sees their next message carry the first, with no second start. Antigravity only talks to its own services, and opencode (which could use the mock as a provider) isn't covered yet, so only their command lines are tested (`tasks.rs`).
 
 **A planning agent** resumes too, one conversation per project rather than per task: it starts the same way with `You are the Kanna planning agent.`, and since the main checkout isn't a folder of its own, a session it takes no ID for is the first one made there since it started, not the newest ([planner resume](planner-resume.md#2-each-agent)).
