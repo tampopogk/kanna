@@ -635,7 +635,30 @@ JSON
   check test "$(mdo pictures)" == "$pictures" || { echo "a scroll drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
   mdo zoom ',"zoom":1' >/dev/null; sleep 0.3
   check test "$(mdo pictures)" == "$pictures" || { echo "a zoom drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  local step box
+  box="$(mdo overview.box_height)"
+  for step in 1 1 1 1 1 1 1; do
+    mdo zoom ",\"zoom\":$step" >/dev/null; sleep 0.2
+    check test "$(mdo overview.shown)" == True || { echo "zoomed in to $(mdo zoom): the overview hid"; return 1; }
+  done
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "at $(mdo zoom)×: the overview hid"; return 1; }
+  check python3 -c 'import sys; assert float(sys.argv[1]) < float(sys.argv[2]), sys.argv[1:]' "$(mdo overview.box_height)" "$box" || { echo "zooming in didn't shrink the box"; return 1; }
+  for step in -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1; do
+    mdo zoom ",\"zoom\":$step" >/dev/null; sleep 0.2
+    check test "$(mdo overview.shown)" == True || { echo "zoomed out to $(mdo zoom): the overview hid"; return 1; }
+  done
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "at $(mdo zoom)×: the overview hid"; return 1; }
+  check python3 -c 'import sys; assert float(sys.argv[1]) > float(sys.argv[2]), sys.argv[1:]' "$(mdo overview.box_height)" "$box" || { echo "zooming out didn't grow the box"; return 1; }
   mdo zoom ',"zoom":0' >/dev/null
+  check test "$(mdo pictures)" == "$pictures" || { echo "zooming drew the picture again: $pictures, then $(mdo pictures)"; return 1; }
+  kanna open --window win-1 term --name mdside --split right >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False ]]' || { echo "half of 1200 pt still shows the overview: width $(mdo width)"; return 1; }
+  mdo zoom ',"zoom":1' >/dev/null; mdo zoom ',"zoom":1' >/dev/null; mdo zoom ',"zoom":1' >/dev/null
+  kanna zoom longdoc >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "the pane zoomed to the window, the doc at $(mdo zoom)×: no overview, width $(mdo width)"; return 1; }
+  kanna zoom longdoc >/dev/null; kanna close mdside >/dev/null
+  mdo zoom ',"zoom":0' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True && "$(mdo width)" == 1200* ]]' || { echo "not back to the whole window: width $(mdo width)"; return 1; }
   mdo scroll ',"overview_click":3' >/dev/null
   check wait_for 5 eval '[[ "$(mdo scroll)" == 0* ]]' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
   mdo scroll ',"overview_marks_click":690' >/dev/null

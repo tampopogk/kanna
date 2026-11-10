@@ -33,14 +33,16 @@ enum MarkdownOverviewLayout {
 
     static func column(_ width: CGFloat) -> CGFloat { max(0, width - inset(width) * 2 - padding * 2) }
 
-    static func textColumn(room: CGFloat, zoom: CGFloat) -> CGFloat { max(0, min(column(room) * zoom, room - margin * 2)) }
-
     static func scale(column: CGFloat) -> CGFloat { OverviewMetrics.thumbWidth / max(1, column + gutter) }
 
-    static func shown(overview: Bool, comments wantsComments: Bool, forced: Bool, width: CGFloat, zoom: CGFloat, digit: CGFloat) -> (overview: Bool, comments: Bool) {
+    static func wanted(enabled: Bool, contentHeight: CGFloat, paneHeight: CGFloat) -> Bool {
+        enabled && contentHeight > paneHeight + 0.5
+    }
+
+    static func shown(overview: Bool, comments wantsComments: Bool, forced: Bool, width: CGFloat, digit: CGFloat) -> (overview: Bool, comments: Bool) {
         let pinned = wantsComments && forced
         let wanted = (overview ? [OverviewPanel.overview] : []) + (wantsComments && !forced ? [comments] : [])
-        let shown = OverviewLayout.shown(wanted, width: width - (pinned ? comments.width : 0), columnWidth: digit * zoom) { textColumn(room: $0, zoom: zoom) }
+        let shown = OverviewLayout.shown(wanted, width: width - (pinned ? comments.width : 0), columnWidth: digit) { column($0) }
         return (shown.contains(.overview), pinned || shown.contains(comments))
     }
 }
@@ -122,13 +124,13 @@ extension MarkdownPaneView {
         return OverviewViewport(documentHeight: textView.frame.height, contentHeight: content, top: clip.bounds.minY, height: clip.bounds.height)
     }
 
-    func sides(height: CGFloat? = nil, comments: Bool? = nil, forced: Bool? = nil) -> (overview: Bool, comments: Bool) {
-        var viewport = overviewViewport
-        if let height { viewport.height = height / max(zoom, 0.01) }
-        let wanted = (textView.textStorage?.length ?? 0) > 0 && OverviewLayout.wanted(enabled: OverviewSetting.enabled, viewport: viewport)
+    func sides(comments: Bool? = nil, forced: Bool? = nil) -> (overview: Bool, comments: Bool) {
+        if let container = textView.textContainer { layoutManager.ensureLayout(for: container) }
+        let wanted = (textView.textStorage?.length ?? 0) > 0
+            && MarkdownOverviewLayout.wanted(enabled: OverviewSetting.enabled, contentHeight: overviewViewport.contentHeight, paneHeight: textHeight)
         overviewWanted = wanted
         return MarkdownOverviewLayout.shown(overview: wanted, comments: markup && (comments ?? showThreads), forced: forced ?? forcedThreads,
-                                            width: bounds.width, zoom: zoom, digit: MarkdownOverviewLayout.digit)
+                                            width: bounds.width, digit: MarkdownOverviewLayout.digit)
     }
 
     func setUpOverview() {
