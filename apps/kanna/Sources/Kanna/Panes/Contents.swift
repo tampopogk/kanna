@@ -128,6 +128,10 @@ final class Contents {
     func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? log(id)?.keyView ?? serial(id)?.keyView ?? run(id)?.keyView }
     func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
+    private func tell(_ text: String, to agent: String, doc: String, thread: String, state: String) {
+        onCall?("tasks", ["action": .string("thread_event"), "pane": .string(agent), "text": .string(text), "doc": .string(doc), "thread": .string(thread), "state": .string(state)]) { _ in }
+    }
+
     private func send(_ text: String, to agent: String, doc: String, thread: String, done: @escaping (DocDelivery) -> Void) {
         guard let onCall else { return done(.failed("not connected to the daemon")) }
         let args: [String: JSON] = ["action": .string("comment"), "pane": .string(agent), "text": .string(text), "doc": .string(doc), "thread": .string(thread)]
@@ -207,6 +211,7 @@ final class Contents {
             markdown.agent = pane["agent"]?.string
             markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
             markdown.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
+            markdown.onThreadEvent = { [weak self] agent, text, doc, thread, state in self?.tell(text, to: agent, doc: doc, thread: thread, state: state) }
             markdown.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             markdown.onComments = { [weak self] button in self?.onComments?(id, button) }
             if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
@@ -375,6 +380,7 @@ final class Contents {
             web.agent = pane["agent"]?.string
             web.agentStatus = web.agent.flatMap { self.agentStatus?($0) }
             web.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
+            web.onThreadEvent = { [weak self] agent, text, doc, thread, state in self?.tell(text, to: agent, doc: doc, thread: thread, state: state) }
             web.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
             web.onComments = { [weak self] button in self?.onComments?(id, button) }
             web.onMarkup = { [weak self] markup in self?.marked(markup, in: id) }
