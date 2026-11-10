@@ -16,6 +16,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var views: [String: JSON] = [:]
     var shelves: [String: [JSON]] = [:]
     var deskMade: [String: [String: Int]] = [:]
+    var deskIDs: [String: [String: String]] = [:]
     var deskStacks: [String: [String: String]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
@@ -63,6 +64,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var updates: Updates?
     var toastShowing: (pane: String, desk: String?)?
     var statsTimer: Timer?
+    var buildsTimer: Timer?
     var queueTimer: Timer?
 
     static var daemonSocketPath: String {
@@ -272,6 +274,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
         link.onRun = { [weak self] content, message in self?.contents.received(run: message, content: content) }
         link.onSchedules = { [weak self] in self?.schedulesChanged(on: machine) }
+        link.onStats = { [weak self] repo in self?.statsChanged(repo, on: machine) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
             self?.contents.update(pane)
@@ -439,7 +442,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
             return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
-                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id))
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id), task: deskTaskID(id))
         }
     }
 
@@ -716,13 +719,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             self?.layoutCommand("focus", ["tab": .string(tab)])
         }
+        controller.buildsPage.onCancel = { [weak self] job in self?.cancelBuild(job) }
         controller.tabBar.onPage = { [weak self, weak controller] page in
             guard let self, let controller else { return }
             controller.page = page
             if page == WindowController.pages[1] { links?.refresh() }
-            if page == WindowController.pages[2] { loadStats(controller) }
-            if page == WindowController.pages[3] { loadSchedules(controller) }
-            if page == WindowController.pages[4] { loadQueue(controller) }
+            if page == WindowController.pages[2] { loadBuilds() }
+            if page == WindowController.pages[3] { loadStats(controller) }
+            if page == WindowController.pages[4] { loadSchedules(controller) }
+            if page == WindowController.pages[5] { loadQueue(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
@@ -750,6 +755,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
         controller.deskView.onShelve = { [weak self] task in self?.shelveTask(task, from: id) }
+        controller.deskView.onRun = { [weak self] task in self?.runTask(task, from: id) }
+        controller.deskView.onKeyed = { [weak self] _ in self?.deskKeysChanged() }
         controller.deskView.onLog = { [weak self, weak controller] entry in
             guard let self, let controller else { return }
             showQueue(controller, at: entry)
@@ -772,6 +779,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onBecomeKey = { [weak self, weak controller] in
             guard let self, let controller else { return }
             if controller.window.isKeyWindow { physical.setFront(id) }
+            deskKeysChanged()
             if let window = window(id) { controller.render(window, panes) }
             placeToasts()
         }

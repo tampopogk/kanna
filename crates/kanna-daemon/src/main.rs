@@ -9,9 +9,11 @@ mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
+mod build_queue;
 mod cli;
 mod guests;
 mod instance_move;
+mod ios_apps;
 mod tasks;
 mod db;
 mod desk_news;
@@ -466,6 +468,8 @@ fn run() -> Result<(), String> {
     scheduler.watch_deliveries(&tasks);
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
+    builds::install(&state_dir, &core, build_callers.clone());
+    ios_apps::install(&state_dir, &core, build_callers.clone());
     if cfg!(target_os = "macos") {
         guests.start();
     }
@@ -657,7 +661,16 @@ fn run() -> Result<(), String> {
             app.status(pane, core.pane(pane).and_then(|p| p.status().map(String::from)).as_deref());
         }
     }));
-    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let (stats_link, stats_phone) = (Rc::downgrade(&app), Rc::downgrade(&phone));
+    *stats.on_change.borrow_mut() = Some(Box::new(move |repo| {
+        if let Some(app) = stats_link.upgrade() {
+            app.stats_changed(repo);
+        }
+        if let Some(phone) = stats_phone.upgrade() {
+            phone.stats_changed(repo);
+        }
+    }));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -988,7 +1001,7 @@ fn run() -> Result<(), String> {
             }
             Event::Serial(event) => serial.event_in(event),
             Event::Sampled(sampled) => stats.sampled(sampled),
-            Event::Covered(covered) => stats.coverage().covered(covered),
+            Event::Covered(covered) => stats.covered(covered),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {

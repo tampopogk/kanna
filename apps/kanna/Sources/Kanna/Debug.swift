@@ -174,6 +174,7 @@ extension AppController {
                                   "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf), "dots": .array(page.shelfDots), "groups": .array(page.groupTitles.map { .string($0) })]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
+                                "selection": page.selection.map { .string($0) } ?? .null, "keyed": .bool(page.keyed), "hints": page.hints,
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
             let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null, "stack": task.stack.map { .string($0) } ?? .null, "sub": .string(task.sub)] }
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "tasks": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
@@ -183,8 +184,9 @@ extension AppController {
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
+                    "buildsPage": .bool(!controller.buildsPage.isHidden), "builds": .array(controller.buildsPage.macs.map { mac in ["name": .string(mac.name), "summary": .string(mac.summary), "rows": .array(mac.rows.map { ["job": .string($0.job), "mark": .string($0.mark), "label": .string($0.label), "state": .string($0.state), "note": .string($0.note)] }), "recent": .array(mac.recent.map { ["job": .string($0.job), "label": .string($0.label), "state": .string($0.state)] })] }),
                     "shownPage": controller.shownPage.map { .string($0) } ?? .null,
-                    "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
+                    "statsPage": .bool(!controller.statsPage.isHidden), "statsStatus": controller.statsPage.shownStatus.map { .string($0) } ?? .null, "statsLoadings": .number(Double(controller.statsPage.loadings)), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "queuePage": .bool(!controller.queuePage.isHidden), "queueCount": controller.tabBar.pageCounts[MergeQueuePage.title].map { .number(Double($0)) } ?? .null,
                     "queue": .array(controller.queuePage.entries.map { ["id": .string($0.id), "task": .string($0.task), "name": .string($0.name), "state": .string($0.state), "said": .string($0.said), "terminal": $0.terminal.map { .string($0) } ?? .null, "needs": $0.needs.map { .string($0) } ?? .null] }),
                     "queuePicked": controller.queuePage.selected.map { .string($0.task) } ?? .null, "queueTerminal": controller.queuePage.hostedTerminal.map { .string($0) } ?? .null,
@@ -418,7 +420,9 @@ extension AppController {
                     "detail": log.detail.map { .string($0.hash) } ?? .null, "detailShown": .bool(log.detailShown), "zoom": .number(Double(log.zoom)), "width": .number(log.bounds.width)]
         }
         commands["debug.ios"] = { [weak self] args in
-            guard let self, let id = args["pane"]?.string, let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
+            guard let self, let id = args["pane"]?.string else { throw KannaError("wrong_type", "not a running ios pane") }
+            if let answer = args["approve"]?.bool, let view = contents.ios(id) { return ["answered": .bool(view.answer(answer))] }
+            guard let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
             if let x = args["x"]?.number, let y = args["y"]?.number {
                 screen.touch(.leftMouseDown, at: CGPoint(x: x, y: y))
                 try await Task.sleep(for: .milliseconds(80))
