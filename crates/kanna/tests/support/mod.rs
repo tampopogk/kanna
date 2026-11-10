@@ -93,6 +93,11 @@ impl Daemon {
         self.extra.retain(|(k, _)| k != key);
     }
 
+    pub fn launch(&mut self) {
+        self.stop();
+        self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
+    }
+
     pub fn restart(&mut self) {
         self.stop();
         self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);

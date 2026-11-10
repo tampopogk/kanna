@@ -149,7 +149,7 @@ flowchart LR
 The `fixes` metric runs at each landing: a first-parent commit on main other than `Merge main into …`. It is sampled with the rest, so the stats of the process that makes the code (how many landings needed a fix, how long bugs lived, where they were) start with 30 days of history, but Code quality doesn't show it.
 
 - **A fix:** a landing is one if any of these hold:
-  - It carries a `Fixes: COMMIT` trailer in any of its commits.
+  - It carries a `Fixes: COMMIT` trailer in any of its commits, other than a cherry-pick (`cherry picked from commit`): a release branch's picks come back to main by a merge and were counted when they first landed ([release candidates §3](release-candidates.md#3-the-release-branch)).
   - Its branch starts with `fix-`, `bug-` or `hotfix-`.
   - The first clause of its subject has fix, bug, regression, crash, broken, wrong or revert.
   - Its task's name and the first sentence of its first message have one of those words, or a problem word: fails, stuck, hangs, leaks, loses, race, flaky, doesn't, isn't, nothing.

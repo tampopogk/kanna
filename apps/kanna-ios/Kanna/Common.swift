@@ -78,6 +78,7 @@ struct ChipButton: View {
         Button { store.showChipPop.toggle() } label: { Chip(path: store.plannerPath, on: store.showChipPop) }
             .buttonStyle(.plain)
             .accessibilityIdentifier("chip")
+            .accessibilityValue(store.checking ? "checking" : "live")
     }
 }
 

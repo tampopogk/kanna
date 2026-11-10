@@ -87,7 +87,7 @@ Decided; everything else is kmux's.
 
 ## 3. Reaching Kanna
 
-The CLI never starts a daemon: it starts Kanna.app, which does. When a command fails against a daemon of another build (`capabilities` answers `build`), it adds a line saying so and to relaunch Kanna.app ([daemon build](daemon-build.md)). Which daemon it talks to: [instances](instances.md#2-which-instance-a-command-goes-to).
+The CLI never starts a daemon: it starts Kanna.app, which does. When a command fails against a daemon of another build (`capabilities` answers `build`), it adds a line saying so and to relaunch Kanna.app ([daemon build](daemon-build.md)). Which daemon it talks to: [instances](instances.md#2-which-instance-a-command-goes-to). Which `kanna` binary a shell runs: [which kanna a shell runs](cli-per-instance.md).
 
 ```mermaid
 sequenceDiagram

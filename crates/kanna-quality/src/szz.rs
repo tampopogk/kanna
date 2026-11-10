@@ -67,7 +67,7 @@ pub fn named_fixes(repo: &Path, landing: &str, parents: &[String]) -> Vec<String
         Some(first) if parents.len() > 1 => format!("{first}..{landing}"),
         _ => format!("{landing}^!"),
     };
-    let Ok(bodies) = git(repo, &["log", "--format=%(trailers:key=Fixes,valueonly)", &range]) else { return vec![] };
+    let Ok(bodies) = git(repo, &["log", "--invert-grep", "-F", "--grep=(cherry picked from commit ", "--format=%(trailers:key=Fixes,valueonly)", &range]) else { return vec![] };
     bodies.lines().filter_map(|line| line.split_whitespace().next()).filter(|sha| sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit())).map(String::from).collect()
 }
 
@@ -232,6 +232,18 @@ mod tests {
         assert_eq!(landing_of(&repo, &landing, &fix), Some(landing));
         let parents: Vec<String> = run(&repo, &["show", "-s", "--format=%P", &fix]).split(' ').map(String::from).collect();
         assert_eq!(named_fixes(&repo, &fix, &parents), Vec::<String>::new());
+        run(&repo, &["branch", "release", &fix]);
+        std::fs::write(repo.join("src/other.rs"), "fn c() {}\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-q", "-m", &format!("c\n\nFixes: {fix}")]);
+        let named = run(&repo, &["rev-parse", "HEAD"]);
+        assert_eq!(named_fixes(&repo, &named, std::slice::from_ref(&fix)), vec![fix.clone()]);
+        run(&repo, &["checkout", "-q", "release"]);
+        run(&repo, &["cherry-pick", "-x", &named]);
+        run(&repo, &["checkout", "-q", "main"]);
+        run(&repo, &["merge", "-q", "--no-ff", "-m", "Merge branch 'release-back'", "release"]);
+        let back = run(&repo, &["rev-parse", "HEAD"]);
+        assert_eq!(named_fixes(&repo, &back, &[named, run(&repo, &["rev-parse", "release"])]), Vec::<String>::new(), "a release branch's pick was counted when it landed on main");
         let _ = std::fs::remove_dir_all(&repo);
     }
 }

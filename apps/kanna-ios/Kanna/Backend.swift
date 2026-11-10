@@ -252,6 +252,7 @@ protocol Backend: AnyObject {
     func stats(repo: String) async throws -> StatsPage
     func move(repo: String, machine: String) async throws -> Moved
     func close()
+    func unlink()
     func forget()
     func link() async -> Link
     func highlight(file: String, text: String) -> [TextSpan]

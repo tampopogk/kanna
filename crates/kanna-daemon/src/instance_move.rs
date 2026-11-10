@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const MOVING_DB: &str = "kanna.db.moving";
 pub const MOVING_KEY: &str = "device.key.moving";
 pub const LEAVING: &str = "moving.json";
+pub const LEFT: &str = "moved.json";
 pub const MOVED_FROM: &str = "moved_from";
 pub const SCHEMA_FLAG: &str = "--schema";
 pub const TERMINALS: &str = "terminals";
@@ -269,8 +270,12 @@ pub fn leaving(state: &Path, id: &str, to: &Path, socket: &Path) -> Result<(), S
     fs::write(&path, json!({ "id": id, "to": to, "socket": socket }).to_string()).map_err(|e| format!("can't write {}: {e}", path.display()))
 }
 
-fn leaving_id(state: &Path) -> Option<Value> {
-    serde_json::from_str(&fs::read_to_string(state.join(LEAVING)).ok()?).ok()
+fn marker(state: &Path, name: &str) -> Option<Value> {
+    serde_json::from_str(&fs::read_to_string(state.join(name)).ok()?).ok()
+}
+
+fn id_of(value: &Value) -> Option<&str> {
+    value.get("id").and_then(Value::as_str)
 }
 
 pub fn stay(state: &Path) {
@@ -306,7 +311,7 @@ fn aside(state: &Path, name: &str, to: &str) {
     }
 }
 
-fn retire(state: &Path, to: &str) -> PathBuf {
+fn retire(state: &Path, to: &str, left: bool) -> PathBuf {
     let stamp = stamp();
     let kept = format!("{DB}.moved-{stamp}");
     aside(state, &format!("{DB}-wal"), &format!("{kept}-wal"));
@@ -317,12 +322,56 @@ fn retire(state: &Path, to: &str) -> PathBuf {
     aside(state, KEY, &format!("{KEY}.moved-{stamp}"));
     aside(state, TERMINALS, &format!("{TERMINALS}.moved-{stamp}"));
     aside(state, APP_FILES[0], &format!("{}.moved-{stamp}", APP_FILES[0]));
+    let kept = state.join(kept);
+    if left {
+        let mut marker = marker(state, LEAVING).unwrap_or_else(|| json!({}));
+        marker["kept"] = json!(kept);
+        if let Err(error) = fs::write(state.join(LEFT), marker.to_string()) {
+            say(format!("can't write {}: {error}", state.join(LEFT).display()));
+        }
+    }
     let _ = fs::remove_file(state.join(LEAVING));
-    say(format!("this Kanna moved to {to}: it starts again empty, with a machine key of its own; its records are in {}", state.join(&kept).display()));
-    state.join(kept)
+    say(format!("this Kanna moved to {to}: it starts again empty, with a machine key of its own; its records are in {}", kept.display()));
+    kept
 }
 
-fn finish_leaving(state: &Path, leaving: &Value, to: &Path) {
+fn left_behind(state: &Path, to: &Path) -> String {
+    format!(
+        "this Kanna moved to {}, but its keeper, with the moved terminals, is still in {}: open {}'s Kanna, which takes it, or end those terminals; this Kanna doesn't start until then",
+        label(to),
+        state.display(),
+        label(to)
+    )
+}
+
+fn hand_over_left(state: &Path, left: &Value) -> Result<Option<PathBuf>, String> {
+    let kept = left.get("kept").and_then(Value::as_str).map(PathBuf::from);
+    let done = || {
+        let _ = fs::remove_file(state.join(LEFT));
+        Ok(kept.clone())
+    };
+    let Some(to) = left.get("to").and_then(Value::as_str).map(PathBuf::from) else { return done() };
+    if !keeper_running(state) {
+        return done();
+    }
+    if moved_from(&to).as_ref().and_then(id_of) != id_of(left) {
+        say(format!("{} no longer holds the move that left the keeper here, so this Kanna keeps it", to.display()));
+        return done();
+    }
+    if !keeper_running(&to) {
+        match move_keeper(state, &to) {
+            Ok(true) => say(format!("its keeper moved to {}, after the move", to.display())),
+            Ok(false) => {}
+            Err(error) => say(error),
+        }
+    }
+    match keeper_running(state) {
+        false => done(),
+        true => Err(left_behind(state, &to)),
+    }
+}
+
+fn finish_leaving(state: &Path, leaving: &Value, to: &Path) -> bool {
     match move_keeper(state, to) {
         Ok(true) => say(format!("its keeper moved to {}, after the move", to.display())),
         Ok(false) => {}
@@ -333,12 +382,13 @@ fn finish_leaving(state: &Path, leaving: &Value, to: &Path) {
             say(error);
         }
     }
+    keeper_running(state)
 }
 
 fn finish_arriving(state: &Path, socket: &Path, mark: &Value) {
     let Some(from) = mark.get("from_dir").and_then(Value::as_str).map(PathBuf::from) else { return };
-    let id = mark.get("id").and_then(Value::as_str);
-    if leaving_id(&from).and_then(|l| l.get("id").and_then(Value::as_str).map(str::to_string)).as_deref() != id || id.is_none() {
+    let Some(id) = id_of(mark) else { return };
+    if ![LEAVING, LEFT].iter().any(|name| marker(&from, name).as_ref().and_then(id_of) == Some(id)) {
         return;
     }
     if !keeper_running(state) {
@@ -355,7 +405,7 @@ fn finish_arriving(state: &Path, socket: &Path, mark: &Value) {
     }
 }
 
-pub fn settle(state: &Path, socket: &Path) -> Option<PathBuf> {
+pub fn settle(state: &Path, socket: &Path) -> Result<Option<PathBuf>, String> {
     if state.join(MOVING_DB).exists() {
         abandon(state);
         say(format!("a move into {} didn't finish, so it's as it was", state.display()));
@@ -365,15 +415,25 @@ pub fn settle(state: &Path, socket: &Path) -> Option<PathBuf> {
             finish_arriving(state, socket, &mark);
         }
     }
-    let leaving = leaving_id(state)?;
-    let (id, to) = (leaving.get("id").and_then(Value::as_str)?, PathBuf::from(leaving.get("to").and_then(Value::as_str)?));
-    if moved_from(&to).is_some_and(|m| m.get("id").and_then(Value::as_str) == Some(id)) {
-        finish_leaving(state, &leaving, &to);
-        return Some(retire(state, &to.display().to_string()));
+    if let Some(left) = marker(state, LEFT) {
+        return hand_over_left(state, &left);
+    }
+    let Some(leaving) = marker(state, LEAVING) else { return Ok(None) };
+    let (Some(id), Some(to)) = (id_of(&leaving), leaving.get("to").and_then(Value::as_str).map(PathBuf::from)) else {
+        stay(state);
+        return Ok(None);
+    };
+    if moved_from(&to).as_ref().and_then(id_of) == Some(id) {
+        let left = finish_leaving(state, &leaving, &to);
+        let kept = retire(state, &to.display().to_string(), left);
+        return match left {
+            true => Err(left_behind(state, &to)),
+            false => Ok(Some(kept)),
+        };
     }
     stay(state);
     say(format!("the move to {} didn't finish, so this Kanna is as it was", to.display()));
-    None
+    Ok(None)
 }
 
 pub fn keep_from(conn: &Connection, old: &Path) -> rusqlite::Result<()> {
@@ -477,9 +537,9 @@ mod tests {
         let (source, receiver) = (scratch("src3"), scratch("dst3"));
         let (db, _) = staged_move(&source, &receiver);
         drop(db);
-        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), None);
+        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), Ok(None));
         assert!(fs::read_dir(&receiver).unwrap().next().is_none(), "the receiver throws the half-made copy away");
-        assert_eq!(settle(&source, &source.join("kanna.sock")), None);
+        assert_eq!(settle(&source, &source.join("kanna.sock")), Ok(None));
         assert!(source.join(KEY).exists() && source.join(DB).exists() && source.join(TERMINALS).exists() && !source.join(LEAVING).exists(), "the source is as it was");
     }
 
@@ -489,11 +549,11 @@ mod tests {
         let (db, _) = staged_move(&source, &receiver);
         fs::rename(receiver.join(MOVING_DB), receiver.join(DB)).unwrap();
         drop(db);
-        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), None);
+        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), Ok(None));
         assert_eq!(fs::read_to_string(receiver.join(KEY)).unwrap(), "key", "the receiver finishes putting things in place");
         assert!(receiver.join(TERMINALS).join("term-4.snap").exists());
         assert_eq!(fs::read_link(source.join("kanna.sock")).unwrap(), receiver.join("kanna.sock"), "the old socket leads to the receiver");
-        let old = settle(&source, &source.join("kanna.sock")).expect("the source retires");
+        let old = settle(&source, &source.join("kanna.sock")).unwrap().expect("the source retires");
         assert!(!source.join(KEY).exists() && !source.join(DB).exists() && !source.join(TERMINALS).exists() && !source.join(LEAVING).exists());
         let fresh = crate::db::Db::open(&source);
         fresh.keep_from_moved(&old).unwrap();
@@ -503,6 +563,42 @@ mod tests {
         let layout: i64 = conn.query_row("select count(*) from layout", [], |r| r.get(0)).unwrap();
         assert_eq!((projects, layout), (1, 0), "its recent projects stay, its windows went with the terminals");
         assert_eq!(kanna_build::own_socket(&source.join("kanna.sock")), source.join(kanna_build::OWN_SOCKET));
+    }
+
+    #[test]
+    fn a_keeper_left_behind_is_kept_for_the_receiver_after_the_source_retires() {
+        let (source, receiver) = (scratch("src5"), scratch("dst5"));
+        let (db, _) = staged_move(&source, &receiver);
+        fs::rename(receiver.join(MOVING_DB), receiver.join(DB)).unwrap();
+        drop(db);
+        let keeper = flock(&keeper_paths::lock(&source), true).unwrap();
+        let refused = settle(&source, &source.join("kanna.sock")).unwrap_err();
+        assert!(refused.contains("still in") && refused.contains(&label(&receiver)), "{refused}");
+        assert!(!source.join(DB).exists() && !source.join(LEAVING).exists(), "the source retires all the same");
+        assert_eq!(marker(&source, LEFT).as_ref().and_then(id_of), Some("m-1"), "the move's id stays beside the keeper");
+        assert!(settle(&source, &source.join("kanna.sock")).is_err(), "it doesn't start while the keeper holds the moved terminals");
+        let _ = fs::remove_file(source.join("kanna.sock"));
+        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), Ok(None));
+        assert_eq!(fs::read_link(source.join("kanna.sock")).unwrap(), receiver.join("kanna.sock"), "the receiver knows the move by its id, the source's moving.json gone");
+        drop(keeper);
+        let kept = settle(&source, &source.join("kanna.sock")).unwrap().expect("the source starts once its keeper is gone");
+        assert!(kept.file_name().unwrap().to_string_lossy().starts_with("kanna.db.moved-"), "{kept:?}");
+        assert!(!source.join(LEFT).exists());
+        let _ = fs::remove_file(source.join("kanna.sock"));
+        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), Ok(None));
+        assert!(fs::symlink_metadata(source.join("kanna.sock")).is_err(), "with the move done, the receiver leaves the old folder alone");
+    }
+
+    #[test]
+    fn moved_from_alone_takes_nothing_from_the_old_folder() {
+        let (source, receiver) = (scratch("src6"), scratch("dst6"));
+        let (db, _) = staged_move(&source, &receiver);
+        fs::rename(receiver.join(MOVING_DB), receiver.join(DB)).unwrap();
+        drop(db);
+        stay(&source);
+        fs::write(source.join(LEFT), json!({ "id": "m-other", "to": receiver }).to_string()).unwrap();
+        assert_eq!(settle(&receiver, &receiver.join("kanna.sock")), Ok(None));
+        assert!(fs::symlink_metadata(source.join("kanna.sock")).is_err(), "another move's marker isn't this one");
     }
 
     #[test]

@@ -162,7 +162,29 @@ struct Keeper {
     stopping: Option<Instant>,
     lock: Option<File>,
     build: Option<String>,
+    ops: Vec<&'static str>,
     upgrade: Option<Becoming>,
+}
+
+pub const OPS: [&str; 8] = ["hello", "spawn", "adopt", "close", "ack", "stop", "upgrade", "move"];
+
+fn own_build_and_ops() -> (Option<String>, Vec<&'static str>) {
+    let all = OPS.to_vec();
+    #[cfg(debug_assertions)]
+    match std::env::var("KANNA_KEEPER_TEST_AS_OLD").as_deref() {
+        Ok("unbuilt") => return (None, all.into_iter().filter(|op| !["upgrade", "move"].contains(op)).collect()),
+        Ok("unmovable") => return (kanna_build::own_build_id(), all.into_iter().filter(|op| *op != "move").collect()),
+        _ => {}
+    }
+    (kanna_build::own_build_id(), all)
+}
+
+fn hello_of(build: &Option<String>, ops: &[&str]) -> Value {
+    let mut hello = json!({"version": PROTOCOL_VERSION, "pid": std::process::id(), "build": build});
+    if build.is_some() {
+        hello["ops"] = json!(ops);
+    }
+    hello
 }
 
 struct Becoming {
@@ -277,7 +299,10 @@ pub fn resume(settings: Settings, fd: RawFd) -> Result<()> {
             short(keeper.build.as_deref())
         ),
     }
-    let mut reply = json!({"ok": true, "version": PROTOCOL_VERSION, "pid": std::process::id(), "build": keeper.build, "from": requester.from, "dir": keeper.settings.state_dir});
+    let mut reply = hello_of(&keeper.build, &keeper.ops);
+    reply["ok"] = true.into();
+    reply["from"] = json!(requester.from);
+    reply["dir"] = json!(keeper.settings.state_dir);
     if !requester.tag.is_null() {
         reply["req"] = requester.tag;
     }
@@ -343,6 +368,7 @@ fn pollfd(fd: libc::c_int, events: libc::c_short) -> libc::pollfd {
 
 impl Keeper {
     fn new(listener: UnixListener, sigs: OwnedFd, settings: Settings, lock: File) -> Keeper {
+        let (build, ops) = own_build_and_ops();
         Keeper {
             listener,
             sigs,
@@ -359,7 +385,8 @@ impl Keeper {
             stop: false,
             stopping: None,
             lock: Some(lock),
-            build: kanna_build::own_build_id(),
+            build,
+            ops,
             upgrade: None,
         }
     }
@@ -597,8 +624,10 @@ impl Keeper {
     fn request(&mut self, i: usize, req: &Value) {
         let tag = req.get("req").cloned().unwrap_or(Value::Null);
         let id = req["id"].as_str().unwrap_or("");
-        let result: Result<(Value, Vec<Rc<OwnedFd>>), String> = match req["op"].as_str().unwrap_or("") {
-            "hello" => Ok((json!({"version": PROTOCOL_VERSION, "pid": std::process::id(), "build": self.build}), vec![])),
+        let op = req["op"].as_str().unwrap_or("");
+        let op = if self.ops.contains(&op) { op } else { "" };
+        let result: Result<(Value, Vec<Rc<OwnedFd>>), String> = match op {
+            "hello" => Ok((hello_of(&self.build, &self.ops), vec![])),
             "spawn" => match self.spawn(i, &tag, id, req) {
                 Ok(()) => return,
                 Err(error) => Err(error),
@@ -635,7 +664,7 @@ impl Keeper {
                 (Some(_), Err(e)) => Err(format!("can't find the keeper's own binary: {e}")),
                 (None, _) => Err("move needs a dir".into()),
             },
-            op => Err(format!("unknown op {op:?}")),
+            _ => Err(format!("unknown op {:?}", req["op"].as_str().unwrap_or(""))),
         };
         let (mut reply, fds) = match result {
             Ok((body, fds)) => {

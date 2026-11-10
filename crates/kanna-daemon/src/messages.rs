@@ -13,6 +13,8 @@ pub const SCHEDULE: &str = "schedule ";
 
 pub const RUN: &str = "run-";
 
+pub const QUEUE: &str = "queue-";
+
 pub const DESK: &str = "desk";
 
 pub const PHONE: &str = "phone";
@@ -20,7 +22,7 @@ pub const PHONE: &str = "phone";
 pub const KANNA: &str = "kanna";
 
 pub fn yours(sender: &str) -> bool {
-    sender == USER || sender == DESK || sender == PHONE || sender == KANNA || sender.starts_with(SCHEDULE) || sender.starts_with(RUN)
+    sender == USER || sender == DESK || sender == PHONE || sender == KANNA || sender.starts_with(SCHEDULE) || sender.starts_with(RUN) || sender.starts_with(QUEUE)
 }
 
 pub const PICKUP: Duration = Duration::from_secs(5);

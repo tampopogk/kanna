@@ -96,7 +96,8 @@ The upgrade request and the state are versioned apart from the protocol:
 
 - **The daemon, at start.** After `hello` it compares the keeper's `build` with the SHA-256 of the `kanna-keeper` it would start (the one beside it in `Contents/Helpers`, or `$KANNA_KEEPER`). If they differ, or the protocol versions do, it asks for an upgrade to that binary before `adopt`, then says so in daemon.log (`upgraded the keeper (pid P) from build a1b2c3d4 to e5f6a7b8`). So starting a newly built Kanna upgrades the keeper by itself. If the upgrade fails, a keeper of the same protocol is kept as it is (logged); one of another protocol is refused as before, saying which pid to stop.
 - **By hand:** `kanna-keeper --upgrade [--state-dir DIR]` asks the keeper of DIR to become the binary that was run, and prints `upgraded the keeper (pid P) to PATH` or the error.
-- **A keeper that predates upgrades** (no `build` in `hello`) can't be upgraded: the daemon logs it and uses it as it is. It gets new code the next time it stops.
+- **A keeper that predates upgrades** (no `build` in `hello`) can't be upgraded: the daemon logs it and uses it as it is. It gets new code the next time it stops. Nor can it move to another instance folder ([instance move §2](instance-move.md#2-moving)), so a move refuses it (`old_keeper`).
+- **`hello` lists the ops a keeper takes** (`ops`), so a daemon can tell what an older keeper can't do without trying it. A keeper from before that lists none.
 
 ## 7. An interrupted upgrade
 

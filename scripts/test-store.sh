@@ -194,6 +194,11 @@ kanna_cargo_seed "$second" "" 15.0 2>/dev/null
 [[ "$(cat "$second/target/debug/deps/libdep_x.rlib")" == mine ]] || fail "seed: replaced a worktree's own build"
 kanna_cargo_seed "$main" "" 15.0 2>/dev/null
 [[ ! -e "$main/target/debug" && ! -e "$main/target/release" ]] || fail "seed: seeded the main checkout"
+caller="$(worktree task-caller)" && (kanna_targets "$caller") 2>/dev/null
+triple=caller key=caller stamp=caller
+kanna_cargo_seed "$caller" "" 15.0 2>/dev/null
+kanna_cargo_stamp "$caller" 15.0 2>/dev/null
+[[ "$triple $key $stamp" == "caller caller caller" ]] || fail "seed: changed the build scripts' variables: $triple $key $stamp"
 
 packages="$main/target/kanna-build"
 mkdir -p "$packages/repositories/r" "$packages/checkouts/c"

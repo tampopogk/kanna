@@ -136,7 +136,7 @@ final class DeviceTests: XCTestCase {
     private func linked(within seconds: TimeInterval) -> Int? {
         let began = Date()
         while Date().timeIntervalSince(began) < seconds {
-            if !chip.isEmpty, !chip.contains("Offline") { return Int(Date().timeIntervalSince(began) * 1000) }
+            if !chip.isEmpty, !chip.contains("Offline"), app.buttons["chip"].value as? String == "live" { return Int(Date().timeIntervalSince(began) * 1000) }
             Thread.sleep(forTimeInterval: 0.05)
         }
         return nil
@@ -181,8 +181,10 @@ final class DeviceTests: XCTestCase {
         for away in [5.0, 15.0, 45.0] {
             XCUIDevice.shared.press(.home)
             Thread.sleep(forTimeInterval: away)
+            let left = Date()
             app.activate()
-            print("kanna-away back after \(Int(away)) s: \(linked(within: 30) ?? -1) ms, \(chip)")
+            let waited = Int(Date().timeIntervalSince(left) * 1000)
+            print("kanna-away back after \(Int(away)) s: \(waited + (linked(within: 30) ?? -1)) ms, \(chip)")
         }
         let watched = Date()
         var last = chip

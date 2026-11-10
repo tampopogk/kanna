@@ -1,10 +1,13 @@
 use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER, MAX_LINE};
 use crate::{relay_mode, Failure, Relay, ALPN, DEFAULT_PORT};
+use iroh::dns::{BoxIter, DnsError, DnsResolver, Resolver, TxtRecordData};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -26,6 +29,41 @@ struct Port {
     _open: tokio::sync::watch::Sender<()>,
 }
 
+type Lookup<T> = Pin<Box<dyn Future<Output = Result<BoxIter<T>, DnsError>> + Send>>;
+
+#[derive(Debug)]
+struct SystemDns;
+
+async fn looked_up(host: String) -> Vec<IpAddr> {
+    tokio::net::lookup_host((host, 0)).await.map(|found| found.map(|socket| socket.ip()).collect()).unwrap_or_default()
+}
+
+impl Resolver for SystemDns {
+    fn lookup_ipv4(&self, host: String) -> Lookup<Ipv4Addr> {
+        Box::pin(async move {
+            let found: Vec<Ipv4Addr> = looked_up(host).await.into_iter().filter_map(|ip| if let IpAddr::V4(v4) = ip { Some(v4) } else { None }).collect();
+            Ok(Box::new(found.into_iter()) as BoxIter<Ipv4Addr>)
+        })
+    }
+
+    fn lookup_ipv6(&self, host: String) -> Lookup<Ipv6Addr> {
+        Box::pin(async move {
+            let found: Vec<Ipv6Addr> = looked_up(host).await.into_iter().filter_map(|ip| if let IpAddr::V6(v6) = ip { Some(v6) } else { None }).collect();
+            Ok(Box::new(found.into_iter()) as BoxIter<Ipv6Addr>)
+        })
+    }
+
+    fn lookup_txt(&self, _host: String) -> Lookup<TxtRecordData> {
+        Box::pin(async { Ok(Box::new(std::iter::empty()) as BoxIter<TxtRecordData>) })
+    }
+
+    fn clear_cache(&self) {}
+
+    fn reset(&self) -> Box<dyn Resolver> {
+        Box::new(SystemDns)
+    }
+}
+
 pub struct LineSend(SendStream);
 
 pub struct LineRecv(BufReader<RecvStream>);
@@ -45,6 +83,10 @@ impl LineRecv {
 impl Client {
     pub async fn start(secret: SecretKey) -> Result<Client, String> {
         Client::with(Endpoint::builder(presets::Minimal).secret_key(secret)).await
+    }
+
+    pub async fn start_phone(secret: SecretKey) -> Result<Client, String> {
+        Client::with(Endpoint::builder(presets::Minimal).secret_key(secret).dns_resolver(DnsResolver::custom(SystemDns))).await
     }
 
     pub async fn start_relay_only(secret: SecretKey) -> Result<Client, String> {
@@ -207,6 +249,12 @@ impl Client {
         json!({ "path": if path.is_ip() { "direct" } else { "relay" }, "lan": path.is_ip() && lan, "rtt_ms": path.rtt().as_secs_f64() * 1000.0, "remote": remote })
     }
 
+    pub fn forget(&self, key: &str) {
+        if let Some(conn) = self.conns().remove(key) {
+            conn.close(0u32.into(), b"forgotten");
+        }
+    }
+
     pub async fn network_changed(&self) {
         self.endpoint.network_change().await;
     }
@@ -231,7 +279,7 @@ async fn open(conn: &Connection, header: &Value) -> Result<(SendStream, BufReade
 
 async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     let mut found = vec![];
-    for addr in addrs {
+    for addr in addrs.iter().filter(|addr| !addr.contains("://")) {
         if let Ok(socket) = addr.parse::<SocketAddr>() {
             found.push(socket);
             continue;

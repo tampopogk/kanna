@@ -1110,3 +1110,24 @@ fn a_move_takes_every_session_to_another_folder_on_the_same_pid() {
     there.close("agent").unwrap();
     wait_for("the agent to end", || !alive(agent.pid));
 }
+
+#[test]
+fn hello_says_which_ops_the_keeper_takes() {
+    let f = Fixture::new();
+    let hello = f.client().info().unwrap();
+    assert!(hello.build.is_some() && hello.can("move") && hello.can("upgrade"), "{hello:?}");
+}
+
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "needs the keeper's debug-build test hooks")]
+fn a_keeper_from_before_moves_says_so_and_refuses_one() {
+    for (old, build) in [("unbuilt", false), ("unmovable", true)] {
+        let f = Fixture::with(&[("KANNA_KEEPER_TEST_AS_OLD", old)]);
+        let mut c = f.client();
+        let hello = c.info().unwrap();
+        assert_eq!((hello.build.is_some(), hello.can("move")), (build, false), "{old}: {hello:?}");
+        let refused = c.move_to(&f.dir.join("moved")).unwrap_err().to_string();
+        assert!(refused.contains("unknown op \"move\""), "{old}: {refused}");
+        assert!(f.socket().exists(), "{old}: it stays");
+    }
+}

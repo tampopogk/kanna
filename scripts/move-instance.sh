@@ -50,6 +50,9 @@ case "$to" in
 esac
 app="$(jq -r '.app // empty' "$folder/instance.json" 2>/dev/null || true)"
 bundle="$(jq -r '.bundle // empty' "$folder/instance.json" 2>/dev/null || true)"
+for name in $(env | sed -n 's/^\(KANNA_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$name"
+done
 if $serve; then
   [ -n "$app" ] && [ -x "$app/Contents/Helpers/kanna" ] || { echo "$folder/instance.json names no app: run its kanna machine serve yourself" >&2; exit 1; }
   "$app/Contents/Helpers/kanna" machine serve

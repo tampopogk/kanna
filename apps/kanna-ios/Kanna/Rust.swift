@@ -70,6 +70,10 @@ enum Rust {
         kanna_phone_network_changed()
     }
 
+    static func forget(_ key: String) {
+        key.withCString { kanna_phone_forget($0) }
+    }
+
     static func stop() {
         kanna_phone_stop()
     }

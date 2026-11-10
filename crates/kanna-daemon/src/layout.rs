@@ -60,7 +60,11 @@ impl DaemonLayout {
     }
 
     pub fn saved_panes(&self) -> Vec<kanna_mux::Pane> {
-        let mut panes = self.owner.borrow().records();
+        let owner = self.owner.borrow();
+        let core = self.core.borrow().as_ref().and_then(WeakCore::upgrade);
+        let planners = owner.saved_planners();
+        let mut panes = owner.records();
+        panes.retain(|p| !planners.contains(&p.id) || core.as_ref().is_some_and(|core| core.pane(&p.id).is_some()));
         for pane in panes.iter_mut().filter(|p| p.kind != PaneType::Term && p.state == PaneState::Starting) {
             pane.state = PaneState::Running;
         }
