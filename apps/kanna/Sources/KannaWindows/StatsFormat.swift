@@ -51,6 +51,15 @@ public enum StatsFormat {
         return (full ? long : short).string(from: date)
     }
 
+    public static func across(_ at: Double, from: Double, to: Double) -> Double {
+        to > from ? min(max((at - from) / (to - from), 0), 1) : 1
+    }
+
+    public static func windowStart(from: Double, to: Double) -> String {
+        let days = Int(((to - from) / 86400).rounded(.up))
+        return days <= 1 ? "today" : "\(days) days ago"
+    }
+
     public static func nice(_ value: Double) -> Double {
         if value <= 5 { return max(1, value.rounded(.up)) }
         let power = pow(10, (log10(value)).rounded(.down))

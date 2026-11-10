@@ -1,6 +1,6 @@
 # Software factory
 
-**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates and steering built ([§6.2](#62-gates-and-steering-as-built): `ask`, `kanna run answer`, `pause`, `resume`, `skip`, `retry`, the task stopped and started mid-stage), the [Run tab](run-tab.md) and fan-out ([run fan-out](run-fan-out.md): `each`, `merge`, `xN by`, `guard`, `on` this machine) and [revisions](pipeline-revisions.md); metrics not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run`, `pipeline_gates`, `pipeline_fanout` and `pipeline_revisions` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [Kojo](kojo.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
+**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates and steering built ([§6.2](#62-gates-and-steering-as-built): `ask`, `kanna run answer`, `pause`, `resume`, `skip`, `retry`, the task stopped and started mid-stage), the [Run tab](run-tab.md) and fan-out ([run fan-out](run-fan-out.md): `each`, `merge`, `xN by`, `guard`, `on` this machine), [revisions](pipeline-revisions.md) and metrics ([pipeline metrics](pipeline-metrics.md)); stages on other machines not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run`, `pipeline_gates`, `pipeline_fanout`, `pipeline_revisions` and `pipeline_stats` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [Kojo](kojo.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
 
 A **pipeline** says how an approved change gets built: its stages (plan, build, review, tests), who does each (an agent or code), and where a failure goes (a bounded loop back to a fix). Any task's agent can **run** one; the daemon drives it in the task's background terminals, a **Run** tab shows where it is, and the finished branch is handed back to the task, where you review and merge it. Every stage's numbers and your interventions go in `kanna.db`, to compare and tune pipelines.
 
@@ -123,6 +123,8 @@ sequenceDiagram
 
 ## 5. Metrics
 
+Built as [pipeline metrics](pipeline-metrics.md), which says what each number is read from.
+
 Every visit writes a row; everything below is a query over them, shown on the Run tab for one run and on the Stats tab's **Pipelines** section across runs, grouped by pipeline and revision (a pipeline's text hash), so a changed arrow is a new line to compare.
 
 | Per visit | From |
@@ -136,15 +138,15 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 
 | Per run | Is |
 |---|---|
-| time to hand back; active time | started to handed back; the sum of visits |
+| time to land; time to hand back; active time | started to the merge on main; started to handed back; the sum of visits |
 | sessions, turns, tokens, cost | sums |
 | rework loops | fail arrows taken, by stage |
 | review findings; test failures | sums; `run` visits that failed |
 | interventions | the sum, by kind |
-| outcome | handed back, stopped (why), stuck |
+| outcome | landed, handed back, stopped (why), stuck |
 | bugs traced back; changed lines covered; quality delta | from [code quality metrics](code-quality-metrics.md): fix commits on main blamed to the run's commits (SZZ), lines the run changed that a test executes, erosion and verbosity before and after, each sampled later and joined by the run's commits once the task's branch merges |
 
-- **Comparison:** runs, handed-back share, medians of the rest, and a dot per run over time, so a pipeline change shows as a step; a stage's times split by machine. SZZ's noise caveat (F1 about 0.6) shows with its column.
+- **Comparison:** runs, landed share, medians of the rest, and a dot per run over time, so a pipeline change shows as a step; a stage's times split by machine. SZZ's noise caveat (F1 about 0.6) shows with its column.
 - **For agents:** `kanna run show RUN --json` and `kanna stats pipelines --json` give the same numbers.
 
 ## 6. How it's built
@@ -193,7 +195,7 @@ sequenceDiagram
 - **Need:** `kanna run need TEXT` pauses the run (`STAGE needs: TEXT`) and messages the task's agent what and how to answer. At the turn's end (or 10s on) the agent is quit as a Shelf runner quits one, keeping its session (Claude's as given, Codex's as printed on exit, else the worker's latest). A paused run holds no process.
 - **Unreported turn:** pauses the run the same way (`STAGE stopped without reporting`), telling the task's agent with the screen's last lines. The terminal counts every reported turn as it arrives, so a short one is still seen ([agent status](agent-status.md#3-the-report-osc-7501)).
 - **A long command:** a stage's agent asks Kanna to run one and waits for it with `kanna run command`; a turn that ends while it runs is carried on when it ends ([run commands](run-commands.md)).
-- **Resume:** `kanna run resume [RUN] [TEXT]` restarts the session in a new background terminal (`claude --resume ID`, `codex resume ID`) with TEXT (in `.kanna/tmp/reply-N-K.md`, default `Carry on.`) as its next message. Time paused doesn't count against `within`.
+- **Resume:** `kanna run resume [RUN] [TEXT]` restarts the session in a new background terminal (`claude --resume ID`, `codex resume ID`) with TEXT (in `.kanna/tmp/reply-N-K.md`, default `Carry on.`) as its next message. A stage whose session isn't known (an agent that takes no ID and didn't say one as it quit) starts again fresh from its stage prompt followed by TEXT, never the agent's latest session. Time paused doesn't count against `within`.
 - **Kanna's agents only:** a stage names one of [Kanna's agents](agent-status.md#2-kannas-agents) (`FILE:LINE: unknown agent 'gemini'; use claude, codex, opencode, agy, or run, ask or merge` otherwise). One [too old to report](agent-status.md#2-kannas-agents) is quit when its stage starts, and the run stops with why.
 - **Exit without report:** stops the run (`STAGE's agent exited without reporting it was done`). `within` passing resets the worktree to the visit's start and fails it as `timed out` at a `verdict` stage, and stops the run at any other.
 - **`run` stage:** under the task scripts' wrapper, with `within` as its time limit and none without it (`tasks.timeout` bounds only a task's setup and teardown), output in `.kanna/tmp/stage-N.log`, exit code in `stage-N.exit`, so a daemon restart loses nothing. `KANNA_FEEDBACK` is `feedback-N.txt`, the last failure's full output.
