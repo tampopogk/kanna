@@ -9,6 +9,7 @@ mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
+mod cli;
 mod guests;
 mod instance_move;
 mod tasks;
@@ -328,7 +329,19 @@ fn run() -> Result<(), String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone()), ("AGY_CLI_OSC7501".to_string(), "on".to_string())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
-    let kanna_cli = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("kanna"))).unwrap_or_default();
+    let own_cli = std::env::current_exe().ok().and_then(|exe| cli::beside(&exe));
+    env.extend(cli::env(own_cli.as_deref()));
+    if let Some(own_cli) = own_cli.as_deref().filter(|_| app_bundle().is_some() && state_dir == build.instance_folder(&support_folder(), kanna_build::DEFAULT_INSTANCE)) {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        match cli::claim(&home, own_cli, cli::Owner::of(&build)) {
+            cli::Claim::Linked => log!("kanna-daemon: ~/{} is {}", cli::LINK, own_cli.display()),
+            cli::Claim::Higher(other) => log!("kanna-daemon: ~/{} stays {}", cli::LINK, other.display()),
+            cli::Claim::NotALink => log!("kanna-daemon: ~/{} is a file, left alone", cli::LINK),
+            cli::Claim::Failed(error) => log!("kanna-daemon: can't link {error}"),
+            cli::Claim::Mine | cli::Claim::NotOffered => {}
+        }
+    }
+    let kanna_cli = own_cli.unwrap_or_default();
     if let Some(shim) = builds::install_shim(&state_dir, &kanna_cli, builds::shim_wanted()) {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
         env.push(("PATH".to_string(), format!("{}:{path}", shim.display())));
@@ -405,6 +418,14 @@ fn run() -> Result<(), String> {
     runs.install(&core);
     let queue = Rc::new(queue::Queue::open(db.clone(), Rc::downgrade(&tasks), Rc::downgrade(&runs)));
     queue.install(&core, &runs);
+    let needing = Rc::downgrade(&toasts);
+    *queue.on_needs.borrow_mut() = Some(Box::new(move |entry, title, why| {
+        let Some(toasts) = needing.upgrade() else { return };
+        let toast = toasts::Toast { title: title.to_string(), detail: Some(why.to_string()), pane: None, task: None, key: Some(format!("queue:{entry}:{why}")), from: None };
+        if let Err(error) = toasts.raise(toast) {
+            log!("kanna-daemon: can't raise a toast for {entry}: {}", error.message);
+        }
+    }));
     let closing = Rc::downgrade(&runs);
     let leaving = Rc::downgrade(&queue);
     *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {

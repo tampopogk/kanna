@@ -56,6 +56,12 @@ kanna help
 
 `kanna` starts Kanna.app if it isn't running. In a Kanna terminal it talks to that terminal's Kanna, whatever its channel. `--mux kmux` drives a kmux you run instead, and `--instance NAME` runs a separate Kanna with its own app, daemon and terminals. `kanna instances` lists the running Kannas of every channel, and `kanna instances prune` deletes the folders of dev builds whose worktree is gone.
 
+Outside Kanna, plain `kanna` is the link `~/.local/bin/kanna`, which a starting Kanna points at its own CLI (Production over Staging over Dev; never a worktree's build). When you run several Kannas at once, make each Kanna terminal use its own Kanna's CLI by adding this at the end of `~/.zprofile` and `~/.zshrc` ([which kanna a shell runs](docs/specs/cli-per-instance.md)):
+
+```zsh
+[[ -n $KANNA_CLI ]] && path=(${KANNA_CLI:h} $path)
+```
+
 ## Test
 
 Some tests check Kanna against kmux, the reference model, using kmux's source and tests in `references/kmux` (a git subtree).
