@@ -72,7 +72,7 @@ flowchart TB
 | [Files and threads](specs/files-and-threads.md) | images, links, comment threads, a doc's diff base and screenshots go through the daemon, so a remote task's panes work |
 | [Serial monitor](specs/serial-monitor.md) | A pane on a serial port the daemon owns, shared with `kanna serial` for agents |
 | [Doc markup](specs/doc-markup.md) | Commenting on a doc with the agent beside it |
-| [Terminal behaviour](specs/terminal.md) · [terminal links](specs/terminal-links.md) | What a terminal does, who answers the program; which links open |
+| [Terminal behaviour](specs/terminal.md) · [terminal links](specs/terminal-links.md) · [Ghostty's resources](specs/ghostty-resources.md) | What a terminal does, who answers the program; which links open; where themes, terminfo and shell integration come from |
 | [The shell a command runs in](specs/command-shell.md) | Commands start in an interactive login shell |
 
 **The CLI**

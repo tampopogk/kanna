@@ -78,6 +78,7 @@ final class GhosttyRuntime {
         }
         ghostty_config_load_recursive_files(cfg)
         ghostty_config_finalize(cfg)
+        GhosttyResources.report(cfg)
         return cfg
     }
 
