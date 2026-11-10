@@ -51,7 +51,7 @@ kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ...
 
 ## Ready and stale
 
-- **Run `kanna task ready` only when nothing remains but the merge:** the work is finished and committed at this commit, the tests pass, and there's nothing else to do. If the user still has to check it on a real device, or a question is open, it isn't ready: don't run it. Uncommitted changes are refused. Tasks waiting for yours can then start on your branch.
+- **Run `kanna task ready`, as it is with no arguments, only when nothing remains but the merge:** the work is finished and committed at this commit, the tests pass, and there's nothing else to do. If the user still has to check it on a real device, or a question is open, it isn't ready: don't run it. Uncommitted changes are refused. Tasks waiting for yours can then start on your branch.
 - **Your row says `ready` only while it also merges into main cleanly,** which Kanna checks itself, again whenever main moves. Being behind main is fine. If it says `conflicts` (the command names the files), merge main, fix them, rerun the tests, commit, then run `kanna task ready` again.
 - **Your branch moving drops the claim:** a new commit, a merge, a rebase. There's nothing to clear; run `kanna task ready` again when you're done.
 - **When you're stale,** you get a message from `kanna` saying which task you build on moved. Merge the commit it names into your branch, rerun your tests, commit, then `kanna task ready`. `kanna task ready` is refused until you've merged it.
@@ -59,10 +59,18 @@ kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ...
 
 ## Merging
 
-- **"Merge" means `kanna task merge -m "SUMMARY"`,** never merging by hand: no `git merge` into main, no merging main into your branch first, no rebuild and rerun of the tests. SUMMARY is one line on what the work does (`find is case-insensitive unless the search has a capital, in every find bar`); the merge commit reads `Merge branch 'BRANCH': SUMMARY`.
+```sh
+kanna task merge -m "SUMMARY"
+kanna task merge --cancel
+```
+
+That's all of it, from your own terminal, with no task ID: there's nothing to look up in `kanna help`.
+
+- **Merge only when the user says "merge":** agents don't queue their own work. `--cancel` takes your task back out of the queue, also only when the user asks.
+- **Never merge by hand:** no `git merge` into main, no merging main into your branch first, no rebuild and rerun of the tests. SUMMARY is one line on what the work does (`find is case-insensitive unless the search has a capital, in every find bar`); the merge commit reads `Merge branch 'BRANCH': SUMMARY`.
 - **It hands your branch to the repo's merge queue** and returns at once: your agent quits at the end of this turn and your tabs close, so say in your chat that it's queued and end your turn. The queue merges your branch onto main, runs the repo's tests on that merge (`merge.test`, or `.kanna/pipelines/merge-queue.kojo`), and moves main to it if they pass, or if an agent judges that no failure is your branch's; then the task is Done.
 - **Refused** when your branch conflicts with main (merge main, fix, rerun your tests, commit, merge again), when it `merges after` another task, or with uncommitted changes: do what the refusal says.
-- **A message from `queue-…`** means your merge failed: it says why and where the log is, and you're back on the Shelf. Merge main into your branch, fix what failed, rerun the tests that failed, commit, then `kanna task merge` again.
+- **A message from `queue-…`** means your merge failed: it says why and where the log is, and you're back on the Shelf. Merge main into your branch, fix what failed, rerun the tests that failed, commit, then the same `kanna task merge -m "SUMMARY"` again.
 
 ## Events
 
@@ -148,8 +156,8 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task name [TASK] NAME` | Rename a task, running or waiting on the Shelf (only when the user asks) |
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's Shelf; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: it can't start until those tasks are claimed ready or done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a Shelf task waits for (only when the user asks to unblock it) |
-| `kanna task ready [TASK]` | Say all that's left is to merge, at your branch's head: finished, tests passing, nothing for the user to check. The tasks waiting for it can start on it |
-| `kanna task merge [TASK] [-m SUMMARY]` | When the user says merge: hand the branch to the merge queue; the agent quits and the queue lands it on main once the tests pass on the merge ([Merging](#merging)) |
+| `kanna task ready` | Say all that's left is to merge, at your branch's head ([Ready and stale](#ready-and-stale)) |
+| `kanna task merge -m SUMMARY` · `kanna task merge --cancel` | When the user says merge: hand the branch to the merge queue, or take it back out ([Merging](#merging)) |
 | `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's, those in the merge queue (Merging: queued, testing, judging, needs you, landing), then the Shelf's: ID, name, state (working, idle, needs you, stopped, merged, replied, merge-failed, ready (claimed and merges into main cleanly), conflicts (claimed but conflicts with main), stale with what it's behind, or blocked with what it waits for; `merges after` a task whose work isn't in main yet), an agent other than the default; `--all`: every repo's; QUERY keeps those where every word starts the task's ID or is its agent's pane ID, or is in its name, first message or branch, and a done task's ID alone says it's done, and when; `--include-done` adds done tasks under Done, newest first: with QUERY every one that matches, without it the 5 done last |
 | `kanna task start TASK` | Run a task where it is: a Shelf task gets its worktree, branch and agent with the first message, and stays on the Shelf; a stopped task resumes its conversation |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (only when the user asks) |
@@ -174,4 +182,4 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna schedule pause NAME\|ID` / `resume` / `run` | Pause one, resume it (a time missed while paused fires once), or leave its message now |
 | `kanna schedule reply NAME\|ID TEXT` | Leave a result beside the firing you were last delivered |
 
-Run them from your own terminal, in the repo: a new task belongs to the repo you're in.
+Run them from your own terminal, in the repo: a new task belongs to the repo you're in, and a `[TASK]` left out is your own. Each row is the command's whole usage as you need it, so run it without checking `kanna help` first.
