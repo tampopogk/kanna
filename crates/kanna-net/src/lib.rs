@@ -53,6 +53,8 @@ pub fn relay_url(text: &str) -> Result<iroh::RelayUrl, Failure> {
     }
 }
 
+pub const ACCOUNTS: &str = "accounts";
+
 pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
 
 #[derive(Clone, Debug, PartialEq)]

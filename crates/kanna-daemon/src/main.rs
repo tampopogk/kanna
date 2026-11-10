@@ -1064,7 +1064,7 @@ fn run() -> Result<(), String> {
                             args.remove(kanna_net::PEER);
                         }
                     }
-                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.is_here(conn)) {
+                    if let Some(refused) = machines::refuse_link(&request).filter(|_| !app.is_here(conn)) {
                         app.answer_app(conn, refused);
                         continue;
                     }
