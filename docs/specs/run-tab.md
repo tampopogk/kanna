@@ -36,6 +36,7 @@ A notice is one JSON object, built from the run's rows, its revision's parsed pi
 | `run`, `task`, `name`, `pipeline`, `branch`, `state`, `outcome`, `why` | Who and where; `name` is the task's |
 | `startedAt`, `endedAt`, `now`, `startedBy` | `startedBy` is `the task's agent` when its terminal started the run, else `you` |
 | `revision` | `n`, `by`, `at`, `hash` of the current revision |
+| `revisions` | Every revision and refusal, oldest first ([pipeline revisions §5](pipeline-revisions.md#5-how-its-built)) |
 | `place` | `stage`, `at`, `of`: the current stage's place in the file's stage order |
 | `graph` | `kanna_pipe::layout` of the revision ([§3](#3-the-graph)), each node with its `state` and `visits`, each edge with `taken` |
 | `numbers` | `visits`, `sessions`, `budget`, `waited`, `waitingSince`, `turns`, `tokens`, `cost`, `rework`, `interventions`, `lines` |
@@ -45,9 +46,9 @@ A notice is one JSON object, built from the run's rows, its revision's parsed pi
 
 - **Node state:** an open visit is `now` (`wait` when the run waits or is paused); a stage's last ended visit is `pass` (`pass`, `done`, `yes`, `skipped`) or `fail`; `done` passes once the run is handed back.
 - **Rework loops:** fail arrows taken, as the mockup counts them.
-- **Interventions:** events `answered`, `paused`, `resumed`, `skipped`, `retried`, `typed`, `stopped`, `revision` not made by the daemon.
+- **Interventions:** events `answered`, `paused`, `resumed`, `skipped`, `retried`, `typed`, `stopped`, `revision` not made by the daemon or a stage.
 - **Lines:** `git diff --shortstat` of the run's branch from its base.
-- **Not recorded yet:** turns and tokens come with Factory 7; until then they're `null`, `cost` is `null` unless every agent visit has them, and the tab shows a dash.
+- **Turns, tokens and cost** are a visit's measured `usage` ([pipeline metrics](pipeline-metrics.md)): tokens are in, cache writes and out, as the Stats tab counts them. A visit not measured yet, or whose agent left no session file, has `null`; a run's sum is `null` unless every agent visit has one, and the tab shows a dash.
 
 ## 3. The graph
 
@@ -69,12 +70,12 @@ The app turns the grid into points (`RunGraph.lay`) with the mockup's sizes and 
 |---|---|
 | Watch | `kanna open run --watch` ([§5](#5-watching-a-worker)) |
 | Pause · Skip stage · Retry stage · Stop | `pause`, `skip`, `retry`, `stop` |
-| Edit pipeline | `edit` |
+| Edit pipeline | `edit` ([pipeline revisions §2](pipeline-revisions.md#2-your-edit)) |
 | Yes · No (ask card) | `answer` with `answer: yes\|no` and the note |
 | Resume (need card) | `resume` with the answer as its text |
 
 - **Tiles:** visits · sessions of the budget, wall time · time waiting on you, agent turns, tokens · cost, rework loops, your interventions, lines · files.
-- **Revision line,** then **Stages, in order** (#, stage, who, took, verdict, turns, tokens, notes; an open visit says running or waiting) and **Workers now running** (stage, visit, who, terminal, since).
+- **Revisions** ([pipeline revisions §4](pipeline-revisions.md#4-on-the-run-tab)), then **Stages, in order** (#, stage, who, took, verdict, turns, tokens, notes; an open visit says running or waiting) and **Workers now running** (stage, visit, who, terminal, since).
 - **Badge:** the Run tab's tab shows `at/of` (`5/7`) while the run is live and `done` once handed back. It's the run's only sign: the Shelf, the Desk view and the strip don't change.
 - **Ticking:** while live, the times redraw every second from the notice's `now`.
 
@@ -95,6 +96,5 @@ The app turns the grid into points (`RunGraph.lay`) with the mockup's sizes and 
 
 ## 7. Not built yet
 
-- **Edit pipeline** is Factory 6's verb: until it lands, the daemon refuses it and the tab flashes the refusal.
 - **The watch scene's header bar** (`watch · review · codex · 2nd visit · 4m … follows the run`) above the shown terminal.
 - **A visit opening to its answer, output or diff.**
