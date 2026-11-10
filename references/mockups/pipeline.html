@@ -126,6 +126,11 @@ table.t.wrap td { white-space: normal; }
 .sec { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 6px; }
 .rev { color: var(--muted); font-size: 12px; }
 .rev b { color: var(--text); font-weight: 600; }
+.revdiff { margin: 2px 0 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font: 11.5px/17px ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; }
+.revdiff.plain { border: 0; background: none; padding: 0 0 0 14px; margin-top: -4px; }
+.revdiff .add { color: var(--ok); }
+.revdiff .del { color: var(--bad); }
+.revdiff .same { color: var(--muted); }
 
 /* stats page */
 .fixed { display: flex; gap: 2px; padding: 0 10px; height: 34px; align-items: center; border-bottom: 1px solid var(--line); }
@@ -385,7 +390,18 @@ function runTabHTML(gate) {
       <div class="kpi"><div class="v">0</div><div class="l">your interventions</div></div>
       <div class="kpi"><div class="v">+212 −48</div><div class="l">lines · 3 files</div></div>
     </div>
-    ${`<p class="rev"><b>Revision 2</b> by stage <span class="mono">plan</span> at 10:41: added <span class="mono">e2e-dark = run scripts/e2e-kanna.sh diff_dark</span> after <span class="mono">e2e</span> · still 17 of 40 sessions worst case · <span style="color:var(--accent)">show diff</span></p>`}
+    ${`<p class="rev"><b>Revision 1</b> from the pipeline file at 10:36 · worst case 17 of 40 sessions · the run's branch run/task-7f3a-1</p>
+    <p class="rev"><b>Revision 2</b> by stage <span class="mono">plan</span> at 10:41: added e2e-dark · 2 arrows added · worst case 17 of 40 sessions · <span style="color:var(--accent)">hide diff</span></p>
+    <pre class="revdiff"><span class="same">  e2e     = run scripts/e2e-kanna.sh on mini</span>
+<span class="add">+ e2e-dark = run scripts/e2e-kanna.sh diff_dark</span>
+<span class="same">  </span>
+<span class="add">+ plan -> e2e-dark</span>
+<span class="same">  plan -> build -> join -> check</span>
+<span class="same">  …</span>
+<span class="same">  e2e    -> done</span>
+<span class="add">+ e2e-dark -> build</span></pre>
+    <p class="rev"><b style="color:var(--warn)">Refused: an edit</b> by you at 11:02</p>
+    <pre class="revdiff plain"><span class="del">pipeline.kojo:17: the loop review -> fix -> check -> review has no max</span></pre>`}
     <div class="sec">Stages, in order</div>
     <table class="t">
       <tr><th>#</th><th>Stage</th><th>Who</th><th class="r">Took</th><th>Verdict</th><th class="r">Turns</th><th class="r">Tokens</th><th>Notes</th></tr>

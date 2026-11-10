@@ -11,6 +11,7 @@ public final class RunPaneView: NSView, NSTextFieldDelegate {
     public private(set) var notice: RunNotice?
     public private(set) var failure: String?
     public private(set) var flashed: String?
+    public private(set) var said: String?
 
     private let scroll = NSScrollView()
     private let document = RunDocument()
@@ -71,8 +72,20 @@ public final class RunPaneView: NSView, NSTextFieldDelegate {
 
     public func flash(_ message: String) {
         flashed = message
+        said = nil
         document.flash = message
+        document.said = nil
         document.needsDisplay = true
+    }
+
+    public func say(_ message: String) {
+        said = message
+        document.said = message
+        document.needsDisplay = true
+    }
+
+    public func toggleDiff(_ n: Int) {
+        document.toggleDiff(n)
     }
 
     public func stop() {
@@ -82,7 +95,9 @@ public final class RunPaneView: NSView, NSTextFieldDelegate {
 
     public func press(_ action: String, note: String? = nil) {
         flashed = nil
+        said = nil
         document.flash = nil
+        document.said = nil
         var args: [String: String] = [:]
         let note = note ?? document.noteField.stringValue
         switch action {
@@ -103,6 +118,8 @@ public final class RunPaneView: NSView, NSTextFieldDelegate {
     public var tiles: [(value: String, label: String)] { document.tiles }
     public var rows: [[String]] { document.rows }
     public var workerLines: [String] { document.workerLines }
+    public var revisionLines: [String] { document.revisionLines }
+    public var diffLines: [String] { document.diffLines }
     public var legend: [String] { document.legendItems }
     public var graph: RunGraph { document.graph }
     public var cardShown: Bool { document.cardButtons.contains { !$0.isHidden } }
@@ -121,6 +138,9 @@ final class RunDocument: NSView {
     var notice: RunNotice?
     var failure: String?
     var flash: String?
+    var said: String?
+    private var expanded: Set<Int> = []
+    private var toggles: [(frame: CGRect, n: Int)] = []
     private(set) var buttons: [String: NSButton] = [:]
     private(set) var cardButtons: [NSButton] = []
     let noteField = NSTextField()
@@ -331,7 +351,7 @@ final class RunDocument: NSView {
         }
         y = ty + 48 + 16
         spots["revision"] = y
-        y += 22
+        y += revisionsHeight(n)
         spots["stages"] = y
         y += 22
         spots["table"] = y
@@ -345,6 +365,45 @@ final class RunDocument: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         owner?.onFocus?()
+        let point = convert(event.locationInWindow, from: nil)
+        if let toggle = toggles.first(where: { $0.frame.insetBy(dx: -4, dy: -3).contains(point) }) { toggleDiff(toggle.n) }
+    }
+
+    func toggleDiff(_ n: Int) {
+        if !expanded.insert(n).inserted { expanded.remove(n) }
+        rebuild(width: width)
+    }
+
+    private let revisionLine: CGFloat = 20
+    private let diffLine: CGFloat = 17
+
+    private func shownRevisions(_ n: RunNotice) -> [RunRevision] {
+        if !n.revisions.isEmpty { return n.revisions }
+        return n.revision.map { [RunRevision(n: $0.n, by: $0.by, at: $0.at)] } ?? []
+    }
+
+    private func open(_ revision: RunRevision) -> Bool { revision.n.map { expanded.contains($0) } == true && revision.changed }
+
+    private func revisionsHeight(_ n: RunNotice) -> CGFloat {
+        let revisions = shownRevisions(n)
+        var height: CGFloat = revisions.isEmpty ? revisionLine : 0
+        for revision in revisions {
+            height += revisionLine + CGFloat(revision.errors.count) * diffLine
+            if open(revision) { height += CGFloat(revision.diff.count) * diffLine + 14 }
+        }
+        return height + 2
+    }
+
+    var revisionLines: [String] {
+        guard let n = notice else { return [] }
+        return shownRevisions(n).map { revision in
+            ([revision.title + " " + revision.detail] + revision.errors).joined(separator: "\n") + (revision.changed ? (open(revision) ? " · hide diff" : " · show diff") : "")
+        }
+    }
+
+    var diffLines: [String] {
+        guard let n = notice else { return [] }
+        return shownRevisions(n).filter(open).flatMap { $0.diff.map { $0.sign + $0.text } }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? { owner?.contextMenu?() }
@@ -368,8 +427,8 @@ final class RunDocument: NSView {
         drawRevision(n)
         drawTable(n)
         drawWorkers(n)
-        if let flash {
-            let text = attributed(flash, RunTheme.sans(12), RunTheme.bad)
+        if let message = flash ?? said {
+            let text = attributed(message, RunTheme.sans(12), flash == nil ? RunTheme.muted : RunTheme.bad)
             let size = text.size()
             text.draw(at: NSPoint(x: width - side - size.width, y: (spots["title"] ?? 18) + 62))
         }
@@ -540,16 +599,57 @@ final class RunDocument: NSView {
     }
 
     private func drawRevision(_ n: RunNotice) {
-        let y = spots["revision"] ?? 0
-        let text = NSMutableAttributedString()
-        if let revision = n.revision {
-            text.append(attributed("Revision \(revision.n)", RunTheme.sans(12, .semibold), RunTheme.text))
-            let by = revision.by == "file" ? "from the pipeline file" : revision.by.hasPrefix("stage:") ? "by stage \(revision.by.dropFirst(6))" : "by you"
-            text.append(attributed(" \(by) at \(RunFormat.time(revision.at)) · the run's branch \(n.branch)", RunTheme.sans(12), RunTheme.muted))
-        } else {
-            text.append(attributed("the run's branch \(n.branch)", RunTheme.sans(12), RunTheme.muted))
+        var y = spots["revision"] ?? 0
+        toggles = []
+        let revisions = shownRevisions(n)
+        if revisions.isEmpty {
+            attributed("the run's branch \(n.branch)", RunTheme.sans(12), RunTheme.muted).draw(at: NSPoint(x: side, y: y))
+            return
         }
-        text.draw(at: NSPoint(x: side, y: y))
+        let room = width - 2 * side
+        let clipped = NSMutableParagraphStyle()
+        clipped.lineBreakMode = .byTruncatingTail
+        for (index, revision) in revisions.enumerated() {
+            let refused = revision.n == nil
+            let text = NSMutableAttributedString()
+            text.append(attributed(revision.title, RunTheme.sans(12, .semibold), refused ? RunTheme.warn : RunTheme.text))
+            text.append(attributed(" " + revision.detail + (index == 0 ? " · the run's branch \(n.branch)" : ""), RunTheme.sans(12), RunTheme.muted))
+            let toggle = revision.changed ? attributed(open(revision) ? "hide diff" : "show diff", RunTheme.sans(12), RunTheme.accent) : nil
+            let toggleWidth = toggle.map { ceil($0.size().width) + 14 } ?? 0
+            text.addAttribute(.paragraphStyle, value: clipped, range: NSRange(location: 0, length: text.length))
+            let textWidth = min(ceil(text.size().width), room - toggleWidth)
+            text.draw(in: CGRect(x: side, y: y, width: textWidth, height: revisionLine))
+            if let toggle, let number = revision.n {
+                attributed("·", RunTheme.sans(12), RunTheme.muted).draw(at: NSPoint(x: side + textWidth + 4, y: y))
+                let frame = CGRect(x: side + textWidth + 14, y: y, width: ceil(toggle.size().width), height: 16)
+                toggle.draw(at: frame.origin)
+                toggles.append((frame, number))
+            }
+            y += revisionLine
+            for error in revision.errors {
+                let line = NSMutableAttributedString(attributedString: attributed(error, RunTheme.mono(11.5), RunTheme.bad))
+                line.addAttribute(.paragraphStyle, value: clipped, range: NSRange(location: 0, length: line.length))
+                line.draw(in: CGRect(x: side + 14, y: y, width: room - 14, height: diffLine))
+                y += diffLine
+            }
+            guard open(revision) else { continue }
+            let box = CGRect(x: side, y: y + 2, width: room, height: CGFloat(revision.diff.count) * diffLine + 8)
+            let path = NSBezierPath(roundedRect: box, xRadius: 6, yRadius: 6)
+            RunTheme.panel.setFill()
+            path.fill()
+            RunTheme.line.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            var ly = box.minY + 4
+            for line in revision.diff {
+                let color = line.sign == "+" ? RunTheme.ok : line.sign == "-" ? RunTheme.bad : RunTheme.muted
+                let shown = NSMutableAttributedString(attributedString: attributed((line.sign == "-" ? "−" : line.sign) + " " + line.text, RunTheme.mono(11.5), color))
+                shown.addAttribute(.paragraphStyle, value: clipped, range: NSRange(location: 0, length: shown.length))
+                shown.draw(in: CGRect(x: box.minX + 10, y: ly, width: box.width - 20, height: diffLine))
+                ly += diffLine
+            }
+            y += box.height + 6
+        }
     }
 
     private func drawTable(_ n: RunNotice) {

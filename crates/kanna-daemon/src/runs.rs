@@ -242,6 +242,23 @@ pub fn unbuilt(pipeline: &Pipeline) -> Vec<String> {
     out
 }
 
+pub fn write_draft(draft: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let folder = draft.parent().ok_or_else(|| std::io::Error::other("the draft has no folder"))?;
+    fs::create_dir_all(folder)?;
+    if fs::symlink_metadata(folder)?.file_type().is_symlink() {
+        return Err(std::io::Error::other(format!("{} is a link", folder.display())));
+    }
+    let fresh = folder.join(format!(".{DRAFT}.new"));
+    let _ = fs::remove_file(&fresh);
+    fs::OpenOptions::new().write(true).create_new(true).open(&fresh)?.write_all(text.as_bytes())?;
+    fs::rename(&fresh, draft)
+}
+
+fn is_plain_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
 pub fn budget_value(pipeline: &Pipeline) -> Value {
     pipeline.budget.as_ref().map_or(Value::Null, |b| json!({ "sessions": b.sessions, "seconds": b.time.map(|t| t.as_secs()) }))
 }
@@ -2269,8 +2286,8 @@ impl Runs {
             Some(("revision", Some(by.to_string()), event))
         });
         let draft = Path::new(&worker).join(SCRATCH).join(DRAFT);
-        if fs::read_to_string(&draft).is_ok_and(|text| text == before.text) {
-            let _ = fs::write(&draft, &after.text);
+        if is_plain_file(&draft) && fs::read_to_string(&draft).is_ok_and(|text| text == before.text) {
+            let _ = write_draft(&draft, &after.text);
         }
         log!("kanna-daemon: {id} takes revision {n} by {by}: {what}");
         Ok((n, what))
@@ -2308,8 +2325,8 @@ impl Runs {
         }
         let Some((text, worker, owned, n)) = self.live.borrow().iter().find(|l| l.row.id == row.id).map(|l| (l.pipeline.text.clone(), l.doc.worker.clone(), l.doc.owner.is_some(), l.doc.revision)) else { return responder.reply(Err(KmuxError::new("ended", format!("{} has ended", row.id)))) };
         let draft = Path::new(&worker).join(SCRATCH).join(DRAFT);
-        if !draft.is_file() {
-            if let Err(error) = fs::create_dir_all(draft.parent().unwrap_or(Path::new(&worker))).and_then(|()| fs::write(&draft, &text)) {
+        if !is_plain_file(&draft) {
+            if let Err(error) = write_draft(&draft, &text) {
                 return responder.reply(Err(failed(format!("can't write {}: {error}", draft.display()))));
             }
         }
@@ -2675,6 +2692,23 @@ mod tests {
         assert_eq!(edit_errors(&p, &p.text.replace("max 2", "max 9"), &context, None).unwrap_err().len(), 1);
         assert_eq!(edit_errors(&p, "build = claude\nbuild -> nowhere\n", &context, None).unwrap_err()[0].0, 2);
         assert_eq!(edit_errors(&p, &p.text.replace("build = claude", "build = claude guard check"), &context, None).unwrap_err(), [(2, "build uses guard, which runs can't do yet".to_string())]);
+    }
+
+    #[test]
+    fn a_draft_is_never_written_through_a_link() {
+        let folder = std::env::temp_dir().join(format!("kanna-draft-{}-{}", std::process::id(), now()));
+        let (scratch, elsewhere) = (folder.join("tmp"), folder.join("elsewhere.txt"));
+        fs::create_dir_all(&scratch).unwrap();
+        fs::write(&elsewhere, "kept").unwrap();
+        let draft = scratch.join(DRAFT);
+        std::os::unix::fs::symlink(&elsewhere, &draft).unwrap();
+        assert!(!is_plain_file(&draft));
+        write_draft(&draft, "a = run true\n").unwrap();
+        assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "kept");
+        assert!(is_plain_file(&draft) && fs::read_to_string(&draft).unwrap() == "a = run true\n");
+        std::os::unix::fs::symlink(&scratch, folder.join("linked")).unwrap();
+        assert!(write_draft(&folder.join("linked").join(DRAFT), "x").is_err());
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]
