@@ -316,6 +316,19 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         text text not null,
         primary key (repo, subsystem)
     );
+"), Step::Sql("
+    create table merge_queue (
+        id text primary key,
+        repo text not null,
+        task text not null,
+        head text not null,
+        state text not null check (state in ('queued', 'testing', 'landing', 'landed', 'failed', 'cancelled')),
+        queued_at real not null,
+        ended_at real,
+        run text,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create index merge_queue_by_repo on merge_queue (repo, state, queued_at);
 ")];
 
 pub const RECENT: usize = 10;
@@ -579,11 +592,12 @@ impl Drop for Checkpoints {
 
 const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn checkpointing(path: PathBuf) -> Option<Checkpoints> {
+fn checkpointing(path: &Path) -> Option<Checkpoints> {
+    let conn = Connection::open(path).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
+    conn.query_row("pragma schema_version", [], |_| Ok(())).ok()?;
     let (stop, stopping) = std::sync::mpsc::channel::<()>();
     let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
-        let Ok(conn) = Connection::open(&path) else { return };
-        let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
         while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopping.recv_timeout(CHECKPOINT_EVERY) {
             let started = std::time::Instant::now();
             let _ = conn.query_row("pragma wal_checkpoint(passive)", [], |_| Ok(()));
@@ -705,8 +719,11 @@ impl Db {
         } else {
             let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
         }
-        if db.conn.path().is_some_and(|file| !file.is_empty()) && db.conn.pragma_update(None, "wal_autocheckpoint", 0).is_ok() {
-            db.checkpoints = checkpointing(path);
+        if db.conn.path().is_some_and(|file| !file.is_empty()) {
+            db.checkpoints = checkpointing(&path);
+            if db.checkpoints.is_some() {
+                let _ = db.conn.pragma_update(None, "wal_autocheckpoint", 0);
+            }
         }
         db
     }
@@ -802,10 +819,10 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, f64)>> {
+    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, Option<f64>)>> {
         let mut statement = self.conn.prepare(
-            "select t.id, t.repo, t.terminal, t.made_at, t.doc, coalesce((select max(at) from task_events e where e.task = t.id and e.what = 'done'), t.made_at) as done_at \
-             from tasks t where t.place = 'done' order by done_at desc, t.rowid desc",
+            "select t.id, t.repo, t.terminal, t.made_at, t.doc, (select max(at) from task_events e where e.task = t.id and e.what = 'done') as done_at \
+             from tasks t where t.place = 'done' order by coalesce(done_at, t.made_at) desc, t.rowid desc",
         )?;
         let rows = statement.query_map([], |r| {
             let doc: String = r.get(4)?;
@@ -1183,6 +1200,16 @@ impl Db {
         rows.collect()
     }
 
+    pub fn samples_of(&self, repo: &str, metrics: &[&str]) -> rusqlite::Result<Vec<Sample>> {
+        let mut rows = vec![];
+        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and metric = ?2 order by at, commit_id")?;
+        for metric in metrics {
+            let found = statement.query_map(params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))?;
+            rows.extend(found.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(rows)
+    }
+
     pub fn put_samples(&self, repo: &str, samples: &[Sample]) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for sample in samples {
@@ -1208,6 +1235,12 @@ impl Db {
         )?;
         let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
         rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
+    }
+
+    pub fn names(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare("select id, coalesce(json_extract(doc, '$.name'), id) from tasks where repo = ?1")?;
+        let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     pub fn agent_rows(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<AgentRow>> {
@@ -1378,6 +1411,21 @@ impl Db {
         Ok(())
     }
 
+    pub fn backup_to(&self, path: &Path) -> rusqlite::Result<()> {
+        let _ = fs::remove_file(path);
+        self.conn.backup(rusqlite::MAIN_DB, path, None)?;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        Ok(())
+    }
+
+    pub fn keep_from_moved(&self, old: &Path) -> rusqlite::Result<()> {
+        crate::instance_move::keep_from(&self.conn, old)
+    }
+
+    pub fn records_version(&self) -> rusqlite::Result<i64> {
+        self.conn.query_row("pragma user_version", [], |row| row.get(0))
+    }
+
     pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
         self.conn.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional()
     }
@@ -1405,6 +1453,19 @@ impl Db {
         let rows = statement.query_map([], |r| r.get(0))?;
         rows.collect()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueueRow {
+    pub id: String,
+    pub repo: String,
+    pub task: String,
+    pub head: String,
+    pub state: String,
+    pub queued_at: f64,
+    pub ended_at: Option<f64>,
+    pub run: Option<String>,
+    pub doc: Value,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1489,6 +1550,32 @@ fn stage_row(r: &rusqlite::Row) -> rusqlite::Result<StageRow> {
 }
 
 impl Db {
+    pub fn new_queue_id(&self) -> rusqlite::Result<String> {
+        loop {
+            let id = format!("queue-{}", &random_id()?["task-".len()..]);
+            if self.conn.query_row("select 1 from merge_queue where id = ?1", [&id], |_| Ok(())).optional()?.is_none() {
+                return Ok(id);
+            }
+        }
+    }
+
+    pub fn put_queued(&self, row: &QueueRow) -> rusqlite::Result<()> {
+        self.conn
+            .execute(
+                "insert into merge_queue (id, repo, task, head, state, queued_at, ended_at, run, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 on conflict (id) do update set state = excluded.state, ended_at = excluded.ended_at, run = excluded.run, doc = excluded.doc",
+                params![row.id, row.repo, row.task, row.head, row.state, row.queued_at, row.ended_at, row.run, row.doc.to_string()],
+            )
+            .map(|_| ())
+    }
+
+    pub fn queued(&self, live: bool) -> rusqlite::Result<Vec<QueueRow>> {
+        let filter = if live { "where state in ('queued', 'testing', 'landing')" } else { "" };
+        let mut statement = self.conn.prepare(&format!("select id, repo, task, head, state, queued_at, ended_at, run, doc from merge_queue {filter} order by queued_at, id"))?;
+        let rows = statement.query_map([], |r| Ok(QueueRow { id: r.get(0)?, repo: r.get(1)?, task: r.get(2)?, head: r.get(3)?, state: r.get(4)?, queued_at: r.get(5)?, ended_at: r.get(6)?, run: r.get(7)?, doc: doc_of(r.get(8)?) }))?;
+        rows.collect()
+    }
+
     pub fn new_run_id(&self) -> rusqlite::Result<String> {
         loop {
             let id = format!("run-{}", &random_id()?["task-".len()..]);
@@ -1559,6 +1646,22 @@ impl Db {
             params![stage.id, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string()],
         )?;
         Ok(stage.id)
+    }
+
+    pub fn patch_stage(&self, id: i64, session: Option<&str>, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update run_stages set session = coalesce(session, ?2), doc = json_patch(doc, ?3) where id = ?1", params![id, session, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn patch_run(&self, id: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update runs set doc = json_patch(doc, ?2) where id = ?1", params![id, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn unmeasured(&self) -> rusqlite::Result<Vec<(StageRow, String)>> {
+        let mut statement = self.conn.prepare(&format!("select {COLUMNS}, r.repo from run_stages s join runs r on r.id = s.run where s.ended_at is not null and json_extract(s.doc, '$.measured') is null order by s.id", COLUMNS = STAGE.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ")))?;
+        let rows = statement.query_map([], |r| Ok((stage_row(r)?, r.get(16)?)))?;
+        rows.collect()
     }
 
     pub fn stages(&self, run: &str) -> rusqlite::Result<Vec<StageRow>> {
@@ -1749,6 +1852,13 @@ mod tests {
         drop(db);
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn the_checkpoint_connection_is_open_before_the_database_is_handed_over() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-gone-{}", std::process::id()));
+        assert!(checkpointing(&dir.join(FILE)).is_none(), "a folder that's gone is known at once, not on the thread");
+    }
+
     use kanna_mux::json::json;
 
     fn folder(name: &str) -> PathBuf {
@@ -1897,7 +2007,7 @@ mod tests {
             }
         }
         let done = db.done_tasks().unwrap();
-        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", 40.0), ("t1", 30.0), ("t2", 20.0)]);
+        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", Some(40.0)), ("t1", Some(30.0)), ("t2", Some(20.0))]);
         assert_eq!(done[0].0.doc["name"], "t4");
         assert_eq!(db.tasks().unwrap().len(), 1, "the open tasks leave out the done ones");
         fs::remove_dir_all(&dir).unwrap();

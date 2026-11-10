@@ -142,7 +142,8 @@ final class LiveBackend: Backend {
         linked = key
         listen(opened)
         let hello = try await hello()
-        let good = (await Task.detached { Rust.path(key) }.value)["remote"] as? String
+        let path = await Task.detached { Rust.path(key) }.value
+        let good = path["path"] as? String == "direct" ? path["remote"] as? String : nil
         if let relay = hello.relay {
             saved.relay = relay
             Keychain.keepRelayToken(hello.relay_token)
@@ -245,6 +246,8 @@ final class LiveBackend: Backend {
             onNotice?(.tasks(repo: repo))
         case "quiz":
             onNotice?(.quiz(repo: repo))
+        case "stats":
+            onNotice?(.stats(repo: repo))
         default: break
         }
     }
@@ -359,6 +362,16 @@ final class LiveBackend: Backend {
             await before?.value
             Rust.stop()
         }
+    }
+
+    func unlink() {
+        let key = linked
+        stream = nil
+        linked = nil
+        let failed = waiting
+        waiting = [:]
+        failed.values.forEach { $0.resume(throwing: Refused(code: "unreachable", message: "unlinked")) }
+        if let key { Task.detached { Rust.forget(key) } }
     }
 
     func forget() {

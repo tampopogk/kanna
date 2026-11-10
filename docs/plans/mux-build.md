@@ -39,7 +39,7 @@ The reference has two parts:
 - **kmux itself**, unchanged: how the mux and its CLI behave. `kanna-mux` runs kmux's own protocol cases (`references/kmux/tests/kmux-protocol/cases`, from the kmux subtree); where Kanna and kmux differ, Kanna is wrong unless we decided otherwise.
 - **Scenarios** for what kmux doesn't do (terminals that outlive the app), written first as a script (`scripts/e2e-kanna.sh`) that fails, and kept passing from then on. Each one runs against a private Kanna instance in the background, never your own.
 
-Scenarios are named for their behaviour, never numbered: tasks running in parallel would pick the same next number. Each is a function in the script with `scenario NAME MILESTONE` on the line above it; `scripts/e2e-kanna.sh NAME…` runs some by name, and `--through M` the ones due by that milestone.
+Scenarios are named for their behaviour, never numbered: tasks running in parallel would pick the same next number. Each is a function in its area's file under `scripts/e2e/` with `scenario NAME MILESTONE` on the line above it ([e2e scenarios](../specs/e2e-scenarios.md)); `scripts/e2e-kanna.sh NAME…` runs some by name, and `--through M` the ones due by that milestone.
 
 How a run stops everything it started, and sweeps up after runs that were killed: [e2e cleanup](../specs/e2e-cleanup.md).
 
