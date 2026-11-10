@@ -42,6 +42,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
+        if TerminalSurfaceView.ignoresOcclusion { webView.ignoreOcclusion() }
         webView.navigationDelegate = self
         titled = webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             MainActor.assumeIsolated { self?.onTitleChange?(view.title ?? "") }
@@ -244,6 +245,13 @@ final class FocusReportingWebView: WKWebView {
             extra.removeItem(item)
             menu.addItem(item)
         }
+    }
+
+    func ignoreOcclusion() {
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard let method = class_getInstanceMethod(WKWebView.self, selector) else { return }
+        unsafeBitCast(method_getImplementation(method), to: Setter.self)(self, selector, false)
     }
 
     func zoom(to target: CGFloat, around point: NSPoint) {

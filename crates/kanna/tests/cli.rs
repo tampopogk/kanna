@@ -344,8 +344,8 @@ fn every_command_works_through_the_daemon_and_the_app() {
     assert_eq!(daemon.kanna(&["markup", "doc", "--off"]).ok(), "comments off in file-1 (doc)");
 
     let capabilities = daemon.kanna(&["capabilities"]).ok();
-    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff, log, serial
-commands: accounts, agents, arrange, capabilities, close, comment, crashes, desk, desks, diffs, file.read, files, focus, list, log.commit, logs, machine, markup, markup.agent, markup.edit, markup.post, move, move-tab, navigate, open, phone, project, projects, quiz, read, rename-pane, rename-tab, replica, resize, restart, run, schedule, screenshot, send, send-key, serial, stats, status, task, tasks, threads, toast, tour, window, zoom"), "{capabilities}");
+    assert!(capabilities.starts_with("pane types: term, web, ios, md, code, diff, log, serial, run
+commands: accounts, agents, arrange, build, build.cancel, build.jobs, build.pool, capabilities, close, comment, crashes, desk, desks, diffs, file.read, files, focus, instance, ios.fetch, list, log.commit, logs, machine, markup, markup.agent, markup.edit, markup.post, move, move-tab, navigate, open, phone, project, projects, queue, quiz, read, rename-pane, rename-tab, replica, resize, restart, run, schedule, screenshot, send, send-key, serial, stats, status, task, tasks, threads, toast, tour, window, zoom"), "{capabilities}");
     assert!(capabilities.ends_with("Kanna.app: attached"), "{capabilities}");
     assert_eq!(daemon.kanna(&["toast", "Build finished", "it took", "3m"]).ok(), "raised toast-1");
     assert_eq!(daemon.kanna(&["toast", "Messages wait", "--pane", "a", "--key", "k1"]).ok(), "raised toast-2");
@@ -355,7 +355,7 @@ commands: accounts, agents, arrange, capabilities, close, comment, crashes, desk
     let raw = daemon.kanna(&["raw", r#"{"cmd":"debug.anything","args":{"pane":"a"}}"#]).json();
     assert_eq!(raw, json!({ "cmd": "debug.anything", "args": { "pane": "term-1" } }));
     let shot = daemon.kanna(&["screenshot", "a", "-o", "shot.png", "--force", "--json"]).json();
-    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-1" }, "window": "win-1", "path": daemon.dir.join("shot.png").to_string_lossy() }));
+    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-1", "stopped": [] }, "window": "win-1", "path": daemon.dir.join("shot.png").to_string_lossy() }));
     assert_eq!(std::fs::read(daemon.dir.join("shot.png")).unwrap(), b"\x89PNG\r\n\x1a\n");
     let window = daemon.kanna(&["screenshot", "--window", "win-1", "--json"]).json();
     assert_eq!(window["args"], json!({ "window": "win-1" }));
@@ -363,6 +363,9 @@ commands: accounts, agents, arrange, capabilities, close, comment, crashes, desk
     assert!(written.starts_with(&format!("{}/kanna-win-1-", std::env::temp_dir().to_string_lossy().trim_end_matches('/'))), "{written}");
     let _ = std::fs::remove_file(written);
     daemon.kanna(&["screenshot", "a", "--window", "win-1"]).fails(2, "give PANE or --window WINDOW, not both");
+    assert_eq!(daemon.kanna(&["screenshot", "a", "--size", "800x500", "--json"]).json()["args"]["size"], json!({ "width": 800, "height": 500 }));
+    daemon.kanna(&["screenshot", "a", "--size", "800"]).fails(2, "--size is WxH in points, e.g. 800x500");
+    daemon.kanna(&["screenshot", "--window", "win-1", "--size", "800x500"]).fails(2, "--size is for a PANE");
     daemon.kanna(&["screenshot"]).fails(2, "screenshot: outside a Kanna terminal there's no window of yours: say PANE or --window WINDOW");
     assert_eq!(daemon.kanna_as("term-1", &["screenshot", "--json"]).json()["args"]["from"], json!("term-1"));
     assert_eq!(daemon.kanna(&["raw", r#"{"cmd":"list"}"#]).json()["panes"].as_array().unwrap().len(), 6);

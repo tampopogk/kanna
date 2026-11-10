@@ -122,7 +122,7 @@ flowchart LR
 - **Order:** the catch-up samples the commit metrics first, then the tree metrics newest first, so today's numbers arrive within seconds.
 - **No checkout:** a tree metric reads the commit's files from git's object store (`ls-tree`, then `cat-file --batch`). Each blob is parsed once and kept while later commits still use it.
 - **Cost:** a commit's tree takes about a second to read, parse and check the first time; later commits reparse only the files they changed. A new commit takes under a second.
-- **Answers early:** the first reply comes once the commit metrics are in. Later requests during a catch-up get what's sampled so far, and the section's note says `sampling N of M commits`.
+- **Answers at once:** a request gets what's stored and the catch-up carries on behind it, with each step in the reply's [`status`](stats.md#3-where-they-come-from), under the page's title. The section with no samples yet says `Measuring the code on main.`
 - **Offenders:** each tree row's `doc` holds the top ten offenders and the 40 most complex files, so the lists need no tree at read time.
 
 ## 4. Coverage runs
@@ -142,14 +142,14 @@ flowchart LR
   - E2E, with `--e2e [SCENARIO…]`: the scenarios run against `kanna`, `kanna-daemon` and `kanna-keeper` built with `-C instrument-coverage`, writing profiles in continuous mode. The app's Swift isn't measured there: one binary can't link two LLVM profile runtimes.
   - Failing tests still count what they ran.
 - **The row:** metric `coverage` at the commit, with line and branch totals, each file's lines and changed lines, and each landing's changed lines. A line counts for the landing that `git blame --first-parent` gives it, if that landing is within the 30 days.
-- **Status:** the Lines covered tile's note says `running at abc123 since 14:02`, the last failure, or how to set it up.
+- **Status:** the Lines covered tile's note says `running at abc123 since 14:02`, the last failure, or how to set it up. While a run goes, the page's status line says `Updating: running coverage`, with no percentage: a run reports no progress.
 
 ## 5. Fixes
 
 The `fixes` metric runs at each landing: a first-parent commit on main other than `Merge main into …`. It is sampled with the rest, so the stats of the process that makes the code (how many landings needed a fix, how long bugs lived, where they were) start with 30 days of history, but Code quality doesn't show it.
 
 - **A fix:** a landing is one if any of these hold:
-  - It carries a `Fixes: COMMIT` trailer in any of its commits.
+  - It carries a `Fixes: COMMIT` trailer in any of its commits, other than a cherry-pick (`cherry picked from commit`): a release branch's picks come back to main by a merge and were counted when they first landed ([release candidates §3](release-candidates.md#3-the-release-branch)).
   - Its branch starts with `fix-`, `bug-` or `hotfix-`.
   - The first clause of its subject has fix, bug, regression, crash, broken, wrong or revert.
   - Its task's name and the first sentence of its first message have one of those words, or a problem word: fails, stuck, hangs, leaks, loses, race, flaky, doesn't, isn't, nothing.
