@@ -15,6 +15,9 @@ struct Doc: Codable, Equatable {
     var commit: String?
     var hot: [Int]?
     var lines: [String]?
+    var round: String?
+    var title: String?
+    var about: String?
 }
 
 struct Item: Codable, Equatable {
@@ -53,6 +56,8 @@ struct Hello: Codable {
     var name: String
     var key: String
     var addrs: [String]
+    var relay: String?
+    var relay_token: String?
     var projects: [Project]
     var machines: [Reach]?
 }
@@ -64,6 +69,7 @@ struct Paired: Codable {
     var addrs: [String]
     var good: String?
     var known: [Reach]?
+    var relay: String?
 }
 
 struct MachineInfo: Codable, Equatable, Identifiable {
@@ -144,6 +150,12 @@ struct StatsSection: Codable, Equatable, Identifiable {
 struct StatsPage: Codable, Equatable {
     var days: [String]
     var sections: [StatsSection]
+    var status: String?
+
+    func keeping(_ shown: StatsPage?) -> StatsPage {
+        guard sections.isEmpty, let shown, !shown.sections.isEmpty else { return self }
+        return StatsPage(days: shown.days, sections: shown.sections, status: status)
+    }
 }
 
 struct Named: Codable, Equatable {
@@ -203,6 +215,8 @@ enum Notice {
     case chat(repo: String, item: Item)
     case planner(repo: String, status: String, since: Double)
     case tasks(repo: String)
+    case quiz(repo: String)
+    case stats(repo: String)
     case projects
 }
 
@@ -225,7 +239,10 @@ protocol Backend: AnyObject {
     var paired: Paired? { get }
     func pair(scanned: String) async throws -> Paired
     func connect(to machine: Reach?) async throws -> Hello
+    func networkChanged()
+    func askLocalNetwork()
     func hello() async throws -> Hello
+    func reaches(_ machine: Reach) async -> Bool
     func read(repo: String, after: Int) async throws -> Page
     func send(repo: String, id: String, text: String) async throws -> Item
     func choose(repo: String, id: String, seq: Int, choice: String) async throws -> Item
@@ -234,11 +251,17 @@ protocol Backend: AnyObject {
     func tell(task: String, id: String, text: String) async throws
     func choose(task: String, id: String, seq: Int, choice: String) async throws
     func pick(task: String, desk: String, room: String?) async throws
+    func quizMap(repo: String) async throws -> MapPage
+    func quizRounds(repo: String) async throws -> RoundsPage
+    func quizAnswer(round: String, n: Int, pick: Int, again: String?) async throws
+    func quizAhead(repo: String, about: String?, again: Bool) async throws
     func machines(repo: String) async throws -> MachinesPage
     func stats(repo: String) async throws -> StatsPage
     func move(repo: String, machine: String) async throws -> Moved
     func close()
+    func unlink()
     func forget()
     func link() async -> Link
     func highlight(file: String, text: String) -> [TextSpan]
+    func drawing(_ source: String) -> DrawingScene?
 }

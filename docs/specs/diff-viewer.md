@@ -103,7 +103,7 @@ sequenceDiagram
 | Click a line | makes it the current line |
 | Click a file in the list | goes to it |
 | Click, ⌥-click a file's header | folds it, folds or unfolds every file |
-| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane (each column owns an `NSTextFinder`, so its matches can be marked in the overview) |
+| ⌘F, ⌘G, ⇧⌘G, Esc | find, as in a code pane: case-insensitive unless the search has a capital ([find bar](find-bar.md); each column has its own, so its matches can be marked in the overview); opening or closing the bar leaves the view where it is |
 | ⌘= ⌘− ⌘0 | font size |
 
 ## 4. CLI
@@ -169,6 +169,7 @@ flowchart TB
 | Pane | `apps/kanna/Sources/KannaDiff` (new target) | lays out the rows (unified or split), the view, files list, keys; holds a newer diff until a refresh (`receive`, `refresh`) |
 | Highlighting, theme, find | `KannaCode`, `kanna-syntax` | shared with the code pane, not copied |
 
+- **The pane alone sizes a column's text view.** It isn't vertically resizable, and it refuses any height below the one the pane gave it: when the find bar changes the clip view's insets, AppKit sets such a text view to the clip's height, and the clip then scrolls to fit it. The pane's layout puts the height back straight after, but by then the view has jumped to the top.
 - **Git is the truth.** The daemon runs the `git` on the user's `PATH` with the pane's arguments (adding `--no-color --no-ext-diff`, so a user's pager, colours or external diff tool don't change what's parsed), never its own diff. That's how "follow how git works" holds: whatever `git diff ARGS` means, the pane means.
 - **Why the `git` binary, not a git library** (libgit2, gitoxide):
 

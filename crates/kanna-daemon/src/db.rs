@@ -287,6 +287,48 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
     create index said_by_who on said (who, id);
     insert into said (who, at, asking, text) select who, at, asking, text from last_words;
     drop table last_words;
+"), Step::Sql("
+    create table status_reports (
+        terminal text primary key,
+        at real not null,
+        doc text not null check (json_valid(doc))
+    );
+"), Step::Sql("
+    alter table quiz_answers add column n integer;
+    create unique index quiz_answers_by_question on quiz_answers (round, n) where n is not null;
+    create table quiz_ready (
+        round integer primary key references quiz_rounds (id),
+        repo text not null,
+        written real not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        taken real
+    );
+    create index quiz_ready_by_repo on quiz_ready (repo, taken);
+    create table quiz_map (
+        repo text primary key,
+        at real not null,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create table quiz_notes (
+        repo text not null,
+        subsystem text not null,
+        at real not null,
+        text text not null,
+        primary key (repo, subsystem)
+    );
+"), Step::Sql("
+    create table merge_queue (
+        id text primary key,
+        repo text not null,
+        task text not null,
+        head text not null,
+        state text not null check (state in ('queued', 'testing', 'landing', 'landed', 'failed', 'cancelled')),
+        queued_at real not null,
+        ended_at real,
+        run text,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create index merge_queue_by_repo on merge_queue (repo, state, queued_at);
 ")];
 
 pub const RECENT: usize = 10;
@@ -428,6 +470,16 @@ pub struct Round {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct Ready {
+    pub round: i64,
+    pub repo: String,
+    pub head: String,
+    pub written: f64,
+    pub doc: Value,
+    pub taken: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Answer {
     pub id: i64,
     pub round: i64,
@@ -501,6 +553,15 @@ pub struct Sample {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct AgentRow {
+    pub task: String,
+    pub name: String,
+    pub at: f64,
+    pub what: String,
+    pub status: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Life {
     pub task: String,
     pub name: String,
@@ -531,11 +592,12 @@ impl Drop for Checkpoints {
 
 const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn checkpointing(path: PathBuf) -> Option<Checkpoints> {
+fn checkpointing(path: &Path) -> Option<Checkpoints> {
+    let conn = Connection::open(path).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
+    conn.query_row("pragma schema_version", [], |_| Ok(())).ok()?;
     let (stop, stopping) = std::sync::mpsc::channel::<()>();
     let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
-        let Ok(conn) = Connection::open(&path) else { return };
-        let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
         while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopping.recv_timeout(CHECKPOINT_EVERY) {
             let started = std::time::Instant::now();
             let _ = conn.query_row("pragma wal_checkpoint(passive)", [], |_| Ok(()));
@@ -657,8 +719,11 @@ impl Db {
         } else {
             let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
         }
-        if db.conn.path().is_some_and(|file| !file.is_empty()) && db.conn.pragma_update(None, "wal_autocheckpoint", 0).is_ok() {
-            db.checkpoints = checkpointing(path);
+        if db.conn.path().is_some_and(|file| !file.is_empty()) {
+            db.checkpoints = checkpointing(&path);
+            if db.checkpoints.is_some() {
+                let _ = db.conn.pragma_update(None, "wal_autocheckpoint", 0);
+            }
         }
         db
     }
@@ -754,10 +819,10 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, f64)>> {
+    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, Option<f64>)>> {
         let mut statement = self.conn.prepare(
-            "select t.id, t.repo, t.terminal, t.made_at, t.doc, coalesce((select max(at) from task_events e where e.task = t.id and e.what = 'done'), t.made_at) as done_at \
-             from tasks t where t.place = 'done' order by done_at desc, t.rowid desc",
+            "select t.id, t.repo, t.terminal, t.made_at, t.doc, (select max(at) from task_events e where e.task = t.id and e.what = 'done') as done_at \
+             from tasks t where t.place = 'done' order by coalesce(done_at, t.made_at) desc, t.rowid desc",
         )?;
         let rows = statement.query_map([], |r| {
             let doc: String = r.get(4)?;
@@ -857,6 +922,36 @@ impl Db {
 
     pub fn put_planner(&self, path: &str, doc: &Value) -> rusqlite::Result<()> {
         self.conn.execute("insert into planners (path, doc) values (?1, ?2) on conflict (path) do update set doc = excluded.doc", params![path, doc.to_string()]).map(|_| ())
+    }
+
+    pub fn reports(&self) -> rusqlite::Result<Vec<(String, Value)>> {
+        let mut statement = self.conn.prepare("select terminal, doc from status_reports")?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, doc_of(r.get(1)?))))?;
+        rows.collect()
+    }
+
+    pub fn put_reports(&self, rows: &[(String, Option<Value>)]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (terminal, doc) in rows {
+            match doc {
+                Some(doc) => tx.execute("insert into status_reports (terminal, at, doc) values (?1, ?2, ?3) on conflict (terminal) do update set at = excluded.at, doc = excluded.doc", params![terminal, now(), doc.to_string()])?,
+                None => tx.execute("delete from status_reports where terminal = ?1", [terminal])?,
+            };
+        }
+        tx.commit()
+    }
+
+    pub fn keep_reports(&self, terminals: &[String]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let kept: Vec<String> = {
+            let mut statement = tx.prepare("select terminal from status_reports")?;
+            let rows = statement.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for terminal in kept.iter().filter(|t| !terminals.contains(t)) {
+            tx.execute("delete from status_reports where terminal = ?1", [terminal])?;
+        }
+        tx.commit()
     }
 
     pub fn log(&self, task: &str, change: &Change) -> rusqlite::Result<()> {
@@ -1011,6 +1106,69 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
+    pub fn answer_question(&self, round: i64, n: i64, kind: &str, file: &str, right: bool, again: Option<i64>, doc: &Value) -> rusqlite::Result<(i64, bool)> {
+        let added = self.conn.execute(
+            "insert into quiz_answers (round, at, kind, file, right, again, doc, n) values (?1, ?2, ?3, ?4, ?5, ?6, json_patch('{}', ?7), ?8) on conflict (round, n) where n is not null do nothing",
+            params![round, now(), kind, file, right, again, doc.to_string(), n],
+        )?;
+        let id = self.conn.query_row("select id from quiz_answers where round = ?1 and n = ?2", params![round, n], |r| r.get(0))?;
+        Ok((id, added > 0))
+    }
+
+    pub fn put_ready(&self, repo: &str, head: &str, round_doc: &Value, doc: &Value) -> rusqlite::Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        let written = now();
+        tx.execute("insert into quiz_rounds (repo, at, head, doc) values (?1, ?2, ?3, json_patch('{}', ?4))", params![repo, written, head, round_doc.to_string()])?;
+        let round = tx.last_insert_rowid();
+        tx.execute("insert into quiz_ready (round, repo, written, doc) values (?1, ?2, ?3, ?4)", params![round, repo, written, doc.to_string()])?;
+        tx.commit()?;
+        Ok(round)
+    }
+
+    pub fn ready(&self, round: i64) -> rusqlite::Result<Option<Ready>> {
+        self.conn.query_row(&format!("{READY} where q.round = ?1"), [round], ready_row).optional()
+    }
+
+    pub fn open_rounds(&self, repo: &str) -> rusqlite::Result<Vec<Ready>> {
+        let mut statement = self.conn.prepare(&format!("{READY} where q.repo = ?1 and (q.taken is null or (select count(*) from quiz_answers a where a.round = q.round and a.n is not null) < json_array_length(q.doc, '$.questions')) order by q.round"))?;
+        let rows = statement.query_map([repo], ready_row)?;
+        rows.collect()
+    }
+
+    pub fn round_waits(&self, repo: &str) -> rusqlite::Result<bool> {
+        self.conn.prepare("select 1 from quiz_ready where repo = ?1 and taken is null and json_type(doc, '$.about') is not 'text'")?.exists([repo])
+    }
+
+    pub fn take_ready(&self, round: i64) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute("update quiz_ready set taken = ?2 where round = ?1 and taken is null", params![round, now()])? > 0)
+    }
+
+    pub fn picks(&self, round: i64) -> rusqlite::Result<Vec<(i64, i64)>> {
+        let mut statement = self.conn.prepare("select n, coalesce(json_extract(doc, '$.pick'), 0) from quiz_answers where round = ?1 and n is not null order by n")?;
+        let rows = statement.query_map([round], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn quiz_map(&self, repo: &str) -> rusqlite::Result<Option<Value>> {
+        self.conn.query_row("select doc from quiz_map where repo = ?1", [repo], |r| Ok(doc_of(r.get(0)?))).optional()
+    }
+
+    pub fn set_quiz_map(&self, repo: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("insert into quiz_map (repo, at, doc) values (?1, ?2, ?3) on conflict (repo) do update set at = excluded.at, doc = excluded.doc", params![repo, now(), doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn quiz_notes(&self, repo: &str) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut statement = self.conn.prepare("select subsystem, text from quiz_notes where repo = ?1 order by subsystem")?;
+        let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn set_quiz_note(&self, repo: &str, subsystem: &str, text: &str) -> rusqlite::Result<()> {
+        self.conn.execute("insert into quiz_notes (repo, subsystem, at, text) values (?1, ?2, ?3, ?4) on conflict (repo, subsystem) do update set at = excluded.at, text = excluded.text", params![repo, subsystem, now(), text])?;
+        Ok(())
+    }
+
     pub fn find_answer(&self, id: i64) -> rusqlite::Result<Option<(Answer, String)>> {
         self.conn
             .query_row(&format!("select {ANSWER}, r.repo from quiz_answers a join quiz_rounds r on r.id = a.round where a.id = ?1"), [id], |r| Ok((answer_row(r)?, r.get(8)?)))
@@ -1042,6 +1200,16 @@ impl Db {
         rows.collect()
     }
 
+    pub fn samples_of(&self, repo: &str, metrics: &[&str]) -> rusqlite::Result<Vec<Sample>> {
+        let mut rows = vec![];
+        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and metric = ?2 order by at, commit_id")?;
+        for metric in metrics {
+            let found = statement.query_map(params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))?;
+            rows.extend(found.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(rows)
+    }
+
     pub fn put_samples(&self, repo: &str, samples: &[Sample]) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for sample in samples {
@@ -1067,6 +1235,39 @@ impl Db {
         )?;
         let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
         rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
+    }
+
+    pub fn names(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare("select id, coalesce(json_extract(doc, '$.name'), id) from tasks where repo = ?1")?;
+        let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    pub fn agent_rows(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<AgentRow>> {
+        let mut statement = self.conn.prepare(
+            "select e.task, coalesce(json_extract(t.doc, '$.name'), t.id), e.at, e.what, json_extract(e.doc, '$.status')
+             from task_events e join tasks t on t.id = e.task
+             where t.repo = ?1
+               and e.what in ('status', 'stopped', 'started', 'picked', 'activated', 'looked', 'done')
+               and e.task in (select task from task_events where what = 'status')
+               and (t.place <> 'done' or exists (select 1 from task_events d where d.task = t.id and d.at >= ?2))
+             order by e.task, e.at, e.id",
+        )?;
+        let rows = statement.query_map(params![repo, since], |r| Ok(AgentRow { task: r.get(0)?, name: r.get(1)?, at: r.get(2)?, what: r.get(3)?, status: r.get(4)? }))?;
+        rows.collect()
+    }
+
+    pub fn last_status(&self, task: &str) -> rusqlite::Result<Option<String>> {
+        let found: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "select case what when 'status' then json_extract(doc, '$.status') end from task_events
+                 where task = ?1 and what in ('status', 'stopped', 'started') order by at desc, id desc limit 1",
+                [task],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.flatten())
     }
 
     pub fn lives(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<Life>> {
@@ -1146,7 +1347,7 @@ impl Db {
         let moved = |column: &str| format!("?2 || substr({column}, length(?1) + 1)");
         let tx = self.conn.unchecked_transaction()?;
         let mut count = 0;
-        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("phone_chat", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
+        for (table, column, verb) in [("tasks", "repo", "update"), ("messages", "repo", "update"), ("quiz_rounds", "repo", "update"), ("quiz_ready", "repo", "update"), ("quiz_map", "repo", "update or replace"), ("quiz_notes", "repo", "update or replace"), ("phone_chat", "repo", "update"), ("samples", "repo", "update or replace"), ("projects", "path", "update or replace"), ("planners", "path", "update or replace")] {
             count += tx.execute(&format!("{verb} {table} set {column} = {} where {}", moved(column), under(column)), [from, to])?;
         }
         let folder = "json_extract(doc, '$.folder')";
@@ -1210,6 +1411,21 @@ impl Db {
         Ok(())
     }
 
+    pub fn backup_to(&self, path: &Path) -> rusqlite::Result<()> {
+        let _ = fs::remove_file(path);
+        self.conn.backup(rusqlite::MAIN_DB, path, None)?;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        Ok(())
+    }
+
+    pub fn keep_from_moved(&self, old: &Path) -> rusqlite::Result<()> {
+        crate::instance_move::keep_from(&self.conn, old)
+    }
+
+    pub fn records_version(&self) -> rusqlite::Result<i64> {
+        self.conn.query_row("pragma user_version", [], |row| row.get(0))
+    }
+
     pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
         self.conn.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional()
     }
@@ -1237,6 +1453,19 @@ impl Db {
         let rows = statement.query_map([], |r| r.get(0))?;
         rows.collect()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueueRow {
+    pub id: String,
+    pub repo: String,
+    pub task: String,
+    pub head: String,
+    pub state: String,
+    pub queued_at: f64,
+    pub ended_at: Option<f64>,
+    pub run: Option<String>,
+    pub doc: Value,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1321,6 +1550,32 @@ fn stage_row(r: &rusqlite::Row) -> rusqlite::Result<StageRow> {
 }
 
 impl Db {
+    pub fn new_queue_id(&self) -> rusqlite::Result<String> {
+        loop {
+            let id = format!("queue-{}", &random_id()?["task-".len()..]);
+            if self.conn.query_row("select 1 from merge_queue where id = ?1", [&id], |_| Ok(())).optional()?.is_none() {
+                return Ok(id);
+            }
+        }
+    }
+
+    pub fn put_queued(&self, row: &QueueRow) -> rusqlite::Result<()> {
+        self.conn
+            .execute(
+                "insert into merge_queue (id, repo, task, head, state, queued_at, ended_at, run, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 on conflict (id) do update set state = excluded.state, ended_at = excluded.ended_at, run = excluded.run, doc = excluded.doc",
+                params![row.id, row.repo, row.task, row.head, row.state, row.queued_at, row.ended_at, row.run, row.doc.to_string()],
+            )
+            .map(|_| ())
+    }
+
+    pub fn queued(&self, live: bool) -> rusqlite::Result<Vec<QueueRow>> {
+        let filter = if live { "where state in ('queued', 'testing', 'landing')" } else { "" };
+        let mut statement = self.conn.prepare(&format!("select id, repo, task, head, state, queued_at, ended_at, run, doc from merge_queue {filter} order by queued_at, id"))?;
+        let rows = statement.query_map([], |r| Ok(QueueRow { id: r.get(0)?, repo: r.get(1)?, task: r.get(2)?, head: r.get(3)?, state: r.get(4)?, queued_at: r.get(5)?, ended_at: r.get(6)?, run: r.get(7)?, doc: doc_of(r.get(8)?) }))?;
+        rows.collect()
+    }
+
     pub fn new_run_id(&self) -> rusqlite::Result<String> {
         loop {
             let id = format!("run-{}", &random_id()?["task-".len()..]);
@@ -1393,6 +1648,22 @@ impl Db {
         Ok(stage.id)
     }
 
+    pub fn patch_stage(&self, id: i64, session: Option<&str>, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update run_stages set session = coalesce(session, ?2), doc = json_patch(doc, ?3) where id = ?1", params![id, session, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn patch_run(&self, id: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update runs set doc = json_patch(doc, ?2) where id = ?1", params![id, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn unmeasured(&self) -> rusqlite::Result<Vec<(StageRow, String)>> {
+        let mut statement = self.conn.prepare(&format!("select {COLUMNS}, r.repo from run_stages s join runs r on r.id = s.run where s.ended_at is not null and json_extract(s.doc, '$.measured') is null order by s.id", COLUMNS = STAGE.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ")))?;
+        let rows = statement.query_map([], |r| Ok((stage_row(r)?, r.get(16)?)))?;
+        rows.collect()
+    }
+
     pub fn stages(&self, run: &str) -> rusqlite::Result<Vec<StageRow>> {
         let mut statement = self.conn.prepare(&format!("select {STAGE} from run_stages where run = ?1 order by id"))?;
         let rows = statement.query_map([run], stage_row)?;
@@ -1406,6 +1677,8 @@ impl Db {
     }
 }
 
+const READY: &str = "select q.round, q.repo, r.head, q.written, q.doc, q.taken from quiz_ready q join quiz_rounds r on r.id = q.round";
+
 const ANSWER: &str = "a.id, a.round, a.at, a.kind, a.file, a.right, a.again, a.doc";
 
 fn doc_of(text: String) -> Value {
@@ -1414,6 +1687,10 @@ fn doc_of(text: String) -> Value {
 
 fn round_row(r: &rusqlite::Row) -> rusqlite::Result<Round> {
     Ok(Round { id: r.get(0)?, repo: r.get(1)?, at: r.get(2)?, head: r.get(3)?, doc: doc_of(r.get(4)?) })
+}
+
+fn ready_row(r: &rusqlite::Row) -> rusqlite::Result<Ready> {
+    Ok(Ready { round: r.get(0)?, repo: r.get(1)?, head: r.get(2)?, written: r.get(3)?, doc: doc_of(r.get(4)?), taken: r.get(5)? })
 }
 
 fn answer_row(r: &rusqlite::Row) -> rusqlite::Result<Answer> {
@@ -1575,6 +1852,13 @@ mod tests {
         drop(db);
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn the_checkpoint_connection_is_open_before_the_database_is_handed_over() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-gone-{}", std::process::id()));
+        assert!(checkpointing(&dir.join(FILE)).is_none(), "a folder that's gone is known at once, not on the thread");
+    }
+
     use kanna_mux::json::json;
 
     fn folder(name: &str) -> PathBuf {
@@ -1723,7 +2007,7 @@ mod tests {
             }
         }
         let done = db.done_tasks().unwrap();
-        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", 40.0), ("t1", 30.0), ("t2", 20.0)]);
+        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", Some(40.0)), ("t1", Some(30.0)), ("t2", Some(20.0))]);
         assert_eq!(done[0].0.doc["name"], "t4");
         assert_eq!(db.tasks().unwrap().len(), 1, "the open tasks leave out the done ones");
         fs::remove_dir_all(&dir).unwrap();

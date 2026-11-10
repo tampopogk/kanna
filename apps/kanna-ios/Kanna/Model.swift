@@ -80,6 +80,7 @@ enum ChatKind {
     case ask([AskOption])
     case answered(String)
     case sys(String)
+    case round(String, String)
 }
 
 struct ChatItem: Identifiable {
@@ -90,7 +91,7 @@ struct ChatItem: Identifiable {
 }
 
 enum Status {
-    case working, needs, idle, ready, stale, stopped, waiting, blocked
+    case working, needs, idle, ready, conflicts, stale, stopped, waiting, blocked
 
     init(wire: String) {
         switch wire {
@@ -98,6 +99,7 @@ enum Status {
         case "needs": self = .needs
         case "idle": self = .idle
         case "ready": self = .ready
+        case "conflicts": self = .conflicts
         case "stale": self = .stale
         case "waiting": self = .waiting
         case "blocked": self = .blocked
@@ -133,7 +135,7 @@ struct WorkItem: Identifiable {
     var picking = false
 }
 
-enum AppTab { case chat, shelf, stats, machines }
+enum AppTab { case chat, shelf, quiz, stats, machines }
 
 enum PairStep { case start, scan, refused, confirm, done }
 
@@ -150,6 +152,11 @@ struct Repo: Identifiable {
     var done: [String] = []
     var down = false
     var lastSeen = ""
+    var map: [SubsystemTile] = []
+    var rounds: [QuizRound] = []
+    var writing: Writing?
+    var queued: [String] = []
+    var failed: String?
 }
 
 struct FullCode: Identifiable {

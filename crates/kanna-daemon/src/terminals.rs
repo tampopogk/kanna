@@ -1,4 +1,5 @@
 use crate::pty::{self, Adopted, Heard, Spawned, Spawner, Spec};
+use crate::reports::Kept;
 use crate::reader::{Feed, Noticed, Reader, Replayed, Typing};
 use crate::wire::Wire;
 use crate::settings::Settings;
@@ -385,6 +386,23 @@ impl Terminals {
         Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
     }
 
+    pub fn picture(&self, id: &str) -> Result<Map, KmuxError> {
+        let live = self.live.borrow();
+        let Some(t) = live.get(id) else { return Err(KmuxError::new("stopped", format!("{id} isn't running"))) };
+        if t.running().is_none() {
+            return Err(KmuxError::new("stopped", format!("{id} isn't running")));
+        }
+        let feed = Feed::lock(&t.feed);
+        let snapshot = feed.save().map_err(|error| KmuxError::new("unavailable", format!("can't read {id}'s screen: {error}")))?;
+        Ok(Map::from_iter([
+            ("data".to_string(), json!(BASE64.encode(&snapshot))),
+            ("cols".to_string(), json!(feed.cols)),
+            ("rows".to_string(), json!(feed.rows)),
+            ("width".to_string(), json!(t.pixels.0)),
+            ("height".to_string(), json!(t.pixels.1)),
+        ]))
+    }
+
     pub fn hide(&self, conn: u64, id: &str) {
         if let Some(terminal) = self.live.borrow().get(id) {
             Feed::lock(&terminal.feed).hide(conn);
@@ -495,7 +513,11 @@ impl Terminals {
         self.store.stop();
     }
 
-    pub fn restore(&self, adopted: Vec<Adopted>) -> Restored {
+    pub fn running(&self) -> Vec<String> {
+        self.live.borrow().iter().filter(|(_, t)| t.running().is_some()).map(|(id, _)| id.clone()).collect()
+    }
+
+    pub fn restore(&self, adopted: Vec<Adopted>, mut reports: HashMap<String, Kept>, placed: &[String]) -> Restored {
         let saved = self.store.load();
         let (mut counter, mut terminals, mut numbered) = (saved.counter, saved.terminals, saved.ptys);
         for id in saved.records.iter().flat_map(|r| [&r.id, &r.pane, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
@@ -519,7 +541,8 @@ impl Terminals {
                     pane.state = PaneState::Running;
                     exits.extend(pty.exit.map(|code| (record.keeper.clone(), pty.pid, code)));
                     restored.adopted += 1;
-                    self.adopt(&record.id, &record.pane, &record.keeper, pty, snapshot)
+                    let kept = reports.remove(&record.id).filter(|_| i64::from(pty.pid) == record.pid);
+                    self.adopt(&record.id, &record.pane, &record.keeper, pty, snapshot, kept)
                 }
                 None if record.state == PaneState::Exited => {
                     pane.state = PaneState::Exited;
@@ -527,8 +550,13 @@ impl Terminals {
                     restored.exited += 1;
                     self.ended(&record, self.store.snapshot(&record.id))
                 }
-                None => {
+                None if placed.contains(&record.pane) => {
                     log!("kanna-daemon: {} ended while no daemon was running, and the keeper has no exit for it", pane.label());
+                    pane.state = PaneState::Exited;
+                    restored.exited += 1;
+                    self.ended(&record, self.store.snapshot(&record.id))
+                }
+                None => {
                     restored.dropped += 1;
                     continue;
                 }
@@ -572,7 +600,7 @@ impl Terminals {
             pane.state = PaneState::Running;
             let keeper = pty.id.clone();
             exits.extend(pty.exit.map(|code| (keeper.clone(), pty.pid, code)));
-            match self.adopt(&id, &pane_id, &keeper, pty, None) {
+            match self.adopt(&id, &pane_id, &keeper, pty, None, None) {
                 Ok(terminal) => {
                     log!("kanna-daemon: took back the keeper's {keeper} as {id}, which the disk didn't know");
                     self.live.borrow_mut().insert(id, terminal);
@@ -600,7 +628,7 @@ impl Terminals {
         restored
     }
 
-    fn adopt(&self, id: &str, pane: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>) -> std::io::Result<Terminal> {
+    fn adopt(&self, id: &str, pane: &str, keeper: &str, pty: Adopted, snapshot: Option<Vec<u8>>, kept: Option<Kept>) -> std::io::Result<Terminal> {
         let settings = self.settings();
         let restored = snapshot.and_then(|snapshot| match Feed::restore(&snapshot, &settings) {
             Ok(feed) => Some(feed),
@@ -622,6 +650,9 @@ impl Terminals {
                 screen.resize(id, cols, rows, 0, 0);
             }
             screen.unsaved |= fresh;
+            if let Some(kept) = kept {
+                screen.restore_statuses(kept.owner, kept.records);
+            }
             (cols, rows)
         };
         pty::set_size(&pty.master, cols, rows, 0, 0);
@@ -838,7 +869,15 @@ impl Terminals {
         let Spawned { pid, master } = spawned;
         let (input, inputs) = mpsc::channel::<Vec<u8>>();
         let typing = Typing::default();
-        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone())?;
+        self.store.track(id, feed.clone());
+        if let Some(detector) = self.detector.borrow().as_ref() {
+            detector.watch(id, serial, feed.clone(), master.try_clone()?);
+        }
+        let reader = Reader::start(id, serial, master.try_clone()?, feed.clone(), typing.clone(), self.wire.clone(), input.clone(), self.events.clone()).inspect_err(|_| {
+            if let Some(detector) = self.detector.borrow().as_ref() {
+                detector.forget(id, serial);
+            }
+        })?;
         let mut writer = File::from(master.try_clone()?);
         let written = typing.clone();
         std::thread::Builder::new().name(format!("kanna.write.{id}")).spawn(move || {
@@ -849,10 +888,6 @@ impl Terminals {
                 crate::reader::written(&written);
             }
         })?;
-        self.store.track(id, feed.clone());
-        if let Some(detector) = self.detector.borrow().as_ref() {
-            detector.watch(id, serial, feed.clone(), master.try_clone()?);
-        }
         self.wire.add(id, serial, reader.resumer()?, input.clone(), typing, feed.clone());
         Ok(Terminal {
             pane: pane.into(),
@@ -913,6 +948,40 @@ mod tests {
                 }
             }
         })
+    }
+
+    struct NoSpawner;
+
+    impl Spawner for NoSpawner {
+        fn spawn(&self, _: &Spec) -> std::io::Result<u64> {
+            Ok(0)
+        }
+        fn close(&self, _: &str) {}
+        fn acknowledge_exit(&self, _: &str) {}
+    }
+
+    #[test]
+    fn a_started_terminal_is_told_its_daemons_kanna() {
+        let dir = std::env::temp_dir().join(format!("kdt-cli{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Helpers")).unwrap();
+        for binary in ["kanna", "kanna-daemon"] {
+            std::fs::write(dir.join("Helpers").join(binary), "").unwrap();
+        }
+        let cli = crate::cli::beside(&dir.join("Helpers/kanna-daemon"));
+        let mut env = vec![("KANNA_SOCKET".to_string(), "/s/kanna.sock".to_string())];
+        env.extend(crate::cli::env(cli.as_deref()));
+        let (events, _inbox) = crate::runtime::channel();
+        let terminals = Terminals::new(Rc::new(NoSpawner), Store::open(&dir).unwrap(), events.clone(), env, Arc::new(Wire::new(events)));
+        let spec = terminals.spec(&Pane::new("term-7", None, PaneType::Term), "t1");
+        let var = |name: &str| spec.env.iter().rev().find(|(key, _)| key == name).and_then(|(_, value)| value.clone());
+        let named = var(crate::cli::VAR).expect("KANNA_CLI is set");
+        assert_eq!(Path::new(&named), dir.join("Helpers/kanna"));
+        assert!(Path::new(&named).is_file(), "it names a kanna that exists");
+        assert_eq!(Path::new(&named).parent(), dir.join("Helpers/kanna-daemon").parent(), "beside the daemon");
+        assert_eq!((var("KANNA_SOCKET").as_deref(), var("KANNA_TERMINAL").as_deref()), (Some("/s/kanna.sock"), Some("term-7")));
+        drop(terminals);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

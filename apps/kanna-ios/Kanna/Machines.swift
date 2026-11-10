@@ -147,7 +147,7 @@ struct MachineDetail: View {
                                 if store.milliseconds(name) > 0 { KeyValue(key: "Round trip", value: "\(store.milliseconds(name)) ms") }
                                 if let since = stamp(machine?.since) { KeyValue(key: "Connected", value: "since \(since)") }
                             } else {
-                                KeyValue(key: "Last seen", value: stamp(machine?.seen) ?? "not lately")
+                                KeyValue(key: "Last seen", value: stamp(machine?.seen) ?? (machine?.me == true ? store.asOf : "not lately"))
                             }
                         }
                         .font(.system(size: 15))
@@ -171,7 +171,7 @@ struct MachineDetail: View {
             }
         }
         .background(K.bg)
-        .pushedNav()
+        .pushedNav(chip: false)
         .sheet(isPresented: $choosing) {
             VStack(spacing: 0) {
                 SheetHead(title: "Run the planner on", detail: "The phone talks to that machine's planner. It won't know this conversation.")

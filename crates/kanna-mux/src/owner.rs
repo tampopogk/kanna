@@ -6,6 +6,7 @@ use crate::pane::{Pane, PaneType, Panes};
 use crate::saved::{self, LAYOUT_VERSION};
 use crate::state::{self, number_in};
 use crate::state_file::{Contents, StateFile};
+use crate::workspace::Where;
 use std::collections::{HashMap, HashSet};
 
 pub struct LayoutOwner {
@@ -130,6 +131,11 @@ impl LayoutOwner {
                 self.panes.iter().filter(|p| placed.contains(&p.id)).cloned().collect()
             }
         }
+    }
+
+    pub fn saved_planners(&self) -> HashSet<String> {
+        let workspaces = self.saved.as_ref().and_then(|saved| saved.get("workspaces")).and_then(Value::as_array).into_iter().flatten();
+        workspaces.filter(|ws| matches!(Where::read(ws.get("where")), Some(Where::Planner(_)))).filter_map(|ws| ws.get("dock")?.get("pane")?.as_str().map(String::from)).collect()
     }
 
     fn record(&mut self, record: &Value) -> Result<Map, KmuxError> {
@@ -309,7 +315,7 @@ impl LayoutOwner {
 
 fn content_counters(state: &Value) -> HashMap<String, usize> {
     let counters = state.get("counters");
-    ["file", "page", "ios", "diff", "log", "serial"].into_iter().filter_map(|prefix| Some((prefix.to_string(), counters?.get(prefix)?.as_f64().filter(|n| *n >= 0.0)? as usize))).collect()
+    ["file", "page", "ios", "diff", "log", "serial", "runview"].into_iter().filter_map(|prefix| Some((prefix.to_string(), counters?.get(prefix)?.as_f64().filter(|n| *n >= 0.0)? as usize))).collect()
 }
 
 fn changed(changed: bool) -> Map {
@@ -556,6 +562,22 @@ mod tests {
         assert_eq!((view["workspaces"][0]["background"].clone(), view["windows"].clone()), (json!(["p3"]), json!([])));
         again.handle(&json!({ "call": "serve", "request": { "op": "remove", "ids": ["p1", "p3"], "task": "p1", "tidy": true } }));
         assert_eq!(Value::Object(again.view())["workspaces"], json!([]));
+    }
+
+    #[test]
+    fn a_planner_whose_pane_is_left_out_loses_its_workspace_but_not_its_tabs() {
+        let mut owner = LayoutOwner::new();
+        owner.handle(&json!({ "call": "attach", "panes": [] }));
+        open(&mut owner, json!({ "id": "p1", "name": null, "type": "term" }), json!({ "dock": "left", "planner": true, "claim": "daemon" }));
+        let planner = owner.view()["workspaces"][0]["id"].as_str().unwrap().to_string();
+        open(&mut owner, json!({ "id": "p2", "name": null, "type": "term" }), json!({ "tab": true, "workspace": planner }));
+        open(&mut owner, json!({ "id": "p3", "name": null, "type": "term" }), json!({ "dock": "left", "shelf": true }));
+        let mut again = LayoutOwner::restoring(owner.export()).unwrap();
+        assert_eq!(again.saved_planners(), HashSet::from(["p1".to_string()]));
+        again.handle(&json!({ "call": "attach", "panes": table(&["p2", "p3"]) }));
+        let view = Value::Object(again.view());
+        assert_eq!(view["workspaces"].as_array().map(|w| w.iter().map(|w| w["dock"]["pane"].clone()).collect::<Vec<_>>()), Some(vec![json!("p3")]), "{view}");
+        assert_eq!(again.saved_planners(), HashSet::new());
     }
 
     #[test]
@@ -833,6 +855,20 @@ mod tests {
         assert_eq!(gone.view()["workspaces"], json!([]));
         assert_eq!(owner.handle(&json!({ "call": "serve", "request": { "op": "place", "pane": { "id": "p2", "name": null, "type": "term" }, "at": { "dock": "top" } } }))["ok"], false);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_quiz_writer_is_a_workspace_with_no_task_and_keeps_its_place_through_a_restart() {
+        let dir = folder("quiz-writer");
+        let file = StateFile::new(&dir.join("layout.json").to_string_lossy());
+        let (mut owner, _) = LayoutOwner::open(Some(file.clone()), false);
+        owner.handle(&json!({ "call": "attach", "panes": [] }));
+        let placed = serve_place(&mut owner, "p1", json!({ "quiz": true, "app": "daemon" }));
+        assert_eq!(placed["workspace"], json!({ "id": "ws-1", "where": { "quiz": "daemon" } }), "{placed}");
+        assert_eq!(command(&mut owner, "task", json!({ "action": "list" }))["tasks"], json!([]), "a writer isn't a task");
+        let saved = owner.view();
+        let read = crate::Where::read(saved["workspaces"][0].get("where"));
+        assert_eq!(read, Some(crate::Where::Quiz("daemon".into())));
     }
 
     #[test]

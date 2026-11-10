@@ -171,9 +171,10 @@ extension AppController {
             }
             let page = controller.deskView
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
-                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf), "dots": .array(page.shelfDots)]
+                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf), "dots": .array(page.shelfDots), "groups": .array(page.groupTitles.map { .string($0) })]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
+                                "selection": page.selection.map { .string($0) } ?? .null, "keyed": .bool(page.keyed), "hints": page.hints,
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
             let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null, "stack": task.stack.map { .string($0) } ?? .null, "sub": .string(task.sub)] }
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "tasks": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
@@ -183,7 +184,13 @@ extension AppController {
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
-                    "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
+                    "buildsPage": .bool(!controller.buildsPage.isHidden), "builds": .array(controller.buildsPage.macs.map { mac in ["name": .string(mac.name), "summary": .string(mac.summary), "rows": .array(mac.rows.map { ["job": .string($0.job), "mark": .string($0.mark), "label": .string($0.label), "state": .string($0.state), "note": .string($0.note)] }), "recent": .array(mac.recent.map { ["job": .string($0.job), "label": .string($0.label), "state": .string($0.state)] })] }),
+                    "shownPage": controller.shownPage.map { .string($0) } ?? .null,
+                    "statsPage": .bool(!controller.statsPage.isHidden), "statsStatus": controller.statsPage.shownStatus.map { .string($0) } ?? .null, "statsLoadings": .number(Double(controller.statsPage.loadings)), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
+                    "queuePage": .bool(!controller.queuePage.isHidden), "queueCount": controller.tabBar.pageCounts[MergeQueuePage.title].map { .number(Double($0)) } ?? .null,
+                    "queue": .array(controller.queuePage.entries.map { ["id": .string($0.id), "task": .string($0.task), "name": .string($0.name), "state": .string($0.state), "said": .string($0.said), "terminal": $0.terminal.map { .string($0) } ?? .null, "needs": $0.needs.map { .string($0) } ?? .null] }),
+                    "queuePicked": controller.queuePage.selected.map { .string($0.task) } ?? .null, "queueTerminal": controller.queuePage.hostedTerminal.map { .string($0) } ?? .null,
+                    "queueDetail": .string(controller.queuePage.detail), "queueLog": controller.queuePage.logShown.map { .string($0) } ?? .null, "queueWaiting": controller.queuePage.waitingText.map { .string($0) } ?? .null,
                     "schedulesPage": .bool(!controller.schedulesPage.isHidden), "scheduleGroups": .array(controller.schedulesPage.groupOrder.map { $0.map { .string($0) } ?? .null }),
                     "schedules": .array(controller.schedulesPage.rows.map { row in
                         ["id": .string(row.id), "name": .string(row.name), "repo": row.repo.map { .string($0) } ?? .null, "rule": .string(row.rule), "target": .string(row.target), "next": .string(row.next), "waiting": .bool(row.waiting), "paused": .bool(row.paused),
@@ -219,7 +226,7 @@ extension AppController {
                 return ["editor": .string(shown)]
             }
             let text = try? await web.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String
-            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)), "page_width": .number(Double(web.webView.frame.width)),
+            var reply: [String: JSON] = ["url": web.webView.url.map { .string(web.unmap($0).absoluteString) } ?? .null, "loaded": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)), "page_width": .number(Double(web.webView.frame.width)),
                                          "notice": web.shownNotice.map { .string($0) } ?? .null, "markup": .bool(web.markable),
                                          "view": .string(Self.identity(web)), "web_view": .string(Self.identity(web.webView)), "loads": .number(Double(web.loads))]
             guard let markup = web.markup else { return reply }
@@ -336,6 +343,22 @@ extension AppController {
             out["captures"] = .array(code.highlights.spans.prefix(200).map { .array([.number(Double($0.range.location)), .number(Double($0.range.length)), .string($0.capture)]) })
             return out
         }
+        commands["debug.run"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let run = contents.run(id) else { throw KannaError("wrong_type", "not a running run pane") }
+            if let action = args["press"]?.string { run.press(action, note: args["note"]?.string) }
+            if let n = args["diff"]?.number { run.toggleDiff(Int(n)) }
+            if let spot = args["reveal"]?.string { run.reveal(spot) }
+            guard let notice = run.notice else { return ["failure": run.failure.map { .string($0) } ?? .null] }
+            let graph = run.graph
+            return ["run": .string(notice.run), "state": .string(notice.state), "badge": .string(notice.badge), "subtitle": .string(run.subtitle),
+                    "enabled": .object(run.enabled.mapValues { .bool($0) }), "card": notice.card.map { .string($0.title) } ?? .null, "cardShown": .bool(run.cardShown),
+                    "tiles": .array(run.tiles.map { .array([.string($0.value), .string($0.label)]) }), "rows": .array(run.rows.map { .array($0.map { .string($0) }) }),
+                    "workers": .array(run.workerLines.map { .string($0) }), "legend": .array(run.legend.map { .string($0) }), "flash": run.flashed.map { .string($0) } ?? .null, "said": run.said.map { .string($0) } ?? .null,
+                    "revisions": .array(run.revisionLines.map { .string($0) }), "diff": .array(run.diffLines.map { .string($0) }),
+                    "nodes": .array(graph.nodes.map { .object(["id": .string($0.node.id), "state": $0.node.state.map { .string($0) } ?? .null, "visits": .number(Double($0.node.visits)),
+                                                              "frame": .array([$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height].map { .number(Double($0)) })]) }),
+                    "edges": .array(graph.edges.map { .object(["from": .string($0.edge.from), "to": .string($0.edge.to), "route": .string($0.edge.route), "taken": .bool($0.edge.taken)]) })]
+        }
         commands["debug.serial"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let serial = contents.serial(id) else { throw KannaError("wrong_type", "not a running serial pane") }
             if let text = args["type"]?.string { serial.type(text, ending: args["ending"]?.bool ?? true) }
@@ -400,7 +423,9 @@ extension AppController {
                     "detail": log.detail.map { .string($0.hash) } ?? .null, "detailShown": .bool(log.detailShown), "zoom": .number(Double(log.zoom)), "width": .number(log.bounds.width)]
         }
         commands["debug.ios"] = { [weak self] args in
-            guard let self, let id = args["pane"]?.string, let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
+            guard let self, let id = args["pane"]?.string else { throw KannaError("wrong_type", "not a running ios pane") }
+            if let answer = args["approve"]?.bool, let view = contents.ios(id) { return ["answered": .bool(view.answer(answer))] }
+            guard let screen = contents.ios(id)?.screen else { throw KannaError("wrong_type", "not a running ios pane") }
             if let x = args["x"]?.number, let y = args["y"]?.number {
                 screen.touch(.leftMouseDown, at: CGPoint(x: x, y: y))
                 try await Task.sleep(for: .milliseconds(80))
@@ -549,6 +574,13 @@ extension AppController {
             guard controller.deskView.visibleShelf.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
             window = controller.window
             point = spot.center
+        } else if let title = args["statsChip"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let chip = controller.statsPage.chips[title] else { throw KannaError("not_found", "no chip \(title) in \(id)'s Stats") }
+            controller.statsPage.scrollToPipelines()
+            controller.statsPage.displayIfNeeded()
+            window = controller.window
+            point = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
         } else if let tile = args["stats"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let list = controller.statsPage.lists[tile], let spot = list.center(of: Int(args["row"]?.number ?? 0)) else { throw KannaError("not_found", "no row \(Int(args["row"]?.number ?? 0)) in \(id)'s Stats list \(tile)") }
@@ -559,6 +591,16 @@ extension AppController {
             guard let controller = controllers[id], let spot = controller.schedulesPage.center(of: control) else { throw KannaError("not_found", "no \(control) on \(id)'s Schedules page") }
             window = controller.window
             point = spot
+        } else if let entry = args["queue"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let spot = controller.queuePage.center(of: entry, takeOut: args["takeOut"]?.bool == true, resume: args["resume"]?.bool == true) else { throw KannaError("not_found", "no \(entry) on \(id)'s Merge queue tab") }
+            window = controller.window
+            point = spot
+        } else if let task = args["shelfLog"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let spot = controller.deskView.shelfLogs.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) has no Log on \(id)'s Shelf") }
+            window = controller.window
+            point = spot.center
         } else if let page = args["page"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.tabBar.pageItems.first(where: { $0.title == page }) else { throw KannaError("not_found", "no \(page) tab on \(id)") }

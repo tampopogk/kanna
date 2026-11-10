@@ -9,11 +9,22 @@ enum StatsFormat {
         return "\(Int((Double(minutes) / 1440).rounded()))d"
     }
 
+    static func hours(_ hours: Double) -> String {
+        if hours < 1 { return "\(Int((hours * 60).rounded()))m" }
+        if hours < 10 {
+            let tenths = (hours * 10).rounded() / 10
+            return tenths == tenths.rounded() ? "\(Int(tenths))h" : "\(tenths)h"
+        }
+        return "\(Int(hours.rounded()))h"
+    }
+
     static func figure(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
         switch unit {
         case "%": return value == value.rounded() ? "\(Int(value))%" : String(format: "%.1f%%", value)
         case "s": return duration(value)
+        case "h": return hours(value)
+        case "x": return String(format: "%.1f", value)
         default: return "\(Int(value.rounded()))"
         }
     }
@@ -248,7 +259,16 @@ struct StatsView: View {
             OfflineBanner(detail: "These are the numbers as they were at \(store.asOf).")
             ScrollView {
                 VStack(spacing: 0) {
-                    if store.statsPage == nil {
+                    if !store.offline, let status = store.statsPage?.status {
+                        Text(status)
+                            .font(.system(size: 12))
+                            .foregroundStyle(K.muted)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 10)
+                    }
+                    if store.statsPage?.sections.isEmpty != false {
                         Text(store.offline ? "No numbers yet: Stats reads from \(store.repo.plannerMachine)." : "Asking \(store.repo.plannerMachine)…").font(.system(size: 14)).foregroundStyle(K.muted).padding(.top, 40)
                     }
                     ForEach(store.statsPage?.sections ?? []) { section in

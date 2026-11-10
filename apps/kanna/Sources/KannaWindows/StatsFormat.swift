@@ -8,11 +8,22 @@ public enum StatsFormat {
         return "\(Int((Double(minutes) / 1440).rounded()))d"
     }
 
+    public static func hours(_ hours: Double) -> String {
+        if hours < 1 { return "\(Int((hours * 60).rounded()))m" }
+        if hours < 10 {
+            let tenths = (hours * 10).rounded() / 10
+            return tenths == tenths.rounded() ? "\(Int(tenths))h" : "\(tenths)h"
+        }
+        return "\(Int(hours.rounded()))h"
+    }
+
     public static func figure(_ value: Double?, unit: String?) -> String {
         guard let value else { return "—" }
         switch unit {
         case "%": return "\(Int(value.rounded()))%"
         case "s": return duration(value)
+        case "h": return hours(value)
+        case "x": return String(format: "%.1f", value)
         default: return "\(Int(value.rounded()))"
         }
     }
@@ -38,6 +49,15 @@ public enum StatsFormat {
         if isToday { return full ? "Today" : "today" }
         guard let date = parser.date(from: iso) else { return iso }
         return (full ? long : short).string(from: date)
+    }
+
+    public static func across(_ at: Double, from: Double, to: Double) -> Double {
+        to > from ? min(max((at - from) / (to - from), 0), 1) : 1
+    }
+
+    public static func windowStart(from: Double, to: Double) -> String {
+        let days = Int(((to - from) / 86400).rounded(.up))
+        return days <= 1 ? "today" : "\(days) days ago"
     }
 
     public static func nice(_ value: Double) -> Double {

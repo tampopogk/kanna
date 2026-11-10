@@ -131,6 +131,10 @@ impl ProgramState {
         }
     }
 
+    pub fn parse(text: &str) -> Option<ProgramState> {
+        [ProgramState::Idle, ProgramState::Working, ProgramState::Done, ProgramState::Blocked, ProgramState::Error].into_iter().find(|s| s.as_str() == text)
+    }
+
     fn ends_with_program(self) -> bool {
         matches!(self, ProgramState::Working | ProgramState::Blocked)
     }
@@ -150,6 +154,10 @@ impl Need {
             Need::Question => "question",
             Need::Auth => "auth",
         }
+    }
+
+    pub fn parse(text: &str) -> Option<Need> {
+        [Need::Permission, Need::Question, Need::Auth].into_iter().find(|n| n.as_str() == text)
     }
 }
 
@@ -182,6 +190,10 @@ impl ProgramStatuses {
         if worked && matches!(status.state, ProgramState::Idle | ProgramState::Done) {
             self.turns += 1;
         }
+        self.keep(status);
+    }
+
+    fn keep(&mut self, status: ProgramStatus) {
         let serial = self.bump();
         if let Some(record) = self.records.iter_mut().find(|(_, r)| r.id == status.id) {
             *record = (serial, status);
@@ -497,6 +509,19 @@ impl Terminal {
 
     pub fn program_status(&self) -> Option<ProgramStatus> {
         unsafe { &(*self.hooks.as_ptr()).statuses }.records.iter().find(|(_, r)| r.id.is_empty()).map(|(_, r)| r.clone())
+    }
+
+    pub fn program_records(&self) -> Vec<ProgramStatus> {
+        let mut records: Vec<&(u64, ProgramStatus)> = unsafe { &(*self.hooks.as_ptr()).statuses }.records.iter().collect();
+        records.sort_by_key(|(serial, _)| *serial);
+        records.into_iter().map(|(_, r)| r.clone()).collect()
+    }
+
+    pub fn restore_program_records(&mut self, records: Vec<ProgramStatus>) {
+        let statuses = &mut self.hooks().statuses;
+        for record in records {
+            statuses.keep(record);
+        }
     }
 
     pub fn program_turns(&self) -> u64 {

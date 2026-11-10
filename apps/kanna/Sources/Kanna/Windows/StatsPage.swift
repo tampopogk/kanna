@@ -16,8 +16,44 @@ struct StatsPoint: Equatable {
     let label: String
 }
 
+struct StatsColumn: Equatable {
+    let title: String
+    let right: Bool
+    let fill: Bool
+}
+
+struct StatsCell: Equatable {
+    let text: String
+    let bar: Double?
+    let swatch: Bool
+    let mono: Bool
+    let tone: String?
+}
+
+struct StatsTableRow: Equatable {
+    let series: Int?
+    let pipeline: String
+    let dim: Bool
+    let cells: [StatsCell]
+}
+
+struct StatsRunPoint: Equatable {
+    let at: Double
+    let value: Double
+    let series: Int?
+    let pipeline: String
+    let label: String
+}
+
 struct StatsChart: Equatable {
     let kind: String
+    var columns: [StatsColumn] = []
+    var table: [StatsTableRow] = []
+    var runPoints: [StatsRunPoint] = []
+    var medians: [StatsRunPoint] = []
+    var from = 0.0
+    var to = 0.0
+    var ticks: [String] = []
     let values: [Double?]
     let max: Double?
     let rows: [StatsRow]
@@ -43,6 +79,18 @@ struct StatsChart: Equatable {
         done = numbers("done")
         what = json?["what"]?.string ?? ""
         empty = json?["empty"]?.string
+        columns = (json?["columns"]?.array ?? []).map { StatsColumn(title: $0["title"]?.string ?? "", right: $0["right"]?.bool == true, fill: $0["fill"]?.bool == true) }
+        table = (json?["rows"]?.array ?? []).filter { $0["cells"] != nil }.map { row in
+            StatsTableRow(series: row["series"]?.number.map { Int($0) }, pipeline: row["pipeline"]?.string ?? "", dim: row["dim"]?.bool == true, cells: (row["cells"]?.array ?? []).map {
+                StatsCell(text: $0["text"]?.string ?? "", bar: $0["bar"]?.number, swatch: $0["swatch"]?.bool == true, mono: $0["mono"]?.bool == true, tone: $0["tone"]?.string)
+            })
+        }
+        let run = { (item: JSON) in StatsRunPoint(at: item["at"]?.number ?? 0, value: item["value"]?.number ?? 0, series: item["series"]?.number.map { Int($0) }, pipeline: item["pipeline"]?.string ?? "", label: item["label"]?.string ?? "") }
+        runPoints = kind == "runs" ? (json?["points"]?.array ?? []).map(run) : []
+        medians = (json?["medians"]?.array ?? []).map(run)
+        from = json?["from"]?.number ?? 0
+        to = json?["to"]?.number ?? 0
+        ticks = (json?["ticks"]?.array ?? []).compactMap(\.string)
     }
 }
 
@@ -66,16 +114,29 @@ struct StatsSection: Equatable {
     let empty: String?
     let placeholder: Bool
     let tiles: [StatsTile]
+    var filters: [String] = []
+    var hasFilters = false
+    var legend: [StatsRunPoint] = []
+    var allRuns: StatsChart?
 }
 
 struct StatsReport: Equatable {
     let project: String
     let days: [String]
-    let sections: [StatsSection]
+    let status: String?
+    private(set) var sections: [StatsSection]
+
+    func keeping(_ shown: StatsReport?) -> StatsReport {
+        guard sections.isEmpty, let shown, !shown.sections.isEmpty else { return self }
+        var kept = self
+        kept.sections = shown.sections
+        return kept
+    }
 
     init?(_ json: JSON) {
         guard let sections = json["sections"]?.array else { return nil }
         project = json["project"]?.string ?? ""
+        status = json["status"]?.string
         days = (json["days"]?.array ?? []).compactMap(\.string)
         self.sections = sections.map { section in
             StatsSection(id: section["id"]?.string ?? "", title: section["title"]?.string ?? "", note: section["note"]?.string ?? "", empty: section["empty"]?.string,
@@ -83,7 +144,10 @@ struct StatsReport: Equatable {
                          tiles: (section["tiles"]?.array ?? []).map { tile in
                              StatsTile(id: tile["id"]?.string ?? "", label: tile["label"]?.string ?? "", value: tile["value"]?.number, unit: tile["unit"]?.string,
                                        note: tile["note"]?.string ?? "", span: Int(tile["span"]?.number ?? 2), chart: StatsChart(tile["chart"]), tip: tile["tip"]?.string)
-                         })
+                         },
+                         filters: (section["filters"]?["pipelines"]?.array ?? []).compactMap(\.string), hasFilters: section["filters"] != nil,
+                         legend: (section["legend"]?.array ?? []).map { StatsRunPoint(at: 0, value: 0, series: $0["series"]?.number.map { Int($0) }, pipeline: $0["pipeline"]?.string ?? "", label: $0["label"]?.string ?? "") },
+                         allRuns: section["allRuns"].map { StatsChart($0) })
         }
     }
 }
@@ -102,6 +166,21 @@ enum StatsInk {
     static let axis = dynamic(0xc9cdd4, 0x3a404a)
     static let made = dynamic(0x9aa1ab, 0x6f7783)
     static let done = dynamic(0x2f9a68, 0x3f9a6e)
+    static let second = dynamic(0xeb6834, 0xd95926)
+    static let third = dynamic(0x1baf7a, 0x199e70)
+    static let panel = dynamic(0xf4f5f7, 0x1b1e24)
+    static let line = dynamic(0xd8dce2, 0x2c313a)
+    static let landed = dynamic(0x1f9d5c, 0x5fcf93)
+    static let going = dynamic(0x2f63d8, 0x7aa2ff)
+
+    static func of(series: Int?) -> NSColor {
+        switch series {
+        case 0: return StatsInk.series
+        case 1: return second
+        case 2: return third
+        default: return context
+        }
+    }
 }
 
 @MainActor
@@ -114,7 +193,17 @@ final class StatsPage: NSView {
     private(set) var tileFrames: [String: NSRect] = [:]
     private(set) var bandFrames: [String: NSRect] = [:]
     var onOpen: ((JSON) -> Void)?
+    var onDays: (() -> Void)?
     private(set) var lists: [String: StatsList] = [:]
+    private(set) var chips: [String: StatsChip] = [:]
+    private(set) var runDays = 30
+    private(set) var hiddenPipelines: Set<String> = []
+    private(set) var tableView = false
+    private var tables: [String: StatsTable] = [:]
+    private var statusLine: NSTextField?
+    private(set) var loadings = 0
+
+    var shownStatus: String? { statusLine.flatMap { $0.isHidden ? nil : $0.stringValue } }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -139,9 +228,15 @@ final class StatsPage: NSView {
 
     func show(_ report: StatsReport?, project: String) {
         guard report != self.report || project != location else { return }
+        let sameNumbers = project == location && report?.days == self.report?.days && report?.sections == self.report?.sections
         self.report = report
         location = project
-        lay()
+        if sameNumbers, let statusLine {
+            statusLine.stringValue = report?.status ?? ""
+            statusLine.isHidden = report?.status == nil
+        } else {
+            lay()
+        }
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
@@ -170,6 +265,8 @@ final class StatsPage: NSView {
         tileFrames = [:]
         bandFrames = [:]
         lists = [:]
+        chips = [:]
+        tables = [:]
         let left: CGFloat = 32, gap: CGFloat = 22
         let width = max(280, min(980, scroller.contentSize.width - left * 2))
         var y: CGFloat = 28
@@ -179,7 +276,12 @@ final class StatsPage: NSView {
         let sub = label("\(location) · main · last 30 days", size: 13, color: .secondaryLabelColor)
         sub.frame = NSRect(x: left, y: y, width: width, height: sub.frame.height)
         y += sub.frame.height
-        guard let report else {
+        let status = label(report?.status ?? "", color: .secondaryLabelColor)
+        status.frame = NSRect(x: left, y: y + 6, width: width, height: status.frame.height)
+        status.isHidden = report?.status == nil
+        statusLine = status
+        guard let report, !report.sections.isEmpty else {
+            loadings += 1
             y += 26
             label("Loading…", color: .secondaryLabelColor).frame.origin = NSPoint(x: left, y: y)
             finish(y + 40)
@@ -198,6 +300,7 @@ final class StatsPage: NSView {
             band.frame.size.height = head.frame.height + 14
             bandFrames[section.id] = band.frame
             y = band.frame.maxY + 14
+            if section.hasFilters { y = layFilters(section, at: NSPoint(x: left, y: y), width: width) }
             if section.tiles.isEmpty {
                 if section.placeholder {
                     let box = StatsPlaceholder(frame: NSRect(x: left, y: y, width: width, height: 0))
@@ -213,12 +316,22 @@ final class StatsPage: NSView {
                 }
                 continue
             }
-            let places = StatsFormat.places(section.tiles.map(\.span), width: width, gap: gap)
-            var rowTop = y, rowBottom = y, row = 0
-            for (tile, place) in zip(section.tiles, places) {
+            let tiles = tableView ? section.tiles.compactMap { tile -> StatsTile? in
+                guard tile.chart.kind == "runs" else { return tile }
+                guard tile.id == "run-land", let all = section.allRuns else { return nil }
+                return StatsTile(id: "all-runs", label: "Run by run", value: nil, unit: nil, note: "", span: 6, chart: all)
+            } : section.tiles
+            let places = StatsFormat.places(tiles.map(\.span), width: width, gap: gap)
+            var rowTop = y, rowBottom = y, row = 0, legendDrawn = false
+            for (tile, place) in zip(tiles, places) {
                 if place.row != row {
                     row = place.row
                     rowTop = rowBottom + 14
+                }
+                if tile.chart.kind == "runs", !legendDrawn {
+                    legendDrawn = true
+                    rowTop = layLegend(section.legend, at: NSPoint(x: left, y: rowTop), width: width)
+                    rowBottom = rowTop
                 }
                 let bottom = layTile(tile, days: report.days, at: NSPoint(x: left + place.x, y: rowTop), width: place.width, hero: section.id == "quiz")
                 tileFrames[tile.id] = NSRect(x: left + place.x, y: rowTop, width: place.width, height: bottom - rowTop)
@@ -235,7 +348,115 @@ final class StatsPage: NSView {
         document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: max(height, scroller.contentSize.height))
     }
 
+    private func layFilters(_ section: StatsSection, at origin: NSPoint, width: CGFloat) -> CGFloat {
+        var x = origin.x
+        func word(_ text: String) {
+            let field = label(text, color: .secondaryLabelColor)
+            field.frame.origin = NSPoint(x: x, y: origin.y + 4)
+            x = field.frame.maxX + 8
+        }
+        func chip(_ title: String, on: Bool, click: @escaping () -> Void) {
+            let view = StatsChip(title: title, on: on)
+            view.onClick = click
+            view.frame.origin = NSPoint(x: x, y: origin.y)
+            document.addSubview(view)
+            chips[title] = view
+            x = view.frame.maxX + 6
+        }
+        word("Show")
+        for (title, days) in [("30 days", 30), ("90 days", 90), ("all", 0)] {
+            chip(title, on: runDays == days) { [weak self] in
+                guard let self else { return }
+                runDays = days
+                lay()
+                onDays?()
+            }
+        }
+        x += 10
+        if !section.filters.isEmpty { word("Pipelines") }
+        for name in section.filters {
+            chip(name, on: !hiddenPipelines.contains(name)) { [weak self] in
+                guard let self else { return }
+                if hiddenPipelines.contains(name) { hiddenPipelines.remove(name) } else { hiddenPipelines.insert(name) }
+                lay()
+            }
+        }
+        return origin.y + 36
+    }
+
+    private func layLegend(_ legend: [StatsRunPoint], at origin: NSPoint, width: CGFloat) -> CGFloat {
+        let head = label("RUN BY RUN", size: 11, color: .secondaryLabelColor)
+        head.frame.origin = NSPoint(x: origin.x, y: origin.y + 6)
+        var x = origin.x
+        let y = head.frame.maxY + 6
+        for item in legend where !hiddenPipelines.contains(item.pipeline) {
+            let swatch = StatsSwatch(frame: NSRect(x: x, y: y + 3, width: 9, height: 9))
+            swatch.color = StatsInk.of(series: item.series)
+            document.addSubview(swatch)
+            let name = label(item.label, size: 11.5, color: .secondaryLabelColor)
+            name.frame.origin = NSPoint(x: x + 14, y: y)
+            x = name.frame.maxX + 14
+        }
+        return y + 24
+    }
+
+    private func layPipelineTile(_ tile: StatsTile, at origin: NSPoint, width: CGFloat) -> CGFloat {
+        var y = origin.y
+        if tile.chart.kind == "runs" {
+            let card = StatsCard(frame: NSRect(x: origin.x, y: y, width: width, height: 196))
+            document.addSubview(card)
+            let name = label(tile.label, weight: .semibold)
+            name.frame.origin = NSPoint(x: origin.x + 12, y: y + 10)
+            let note = label(tile.note, size: 11, color: .secondaryLabelColor, wraps: width - 24)
+            note.frame.origin = NSPoint(x: origin.x + 12, y: name.frame.maxY + 1)
+            let chart = StatsRunChart(tile: tile, hidden: hiddenPipelines)
+            chart.frame = NSRect(x: origin.x + 8, y: note.frame.maxY + 6, width: width - 16, height: card.frame.maxY - note.frame.maxY - 12)
+            chart.onHover = { [weak self, weak chart] text, point in
+                guard let self, let chart else { return }
+                self.hover(text, at: chart.convert(point, to: self.document))
+            }
+            document.addSubview(chart)
+            return card.frame.maxY
+        }
+        if !tile.label.isEmpty {
+            let name = label(tile.label.uppercased(), size: 11, color: .secondaryLabelColor)
+            name.frame.origin = NSPoint(x: origin.x, y: y + 6)
+            y = name.frame.maxY + 6
+        }
+        let table = StatsTable(chart: tile.chart, hidden: hiddenPipelines, width: width)
+        tables[tile.id] = table
+        let holder = NSScrollView(frame: NSRect(x: origin.x, y: y, width: width, height: table.frame.height))
+        holder.drawsBackground = false
+        holder.hasHorizontalScroller = table.frame.width > width
+        holder.autohidesScrollers = true
+        holder.verticalScrollElasticity = .none
+        holder.documentView = table
+        document.addSubview(holder)
+        y = holder.frame.maxY
+        if !tile.note.isEmpty {
+            let note = label(tile.note, size: 11.5, color: .secondaryLabelColor, wraps: width)
+            note.frame.origin = NSPoint(x: origin.x, y: y + 8)
+            y = note.frame.maxY
+        }
+        if tile.id == "pipelines" {
+            let link = StatsChip(title: tableView ? "Charts" : "Table view", on: false, plain: true)
+            link.onClick = { [weak self] in
+                guard let self else { return }
+                tableView.toggle()
+                lay()
+            }
+            link.frame.origin = NSPoint(x: origin.x, y: y + 4)
+            document.addSubview(link)
+            chips["Table view"] = link
+            let cli = label("kanna stats pipelines --json", size: 11.5, color: .secondaryLabelColor)
+            cli.frame.origin = NSPoint(x: link.frame.maxX + 10, y: y + 7)
+            y = link.frame.maxY
+        }
+        return y
+    }
+
     private func layTile(_ tile: StatsTile, days: [String], at origin: NSPoint, width: CGFloat, hero: Bool) -> CGFloat {
+        if ["table", "runs"].contains(tile.chart.kind) { return layPipelineTile(tile, at: origin, width: width) }
         var y = origin.y
         let name = label(tile.label, color: .secondaryLabelColor)
         name.frame = NSRect(x: origin.x, y: y, width: width, height: name.frame.height)
@@ -300,14 +521,21 @@ final class StatsPage: NSView {
         (report?.sections ?? []).flatMap { section in
             section.tiles.map { tile -> JSON in
                 ["section": .string(section.id), "id": .string(tile.id), "label": .string(tile.label), "figure": .string(["ranked", "list"].contains(tile.chart.kind) ? "" : tile.figure), "note": .string(tile.note),
-                 "rows": .array(tile.chart.kind == "list" ? tile.chart.rows.map { .string($0.label) } : []), "tip": tile.tip.map { .string($0) } ?? .null,
+                 "rows": .array(tile.chart.kind == "list" ? tile.chart.rows.map { .string($0.label) } : []), "tip": tile.tip.map { .string($0) } ?? .null, "kind": .string(tile.chart.kind),
+                 "table": .array((tables[tile.id]?.shown ?? []).map { row in .array(row.cells.map { .string($0.text) }) }), "dots": .number(Double(tile.chart.runPoints.filter { !hiddenPipelines.contains($0.pipeline) }.count)),
                  "frame": tileFrames[tile.id].map { ["x": .number($0.minX), "y": .number($0.minY), "width": .number($0.width), "height": .number($0.height)] } ?? .null]
             }
         }
     }
 
+    func scrollToPipelines() {
+        guard let chip = chips["30 days"] else { return }
+        scroller.contentView.scroll(to: NSPoint(x: 0, y: max(0, chip.frame.minY - 50)))
+        scroller.reflectScrolledClipView(scroller.contentView)
+    }
+
     var shownSections: [JSON] {
-        (report?.sections ?? []).map { ["id": .string($0.id), "title": .string($0.title), "empty": $0.empty.map { .string($0) } ?? .null, "placeholder": .bool($0.placeholder), "tiles": .number(Double($0.tiles.count)), "band": bandFrames[$0.id].map { ["x": .number($0.minX), "y": .number($0.minY), "width": .number($0.width), "height": .number($0.height)] } ?? .null] }
+        (report?.sections ?? []).map { ["id": .string($0.id), "title": .string($0.title), "empty": $0.empty.map { .string($0) } ?? .null, "placeholder": .bool($0.placeholder), "tiles": .number(Double($0.tiles.count)), "chips": .array(chips.keys.sorted().map { .string($0) }), "on": .array(chips.filter { $0.value.on }.keys.sorted().map { .string($0) }), "tableView": .bool(tableView), "band": bandFrames[$0.id].map { ["x": .number($0.minX), "y": .number($0.minY), "width": .number($0.width), "height": .number($0.height)] } ?? .null] }
     }
 }
 
@@ -558,7 +786,8 @@ final class StatsChartView: NSView {
             let all = tile.chart.points.map(\.value)
             return StatsFormat.niceDuration(StatsFormat.percentile(all, 0.9) ?? 3600)
         }
-        return StatsFormat.nice(tile.chart.values.compactMap { $0 }.max() ?? 0)
+        let top = tile.chart.values.compactMap { $0 }.max() ?? 0
+        return tile.unit == "s" ? StatsFormat.niceDuration(top) : StatsFormat.nice(top)
     }
 
     private var strip: CGFloat { tile.chart.kind == "flow" ? 34 : 0 }
@@ -566,7 +795,7 @@ final class StatsChartView: NSView {
 
     private func y(_ value: Double) -> CGFloat { baseline - CGFloat(min(value, scale) / scale) * (baseline - plot.minY) }
 
-    private func tick(_ value: Double) -> String { tile.unit == "s" ? StatsFormat.duration(value) : tile.unit == "%" ? "\(Int(value))%" : "\(Int(value))" }
+    private func tick(_ value: Double) -> String { tile.unit == "s" ? StatsFormat.duration(value) : tile.unit == "h" ? StatsFormat.hours(value) : tile.unit == "%" ? "\(Int(value))%" : "\(Int(value))" }
 
     override func draw(_ dirtyRect: NSRect) {
         let plot = self.plot

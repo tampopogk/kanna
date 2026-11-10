@@ -245,18 +245,17 @@ impl Tasks {
             return match status.as_deref() {
                 Some("needs-you") => ("needs".into(), since),
                 Some("working") => ("working".into(), since),
-                _ if !entry.stale.is_empty() => ("stale".into(), since),
-                _ if entry.ready.is_some() => ("ready".into(), since),
-                _ => ("idle".into(), since),
+                _ => match self.merge_label(entry) {
+                    Some(label @ ("stale" | "ready" | "conflicts")) => (label.into(), since),
+                    _ => ("idle".into(), since),
+                },
             };
         }
         let last = self.last_event(entry);
         let status = if entry.folder.is_none() && entry.held.is_none() {
             if self.waits(entry).is_empty() { "waiting" } else { "blocked" }
-        } else if !entry.stale.is_empty() {
-            "stale"
-        } else if entry.ready.is_some() {
-            "ready"
+        } else if let Some(label @ ("stale" | "ready" | "conflicts")) = self.merge_label(entry) {
+            label
         } else if entry.stopped.as_deref() == Some(Status::NeedsYou.as_str()) {
             "needs"
         } else {
@@ -267,9 +266,7 @@ impl Tasks {
 
     fn after_of(&self, entry: &Entry) -> Vec<Value> {
         let waits = self.waits(entry);
-        let stale = entry.stale.iter();
-        let bases = entry.bases.iter().map(|b| &b.id);
-        let ids: Vec<&String> = if waits.is_empty() { stale.chain(bases).collect() } else { waits.iter().collect() };
+        let ids: Vec<&String> = if !waits.is_empty() { waits.iter().collect() } else if !entry.stale.is_empty() { entry.stale.iter().collect() } else { entry.bases.iter().map(|b| &b.id).collect() };
         let replica = self.replica.borrow();
         let name = |id: &str| self.known(id).and_then(|e| e.name).or_else(|| replica.births(id).first().and_then(|r| r.text("name").map(String::from)));
         ids.into_iter().map(|id| json!({ "id": id, "name": opt(name(id).as_deref()) })).collect()

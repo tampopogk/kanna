@@ -76,6 +76,7 @@ pub trait Host: Send + Sync + 'static {
         None
     }
     fn job(&self, _from: String, _stream: std::os::unix::net::UnixStream) {}
+    fn bundle(&self, _from: String, _path: String, _stream: std::os::unix::net::UnixStream) {}
     fn phone(&self, _from: String, _key: String, _stream: std::os::unix::net::UnixStream) {}
 }
 
@@ -270,8 +271,11 @@ impl Node {
                     let conn = state.conns.get(key).filter(|c| c.close_reason().is_none());
                     let selected = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| (p.is_ip(), p.rtt().as_secs_f64() * 1000.0, matches!(p.remote_addr(), iroh::TransportAddr::Ip(socket) if crate::client::local(socket.ip())))));
                     let path = selected.map(|(ip, _, _)| if ip { "direct" } else { "relay" });
-                    let mut addrs = strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default());
+                    let mut addrs: Vec<String> = conn.map(|c| c.paths().iter().filter_map(|p| match p.remote_addr() { iroh::TransportAddr::Ip(socket) => Some(socket.to_string()), _ => None }).collect()).unwrap_or_default();
+                    addrs.extend(strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default()));
                     addrs.extend(state.addrs.get(key).cloned().unwrap_or_default());
+                    let mut seen = std::collections::HashSet::new();
+                    addrs.retain(|a| seen.insert(a.clone()));
                     let relay = state.relay.as_ref().map(|r| r.url.to_string()).or_else(|| view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)));
                     peers.push(json!({
                         "name": name,
@@ -575,14 +579,17 @@ impl Node {
             let _ = send.finish();
             return;
         }
-        if kind == "job" {
+        if kind == "job" || kind == "file" {
             if cert.is_some() {
-                let _ = write_line(&mut send, &refusal(&Failure::new("not_a_daemon", "only a machine's daemon sends a job"))).await;
+                let _ = write_line(&mut send, &refusal(&Failure::new("not_a_daemon", format!("only a machine's daemon opens a {kind} stream")))).await;
                 let _ = send.finish();
                 return;
             }
             let Ok((ours, theirs)) = std::os::unix::net::UnixStream::pair() else { return };
-            self.0.host.job(from, theirs);
+            match header["path"].as_str().filter(|_| kind == "file") {
+                Some(path) => self.0.host.bundle(from, path.to_string(), theirs),
+                None => self.0.host.job(from, theirs),
+            }
             let (node, remote) = (self.clone(), remote.clone());
             let watched = async move {
                 while revoked.changed().await.is_ok() {
@@ -778,7 +785,12 @@ impl Node {
             return self.settle(Err(failure));
         }
         self.save();
-        if write_line(send, &json!({ "ok": true, "handoff": party.seal(&staged.export()) })).await.is_err() {
+        let mut handoff = staged.export();
+        if let Some(relay) = self.state().relay.as_ref() {
+            handoff["relay"] = json!(relay.url.to_string());
+            handoff["relay_token"] = json!(relay.token);
+        }
+        if write_line(send, &json!({ "ok": true, "handoff": party.seal(&handoff) })).await.is_err() {
             return self.settle(Err(Failure::new("unreachable", "lost the phone")));
         }
         let _ = read_line(recv, MAX_LINE).await;
@@ -1070,6 +1082,15 @@ impl Node {
         Ok((theirs, name))
     }
 
+    pub async fn bundle(&self, host: &str, path: &str) -> Result<std::os::unix::net::UnixStream, Failure> {
+        self.usable()?;
+        let key = self.resolve(host)?;
+        let (send, recv, _) = self.open_to(&key, "file", json!({ "path": path })).await?;
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|e| Failure::new("failed", e.to_string()))?;
+        tokio::spawn(splice_unix(ours, send, recv));
+        Ok(theirs)
+    }
+
     pub async fn sync(&self, host: &str) -> Result<Value, Failure> {
         let (mut send, mut recv, name) = self.control_stream(host).await?;
         let synced = self.sync_over(&mut send, &mut recv).await;
@@ -1117,13 +1138,14 @@ impl Node {
         if key == self.key() {
             return Err(Failure::new("bad_request", "this machine can't revoke itself: revoke it from another of your machines"));
         }
-        let name = {
+        let (name, is_phone) = {
             let mut state = self.state();
             let Some(log) = state.log.as_mut() else { return Err(Failure::new("unpaired", "this machine isn't paired")) };
             let name = log.view().name_of(&key).ok_or_else(|| Failure::new("not_found", format!("{host} isn't one of your machines")))?;
+            let is_phone = log.view().is_phone(&key);
             let entry = log.entry(&self.0.secret, "revoke", json!({ "key": key }), None, unix_time());
             log.merge(&[entry])?;
-            name
+            (name, is_phone)
         };
         self.drop_revoked();
         self.save();
@@ -1134,7 +1156,8 @@ impl Node {
                 told.push(self.name_of(&other));
             }
         }
-        Ok(json!({ "name": name, "key": key, "told": told }))
+        let relay_token = is_phone && self.relay_token().is_some();
+        Ok(json!({ "name": name, "key": key, "told": told, "relay_token": relay_token }))
     }
 
     async fn pairing_targets(&self, peer: Option<&str>) -> Result<Vec<EndpointAddr>, Failure> {

@@ -60,7 +60,10 @@ fn start(secret: *const c_char) -> Result<Value, Value> {
     let runtime = runtime()?;
     let secret = secret_of(text(secret))?;
     let began = Instant::now();
-    let client = runtime.block_on(Client::start(secret.clone())).map_err(|reason| failure("unavailable", reason))?;
+    if let Some(client) = phone().client.clone().filter(|client| client.key() == secret.public().to_string()) {
+        return Ok(json!({ "key": client.key(), "secret": hex(&secret.to_bytes()), "ms": 0.0 }));
+    }
+    let client = runtime.block_on(Client::start_phone(secret.clone())).map_err(|reason| failure("unavailable", reason))?;
     let key = client.key();
     let mut phone = phone();
     phone.secret = Some(secret.clone());
@@ -163,12 +166,37 @@ pub extern "C" fn kanna_phone_path(key: *const c_char) -> *mut c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn kanna_phone_network_changed() {
+    let client = phone().client.clone();
+    if let (Some(client), Ok(runtime)) = (client, runtime()) {
+        runtime.block_on(client.network_changed());
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn kanna_phone_highlight(file: *const c_char, source: *const c_char) -> *mut c_char {
     let (file, source) = (text(file).unwrap_or_default(), text(source).unwrap_or_default());
     let first = source.lines().next().unwrap_or_default();
     let found = kanna_syntax::language_for(&file, first).and_then(|language| kanna_syntax::highlight(language, &source)).unwrap_or_default();
     let spans: Vec<Value> = found.spans.iter().map(|s| json!({ "start": s.start, "end": s.end, "capture": kanna_syntax::CAPTURES.get(s.capture as usize) })).collect();
     give(json!({ "spans": spans }))
+}
+
+#[no_mangle]
+pub extern "C" fn kanna_phone_drawing(source: *const c_char) -> *mut c_char {
+    match kanna_merman::flowchart(&text(source).unwrap_or_default()) {
+        Ok(drawn) => give(json!({ "drawing": drawn })),
+        Err(message) => give(json!({ "drawing": null, "problem": message })),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn kanna_phone_forget(key: *const c_char) {
+    let mut phone = phone();
+    phone.streams.clear();
+    if let (Some(client), Some(key)) = (&phone.client, text(key)) {
+        client.forget(&key);
+    }
 }
 
 #[no_mangle]

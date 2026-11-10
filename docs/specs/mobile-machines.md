@@ -1,6 +1,6 @@
 # Phone: Machines, Stats and the Planner's Machine
 
-**Status:** built on the LAN ([slice 3](mobile-app.md#9-build-order)) · **Tested:** e2e `phone_machines` (two daemons, the mock as claude), `tasks`/`phone.rs` unit tests, `FlowTests` on the fixture backend; `DeviceTests.testMachinesAndStats` is written and has not yet run on a real iPhone · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [chat §1](mobile-chat.md#1-the-planner-machine), [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), [Stats](stats.md)
+**Status:** built on the LAN ([slice 3](mobile-app.md#9-build-order)) · **Tested:** e2e `phone_machines` (two daemons, the mock as claude), `tasks`/`phone.rs` unit tests, `FlowTests` on the fixture backend, and by hand on a real iPhone against real daemons on a MacBook Pro and a Mac Studio, with the planner moved to each. `DeviceTests.testMachinesAndStats` is written but hasn't run: XCUITest timed out enabling automation mode on that phone · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [chat §1](mobile-chat.md#1-the-planner-machine), [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), [Stats](stats.md)
 
 Several machines read as one repo on the phone. Each daemon says what it has clones of in the replicated Shelf, so `hello` answers at once from any machine, including for machines that are asleep. The link goes to one machine at a time, and it moves to whichever machine runs the current repo's planner.
 
@@ -68,7 +68,10 @@ sequenceDiagram
 ```
 
 - **`no_clone`** if the machine has no clone. The phone offers only machines that have one and are up.
+- **Linked through another machine,** the phone tries the planner machine itself: at once when its network changes, then every 30 s. It doesn't go by what the other machine says, since that machine can be wrong about it, or on an older build.
+- **With no link at all,** every machine reads *Offline*: the Machines tab keeps its last page, but that's what one machine said then, not what the phone reaches now.
 - **It works with the old planner machine asleep,** since the phone goes through any machine it can reach.
+- **A planner machine's daemon runs in the user's login session,** from Kanna.app or launchd (`kanna machine serve`). Started over SSH, the login keychain is locked and `claude` reports it isn't logged in.
 - **The old planner keeps running.** A Mac's Desk keeps its planner, as [chat §1](mobile-chat.md#1-the-planner-machine) says: this only changes which one the phone talks to.
 
 ## 5. The chat across machines
@@ -95,7 +98,7 @@ Each machine's `phone_chat` counts its own `seq`, so the phone keeps a chat per 
 
 ## 7. Stats
 
-`stats {repo}` is the [same reply](stats.md#4-adding-a-metric) as `kanna stats --json`, read from the planner machine, kept for offline, asked when the tab shows and every minute while it does. A sampler catching up can take a while, so the phone waits for it.
+`stats {repo}` is the [same reply](stats.md#4-adding-a-metric) as `kanna stats --json`, read from the planner machine, kept for offline, asked when the tab shows, every minute while it does, and when a `stats` notice says the numbers moved. The reply comes at once with what's stored, so the phone never waits for the sampler: its last page stays drawn, a reply with no sections doesn't replace it, and the [status line](stats.md#3-where-they-come-from) shows the same words as the Mac under the offline banner until the catch-up ends. Offline, the line is hidden: nothing is updating.
 
 - **Tiles:** a span of 4 or more, `ranked` and `list` take the full width, the rest two to a row.
 - **Charts:** `line`, `columns`, `flow`'s line and `dots`' median as sparklines or bars, with a press-and-drag readout from `what` and `days`; `ranked` and `list` as rows, the first five. **Any other kind shows the tile's number alone,** because phones update later than daemons.

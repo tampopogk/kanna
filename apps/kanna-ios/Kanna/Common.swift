@@ -7,6 +7,7 @@ extension Status {
         case .needs: "Needs you"
         case .idle: "Idle"
         case .ready: "Ready"
+        case .conflicts: "Conflicts"
         case .stale: "Stale"
         case .stopped: "Stopped"
         case .waiting: "Not started"
@@ -25,7 +26,7 @@ struct Dot: View {
             case .needs: Circle().fill(K.warn)
             case .idle: Circle().fill(K.ok)
             case .ready: Circle().fill(K.ok).padding(0).overlay(Circle().stroke(K.okTint, lineWidth: 2).padding(-2))
-            case .stale: Circle().fill(K.machine)
+            case .stale, .conflicts: Circle().fill(K.machine)
             case .stopped, .waiting: Circle().strokeBorder(K.muted, lineWidth: 1.5)
             case .blocked: Circle().strokeBorder(K.muted, style: StrokeStyle(lineWidth: 1.5, dash: [1.5, 1.5]))
             }
@@ -77,6 +78,7 @@ struct ChipButton: View {
         Button { store.showChipPop.toggle() } label: { Chip(path: store.plannerPath, on: store.showChipPop) }
             .buttonStyle(.plain)
             .accessibilityIdentifier("chip")
+            .accessibilityValue(store.checking ? "checking" : "live")
     }
 }
 
@@ -110,6 +112,11 @@ struct ConnectionPop: View {
             if store.plannerPath != .off {
                 KeyValue(key: "Round trip", value: "\(store.milliseconds(machine)) ms")
                 KeyValue(key: "Direct path", value: store.plannerPath == .relay ? "Trying" : "In use")
+            }
+            if store.fixture {
+                Button(store.offline ? "Bring the link back" : "Drop the link") { store.flipFixtureLink() }
+                    .font(.system(size: 13))
+                    .accessibilityIdentifier("fixture-link")
             }
         }
         .padding(.horizontal, 13)
@@ -210,12 +217,14 @@ extension View {
             .toolbarBackgroundVisibility(.visible, for: .navigationBar)
     }
 
-    func pushedNav() -> some View {
+    func pushedNav(chip: Bool = true) -> some View {
         navigationBarTitleDisplayMode(.inline)
             .solidBar()
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { ChipButton() }
-                    .sharedBackgroundVisibility(.hidden)
+                if chip {
+                    ToolbarItem(placement: .topBarTrailing) { ChipButton() }
+                        .sharedBackgroundVisibility(.hidden)
+                }
             }
     }
 
@@ -437,6 +446,28 @@ struct PrimaryButton: View {
         }
         .buttonStyle(.plain)
         .disabled(off)
+    }
+}
+
+struct StartBanner: View {
+    var title: String
+    var detail: String
+    var calm = false
+    var chevron = true
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.system(size: 16, weight: .bold))
+                Text(detail).font(.system(size: 13)).opacity(calm ? 1 : 0.85).foregroundStyle(calm ? K.muted : K.onAccent)
+            }
+            Spacer(minLength: 0)
+            if chevron { Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold)) }
+        }
+        .foregroundStyle(calm ? K.text : K.onAccent)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(calm ? K.panel : K.accent, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 

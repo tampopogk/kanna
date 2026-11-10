@@ -58,6 +58,8 @@ pub trait TaskBook {
 
 pub type CommandHandler = Rc<dyn Fn(Value, Responder)>;
 
+pub type OpenPrep = Rc<dyn Fn(&mut Value) -> Result<(), KmuxError>>;
+
 pub type PrefixHandler = Rc<dyn Fn(&str, Value, Responder)>;
 
 pub const TASKS_PER_PROJECT: usize = 3;
@@ -130,6 +132,7 @@ struct Inner {
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
     new_run: RefCell<Vec<Rc<dyn Fn(&str)>>>,
     ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
+    preps: RefCell<HashMap<&'static str, OpenPrep>>,
 }
 
 pub struct Core(CoreHandle);
@@ -180,6 +183,7 @@ impl Core {
             waiters: RefCell::new(HashMap::new()),
             new_run: RefCell::new(vec![]),
             ended: RefCell::new(vec![]),
+            preps: RefCell::new(HashMap::new()),
         })))
     }
 }
@@ -197,6 +201,7 @@ impl Drop for Core {
         inner.driver.borrow_mut().take();
         inner.waiters.borrow_mut().clear();
         inner.extra.borrow_mut().clear();
+        inner.preps.borrow_mut().clear();
         inner.prefixes.borrow_mut().clear();
         inner.front.borrow_mut().take();
         inner.host.borrow_mut().take();
@@ -320,6 +325,15 @@ impl CoreHandle {
 
     pub fn add_command(&self, name: &str, handler: CommandHandler) {
         self.0.extra.borrow_mut().insert(name.into(), handler);
+    }
+
+    pub fn on_open(&self, kind: PaneType, prep: OpenPrep) {
+        self.0.preps.borrow_mut().insert(kind.as_str(), prep);
+    }
+
+    fn prep_open(&self, args: &mut Value) -> Result<(), KmuxError> {
+        let prep = string(args, "type").and_then(|kind| self.0.preps.borrow().get(kind).cloned());
+        prep.map_or(Ok(()), |prep| prep(args))
     }
 
     pub fn set_tasks(&self, book: Rc<dyn TaskBook>) {
@@ -533,7 +547,7 @@ impl CoreHandle {
     }
 
     async fn woken(&self, task: &str) -> Result<Vec<String>, KmuxError> {
-        let held = self.terminals_of(task, |p| p.hung_up && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
+        let held = self.terminals_of(task, |p| (p.hung_up || p.lost()) && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
         let mut woken = vec![];
         for id in &held {
             let snapshot = self.reload(id, true).await;
@@ -678,7 +692,8 @@ impl CoreHandle {
             Some(cmd) => {
                 let cmd = cmd.to_string();
                 let mut args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-                match if matches!(cmd.as_str(), "window" | "open") { self.task_workspace(&mut args) } else { Ok(()) } {
+                let prepared = if cmd == "open" { self.prep_open(&mut args) } else { Ok(()) };
+                match prepared.and_then(|()| if matches!(cmd.as_str(), "window" | "open") { self.task_workspace(&mut args) } else { Ok(()) }) {
                     Ok(()) => self.run(&cmd, args).await,
                     Err(error) => Err(error),
                 }
@@ -864,6 +879,12 @@ impl CoreHandle {
         if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial) {
             return Err(bad_request("path is only for markdown, code, diff, log and serial panes"));
         }
+        if kind == PaneType::Run && empty("run") {
+            return Err(bad_request("run panes need a run: its ID"));
+        }
+        if args.get("run").is_some() && kind != PaneType::Run {
+            return Err(bad_request("run is only for run panes"));
+        }
         if (args.get("baud").is_some() || args.get("lineEnding").is_some()) && kind != PaneType::Serial {
             return Err(bad_request("baud and lineEnding are only for serial panes"));
         }
@@ -897,7 +918,7 @@ impl CoreHandle {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
         };
-        let placed = ["window", "workspace", "dock", "lead", "planner"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
+        let placed = ["window", "workspace", "dock", "lead", "planner", "quiz"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
         if let Some(from) = string(args, "from").filter(|from| !placed && self.state().panes.pane(from).is_none()) {
             return Err(KmuxError::new("no_caller", format!("{from} isn't one of this Kanna's panes, so there's no window of yours here: say where with --window WINDOW (or --window new)")));
         }
@@ -939,29 +960,30 @@ impl CoreHandle {
         let shelf = is_true(args, "shelf");
         let claimed = string(args, "claim").map(String::from);
         let planner = is_true(args, "planner");
+        let quiz = is_true(args, "quiz");
         if dock.is_some() && args.get("window").is_some() {
             return Err(bad_request("a docked pane is a task's agent, in its own workspace, not in a window"));
         }
-        if shelf && dock.is_none() || claimed.is_some() && dock.is_none() && !planner {
-            return Err(bad_request("claim is for a docked pane or a planner, and shelf for a docked pane"));
+        if shelf && dock.is_none() || claimed.is_some() && dock.is_none() && !planner && !quiz {
+            return Err(bad_request("claim is for a docked pane, a planner or a quiz writer, and shelf for a docked pane"));
         }
         if shelf && claimed.is_some() {
             return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
         let background = is_true(args, "background");
-        if background && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || shelf || claimed.is_some() || string(args, "workspace").is_none() || ["window", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
+        if background && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || quiz || shelf || claimed.is_some() || string(args, "workspace").is_none() || ["window", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
             return Err(bad_request("a background terminal is in its task's workspace and nowhere else: it takes a workspace, and no window, dock, split, size or tab"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
             return Err(bad_request("a window's lead is a terminal in a window, with no dock, split, size or tab"));
         }
-        if planner && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
-            return Err(bad_request("a planner is a terminal of its own, with no dock, split, size, tab or window"));
+        if (planner || quiz) && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
+            return Err(bad_request("a planner or a quiz writer is a terminal of its own, with no dock, split, size, tab or window"));
         }
         let app = match (dock, shelf) {
             (Some(_), false) => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
-            _ if planner => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
+            _ if planner || quiz => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
             _ => None,
         };
 
@@ -981,12 +1003,12 @@ impl CoreHandle {
             self.room_for_task(string(args, "cwd"), app).await?;
         }
         let id = self.state().panes.next_id(kind);
-        let placeless = !new_tab && !lead && !planner && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() && args.get("workspace").is_none();
-        let opener = string(args, "from").filter(|_| !lead && !planner && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
+        let placeless = !new_tab && !lead && !planner && !quiz && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() && args.get("workspace").is_none();
+        let opener = string(args, "from").filter(|_| !lead && !planner && !quiz && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
         let from = opener.clone().filter(|_| placeless);
         let cwd = match string(args, "cwd") {
             Some(cwd) => Some(cwd.to_string()),
-            None if kind == PaneType::Term && dock.is_none() && !lead && !planner => self.task_folder(opener.as_deref(), string(args, "window"), string(args, "workspace")).await,
+            None if kind == PaneType::Term && dock.is_none() && !lead && !planner && !quiz => self.task_folder(opener.as_deref(), string(args, "window"), string(args, "workspace")).await,
             None => None,
         };
         let at = Placement {
@@ -1003,6 +1025,7 @@ impl CoreHandle {
             shelf,
             lead,
             planner,
+            quiz,
             background,
         };
         let placed = self.layout(place_request(&Pane::new(&id, name.clone(), kind), &at)).await?;
@@ -1031,6 +1054,9 @@ impl CoreHandle {
             if matches!(kind, PaneType::Diff | PaneType::Log) {
                 pane.git_args = Some(diff.unwrap_or_default());
                 pane.view = view;
+            }
+            if kind == PaneType::Run {
+                pane.run = field("run");
             }
             if kind == PaneType::Serial {
                 pane.baud = baud;
@@ -1178,7 +1204,16 @@ impl CoreHandle {
         let (path, first, last) = (comment.path.clone(), comment.first, comment.last);
         let placeless = ["name", "tab", "dock", "split", "size"].iter().all(|key| args.get(*key).is_none());
         let from = string(args, "from");
-        let found = if placeless { self.showing(&path, from, string(args, "window")).await? } else { None };
+        let found = match string(args, "pane") {
+            Some(pane) => {
+                let id = self.state().panes.pane(pane).filter(|p| p.kind == PaneType::Code && p.path.as_deref() == Some(path.as_str())).map(|p| p.id.clone());
+                let id = id.ok_or_else(|| KmuxError::new("not_found", format!("{pane} isn't a code pane showing {path}")))?;
+                let location = self.layout(json!({ "op": "location", "pane": id })).await?;
+                Some((id, location))
+            }
+            None if placeless => self.showing(&path, from, string(args, "window")).await?,
+            None => None,
+        };
         let (id, location, was_open) = match found {
             Some((id, location)) => {
                 {

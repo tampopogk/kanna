@@ -2,6 +2,8 @@ use crate::app_link::AppLink;
 use crate::db::{self, Db, PhoneItem};
 use crate::machines::Caller;
 use crate::messages::{KANNA, PHONE, PLANNER};
+use crate::quiz::Quiz;
+use crate::quiz_writer::Written;
 use crate::runtime::Events;
 use crate::tasks::{failed as refusal, ProjectRecord, Tasks};
 use crate::Event;
@@ -32,7 +34,6 @@ const PEER_WAIT: Duration = Duration::from_secs(3);
 
 const SCAN_EVERY: u64 = 60;
 
-const STATS_WAIT: Duration = Duration::from_secs(120);
 
 const ACT_WAIT: Duration = Duration::from_secs(20);
 
@@ -110,6 +111,7 @@ struct Watch {
 pub struct Phone {
     db: Rc<Db>,
     tasks: Rc<Tasks>,
+    quiz: Rc<Quiz>,
     core: CoreHandle,
     caller: Option<Caller>,
     app: Rc<AppLink>,
@@ -127,8 +129,8 @@ fn item_value(item: &PhoneItem, read: Option<f64>) -> Value {
 }
 
 impl Phone {
-    pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, caller: Option<Caller>, app: Rc<AppLink>) -> Rc<Phone> {
-        let phone = Rc::new(Phone { db, tasks, core: core.clone(), caller, app, told: std::cell::Cell::new(0), repos: RefCell::default(), watches: RefCell::default(), records: RefCell::default(), seen: RefCell::default(), ticks: std::cell::Cell::new(0), known: std::cell::Cell::new(0) });
+    pub fn install(core: &CoreHandle, db: Rc<Db>, tasks: Rc<Tasks>, quiz: Rc<Quiz>, caller: Option<Caller>, app: Rc<AppLink>) -> Rc<Phone> {
+        let phone = Rc::new(Phone { db, tasks, quiz, core: core.clone(), caller, app, told: std::cell::Cell::new(0), repos: RefCell::default(), watches: RefCell::default(), records: RefCell::default(), seen: RefCell::default(), ticks: std::cell::Cell::new(0), known: std::cell::Cell::new(0) });
         let this = Rc::downgrade(&phone);
         core.add_command(
             COMMAND,
@@ -137,6 +139,14 @@ impl Phone {
                 None => responder.reply(Err(KmuxError::new("stopping", "the daemon is stopping"))),
             }),
         );
+        if let Some(writers) = phone.quiz.writers() {
+            let this = Rc::downgrade(&phone);
+            *writers.on_change.borrow_mut() = Some(Box::new(move |path, written| {
+                if let Some(phone) = this.upgrade() {
+                    phone.quiz_changed(path, written);
+                }
+            }));
+        }
         Phone::ticking(Rc::downgrade(&phone));
         phone
     }
@@ -174,8 +184,32 @@ impl Phone {
             "task.send" => self.task_send(&args, responder),
             "task.pick" => self.task_pick(&args, responder),
             "here.shelf" => responder.reply(self.here_shelf(&args)),
+            "quiz.map" => match self.path_of(&args) {
+                Ok(path) => self.quiz.map(&path, responder),
+                Err(error) => responder.reply(Err(error)),
+            },
+            "quiz.rounds" => responder.reply(self.path_of(&args).and_then(|path| self.quiz.rounds(&path))),
+            "quiz.answer" => responder.reply(self.quiz.phone_answer(&args)),
+            "quiz.ahead" => responder.reply(self.quiz_ahead(&args)),
             "here.read" => responder.reply(string(&args, "task").ok_or_else(|| bad("say which task")).and_then(|task| self.read_here(task))),
             other => responder.reply(Err(bad(format!("no phone request \"{other}\"")))),
+        }
+    }
+
+    fn quiz_ahead(&self, args: &Value) -> Result<Map, KmuxError> {
+        let path = self.path_of(args)?;
+        let mut asked = args.clone();
+        asked["repo"] = json!(path);
+        self.quiz.ahead(&asked)
+    }
+
+    fn quiz_changed(&self, path: &str, written: Option<Written>) {
+        let ready = written.as_ref().map(|w| format!("r{}", w.round));
+        if let Some(Written { round, title, about: Some(about) }) = written {
+            let _ = self.put(path, "round", None, None, json!({ "round": format!("r{round}"), "title": title, "about": about }));
+        }
+        if let Some(repo) = self.identity_of(path) {
+            notify(&json!({ "notice": "quiz", "repo": repo, "ready": ready }));
         }
     }
 
@@ -240,7 +274,7 @@ impl Phone {
         }
         let reachable: Vec<Value> = machines.iter().map(|m| json!({ "name": m["name"], "key": m["key"], "addrs": if m["key"] == me.as_str() { machine["addrs"].clone() } else { m["addrs"].clone() } })).collect();
         let log = self.caller.as_ref().and_then(Caller::log);
-        responder.reply(Ok(Map::from_iter([("name".to_string(), machine["name"].clone()), ("key".to_string(), machine["key"].clone()), ("addrs".to_string(), machine["addrs"].clone()), ("projects".to_string(), Value::Array(projects)), ("machines".to_string(), Value::Array(reachable)), ("log".to_string(), log.unwrap_or(Value::Null))])));
+        responder.reply(Ok(Map::from_iter([("name".to_string(), machine["name"].clone()), ("key".to_string(), machine["key"].clone()), ("addrs".to_string(), machine["addrs"].clone()), ("relay".to_string(), machine["relay"].clone()), ("relay_token".to_string(), json!(self.caller.as_ref().and_then(Caller::relay_token))), ("projects".to_string(), Value::Array(projects)), ("machines".to_string(), Value::Array(reachable)), ("log".to_string(), log.unwrap_or(Value::Null))])));
     }
 
     fn here_machine(&self) -> Map {
@@ -374,7 +408,7 @@ impl Phone {
             Ok(path) => path,
             Err(error) => return responder.reply(Err(error)),
         };
-        self.ask(None, "stats", json!({ "repo": path }), STATS_WAIT, move |reply| responder.reply(reply.map(fields)));
+        self.ask(None, "stats", json!({ "repo": path }), ACT_WAIT, move |reply| responder.reply(reply.map(fields)));
     }
 
     fn claim(&self, path: &str) -> Result<(), KmuxError> {
@@ -393,6 +427,12 @@ impl Phone {
     fn path_of(&self, args: &Value) -> Result<String, KmuxError> {
         let repo = string(args, "repo").ok_or_else(|| bad("say which repo"))?;
         self.repos.borrow().get(repo).cloned().ok_or_else(|| KmuxError::new("unknown_repo", format!("{repo} isn't a project on this machine")))
+    }
+
+    pub fn stats_changed(&self, path: &str) {
+        if let Some(repo) = self.identity_of(path) {
+            notify(&json!({ "notice": "stats", "repo": repo }));
+        }
     }
 
     fn identity_of(&self, path: &str) -> Option<String> {
@@ -771,9 +811,12 @@ impl Phone {
             for item in self.db.phone_unread(path).unwrap_or_default() {
                 if let Some(delivered) = item.message.and_then(|id| self.db.message(id).ok().flatten()).and_then(|m| m.delivered) {
                     let _ = self.db.set_phone_read(path, item.seq);
+                    let answered = self.db.phone_items(path, item.seq).unwrap_or_default().iter().any(|later| later.kind != "me" && later.kind != "sys");
                     retell.push(item);
-                    watch.answering = Some(delivered);
-                    watch.nudged = false;
+                    if !answered {
+                        watch.answering = Some(delivered);
+                        watch.nudged = false;
+                    }
                 }
             }
             if let Some(delivered) = watch.answering.filter(|at| state.as_deref() == Some("idle") && time - at > SETTLE) {
