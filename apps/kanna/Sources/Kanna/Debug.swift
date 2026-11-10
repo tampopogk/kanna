@@ -24,6 +24,7 @@ extension AppController {
                 "bundle": .string(Bundle.main.bundleIdentifier ?? ""),
                 "panes": .array(keyWindow.map { WindowController.paneIDs($0["root"] ?? .null).map { .string($0) } } ?? []),
                 "windows": .array(controllers.keys.sorted().map { .string($0) }),
+                "frames": .object(controllers.mapValues { c in .array([c.window.frame.minX, c.window.frame.minY, c.window.frame.width, c.window.frame.height].map { .number(Double($0)) }) }),
             ]
             if let daemon {
                 reply["daemon"] = .string(daemon.socketPath)
@@ -108,6 +109,7 @@ extension AppController {
             return ["dropped": .bool(view.drop(pasteboard))]
         }
         commands["debug.pinch"] = { [weak self] args in try await self?.pinch(args) ?? [:] }
+        commands["debug.wheel"] = { [weak self] args in try await self?.wheel(args) ?? [:] }
         commands["debug.text"] = { [weak self] args in
             guard let self else { return [:] }
             let view = try terminal(args["pane"]?.string)
@@ -174,6 +176,7 @@ extension AppController {
                                   "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf), "dots": .array(page.shelfDots), "groups": .array(page.groupTitles.map { .string($0) })]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
+                                "selection": page.selection.map { .string($0) } ?? .null, "keyed": .bool(page.keyed), "hints": page.hints,
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
             let tasks = controller.deskTasks.map { task -> JSON in ["task": .string(task.id), "title": .string(task.title), "status": task.status.map { .string($0) } ?? .null, "agent": task.agent.map { .string($0) } ?? .null, "stack": task.stack.map { .string($0) } ?? .null, "sub": .string(task.sub)] }
             return ["desk": .bool(controller.desk), "empty": .bool(controller.emptyDesk), "tasks": .array(tasks), "active": controller.active.map { .string($0) } ?? .null,
@@ -185,7 +188,7 @@ extension AppController {
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "buildsPage": .bool(!controller.buildsPage.isHidden), "builds": .array(controller.buildsPage.macs.map { mac in ["name": .string(mac.name), "summary": .string(mac.summary), "rows": .array(mac.rows.map { ["job": .string($0.job), "mark": .string($0.mark), "label": .string($0.label), "state": .string($0.state), "note": .string($0.note)] }), "recent": .array(mac.recent.map { ["job": .string($0.job), "label": .string($0.label), "state": .string($0.state)] })] }),
                     "shownPage": controller.shownPage.map { .string($0) } ?? .null,
-                    "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
+                    "statsPage": .bool(!controller.statsPage.isHidden), "statsStatus": controller.statsPage.shownStatus.map { .string($0) } ?? .null, "statsLoadings": .number(Double(controller.statsPage.loadings)), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "queuePage": .bool(!controller.queuePage.isHidden), "queueCount": controller.tabBar.pageCounts[MergeQueuePage.title].map { .number(Double($0)) } ?? .null,
                     "queue": .array(controller.queuePage.entries.map { ["id": .string($0.id), "task": .string($0.task), "name": .string($0.name), "state": .string($0.state), "said": .string($0.said), "terminal": $0.terminal.map { .string($0) } ?? .null, "needs": $0.needs.map { .string($0) } ?? .null] }),
                     "queuePicked": controller.queuePage.selected.map { .string($0.task) } ?? .null, "queueTerminal": controller.queuePage.hostedTerminal.map { .string($0) } ?? .null,
@@ -345,12 +348,15 @@ extension AppController {
         commands["debug.run"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let run = contents.run(id) else { throw KannaError("wrong_type", "not a running run pane") }
             if let action = args["press"]?.string { run.press(action, note: args["note"]?.string) }
+            if let n = args["diff"]?.number { run.toggleDiff(Int(n)) }
+            if let spot = args["reveal"]?.string { run.reveal(spot) }
             guard let notice = run.notice else { return ["failure": run.failure.map { .string($0) } ?? .null] }
             let graph = run.graph
             return ["run": .string(notice.run), "state": .string(notice.state), "badge": .string(notice.badge), "subtitle": .string(run.subtitle),
                     "enabled": .object(run.enabled.mapValues { .bool($0) }), "card": notice.card.map { .string($0.title) } ?? .null, "cardShown": .bool(run.cardShown),
                     "tiles": .array(run.tiles.map { .array([.string($0.value), .string($0.label)]) }), "rows": .array(run.rows.map { .array($0.map { .string($0) }) }),
-                    "workers": .array(run.workerLines.map { .string($0) }), "legend": .array(run.legend.map { .string($0) }), "flash": run.flashed.map { .string($0) } ?? .null,
+                    "workers": .array(run.workerLines.map { .string($0) }), "legend": .array(run.legend.map { .string($0) }), "flash": run.flashed.map { .string($0) } ?? .null, "said": run.said.map { .string($0) } ?? .null,
+                    "revisions": .array(run.revisionLines.map { .string($0) }), "diff": .array(run.diffLines.map { .string($0) }),
                     "nodes": .array(graph.nodes.map { .object(["id": .string($0.node.id), "state": $0.node.state.map { .string($0) } ?? .null, "visits": .number(Double($0.node.visits)),
                                                               "frame": .array([$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height].map { .number(Double($0)) })]) }),
                     "edges": .array(graph.edges.map { .object(["from": .string($0.edge.from), "to": .string($0.edge.to), "route": .string($0.edge.route), "taken": .bool($0.edge.taken)]) })]
@@ -570,6 +576,13 @@ extension AppController {
             guard controller.deskView.visibleShelf.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
             window = controller.window
             point = spot.center
+        } else if let title = args["statsChip"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let chip = controller.statsPage.chips[title] else { throw KannaError("not_found", "no chip \(title) in \(id)'s Stats") }
+            controller.statsPage.scrollToPipelines()
+            controller.statsPage.displayIfNeeded()
+            window = controller.window
+            point = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
         } else if let tile = args["stats"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let list = controller.statsPage.lists[tile], let spot = list.center(of: Int(args["row"]?.number ?? 0)) else { throw KannaError("not_found", "no row \(Int(args["row"]?.number ?? 0)) in \(id)'s Stats list \(tile)") }
@@ -665,6 +678,26 @@ extension AppController {
             }
         }
         return [:]
+    }
+
+    private func wheel(_ args: JSON) async throws -> [String: JSON] {
+        let id = try resolve(args["pane"]?.string ?? focusedPane ?? "")
+        guard let view = panes.keyView(id), let window = view.window else { throw KannaError("wrong_type", "pane is not on screen") }
+        let area = view.visibleRect.intersection(view.bounds)
+        let point = view.convert(NSPoint(x: area.midX, y: area.midY), to: nil)
+        let height = NSScreen.screens.first?.frame.height ?? 0
+        let delta = Int32(args["delta"]?.number ?? -40)
+        let count = Int(args["count"]?.number ?? 10)
+        let pause = Int(args["every_ms"]?.number ?? 16)
+        for index in 0..<count {
+            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { continue }
+            cg.location = CGPoint(x: point.x, y: height - point.y)
+            cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: index == 0 ? 1 : index == count - 1 ? 4 : 2)
+            guard let event = NSEvent(cgEvent: cg) else { continue }
+            window.sendEvent(event)
+            try await Task.sleep(for: .milliseconds(pause))
+        }
+        return ["scroll": .number(Double(contents.markdown(id)?.scrollTop ?? 0))]
     }
 
     private func pinch(_ args: JSON) async throws -> [String: JSON] {

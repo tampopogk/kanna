@@ -480,6 +480,10 @@ impl AppLink {
         }));
     }
 
+    pub fn stats_changed(&self, repo: &str) {
+        self.notify("stats", json!({ "repo": repo }));
+    }
+
     pub fn folder(&self, pane: &str, cwd: &str) {
         if self.attached() {
             let notice = self.folder_notice(pane, cwd);
@@ -706,6 +710,11 @@ impl AppLink {
             }
             ("serial.unsubscribe", Some(view)) => {
                 self.serial.unsubscribe(&view);
+                return None;
+            }
+            ("terminal.picture", _) => {
+                let reply = self.terminals.picture(string(&args, "terminal").unwrap_or_default());
+                self.answer_subscribe(conn, &message, reply);
                 return None;
             }
             ("file.unsubscribe", Some(view)) => {

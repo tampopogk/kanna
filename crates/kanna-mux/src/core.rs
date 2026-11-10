@@ -1204,7 +1204,16 @@ impl CoreHandle {
         let (path, first, last) = (comment.path.clone(), comment.first, comment.last);
         let placeless = ["name", "tab", "dock", "split", "size"].iter().all(|key| args.get(*key).is_none());
         let from = string(args, "from");
-        let found = if placeless { self.showing(&path, from, string(args, "window")).await? } else { None };
+        let found = match string(args, "pane") {
+            Some(pane) => {
+                let id = self.state().panes.pane(pane).filter(|p| p.kind == PaneType::Code && p.path.as_deref() == Some(path.as_str())).map(|p| p.id.clone());
+                let id = id.ok_or_else(|| KmuxError::new("not_found", format!("{pane} isn't a code pane showing {path}")))?;
+                let location = self.layout(json!({ "op": "location", "pane": id })).await?;
+                Some((id, location))
+            }
+            None if placeless => self.showing(&path, from, string(args, "window")).await?,
+            None => None,
+        };
         let (id, location, was_open) = match found {
             Some((id, location)) => {
                 {

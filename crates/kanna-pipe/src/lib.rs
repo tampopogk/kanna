@@ -7,7 +7,7 @@ mod walk;
 pub use check::Context;
 pub use graph::{layout, who, Edge, Graph, Node, Route};
 pub use parse::parse;
-pub use revise::{edited, emitted, Revision};
+pub use revise::{diff, edited, emitted, Change, Refused, Revision};
 
 use std::collections::BTreeMap;
 use std::fmt;

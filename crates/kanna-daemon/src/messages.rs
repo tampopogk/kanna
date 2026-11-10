@@ -510,6 +510,16 @@ mod tests {
     }
 
     #[test]
+    fn messages_from_you_and_kanna_for_you_take_the_recipients_class() {
+        for sender in [USER, DESK, PHONE, KANNA, "schedule quiz", "run-3"] {
+            assert!(yours(sender), "{sender}");
+        }
+        for sender in [PLANNER, "task-5e2c"] {
+            assert!(!yours(sender), "{sender}");
+        }
+    }
+
+    #[test]
     fn a_claude_message_states_its_permissions_in_claudes_envelope() {
         assert_eq!(envelope("[message from user] Hi", None), "[message from user] Hi");
         assert_eq!(envelope("[message from user] Hi", Some(BYPASS)), "<cross-session-message from-mode=\"bypass\">\n[message from user] Hi\n</cross-session-message>");

@@ -23,11 +23,22 @@ enum WordOp: Equatable {
     case same(NSRange, NSRange)
     case removed(NSRange)
     case added(NSRange)
+    case space
+}
+
+struct TextDiff {
+    let ops: [WordOp]
+    let kept: Double
 }
 
 enum MarkdownDiff {
     static let similar = 0.4
     static let limit = 4_000_000
+    static let lightShare = 0.5
+    static let lightPlaces = 2
+    static let denseShare = 0.8
+    static let wordsPerPlace = 8
+    static let keptParagraph = 0.5
 
     static func entries(old: Document?, new: Document) -> [DiffEntry] {
         guard let old else { return new.children.map { .added($0) } }
@@ -131,11 +142,13 @@ enum MarkdownDiff {
         return out + removed + added
     }
 
-    static func common<T: Equatable>(_ a: [T], _ b: [T]) -> [(Int, Int)] {
+    static func common<T: Equatable>(_ a: [T], _ b: [T]) -> [(Int, Int)] { common(a, b, by: ==) }
+
+    static func common<T>(_ a: [T], _ b: [T], by same: (T, T) -> Bool) -> [(Int, Int)] {
         var head = 0
-        while head < a.count, head < b.count, a[head] == b[head] { head += 1 }
+        while head < a.count, head < b.count, same(a[head], b[head]) { head += 1 }
         var tail = 0
-        while tail < a.count - head, tail < b.count - head, a[a.count - 1 - tail] == b[b.count - 1 - tail] { tail += 1 }
+        while tail < a.count - head, tail < b.count - head, same(a[a.count - 1 - tail], b[b.count - 1 - tail]) { tail += 1 }
         let x = Array(a[head..<(a.count - tail)]), y = Array(b[head..<(b.count - tail)])
         var middle: [(Int, Int)] = []
         if !x.isEmpty, !y.isEmpty {
@@ -144,12 +157,12 @@ enum MarkdownDiff {
             var length = [Int32](repeating: 0, count: (x.count + 1) * columns)
             for i in stride(from: x.count - 1, through: 0, by: -1) {
                 for j in stride(from: y.count - 1, through: 0, by: -1) {
-                    length[i * columns + j] = x[i] == y[j] ? length[(i + 1) * columns + j + 1] + 1 : max(length[(i + 1) * columns + j], length[i * columns + j + 1])
+                    length[i * columns + j] = same(x[i], y[j]) ? length[(i + 1) * columns + j + 1] + 1 : max(length[(i + 1) * columns + j], length[i * columns + j + 1])
                 }
             }
             var i = 0, j = 0
             while i < x.count, j < y.count {
-                if x[i] == y[j] {
+                if same(x[i], y[j]) {
                     middle.append((head + i, head + j))
                     i += 1
                     j += 1
@@ -206,6 +219,108 @@ enum MarkdownDiff {
         }
         flush(old.count, new.count)
         return tidy(ops, old: old, new: new)
+    }
+
+    static func edits(_ old: [WordToken], _ new: [WordToken]) -> TextDiff {
+        let end = { (tokens: [WordToken]) in (tokens.lastIndex { !($0.key.first?.isWhitespace ?? true) } ?? -1) + 1 }
+        let body = edits(sentences: Array(old[..<end(old)]), Array(new[..<end(new)]))
+        return TextDiff(ops: body.ops + words(Array(old[end(old)...]), Array(new[end(new)...])), kept: body.kept)
+    }
+
+    private static func edits(sentences old: [WordToken], _ new: [WordToken]) -> TextDiff {
+        let a = sentences(old), b = sentences(new)
+        let keysA = a.map { words(in: old[$0]) }, keysB = b.map { words(in: new[$0]) }
+        let wordsA = keysA.map(alphanumeric), wordsB = keysB.map(alphanumeric)
+        let total = (wordsA + wordsB).map(\.count).reduce(0, +)
+        var ops: [WordOp] = []
+        var kept = 0
+        var i = 0, j = 0
+        func light(_ x: Int, _ y: Int) {
+            ops += words(Array(old[a[x]]), Array(new[b[y]]))
+            kept += wordsA[x].count + wordsB[y].count
+        }
+        func gap(_ olds: Range<Int>, _ news: Range<Int>) {
+            let pairs = olds.isEmpty || news.isEmpty || olds.count * news.count > 2500 ? []
+                : common(Array(olds), Array(news), by: { lightly(wordsA[$0], wordsB[$1]) }).map { ($0 + olds.lowerBound, $1 + news.lowerBound) }
+            var x = olds.lowerBound, y = news.lowerBound
+            for (p, q) in pairs + [(olds.upperBound, news.upperBound)] {
+                ops += whole(old, x < p ? a[x].lowerBound..<a[p - 1].upperBound : 0..<0, new, y < q ? b[y].lowerBound..<b[q - 1].upperBound : 0..<0)
+                if p < olds.upperBound { light(p, q) }
+                x = p + 1
+                y = q + 1
+            }
+        }
+        for (x, y) in common(keysA.map { $0.joined(separator: " ") }, keysB.map { $0.joined(separator: " ") }) {
+            gap(i..<x, j..<y)
+            light(x, y)
+            i = x + 1
+            j = y + 1
+        }
+        gap(i..<a.count, j..<b.count)
+        return TextDiff(ops: ops, kept: total == 0 ? 1 : Double(kept) / Double(total))
+    }
+
+    static func lightly(_ old: [String], _ new: [String]) -> Bool {
+        let pairs = common(old, new)
+        guard !pairs.isEmpty else { return false }
+        var places = 0, i = 0, j = 0
+        for (a, b) in pairs {
+            if a > i || b > j { places += 1 }
+            i = a + 1
+            j = b + 1
+        }
+        if old.count > i || new.count > j { places += 1 }
+        let share = similarity(old, new)
+        return places <= 1 || (share >= lightShare && places <= lightPlaces)
+            || (share >= denseShare && places <= min(old.count, new.count) / wordsPerPlace)
+    }
+
+    static func sentences(_ tokens: [WordToken]) -> [Range<Int>] {
+        var out: [Range<Int>] = []
+        var start = 0, depth = 0, index = 0
+        while index < tokens.count {
+            let key = tokens[index].key, first = key.first
+            if first == "(" || first == "[" { depth += 1 }
+            if first == ")" || first == "]" { depth = max(0, depth - 1) }
+            var end: Int?
+            if first == "\n" {
+                end = index + 1
+            } else if depth == 0, let first, ".?!:·".contains(first), index + 1 < tokens.count, blank(tokens[index + 1].key),
+                      !(index > 0 && tokens[index - 1].key.count == 1 && tokens[index - 1].key.first!.isLetter) {
+                end = index + 2
+            }
+            if let end {
+                out.append(start..<end)
+                start = end
+                depth = 0
+            }
+            index = end ?? index + 1
+        }
+        if start < tokens.count { out.append(start..<tokens.count) }
+        return out
+    }
+
+    private static func blank(_ key: String) -> Bool { !key.isEmpty && key.allSatisfy { $0.isWhitespace && $0 != "\n" } }
+
+    private static func words(in tokens: ArraySlice<WordToken>) -> [String] {
+        tokens.map(\.key).filter { $0.first.map { !$0.isWhitespace } ?? false }
+    }
+
+    private static func alphanumeric(_ keys: [String]) -> [String] {
+        keys.filter { $0.unicodeScalars.first.map { CharacterSet.alphanumerics.contains($0) || $0 == "_" } ?? false }
+    }
+
+    private static func whole(_ old: [WordToken], _ olds: Range<Int>, _ new: [WordToken], _ news: Range<Int>) -> [WordOp] {
+        let space = { (token: WordToken) in token.key.first?.isWhitespace ?? false }
+        var olds = olds, end = news.upperBound
+        while end > news.lowerBound, space(new[end - 1]) { end -= 1 }
+        if end > news.lowerBound { while let last = olds.last, space(old[last]) { olds = olds.lowerBound..<last } }
+        let span = { (tokens: [WordToken], range: Range<Int>) in NSRange(location: tokens[range.lowerBound].range.location, length: NSMaxRange(tokens[range.upperBound - 1].range) - tokens[range.lowerBound].range.location) }
+        var out: [WordOp] = []
+        if !olds.isEmpty { out.append(.removed(span(old, olds))) }
+        if !olds.isEmpty, end > news.lowerBound { out.append(.space) }
+        if end > news.lowerBound { out.append(.added(span(new, news.lowerBound..<end))) }
+        return out + new[end..<news.upperBound].map { .same($0.range, $0.range) }
     }
 
     private static func tidy(_ ops: [WordOp], old: [WordToken], new: [WordToken]) -> [WordOp] {
