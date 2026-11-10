@@ -136,7 +136,7 @@ flowchart TD
     J -->|"yes"| F["back to the Shelf<br/>with the reasons"]
 ```
 
-**The tests.** The daemon runs `merge.test` itself, as a [`run` stage](kojo.md#2-stages): in a terminal of its own in the queue's worktree, with your login shell, its output in `.kanna/tmp/stage-1.log` there. The terminal belongs to the keeper, so the tests outlast a daemon restart. Exit 0 lands the entry. The tests have no time limit: a hung run holds the queue until you take the entry out, and the tab shows how long it has run.
+**The tests.** The daemon runs `merge.test` itself, as a [`run` stage](kojo.md#2-stages): in a terminal of its own in the queue's worktree, with your login shell, its output in `.kanna/tmp/stage-1.log` there. The terminal belongs to the keeper, so the tests outlast a daemon restart; if the keeper is lost too, they run again ([keeper loss](keeper-loss.md)). Exit 0 lands the entry. The tests have no time limit: a hung run holds the queue until you take the entry out, and the tab shows how long it has run.
 
 **The judge.** Main can have failing tests, both known failures and tests that fail only under load, so a failing entry is judged on what it breaks. The judge is a new session of `tasks.agent` in the queue's worktree, with the merge checked out; if `tasks.agent` is a command rather than an agent's name, the judge is `claude`. It starts only when the tests fail. Its prompt is Kanna's `merge-judge` prompt, filled in with `merge.test`, main and M0, the branch, the merge X and the queue branch, followed by the end of the tests' output and the log's path. A repo can replace it with its own `.kanna/prompts/merge-judge.md`. It asks the judge to:
 

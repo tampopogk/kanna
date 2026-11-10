@@ -264,6 +264,10 @@ impl Pane {
         }
     }
 
+    pub fn lost(&self) -> bool {
+        self.kind == PaneType::Term && self.state == PaneState::Exited && self.exit_code.is_none() && !self.hung_up
+    }
+
     pub fn status(&self) -> Option<&str> {
         match (self.kind, self.state) {
             (PaneType::Term, PaneState::Exited) if self.waits_on_you => Some("needs-you"),
