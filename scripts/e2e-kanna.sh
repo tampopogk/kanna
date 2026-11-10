@@ -4030,6 +4030,10 @@ print(next((i["shortcut"] for i in items if i["menu"] == "Task" and i["item"] ==
   check test "$(search selection)" == "$(tid 1)" || { desk search; return 1; }
   key cmd+down
   check test "$(search selection)" == "$(tid 5)" || { desk search; return 1; }
+  key cmd+shift+p
+  check test "$(search selection)" == "$(tid 4)" || { echo "desk_keys: ⇧⌘P didn't go up a row"; desk search; return 1; }
+  key cmd+shift+n
+  check test "$(search selection)" == "$(tid 5)" || { echo "desk_keys: ⇧⌘N didn't go down a row"; desk search; return 1; }
 
   key cmd+up; key down
   check test "$(search selection)" == "$(tid 2)" || { desk search; return 1; }
@@ -4052,11 +4056,25 @@ print(next((i["shortcut"] for i in items if i["menu"] == "Task" and i["item"] ==
   check test "$(search found),$(search selection)" == '["'"$(tid 4)"'"],'"$(tid 4)" || { desk search; return 1; }
   key up
   check test "$(search selection)" == "$(tid 3)" || { echo "desk_keys: ↑ from a match didn't reach the Desk's rows"; desk search; return 1; }
+  key cmd+shift+n
+  check test "$(search query),$(search selection)" == "del,$(tid 4)" || { echo "desk_keys: ⇧⌘N while searching"; desk search; return 1; }
+  key cmd+shift+p
+  check test "$(search query),$(search selection)" == "del,$(tid 3)" || { echo "desk_keys: ⇧⌘P while searching"; desk search; return 1; }
   key escape
   check test "$(search query),$(search keyed)" == ",True" || { desk search; return 1; }
   key escape
   check test "$(desk responder),$(search keyed)" == "TerminalSurfaceView,False" || { echo "desk_keys: esc didn't go back to the planning terminal"; desk responder; return 1; }
   check test "$(hint "$(tid 3)" selected)" == False || { echo "desk_keys: the selection still shows"; desk search.hints; return 1; }
+  check test "$(menu_key "Select Previous Task"),$(menu_key "Select Next Task")" == "⇧⌘p,⇧⌘n" || { echo "desk_keys: the Task menu doesn't show ⇧⌘P ⇧⌘N"; return 1; }
+  local was; was=$(search selection)
+  key cmd+shift+n
+  check test "$(desk responder),$(search keyed),$(search selection)" == "NSTextView,True,$was" || { echo "desk_keys: ⇧⌘N from the planning terminal didn't hand the keyboard to the selection, on its row"; desk responder; desk search; return 1; }
+  key cmd+shift+n
+  check test "$(search selection)" != "$was" || { echo "desk_keys: ⇧⌘N didn't move on"; desk search; return 1; }
+  key cmd+shift+p
+  check test "$(search selection)" == "$was" || { echo "desk_keys: ⇧⌘P didn't come back"; desk search; return 1; }
+  key escape
+  check test "$(desk responder),$(search keyed)" == "TerminalSurfaceView,False" || { desk responder; return 1; }
 }
 
 scenario task_start_stop M4

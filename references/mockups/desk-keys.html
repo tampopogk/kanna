@@ -112,7 +112,7 @@ body.picture.menu .menubar { margin: 0; border-radius: 0; border-width: 0 0 1px;
 <main>
   <div class="intro">
     <h1>Desk view keys: one selection over the Desk's rows and the Shelf's</h1>
-    <p>The planning terminal has the keyboard in the Desk view. ⌘F hands it to the Desk view's list: the Shelf's search field gets the cursor and a row is selected, the first Shelf row (the first match while you search). ↑ ↓ move through the Desk's rows and then the Shelf's; ↩ does the row's click (Move to Desk, Make active); ⇧⌘⌫ moves a Desk task to the Shelf; ⌘↩ starts or stops a Shelf task where it is. Esc clears the search, then goes back to the terminal. Click the planning terminal to give it the keyboard, as esc does. The hints are text, not buttons: leaving the Desk takes a drag or this selection.</p>
+    <p>The planning terminal has the keyboard in the Desk view. ⌘F hands it to the Desk view's list: the Shelf's search field gets the cursor and a row is selected, the first Shelf row (the first match while you search). ↑ ↓, or ⇧⌘P ⇧⌘N without leaving the letters, move through the Desk's rows and then the Shelf's; ↩ does the row's click (Move to Desk, Make active); ⇧⌘⌫ moves a Desk task to the Shelf; ⌘↩ starts or stops a Shelf task where it is. Esc clears the search, then goes back to the terminal. Click the planning terminal to give it the keyboard, as esc does. The hints are text, not buttons: leaving the Desk takes a drag or this selection.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="fill">Fill the Desk</button>
@@ -121,6 +121,7 @@ body.picture.menu .menubar { margin: 0; border-radius: 0; border-width: 0 0 1px;
     <div class="keys">
       <span><kbd>⌘F</kbd> select in the Desk view (from the terminal too)</span>
       <span><kbd>↑</kbd> <kbd>↓</kbd> the Desk's rows, then the Shelf's</span>
+      <span><kbd>⇧⌘P</kbd> <kbd>⇧⌘N</kbd> the same, hands on the letters (from the terminal too)</span>
       <span><kbd>⌘↑</kbd> <kbd>⌘↓</kbd> or <kbd>Home</kbd> <kbd>End</kbd> the first, the last</span>
       <span><kbd>↩</kbd> Move to Desk · Make active</span>
       <span><kbd>⇧⌘⌫</kbd> Move to Shelf (a selected Desk row)</span>
@@ -251,6 +252,8 @@ function menubar() {
   const drop = `<div class="drop">
     ${item(inTask ? "Show Desk" : "Show Active Task", "⌘.", true, "toggle")}
     ${item("Move to Shelf", s.keys ? "⇧⌘⌫" : "", shelveOn, "shelve")}
+    <hr>${item("Select Previous Task", "⇧⌘P", s.view === "desk", "prev")}
+    ${item("Select Next Task", "⇧⌘N", s.view === "desk", "next")}
     <hr>${item(pickLabel, s.keys ? "↩" : "", !!sel, "enter")}
     ${item(runLabel, s.keys ? "⌘↩" : "", sel?.place === "shelf", "run")}
     <hr>${[1, 2].map(n => item(`Desk Task ${n}`, `⌘${n}`, !!others()[n - 1], "slot" + n)).join("")}
@@ -324,6 +327,12 @@ function enter() {
   moveToDesk(t.id);
 }
 
+function selectStep(by) {
+  if (s.view !== "desk") return;
+  if (!s.keys) return enterKeys();
+  step(by);
+}
+
 document.addEventListener("click", e => {
   const el = sel => e.target.closest(sel);
   const top = el("[data-top]"), mi = el("[data-menu]");
@@ -332,6 +341,7 @@ document.addEventListener("click", e => {
     const m = mi.dataset.menu;
     if (m === "toggle") { if (s.view === "task") { s.view = "desk"; return render(); } return task(s.active) ? (s.view = "task", s.keys = false, render()) : render(); }
     if (m === "shelve") return moveToShelf(s.view === "task" ? s.active : s.sel);
+    if (m === "prev" || m === "next") return selectStep(m === "next" ? 1 : -1);
     if (m === "enter") return enter();
     if (m === "run") return startStop(s.sel);
     if (m.startsWith("slot")) return activate(others()[Number(m.slice(4)) - 1].id);
@@ -353,6 +363,7 @@ document.addEventListener("keydown", e => {
   if (e.metaKey && !e.shiftKey && e.key === ".") { e.preventDefault(); if (s.view === "task") { s.view = "desk"; render(); } else if (task(s.active)) { s.view = "task"; s.keys = false; s.query = ""; render(); } return; }
   if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === "f") { e.preventDefault(); return enterKeys(); }
   if (e.metaKey && e.shiftKey && e.key === "Backspace") { e.preventDefault(); return moveToShelf(selected()?.place === "desk" ? s.sel : null); }
+  if (e.metaKey && e.shiftKey && (e.key.toLowerCase() === "n" || e.key.toLowerCase() === "p")) { e.preventDefault(); return selectStep(e.key.toLowerCase() === "n" ? 1 : -1); }
   if (!s.keys || s.view !== "desk") return;
   const key = e.key;
   if (key === "ArrowDown" || key === "ArrowUp") { e.preventDefault(); return step(e.metaKey ? (key === "ArrowDown" ? Infinity : -Infinity) : key === "ArrowDown" ? 1 : -1); }

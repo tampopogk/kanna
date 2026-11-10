@@ -108,6 +108,9 @@ extension AppController {
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
             ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
+            ("Select Previous Task", #selector(deskPrevious), nil, .shiftCmd("p")),
+            ("Select Next Task", #selector(deskNext), nil, .shiftCmd("n")),
+            nil,
             ("Move to Desk", #selector(deskEnter), nil, nil),
             ("Start", #selector(deskRun), nil, nil),
             nil,
@@ -305,6 +308,7 @@ extension AppController {
             item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
             return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
         case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil || deskSelection?.onDesk == true
+        case #selector(deskPrevious), #selector(deskNext): return deskView?.canSelect == true
         case #selector(deskEnter):
             let task = deskSelection
             item.title = task.map { $0.onDesk ? ($0.active ? "Show Active Task" : "Make Active") : "Move to Desk" } ?? "Move to Desk"
@@ -493,6 +497,10 @@ extension AppController {
     }
 
     private var deskSelection: (id: String, onDesk: Bool, blocked: Bool, running: Bool, active: Bool)? { deskView?.selectedTask }
+
+    @objc func deskPrevious() { deskView?.select(-1) }
+
+    @objc func deskNext() { deskView?.select(1) }
 
     @objc func deskEnter() { deskView?.enter() }
 

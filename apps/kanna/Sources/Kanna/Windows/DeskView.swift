@@ -620,6 +620,13 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         reveal()
     }
 
+    var canSelect: Bool { !isHidden && window != nil && !order.isEmpty }
+
+    func select(_ by: Int) {
+        guard canSelect else { return }
+        if keyed { step(by) } else { focusSearch() }
+    }
+
     private var firstRow: String? { found.first ?? (query.isEmpty ? shown?.tasks.first?.identity : nil) }
 
     func clearSearch() {
@@ -700,7 +707,12 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        guard keyed, flags == .command, event.keyCode == 36 || event.keyCode == 76 else { return super.performKeyEquivalent(with: event) }
+        if flags == [.command, .shift], let letter = event.charactersIgnoringModifiers?.lowercased(), letter == "n" || letter == "p", canSelect {
+            select(letter == "n" ? 1 : -1)
+            return true
+        }
+        guard keyed else { return super.performKeyEquivalent(with: event) }
+        guard flags == .command, event.keyCode == 36 || event.keyCode == 76 else { return super.performKeyEquivalent(with: event) }
         run()
         return true
     }
