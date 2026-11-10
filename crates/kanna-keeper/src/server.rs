@@ -162,7 +162,36 @@ struct Keeper {
     stopping: Option<Instant>,
     lock: Option<File>,
     build: Option<String>,
-    upgrade: Option<(u64, Value, String)>,
+    ops: Vec<&'static str>,
+    upgrade: Option<Becoming>,
+}
+
+pub const OPS: [&str; 8] = ["hello", "spawn", "adopt", "close", "ack", "stop", "upgrade", "move"];
+
+fn own_build_and_ops() -> (Option<String>, Vec<&'static str>) {
+    let all = OPS.to_vec();
+    #[cfg(debug_assertions)]
+    match std::env::var("KANNA_KEEPER_TEST_AS_OLD").as_deref() {
+        Ok("unbuilt") => return (None, all.into_iter().filter(|op| !["upgrade", "move"].contains(op)).collect()),
+        Ok("unmovable") => return (kanna_build::own_build_id(), all.into_iter().filter(|op| *op != "move").collect()),
+        _ => {}
+    }
+    (kanna_build::own_build_id(), all)
+}
+
+fn hello_of(build: &Option<String>, ops: &[&str]) -> Value {
+    let mut hello = json!({"version": PROTOCOL_VERSION, "pid": std::process::id(), "build": build});
+    if build.is_some() {
+        hello["ops"] = json!(ops);
+    }
+    hello
+}
+
+struct Becoming {
+    conn: u64,
+    tag: Value,
+    binary: String,
+    dir: Option<PathBuf>,
 }
 
 pub const LISTENING: u8 = b'1';
@@ -254,13 +283,26 @@ pub fn resume(settings: Settings, fd: RawFd) -> Result<()> {
     keeper.closed = state.closed.into_iter().map(|c| Closed { pid: c.pid, kill_at: c.kill_in.map(|d| now + d.saturating_sub(paused)) }).collect();
     keeper.reap();
     let requester = state.requester;
-    eprintln!(
-        "kanna-keeper: upgraded (pid {}) from build {} to {}",
-        std::process::id(),
-        short(requester.from.as_deref()),
-        short(keeper.build.as_deref())
-    );
-    let mut reply = json!({"ok": true, "version": PROTOCOL_VERSION, "pid": std::process::id(), "build": keeper.build, "from": requester.from});
+    match &state.from_dir {
+        Some(from) => {
+            let from = Path::new(from);
+            let _ = std::fs::remove_file(paths::socket(from));
+            if std::fs::read_to_string(paths::pid(from)).is_ok_and(|p| p.trim() == std::process::id().to_string()) {
+                let _ = std::fs::remove_file(paths::pid(from));
+            }
+            eprintln!("kanna-keeper: moved (pid {}) from {} with {} pty(s)", std::process::id(), from.display(), keeper.ptys.len());
+        }
+        None => eprintln!(
+            "kanna-keeper: upgraded (pid {}) from build {} to {}",
+            std::process::id(),
+            short(requester.from.as_deref()),
+            short(keeper.build.as_deref())
+        ),
+    }
+    let mut reply = hello_of(&keeper.build, &keeper.ops);
+    reply["ok"] = true.into();
+    reply["from"] = json!(requester.from);
+    reply["dir"] = json!(keeper.settings.state_dir);
     if !requester.tag.is_null() {
         reply["req"] = requester.tag;
     }
@@ -326,6 +368,7 @@ fn pollfd(fd: libc::c_int, events: libc::c_short) -> libc::pollfd {
 
 impl Keeper {
     fn new(listener: UnixListener, sigs: OwnedFd, settings: Settings, lock: File) -> Keeper {
+        let (build, ops) = own_build_and_ops();
         Keeper {
             listener,
             sigs,
@@ -342,7 +385,8 @@ impl Keeper {
             stop: false,
             stopping: None,
             lock: Some(lock),
-            build: kanna_build::own_build_id(),
+            build,
+            ops,
             upgrade: None,
         }
     }
@@ -580,8 +624,10 @@ impl Keeper {
     fn request(&mut self, i: usize, req: &Value) {
         let tag = req.get("req").cloned().unwrap_or(Value::Null);
         let id = req["id"].as_str().unwrap_or("");
-        let result: Result<(Value, Vec<Rc<OwnedFd>>), String> = match req["op"].as_str().unwrap_or("") {
-            "hello" => Ok((json!({"version": PROTOCOL_VERSION, "pid": std::process::id(), "build": self.build}), vec![])),
+        let op = req["op"].as_str().unwrap_or("");
+        let op = if self.ops.contains(&op) { op } else { "" };
+        let result: Result<(Value, Vec<Rc<OwnedFd>>), String> = match op {
+            "hello" => Ok((hello_of(&self.build, &self.ops), vec![])),
             "spawn" => match self.spawn(i, &tag, id, req) {
                 Ok(()) => return,
                 Err(error) => Err(error),
@@ -603,12 +649,22 @@ impl Keeper {
             "stop" => Ok(self.begin_stop()),
             "upgrade" => match req["binary"].as_str() {
                 Some(binary) if Path::new(binary).is_absolute() => {
-                    self.upgrade = Some((self.conns[i].serial, tag, binary.to_string()));
+                    self.upgrade = Some(Becoming { conn: self.conns[i].serial, tag, binary: binary.to_string(), dir: None });
                     return;
                 }
                 _ => Err("upgrade needs the absolute path of a keeper binary".into()),
             },
-            op => Err(format!("unknown op {op:?}")),
+            "move" => match (req["dir"].as_str(), std::env::current_exe()) {
+                (Some(dir), _) if !Path::new(dir).is_absolute() => Err("move needs the absolute path of a folder".into()),
+                (Some(dir), _) if Path::new(dir) == self.settings.state_dir => Err(format!("the keeper is already in {dir}")),
+                (Some(dir), Ok(binary)) => {
+                    self.upgrade = Some(Becoming { conn: self.conns[i].serial, tag, binary: binary.to_string_lossy().into_owned(), dir: Some(PathBuf::from(dir)) });
+                    return;
+                }
+                (Some(_), Err(e)) => Err(format!("can't find the keeper's own binary: {e}")),
+                (None, _) => Err("move needs a dir".into()),
+            },
+            _ => Err(format!("unknown op {:?}", req["op"].as_str().unwrap_or(""))),
         };
         let (mut reply, fds) = match result {
             Ok((body, fds)) => {
@@ -794,10 +850,21 @@ impl Keeper {
 }
 
 impl Keeper {
-    fn upgrade(&mut self, (conn, tag, binary): (u64, Value, String)) {
-        eprintln!("kanna-keeper: upgrading to {binary}");
-        let error = self.try_upgrade(conn, &tag, Path::new(&binary));
-        eprintln!("kanna-keeper: not upgraded: {error}");
+    fn upgrade(&mut self, Becoming { conn, tag, binary, dir }: Becoming) {
+        let error = match &dir {
+            Some(dir) => {
+                eprintln!("kanna-keeper: moving to {}", dir.display());
+                let error = self.try_move(conn, &tag, Path::new(&binary), dir);
+                eprintln!("kanna-keeper: not moved: {error}");
+                error
+            }
+            None => {
+                eprintln!("kanna-keeper: upgrading to {binary}");
+                let error = self.try_upgrade(conn, &tag, Path::new(&binary));
+                eprintln!("kanna-keeper: not upgraded: {error}");
+                error
+            }
+        };
         let mut reply = json!({"ok": false, "error": error});
         if !tag.is_null() {
             reply["req"] = tag;
@@ -822,6 +889,48 @@ impl Keeper {
             return e;
         }
         upgrade::exec(binary, &self.settings.state_dir, &file, &state.fds())
+    }
+
+    fn try_move(&mut self, conn: u64, tag: &Value, binary: &Path, dir: &Path) -> String {
+        if let Err(e) = paths::ensure_dir(dir) {
+            return format!("{}: {e}", dir.display());
+        }
+        let lock = match std::fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(paths::lock(dir)) {
+            Ok(lock) => lock,
+            Err(e) => return format!("can't open {}: {e}", paths::lock(dir).display()),
+        };
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return format!("a keeper already runs for {}", dir.display());
+        }
+        let listener = match listen(&paths::socket(dir)) {
+            Ok(listener) => listener,
+            Err(e) => return format!("{e:#}"),
+        };
+        let undo = |error: String| {
+            let _ = std::fs::remove_file(paths::socket(dir));
+            let _ = std::fs::remove_file(paths::pid(dir));
+            error
+        };
+        if let Err(e) = std::fs::write(paths::pid(dir), format!("{}\n", std::process::id())) {
+            return undo(format!("can't write {}: {e}", paths::pid(dir).display()));
+        }
+        self.reap();
+        self.flush_all();
+        let mut state = self.state(conn, tag);
+        state.lock = lock.as_raw_fd();
+        state.listener = listener.as_raw_fd();
+        state.from_dir = Some(self.settings.state_dir.to_string_lossy().into_owned());
+        let mut file = match upgrade::write(dir, &state) {
+            Ok(file) => file,
+            Err(e) => return undo(format!("can't write the state: {e}")),
+        };
+        if let Err(e) = upgrade::probe(binary, &mut file, PROBE_TIMEOUT) {
+            return undo(e);
+        }
+        let logged = Logging::to(&paths::log(&self.settings.state_dir), &paths::log(dir));
+        let error = upgrade::exec(binary, dir, &file, &state.fds());
+        drop(logged);
+        undo(error)
     }
 
     fn flush_all(&mut self) {
@@ -855,6 +964,7 @@ impl Keeper {
             next_serial: self.next_serial,
             nofile: pty::original_nofile(),
             requester: Requester { conn, tag: tag.clone(), from: self.build.clone() },
+            from_dir: None,
             conns: self
                 .conns
                 .iter()
@@ -893,6 +1003,36 @@ impl Keeper {
                 .iter()
                 .map(|c| ClosedState { pid: c.pid, kill_in: c.kill_at.map(|at| at.saturating_duration_since(now)) })
                 .collect(),
+        }
+    }
+}
+
+struct Logging {
+    saved: Option<OwnedFd>,
+}
+
+impl Logging {
+    fn to(old: &Path, new: &Path) -> Logging {
+        let same = |a: &libc::stat, b: &std::fs::Metadata| {
+            use std::os::unix::fs::MetadataExt;
+            a.st_dev as u64 == b.dev() && a.st_ino == b.ino()
+        };
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let logging = unsafe { libc::fstat(2, &mut st) } == 0 && std::fs::metadata(old).is_ok_and(|m| same(&st, &m));
+        let log = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(new);
+        let (true, Ok(log)) = (logging, log) else { return Logging { saved: None } };
+        let saved = unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 0) };
+        if saved < 0 || unsafe { libc::dup2(log.as_raw_fd(), 2) } < 0 {
+            return Logging { saved: None };
+        }
+        Logging { saved: Some(unsafe { OwnedFd::from_raw_fd(saved) }) }
+    }
+}
+
+impl Drop for Logging {
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved.take() {
+            unsafe { libc::dup2(saved.as_raw_fd(), 2) };
         }
     }
 }

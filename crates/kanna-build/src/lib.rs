@@ -9,13 +9,26 @@ pub const DEFAULT_INSTANCE: &str = "default";
 
 pub const SOCKET: &str = "kanna.sock";
 
+pub const OWN_SOCKET: &str = "kanna.own.sock";
+
+pub fn instance_socket(folder: &Path) -> PathBuf {
+    own_socket(&folder.join(SOCKET))
+}
+
+pub fn own_socket(socket: &Path) -> PathBuf {
+    match std::fs::symlink_metadata(socket) {
+        Ok(meta) if meta.file_type().is_symlink() => socket.with_file_name(OWN_SOCKET),
+        _ => socket.to_path_buf(),
+    }
+}
+
 pub const RECORD: &str = "instance.json";
 
 pub const DAEMON: &str = "kanna-daemon";
 
 pub const VERSION: &str = env!("KANNA_BUILD_VERSION");
 
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 
 pub const COMMIT: &str = env!("KANNA_BUILD_COMMIT");
 
