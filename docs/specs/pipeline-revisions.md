@@ -1,12 +1,12 @@
 # Pipeline revisions
 
-**Status:** built: a stage's `kojo` block merged and adopted or refused, `kanna run edit [RUN] [FILE]`, the Run tab's revisions with their diffs, a revision by you as an intervention · **Part of:** [software factory §4](software-factory.md#4-seeing-and-steering-a-run), [Kojo §7](kojo.md#7-changing-a-pipeline-while-it-runs) (the merge rules) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#run`) · **Tested:** `cargo test -p kanna-pipe --test flow`, `cargo test -p kanna-daemon runs::`, `cargo test -p kanna-daemon run_notice`, `swift test --filter KannaRunTests`, e2e `pipeline_revisions`
+**Status:** built: a stage's `kojo` block merged and adopted or refused, `kanna run edit [RUN] [FILE]`, the Run tab's revisions with their diffs, a revision by you as an intervention · **Part of:** [software factory §4](software-factory.md#4-seeing-and-steering-a-run), [Kojo §7](kojo.md#7-changing-a-pipeline-while-it-runs) (the merge rules) · **Builds on:** [run fan-out](run-fan-out.md) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#run`) · **Tested:** `cargo test -p kanna-pipe --test flow`, `cargo test -p kanna-daemon runs::`, `cargo test -p kanna-daemon run_notice`, `swift test --filter KannaRunTests`, e2e `pipeline_revisions`
 
 A run's pipeline can change while it runs. A stage with `emits` adds stages and arrows from its answer, and you edit the run's copy by hand. Either way the daemon checks the whole pipeline and its budget, then records the next revision or refuses it and records why.
 
-| A revision by a stage and one by you, the second's diff open | A refused edit, in the draft's pane |
+| Revisions by a stage and by you, with revision 3's diff open | A refused edit, in the draft's pane |
 |---|---|
-| ![The Run tab after a stage's block and an edit: three revisions, each with who made it; revision 3's diff is open; the graph has the stages they added](pipeline-revisions.png) | ![The draft in a code pane after a refused edit: the line the error names is tinted, with the errors in a box above it](pipeline-revisions-refused.png) |
+| ![The Run tab's revisions after a stage's block and an edit: three revisions with who made each, two refusals with their errors, and revision 3's diff open](pipeline-revisions.png) | ![The draft in a code pane after a refused edit: the line the error names is tinted, with the errors in a box above it](pipeline-revisions-refused.png) |
 
 ![The same Run tab in light mode](pipeline-revisions-light.png)
 
@@ -37,7 +37,7 @@ sequenceDiagram
     end
 ```
 
-- **When:** as an agent stage's visit ends, before its arrow is picked, so a block's own arrow from the stage is the one taken.
+- **When:** as an agent stage's step ends (its visit, or all its instances or attempts), before its arrow is picked, so a block's own arrow from the stage is the one taken.
 - **Merge:** [Kojo §7](kojo.md#7-changing-a-pipeline-while-it-runs)'s rules, in `kanna_pipe::emitted`.
 - **Prompts:** a new agent stage's prompt is one kept with revision 1, or a file in the run's worktree (`.kanna/prompts/NAME.md`), which the stage may have written. Each revision keeps the prompts it was checked with.
 - **Refused:** the pipeline stays as it was. The errors name the block's lines (`the kojo block:2: …`) or the merged pipeline's (`the merged pipeline:23: …`). The next stage gets them as feedback from the emitting stage, ahead of any feedback the stage's fail carries; a `run` stage reads them in `$KANNA_FEEDBACK`.
