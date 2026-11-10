@@ -24,6 +24,7 @@ extension AppController {
                 "bundle": .string(Bundle.main.bundleIdentifier ?? ""),
                 "panes": .array(keyWindow.map { WindowController.paneIDs($0["root"] ?? .null).map { .string($0) } } ?? []),
                 "windows": .array(controllers.keys.sorted().map { .string($0) }),
+                "frames": .object(controllers.mapValues { c in .array([c.window.frame.minX, c.window.frame.minY, c.window.frame.width, c.window.frame.height].map { .number(Double($0)) }) }),
             ]
             if let daemon {
                 reply["daemon"] = .string(daemon.socketPath)

@@ -49,7 +49,7 @@ stateDiagram-v2
 - **Which bar:** the bar of the window in front under the cursor, counting 14 pt above and below it. A window hidden behind another at that point doesn't count.
 - **Which gap:** the gap moves past a neighbour when the dragged tab's centre passes the middle of the space the two share, measured on the bar with the dragged tab left out, so the gap never flickers between two places.
 - **Dropping in a gap** sends `move-tab {tab, window | workspace, index}` at once (the index counted with the tab still in its own bar, as the daemon takes it) and the tab settles into the gap; the moved tab becomes its window's active tab.
-- **Dropping off every tab bar**, over the desktop or over a window's panes, sends `move-tab {tab, window: "new"}`; the new window opens at the cursor (40 pt to its left, 12 pt above it), the size of the window the tab came from.
+- **Dropping off every tab bar**, over the desktop or over a window's panes, sends `move-tab {tab, window: "new"}`; the new window opens at the cursor (40 pt to its left, 12 pt above it), the size of the window the tab came from, moved and if need be shrunk to stay within the screen it's dropped on (its menu bar and Dock left clear). When the window the tab came from fills its screen (zoomed, full screen, or within 4 pt of its edges), the new window fills the screen it's dropped on.
 - **Nothing moves** when the drop is in the gap it started from, or after Escape: the tab slides home. The drag reports `dropped: false`.
 - **The last tab** of a window can be dragged into another window or out to a new one; its old window closes.
 
@@ -75,7 +75,7 @@ With **Reduce Motion** on (System Settings › Accessibility › Display), the d
 
 ## 5. Checked by
 
-`tab_drag` of `scripts/e2e/windows.sh`, on a private instance with `debug.drag` (which shows no ghost and runs without motion): reorder to the end and back to the front; dropping where it started, Escape (`cancel: true`) move nothing; to another window's tab and onto its +; tearing a tab off into a third window; dragging a window's last tab away closes it; a drop on another window's pane opens a new window. `drag_panes_tabs` covers the older drops. The motion itself is reviewed by eye against the mockup.
+`tab_drag` of `scripts/e2e/windows.sh`, on a private instance with `debug.drag` (which shows no ghost and runs without motion): reorder to the end and back to the front; dropping where it started, Escape (`cancel: true`) move nothing; to another window's tab and onto its +; tearing a tab off into a third window; dragging a window's last tab away closes it; a drop on another window's pane opens a new window; a tab torn from a window that fills the screen opens a window the same size (`fill: true`, frames read from `debug.app`). `drag_panes_tabs` covers the older drops. The motion itself is reviewed by eye against the mockup.
 
 ## 6. Glossary
 

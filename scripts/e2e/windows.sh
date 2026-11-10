@@ -284,6 +284,16 @@ tab_drag() {
   check test "$(dropped)" == True || { echo "$last_drag"; return 1; }
   check test "$(state | field windows | count)" == 3 || { echo "$last_drag"; return 1; }
   check test "$(tab_ids win-2)" == "$b" || return 1
+  local frame holder torn
+  frame() { raw '{"id":1,"cmd":"debug.app"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["frames"].get(sys.argv[1]))' "$1"; }
+  holder() { state | python3 -c 'import json, sys; print([w["id"] for w in json.load(sys.stdin)["windows"] if sys.argv[1] in [t["id"] for t in w["tabs"]]][0])' "$1"; }
+  holder="$(holder "$d")"
+  drag "{\"tab\":\"$a\",\"to\":{\"pane\":\"tb\",\"x\":0.5,\"y\":0.5},\"fill\":true}"
+  check test "$(state | field windows | count)" == 4 || { echo "$last_drag"; return 1; }
+  torn="$(holder "$a")"
+  check test "$torn" != "$holder" || return 1
+  check test "$(frame "$torn")" != None || return 1
+  check test "$(frame "$torn")" == "$(frame "$holder")" || { echo "$(frame "$torn") vs $(frame "$holder")"; return 1; }
 }
 tab_ids() { win "$1" tabs | python3 -c 'import json, sys; print(" ".join(t["id"] for t in json.load(sys.stdin)))'; }
 

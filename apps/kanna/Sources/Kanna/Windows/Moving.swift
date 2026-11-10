@@ -17,13 +17,20 @@ extension AppController {
         return controllers.values.first { $0.window.windowNumber == number }
     }
 
-    func newWindowFrame(at point: NSPoint, size: NSSize) -> NSRect {
-        NSRect(x: point.x - 40, y: point.y - size.height + 12, width: size.width, height: size.height)
+    func newWindowFrame(at point: NSPoint, shape: WindowShape) -> NSRect {
+        let size = shape.size
+        let wanted = NSRect(x: point.x - 40, y: point.y - size.height + 12, width: size.width, height: size.height)
+        guard let area = (NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) } ?? NSScreen.main)?.visibleFrame else { return wanted }
+        if shape.fills { return area }
+        let width = min(size.width, area.width), height = min(size.height, area.height)
+        let x = min(max(point.x - 40, area.minX), area.maxX - width)
+        let y = min(max(point.y - height + 12, area.minY), area.maxY - height)
+        return NSRect(x: x, y: y, width: width, height: height)
     }
 
-    private func paneDrop(_ id: String, at point: NSPoint, hint: DropHint, size: NSSize) -> Drop? {
+    private func paneDrop(_ id: String, at point: NSPoint, hint: DropHint, shape: WindowShape) -> Drop? {
         guard let controller = controller(at: point, skipping: hint.windowNumber) else {
-            hint.show(newWindowFrame(at: point, size: size), text: "new window", rounded: true)
+            hint.show(newWindowFrame(at: point, shape: shape), text: "new window", rounded: true)
             return .newWindow(point)
         }
         let window = controller.window, inWindow = window.convertPoint(fromScreen: point)
@@ -65,10 +72,11 @@ extension AppController {
 
     @discardableResult
     func dragPane(_ id: String) -> Bool {
-        guard let size = panes[id]?.window?.frame.size, !frozen(id) else { return false }
+        guard let window = panes[id]?.window, !frozen(id) else { return false }
+        let shape = WindowShape(window)
         let hint = DropHint()
-        let end = trackMouse { _ = paneDrop(id, at: $0, hint: hint, size: size) }
-        let drop = paneDrop(id, at: end, hint: hint, size: size)
+        let end = trackMouse { _ = paneDrop(id, at: $0, hint: hint, shape: shape) }
+        let drop = paneDrop(id, at: end, hint: hint, shape: shape)
         hint.hide()
         var args: [String: JSON] = ["pane": .string(id)]
         switch drop {
@@ -82,7 +90,7 @@ extension AppController {
         case .newWindow: args["window"] = "new"
         case nil: return false
         }
-        perform("move", args, tornOff: drop, size: size)
+        perform("move", args, tornOff: drop, shape: shape)
         return true
     }
 
@@ -93,10 +101,10 @@ extension AppController {
         return drag.drop(at: end)
     }
 
-    private func perform(_ cmd: String, _ args: [String: JSON], tornOff drop: Drop?, size: NSSize) {
+    private func perform(_ cmd: String, _ args: [String: JSON], tornOff drop: Drop?, shape: WindowShape) {
         layoutCommand(cmd, args) { [weak self] reply in
             guard let self, reply["ok"]?.bool == true, case .newWindow(let point)? = drop, let id = reply["window"]?.string else { return }
-            let frame = newWindowFrame(at: point, size: size)
+            let frame = newWindowFrame(at: point, shape: shape)
             physical.setFrame(id, frame)
             controllers[id]?.window.setFrame(frame, display: true)
         }
@@ -112,6 +120,10 @@ extension AppController {
         defer {
             testingDrag = false
             DropHint.quiet = false
+        }
+        if args["fill"]?.bool == true, let tab = args["tab"]?.string, let window = windowOf(tab: tab)?["id"]?.string.flatMap({ controllers[$0]?.window }),
+           let area = window.screen?.visibleFrame {
+            window.setFrame(area, display: true)
         }
         try await Task.sleep(for: .milliseconds(50))
         if let reference = args["divider"]?.string {
@@ -178,5 +190,17 @@ extension AppController {
         if panes[reference] != nil { return reference }
         guard let id = paneID(named: reference) else { throw KannaError("not_found", "no pane \"\(reference)\"") }
         return id
+    }
+}
+
+struct WindowShape {
+    let size: NSSize
+    let fills: Bool
+
+    @MainActor init(_ window: NSWindow) {
+        size = window.frame.size
+        let area = window.screen?.visibleFrame ?? .null
+        let edges = [window.frame.minX - area.minX, window.frame.minY - area.minY, area.maxX - window.frame.maxX, area.maxY - window.frame.maxY]
+        fills = window.styleMask.contains(.fullScreen) || window.isZoomed || (!area.isNull && edges.allSatisfy { abs($0) <= 4 })
     }
 }

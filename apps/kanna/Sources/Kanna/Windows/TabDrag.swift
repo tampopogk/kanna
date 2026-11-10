@@ -160,6 +160,7 @@ final class TabDrag {
     private let grab: CGFloat
     private let width: CGFloat
     private let size: NSSize
+    private let shape: WindowShape
     private let ghost: TabGhost
     private let still: Bool
     private let motion = Motion()
@@ -179,6 +180,7 @@ final class TabDrag {
         width = frame.width
         self.grab = min(max(grab ?? frame.width / 2, 0), frame.width)
         size = window.frame.size
+        shape = WindowShape(window)
         still = quiet || Motion.still
         let bar = source.tabBar
         let image = bar.image(of: tab)
@@ -366,7 +368,7 @@ final class TabDrag {
     }
 
     private func tearOff(at point: NSPoint) {
-        let frame = app.newWindowFrame(at: point, size: size)
+        let frame = app.newWindowFrame(at: point, shape: shape)
         app.arriving = (frame, !still)
         app.layoutCommand("move-tab", ["tab": .string(tab), "window": "new"]) { [self] reply in
             app.arriving = nil
