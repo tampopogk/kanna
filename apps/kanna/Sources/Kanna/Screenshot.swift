@@ -16,6 +16,8 @@ extension AppController {
 
     private func screenshot(_ args: JSON) async throws -> [String: JSON] {
         let pane = args["pane"]?.string
+        if let pane, shownHere(pane) == nil { return try await hiddenShot(pane, args) }
+        if args["size"] != nil { throw KannaError("bad_request", "--size is for a pane that isn't showing; \(pane ?? "a window") is drawn as it is") }
         let (id, shot) = try screenshotTarget(pane: pane, window: args["window"]?.string, from: args["from"]?.string)
         guard let controller = controllers[id], let window = window(id) else { throw KannaError("not_found", "no window \"\(id)\"") }
         let shown = shownPaneViews(window)
@@ -34,12 +36,8 @@ extension AppController {
 
     private func screenshotTarget(pane: String?, window: String?, from: String?) throws -> (window: String, pane: String?) {
         if let pane {
-            if let shown = windows.first(where: { shownPaneViews($0).contains { $0.id == pane } }), let id = shown["id"]?.string { return (id, pane) }
-            if case .array(let tabs)? = windowOf(pane: pane)?["tabs"],
-               let tab = tabs.first(where: { if case .array(let ids)? = $0["panes"] { ids.contains(.string(pane)) } else { false } })?["id"]?.string {
-                throw KannaError("not_shown", "pane \(pane) is in tab \(tab), which isn't showing")
-            }
-            throw KannaError("not_shown", "pane \(pane) isn't in a window")
+            guard let shown = shownHere(pane) else { throw KannaError("not_shown", "pane \(pane) isn't showing") }
+            return (shown.window, pane)
         }
         if let window {
             guard self.window(window) != nil else { throw KannaError("not_found", "no window \"\(window)\"") }

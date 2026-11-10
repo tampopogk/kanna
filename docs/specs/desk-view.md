@@ -46,13 +46,14 @@ stateDiagram-v2
     TaskView --> DeskView: Done · Move to Shelf (no task active)
 ```
 
-- **⌘. toggles.** From the active task it shows the Desk view; the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
+- **⌘. toggles.** From the active task it shows the Desk view, on the tab it showed last ([the Desk view's tab](desk-view-tab.md)); the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
 - **"Pull back the task parked last" becomes "the active task".** With none active (it was Done or moved to the Shelf), ⌘. makes the Desk's ⌘1 task active: the one left last. That was the old "task parked last", so the key does what it did.
 - **Making a task active** (click, ⌘1, ⌘2, `kanna task activate`) leaves the one active before on the Desk, not active, as pulling parked it before. It counts as left then, even when the Desk view was showing, so it becomes ⌘1.
 - **The Desk's tasks are listed oldest first**, by when each task was made, as the Shelf sorts ([tasks](tasks.md)). The active task stays in its place in that order; only its row's highlight marks it. A task that needs you stays in its place too: its status dot shows it.
 - **⌘1 and ⌘2 pick among the Desk's tasks other than the active one** by recency, not by place: ⌘1 the one left most recently, ⌘2 the one left longest ago. ⌘1 pressed again goes back to the task you came from; ⌘2 pressed again cycles through the Desk whatever its number of tasks: through all three, or, with two, back and forth (with one other task ⌘1 and ⌘2 both go to it). With no task active they work the same over the Desk's tasks. Those two cover a full Desk, so there's no ⌘3. The Task menu has Desk Task 1 and 2, each enabled whenever its key does something.
 - **A task shows the key that's uniquely its own,** the same in the strip and in the Desk view: ⌘1 on the task left last, ⌘2 on the one left longest ago when that's another task. With two tasks the other shows ⌘1; with no task active and three on the Desk, the middle one has no key. The Desk view's rows are oldest first, so their keys aren't in numeric order there.
-- **Hover hints.** A row shows its hint only while hovered: "⌘N · Make active →", or the active task's "⌘. · Back to it".
+- **Hover hints.** A row shows its hint only while hovered or selected: "⌘N · Make active →", or the active task's "⌘. · Back to it", beside the keys of [the Desk view's selection](desk-keys.md).
+- **The keyboard:** ⌘F selects a row, ↑ ↓ move over the Desk's rows and the Shelf's, ↩ picks or makes active, ⇧⌘⌫ moves to the Shelf ([Desk view keys](desk-keys.md)).
 - **The strip** (pictured above) goes in key order: the ⌘1 task, then ⌘2, then any task with no key. So it reorders as you switch tasks, and only then: a task that needs you keeps its place and its key. A task's key shows on hover ([Desk](desk.md#3-the-desks-tasks)).
 - **Dragging a Desk row onto the Shelf** moves that task there as it is: [Drag a Desk task to the Shelf](desk-row-shelve.md).
 - **A running Shelf task's row** shows its status: [Shelf row status](shelf-row-status.md).

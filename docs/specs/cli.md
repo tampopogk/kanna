@@ -173,7 +173,7 @@ flowchart LR
 | `commands/mod.rs` | `Command`, `Flow`, `COMMANDS` (one line per command: the order help prints), lookup, and the tests that span commands (kmux's `requests`, `usage_errors_say_what_to_do`, every documented example parses) |
 | `commands/shared.rs` | what several commands' parsing uses: `usage`, `pane`, `target`, `caller`, `repo_here`, `absolute`, `file_line` |
 | `output.rs` | what several commands' printing uses: `join`, `label`, `state`, `whose`, `moved`, `tilde`, `ago`, `expression`, task ID shortening |
-| `commands/help.rs`, `config.rs`, `completions.rs`, `instances.rs`, `raw.rs`, `build.rs`, `guests.rs` | commands outside the table, which `lib.rs` or `main` calls by name |
+| `commands/help.rs`, `config.rs`, `completions.rs`, `instances.rs`, `raw.rs`, `build.rs`, `builds.rs`, `guests.rs` | commands outside the table, which `lib.rs` or `main` calls by name |
 | `threads.rs`, `complete.rs`, `target.rs`, `args.rs`, `route.rs` | not one command's: comment threads, tab completion, reaching a Kanna, argument words, which machine a task's command goes to |
 
 Something moves to `shared.rs` or `output.rs` when a second command needs it, and back when only one does.
