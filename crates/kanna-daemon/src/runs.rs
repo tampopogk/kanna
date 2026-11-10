@@ -1,8 +1,9 @@
 use crate::db::{Db, RunRow, StageRow};
+use crate::run_notice;
 use crate::task_scripts;
 use crate::tasks::{self, git, Entry, Tasks};
 use kanna_mux::json::{json, num, opt, string, Map, Value};
-use kanna_mux::{CoreHandle, KmuxError, PaneState, Responder, WeakCore};
+use kanna_mux::{CoreHandle, KmuxError, PaneState, PaneType, Responder, WeakCore};
 use kanna_pipe::{Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
@@ -375,6 +376,11 @@ fn failed(error: impl std::fmt::Display) -> KmuxError {
     KmuxError::new("failed", error.to_string())
 }
 
+fn shown(list: &Value, pane: &str) -> bool {
+    let has = |list: Option<&Value>| list.and_then(Value::as_array).is_some_and(|l| l.iter().any(|p| p == pane));
+    list.get("workspaces").and_then(Value::as_array).is_some_and(|all| all.iter().any(|ws| !has(ws.get("background")) && ws.get("tabs").and_then(Value::as_array).is_some_and(|tabs| tabs.iter().any(|t| has(t.get("panes"))))))
+}
+
 fn alive(core: &CoreHandle, pane: &str) -> bool {
     core.pane(pane).is_some_and(|p| matches!(p.state, PaneState::Starting | PaneState::Running))
 }
@@ -457,6 +463,7 @@ struct Live {
     doc: Doc,
     pipeline: Pipeline,
     visit: Option<Visit>,
+    last: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -484,6 +491,7 @@ pub struct Started {
     pub prompts: BTreeMap<String, String>,
     pub owner: Option<String>,
     pub by: String,
+    pub agent: bool,
 }
 
 pub struct Runs {
@@ -493,6 +501,9 @@ pub struct Runs {
     live: RefCell<Vec<Live>>,
     soon: Cell<bool>,
     host: String,
+    views: RefCell<BTreeMap<String, String>>,
+    pub on_run: RefCell<Option<Box<dyn Fn(&[String], &Value)>>>,
+    pub heed: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_end: RefCell<Option<OnEnd>>,
     pub on_moved: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_tell: RefCell<Option<OnTell>>,
@@ -534,9 +545,9 @@ impl Runs {
                 v
             });
             log!("kanna-daemon: {} carries on ({}, {})", row.id, row.state, visit.as_ref().map_or("between stages".to_string(), |v| format!("in {}", v.row.stage)));
-            live.push(Live { row, doc, pipeline, visit });
+            live.push(Live { row, doc, pipeline, visit, last: None });
         }
-        Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default(), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() }
+        Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -548,11 +559,22 @@ impl Runs {
                 this.soon.set(true);
             }
         }));
+        let preparing = Rc::downgrade(self);
+        core.on_open(
+            PaneType::Run,
+            Rc::new(move |args| {
+                let this = preparing.upgrade().ok_or_else(|| KmuxError::new("app_gone", "the daemon is stopping"))?;
+                this.prepare_open(args)
+            }),
+        );
         let this = Rc::downgrade(self);
         core.add_command(
             "run",
             Rc::new(move |args, responder: Responder| {
                 let Some(this) = this.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
+                if string(&args, "action") == Some("watch") {
+                    return this.watch(&args, responder);
+                }
                 let reply = this.handle(&args);
                 responder.reply(reply);
             }),
@@ -574,7 +596,7 @@ impl Runs {
             Some("pause") => self.pause_run(args),
             Some("skip") => self.skip(args),
             Some("retry") => self.retry(args),
-            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, resume, answer, pause, skip, retry, done, need or command)"))),
+            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, resume, watch, answer, pause, skip, retry, done, need or command)"))),
         }
     }
 
@@ -620,7 +642,8 @@ impl Runs {
             }
         };
         let by = string(args, "by").unwrap_or("user").to_string();
-        let started = Started { task: task.id.clone(), repo: task.repo.clone(), worker: worker.clone(), branch: branch.clone(), base, text, shown, name: name.clone(), request, prompts, owner: None, by };
+        let agent = string(args, "by").and_then(|by| self.tasks.upgrade()?.task_of(by)).is_some_and(|of| of == task.id);
+        let started = Started { task: task.id.clone(), repo: task.repo.clone(), worker: worker.clone(), branch: branch.clone(), base, text, shown, name: name.clone(), request, prompts, owner: None, by, agent };
         let (id, worst) = self.launch(started, pipeline)?;
         Ok(Map::from_iter([
             ("run".to_string(), json!(id)),
@@ -648,18 +671,18 @@ impl Runs {
     }
 
     fn launch(&self, started: Started, pipeline: Pipeline) -> Result<(String, u32), KmuxError> {
-        let Started { task, repo, worker, branch, base, text, shown, name, request, prompts, owner, by } = started;
+        let Started { task, repo, worker, branch, base, text, shown, name, request, prompts, owner, by, agent } = started;
         let id = self.db.new_run_id().map_err(failed)?;
         let doc = Doc { request, file: shown.clone(), worker: worker.clone(), base: base.clone(), revision: 1, taken: vec![0; pipeline.arrows.len()], next: Some(pipeline.start.clone()), owner, ..Doc::default() };
         let budget = pipeline.budget.as_ref().map_or(Value::Null, |b| json!({ "sessions": b.sessions, "seconds": b.time.map(|t| t.as_secs()) }));
         let mut value = doc.to_value();
         value["budget"] = budget;
         let row = RunRow { id: id.clone(), task: task.clone(), repo, pipeline: name.clone(), revision_hash: hash(&text), branch: branch.clone(), state: "running".into(), started_at: now(), ended_at: None, outcome: None, doc: value };
-        self.db.put_run(&row, Some(("started", Some(&by), &json!({ "pipeline": name, "branch": branch, "base": base })))).map_err(failed)?;
+        self.db.put_run(&row, Some(("started", Some(&by), &json!({ "pipeline": name, "branch": branch, "base": base, "agent": agent })))).map_err(failed)?;
         self.db.add_revision(&id, "file", &row.revision_hash, &json!({ "text": text, "file": shown, "prompts": prompts })).map_err(failed)?;
         log!("kanna-daemon: {} runs {name} for {task} on {branch} in {worker}", id);
         let worst = pipeline.max_sessions(&Sizes::new());
-        self.live.borrow_mut().push(Live { row, doc, pipeline, visit: None });
+        self.live.borrow_mut().push(Live { row, doc, pipeline, visit: None, last: None });
         self.soon.set(true);
         Ok((id, worst))
     }
@@ -889,6 +912,7 @@ impl Runs {
         if let Err(error) = self.db.put_run(&row, event) {
             log!("kanna-daemon: couldn't save {id} in kanna.db: {error}");
         }
+        self.publish(id);
         self.asks_changed.set(true);
         if owned {
             if let Some(on_moved) = self.on_moved.borrow().as_ref() {
@@ -1271,7 +1295,7 @@ impl Runs {
         let closing = pane.clone();
         let finish = move |said: Option<String>| {
             let Some(this) = this.upgrade() else { return };
-            this.close(&closing);
+            this.retire(&id, &closing);
             let mut parked = None;
             let mut started = false;
             this.update(&id, |live| {
@@ -1535,10 +1559,29 @@ impl Runs {
 
     fn open_worker(self: &Rc<Self>, id: &str, cwd: &str, command: &str, opened: impl FnOnce(&Rc<Self>, &str, &str) + 'static) {
         let Some(core) = self.core.upgrade() else { return };
-        let task = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.task.clone()).unwrap_or_default();
-        let (this, id) = (Rc::downgrade(self), id.to_string());
-        core.handle(json!({ "cmd": "open", "args": { "type": "term", "background": true, "workspace": task, "cwd": cwd, "cmd": command, "wait": false } }), move |reply| {
+        let last = self.live.borrow_mut().iter_mut().find(|l| l.row.id == id).and_then(|l| l.last.take());
+        let Some(old) = last else { return self.open_beside(id, cwd, command, None, opened) };
+        let (this, id, cwd, command) = (Rc::downgrade(self), id.to_string(), cwd.to_string(), command.to_string());
+        core.handle(json!({ "cmd": "list" }), move |reply| {
             let Some(this) = this.upgrade() else { return };
+            let shown = shown(&reply, &old);
+            this.open_beside(&id, &cwd, &command, Some((old, shown)), opened);
+        });
+    }
+
+    fn open_beside(self: &Rc<Self>, id: &str, cwd: &str, command: &str, last: Option<(String, bool)>, opened: impl FnOnce(&Rc<Self>, &str, &str) + 'static) {
+        let Some(core) = self.core.upgrade() else { return };
+        let task = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.task.clone()).unwrap_or_default();
+        let args = match &last {
+            Some((old, true)) => json!({ "type": "term", "from": old, "cwd": cwd, "cmd": command, "wait": false }),
+            _ => json!({ "type": "term", "background": true, "workspace": task, "cwd": cwd, "cmd": command, "wait": false }),
+        };
+        let (this, id) = (Rc::downgrade(self), id.to_string());
+        core.handle(json!({ "cmd": "open", "args": args }), move |reply| {
+            let Some(this) = this.upgrade() else { return };
+            if let Some((old, _)) = &last {
+                this.close(old);
+            }
             let pane = reply.get("pane").and_then(|p| string(p, "id")).map(String::from);
             let Some(pane) = pane.filter(|_| reply.get("ok") == Some(&Value::Bool(true))) else {
                 let why = reply.get("error").and_then(|e| string(e, "message")).unwrap_or("it failed").to_string();
@@ -1551,9 +1594,54 @@ impl Runs {
                 });
                 return this.stop(&id, "stopped", &format!("can't open a terminal for {stage}: {why}"), Some("daemon"), true);
             };
+            if let Some((old, true)) = &last {
+                log!("kanna-daemon: {id}'s next worker {pane} takes the tab {old} was shown in");
+                this.name_tab(&id, &pane);
+            }
+            this.heed_typing(&pane);
             opened(&this, &id, &pane);
             this.soon.set(true);
         });
+    }
+
+    fn retire(&self, id: &str, pane: &str) {
+        let before = {
+            let mut live = self.live.borrow_mut();
+            match live.iter_mut().find(|l| l.row.id == id) {
+                Some(live) => live.last.replace(pane.to_string()),
+                None => Some(pane.to_string()),
+            }
+        };
+        if let Some(before) = before.filter(|b| b != pane) {
+            self.close(&before);
+        }
+    }
+
+    fn close_last(&self, id: &str) {
+        let last = self.live.borrow_mut().iter_mut().find(|l| l.row.id == id).and_then(|l| l.last.take());
+        if let Some(last) = last {
+            self.close(&last);
+        }
+    }
+
+    fn heed_typing(&self, pane: &str) {
+        let terminal = self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.terminal).unwrap_or_else(|| pane.to_string());
+        if let Some(heed) = self.heed.borrow().as_ref() {
+            heed(&terminal);
+        }
+    }
+
+    pub fn typed(&self, pane: &str) {
+        let found = self.live.borrow().iter().find_map(|l| {
+            let visit = l.visit.as_ref().filter(|v| v.row.terminal.as_deref() == Some(pane))?;
+            Some((l.row.id.clone(), visit.row.stage.clone(), visit.row.visit))
+        });
+        let Some((id, stage, visit)) = found else { return };
+        log!("kanna-daemon: you typed into {id}'s {stage} ({pane})");
+        if let Err(error) = self.db.run_event(&id, "typed", Some("user"), &json!({ "stage": stage, "visit": visit, "terminal": pane })) {
+            log!("kanna-daemon: couldn't record typing into {id}: {error}");
+        }
+        self.publish(&id);
     }
 
     fn vars(&self, row: &RunRow, doc: &Doc, stage: &str) -> Vec<(&'static str, String)> {
@@ -1590,7 +1678,7 @@ impl Runs {
         let (this, id, closing) = (Rc::downgrade(self), id.to_string(), pane.to_string());
         let finish = move |_: Option<String>| {
             let Some(this) = this.upgrade() else { return };
-            this.close(&closing);
+            this.retire(&id, &closing);
             this.conclude(&id, ended);
         };
         match self.tasks.upgrade() {
@@ -1651,7 +1739,7 @@ impl Runs {
         let (this, id, closing) = (Rc::downgrade(self), id.to_string(), pane.to_string());
         let finish = move || {
             let Some(this) = this.upgrade() else { return };
-            this.close(&closing);
+            this.retire(&id, &closing);
             this.conclude(&id, ended);
         };
         match self.core.upgrade().filter(|core| alive(core, pane)) {
@@ -1960,6 +2048,7 @@ impl Runs {
                 }
             }
         }
+        self.close_last(id);
         log!("kanna-daemon: {id} {state}: {why}");
         let (by, why_owned, state_owned, outcome) = (by.map(String::from), why.to_string(), state.to_string(), outcome.to_string());
         self.update(id, |live| {
@@ -2040,6 +2129,7 @@ impl Runs {
                 log!("kanna-daemon: {id}'s worktree {} is kept: {error}", doc.worker);
             }
         }
+        self.close_last(id);
         let stages = self.db.stages(id).unwrap_or_default();
         let distinct: std::collections::BTreeSet<&str> = stages.iter().map(|s| s.stage.as_str()).collect();
         let took = clock(Duration::from_secs_f64((now() - row.started_at).max(0.0)));
@@ -2059,6 +2149,156 @@ impl Runs {
             return self.ended(id, head);
         }
         self.tell(id, &format!("handed back: {summary}. {note}. `kanna run show {id}` has its visits."));
+    }
+
+    fn pipeline_of(&self, row: &RunRow) -> Option<Pipeline> {
+        if let Some(live) = self.live.borrow().iter().find(|l| l.row.id == row.id) {
+            return Some(live.pipeline.clone());
+        }
+        let text = self.db.revisions(&row.id).ok()?.last().and_then(|r| string(&r.doc, "text").map(String::from))?;
+        kanna_pipe::parse(&text).ok()
+    }
+
+    fn lines(&self, row: &RunRow) -> Option<(u64, u64, u64)> {
+        let base = string(&row.doc, "base").filter(|b| !b.is_empty())?;
+        let stat = git(Path::new(&row.repo), &["diff", "--shortstat", base, &row.branch]).ok()?;
+        let number = |word: &str| stat.split(',').find(|part| part.contains(word)).and_then(|part| part.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
+        Some((number("insertion"), number("deletion"), number("file")))
+    }
+
+    pub fn notice(&self, id: &str) -> Result<Value, KmuxError> {
+        let row = match self.live.borrow().iter().find(|l| l.row.id == id) {
+            Some(live) => live.row.clone(),
+            None => self.db.runs(None).map_err(failed)?.into_iter().find(|r| r.id == id).ok_or_else(|| KmuxError::new("not_found", format!("no run {id}")))?,
+        };
+        let pipeline = self.pipeline_of(&row).ok_or_else(|| failed(format!("{id}'s pipeline doesn't parse any more")))?;
+        let stages = self.db.stages(id).map_err(failed)?;
+        let events = self.db.run_events(id).map_err(failed)?;
+        let revision = self.db.revisions(id).map_err(failed)?.pop();
+        let task = self.tasks.upgrade().and_then(|t| t.entry(&row.task));
+        let lines = self.lines(&row);
+        Ok(run_notice::notice(&run_notice::Inputs {
+            row: &row,
+            pipeline: &pipeline,
+            stages: &stages,
+            events: &events,
+            revision: revision.as_ref(),
+            task_name: task.as_ref().and_then(|t| t.name.as_deref()),
+            lines,
+            now: now(),
+        }))
+    }
+
+    fn publish(&self, id: &str) {
+        let views: Vec<String> = self.views.borrow().iter().filter(|(_, run)| run.as_str() == id).map(|(view, _)| view.clone()).collect();
+        if views.is_empty() {
+            return;
+        }
+        match self.notice(id) {
+            Ok(notice) => {
+                if let Some(on_run) = self.on_run.borrow().as_ref() {
+                    on_run(&views, &notice);
+                }
+            }
+            Err(error) => log!("kanna-daemon: can't tell the Run tab about {id}: {}", error.message),
+        }
+    }
+
+    pub fn subscribe(&self, view: &str, args: &Value) -> Result<Map, KmuxError> {
+        let run = string(args, "run").filter(|r| !r.is_empty()).ok_or_else(|| bad("say which run"))?;
+        let notice = self.notice(run)?;
+        self.views.borrow_mut().insert(view.to_string(), run.to_string());
+        match notice {
+            Value::Object(map) => Ok(map),
+            _ => Ok(Map::new()),
+        }
+    }
+
+    pub fn unsubscribe(&self, view: &str) {
+        self.views.borrow_mut().remove(view);
+    }
+
+    pub fn leave_views(&self, gone: impl Fn(&str) -> bool) {
+        self.views.borrow_mut().retain(|view, _| !gone(view));
+    }
+
+    pub fn stage_of(&self, task: &str) -> Option<String> {
+        let live = self.live.borrow();
+        let live = live.iter().rfind(|l| l.row.task == task && LIVE.contains(&l.row.state.as_str()))?;
+        let stages = self.db.stages(&live.row.id).ok()?;
+        let (stage, at, of) = run_notice::place(&live.pipeline, &live.row, &stages);
+        Some(format!("{stage} {at}/{of}"))
+    }
+
+    fn prepare_open(&self, args: &mut Value) -> Result<(), KmuxError> {
+        let row = self.find(args)?;
+        args["run"] = json!(row.id);
+        for key in ["by", "cwd"] {
+            if let Some(map) = args.as_object_mut() {
+                map.remove(key);
+            }
+        }
+        let placed = ["window", "workspace", "from", "dock", "lead", "planner"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null()));
+        if !placed {
+            args["workspace"] = json!(row.task);
+        }
+        if args.get("split").is_none() {
+            args["tab"] = json!(true);
+        }
+        Ok(())
+    }
+
+    fn watch(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let terminal = match self.watched(args) {
+            Ok(found) => found,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
+        let (run, terminal) = terminal;
+        let by = string(args, "by").unwrap_or("user").to_string();
+        let (this, focusing) = (Rc::downgrade(self), core.weak());
+        core.handle(json!({ "cmd": "move", "args": { "pane": terminal, "tab": "new" } }), move |moved| {
+            if moved.get("ok") != Some(&Value::Bool(true)) {
+                let message = moved.get("error").and_then(|e| string(e, "message")).unwrap_or("it couldn't be moved").to_string();
+                return responder.reply(Err(failed(format!("can't show {terminal} in a tab: {message}"))));
+            }
+            if let Some(this) = this.upgrade() {
+                let _ = this.db.run_event(&run, "watched", Some(&by), &json!({ "terminal": terminal }));
+                log!("kanna-daemon: {run} is watched in {terminal}");
+                this.name_tab(&run, &terminal);
+            }
+            let mut out = Map::from_iter([("run".to_string(), json!(run)), ("terminal".to_string(), json!(terminal))]);
+            for key in ["tab", "workspace", "window"] {
+                if let Some(value) = moved.get(key) {
+                    out.insert(key.to_string(), value.clone());
+                }
+            }
+            let Some(core) = focusing.upgrade() else { return responder.reply(Ok(out)) };
+            core.handle(json!({ "cmd": "focus", "args": { "pane": terminal } }), move |_| responder.reply(Ok(out)));
+        });
+    }
+
+    fn name_tab(&self, id: &str, pane: &str) {
+        let title = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit.as_ref().map(|v| format!("{} · {}", v.row.stage, run_notice::who(&l.pipeline, &v.row))));
+        let (Some(title), Some(core)) = (title, self.core.upgrade()) else { return };
+        let (renaming, pane) = (core.weak(), pane.to_string());
+        core.handle(json!({ "cmd": "list" }), move |list| {
+            let tab = list.get("workspaces").and_then(Value::as_array).into_iter().flatten().flat_map(|ws| ws.get("tabs").and_then(Value::as_array).into_iter().flatten()).find(|t| t.get("panes").and_then(Value::as_array).is_some_and(|p| p.iter().any(|p| p == pane.as_str()))).and_then(|t| string(t, "id").map(String::from));
+            if let (Some(tab), Some(core)) = (tab, renaming.upgrade()) {
+                core.handle(json!({ "cmd": "rename-tab", "args": { "tab": tab, "title": title } }), |_| {});
+            }
+        });
+    }
+
+    fn watched(&self, args: &Value) -> Result<(String, String), KmuxError> {
+        let row = self.find_live(args)?;
+        let current = self.live.borrow().iter().find(|l| l.row.id == row.id).and_then(|l| l.visit.as_ref().filter(|v| !v.paused && !v.ending).and_then(|v| v.row.terminal.clone()));
+        let terminal = match string(args, "worker").filter(|w| !w.is_empty()) {
+            Some(worker) if current.as_deref() == Some(worker) => worker.to_string(),
+            Some(worker) => return Err(KmuxError::new("not_a_worker", format!("{worker} isn't {}'s worker now{}", row.id, current.as_ref().map_or(String::new(), |c| format!(": its worker is {c}"))))),
+            None => current.ok_or_else(|| KmuxError::new("no_worker", format!("{} has no stage running now ({}), so there's no terminal to watch", row.id, row.state)))?,
+        };
+        Ok((row.id, terminal))
     }
 
     fn tell(&self, id: &str, text: &str) {
@@ -2204,7 +2444,7 @@ mod tests {
 
     fn live(doc: Doc) -> Live {
         let row = RunRow { id: "run-1".into(), task: "task-1".into(), repo: "/r".into(), pipeline: "p".into(), revision_hash: String::new(), branch: "run/task-1-1".into(), state: "waiting".into(), started_at: 0.0, ended_at: None, outcome: None, doc: Value::Null };
-        Live { row, doc, pipeline: pipeline("a = claude\n"), visit: None }
+        Live { row, doc, pipeline: pipeline("a = claude\n"), visit: None, last: None }
     }
 
     #[test]

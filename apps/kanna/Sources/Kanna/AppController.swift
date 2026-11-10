@@ -173,6 +173,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panes.onDrag = { [weak self] pane in self?.dragPane(pane) }
         panes.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
+        contents.onBadge = { [weak self] in self?.refresh() }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
         contents.pageZoom = { [weak self] pane in self?.physical.pageZoom(pane) }
@@ -269,6 +270,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
+        link.onRun = { [weak self] content, message in self?.contents.received(run: message, content: content) }
         link.onSchedules = { [weak self] in self?.schedulesChanged(on: machine) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
@@ -336,6 +338,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.subscribeLogs(on: machine)
         contents.subscribeFiles(on: machine)
         contents.subscribeSerials(on: machine)
+        contents.subscribeRuns(on: machine)
         schedulesChanged(on: machine)
         loadRecent()
         layoutChanged()
@@ -723,6 +726,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
+        controller.tabBar.badge = { [weak self] pane in self?.contents.badge(pane) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
         controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }
