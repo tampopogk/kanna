@@ -1788,7 +1788,7 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   comment_waits c1 "md_comments_thread c1 status" || { md_comments_md; return 1; }
   check test "$(md_comments_md | field cards.c1.waiting)" == "Waiting · it goes to the agent when its turn is over" || { md_comments_md; return 1; }
   md_comments_shot md_comments-waiting
-  check wait_for 15 shows "$comment_term" "› draft" || { kanna read "$comment_term"; return 1; }
+  check wait_for 15 shows "$comment_term" "❯ draft" || { kanna read "$comment_term"; return 1; }
   comment_arrived c1 "md_comments_thread c1 status" || return 1
   shows "$comment_term" "peer: > TELLCLAUDE" && shows "$comment_term" "peer: Say when" || { kanna read "$comment_term"; return 1; }
   check wait_for 20 eval '[[ "$(comment_held "$comment_task")" == stopped ]]' || { echo "the Shelf task should stop after the comment's turn"; return 1; }
