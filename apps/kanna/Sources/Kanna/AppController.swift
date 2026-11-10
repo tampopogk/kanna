@@ -119,6 +119,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             fatal("kanna: \(error.localizedDescription)")
         }
+        TerminalSurfaceView.isKey = { [weak self] window in
+            guard let self, let id = keyWindow?["id"]?.string else { return false }
+            return controllers[id]?.window === window
+        }
         if echo {
             terminals = ExternalIOBackend(runtime: runtime, link: EchoLink())
             let server = SocketServer(path: Self.echoSocketPath) { [weak self] request in await self?.commands.handle(request) ?? nil }
@@ -586,6 +590,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusSeen()
             notePanes()
             placeToasts()
+            GhosttyRuntime.shared?.syncFocus()
         }
         let ids = Set(windows.compactMap { $0["id"]?.string })
         for (id, controller) in controllers where !ids.contains(id) {
@@ -711,6 +716,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if controller.window.isKeyWindow { physical.setFront(id) }
             if let window = window(id) { controller.render(window, panes) }
             placeToasts()
+            GhosttyRuntime.shared?.syncFocus()
         }
         controllers[id] = controller
         recordFrame(id)

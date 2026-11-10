@@ -4,7 +4,7 @@ import QuartzCore
 
 @MainActor
 final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
-    var surface: ghostty_surface_t? { didSet { if surface != nil { syncSurfaceGeometry(); updateVisibility() } } }
+    var surface: ghostty_surface_t? { didSet { if surface != nil { syncSurfaceGeometry(); updateVisibility(); syncFocus() } } }
     var isHandlingInputEvent = false
     private var dropped: String?
     var focused: (() -> Void)?
@@ -41,8 +41,8 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
                 MainActor.assumeIsolated { self?.updateVisibility() }
             }
         }
-        guard let surface else { return }
-        ghostty_surface_set_focus(surface, window?.firstResponder === self)
+        guard surface != nil else { return }
+        syncFocus()
         syncSurfaceGeometry()
         updateVisibility()
     }
@@ -102,16 +102,27 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         syncSurfaceGeometry()
     }
 
+    static var isKey: (NSWindow) -> Bool = { $0.isKeyWindow }
+
+    var hasFocus: Bool { window.map { $0.firstResponder === self && Self.isKey($0) } ?? false }
+
+    func syncFocus() { setFocus(hasFocus) }
+
+    private func setFocus(_ value: Bool) {
+        guard let surface else { return }
+        ghostty_surface_set_focus(surface, value)
+    }
+
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if let surface { ghostty_surface_set_focus(surface, true) }
+        setFocus(result && window.map(Self.isKey) == true)
         if result { focused?() }
         return result
     }
 
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
-        if let surface { ghostty_surface_set_focus(surface, false) }
+        setFocus(!result && hasFocus)
         return result
     }
 

@@ -93,6 +93,8 @@ final class GhosttyRuntime {
         return true
     }
 
+    func syncFocus() { live.values.forEach { $0.syncFocus() } }
+
     func detach(_ view: TerminalSurfaceView) {
         live.removeValue(forKey: view.surfaceID)
         if let surface = view.surface { ghostty_surface_free(surface) }
