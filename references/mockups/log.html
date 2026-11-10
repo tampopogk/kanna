@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Commit Graph Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0; --faint: #5d6470;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --term: #16181c;
+  --tint: rgba(122, 162, 255, .16); --hover: rgba(255,255,255,.03); --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --hit: rgba(240, 179, 90, .22); --fresh: rgba(95, 207, 147, .28);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --l0: #7aa2ff; --l1: #5fcf93; --l2: #f0b35a; --l3: #c792ea; --l4: #56b6c2; --l5: #ef8a6b; --l6: #e5c07b; --l7: #ff8fb8;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280; --faint: #a0a7b2;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --term: #fbfbfc;
+  --tint: rgba(47, 99, 216, .11); --hover: rgba(0,0,0,.025); --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+  --hit: rgba(214, 150, 40, .22); --fresh: rgba(31, 157, 92, .2);
+  --l0: #2f63d8; --l1: #1f9d5c; --l2: #c47f12; --l3: #8839c4; --l4: #0e7490; --l5: #d0552f; --l6: #9a7a10; --l7: #c8327a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1560px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 960px; }
+.intro code { font: 12px var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
+.controls .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.keys { color: var(--muted); font-size: 12px; margin: -6px 0 14px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.keys kbd { font: 11px var(--mono); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; background: var(--panel2); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 760px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--bg); }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.where b { color: var(--text); font-weight: 600; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 26%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.working { background: var(--accent); }
+.dot.idle { background: var(--ok); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; color: var(--text); }
+.term .c { color: var(--accent); } .term .p { color: var(--warn); } .term .g { color: var(--muted); } .term .ok { color: var(--ok); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; overflow: hidden; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.dtab.on { color: var(--text); }
+.dtab .x { color: var(--muted); font-size: 11px; visibility: hidden; }
+.dtab.on .x { visibility: visible; }
+.dtabs .add { color: var(--muted); padding: 0 8px; font-size: 15px; }
+.shelf { height: 30px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.shelf .item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+.shelf .backlog { margin-left: auto; }
+
+.log { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); position: relative; }
+.lhead { height: 34px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.lhead .what { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lhead .what code { font: 11.5px var(--mono); }
+.lhead .spacer { flex: 1; }
+.lhead .count { white-space: nowrap; }
+.newc { color: var(--accent); font-weight: 600; font-size: 11.5px; text-decoration: underline; cursor: pointer; white-space: nowrap; }
+.lbody { flex: 1; min-height: 0; display: flex; }
+.scroller { flex: 1; min-width: 0; overflow: auto; position: relative; }
+.rows { position: relative; }
+.rows svg { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 1; }
+.row { position: relative; height: 26px; display: flex; align-items: center; white-space: nowrap; font-size: 12.5px; cursor: default; }
+.row:hover { background: var(--hover); }
+.row.sel { background: var(--tint); }
+.row.sel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+.row.hit { background: var(--hit); }
+.row.sel.hit { background: linear-gradient(var(--tint), var(--tint)), var(--hit); }
+.row.fresh { animation: fresh 2.6s ease-out; }
+@keyframes fresh { 0%, 45% { background: var(--fresh); } 100% { background: transparent; } }
+.row .g { flex: none; }
+.row .hash { flex: none; width: 64px; font: 11.5px var(--mono); color: var(--muted); }
+.row .msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; padding-right: 10px; }
+.row .msg .s { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.row.merge .msg .s { color: var(--muted); }
+.row.merge.spine .msg .s { color: var(--text); }
+.row .who { flex: none; width: 104px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.row .when { flex: none; width: 62px; color: var(--muted); text-align: right; padding-right: 12px; font-size: 12px; }
+.chip { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 7px; border-radius: 9px; font-size: 11px; border: 1px solid var(--line); background: var(--panel); color: var(--text); max-width: 340px; overflow: hidden; }
+.chip .nm { overflow: hidden; text-overflow: ellipsis; }
+.chip.ref { font: 11px var(--mono); }
+.chip.head { border-color: var(--accent); color: var(--accent); }
+.chip.tag { border-style: dashed; color: var(--warn); }
+.chip.task { border-color: color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 14%, var(--bg)); }
+.chip.task i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); flex: none; }
+.chip .pl { color: var(--muted); font-size: 10.5px; }
+.chip .ab { font: 10.5px var(--mono); color: var(--muted); }
+.chip .ab b { font-weight: 500; color: var(--bad); }
+.chip.merged { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 10%, var(--bg)); }
+.chip.merged .pl { color: var(--ok); }
+.fold { flex: none; font: 10.5px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 9px; padding: 0 6px; height: 17px; display: inline-flex; align-items: center; cursor: pointer; }
+.fold:hover { color: var(--text); border-color: var(--accent); }
+
+.detail { flex: 0 0 340px; min-width: 0; border-left: 1px solid var(--line); overflow: auto; background: var(--bg); font-size: 12.5px; }
+.detail.hidden { display: none; }
+.detail .top { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+.detail .subj { font-size: 13.5px; font-weight: 600; line-height: 1.4; margin-bottom: 10px; }
+.detail .meta { display: grid; grid-template-columns: 64px 1fr; gap: 4px 8px; color: var(--muted); font-size: 12px; }
+.detail .meta span:nth-child(2n) { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail .meta code { font: 11.5px var(--mono); }
+.detail .meta a { color: var(--accent); cursor: pointer; font: 11.5px var(--mono); margin-right: 6px; }
+.detail .copy { color: var(--accent); font-size: 11px; margin-left: 8px; cursor: pointer; }
+.detail .labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.detail .labels .chip { height: auto; min-height: 18px; flex-wrap: wrap; white-space: normal; padding: 1px 8px; max-width: 100%; }
+.detail .body { padding: 12px 16px; white-space: pre-wrap; color: var(--text); border-bottom: 1px solid var(--line); line-height: 1.5; font-size: 12px; }
+.detail .body:empty { display: none; }
+.detail .fh { padding: 10px 16px 4px; color: var(--muted); font-size: 11.5px; display: flex; }
+.detail .fh .sp { flex: 1; }
+.detail .f { display: flex; align-items: center; gap: 8px; padding: 2px 16px; font: 11.5px var(--mono); white-space: nowrap; }
+.detail .f .p { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.detail .f .a { color: var(--ok); } .detail .f .d { color: var(--bad); }
+.detail .f .bar { display: inline-flex; width: 40px; height: 6px; border-radius: 2px; overflow: hidden; background: var(--panel2); flex: none; }
+.detail .f .bar i { display: block; height: 100%; }
+.detail .open { margin: 12px 16px 16px; display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11.5px; }
+.detail .open code { font: 11.5px var(--mono); color: var(--text); }
+.detail .foldnote { margin: 12px 16px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 12px; }
+
+.find { position: absolute; top: 40px; right: 352px; z-index: 5; display: none; align-items: center; gap: 6px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px 4px 10px; box-shadow: var(--shadow); font-size: 12px; color: var(--muted); }
+.find.on { display: flex; }
+.find.wide { right: 12px; }
+.find input { font: 12px var(--sans); background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 3px 7px; width: 200px; outline: none; }
+.find input:focus { border-color: var(--accent); }
+.find span.b { cursor: pointer; padding: 0 4px; color: var(--text); }
+.toast { position: absolute; left: 50%; bottom: 46px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; font-size: 12px; color: var(--text); box-shadow: var(--shadow); z-index: 9; }
+.toast code { font: 11.5px var(--mono); color: var(--accent); }
+.empty { padding: 60px 40px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Commit graph: the repo's history as a tab beside the agent</h1>
+    <p><code>kanna open log [REV...]</code> opens a <b>log pane</b>: commits as rows with coloured lanes, merges drawn as curves, each row with its hash, subject, author and age, and its branches and tags. A branch that is a task's is labelled with the task's name and where it is (Desk, Shelf, merged), and how far it is ahead of and behind main. From the planner it shows main and the repo's task branches; from a task, the task's branch and main. Long merged branches fold into their merge, so main reads as a line of merges. It holds still: new commits wait, and the header says so until ⌘R. This mockup runs on the kanna repo's own history (the newest 700 commits of main and its 33 live task branches).</p>
+    <div class="controls">
+      <button id="openPlanner">Planner: kanna open log</button>
+      <button id="openTask">Task: kanna open log</button>
+      <button id="commit">Agent commits</button>
+      <span class="sep"></span>
+      <button id="theme">Light / dark</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="keys">
+      <span><kbd>j</kbd> <kbd>k</kbd> commits</span>
+      <span><kbd>→</kbd> <kbd>←</kbd> unfold / fold a merge</span>
+      <span><kbd>↩</kbd> or double-click: open its diff</span>
+      <span><kbd>⌘C</kbd> copy the hash</span>
+      <span><kbd>⌘F</kbd> find subjects and hashes</span>
+      <span><kbd>⌘R</kbd> take new commits</span>
+      <span><kbd>g</kbd> <kbd>G</kbd> top / bottom</span>
+    </div>
+  </div>
+  <div class="window" id="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where" id="where"><b>kanna</b> · Desk</span></div>
+    <div class="content">
+      <div class="agent">
+        <div class="head"><span class="dot idle" id="adot"></span><span id="aname">claude · planner</span></div>
+        <div class="term" id="term"></div>
+      </div>
+      <div class="docs">
+        <div class="dtabs" id="dtabs"></div>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+    <div class="shelf"><span class="item"><span class="dot working"></span>App waits for its daemon and keeper</span><span class="item"><span class="dot idle"></span>Agent permission prompts setting</span><span class="item"><span class="dot idle"></span>Next Window skips minimized windows</span><span class="backlog">30 on the Shelf</span></div>
+  </div>
+</main>
+<script src="log/history.js"></script>
+<script>
+const H = window.HISTORY;
+const ROW = 26, LANE = 14, PAD = 12, FOLD_OVER = 3, STUB = 6;
+const byHash = new Map(H.commits.map(c => [c.h, c]));
+const order = new Map(H.commits.map((c, i) => [c.h, i]));
+const short = h => h.slice(0, 8);
+const CALLER = "task-667698d7";
+
+const extra = [];
+let state;
+const init = () => ({ open: false, scope: "planner", unfolded: new Set(), sel: null, held: 0, shown: 0, fresh: new Set(), find: "", findOn: false, hit: -1, theme: document.documentElement.dataset.theme || "dark" });
+state = init();
+
+function commitsNow(upto) { return [...extra.slice(0, upto).reverse(), ...H.commits]; }
+
+function model(upto) {
+  const all = commitsNow(upto);
+  const map = new Map(all.map(c => [c.h, c]));
+  const tasks = H.tasks.filter(t => t.tip).map(t => ({ ...t }));
+  for (const e of extra.slice(0, upto)) { const t = tasks.find(t => t.id === e.task); t.tip = e.h; t.ahead += 1; }
+  let tips = ["main", ...tasks.map(t => t.tip)];
+  if (state.scope === "task") tips = [H.commits[0].h, tasks.find(t => t.id === CALLER).tip];
+  const mainTip = H.commits.find(c => c.r.includes("main")).h;
+  const reach = new Set(), stack = tips.map(t => t === "main" ? mainTip : t);
+  while (stack.length) { const h = stack.pop(); if (reach.has(h) || !map.has(h)) continue; reach.add(h); stack.push(...map.get(h).p); }
+  const commits = all.filter(c => reach.has(c.h));
+  const spine = [], onSpine = new Set();
+  for (let h = mainTip; map.has(h); h = map.get(h).p[0]) { spine.push(h); onSpine.add(h); }
+  const side = new Map(), sides = new Map();
+  for (const m of [...spine].reverse()) {
+    const c = map.get(m); if (c.p.length < 2) continue;
+    const set = new Set(), st = c.p.slice(1);
+    while (st.length) { const h = st.pop(); if (!map.has(h) || onSpine.has(h) || set.has(h) || side.has(h)) continue; set.add(h); st.push(...map.get(h).p); }
+    for (const h of set) side.set(h, m);
+    sides.set(m, set);
+  }
+  const foldable = new Set();
+  for (const [m, set] of sides) {
+    if (set.size <= FOLD_OVER) continue;
+    const leaks = commits.some(c => !set.has(c.h) && c.h !== m && c.p.some(p => set.has(p)));
+    if (!leaks) foldable.add(m);
+  }
+  const taskAt = new Map();
+  for (const t of tasks) {
+    if (!reach.has(t.tip)) continue;
+    let at = t.tip;
+    const merged = onSpine.has(t.tip) || side.has(t.tip);
+    if (side.has(at) && foldable.has(side.get(at)) && !state.unfolded.has(side.get(at))) at = side.get(at);
+    if (!taskAt.has(at)) taskAt.set(at, []);
+    taskAt.get(at).push({ ...t, merged });
+  }
+  const hidden = h => side.has(h) && foldable.has(side.get(h)) && !state.unfolded.has(side.get(h));
+  const rows = commits.filter(c => !hidden(c.h)).map(c => ({ c, spine: onSpine.has(c.h), fold: foldable.has(c.h) ? sides.get(c.h).size : 0, open: state.unfolded.has(c.h), tasks: taskAt.get(c.h) || [] }));
+  layout(rows, onSpine);
+  return { rows, tasks, map, sides, side, foldable, onSpine, total: commits.length };
+}
+
+function layout(rows, onSpine) {
+  const vis = new Set(rows.map(r => r.c.h));
+  const at = new Map(rows.map((r, i) => [r.c.h, i]));
+  const lanes = [], colors = [];
+  let next = 1, max = 0;
+  const free = () => { let k = 1; while (lanes[k]) k++; return k; };
+  rows.forEach((r, i) => {
+    const h = r.c.h;
+    const exp = []; lanes.forEach((x, k) => { if (x === h) exp.push(k); });
+    const col = r.spine ? 0 : exp.length ? Math.min(...exp) : free();
+    if (!r.spine && !exp.length) colors[col] = next++;
+    if (r.spine) colors[0] = 0;
+    r.col = col; r.color = colors[col];
+    r.inc = exp.map(k => ({ k, color: colors[k] }));
+    r.thru = []; lanes.forEach((x, k) => { if (x && x !== h) r.thru.push({ k, color: colors[k] }); });
+    for (const k of exp) lanes[k] = null;
+    const ps = (r.fold && !r.open ? r.c.p.slice(0, 1) : r.c.p).filter(p => vis.has(p));
+    r.out = [];
+    ps.forEach((p, j) => {
+      let k = lanes.indexOf(p);
+      if (k < 0 && j > 0 && !r.spine && onSpine.has(p) && at.get(p) - i > STUB) { r.out.push({ k: 0, color: 0, back: true }); return; }
+      if (k < 0) {
+        if (onSpine.has(p) && r.spine) k = 0;
+        else if (j === 0 && !lanes[col]) k = col;
+        else { k = free(); colors[k] = next++; }
+        lanes[k] = p;
+      }
+      r.out.push({ k, color: colors[k] });
+    });
+    r.dangling = r.c.p.length && !ps.length && !(r.fold && !r.open);
+    if (r.dangling) r.out.push({ k: col, color: colors[col], stub: true });
+    max = Math.max(max, col, ...r.thru.map(t => t.k), ...r.out.map(o => o.k));
+  });
+  rows.lanes = max + 1;
+}
+
+function rel(t) {
+  const s = H.now - t;
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  if (s < 86400 * 30) return Math.round(s / 86400) + "d ago";
+  return Math.round(s / 86400 / 30) + "mo ago";
+}
+const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const lc = n => `var(--l${n % 8})`;
+
+function graph(rows, lw, width) {
+  const x = k => PAD + k * lw;
+  const parts = [];
+  rows.forEach((r, i) => {
+    const top = i * ROW, mid = top + ROW / 2, bot = top + ROW;
+    const path = (d, color, dash) => parts.push(`<path d="${d}" stroke="${lc(color)}" stroke-width="1.8" fill="none" stroke-linecap="round"${dash ? ' stroke-dasharray="2 3"' : ""}/>`);
+    for (const t of r.thru) path(`M${x(t.k)} ${top}V${bot}`, t.color);
+    for (const t of r.inc) path(t.k === r.col ? `M${x(t.k)} ${top}V${mid}` : `M${x(t.k)} ${top}C${x(t.k)} ${mid} ${x(t.k)} ${mid} ${x(t.k) + Math.sign(x(r.col) - x(t.k)) * Math.min(Math.abs(x(r.col) - x(t.k)), ROW / 2)} ${mid}H${x(r.col)}`, t.color);
+    for (const o of r.out) {
+      if (o.stub) { path(`M${x(o.k)} ${mid}V${bot}`, o.color, true); continue; }
+      if (o.back) { const x0 = x(r.col), x1 = x0 - Math.min(lw, 10); path(`M${x0} ${mid}C${x1} ${mid} ${x1} ${mid} ${x1} ${bot - 3}`, 0, true); parts.push(`<circle cx="${x1}" cy="${bot - 3}" r="1.8" fill="${lc(0)}"/>`); continue; }
+      if (o.k === r.col) path(`M${x(o.k)} ${mid}V${bot}`, o.color);
+      else { const d = Math.sign(x(o.k) - x(r.col)); const bend = Math.min(Math.abs(x(o.k) - x(r.col)), ROW / 2); path(`M${x(r.col)} ${mid}H${x(o.k) - d * bend}C${x(o.k)} ${mid} ${x(o.k)} ${mid} ${x(o.k)} ${bot}`, o.color); }
+    }
+  });
+  rows.forEach((r, i) => {
+    const cx = x(r.col), cy = i * ROW + ROW / 2, c = lc(r.color);
+    if (r.fold && !r.open) {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="5" fill="var(--bg)" stroke="${c}" stroke-width="2"/><circle cx="${cx}" cy="${cy}" r="2" fill="${c}"/>`);
+    } else if (r.tasks.some(t => !t.merged)) {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="5.5" fill="${c}" stroke="var(--bg)" stroke-width="2"/>`);
+    } else if (r.c.p.length > 1) {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="3.6" fill="${c}" stroke="var(--bg)" stroke-width="1.5"/>`);
+    } else {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="4.2" fill="var(--bg)" stroke="${c}" stroke-width="2"/>`);
+    }
+  });
+  return `<svg width="${width}" height="${rows.length * ROW}">${parts.join("")}</svg>`;
+}
+
+function chips(r, m) {
+  const out = [];
+  for (const t of r.tasks) {
+    const color = lc(r.color);
+    if (t.merged) out.push(`<span class="chip task merged" style="--c:var(--ok)" title="${esc(t.branch)}"><span class="nm">${esc(t.name)}</span><span class="pl">✓ merged</span></span>`);
+    else out.push(`<span class="chip task" style="--c:${color}" title="${esc(t.branch)}"><i></i><span class="nm">${esc(t.name)}</span><span class="pl">${t.place === "desk" ? "Desk" : "Shelf"}</span><span class="ab">${t.ahead} ahead${t.behind ? ` · <b>${t.behind} behind</b>` : ""}</span></span>`);
+  }
+  const taskBranches = new Set(r.tasks.map(t => t.branch));
+  for (const ref of r.c.r) {
+    if (taskBranches.has(ref)) continue;
+    if (ref.startsWith("tag: ")) out.push(`<span class="chip ref tag">${esc(ref.slice(5))}</span>`);
+    else if (ref === "main") out.push(`<span class="chip ref head">main</span>`);
+    else if (ref.startsWith("origin/")) out.push(`<span class="chip ref" style="color:var(--muted)">${esc(ref)}</span>`);
+  }
+  return out.join("");
+}
+
+let M = null;
+const log = document.getElementById("log");
+
+function render(keepScroll) {
+  document.documentElement.dataset.theme = state.theme;
+  renderTabs();
+  if (!state.open) { log.innerHTML = `<div class="empty">No log open.</div>`; return; }
+  const sc = document.getElementById("scroller");
+  const top = sc ? sc.scrollTop : 0;
+  M = model(state.shown);
+  const rows = M.rows;
+  const lw = rows.lanes > 16 ? Math.max(8, Math.floor(16 * LANE / rows.lanes)) : LANE;
+  const gw = PAD * 2 + (rows.lanes - 1) * lw;
+  if (!state.sel || !rows.some(r => r.c.h === state.sel)) state.sel = rows[0].c.h;
+  const what = state.scope === "task" ? `<code>log</code> · app-waits-for-services and main` : `<code>log</code> · main and ${M.tasks.length} task branches`;
+  const held = state.held - state.shown;
+  const shownCount = rows.length;
+  const hits = findHits();
+  log.innerHTML = `
+    <div class="lhead"><span class="what">${what}</span><span class="spacer"></span>
+      ${held ? `<span class="newc" id="newc">${held} new commit${held > 1 ? "s" : ""}</span>` : ""}
+      <span class="count">${M.total} commits${shownCount < M.total ? ` · ${M.total - shownCount} folded` : ""}</span></div>
+    <div class="lbody">
+      <div class="scroller" id="scroller"><div class="rows" id="rows" style="height:${rows.length * ROW}px">${graph(rows, lw, gw)}${rows.map((r, i) => `
+        <div class="row${r.c.p.length > 1 ? " merge" : ""}${r.spine ? " spine" : ""}${r.c.h === state.sel ? " sel" : ""}${hits.has(r.c.h) ? " hit" : ""}${state.fresh.has(r.c.h) ? " fresh" : ""}" data-h="${r.c.h}">
+          <span class="g" style="width:${gw}px"></span>
+          <span class="hash">${short(r.c.h)}</span>
+          <span class="msg">${chips(r, M)}<span class="s">${esc(r.c.s)}</span>${r.fold ? `<span class="fold" data-m="${r.c.h}">${r.open ? "▾" : "▸"} ${r.fold}</span>` : ""}</span>
+          <span class="who">${esc(r.c.a)}</span><span class="when">${rel(r.c.t)}</span>
+        </div>`).join("")}</div></div>
+      <div class="detail${narrow() ? " hidden" : ""}" id="detail"></div>
+    </div>
+    <div class="find${state.findOn ? " on" : ""}${narrow() ? " wide" : ""}" id="find"><input id="fq" placeholder="Find subjects and hashes" value="${esc(state.find)}"><span id="fcount">${findLabel(hits)}</span><span class="b" id="fprev">‹</span><span class="b" id="fnext">›</span><span class="b" id="fclose">✕</span></div>`;
+  const s2 = document.getElementById("scroller");
+  s2.scrollTop = keepScroll ? top : 0;
+  detail();
+  bind();
+}
+function narrow() { return document.getElementById("log").clientWidth < 820; }
+
+function detail() {
+  const el = document.getElementById("detail");
+  const r = M.rows.find(r => r.c.h === state.sel); if (!r) return;
+  const c = r.c;
+  const total = c.f.reduce((n, f) => n + (+f[1] || 0) + (+f[2] || 0), 0);
+  const max = Math.max(1, ...c.f.map(f => (+f[1] || 0) + (+f[2] || 0)));
+  const date = new Date(c.t * 1000).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const lab = chips(r, M);
+  const foldNote = r.fold ? `<div class="foldnote">Merges ${r.fold} commits ${r.open ? "shown below" : "folded into this row"} · <b>${r.open ? "←" : "→"}</b> to ${r.open ? "fold" : "unfold"}</div>` : "";
+  el.innerHTML = `
+    <div class="top"><div class="subj">${esc(c.s)}</div>
+      <div class="meta"><span>Commit</span><span><code>${short(c.h)}</code><span class="copy" id="copy">Copy hash</span></span>
+      <span>Author</span><span>${esc(c.a)}</span><span>Date</span><span>${date} · ${rel(c.t)}</span>
+      <span>Parent${c.p.length > 1 ? "s" : ""}</span><span>${c.p.map(p => `<a data-go="${p}">${short(p)}</a>`).join("") || "none"}</span></div>
+      ${lab ? `<div class="labels">${lab}</div>` : ""}</div>
+    ${foldNote}
+    <div class="body">${esc(c.b)}</div>
+    <div class="fh"><span>${c.fn} file${c.fn === 1 ? "" : "s"}${c.p.length > 1 ? " (against its first parent)" : ""}</span><span class="sp"></span><span>${total} lines</span></div>
+    ${c.f.map(f => { const a = +f[1] || 0, d = +f[2] || 0, w = 40 * (a + d) / max; return `<div class="f"><span class="p">&lrm;${esc(f[0])}</span><span class="a">+${a}</span><span class="d">−${d}</span><span class="bar"><i style="width:${w * a / Math.max(1, a + d)}px;background:var(--ok)"></i><i style="width:${w * d / Math.max(1, a + d)}px;background:var(--bad)"></i></span></div>`; }).join("")}
+    ${c.fn > c.f.length ? `<div class="f" style="color:var(--muted)">and ${c.fn - c.f.length} more</div>` : ""}
+    <div class="open">↩ opens <code>kanna open diff ${short(c.h)}^!</code></div>`;
+}
+
+function findHits() {
+  const q = state.find.trim().toLowerCase();
+  if (!state.findOn || !q) return new Set();
+  return new Set(commitsNow(state.shown).filter(c => c.s.toLowerCase().includes(q) || c.h.startsWith(q)).map(c => c.h));
+}
+function findLabel(hits) {
+  if (!state.findOn || !state.find.trim()) return "";
+  if (!hits.size) return "no match";
+  const list = M ? M.rows.filter(r => hits.has(r.c.h)) : [];
+  const i = list.findIndex(r => r.c.h === state.sel);
+  return `${i >= 0 ? i + 1 : "–"} of ${hits.size}`;
+}
+function findStep(dir) {
+  const hits = findHits(); if (!hits.size) return;
+  const all = commitsNow(state.shown).map(c => c.h).filter(h => hits.has(h));
+  const cur = all.indexOf(state.sel);
+  const h = all[(cur + dir + all.length) % all.length] ?? all[0];
+  reveal(h); select(h);
+}
+function reveal(h) {
+  if (M.side.has(h) && M.foldable.has(M.side.get(h)) && !state.unfolded.has(M.side.get(h))) { state.unfolded.add(M.side.get(h)); render(true); }
+}
+
+function select(h, scroll = true) {
+  state.sel = h;
+  document.querySelectorAll(".row.sel").forEach(e => e.classList.remove("sel"));
+  const el = document.querySelector(`.row[data-h="${h}"]`); if (!el) return;
+  el.classList.add("sel");
+  if (scroll) {
+    const sc = document.getElementById("scroller"), y = el.offsetTop;
+    if (y < sc.scrollTop + ROW) sc.scrollTop = y - ROW * 2;
+    else if (y > sc.scrollTop + sc.clientHeight - ROW * 2) sc.scrollTop = y - sc.clientHeight + ROW * 3;
+  }
+  detail();
+  const fc = document.getElementById("fcount"); if (fc) fc.textContent = findLabel(findHits());
+}
+
+function toggleFold(m, open) {
+  if (!M.foldable.has(m)) return;
+  if (open === undefined) open = !state.unfolded.has(m);
+  if (open) state.unfolded.add(m); else state.unfolded.delete(m);
+  render(true);
+}
+
+function toast(html) {
+  document.querySelectorAll(".toast").forEach(t => t.remove());
+  const t = document.createElement("div"); t.className = "toast"; t.innerHTML = html;
+  log.appendChild(t); setTimeout(() => t.remove(), 1800);
+}
+function openDiff(h) {
+  toast(`Opens <code>kanna open diff ${short(h)}^!</code> in a new tab`);
+  say(`<span class="g">(the app runs)</span> kanna open diff ${short(h)}^!\n<span class="g">opened diff-412 · tab 3</span>\n`);
+}
+
+function bind() {
+  document.querySelectorAll(".row").forEach(el => {
+    el.onclick = e => { if (e.target.classList.contains("fold")) return toggleFold(e.target.dataset.m); select(el.dataset.h, false); };
+    el.ondblclick = () => openDiff(el.dataset.h);
+  });
+  document.querySelectorAll("[data-go]").forEach(a => a.onclick = () => { reveal(a.dataset.go); select(a.dataset.go); });
+  const copy = document.getElementById("copy"); if (copy) copy.onclick = () => toast(`Copied <code>${state.sel}</code>`);
+  const nc = document.getElementById("newc"); if (nc) nc.onclick = refresh;
+  const fq = document.getElementById("fq");
+  fq.oninput = () => { state.find = fq.value; const hits = findHits(); document.querySelectorAll(".row").forEach(r => r.classList.toggle("hit", hits.has(r.dataset.h))); document.getElementById("fcount").textContent = findLabel(hits); };
+  fq.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); findStep(e.shiftKey ? -1 : 1); } if (e.key === "Escape") closeFind(); e.stopPropagation(); };
+  document.getElementById("fnext").onclick = () => findStep(1);
+  document.getElementById("fprev").onclick = () => findStep(-1);
+  document.getElementById("fclose").onclick = closeFind;
+}
+function closeFind() { state.findOn = false; state.find = ""; render(true); }
+
+function refresh() {
+  if (state.held === state.shown) return;
+  const before = new Set(model(state.shown).rows.map(r => r.c.h));
+  state.shown = state.held;
+  const after = model(state.shown).rows.map(r => r.c.h);
+  state.fresh = new Set(after.filter(h => !before.has(h)));
+  render(true);
+  setTimeout(() => { state.fresh.clear(); }, 2600);
+}
+
+document.addEventListener("keydown", e => {
+  if (!state.open) return;
+  if (e.metaKey && e.key === "f") { e.preventDefault(); state.findOn = true; render(true); const fq = document.getElementById("fq"); fq.focus(); fq.select(); return; }
+  if (e.metaKey && e.key === "r") { e.preventDefault(); refresh(); return; }
+  if (e.metaKey && e.key === "c") { e.preventDefault(); toast(`Copied <code>${state.sel}</code>`); return; }
+  if (e.metaKey || e.altKey || e.ctrlKey) return;
+  const rows = M.rows, i = rows.findIndex(r => r.c.h === state.sel);
+  const go = j => { if (rows[j]) select(rows[j].c.h); };
+  if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); go(i + 1); }
+  else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); go(i - 1); }
+  else if (e.key === "g") go(0);
+  else if (e.key === "G") go(rows.length - 1);
+  else if (e.key === "ArrowRight" || e.key === "l") { e.preventDefault(); toggleFold(state.sel, true); }
+  else if (e.key === "ArrowLeft" || e.key === "h") { e.preventDefault(); const m = M.side.get(state.sel); if (M.foldable.has(state.sel) && state.unfolded.has(state.sel)) toggleFold(state.sel, false); else if (m && state.unfolded.has(m)) { state.unfolded.delete(m); state.sel = m; render(true); select(m); } }
+  else if (e.key === "Enter") openDiff(state.sel);
+});
+
+const term = document.getElementById("term");
+let said = "";
+function say(s) { said += s; term.innerHTML = said; }
+function renderTabs() {
+  const tabs = state.open ? [["log", true], ["diff --merge-base main", false]] : [["diff --merge-base main", true]];
+  document.getElementById("dtabs").innerHTML = tabs.map(([n, on]) => `<div class="dtab${on ? " on" : ""}">${n}<span class="x">✕</span></div>`).join("") + `<span class="add">+</span>`;
+}
+
+function openPlanner() {
+  Object.assign(state, { open: true, scope: "planner", sel: null, unfolded: new Set() });
+  document.getElementById("aname").textContent = "claude · planner";
+  document.getElementById("where").innerHTML = "<b>kanna</b> · Desk";
+  said = ""; say(`<span class="p">❯</span> show me where the tasks are\n\n<span class="c">⏺</span> Bash(kanna open log)\n  <span class="g">⎿ opened log-31 in ws-1, tab-12: running</span>\n\n<span class="c">⏺</span> The log is open beside me: main as a line of merges, and each task's branch with how far it is behind main. Three Shelf tasks are merged and can be marked done.\n`);
+  render();
+}
+function openTask() {
+  Object.assign(state, { open: true, scope: "task", sel: null, unfolded: new Set() });
+  document.getElementById("aname").textContent = "claude · App waits for its daemon and keeper";
+  document.getElementById("where").innerHTML = "<b>App waits for its daemon and keeper</b> · Desk";
+  said = ""; say(`<span class="p">❯</span> how far behind main are we?\n\n<span class="c">⏺</span> Bash(kanna open log)\n  <span class="g">⎿ opened log-32 in ws-43 (task-6676, on the Desk), tab-7: running</span>\n\n<span class="c">⏺</span> 7 commits ahead and 12 behind main: the log shows both.\n`);
+  render();
+}
+let made = 0;
+document.getElementById("openPlanner").onclick = openPlanner;
+document.getElementById("openTask").onclick = openTask;
+document.getElementById("commit").onclick = () => {
+  if (!state.open) return;
+  const t = H.tasks.find(t => t.id === CALLER);
+  const prev = extra.length ? extra[extra.length - 1].h : t.tip;
+  const subjects = ["App waits for the keeper's socket before its first request", "The daemon answers hello once its keeper is up; e2e app_waits"];
+  if (made >= subjects.length) return;
+  const h = ("f0" + made + "c" + "9e3a41b27d").padEnd(40, "0");
+  extra.push({ h, p: [prev], a: "Jeremy Hale", t: H.now, r: [], s: subjects[made], b: "", f: [["apps/kanna/Sources/Kanna/Daemon/DaemonLink.swift", "24", "6"]], fn: 1, task: CALLER });
+  made++;
+  state.held = extra.length;
+  say(`\n<span class="c">⏺</span> Bash(git commit -m "${subjects[made - 1].slice(0, 40)}…")\n`);
+  render(true);
+};
+document.getElementById("theme").onclick = () => { state.theme = state.theme === "light" ? "dark" : "light"; render(true); };
+document.getElementById("reset").onclick = () => { const t = state.theme; state = init(); state.theme = t; extra.length = 0; made = 0; said = ""; term.innerHTML = ""; render(); };
+
+const q = new URLSearchParams(location.search);
+if (q.has("picture")) document.body.classList.add("picture");
+if (q.has("light")) state.theme = "light";
+render();
+if (q.has("open")) openPlanner();
+if (q.has("task")) openTask();
+if (q.has("unfold")) { const m = M.rows.find(r => r.fold && r.spine && r.c.s.startsWith(q.get("unfold"))); if (m) toggleFold(m.c.h, true); }
+if (q.has("sel")) { const r = M.rows.find(r => r.c.s.startsWith(q.get("sel")) || r.c.h.startsWith(q.get("sel"))); if (r) select(r.c.h); }
+if (q.has("held")) { document.getElementById("commit").click(); document.getElementById("commit").click(); }
+if (q.has("find")) { state.findOn = true; state.find = q.get("find"); render(true); findStep(1); }
+if (q.has("scroll")) document.getElementById("scroller").scrollTop = +q.get("scroll");
+</script>
+</body>
+</html>

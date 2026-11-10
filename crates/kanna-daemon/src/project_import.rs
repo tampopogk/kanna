@@ -1,4 +1,4 @@
-use crate::projects::{canonical, home_place, identity, tilde};
+use crate::projects::{canonical, home_place, identity_off_loop, tilde};
 use kanna_mux::json::{json, Value};
 use kanna_mux::{project, KmuxError};
 use std::fs;
@@ -62,8 +62,8 @@ pub fn plan(repos: &Path, path: &Path, homes: &[PathBuf]) -> Result<Import, Kmux
         return Err(refused("in_place", format!("{} is in its place already", tilde(&from))));
     }
     if to.exists() || fs::symlink_metadata(&to).is_ok() {
-        let theirs = identity(&canonical(&to));
-        return Err(match identity(&from).filter(|mine| mine.starts_with("url:") && Some(mine) == theirs.as_ref()) {
+        let theirs = identity_off_loop(&canonical(&to));
+        return Err(match identity_off_loop(&from).filter(|mine| mine.starts_with("url:") && Some(mine) == theirs.as_ref()) {
             Some(same) => refused(
                 "clash",
                 format!("{} and {} are both clones of {}, and a project has one place: keep one of them (remove the other, or give it another origin), then import again", tilde(&from), tilde(&to), &same[4..]),
@@ -92,6 +92,22 @@ pub fn shifted(text: &str, from: &Path, to: &Path) -> Option<String> {
 pub struct Copied {
     pub worktrees: usize,
     pub outside: Vec<PathBuf>,
+}
+
+pub struct Moved {
+    pub copied: Copied,
+    pub sessions: Carried,
+    pub mentions: Vec<String>,
+}
+
+pub fn moved(plan: &Import) -> Result<Moved, String> {
+    let copied = copy(plan)?;
+    let mut sessions = Carried::default();
+    for from in plan.froms() {
+        let found = Stores::here().carry(&from, &plan.to);
+        sessions = Carried { claude: sessions.claude + found.claude, codex: sessions.codex + found.codex, opencode: sessions.opencode + found.opencode, kept: [sessions.kept, found.kept].concat() };
+    }
+    Ok(Moved { copied, sessions, mentions: mentions(&crate::agents::home(), &plan.to, &plan.from) })
 }
 
 pub fn copy(plan: &Import) -> Result<Copied, String> {
@@ -189,7 +205,6 @@ fn rejoin(plan: &Import) -> Result<Copied, String> {
 pub struct Stores {
     pub claude: PathBuf,
     pub codex: PathBuf,
-    pub copilot: PathBuf,
     pub opencode: PathBuf,
 }
 
@@ -197,14 +212,13 @@ pub struct Stores {
 pub struct Carried {
     pub claude: usize,
     pub codex: usize,
-    pub copilot: usize,
     pub opencode: usize,
     pub kept: Vec<String>,
 }
 
 impl Carried {
     pub fn to_value(&self) -> Value {
-        json!({ "claude": self.claude, "codex": self.codex, "copilot": self.copilot, "opencode": self.opencode, "kept": self.kept })
+        json!({ "claude": self.claude, "codex": self.codex, "opencode": self.opencode, "kept": self.kept })
     }
 }
 
@@ -214,14 +228,13 @@ impl Stores {
         let home = crate::agents::home();
         let ours = var("KANNA_AGENTS_HOME").is_some();
         let dir = |name: &str, default: &str| var(name).filter(|_| !ours).unwrap_or_else(|| home.join(default));
-        Stores { claude: dir("CLAUDE_CONFIG_DIR", ".claude"), codex: dir("CODEX_HOME", ".codex"), copilot: dir("COPILOT_HOME", ".copilot"), opencode: dir("XDG_DATA_HOME", ".local/share").join("opencode") }
+        Stores { claude: dir("CLAUDE_CONFIG_DIR", ".claude"), codex: dir("CODEX_HOME", ".codex"), opencode: dir("XDG_DATA_HOME", ".local/share").join("opencode") }
     }
 
     pub fn carry(&self, from: &Path, to: &Path) -> Carried {
         let mut carried = Carried::default();
         self.claude_folders(from, to, &mut carried);
         carried.codex = self.codex_rollouts(from, to);
-        carried.copilot = self.copilot_sessions(from, to);
         carried.opencode = self.opencode_sessions(from, to).unwrap_or_else(|error| {
             carried.kept.push(format!("opencode's sessions in {}: {error}", tilde(&self.opencode)));
             0
@@ -258,18 +271,6 @@ impl Stores {
                 if rewrite(&rollout, |text| json_paths(text, "cwd", from, to)) {
                     count += 1;
                 }
-            }
-        }
-        count
-    }
-
-    fn copilot_sessions(&self, from: &Path, to: &Path) -> usize {
-        let Ok(listed) = fs::read_dir(self.copilot.join("session-state")) else { return 0 };
-        let mut count = 0;
-        for session in listed.flatten() {
-            let file = session.path().join("workspace.yaml");
-            if fs::metadata(&file).is_ok_and(|m| m.len() <= 64 << 10) && rewrite(&file, |text| yaml_paths(text, &["cwd", "git_root"], from, to)) {
-                count += 1;
             }
         }
         count
@@ -382,33 +383,6 @@ fn json_paths(text: &str, key: &str, from: &Path, to: &Path) -> Option<String> {
         text = out;
     }
     changed.then_some(text)
-}
-
-fn yaml_paths(text: &str, keys: &[&str], from: &Path, to: &Path) -> Option<String> {
-    let mut changed = false;
-    let lines: Vec<String> = text
-        .split_inclusive('\n')
-        .map(|line| {
-            let Some((key, value)) = line.split_once(':') else { return line.to_string() };
-            if !keys.contains(&key.trim()) {
-                return line.to_string();
-            }
-            let body = value.trim_end_matches(['\n', '\r']);
-            let ending = &value[body.len()..];
-            let trimmed = body.trim();
-            let quote = trimmed.chars().next().filter(|c| *c == '"' || *c == '\'');
-            let bare = quote.map_or(trimmed, |q| trimmed.trim_matches(q));
-            match shifted(bare, from, to) {
-                Some(path) => {
-                    changed = true;
-                    let q = quote.map(String::from).unwrap_or_default();
-                    format!("{key}: {q}{path}{q}{ending}")
-                }
-                None => line.to_string(),
-            }
-        })
-        .collect();
-    changed.then(|| lines.concat())
 }
 
 const SKIPPED: &[&str] = &["projects", "todos", "shell-snapshots", "statsig", "debug", "logs", "file-history", "session-env", "plugins", "ide", "cache", "paste-cache", "backups", "telemetry", "sessions", "local", "jobs", "shares", "access-audit", "history.jsonl"];
@@ -601,7 +575,7 @@ mod tests {
         let (from, to) = (dir.join("work/app"), dir.join("repos/a/app"));
         fs::create_dir_all(to.join(".kanna-worktrees/task-1")).unwrap();
         fs::create_dir_all(to.join("docs/specs")).unwrap();
-        let stores = Stores { claude: dir.join(".claude"), codex: dir.join(".codex"), copilot: dir.join(".copilot"), opencode: dir.join("opencode") };
+        let stores = Stores { claude: dir.join(".claude"), codex: dir.join(".codex"), opencode: dir.join("opencode") };
         let projects = stores.claude.join("projects");
         let old = claude_name(&from);
         for name in [old.clone(), format!("{old}--kanna-worktrees-task-1"), format!("{old}--kanna-worktrees-task-gone"), format!("{old}-docs-specs"), format!("{old}-old")] {
@@ -619,15 +593,12 @@ mod tests {
         fs::write(day.join("rollout-1.jsonl"), &ours).unwrap();
         fs::write(day.join("rollout-2.jsonl"), &theirs).unwrap();
         let before = fs::metadata(day.join("rollout-1.jsonl")).unwrap().modified().unwrap();
-        let state = stores.copilot.join("session-state/c1");
-        fs::create_dir_all(&state).unwrap();
-        fs::write(state.join("workspace.yaml"), format!("id: c1\ncwd: {}\ngit_root: \"{}\"\nsummary: from {}\n", from.join(".kanna-worktrees/task-1").display(), from.display(), from.display())).unwrap();
         fs::create_dir_all(&stores.opencode).unwrap();
         let db = rusqlite::Connection::open(stores.opencode.join("opencode.db")).unwrap();
         db.execute_batch(&format!("create table session (id text, directory text); insert into session values ('o1', '{}'), ('o2', '{}-old'), ('o3', '{}/sub');", from.display(), from.display(), from.display())).unwrap();
         drop(db);
         let carried = stores.carry(&from, &to);
-        assert_eq!((carried.claude, carried.codex, carried.copilot, carried.opencode), (4, 1, 1, 2), "{carried:?}");
+        assert_eq!((carried.claude, carried.codex, carried.opencode), (4, 1, 2), "{carried:?}");
         let mut names: Vec<String> = fs::read_dir(&projects).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         let new = claude_name(&to);
@@ -646,7 +617,6 @@ mod tests {
         assert_eq!(rollout, ours.replace(&from.display().to_string(), &to.display().to_string()));
         assert_eq!(fs::metadata(day.join("rollout-1.jsonl")).unwrap().modified().unwrap(), before, "the rollout keeps its time, which the session lookups go by");
         assert_eq!(fs::read_to_string(day.join("rollout-2.jsonl")).unwrap(), theirs);
-        assert_eq!(fs::read_to_string(state.join("workspace.yaml")).unwrap(), format!("id: c1\ncwd: {}\ngit_root: \"{}\"\nsummary: from {}\n", to.join(".kanna-worktrees/task-1").display(), to.display(), from.display()));
         let db = rusqlite::Connection::open(stores.opencode.join("opencode.db")).unwrap();
         let dirs: Vec<String> = db.prepare("select directory from session order by id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert_eq!(dirs, [to.display().to_string(), format!("{}-old", from.display()), format!("{}/sub", to.display())]);
@@ -660,7 +630,7 @@ mod tests {
         let row = |id: &str, repo: &str, folder: &str| crate::db::Row { id: id.into(), repo: repo.into(), place: crate::db::Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": id, "folder": folder }) };
         db.put(&row("task-00000001", "/w/app", "/w/app/.kanna-worktrees/task-00000001"), None).unwrap();
         db.put(&row("task-00000002", "/w/app-old", "/w/app-old/.kanna-worktrees/task-00000002"), None).unwrap();
-        db.put_message("task-00000001", "/w/app", "user", "hi", None).unwrap();
+        db.put_message("task-00000001", "/w/app", "user", "hi", None, None).unwrap();
         db.touch_project("/w/app").unwrap();
         db.touch_project("/r/a/app").unwrap();
         db.put_planner("/w/app", &json!({ "agent": "claude", "session": "s" })).unwrap();

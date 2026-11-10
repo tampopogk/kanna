@@ -1,6 +1,6 @@
 # Machines: Identity and Pairing
 
-**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Cloud:** [enrollment by token](kanna-cloud.md#4-enrollment-by-token), [hosted peers](kanna-cloud.md#8-threat-model) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
+**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
 
 How one of your machines knows another is yours, with no account and no server. The rule, here and in [Kanna Cloud](kanna-cloud.md): **trust comes from your devices, never from a server.**
 
@@ -18,6 +18,7 @@ How one of your machines knows another is yours, with no account and no server. 
 |---|---|---|
 | `device.key` (Ed25519 in hex, `0600`, in the instance's state folder, [instances](instances.md); made on first start) | the daemon | the device's signing key and the daemon's iroh endpoint ID |
 | the app's endpoint key | Kanna.app, made at first launch | its own iroh endpoint, with a **certificate** from `device.key`: `{key, device, sig}` |
+| a phone's device key (planned) | the phone's Keychain | its iroh endpoint, in the log with `role: "phone"`: it adds nobody and runs nothing ([phone link §1](mobile-link.md#1-a-phone-in-the-peer-log)) |
 
 - **Why two:** an iroh endpoint *is* its key, so the daemon and the app can't share one. The relay would register only the latest, and the daemon would drop off while the app is open.
 - **A remote daemon accepts** an endpoint whose certificate chains to a device in its peer log. The certificate is in the header of the app's `control` stream ([links §1](machine-links.md#1-making-a-link)).
@@ -25,7 +26,7 @@ How one of your machines knows another is yours, with no account and no server. 
 
 ## 2. Pairing
 
-A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. (Kanna Cloud reuses it with a token instead of a typed code: [enrollment](kanna-cloud.md#4-enrollment-by-token).)
+A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. A phone pairs by the same exchange with the Mac showing the code in a QR ([phone link §2](mobile-link.md#2-pairing)).
 
 ```mermaid
 sequenceDiagram
@@ -82,7 +83,7 @@ The peers are a **signed log**, not a record that replicates by last writer wins
   - **Codex:** nothing. Codex denies reads only in a permission profile (`[permissions.NAME.filesystem]`, `"PATH" = "deny"`), which can't be used beside `sandbox_mode`, and Kanna starts Codex with `--yolo` (`sandbox_mode="danger-full-access"`), so a Codex agent can read the key.
 - **A machine that runs your agent sees your code.** End-to-end encryption protects what passes through a relay, not what runs on a host.
 - **A stolen key can still revoke on a stale branch:** those revocations stand (they must, for mutual revocation), so a thief can shut honest machines out until they re-pair. It can't let anything in.
-- **On machines someone else runs,** the operator can sign with `device.key` too: that's Kanna Cloud's threat model ([Cloud §8](kanna-cloud.md#8-threat-model)).
+- **Kanna Cloud's VMs are never peers:** a customer's Kanna reaches them through its link to Kanna Cloud, for one task each ([Cloud §6](kanna-cloud.md#6-the-link-to-kanna-cloud)), so no key someone else holds is ever in your peer log.
 
 ## 5. Interfaces
 
@@ -97,7 +98,7 @@ The peers are a **signed log**, not a record that replicates by last writer wins
 | `kanna machine revoke MACHINE` | revokes a machine for good and tells the others |
 | `kanna --host MACHINE COMMAND …` (or `KANNA_HOST`) | runs COMMAND on that machine: its name, or its key |
 
-A MACHINE is a name in the log or a 64-digit key. `kanna machine update` is in [updates](machine-update.md). The daemon's `machine` command takes the same actions (`status`, `name`, `offer`, `wait`, `pair`, `ping`, `sync`, `addr`, `revoke`, `update`, `call`); `call {host, cmd, args}` is what `--host` sends, and its reply is the remote daemon's reply. Error codes: `unpaired`, `revoked`, `identity_mismatch`, `unreachable`, `not_found`, `gesture_required`, `pake_confirmation_failed`, `code_expired`, `rate_limited`, `already_paired`, `broken`.
+A MACHINE is a name in the log or a 64-digit key. The daemon's `machine` command takes the same actions (`status`, `name`, `offer`, `wait`, `pair`, `ping`, `sync`, `addr`, `revoke`, `call`); `call {host, cmd, args}` is what `--host` sends, and its reply is the remote daemon's reply. Error codes: `unpaired`, `revoked`, `identity_mismatch`, `unreachable`, `not_found`, `gesture_required`, `pake_confirmation_failed`, `code_expired`, `rate_limited`, `already_paired`, `broken`.
 
 **Port:** the endpoint binds the UDP port it used last (kept in the `machines` document), else 7470, else any free port. `KANNA_MACHINE_PORT` overrides it, and `KANNA_MACHINE_MDNS=0` turns LAN discovery off; tests set both, so test daemons never advertise on the LAN.
 

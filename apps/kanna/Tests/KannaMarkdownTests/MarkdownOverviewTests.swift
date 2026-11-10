@@ -31,23 +31,32 @@ struct MarkdownOverviewTests {
         #expect(MarkdownOverviewLayout.column(room - OverviewMetrics.width) == MarkdownTheme.maxTextWidth)
     }
 
+    @Test func theDocIsMeasuredAtFullSizeAtItsWidth() {
+        let paragraph = String(repeating: "The redirect is checked before the app trusts it. ", count: 40)
+        let storage = NSTextStorage(string: paragraph, attributes: [.font: NSFont.systemFont(ofSize: MarkdownTheme.bodySize)])
+        let layout = MarkdownFullSizeLayout(storage: storage, padding: 5)
+        let wide = layout.height(key: [1], width: 1200, insetHeight: 22)
+        let narrow = layout.height(key: [1], width: 600, insetHeight: 22)
+        #expect(narrow > wide)
+        #expect(wide > 44)
+        storage.append(NSAttributedString(string: paragraph, attributes: [.font: NSFont.systemFont(ofSize: MarkdownTheme.bodySize)]))
+        #expect(layout.height(key: [1], width: 600, insetHeight: 22) == narrow)
+        #expect(layout.height(key: [2], width: 600, insetHeight: 22) > narrow)
+        layout.detach()
+        #expect(storage.layoutManagers.isEmpty)
+    }
+
     @Test func itShowsForADocTallerThanThePaneAtFullSize() {
         #expect(MarkdownOverviewLayout.wanted(enabled: true, contentHeight: 701, paneHeight: 700))
         #expect(!MarkdownOverviewLayout.wanted(enabled: true, contentHeight: 700, paneHeight: 700))
         #expect(!MarkdownOverviewLayout.wanted(enabled: false, contentHeight: 5000, paneHeight: 700))
     }
 
-    @Test func theCommentsListOutlastsTheOverview() {
-        var last = (overview: true, comments: true)
-        var seen: [String] = []
+    @Test func theCommentsListLeavesTheOverviewAlone() {
         for width in stride(from: CGFloat(1600), through: 300, by: -10) {
-            let now = shown(width, comments: true)
-            #expect(!(now.overview && !last.overview) && !(now.comments && !last.comments))
-            let name = "\(now.overview ? "overview" : "")+\(now.comments ? "list" : "")"
-            if seen.last != name { seen.append(name) }
-            last = now
+            #expect(shown(width, comments: true).overview == shown(width).overview)
+            #expect(shown(width, comments: true, forced: true).overview == shown(width).overview)
         }
-        #expect(seen == ["overview+list", "+list", "+"])
     }
 
     @Test func theListShowsAtTwiceItsWidthAlone() {
@@ -62,16 +71,18 @@ struct MarkdownOverviewTests {
     }
 
     @Test func thePictureKeyChangesWithTheLook() {
-        let key = MarkdownPictureKey(revision: 1, width: 900, dark: true, comments: [])
+        let key = MarkdownPictureKey(revision: 1, width: 900, height: 4000, dark: true, comments: [])
         var reload = key
         reload.revision += 1
         var wider = key
         wider.width = 1000
+        var taller = key
+        taller.height = 4200
         var light = key
         light.dark = false
         var commented = key
         commented.comments = MarkdownPictureKey.comments([DocMark(range: NSRange(location: 4, length: 3), kind: .open)])
-        for changed in [reload, wider, light, commented] { #expect(changed != key) }
+        for changed in [reload, wider, taller, light, commented] { #expect(changed != key) }
         var resolved = commented
         resolved.comments = MarkdownPictureKey.comments([DocMark(range: NSRange(location: 4, length: 3), kind: .resolved)])
         #expect(resolved != commented)

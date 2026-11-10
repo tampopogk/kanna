@@ -65,8 +65,8 @@ A range shows a past version, not the file on disk, so it **doesn't reload** (an
 
 ```mermaid
 flowchart LR
-    F[file on disk] --> P1[parse]
-    G["git merge-base REF HEAD<br/>git show BASE:./FILE<br/>(a range: git show A: and B:)"] --> P2[parse]
+    F["file, from the daemon"] --> P1[parse]
+    G["the daemon: git merge-base REF HEAD<br/>git show BASE:./FILE<br/>(a range: git show A: and B:)"] --> P2[parse]
     P1 --> B[match blocks]
     P2 --> B
     B --> W[diff words in paired blocks]
@@ -77,16 +77,16 @@ flowchart LR
 
 | Part | Where |
 |---|---|
-| `--diff`: a bare one resolves to main or master | `crates/kanna/src/commands.rs` |
+| `--diff`: a bare one resolves to main or master | `crates/kanna/src/commands/open.rs` |
 | `diff` in the pane's record, saved in `layout.json` | `crates/kanna-mux/src/pane.rs`, `state.rs`, `core.rs` |
 | The old text, block and word diff | `apps/kanna/Sources/KannaMarkdown/MarkdownDiff.swift` |
 | Rendering both versions into one doc, the marks | `MarkdownRenderer.swift`; the bars in `MarkdownLayoutManager.swift` |
 | Header, reload, keys | `MarkdownPaneView.swift`, the header's chip in `KannaDocs/DocComments.swift` |
 
 - **Matching** is a longest common subsequence of the blocks (as `git diff` matches lines), then, between each pair of matches, the best pairing of same-kind blocks by shared words. Words are matched the same way. Past 4 million cells either step gives up pairing: the blocks show removed and added.
-- **The diff runs in the app** on the text the daemon sends ([file panes](file-panes.md)); the daemon only keeps REF in the record. The app still runs `git` (`/usr/bin/git`) in the file's folder for the base and a range's versions, which is to move to the daemon ([file panes §5](file-panes.md#5-not-in-this-change)).
+- **The diff runs in the app** on the texts the daemon sends: the file's, and with it the base's or a range's two versions, which the daemon reads with `git` in the file's folder and checks again every 2 s ([files and threads](files-and-threads.md#2-messages)).
 - **Rendering:** the renderer walks the new doc with the diff's entries; a removed block is rendered from the old doc where it was, a changed one from both, merged word by word. Every changed block carries a `kanna.change` attribute (added, removed, changed); the bars and the count read it.
-- **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, list items, table rows, headings, a changed diagram, a new file, the word diff, a range's two versions); `markdown_diff` in `scripts/e2e-kanna.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF, a range: B's text, no reload, no comments, a doc new in B, one missing from B).
+- **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, list items, table rows, headings, a changed diagram, a new file, the word diff); `files.rs` (the base, a range's two versions, a bad REF); `markdown_diff` in `scripts/e2e-kanna.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF, a range: B's text, no reload, no comments, a doc new in B, one missing from B).
 
 The pane's [overview](markdown-overview.md) marks the changes down its right edge, in the bars' colours.
 

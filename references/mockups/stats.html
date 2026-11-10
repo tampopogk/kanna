@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stats Tab Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --series: #3987e5; --wash: rgba(57,135,229,.12); --context: #5b616b; --made: #6f7783; --done: #3f9a6e; --grid: #262a31; --axis: #3a404a;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+  --series: #2a78d6; --wash: rgba(42,120,214,.10); --context: #b9bec7; --made: #9aa1ab; --done: #2f9a68; --grid: #eceef1; --axis: #c9cdd4;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 820px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { color: var(--text); font-size: 12px; font-weight: 600; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 34%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; }
+.term .p { color: var(--warn); } .term .m { color: var(--machine); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; height: 26px; padding: 0 10px; color: var(--muted); white-space: nowrap; cursor: pointer; border-radius: 6px; }
+.dtab.fixed { font-weight: 500; }
+.dtab.on { color: var(--text); background: var(--panel); }
+.dtabs .sep { width: 1px; height: 14px; background: var(--line); margin: 0 4px; }
+
+.page { flex: 1; overflow: auto; padding: 28px 32px 40px; position: relative; }
+.page h2 { font-size: 22px; margin: 0; }
+.page .sub { color: var(--muted); margin: 4px 0 0; }
+.section { margin-top: 40px; max-width: 980px; }
+.section > .sh { display: flex; align-items: baseline; gap: 10px; padding: 7px 12px; border-radius: 6px; background: var(--panel2); }
+.section > .sh b { font-size: 15px; font-weight: 700; }
+.section > .sh span { color: var(--muted); font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px 22px; margin-top: 14px; }
+.grid.two { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.grid.three { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.tile { min-width: 0; }
+.tile.wide { grid-column: span 2; }
+.tile .label { color: var(--muted); font-size: 12px; }
+.tile .value { font-size: 24px; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+.tile .value small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+.tile.hero .value { font-size: 34px; }
+.chart { position: relative; height: 84px; margin-top: 8px; }
+.tile.hero .chart { height: 120px; }
+.tile.full { grid-column: 1 / -1; }
+.chart.flow { height: 150px; }
+.legend { display: flex; gap: 14px; color: var(--muted); font-size: 11px; margin-top: 4px; }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.chart svg { display: block; overflow: visible; }
+.chart text { font: 10px var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
+.empty-note { color: var(--muted); font-size: 12px; margin-top: 10px; max-width: 520px; }
+
+.ranked { margin-top: 10px; }
+.ranked .r { display: grid; grid-template-columns: 140px 1fr 86px; align-items: center; gap: 10px; height: 24px; }
+.ranked .r .n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ranked .r .v { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.ranked .track { height: 8px; position: relative; }
+.ranked .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--series); border-radius: 0 4px 4px 0; }
+.ranked .r:hover .fill { filter: brightness(1.15); }
+
+.placeholder { margin-top: 14px; padding: 18px 20px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); }
+.placeholder b { color: var(--text); font-weight: 600; }
+
+.tip { position: absolute; pointer-events: none; z-index: 10; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 12px; white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.tip b { font-size: 13px; }
+.tip span { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Stats: a project's numbers over the last 30 days</h1>
+    <p>A third fixed tab in the Desk view, after Desk and Machines. Each number is today's value over a small chart of the last 30 days; hover a chart for a day's value. Quiz: the share of kept quiz answers you got right in the 30 days before each day, by kind and by area, and the misses still to come back. Main: commits and merges (tasks landed) per day. Tasks: how many are open at the end of each day (not done, Desk and Shelf together) with each day's made and done under it, made, started and ended per day, and how long each task took from made to done. Agents: how long task agents worked, how long they waited on you and how soon you answered, how long finished work sat unlooked at, and turns per task with the median turn. Code quality is a placeholder for the next task.</p>
+    <div class="controls">
+      <button id="theme">Light / dark</button>
+      <button id="empty">A new project</button>
+    </div>
+  </div>
+  <div id="stage"></div>
+</main>
+<script>
+const DAY = 86400000;
+const DAYS = 30;
+const today = new Date(2026, 9, 31);
+let fresh = location.hash.includes("empty");
+
+const sum = a => a.reduce((x, y) => x + (y || 0), 0);
+function rng(seed) { let x = seed; return () => (x = (x * 1103515245 + 12345) % 2147483648) / 2147483648; }
+function series(seed, base, swing, zeroes = 0.1) {
+  const r = rng(seed);
+  return Array.from({ length: DAYS }, (_, i) => {
+    const weekend = [0, 6].includes(new Date(today - (DAYS - 1 - i) * DAY).getDay());
+    if (r() < zeroes + (weekend ? 0.25 : 0)) return 0;
+    return Math.max(0, Math.round(base + (r() - 0.5) * swing + i * 0.08 * base / 10));
+  });
+}
+function data() {
+  if (fresh) {
+    const commits = Array(DAYS).fill(0); commits[27] = 3; commits[28] = 5; commits[29] = 2;
+    const merges = Array(DAYS).fill(0); merges[29] = 1;
+    const made = Array(DAYS).fill(0); made[28] = 4; made[29] = 2;
+    const started = Array(DAYS).fill(0); started[28] = 2; started[29] = 3;
+    const ended = Array(DAYS).fill(0); ended[29] = 1;
+    return { project: "~/work/notes", before: 0, grade: null, misses: [], kinds: [], areas: [], answers: 0, commits, merges, made, started, ended, lead: [{ day: 29, hours: 5.2, name: "Set up the repo" }], agents: null };
+  }
+  const r = rng(7);
+  const grade = Array.from({ length: DAYS }, (_, i) => i < 4 ? null : Math.round((0.58 + i * 0.0068 + (r() - 0.5) * 0.04) * 1000) / 10);
+  const misses = Array.from({ length: DAYS }, (_, i) => i < 4 ? null : Math.max(0, Math.round(3 + i * 0.25 - (i > 20 ? (i - 20) * 0.6 : 0) + (r() - 0.5) * 2)));
+  const merges = series(11, 6, 8, 0.05);
+  const commits = merges.map((m, i) => m * 3 + Math.round(rng(i + 3)() * 8));
+  const lead = [];
+  const lr = rng(5);
+  merges.forEach((m, day) => { for (let k = 0; k < m; k++) lead.push({ day, hours: Math.round(Math.exp(lr() * 3.6 - 0.4) * 10) / 10, name: ["Stats tab on the Desk", "Fix the page_comments pinch", "Agent prompts setting", "Cycle skips minimized", "Shelf trailing closure warning", "Release notes"][Math.floor(lr() * 6)] }); });
+  return {
+    project: "~/work/kanna-v4", before: 31,
+    grade, misses, answers: 95,
+    kinds: [["why", 11, 12], ["where", 13, 16], ["behaviour", 15, 20], ["architecture", 14, 21], ["drawing", 6, 10], ["bug", 9, 16]],
+    areas: [["docs/specs", 17, 20], ["crates/kanna-daemon", 19, 26], ["apps/kanna", 15, 22], ["crates/kanna", 7, 11], ["scripts", 5, 9], ["Other", 5, 7]],
+    commits, merges, made: series(21, 7, 8), started: series(31, 8, 9), ended: series(41, 6, 8), lead,
+    agents: agentData(merges),
+  };
+}
+function agentData(merges) {
+  const r = rng(13);
+  const names = ["Stats tab on the Desk", "Fix the page_comments pinch", "Agent prompts setting", "Cycle skips minimized", "Shelf trailing closure warning", "Release notes"];
+  const work = merges.map(m => Math.round((m * 2.6 + r() * 5) * 10) / 10);
+  const waiting = merges.map(m => m ? Math.round((m * 0.5 + r() * 1.2) * 10) / 10 : 0);
+  const answers = [], unread = [];
+  merges.forEach((m, day) => {
+    for (let k = 0; k < m * 2; k++) answers.push({ day, hours: Math.round(Math.exp(r() * 4.2 - 4) * 100) / 100, name: names[Math.floor(r() * 6)] });
+    for (let k = 0; k < m; k++) unread.push({ day, hours: Math.round(Math.exp(r() * 5 - 3) * 100) / 100, name: names[Math.floor(r() * 6)] });
+  });
+  const turns = merges.map(m => m * 5 + Math.round(r() * 9)), tasks = merges.map(m => m + 2);
+  const perTask = turns.map((t, i) => Math.round(t / tasks[i] * 10) / 10);
+  const length = merges.map((m, i) => Math.round((5 + i * 0.05 + (r() - 0.5) * 3) * 10) / 60 / 10);
+  return { work, waiting, answers, unread, turns: sum(turns), tasks: Math.round(sum(turns) / 4.3), perTask, length, waitingNow: 2, unreadNow: 3 };
+}
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const dayOf = i => new Date(today - (DAYS - 1 - i) * DAY);
+const fmtDay = i => i === DAYS - 1 ? "Today" : dayOf(i).toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
+const short = i => i === DAYS - 1 ? "today" : dayOf(i).toLocaleDateString("en", { month: "short", day: "numeric" });
+const hours = h => h < 1 ? `${Math.round(h * 60)}m` : h < 48 ? `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`.replace(/ 0m$/, "") : `${Math.round(h / 24)}d`;
+const total = h => h < 1 ? `${Math.round(h * 60)}m` : h < 10 ? `${Math.round(h * 10) / 10}h` : `${Math.round(h)}h`;
+const median = a => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const nice = v => { if (v <= 5) return Math.max(1, Math.ceil(v)); const p = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; };
+
+const charts = [];
+function chart(kind, values, opts = {}) { charts.push({ kind, values, opts }); return `<div class="chart ${kind}" data-chart="${charts.length - 1}"></div>`; }
+const W = 34, PAD = 18;
+
+function draw(el) {
+  const c = charts[+el.dataset.chart], w = el.clientWidth, h = el.clientHeight;
+  const x0 = W, x1 = w - 2, y0 = h - PAD, y1 = 4;
+  const vals = c.values;
+  const p90 = a => { const s = a.slice().sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * 0.9))] || 1; };
+  let max = c.opts.max ?? nice(c.kind === "dots" ? p90(vals.map(p => p.hours)) : Math.max(1, ...vals.filter(v => v != null)));
+  const xs = i => x0 + (i + 0.5) * (x1 - x0) / DAYS;
+  const ys = v => y0 - (v / max) * (y0 - y1);
+  let g = `<line x1="${x0}" x2="${x1}" y1="${y1}" y2="${y1}" stroke="var(--grid)"/><line x1="${x0}" x2="${x1}" y1="${y0}" y2="${y0}" stroke="var(--axis)"/>`;
+  g += `<text x="${x0 - 6}" y="${y1 + 3}" text-anchor="end">${c.opts.unit === "%" ? max + "%" : c.opts.unit === "h" ? hours(max) : max}</text><text x="${x0 - 6}" y="${y0 + 3}" text-anchor="end">0</text>`;
+  for (const i of [0, 15, DAYS - 1]) g += `<text x="${xs(i)}" y="${h - 3}" text-anchor="${i === 0 ? "start" : i === DAYS - 1 ? "end" : "middle"}">${short(i)}</text>`;
+  if (c.kind === "flow") {
+    const strip = 34, ly0 = y0 - strip - 6;
+    const bmax = nice(Math.max(1, ...c.opts.made, ...c.opts.done));
+    const band = (x1 - x0) / DAYS, bw = Math.max(1.5, Math.min(8, band / 2 - 1.5));
+    g = `<line x1="${x0}" x2="${x1}" y1="${y1}" y2="${y1}" stroke="var(--grid)"/><line x1="${x0}" x2="${x1}" y1="${ly0}" y2="${ly0}" stroke="var(--axis)"/><line x1="${x0}" x2="${x1}" y1="${y0}" y2="${y0}" stroke="var(--axis)"/>`;
+    g += `<text x="${x0 - 6}" y="${y1 + 3}" text-anchor="end">${max}</text><text x="${x0 - 6}" y="${ly0 + 3}" text-anchor="end">0</text>`;
+    for (const i of [0, 15, DAYS - 1]) g += `<text x="${xs(i)}" y="${h - 3}" text-anchor="${i === 0 ? "start" : i === DAYS - 1 ? "end" : "middle"}">${short(i)}</text>`;
+    [["made", -1], ["done", 1]].forEach(([k, side]) => c.opts[k].forEach((v, i) => {
+      if (!v) return;
+      const bh = v / bmax * strip, x = side < 0 ? xs(i) - bw - 0.5 : xs(i) + 0.5;
+      g += `<rect x="${x}" y="${y0 - bh}" width="${bw}" height="${bh}" rx="1" fill="var(--${k})"/>`;
+    }));
+    const ly = v => ly0 - (v / max) * (ly0 - y1);
+    const pts = vals.map((v, i) => [xs(i), ly(v)]);
+    g += `<path d="M${pts[0][0]},${ly0} ${pts.map(p => "L" + p.join(",")).join(" ")} L${pts[DAYS - 1][0]},${ly0} Z" fill="var(--wash)"/>`;
+    g += `<path d="${pts.map((p, k) => (k ? "L" : "M") + p.join(",")).join(" ")}" fill="none" stroke="var(--series)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    g += `<circle cx="${pts[DAYS - 1][0]}" cy="${pts[DAYS - 1][1]}" r="4" fill="var(--series)" stroke="var(--bg)" stroke-width="2"/>`;
+  } else if (c.kind === "columns") {
+    const band = (x1 - x0) / DAYS, bw = Math.max(2, Math.min(24, band - 2));
+    vals.forEach((v, i) => {
+      if (!v) return;
+      const top = ys(v), x = xs(i) - bw / 2, r = Math.min(2, bw / 2, y0 - top);
+      g += `<path d="M${x},${y0} V${top + r} Q${x},${top} ${x + r},${top} H${x + bw - r} Q${x + bw},${top} ${x + bw},${top + r} V${y0} Z" fill="var(--series)" data-i="${i}"/>`;
+    });
+  } else if (c.kind === "line") {
+    const pts = vals.map((v, i) => v == null ? null : [xs(i), ys(v)]);
+    const runs = []; let run = [];
+    pts.forEach(p => { if (p) run.push(p); else if (run.length) { runs.push(run); run = []; } });
+    if (run.length) runs.push(run);
+    for (const r of runs) {
+      g += `<path d="M${r[0][0]},${y0} ${r.map(p => "L" + p.join(",")).join(" ")} L${r[r.length - 1][0]},${y0} Z" fill="var(--wash)"/>`;
+      g += `<path d="${r.map((p, k) => (k ? "L" : "M") + p.join(",")).join(" ")}" fill="none" stroke="var(--series)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+    const last = pts[DAYS - 1];
+    if (last) g += `<circle cx="${last[0]}" cy="${last[1]}" r="4" fill="var(--series)" stroke="var(--bg)" stroke-width="2"/>`;
+  } else if (c.kind === "dots") {
+    vals.forEach(p => { g += p.hours > max ? `<path d="M${xs(p.day) - 3},${y1 + 4} L${xs(p.day)},${y1} L${xs(p.day) + 3},${y1 + 4}" fill="none" stroke="var(--context)" stroke-width="1.5"/>` : `<circle cx="${xs(p.day)}" cy="${ys(p.hours)}" r="3" fill="var(--context)"/>`; });
+    const med = Array.from({ length: DAYS }, (_, i) => median(vals.filter(p => p.day > i - 7 && p.day <= i).map(p => p.hours)));
+    const pts = med.map((v, i) => v == null ? null : [xs(i), ys(Math.min(v, max))]).filter(Boolean);
+    if (pts.length > 1) g += `<path d="${pts.map((p, k) => (k ? "L" : "M") + p.join(",")).join(" ")}" fill="none" stroke="var(--series)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    c.med = med;
+  }
+  g += `<line class="hair" x1="0" x2="0" y1="${y1}" y2="${y0}" stroke="var(--muted)" stroke-width="1" visibility="hidden"/>`;
+  el.innerHTML = `<svg width="${w}" height="${h}">${g}</svg>`;
+  el.onpointermove = e => {
+    const box = el.getBoundingClientRect(), px = e.clientX - box.left;
+    const i = Math.max(0, Math.min(DAYS - 1, Math.floor((px - x0) / ((x1 - x0) / DAYS))));
+    const hair = el.querySelector(".hair");
+    hair.setAttribute("x1", xs(i)); hair.setAttribute("x2", xs(i)); hair.setAttribute("visibility", "visible");
+    let text;
+    if (c.kind === "flow") {
+      text = `<b>${vals[i]}</b> <span>open at the end of the day</span><br>${c.opts.made[i]} <span>made</span> · ${c.opts.done[i]} <span>done</span>`;
+    } else if (c.kind === "dots") {
+      const on = vals.filter(p => p.day === i);
+      text = `<b>${c.med[i] == null ? "—" : hours(c.med[i])}</b> <span>7-day median</span><br>${on.length ? on.map(p => `${esc(p.name)} · ${hours(p.hours)}`).join("<br>") : `<span>No task done</span>`}`;
+    } else {
+      const v = vals[i];
+      text = `<b>${v == null ? "—" : c.opts.unit === "%" ? v + "%" : c.opts.unit === "h" ? total(v) : v}</b> <span>${esc(c.opts.what(v))}</span>`;
+    }
+    showTip(`<span>${fmtDay(i)}</span><br>${text}`, e);
+  };
+  el.onpointerleave = () => { el.querySelector(".hair").setAttribute("visibility", "hidden"); hideTip(); };
+}
+
+function showTip(html, e) {
+  const tip = document.querySelector(".tip"), page = document.querySelector(".page");
+  tip.innerHTML = html; tip.hidden = false;
+  const box = page.getBoundingClientRect();
+  let x = e.clientX - box.left + page.scrollLeft + 12, y = e.clientY - box.top + page.scrollTop + 14;
+  if (x + tip.offsetWidth > page.scrollWidth - 8) x -= tip.offsetWidth + 24;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { const tip = document.querySelector(".tip"); if (tip) tip.hidden = true; }
+
+function tile(label, value, note, body, cls = "") {
+  return `<div class="tile ${cls}"><div class="label">${esc(label)}</div><div class="value">${value}${note ? `<small>${esc(note)}</small>` : ""}</div>${body}</div>`;
+}
+function ranked(rows) {
+  return `<div class="ranked">${rows.map(([name, right, all]) => { const p = Math.round(right / all * 100); return `<div class="r" title="${esc(name)}: ${right} of ${all} right"><span class="n">${esc(name)}</span><span class="track"><span class="fill" style="width:${p}%"></span></span><span class="v">${p}% · ${right}/${all}</span></div>`; }).join("")}</div>`;
+}
+
+function render() {
+  const d = data();
+  charts.length = 0;
+  const last = a => a[DAYS - 1];
+  const grade = d.grade && last(d.grade);
+  const leads = d.lead.map(p => p.hours);
+  let count = d.before; const open = d.made.map((m, i) => (count += m - d.ended[i]));
+  const change = open[DAYS - 1] - d.before;
+  const changeNote = change === 0 ? "no change in 30 days" : `${change > 0 ? "+" : "−"}${Math.abs(change)} in 30 days`;
+  const quiz = d.grade ? `
+    <div class="grid two">
+      ${tile("Answers right, last 30 days", Math.round(grade) + "%", `of ${d.answers} answers`, chart("line", d.grade, { unit: "%", max: 100, what: v => v == null ? "No answers yet" : "of the answers in the 30 days before" }), "hero")}
+      ${tile("Misses to come back", last(d.misses), "", chart("line", d.misses, { what: v => v === 1 ? "miss to come back" : "misses to come back" }), "hero")}
+    </div>
+    <div class="grid two">
+      <div class="tile"><div class="label">By kind</div>${ranked(d.kinds.slice().sort((a, b) => b[1] / b[2] - a[1] / a[2]))}</div>
+      <div class="tile"><div class="label">By area</div>${ranked(d.areas.filter(a => a[0] !== "Other").sort((a, b) => b[1] / b[2] - a[1] / a[2]).concat(d.areas.filter(a => a[0] === "Other")))}</div>
+    </div>` : `<p class="empty-note">No quiz answers yet. The planning agent offers a quiz once something lands on main; your answers show here.</p>`;
+  const a = d.agents;
+  const agents = !a ? `<p class="empty-note">No agent status recorded yet. Once a task's agent runs, its time shows here.</p>` : `
+      <div class="grid three">
+        ${tile("Agent time", total(sum(a.work)), `in 30 days · ${total(last(a.work))} today`, chart("columns", a.work, { unit: "h", what: () => "agents worked" }))}
+        ${tile("Waiting on you", total(sum(a.waiting)), `in 30 days · ${total(last(a.waiting))} today`, chart("columns", a.waiting, { unit: "h", what: () => "at needs-you" }))}
+        ${tile("Time to your answer", hours(median(a.answers.map(p => p.hours))), `median of ${a.answers.length} · ${a.waitingNow} waiting now`, chart("dots", a.answers, { unit: "h" }))}
+        ${tile("Done, not looked at", hours(median(a.unread.map(p => p.hours))), `median of ${a.unread.length} · ${a.unreadNow} not looked at yet`, chart("dots", a.unread, { unit: "h" }))}
+        ${tile("Turns per task", (a.turns / a.tasks).toFixed(1), `${a.turns} turns · ${a.tasks} tasks`, chart("line", a.perTask, { what: () => "turns per task that day" }))}
+        ${tile("Turn length", hours(median(a.length)), `median of ${a.turns}`, chart("line", a.length, { unit: "h", max: 0.25, what: () => "median turn that day" }))}
+      </div>`;
+  const page = `
+    <h2>Stats</h2>
+    <p class="sub">${esc(d.project)} · main · last 30 days</p>
+    <div class="section"><div class="sh"><b>Quiz</b><span>what you know of the code, from your kept answers</span></div>${quiz}</div>
+    <div class="section"><div class="sh"><b>Main</b><span>what landed</span></div>
+      <div class="grid">
+        ${tile("Commits", last(d.commits), `today · ${sum(d.commits)} in 30 days`, chart("columns", d.commits, { what: v => v === 1 ? "commit" : "commits" }))}
+        ${tile("Tasks landed", last(d.merges), `today · ${sum(d.merges)} in 30 days`, chart("columns", d.merges, { what: v => v === 1 ? "merge into main" : "merges into main" }))}
+      </div></div>
+    <div class="section"><div class="sh"><b>Tasks</b><span>from the Desk's and the Shelf's events</span></div>
+      <div class="grid">
+        ${tile("Open", last(open), changeNote, chart("flow", open, { made: d.made, done: d.ended }) + `<div class="legend"><span><i style="background:var(--series)"></i>open at the end of the day</span><span><i style="background:var(--made)"></i>made</span><span><i style="background:var(--done)"></i>done</span></div>`, "full")}
+        ${tile("Made", last(d.made), `today · ${sum(d.made)} in 30 days`, chart("columns", d.made, { what: v => v === 1 ? "task made" : "tasks made" }))}
+        ${tile("Started", last(d.started), `today · ${sum(d.started)} in 30 days`, chart("columns", d.started, { what: v => v === 1 ? "task started" : "tasks started" }))}
+        ${tile("Ended", last(d.ended), `today · ${sum(d.ended)} in 30 days`, chart("columns", d.ended, { what: v => v === 1 ? "task ended" : "tasks ended" }))}
+        ${tile("Made to done", leads.length ? hours(median(leads)) : "—", leads.length ? `median of ${leads.length}` : "", chart("dots", d.lead, { unit: "h" }), "wide")}
+      </div></div>
+    <div class="section" id="agents"><div class="sh"><b>Agents</b><span>task agents, from each change of their status</span></div>${agents}</div>
+    <div class="section"><div class="sh"><b>Code quality</b><span>how good the code is, and its trend</span></div>
+      <div class="placeholder"><b>Not measured yet.</b> Measures of the code on main, sampled at each new commit, come here.</div></div>
+    <div class="tip" hidden></div>`;
+  document.getElementById("stage").innerHTML = `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where">Desk</span></div>
+    <div class="content">
+      <div class="agent"><div class="head">Planning · ${esc(d.project)} · main</div><div class="term"><span class="p">&gt;</span> You are the Kanna planning agent.
+
+<span class="m">●</span> In ${esc(d.project.split("/").pop())}: 2 on the Desk, 4 waiting on the Shelf. What are we working on?</div></div>
+      <div class="docs"><div class="dtabs"><span class="dtab fixed">Desk</span><span class="dtab fixed">Machines</span><span class="dtab fixed on">Stats</span><span class="sep"></span><span class="dtab">stats.md</span></div>
+        <div class="page">${page}</div></div>
+    </div></div>`;
+  document.querySelectorAll("[data-chart]").forEach(draw);
+}
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; render(); };
+document.getElementById("empty").onclick = () => { fresh = !fresh; render(); };
+if (location.hash.includes("picture")) document.body.classList.add("picture");
+if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
+addEventListener("resize", () => document.querySelectorAll("[data-chart]").forEach(draw));
+render();
+if (location.hash.includes("agents")) document.getElementById("agents").scrollIntoView();
+</script>
+</body>
+</html>

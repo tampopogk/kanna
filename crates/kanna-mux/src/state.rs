@@ -1,6 +1,6 @@
 use crate::error::KmuxError;
 use crate::json::{encode, is_true, json, num, opt, string, Map, Value};
-use crate::pane::{content_prefix, diff_args, CONTENT_PREFIXES, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes, StopMark, Tour};
+use crate::pane::{content_prefix, diff_args, read_baud, read_line_ending, serial_fields, CONTENT_PREFIXES, read_diff_args, read_view, Comment, History, Pane, PaneType, Panes, StopMark, Tour};
 use std::collections::{HashMap, HashSet};
 
 pub const STATE_VERSION: u32 = 2;
@@ -71,12 +71,20 @@ pub fn pane_record(pane: &Pane) -> Map {
         }
         PaneType::Diff => {
             out.insert("path".into(), opt(pane.path.as_deref()));
-            out.insert("args".into(), diff_args(pane.diff.as_deref()));
+            out.insert("args".into(), diff_args(pane.git_args.as_deref()));
             out.insert("view".into(), Value::String(pane.view.clone().unwrap_or_else(|| "unified".into())));
+        }
+        PaneType::Log => {
+            out.insert("path".into(), opt(pane.path.as_deref()));
+            out.insert("args".into(), diff_args(pane.git_args.as_deref()));
         }
         PaneType::Ios => {
             out.insert("app".into(), opt(pane.app.as_deref()));
             out.insert("device".into(), opt(pane.device.as_deref()));
+        }
+        PaneType::Serial => serial_fields(pane, &mut out),
+        PaneType::Run => {
+            out.insert("run".into(), opt(pane.run.as_deref()));
         }
     }
     if let Some(tour) = &pane.tour {
@@ -126,13 +134,25 @@ pub fn read_record(item: &Value, id: &str, kind: PaneType) -> Pane {
         }
         PaneType::Diff => {
             pane.path = field("path");
-            pane.diff = read_diff_args(item.get("args")).ok().flatten();
+            pane.git_args = read_diff_args(item.get("args")).ok().flatten();
             pane.view = read_view(item.get("view")).ok().flatten();
+        }
+        PaneType::Log => {
+            pane.path = field("path");
+            pane.git_args = read_diff_args(item.get("args")).ok().flatten();
         }
         PaneType::Ios => {
             pane.app = field("app");
             pane.device = field("device");
         }
+        PaneType::Serial => {
+            pane.path = field("path");
+            pane.device = field("device");
+            pane.title = field("title");
+            pane.baud = read_baud(item.get("baud")).ok().flatten();
+            pane.line_ending = read_line_ending(item.get("lineEnding")).ok().flatten();
+        }
+        PaneType::Run => pane.run = field("run"),
     }
     match kind {
         PaneType::Term => pane.tour = item.get("tour").and_then(Tour::from_json),
@@ -182,7 +202,7 @@ pub(crate) fn upgrade(state: &Value) -> Value {
     let count = |key: &str| counters.and_then(|c| c.get(key)).cloned().unwrap_or(Value::Null);
     let pane = count("pane");
     out["version"] = num(STATE_VERSION as f64);
-    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
+    out["counters"] = json!({ "term": pane, "page": pane, "file": pane, "ios": pane, "diff": pane, "log": pane, "serial": pane, "runview": pane, "tab": count("tab"), "window": count("window"), "workspace": count("workspace") });
     out
 }
 
@@ -248,8 +268,9 @@ pub(crate) fn import_versions(state: &Value, versions: &[u32], reader: &str) -> 
         }
         let needed = match kind {
             PaneType::Web => Some("url"),
-            PaneType::Md | PaneType::Code | PaneType::Diff => Some("path"),
+            PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial => Some("path"),
             PaneType::Ios => Some("app"),
+            PaneType::Run => Some("run"),
             PaneType::Term => None,
         };
         if let Some(needed) = needed {

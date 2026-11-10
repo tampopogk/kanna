@@ -53,8 +53,10 @@ sequenceDiagram
 - **In the daemon,** `toasts::Toasts::raise(Toast)` (`crates/kanna-daemon/src/toasts.rs`) is the one way in, for any warning. It returns the toast's ID and whether an app got it, or nothing if its key was raised before.
 - **A key raises it once** for the daemon's life: a later toast with the same key, from the daemon or the CLI, is dropped. The caller picks the key; a warning that should come back after its cause clears uses a new key.
 - **The pane and the task are resolved** when it's raised: a pane by name or ID (`not_found` if there's none), a task by ID, a unique start of it, or its pane. A pane that is a task's agent also gets its task; a running task also gets its agent's pane.
-- **With no app attached** a toast is held, at most 8 and for 60 seconds, and sent when an app says hello. Older ones are dropped.
+- **With no target app** ([app link §3](app-link.md#3-rules)) a toast is held, at most 8 and for 60 seconds, and sent when one says hello. Older ones are dropped. A toast goes to the target app only, so `kanna toast` on a machine shows on that machine.
 - **The app link message** is the notice `toast {id, title, detail, pane, task, about}` ([app link](app-link.md#2-messages)); `detail`, `pane`, `task` and `about` may be null. The app replies nothing.
+
+**The app's own toasts** skip the daemon: `showLocal` shows one in this app, with an ID that replaces any toast of that ID, and it may carry a warning line, a link, a progress bar and buttons. A toast with buttons stays until they're pressed: a click on its body does nothing and it has no ×. The updater's are the first ([auto update](auto-update.md#2-what-you-see)); `debug.toasts` presses a button with `click: ID, action: TITLE`.
 
 **The crash banner** is a toast too: `sticky` (it never fades) with a `record` it opens ([crashes](crashes.md#4-surface)).
 
@@ -66,13 +68,13 @@ sequenceDiagram
 
 ## Its first user: messages that wait
 
-In [agent messaging](agent-messaging.md), a message waits when its recipient can't take it: an agent other than claude or codex, a Claude without a messaging socket, a Codex not attached to its app-server. `Tasks::warn` logs `kanna-daemon: warning: the messages for PANE wait: WHY` when the pane's reason is new, and calls the Backlog's `on_warn` hook, which `main.rs` points at the toasts:
+In [agent messaging](agent-messaging.md), a message waits when its recipient can't take it: an agent other than claude or codex, a Claude without a messaging socket, a Codex not attached to its app-server. A Claude or Codex younger than 20s isn't warned about: it may not have made its socket or link yet, and the message just waits for it ([agent messaging](agent-messaging.md)). `Tasks::warn` logs `kanna-daemon: warning: the messages for PANE wait: WHY` when the pane's reason is new, and calls the Backlog's `on_warn` hook, which `main.rs` points at the toasts:
 
 | Field | Value |
 |---|---|
 | title | `Messages wait for NAME`: the recipient task's name, else the pane |
-| detail | WHY, e.g. `copilot can't take messages: only claude and codex can` |
+| detail | WHY, e.g. `agy can't take messages: only claude and codex can` |
 | pane | the recipient's pane, so the toast also names its task, and a click shows it |
 | key | `messages:PANE:WHY`: one toast per pane and reason for the daemon's life, though the log line comes again after a delivery clears the warning |
 
-Tested in e2e `agent_messaging` (a message to a copilot task raises one toast, and only one).
+Tested in e2e `agent_messaging` (a message to an agy task raises one toast, and only one; a message to a stopped Claude task that makes its socket a few seconds after it starts raises none).

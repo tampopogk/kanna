@@ -1,0 +1,16 @@
+[package]
+name = "kanna-ios-ffi"
+version.workspace = true
+edition.workspace = true
+license = "FSL-1.1-MIT"
+description = "The iPhone app's Rust, as one static library: its iroh endpoint and the phone stream (kanna-net), code highlighting (kanna-syntax), and laying out a quiz's drawings (kanna-merman)."
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+kanna-merman = { path = "../kanna-merman" }
+kanna-net = { path = "../kanna-net" }
+kanna-syntax = { path = "../kanna-syntax" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

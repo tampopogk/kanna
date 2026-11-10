@@ -2,9 +2,12 @@ import AppKit
 import CryptoKit
 import KannaCode
 import KannaDiff
+import KannaLog
 import KannaDocs
 import KannaLinks
 import KannaMarkdown
+import KannaRun
+import KannaSerial
 import WebKit
 
 @MainActor
@@ -49,15 +52,28 @@ final class Contents {
     var portOpen: ((Int, String) -> Result<Int, KannaError>)?
     var contextMenu: (() -> NSMenu?)?
     var agentStatus: ((String) -> String?)?
-    private var markdownSpots: [String: [String: (y: CGFloat, zoom: CGFloat)]] = [:]
+    var agentName: ((String) -> String)?
+    var onComments: ((String, NSView) -> Void)?
+    private var markdownSpots: [String: [String: (y: CGFloat, textSize: CGFloat, pageZoom: CGFloat)]] = [:]
     var textSize: ((String) -> CGFloat?)?
     var onTextSize: ((String, CGFloat) -> Void)?
+    var pageZoom: ((String) -> CGFloat?)?
+    var onPageZoom: ((String, CGFloat) -> Void)?
     private var diffSources: [String: (path: String, args: [String])] = [:]
     private var diffContents: [String: String] = [:]
     private var diffLatest: [String: JSON] = [:]
-    private var fileSources: [String: (path: String, kind: String)] = [:]
+    private var logSources: [String: (path: String, args: [String])] = [:]
+    private var logContents: [String: String] = [:]
+    private var logLatest: [String: JSON] = [:]
+    private var fileSources: [String: (path: String, kind: String, diff: String?)] = [:]
     private var fileContents: [String: String] = [:]
     private var fileLatest: [String: JSON] = [:]
+    private var threadSources: [String: String] = [:]
+    private var threadContents: [String: String] = [:]
+    private var threadLatest: [String: JSON] = [:]
+    private var serialContents: [String: String] = [:]
+    private var runContents: [String: String] = [:]
+    var onBadge: (() -> Void)?
 
     func slot(_ id: String) -> PaneSlot {
         if let slot = slots[id] { return slot }
@@ -78,6 +94,10 @@ final class Contents {
         let agent = pane["agent"]?.string
         if let markdown = markdown(id) {
             markdown.set(markup: pane["markup"]?.bool == true)
+            if markdown.markup, threadSources[id] == nil {
+                threadSources[id] = markdown.path
+                subscribe(threads: id)
+            }
             if markdown.agent != agent {
                 markdown.agent = agent
                 markdown.agentStatus = agent.flatMap { agentStatus?($0) }
@@ -100,14 +120,19 @@ final class Contents {
     func markdown(_ id: String) -> MarkdownPaneView? { slots[id]?.content as? MarkdownPaneView }
     func code(_ id: String) -> CodePaneView? { slots[id]?.content as? CodePaneView }
     func diff(_ id: String) -> DiffPaneView? { slots[id]?.content as? DiffPaneView }
-    func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView }
+    func log(_ id: String) -> LogPaneView? { slots[id]?.content as? LogPaneView }
+    func serial(_ id: String) -> SerialPaneView? { slots[id]?.content as? SerialPaneView }
+    func run(_ id: String) -> RunPaneView? { slots[id]?.content as? RunPaneView }
+    func badge(_ id: String) -> String? { run(id)?.notice?.badge }
+    func keyView(_ id: String) -> NSView? { web(id)?.webView ?? ios(id) ?? markdown(id)?.keyView ?? code(id)?.keyView ?? diff(id)?.keyView ?? log(id)?.keyView ?? serial(id)?.keyView ?? run(id)?.keyView }
     func keyViews(_ id: String) -> [NSView] { diff(id)?.keyViews ?? keyView(id).map { [$0] } ?? [] }
 
-    private func send(_ text: String, to agent: String, done: @escaping (String?) -> Void) {
-        guard let onCall else { return done("not connected to the daemon") }
-        onCall("send", ["pane": .string(agent), "text": .string(text)]) { answer in
-            guard answer["ok"]?.bool == true else { return done(answer["error"]?["message"]?.string ?? "send failed") }
-            done(nil)
+    private func send(_ text: String, to agent: String, doc: String, thread: String, done: @escaping (DocDelivery) -> Void) {
+        guard let onCall else { return done(.failed("not connected to the daemon")) }
+        let args: [String: JSON] = ["action": .string("comment"), "pane": .string(agent), "text": .string(text), "doc": .string(doc), "thread": .string(thread)]
+        onCall("tasks", args) { answer in
+            guard answer["ok"]?.bool == true else { return done(.failed(answer["error"]?["message"]?.string ?? "send failed")) }
+            done(answer["state"]?.string == "waiting" ? .waiting : .sent)
         }
     }
 
@@ -122,9 +147,10 @@ final class Contents {
         switch type {
         case "ios": return "an iOS pane runs only for this Mac's own tasks"
         case "web":
-            guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-                return "a page from \(machine) opens only over http or https"
+            guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
+                return "a page from \(machine) opens only over http or https, or from a file"
             }
+            if url.isFileURL { return MachineFileURL.page(url.absoluteString) == nil ? "\(machine)'s page has no path" : nil }
             return url.host?.isEmpty == false ? nil : "\(machine)'s page has no host"
         default: return nil
         }
@@ -158,28 +184,42 @@ final class Contents {
         let content: NSView
         switch type {
         case "md":
-            let path = Self.absolute(pane["path"]?.string ?? "")
+            let machine = MachineIDs.machine(of: id)
+            let path = machine == nil ? Self.absolute(pane["path"]?.string ?? "") : pane["path"]?.string ?? ""
             let spot = markdownSpots[id]?[path]
-            let markdown = MarkdownPaneView(path: path, zoom: spot?.zoom ?? textSize?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
+            let markdown = MarkdownPaneView(path: path, textSize: spot?.textSize ?? textSize?(id) ?? 1, pageZoom: spot?.pageZoom ?? pageZoom?(id) ?? 1, markup: pane["markup"]?.bool == true, diff: pane["diff"]?.string)
+            markdown.canReveal = machine == nil
+            markdown.readFile = { [weak self] path, data, done in self?.read(path, data: data, for: id, done: done) }
+            markdown.changeThreads = changer(for: id, path: path)
             markdown.startScrollY = spot?.y
             markdown.onHistory = { [weak self] back in self?.onRequest?("navigate", ["pane": .string(id), back ? "back" : "forward": true]) }
             markdown.onZoom = { [weak self, weak markdown] in
                 guard let markdown else { return }
-                self?.onTextSize?(id, markdown.zoom)
+                self?.onTextSize?(id, markdown.textSize)
+                self?.onPageZoom?(id, markdown.pageZoom)
             }
             markdown.onFocus = { [weak self] in self?.onFocus?(id) }
             markdown.agent = pane["agent"]?.string
             markdown.agentStatus = markdown.agent.flatMap { self.agentStatus?($0) }
-            markdown.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            markdown.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
+            markdown.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
+            markdown.onComments = { [weak self] button in self?.onComments?(id, button) }
             if let mark = pane["tour"], let thread = mark["thread"]?.string, let at = mark["at"]?.number, let owner = mark["owner"]?.string {
                 markdown.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
                 markdown.tour = DocTourStep(thread: thread, at: Int(at), of: Int(mark["of"]?.number ?? at))
             }
             markdown.contextMenu = { [weak self] in self?.contextMenu?() }
             markdown.onOpenMarkdown = { [weak self] target in self?.onRequest?("navigate", ["pane": .string(id), "path": .string(target)]) }
-            fileSources[id] = (pane["path"]?.string ?? "", "md")
+            markdown.onOpenCode = { [weak self] path, line in
+                self?.onCall?("open", ["type": "code", "path": .string(path), "line": .number(Double(line)), "from": .string(id)]) { _ in }
+            }
+            fileSources[id] = (pane["path"]?.string ?? "", "md", pane["diff"]?.string)
             slot(id).content = markdown
             subscribe(file: id)
+            if markdown.markup {
+                threadSources[id] = path
+                subscribe(threads: id)
+            }
             return
         case "code":
             let path = pane["path"]?.string ?? ""
@@ -200,7 +240,7 @@ final class Contents {
                 code.onTourStep = { [weak self] to in self?.onRequest?("tour", ["action": "go", "owner": .string(owner), "to": .string(to)]) }
             }
             code.contextMenu = { [weak self] in self?.contextMenu?() }
-            fileSources[id] = (path, "code")
+            fileSources[id] = (path, "code", nil)
             slot(id).content = code
             subscribe(file: id)
             return
@@ -224,11 +264,88 @@ final class Contents {
             diffSources[id] = (pane["path"]?.string ?? "", diffArgs)
             content = diff
             subscribe(diff: diff, id)
+        case "log":
+            let log = LogPaneView(zoom: textSize?(id) ?? 1)
+            let path = pane["path"]?.string ?? ""
+            log.onFocus = { [weak self] in self?.onFocus?(id) }
+            log.contextMenu = { [weak self] in self?.contextMenu?() }
+            log.onZoom = { [weak self, weak log] in
+                guard let log else { return }
+                self?.onTextSize?(id, log.zoom)
+            }
+            log.onOpenDiff = { [weak self] _, args in
+                self?.onCall?("open", ["type": "diff", "path": .string(path), "args": .array(args.map { .string($0) }), "from": .string(id), "tab": true]) { _ in }
+            }
+            log.onCommit = { [weak self] hash, done in
+                guard let onCall = self?.onCall else { return done(nil, "Kanna.app isn't connected to its daemon") }
+                onCall("log.commit", ["path": .string(path), "hash": .string(hash)]) { answer in
+                    guard answer["ok"]?.bool == true, let commit = answer["commit"] else { return done(nil, answer["error"]?["message"]?.string ?? "git couldn't show \(hash)") }
+                    done(commit.encoded(), nil)
+                }
+            }
+            var logArgs: [String] = []
+            if case .array(let list)? = pane["args"] { logArgs = list.compactMap(\.string) }
+            logSources[id] = (path, logArgs)
+            content = log
+            subscribe(log: log, id)
+        case "serial":
+            let serial = SerialPaneView()
+            serial.onFocus = { [weak self] in self?.onFocus?(id) }
+            serial.contextMenu = { [weak self] in self?.contextMenu?() }
+            serial.onSend = { [weak self, weak serial] text, ending in
+                self?.onCall?("serial", ["action": "send", "pane": .string(id), "text": .string(text), "ending": .bool(ending)]) { answer in
+                    if answer["ok"]?.bool != true { serial?.flash(answer["error"]?["message"]?.string ?? "couldn't send") }
+                }
+            }
+            serial.onReset = { [weak self, weak serial] in
+                self?.onCall?("serial", ["action": "reset", "pane": .string(id)]) { answer in
+                    if answer["ok"]?.bool != true { serial?.flash(answer["error"]?["message"]?.string ?? "couldn't reset") }
+                }
+            }
+            serial.onSet = { [weak self] baud, ending in
+                var args: [String: JSON] = ["action": "set", "pane": .string(id)]
+                if let baud { args["baud"] = .number(Double(baud)) }
+                if let ending { args["lineEnding"] = .string(ending) }
+                self?.onCall?("serial", args) { _ in }
+            }
+            slot(id).content = serial
+            subscribe(serial: id)
+            return
+        case "run":
+            let view = RunPaneView()
+            let runID = pane["run"]?.string ?? ""
+            view.onFocus = { [weak self] in self?.onFocus?(id) }
+            view.contextMenu = { [weak self] in self?.contextMenu?() }
+            view.onAction = { [weak self, weak view] action, args in
+                var call: [String: JSON] = ["action": .string(action), "run": .string(runID), "by": "user"]
+                for (key, value) in args { call[key] = .string(value) }
+                self?.onCall?("run", call) { answer in
+                    if answer["ok"]?.bool != true { view?.flash(answer["error"]?["message"]?.string ?? "couldn't \(action) the run") }
+                }
+            }
+            runContents[id] = runID
+            slot(id).content = view
+            subscribe(run: id)
+            return
         case "web":
             var url = pane["url"]?.string ?? "about:blank"
             var unmap: (URL) -> URL = { $0 }
             var waitingFor: String?
-            if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
+            var files: MachineFiles?
+            if let page = MachineFileURL.page(url) {
+                url = page.absoluteString
+                unmap = MachineFileURL.file
+                files = MachineFiles(page: MachineFileURL.path(of: page) ?? "/") { [weak self] (path: String, done: @escaping @MainActor (Result<(real: String, data: Data), MachineFiles.Failure>) -> Void) in
+                    guard let self else { return done(.failure(.init(message: "Kanna.app isn't showing this page"))) }
+                    read(path, data: true, for: id) { result in
+                        switch result {
+                        case .success(let file) where file.type == "file": done(.success((real: file.path, data: file.data ?? Data())))
+                        case .success(let file): done(.failure(.init(message: "\(file.path) isn't a file")))
+                        case .failure(let failure): done(.failure(.init(message: failure.message)))
+                        }
+                    }
+                }
+            } else if let machine = MachineIDs.machine(of: id), let tunnel = PortTunnelURL(url) {
                 switch portOpen?(tunnel.port, machine) ?? .failure(KannaError("unavailable", "this Mac has no machines endpoint")) {
                 case .success(let local):
                     url = tunnel.local(local).absoluteString
@@ -240,8 +357,8 @@ final class Contents {
                     return report(id, ["state": "failed", "error": .string(failure.message)])
                 }
             }
-            let store: WKWebsiteDataStore = if waitingFor != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
-            let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store)
+            let store: WKWebsiteDataStore = if waitingFor != nil || files != nil, let machine = MachineIDs.machine(of: id) { Self.store(of: machine) } else { .default() }
+            let web = WebPaneView(url: url, markup: pane["markup"]?.bool == true, store: store, files: files)
             web.waitingFor = waitingFor
             web.unmap = unmap
             web.onFocus = { [weak self] in self?.onFocus?(id) }
@@ -251,7 +368,10 @@ final class Contents {
             web.onTitleChange = { [weak self] title in self?.onUpdate?(id, ["title": .string(title)]) }
             web.agent = pane["agent"]?.string
             web.agentStatus = web.agent.flatMap { self.agentStatus?($0) }
-            web.onSend = { [weak self] agent, text, done in self?.send(text, to: agent, done: done) }
+            web.onSend = { [weak self] agent, text, doc, thread, done in self?.send(text, to: agent, doc: doc, thread: thread, done: done) }
+            web.agentName = { [weak self] agent in self?.agentName?(agent) ?? agent }
+            web.onComments = { [weak self] button in self?.onComments?(id, button) }
+            web.onMarkup = { [weak self] markup in self?.marked(markup, in: id) }
             content = web
         case "ios":
             let ios = IosPaneView()
@@ -264,6 +384,7 @@ final class Contents {
             return
         }
         slot(id).content = content
+        if let web = content as? WebPaneView { marked(web.markup, in: id) }
         DispatchQueue.main.async { [weak self] in
             guard self?.slots[id]?.content === content else { return }
             self?.report(id, ["state": "running"])
@@ -310,14 +431,36 @@ final class Contents {
             diffLatest = diffLatest.filter { diffContents.values.contains($0.key) }
             onNotice?("diff.unsubscribe", ["view": .string(id)])
         }
+        if let run = content as? RunPaneView {
+            run.stop()
+            runContents.removeValue(forKey: id)
+            onNotice?("run.unsubscribe", ["view": .string(id)])
+        }
+        if let log = content as? LogPaneView {
+            log.stop()
+            logSources.removeValue(forKey: id)
+            logContents.removeValue(forKey: id)
+            logLatest = logLatest.filter { logContents.values.contains($0.key) }
+            onNotice?("log.unsubscribe", ["view": .string(id)])
+        }
+        if let serial = content as? SerialPaneView {
+            serial.stop()
+            serialContents.removeValue(forKey: id)
+            onNotice?("serial.unsubscribe", ["view": .string(id)])
+        }
         if fileSources.removeValue(forKey: id) != nil {
             fileContents.removeValue(forKey: id)
             fileLatest = fileLatest.filter { fileContents.values.contains($0.key) }
             onNotice?("file.unsubscribe", ["view": .string(id)])
         }
+        if threadSources.removeValue(forKey: id) != nil {
+            threadContents.removeValue(forKey: id)
+            threadLatest = threadLatest.filter { threadContents.values.contains($0.key) }
+            onNotice?("markup.unsubscribe", ["view": .string(id)])
+        }
         if let markdown = content as? MarkdownPaneView {
             markdown.stop()
-            markdownSpots[id, default: [:]][markdown.path] = (markdown.scrollTop, markdown.zoom)
+            markdownSpots[id, default: [:]][markdown.path] = (markdown.scrollTop, markdown.textSize, markdown.pageZoom)
         }
         slot.content = nil
         states.removeValue(forKey: id)
@@ -331,6 +474,7 @@ final class Contents {
     }
 
     func subscribeDiffs(on machine: String?) {
+        diffLatest = diffLatest.filter { MachineIDs.machine(of: $0.key) != machine }
         for id in ids where MachineIDs.machine(of: id) == machine {
             if let view = diff(id) { subscribe(diff: view, id) }
         }
@@ -368,14 +512,144 @@ final class Contents {
         if message["updating"]?.bool == true { view.setUpdating(true) }
     }
 
+    func subscribeLogs(on machine: String?) {
+        for id in ids where MachineIDs.machine(of: id) == machine {
+            if let view = log(id) { subscribe(log: view, id) }
+        }
+    }
+
+    private func subscribe(log view: LogPaneView, _ id: String) {
+        guard let source = logSources[id] else { return }
+        let args: [String: JSON] = ["view": .string(id), "path": .string(source.path), "args": .array(source.args.map { .string($0) })]
+        guard let onCall else { return view.receive(LogResult.failed(folder: source.path, args: source.args, error: "Kanna.app isn't connected to its daemon"), serial: 0) }
+        onCall("log.subscribe", args) { [weak self, weak view] answer in
+            guard let self, let view, slots[id]?.content === view else { return }
+            guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
+                let message = answer["error"]?["message"]?.string ?? "The daemon couldn't show this log"
+                return view.receive(LogResult.failed(folder: source.path, args: source.args, error: message), serial: 0)
+            }
+            logContents[id] = content
+            let latest = logLatest[content]
+            show(log: (latest?["serial"]?.number ?? -1) > (answer["serial"]?.number ?? 0) ? latest ?? answer : answer, in: view)
+        }
+    }
+
+    func received(log message: JSON, content: String) {
+        if let found = message["log"], found != .null { logLatest[content] = message }
+        for (id, shown) in logContents where shown == content {
+            if let view = log(id) { show(log: message, in: view) }
+        }
+    }
+
+    private func show(log message: JSON, in view: LogPaneView) {
+        guard let found = message["log"], found != .null else { return }
+        view.receive(found.encoded(), serial: Int(message["serial"]?.number ?? 0))
+    }
+
     func subscribeFiles(on machine: String?) {
+        fileLatest = fileLatest.filter { MachineIDs.machine(of: $0.key) != machine }
+        threadLatest = threadLatest.filter { MachineIDs.machine(of: $0.key) != machine }
         for id in ids where fileSources[id] != nil && MachineIDs.machine(of: id) == machine { subscribe(file: id) }
+        for id in ids where threadSources[id] != nil && MachineIDs.machine(of: id) == machine { subscribe(threads: id) }
+    }
+
+    private func marked(_ markup: PageMarkupView?, in id: String) {
+        guard let markup else {
+            if fileSources.removeValue(forKey: id) != nil {
+                fileContents.removeValue(forKey: id)
+                onNotice?("file.unsubscribe", ["view": .string(id)])
+            }
+            if threadSources.removeValue(forKey: id) != nil {
+                threadContents.removeValue(forKey: id)
+                onNotice?("markup.unsubscribe", ["view": .string(id)])
+            }
+            return
+        }
+        markup.changeThreads = changer(for: id, path: markup.path)
+        fileSources[id] = (markup.path, "md", nil)
+        threadSources[id] = markup.path
+        subscribe(file: id)
+        subscribe(threads: id)
+    }
+
+    private func read(_ path: String, data: Bool, for id: String, done: @escaping @MainActor (Result<MarkdownFile, MarkdownFile.Failure>) -> Void) {
+        guard let onCall else { return done(.failure(.init("Kanna.app isn't connected to its daemon"))) }
+        var args: [String: JSON] = ["view": .string(id), "path": .string(path)]
+        if data { args["data"] = true }
+        onCall("file.read", args) { answer in
+            guard answer["ok"]?.bool == true, let real = answer["path"]?.string else {
+                return done(.failure(.init(answer["error"]?["message"]?.string ?? "can't read \(path)")))
+            }
+            done(.success(MarkdownFile(path: real, type: answer["type"]?.string ?? "other", data: answer["data"]?.string.flatMap { Data(base64Encoded: $0) }, stamp: answer["stamp"]?.string)))
+        }
+    }
+
+    private func changer(for id: String, path: String) -> DocChanger {
+        { [weak self] change, done in
+            guard let onCall = self?.onCall else { return done(DocAnswer(error: "Kanna.app isn't connected to its daemon")) }
+            var args: [String: JSON] = ["view": .string(id), "path": .string(path)]
+            let cmd: String
+            switch change {
+            case .post(let thread, let mark):
+                cmd = "markup.post"
+                args["thread"] = Self.json(thread)
+                if let mark { args["mark"] = .string(mark.base64EncodedString()) }
+            case .edit(let thread, let edit):
+                cmd = "markup.edit"
+                args["id"] = .string(thread)
+                if let state = edit.state { args["state"] = .string(state) }
+                if let status = edit.status { args["status"] = .string(status) }
+                if let error = edit.error { args["error"] = error.map { .string($0) } ?? .null }
+                if let line = edit.line { args["line"] = .number(Double(line)) }
+                if let message = edit.message { args["message"] = Self.json(message) }
+            case .agent(let agent):
+                cmd = "markup.agent"
+                args["agent"] = .string(agent)
+            }
+            onCall(cmd, args) { answer in
+                guard answer["ok"]?.bool == true else { return done(DocAnswer(error: answer["error"]?["message"]?.string ?? "the daemon didn't save the comment")) }
+                done(DocAnswer(id: answer["thread"]?.string, record: answer["record"].flatMap(Self.record)))
+            }
+        }
+    }
+
+    static func json(_ value: some Encodable) -> JSON {
+        (try? JSONEncoder().encode(value)).flatMap { try? JSON.parse($0) } ?? .null
+    }
+
+    static func record(_ json: JSON) -> DocRecord? {
+        try? JSONDecoder().decode(DocRecord.self, from: json.encoded())
+    }
+
+    private func subscribe(threads id: String) {
+        guard let path = threadSources[id], let view = slots[id]?.content, let onCall else { return }
+        onCall("markup.subscribe", ["view": .string(id), "path": .string(path)]) { [weak self, weak view] answer in
+            guard let self, let view, slots[id]?.content === view, answer["ok"]?.bool == true, let content = answer["content"]?.string else { return }
+            threadContents[id] = content
+            let latest = threadLatest[content]
+            let newest = (latest?["serial"]?.number ?? -1) > (answer["serial"]?.number ?? 0) ? latest ?? answer : answer
+            if (newest["serial"]?.number ?? 0) > 0 { show(threads: newest, in: id) }
+        }
+    }
+
+    func received(markup message: JSON, content: String) {
+        if (threadLatest[content]?["serial"]?.number ?? -1) < (message["serial"]?.number ?? 0) { threadLatest[content] = message }
+        for (id, shown) in threadContents where shown == content { show(threads: message, in: id) }
+    }
+
+    private func show(threads message: JSON, in id: String) {
+        guard let record = message["record"].flatMap(Self.record) else { return }
+        markdown(id)?.show(threads: record)
+        web(id)?.markup?.show(threads: record)
+        if let name = message["name"]?.string { web(id)?.markup?.show(name: name) }
     }
 
     private func subscribe(file id: String) {
         guard let source = fileSources[id], let view = slots[id]?.content else { return }
         guard let onCall else { return show(file: ["error": ["message": "Kanna.app isn't connected to its daemon"]], in: id) }
-        onCall("file.subscribe", ["view": .string(id), "path": .string(source.path), "kind": .string(source.kind)]) { [weak self, weak view] answer in
+        var args: [String: JSON] = ["view": .string(id), "path": .string(source.path), "kind": .string(source.kind)]
+        if let diff = source.diff { args["diff"] = .string(diff) }
+        onCall("file.subscribe", args) { [weak self, weak view] answer in
             guard let self, let view, slots[id]?.content === view else { return }
             guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
                 return show(file: ["error": ["message": answer["error"]?["message"] ?? "The daemon couldn't read this file"]], in: id)
@@ -393,9 +667,14 @@ final class Contents {
     }
 
     private func show(file message: JSON, in id: String) {
+        if let markup = web(id)?.markup {
+            if let text = message["text"]?.string { markup.show(source: text) }
+            return
+        }
         var failure = message["error"]?["message"]?.string
         if let text = message["text"]?.string {
-            markdown(id)?.show(text: text)
+            if let name = message["name"]?.string { markdown(id)?.show(name: name) }
+            markdown(id)?.show(text: text, compared: Self.compared(message))
             code(id)?.show(text: text)
             failure = markdown(id)?.diffError
         } else if let failure {
@@ -404,6 +683,159 @@ final class Contents {
         let state = failure == nil ? "running" : "failed"
         guard states[id] != state else { return }
         report(id, failure.map { ["state": .string(state), "error": .string($0)] } ?? ["state": .string(state)])
+    }
+
+    func subscribeRuns(on machine: String?) {
+        for id in ids where run(id) != nil && MachineIDs.machine(of: id) == machine { subscribe(run: id) }
+    }
+
+    private func subscribe(run id: String) {
+        guard let view = run(id), let runID = runContents[id] else { return }
+        guard let onCall else { return view.show(failure: "Kanna.app isn't connected to its daemon") }
+        onCall("run.subscribe", ["view": .string(id), "run": .string(runID)]) { [weak self, weak view] answer in
+            guard let self, let view, run(id) === view else { return }
+            guard answer["ok"]?.bool == true else {
+                let message = answer["error"]?["message"]?.string ?? "The daemon has no run \(runID)"
+                view.show(failure: message)
+                return report(id, ["state": "failed", "error": .string(message)])
+            }
+            view.load(Self.runNotice(answer))
+            onBadge?()
+            if states[id] != "running" { report(id, ["state": "running"]) }
+        }
+    }
+
+    func received(run message: JSON, content: String) {
+        var changed = false
+        for (id, shown) in runContents where shown == content {
+            guard let view = run(id) else { continue }
+            let notice = Self.runNotice(message)
+            if view.notice?.badge != notice.badge { changed = true }
+            view.load(notice)
+        }
+        if changed { onBadge?() }
+    }
+
+    static func runNotice(_ json: JSON) -> RunNotice {
+        var notice = RunNotice()
+        let text = { (key: String) in json[key]?.string ?? "" }
+        let number = { (value: JSON?) in value?.number }
+        notice.run = text("run")
+        notice.task = text("task")
+        notice.name = json["name"]?.string
+        notice.pipeline = text("pipeline")
+        notice.branch = text("branch")
+        notice.state = text("state")
+        notice.outcome = json["outcome"]?.string
+        notice.why = json["why"]?.string
+        notice.startedAt = number(json["startedAt"]) ?? 0
+        notice.endedAt = number(json["endedAt"])
+        notice.now = number(json["now"]) ?? 0
+        notice.startedBy = json["startedBy"]?.string ?? "you"
+        if let revision = json["revision"], let n = revision["n"]?.number {
+            notice.revision = (Int(n), revision["by"]?.string ?? "file", revision["at"]?.number ?? 0)
+        }
+        if let place = json["place"] {
+            notice.place = (place["stage"]?.string ?? "", Int(place["at"]?.number ?? 0), Int(place["of"]?.number ?? 0))
+        }
+        let graph = json["graph"]
+        notice.columns = Int(graph?["columns"]?.number ?? 0)
+        notice.rows = Int(graph?["rows"]?.number ?? 0)
+        notice.nodes = (graph?["nodes"]?.array ?? []).map { n in
+            RunNode(id: n["id"]?.string ?? "", kind: n["kind"]?.string ?? "agent", who: n["who"]?.string ?? "", col: Int(n["col"]?.number ?? 0), row: Int(n["row"]?.number ?? 0),
+                    state: n["state"]?.string, visits: Int(n["visits"]?.number ?? 0))
+        }
+        notice.edges = (graph?["edges"]?.array ?? []).map { e in
+            RunEdge(from: e["from"]?.string ?? "", to: e["to"]?.string ?? "", route: e["route"]?.string ?? "next", label: e["label"]?.string ?? "", fail: e["fail"]?.bool == true,
+                    lane: Int(e["lane"]?.number ?? 0), lanes: Int(e["lanes"]?.number ?? 1), taken: e["taken"]?.bool == true)
+        }
+        notice.visits = (json["visits"]?.array ?? []).map { v in
+            RunVisit(n: Int(v["n"]?.number ?? 0), stage: v["stage"]?.string ?? "", visit: Int(v["visit"]?.number ?? 1), kind: v["kind"]?.string ?? "", who: v["who"]?.string ?? "",
+                     startedAt: v["startedAt"]?.number ?? 0, endedAt: v["endedAt"]?.number, verdict: v["verdict"]?.string, turns: v["turns"]?.number, tokens: v["tokens"]?.number, note: v["note"]?.string ?? "")
+        }
+        notice.workers = (json["workers"]?.array ?? []).map { w in
+            RunWorker(stage: w["stage"]?.string ?? "", visit: Int(w["visit"]?.number ?? 1), who: w["who"]?.string ?? "", terminal: w["terminal"]?.string, worktree: w["worktree"]?.string, startedAt: w["startedAt"]?.number ?? 0)
+        }
+        if let card = json["card"], card["title"]?.string != nil {
+            notice.card = RunCard(kind: card["kind"]?.string ?? "need", stage: card["stage"]?.string ?? "", title: card["title"]?.string ?? "", detail: card["detail"]?.string ?? "")
+        }
+        let numbers = json["numbers"]
+        notice.numbers.visits = Int(numbers?["visits"]?.number ?? 0)
+        notice.numbers.sessions = Int(numbers?["sessions"]?.number ?? 0)
+        notice.numbers.budget = numbers?["budget"]?.number.map { Int($0) }
+        notice.numbers.waited = numbers?["waited"]?.number ?? 0
+        notice.numbers.waitingSince = numbers?["waitingSince"]?.number
+        notice.numbers.turns = numbers?["turns"]?.number
+        notice.numbers.tokens = numbers?["tokens"]?.number
+        notice.numbers.cost = numbers?["cost"]?.number
+        notice.numbers.rework = Int(numbers?["rework"]?.number ?? 0)
+        notice.numbers.interventions = Int(numbers?["interventions"]?.number ?? 0)
+        if let lines = numbers?["lines"], let added = lines["added"]?.number {
+            notice.numbers.lines = (Int(added), Int(lines["removed"]?.number ?? 0), Int(lines["files"]?.number ?? 0))
+        }
+        return notice
+    }
+
+    static func compared(_ message: JSON) -> MarkdownComparison? {
+        if let error = message["diff_error"]?.string { return .failed(error) }
+        if let base = message["base"] { return .base(base["text"]?.string) }
+        if let old = message["old"] { return .range(old.string) }
+        return nil
+    }
+
+    func subscribeSerials(on machine: String?) {
+        for id in ids where serial(id) != nil && MachineIDs.machine(of: id) == machine { subscribe(serial: id) }
+    }
+
+    private func subscribe(serial id: String) {
+        guard let view = serial(id) else { return }
+        guard let onCall else { return view.show(failure: "Kanna.app isn't connected to its daemon") }
+        onCall("serial.subscribe", ["view": .string(id), "pane": .string(id)]) { [weak self, weak view] answer in
+            guard let self, let view, serial(id) === view else { return }
+            guard answer["ok"]?.bool == true, let content = answer["content"]?.string else {
+                let message = answer["error"]?["message"]?.string ?? "The daemon couldn't open this port"
+                view.show(failure: message)
+                return report(id, ["state": "failed", "error": .string(message)])
+            }
+            serialContents[id] = content
+            view.load(rows: Self.serialRows(answer["rows"]), partial: Self.serialRow(answer["partial"]), state: Self.serialState(answer["state"]) ?? SerialState(),
+                      history: answer["history"]?.array?.compactMap(\.string) ?? [])
+            if states[id] != "running" { report(id, ["state": "running"]) }
+        }
+    }
+
+    func received(serial message: JSON, content: String) {
+        for (id, shown) in serialContents where shown == content {
+            serial(id)?.receive(rows: Self.serialRows(message["rows"]), partial: Self.serialRow(message["partial"]), state: Self.serialState(message["state"]), rx: message["rx"]?.number.map { Int($0) })
+        }
+    }
+
+    static func serialRow(_ json: JSON?) -> SerialRow? {
+        guard let json, let text = json["text"]?.string, let t = json["t"]?.number else { return nil }
+        return SerialRow(n: Int(json["n"]?.number ?? 0), t: t, dir: json["d"]?.string ?? "<", text: text, level: json["l"]?.string)
+    }
+
+    static func serialRows(_ json: JSON?) -> [SerialRow] {
+        json?.array?.compactMap { serialRow($0) } ?? []
+    }
+
+    static func serialState(_ json: JSON?) -> SerialState? {
+        guard let json, json != .null, let name = json["state"]?.string else { return nil }
+        var state = SerialState()
+        state.state = name
+        state.cmd = json["cmd"]?.string
+        state.why = json["why"]?.string
+        state.path = json["path"]?.string ?? ""
+        state.name = json["name"]?.string ?? ""
+        state.title = json["title"]?.string ?? ""
+        state.product = json["product"]?.string
+        state.device = json["device"]?.string
+        state.baud = Int(json["baud"]?.number ?? 115_200)
+        state.lineEnding = json["lineEnding"]?.string ?? "lf"
+        state.rx = Int(json["rx"]?.number ?? 0)
+        state.format = json["format"]?.string
+        state.log = json["log"]?.string ?? ""
+        return state
     }
 
     static func absolute(_ path: String) -> String {

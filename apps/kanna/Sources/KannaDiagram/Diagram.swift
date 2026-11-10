@@ -11,12 +11,13 @@ public enum Diagram {
         let scene: DiagramScene?
         switch json["scene"] as? String {
         case "flowchart": scene = Flowchart.scene(semantic: semantic, layout: layout["FlowchartV2"] as? [String: Any] ?? [:])
-        case "sequence": scene = Sequence.scene(semantic: semantic, layout: layout["SequenceDiagram"] as? [String: Any] ?? [:])
+        case "sequence": scene = Sequence.scene(semantic: semantic, layout: layout["SequenceDiagram"] as? [String: Any] ?? [:], log: log)
         case "state": scene = State.scene(semantic: semantic, layout: layout["StateDiagramV2"] as? [String: Any] ?? [:])
         case "class": scene = Class.scene(semantic: semantic, layout: layout["ClassDiagramV2"] as? [String: Any] ?? [:])
         case "gitGraph": scene = GitGraph.scene(semantic: semantic, layout: layout["GitGraphDiagram"] as? [String: Any] ?? [:])
         default: scene = nil
         }
+        if let scene, scene.items.isEmpty { throw DiagramError(message: "merman laid out nothing for this \(type) diagram") }
         return DiagramLayout(type: type, scene: scene.map { scene in
             var scene = log.apply(to: scene)
             scene.fit()
@@ -47,6 +48,12 @@ final class MeasureLog {
     func record(_ text: String, size: CGFloat, htmlLike: Bool) {
         let key = text.trimmingCharacters(in: .whitespaces)
         if styles[key] == nil { styles[key] = (size, htmlLike) }
+    }
+
+    func width(of text: String, defaultSize: CGFloat) -> CGFloat {
+        let style = styles[text.trimmingCharacters(in: .whitespaces)]
+        return LabelText.measure(text, size: style?.size ?? defaultSize, bold: false, italic: false, monospaced: false, maxWidth: nil,
+                                 htmlLike: style?.htmlLike ?? false).width
     }
 
     func apply(to scene: DiagramScene) -> DiagramScene {
