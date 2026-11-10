@@ -980,7 +980,7 @@ fn wait_for(replies: &std::sync::mpsc::Receiver<String>, id: u64) -> Result<Valu
 }
 
 pub fn daemon_socket(state: &Path) -> PathBuf {
-    std::env::var_os("KANNA_SOCKET").filter(|s| !s.is_empty()).map_or_else(|| state.join(kanna_build::SOCKET), PathBuf::from)
+    std::env::var_os("KANNA_SOCKET").filter(|s| !s.is_empty()).map_or_else(|| kanna_build::instance_socket(state), PathBuf::from)
 }
 
 pub fn ask_daemon(socket: &Path, args: Value) -> Result<Value, String> {
