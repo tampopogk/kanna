@@ -183,6 +183,7 @@ extension AppController {
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
+                    "shownPage": controller.shownPage.map { .string($0) } ?? .null,
                     "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
                     "queuePage": .bool(!controller.queuePage.isHidden), "queueCount": controller.tabBar.pageCounts[MergeQueuePage.title].map { .number(Double($0)) } ?? .null,
                     "queue": .array(controller.queuePage.entries.map { ["id": .string($0.id), "task": .string($0.task), "name": .string($0.name), "state": .string($0.state), "said": .string($0.said), "terminal": $0.terminal.map { .string($0) } ?? .null, "needs": $0.needs.map { .string($0) } ?? .null] }),
