@@ -5157,7 +5157,7 @@ RUST
   kanna send "Stats three" 1 || { echo "stats_tab line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "$status_rows")" == *"working needs-you working idle" ]]' || { echo "stats_tab: the status rows are $(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "$status_rows")"; return 1; }
   local json
-  sampled() { json="$(cd "$repo" && kanna stats --json)" && python3 -c 'import json, sys; c = [s for s in json.loads(sys.argv[1])["sections"] if s["id"] == "code"][0]; sys.exit(0 if "sampling" not in c["note"] and any(t["id"] == "erosion" and t["value"] is not None for t in c["tiles"]) else 1)' "$json"; }
+  sampled() { json="$(cd "$repo" && kanna stats --json)" && python3 -c 'import json, sys; c = [s for s in json.loads(sys.argv[1])["sections"] if s["id"] == "code"][0]; sys.exit(0 if json.loads(sys.argv[1])["status"] is None and any(t["id"] == "erosion" and t["value"] is not None for t in c["tiles"]) else 1)' "$json"; }
   check wait_for 20 sampled || { echo "stats_tab: kanna stats --json never had the code sampled: $json"; return 1; }
   check python3 -c 'import json, sys
 r = json.loads(sys.argv[1])
@@ -5242,6 +5242,87 @@ assert len({b["x"] for b in bands}) == 1 and all(a["y"] + a["height"] < b["y"] f
   [[ -s "$out/stats_tab-dark.png" && -s "$out/stats_tab-light.png" ]] || { echo "stats_tab: no snapshots"; return 1; }
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Desk\",\"window\":\"$d\"}}" >/dev/null
   check wait_for 5 eval '[[ "$(desk statsPage "$d")" == False && "$(desk page "$d")" == True ]]' || { echo "stats_tab: the Desk tab didn't leave the Stats page"; return 1; }
+}
+
+scenario stats_updating M4
+stats_updating() {
+  local repo; repo="$(e2e_repo updating)" || { echo "stats_updating line $LINENO"; return 1; }
+  local holds="$KANNA_STATE_DIR/holds" real; real="$(command -v git)"
+  mkdir -p "$holds/bin" "$repo/src"
+  cat >"$holds/bin/git" <<SHIM
+#!/bin/sh
+case " \$* " in
+  *" diff --numstat "*) while [ -e "$holds/reading" ]; do sleep 0.05; done ;;
+  *" ls-tree "*) while [ -e "$holds/measuring" ]; do sleep 0.05; done; [ -e "$holds/slow" ] && sleep 0.5 ;;
+esac
+exec "$real" "\$@"
+SHIM
+  chmod +x "$holds/bin/git"
+  commit() { git -C "$repo" -c user.email=e@e -c user.name=e "$@"; }
+  grow() { printf 'pub fn f%s(a: u8) -> u8 {\n    if a > %s { 1 } else { 0 }\n}\n' "$1" "$1" >>"$repo/src/lib.rs"; git -C "$repo" add src && commit commit -q -m "grow $1"; }
+  grow 1 && grow 2 || { echo "stats_updating line $LINENO"; return 1; }
+  touch "$holds/reading"
+  PATH="$holds/bin:$PATH" start_daemon && start_app || { echo "stats_updating line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\"}}" | field "$1"; }
+  tab() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"$1\",\"window\":\"$d\"}}" >/dev/null; }
+  reply() { (cd "$repo" && kanna stats --json); }
+  tile() { python3 -c 'import json, sys
+r = json.loads(sys.argv[1])
+print(next(t[sys.argv[3]] for s in r["sections"] for t in s["tiles"] if t["id"] == sys.argv[2]))' "$(reply)" "$1" "$2"; }
+  noted() { python3 -c 'import json, sys; sys.exit(0 if any(t["id"] == sys.argv[2] and sys.argv[3] in t["note"] for t in json.loads(sys.argv[1])) else 1)' "$(desk stats)" "$1" "$2"; }
+  local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "stats_updating line $LINENO: $opened"; return 1; }
+  d="${BASH_REMATCH[1]}"
+  raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\",\"size\":[1300,900]}}" >/dev/null
+  tab Stats
+  check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk statsLoadings)" != 0 ]]' || { echo "stats_updating: a repo with no data shows Loading"; return 1; }
+  check wait_for 5 eval '[[ "$(desk statsStatus)" == "Updating: reading 3 new commits" ]]' || { echo "stats_updating: the first step: $(desk statsStatus)"; return 1; }
+  local started=$SECONDS json; json="$(reply)"
+  (( SECONDS - started <= 1 )) || { echo "stats_updating: the reply waited for the catch-up"; return 1; }
+  check test "$(field status <<<"$json")" == "Updating: reading 3 new commits" || { echo "stats_updating: kanna stats --json said $json"; return 1; }
+  check test "$(field sections <<<"$json")" == "[]" || { echo "stats_updating: no data at all has no sections: $json"; return 1; }
+  rm "$holds/reading"
+  check wait_for 10 eval '[[ "$(desk statsStatus)" == None ]] && noted commits "3 in 30 days"' || { echo "stats_updating: the page didn't refresh by itself: $(desk statsStatus) $(desk stats)"; return 1; }
+  local loadings; loadings="$(desk statsLoadings)"
+  [[ "$(tile lines value)" == 4* ]] || { echo "stats_updating: the code lines: $(tile lines value)"; return 1; }
+
+  tab Desk
+  check wait_for 5 eval '[[ "$(desk statsPage)" == False ]]' || { echo "stats_updating line $LINENO"; return 1; }
+  grow 3 && grow 4 && grow 5 || { echo "stats_updating line $LINENO"; return 1; }
+  touch "$holds/reading" "$holds/measuring"
+  tab Stats
+  check wait_for 5 eval '[[ "$(desk statsStatus)" == "Updating: reading 3 new commits" ]]' || { echo "stats_updating: the new commits: $(desk statsStatus)"; return 1; }
+  noted commits "3 in 30 days" || { echo "stats_updating: the old numbers went: $(desk stats)"; return 1; }
+  check test "$(field status <<<"$(reply)")" == "Updating: reading 3 new commits" || { echo "stats_updating: kanna stats --json said $(reply)"; return 1; }
+  check test "$(tile commits note)" == "today · 3 in 30 days" || { echo "stats_updating: the CLI's old numbers: $(tile commits note)"; return 1; }
+  sleep 0.3; snap "$d" stats_updating-reading >/dev/null
+  rm "$holds/reading"
+  check wait_for 5 eval '[[ "$(desk statsStatus)" == "Updating: measuring code, 0 of 3 commits" ]] && noted commits "6 in 30 days"' || { echo "stats_updating: measuring: $(desk statsStatus) $(desk stats)"; return 1; }
+  [[ "$(tile lines value)" == 4* ]] || { echo "stats_updating: the code's old numbers went: $(tile lines value)"; return 1; }
+  rm "$holds/measuring"
+  check wait_for 8 eval '[[ "$(desk statsStatus)" == None ]]' || { echo "stats_updating: the status stayed: $(desk statsStatus)"; return 1; }
+  [[ "$(tile lines value)" == 10* ]] || { echo "stats_updating: the first catch-up's code: $(tile lines value)"; return 1; }
+
+  tab Desk
+  check wait_for 5 eval '[[ "$(desk statsPage)" == False ]]' || { echo "stats_updating line $LINENO"; return 1; }
+  for n in 6 7 8 9 10 11 12 13; do grow "$n" || { echo "stats_updating line $LINENO"; return 1; }; done
+  touch "$holds/slow"
+  tab Stats
+  check wait_for 8 eval '[[ "$(desk statsStatus)" =~ ^Updating:\ measuring\ code,\ [1-7]\ of\ 8\ commits$ ]]' || { echo "stats_updating: no step partway through: $(desk statsStatus)"; return 1; }
+  sleep 0.2; snap "$d" stats_updating-measuring >/dev/null
+  check wait_for 8 eval '[[ "$(desk statsStatus)" == None ]] && [[ "$(tile lines value)" == 26* ]]' || { echo "stats_updating: the page didn't end: $(desk statsStatus) $(tile lines value)"; return 1; }
+  rm "$holds/slow"
+
+  mkdir -p "$KANNA_AGENTS_HOME/.kanna-v4" && python3 -c 'import json, sys; c = json.load(open(sys.argv[3])); c["stats"] = {"coverage": {sys.argv[1]: "while [ -e " + sys.argv[2] + " ]; do sleep 0.05; done; printf \"SF:$PWD/src/lib.rs\\nDA:1,1\\nend_of_record\\n\" >\"$KANNA_COVERAGE\""}}; json.dump(c, open(sys.argv[3], "w"))' "$repo" "$holds/coverage" "$KANNA_AGENTS_HOME/.kanna-v4/config.json"
+  touch "$holds/coverage"
+  tab Desk
+  check wait_for 5 eval '[[ "$(desk statsPage)" == False ]]' || { echo "stats_updating line $LINENO"; return 1; }
+  tab Stats
+  check wait_for 5 eval '[[ "$(desk statsStatus)" == "Updating: running coverage" ]]' || { echo "stats_updating: the coverage run: $(desk statsStatus)"; return 1; }
+  snap "$d" stats_updating-coverage >/dev/null
+  rm "$holds/coverage"
+  check wait_for 10 eval '[[ "$(desk statsStatus)" == None ]] && [[ "$(tile lines-covered value)" != None ]]' || { echo "stats_updating: the run's end: $(desk statsStatus) $(tile lines-covered value) $(tail -3 "$out/daemon.log")"; return 1; }
+  check test "$(desk statsLoadings)" == "$loadings" || { echo "stats_updating: the page went back to Loading: $(desk statsLoadings) after $loadings"; return 1; }
+  [[ -s "$out/stats_updating-reading.png" && -s "$out/stats_updating-measuring.png" ]] || { echo "stats_updating: no snapshots"; return 1; }
 }
 
 scenario quiz_window M4
@@ -7538,7 +7619,16 @@ print(next((r.get(sys.argv[3]) for r in rows if r.get("name") == sys.argv[2]), "
   check test "$(phone machines notes | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r["from"], [m for m in r["machines"] if m["name"] == "vm"][0]["version"] is not None)')" == "mbp True" || { echo "phone_machines: who answered: $(phone machines notes)"; return 1; }
 
   local stats; stats="$(phone stats notes)" || { echo "phone_machines: no stats: $stats"; return 1; }
-  check test "$(field project <<<"$stats")" == "$here" && check test "$(field sections.1.id <<<"$stats")" == main || { echo "phone_machines: the stats: $stats"; return 1; }
+  check test "$(field project <<<"$stats")" == "$here" || { echo "phone_machines: the stats: $stats"; return 1; }
+  check wait_for 10 eval '[[ "$(phone stats notes | field sections.1.id)" == main ]]' || { echo "phone_machines: the stats: $(phone stats notes)"; return 1; }
+  git -C "$here" -c user.email=e@e -c user.name=e commit -q --allow-empty -m moved || { echo "phone_machines line $LINENO"; return 1; }
+  phone listen 6 >"$KANNA_STATE_DIR/stats-notices" &
+  local listening=$!
+  sleep 1
+  phone stats notes >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
+  wait "$listening"
+  grep -q '"notice":"stats"' "$KANNA_STATE_DIR/stats-notices" || { echo "phone_machines: no stats notice for the new commit: $(cat "$KANNA_STATE_DIR/stats-notices")"; return 1; }
+  check test "$(phone stats notes | field status)" == None || { echo "phone_machines: the status stayed: $(phone stats notes)"; return 1; }
 
   phone send notes m1 "mock: run $me phone say first on mbp" >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
   check wait_for 25 eval 'phone read notes | grep -q "first on mbp"' || { echo "phone_machines: no answer on mbp: $(phone read notes)"; return 1; }
