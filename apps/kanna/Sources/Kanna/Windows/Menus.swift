@@ -418,7 +418,7 @@ extension AppController {
             controller?.tabBar.onPage?(String(next.dropFirst(5)))
             return
         }
-        if controller?.page != nil {
+        if controller?.shownPage != nil {
             controller?.page = nil
             refresh()
         }
