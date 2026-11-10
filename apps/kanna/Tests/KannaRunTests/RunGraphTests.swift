@@ -58,6 +58,19 @@ import Testing
         #expect(notice.badge == "done")
     }
 
+    @Test func aRevisionSaysWhoMadeItAndARefusalSaysWhatWasRefused() {
+        let file = RunRevision(n: 1, by: "file", at: 0, worst: 17, budget: 40)
+        #expect(file.title == "Revision 1" && file.who == "from the pipeline file" && !file.changed)
+        #expect(file.detail.hasSuffix(" · worst case 17 of 40 sessions"))
+        let emitted = RunRevision(n: 2, by: "stage:plan", at: 0, summary: "added lint", worst: 17, diff: [RunDiffLine(sign: " ", text: "a = run true"), RunDiffLine(sign: "+", text: "lint = run true")])
+        #expect(emitted.who == "by stage plan" && emitted.changed)
+        #expect(emitted.detail.hasPrefix("by stage plan at ") && emitted.detail.hasSuffix(": added lint · worst case 17 sessions"))
+        #expect(RunRevision(n: 3, by: "user", at: 0).who == "by you")
+        #expect(RunRevision(n: 4, by: "agent", at: 0).who == "by the task's agent")
+        #expect(RunRevision(n: nil, by: "stage:plan", at: 0, errors: ["the kojo block:1: no"]).title == "Refused: a kojo block")
+        #expect(RunRevision(n: nil, by: "user", at: 0).title == "Refused: an edit")
+    }
+
     @Test func numbersNotRecordedYetShowAsADash() {
         #expect(RunFormat.count(nil) == "—")
         #expect(RunFormat.count(2_600_000) == "2.6M")
