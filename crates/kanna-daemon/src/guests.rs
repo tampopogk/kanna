@@ -384,19 +384,15 @@ fn data_disk(path: &Path, gib: u64) -> Result<(), KmuxError> {
     let file = std::fs::File::create_new(path).map_err(|e| failed(format!("can't make {}: {e}", path.display())))?;
     let made = (|| {
         file.set_len(gib << 30).map_err(|e| failed(format!("can't size {}: {e}", path.display())))?;
-        let attached = Command::new("/usr/bin/hdiutil").args(["attach", "-nomount", "-imagekey", "diskimage-class=CRawDiskImage"]).arg(path).output().map_err(|e| failed(format!("hdiutil: {e}")))?;
-        let device = String::from_utf8_lossy(&attached.stdout).split_whitespace().next().filter(|d| d.starts_with("/dev/disk")).map(String::from);
-        let Some(device) = device.filter(|_| attached.status.success()) else {
-            return Err(failed(format!("hdiutil couldn't attach {}: {}", path.display(), String::from_utf8_lossy(&attached.stderr).trim())));
-        };
-        let erased = Command::new("/usr/sbin/diskutil").args(["eraseDisk", "APFS", DATA_VOLUME, "GPT", &device]).output();
-        let opened = match erased {
-            Ok(out) if out.status.success() => open_to_the_guest(path, &device),
+        let disk = AttachedImage::attach(path, &["-nomount"])?;
+        let erased = Command::new("/usr/sbin/diskutil").args(["eraseDisk", "APFS", DATA_VOLUME, "GPT", &disk.device]).output();
+        let device = disk.device.clone();
+        drop(disk);
+        match erased {
+            Ok(out) if out.status.success() => open_to_the_guest(path),
             Ok(out) => Err(failed(format!("diskutil couldn't format {device}: {}", String::from_utf8_lossy(&out.stderr).trim()))),
             Err(e) => Err(failed(format!("diskutil: {e}"))),
-        };
-        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
-        opened
+        }
     })();
     if made.is_err() {
         let _ = std::fs::remove_file(path);
@@ -404,26 +400,61 @@ fn data_disk(path: &Path, gib: u64) -> Result<(), KmuxError> {
     made
 }
 
-fn open_to_the_guest(image: &Path, device: &str) -> Result<(), KmuxError> {
+fn open_to_the_guest(image: &Path) -> Result<(), KmuxError> {
     let failed = |what: String| KmuxError::new("failed", what);
-    let _ = Command::new("/usr/sbin/diskutil").args(["unmountDisk", "force", device]).output();
-    let _ = Command::new("/usr/sbin/diskutil").args(["eject", device]).output();
     let root = image.with_extension("mount");
     std::fs::create_dir(&root).map_err(|e| failed(format!("can't make {}: {e}", root.display())))?;
     let opened = (|| {
         std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700)).map_err(|e| failed(format!("{e}")))?;
-        let attached = Command::new("/usr/bin/hdiutil").args(["attach", "-nobrowse", "-owners", "off", "-imagekey", "diskimage-class=CRawDiskImage", "-mountroot"]).arg(&root).arg(image).output().map_err(|e| failed(format!("hdiutil: {e}")))?;
-        let again = String::from_utf8_lossy(&attached.stdout).split_whitespace().next().filter(|d| d.starts_with("/dev/disk")).map(String::from);
-        let volume = root.join(DATA_VOLUME);
-        let set = std::fs::set_permissions(&volume, std::os::unix::fs::PermissionsExt::from_mode(0o1777)).map_err(|e| failed(format!("can't open {} to the guest's user: {e}", volume.display())));
-        if let Some(again) = again {
-            let _ = Command::new("/usr/sbin/diskutil").args(["unmountDisk", "force", &again]).output();
-            let _ = Command::new("/usr/sbin/diskutil").args(["eject", &again]).output();
-        }
-        set
+        let disk = AttachedImage::attach(image, &["-nobrowse", "-owners", "off", "-mountroot", &root.to_string_lossy()])?;
+        let volume = disk.volume.as_deref().ok_or_else(|| failed(format!("{} has no {DATA_VOLUME} volume", image.display())))?;
+        std::fs::set_permissions(volume, std::os::unix::fs::PermissionsExt::from_mode(0o1777)).map_err(|e| failed(format!("can't open {} to the guest's user: {e}", volume.display())))
     })();
     let _ = std::fs::remove_dir(&root);
     opened
+}
+
+struct AttachedImage {
+    device: String,
+    volume: Option<PathBuf>,
+}
+
+impl AttachedImage {
+    fn attach(image: &Path, options: &[&str]) -> Result<Self, KmuxError> {
+        let failed = |what: String| KmuxError::new("failed", what);
+        let attached = Command::new("/usr/bin/hdiutil").args(["attach", "-plist", "-imagekey", "diskimage-class=CRawDiskImage"]).args(options).arg(image).output().map_err(|e| failed(format!("hdiutil: {e}")))?;
+        if !attached.status.success() {
+            return Err(failed(format!("hdiutil couldn't attach {}: {}", image.display(), String::from_utf8_lossy(&attached.stderr).trim())));
+        }
+        Self::from_plist(&attached.stdout).ok_or_else(|| failed(format!("hdiutil didn't say which device {} is", image.display())))
+    }
+
+    fn from_plist(attached: &[u8]) -> Option<Self> {
+        const APFS_CONTAINER: &str = "EF57347C-0000-11AA-AA11-00306543ECAC";
+        let attached = plist::Value::from_reader(std::io::Cursor::new(attached)).ok()?;
+        let entities = attached.as_dictionary()?.get("system-entities")?.as_array()?;
+        let entities = entities.iter().filter_map(plist::Value::as_dictionary);
+        let text = |entity: &plist::Dictionary, key: &str| entity.get(key).and_then(plist::Value::as_string).map(String::from);
+        let mut device = None;
+        let mut volume = None;
+        for entity in entities {
+            let entry = text(entity, "dev-entry")?;
+            let whole = !entry.trim_start_matches("/dev/disk").contains('s');
+            if whole && text(entity, "content-hint").as_deref() != Some(APFS_CONTAINER) {
+                device = Some(entry);
+            }
+            if text(entity, "volume-kind").as_deref() == Some("apfs") {
+                volume = text(entity, "mount-point").map(PathBuf::from).filter(|point| point.ends_with(DATA_VOLUME));
+            }
+        }
+        Some(Self { device: device?, volume })
+    }
+}
+
+impl Drop for AttachedImage {
+    fn drop(&mut self) {
+        let _ = Command::new("/usr/bin/hdiutil").args(["detach", "-force", &self.device]).output();
+    }
 }
 
 #[cfg(test)]
@@ -439,19 +470,10 @@ mod tests {
         let image = dir.join("data.img");
         data_disk(&image, 8).unwrap();
         assert!(data_disk(&image, 8).is_err(), "an existing data disk isn't replaced");
-        let attached = Command::new("/usr/bin/hdiutil").args(["attach", "-readonly", "-nomount", "-imagekey", "diskimage-class=CRawDiskImage"]).arg(&image).output().unwrap();
-        let text = String::from_utf8_lossy(&attached.stdout).to_string();
-        let device = text.split_whitespace().next().unwrap().to_string();
-        let store = format!("Physical Store {}", device.trim_start_matches("/dev/"));
-        let listed = Command::new("/usr/sbin/diskutil").arg("list").output().unwrap();
-        let listed = String::from_utf8_lossy(&listed.stdout).split("\n\n").filter(|block| block.contains(&store)).collect::<Vec<_>>().join("\n");
-        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
-        assert!(listed.contains(DATA_VOLUME), "{listed}");
-        let _ = Command::new("/usr/bin/hdiutil").args(["attach", "-readonly", "-imagekey", "diskimage-class=CRawDiskImage", "-mountroot"]).arg(&dir).arg(&image).output().unwrap();
-        let mode = std::fs::metadata(dir.join(DATA_VOLUME)).map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o7777);
-        let _ = Command::new("/usr/sbin/diskutil").args(["unmountDisk", "force", &device]).output();
-        let _ = Command::new("/usr/sbin/diskutil").args(["eject", &device]).output();
-        assert_eq!(mode.ok(), Some(0o1777), "the guest's user, whatever its uid, can make its state folder");
+        let disk = AttachedImage::attach(&image, &["-readonly", "-nobrowse", "-mountroot", &dir.to_string_lossy()]).unwrap();
+        let mode = disk.volume.as_ref().and_then(|volume| std::fs::metadata(volume).ok()).map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o7777);
+        drop(disk);
+        assert_eq!(mode, Some(0o1777), "the guest's user, whatever its uid, can make its state folder");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

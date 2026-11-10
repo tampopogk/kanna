@@ -83,7 +83,7 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
 | Process | How it catches a crash | Then |
 |---|---|---|
 | app | `NSApplicationCrashOnExceptions` (registered at launch), so an exception AppKit would log and swallow, in an event or a draw or layer display, ends in `+[NSApplication _crashOnException:]`, which traps (SIGTRAP). An exception preprocessor (`objc_setExceptionPreprocessor`) keeps the last exception thrown, so that SIGTRAP, or a SIGABRT, within 5 s of one is recorded as the exception, with its own stack; `NSSetUncaughtExceptionHandler` and `reportException:` record the others. Handlers for SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE and SIGABRT, on an alternate stack, record the rest. A Rust panic in the app's library goes through the same hook as the daemon's. | the default handler runs again: the process dies of the signal and macOS writes its `.ips` |
-| daemon | a panic hook | the panic goes on as before: on the main thread, a command's or a launched future's included (tokio would swallow those, so `Timed` exits 101), the daemon exits, and the app starts another ([app link §4](app-link.md#4-the-app-starts-the-daemon)) |
+| daemon | a panic hook | on the main thread, whether in the loop or in any task on it, the hook ends the process with status 101 after the record is written, and the app starts another ([app link §4](app-link.md#4-the-app-starts-the-daemon)); nothing unwinds ([daemon runtime §6](daemon-runtime.md#6-decisions)). On any other thread the panic goes on as before: that thread ends and the daemon carries on |
 | keeper | a panic hook | as before; a crash never restarts the keeper |
 
 **GhosttyKit is built without Sentry** (`-Dsentry=false` in `scripts/build-ghosttykit.sh`). Ghostty's own crash reporter starts on a thread of its own from `ghostty_init`, takes over the crash signals, writes a `.ghosttycrash` minidump in `~/.local/state/ghostty/crash` and exits with status 6. That is what happened at 08:31:19: no handler of Kanna's ran and macOS wrote no `.ips`. The build store keys GhosttyKit by that script's hash, so the flag rebuilds it everywhere ([build store](build-store.md)).
@@ -144,8 +144,9 @@ stateDiagram-v2
 
 ## 6. Tests
 
-- **Debug commands** (with `KANNA_DEBUG=1`): `debug.crash` makes the app raise an `NSException` in a view's `draw(_:)` on its next display; `debug.panic` panics the daemon's main loop.
+- **Debug commands** (with `KANNA_DEBUG=1`): `debug.crash` makes the app raise an `NSException` in a view's `draw(_:)` on its next display; `debug.panic` panics the daemon's main loop in a request's handler, and with `{"task": true}` answers, then panics in a local task.
 - **e2e** `crash_app_draw`: `debug.crash` on a private instance in the background; checks the record (kind, reason, stack, panes), the relaunch, the banner, `kanna crashes` with the `.ips`, and the planner's message. `crash_daemon_panic`: the record, the app starting a daemon again, the banner and the message. `crash_report_unheld`: a mock Claude planner started with `--dangerously-skip-permissions`, in a scratch repo's Desk and `cd`'d into the build's checkout (the planner's repo is its pane's cwd, and a private instance opens only projects in its own `~/.kanna-v4/repos`), gets the `debug.crash` report as a peer message rather than `held peer message`.
+- **CLI** `crates/kanna/tests/cli.rs`: both forms of `debug.panic` end the daemon with a failing status and leave one record whose top frame is the panic's site.
 - **Every test run fails on a crash:** after each e2e scenario, and when a CLI test's private daemon is dropped, a record in the instance's `crashes/` fails it and is printed. The crash scenarios take away the records (and `.ips`) they made once they've checked them.
 
 ## 7. Glossary

@@ -16,8 +16,8 @@ for want in sys.argv[1:]:
     if want not in names: print("missing", want, sorted(names)); sys.exit(1)
     print(want, names[want]["last"], "ms")' "$@"; }
   check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "perf_intervals: no planning terminal"; return 1; }
-  (cd "$repo" && kanna task new "Timed" "say hi" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
-  check wait_for 5 shows "Timed" "say hi" || { echo "perf_intervals: the task didn't start"; return 1; }
+  (cd "$repo" && kanna task new "Timed" "hello there" --agent "$agent") >/dev/null && kanna task start $(tid 1) >/dev/null || { echo "perf_intervals line $LINENO"; return 1; }
+  check wait_for 5 shows "Timed" "hello there" || { echo "perf_intervals: the task didn't start"; return 1; }
   kanna task stop $(tid 1) >/dev/null && check wait_for 5 is "Timed" state exited || { echo "perf_intervals: the task didn't stop"; return 1; }
   for i in $(seq 2 50); do
     (cd "$repo" && kanna task new "Shelf task $i" "$(python3 -c 'import sys
@@ -51,7 +51,7 @@ task_list_speed() {
   mkdir -p "$repo" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "task_list_speed line $LINENO"; return 1; }
   git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "task_list_speed line $LINENO"; return 1; }
   start_daemon || { echo "task_list_speed line $LINENO"; return 1; }
-  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "say hi" --agent "$agent") >/dev/null || { echo "task_list_speed line $LINENO"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "hello there" --agent "$agent") >/dev/null || { echo "task_list_speed line $LINENO"; return 1; }; done
   for ((i = 1; i <= n; i++)); do kanna task start "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't start"; return 1; }; done
   for ((i = 1; i <= n; i++)); do kanna task stop "$(tid $i)" >/dev/null || { echo "task_list_speed: task $i didn't stop"; return 1; }; done
   started="$(find "$repo/.kanna-worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
@@ -82,7 +82,7 @@ loop_latency() {
   for ((i = 0; i < 3000; i++)); do echo "$i" >"$big/$i.txt"; done
   git -C "$big" add . && git -C "$big" -c user.email=e@e -c user.name=e commit -q -m big || { echo "loop_latency line $LINENO"; return 1; }
   start_daemon && start_app || { echo "loop_latency line $LINENO"; return 1; }
-  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "say hi" --agent "$agent") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }; done
+  for ((i = 1; i <= n; i++)); do (cd "$repo" && kanna task new "Task $i" "hello there" --agent "$agent") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }; done
   for ((i = 1; i <= n; i++)); do kanna task start "$(tid $i)" >/dev/null && kanna task stop "$(tid $i)" >/dev/null || { echo "loop_latency: task $i didn't start and stop"; return 1; }; done
   mark="$(wc -l <"$out/daemon.log")"
   raw '{"id":1,"cmd":"debug.daemon.perf","args":{"reset":true}}' >/dev/null
@@ -97,7 +97,7 @@ loop_latency() {
   echo "yours" >>"$installed" && echo "ours" >>"$shipped/kanna-tasks/SKILL.md" || { echo "loop_latency line $LINENO"; return 1; }
   for ((i = 0; i < 10; i++)); do kanna agents >"$KANNA_STATE_DIR/agents-status" || { echo "loop_latency line $LINENO"; return 1; }; done
   grep -qi "conflict\|both\|yours" "$KANNA_STATE_DIR/agents-status" || { echo "loop_latency: agents didn't reach a merge:"; cat "$KANNA_STATE_DIR/agents-status"; return 1; }
-  (cd "$repo" && kanna task new "Codex" "say hi" --agent "$codex") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Codex" "hello there" --agent "$codex") >/dev/null || { echo "loop_latency line $LINENO"; return 1; }
   t="$(tid $((n + 1)))"
   for i in 1 2 3 4 5; do kanna task start "$t" >/dev/null && kanna task stop "$t" >/dev/null || { echo "loop_latency: the codex task didn't start and stop, $i"; return 1; }; done
   (cd / && kanna project import "$big" >"$KANNA_STATE_DIR/import-said" 2>&1; echo "$?" >"$KANNA_STATE_DIR/import-exit") &

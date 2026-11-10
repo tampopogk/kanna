@@ -108,7 +108,7 @@ flowchart TB
 | [Stats](specs/stats.md) | The project's numbers over 30 days: quiz, main, tasks |
 | [Schedules tab](specs/schedules-tab.md) | Every repo's schedules, their firings, and pause, run and remove |
 | [Merge queue tab](specs/merge-queue-tab.md) | The repo's merge queue: the entries in line and lately ended, and the picked entry's terminal or log |
-| [The database](specs/database.md) | Tasks and their history in `kanna.db` |
+| [The database](specs/database.md) · [terminal records](specs/terminal-records.md) | Tasks and their history, and each pty's pane, in `kanna.db` |
 | [Settings](specs/settings.md) | Kanna's own settings |
 
 **Building Kanna**

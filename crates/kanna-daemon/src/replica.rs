@@ -513,7 +513,7 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("kanna-replica-{name}-{}-{}", std::process::id(), COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            let db = Db::open(&dir);
+            let db = Db::open(&dir).unwrap();
             let mut replica = Replica::open(&db).unwrap();
             replica.set_device(name);
             Machine { dir, db, replica }
@@ -521,7 +521,7 @@ mod tests {
 
         fn restart(mut self) -> Machine {
             let me = self.replica.me().to_string();
-            self.db = Db::open(&self.dir);
+            self.db = Db::open(&self.dir).unwrap();
             self.replica = Replica::open(&self.db).unwrap();
             self.replica.set_device(&me);
             self

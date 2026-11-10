@@ -258,7 +258,7 @@ markup_reuse() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/reuse" mine other said kept count
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_reuse line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent" && kanna task new "Other" "say hi" --agent "$agent") >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Mine" "hello there" --agent "$agent" && kanna task new "Other" "hello there" --agent "$agent") >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null && kanna task pick "$(tid 2)" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(pane Mine id)" == term-* && "$(pane Other id)" == term-* ]]' || { kanna workspace list --all; return 1; }
   mine="$(pane Mine id)" other="$(pane Other id)"
@@ -311,7 +311,7 @@ markup_button() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/button" mine planner opened w
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_button line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent") >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Mine" "hello there" --agent "$agent") >/dev/null || { echo "markup_button line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null || { echo "markup_button line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(pane Mine id)" == term-* ]]' || { kanna workspace list --all; return 1; }
   mine="$(pane Mine id)"

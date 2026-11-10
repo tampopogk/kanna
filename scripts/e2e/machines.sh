@@ -308,9 +308,9 @@ project_import() {
   refused="$(cd / && kanna "$outside" 2>&1)" && { echo "project_import: a Desk opened outside repos"; return 1; }
   [[ "$refused" == *"kanna project import $outside"* ]] || { echo "project_import: kanna PATH outside repos: $refused"; return 1; }
 
-  (cd "$repo" && kanna task new "Importing" "say importing" --agent "$agent") >/dev/null || { echo "project_import line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Importing" "hello importing" --agent "$agent") >/dev/null || { echo "project_import line $LINENO"; return 1; }
   [[ "$(kanna task start "$(tid 1)")" == "started $(sid 1) on the Shelf: term-"* ]] || { echo "project_import: the task didn't start"; return 1; }
-  check wait_for 5 shows "Importing" "say importing" || { echo "project_import: the agent didn't get its first message"; kanna read "Importing"; return 1; }
+  check wait_for 5 shows "Importing" "hello importing" || { echo "project_import: the agent didn't get its first message"; kanna read "Importing"; return 1; }
   local task worktree session; task="$(pane "Importing" id)"; worktree="$repo/.kanna-worktrees/$(tid 1)"
   session="$(kanna read "Importing" | tr -d '\r\n' | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*/\1/p')"
   [[ "$session" =~ ^[0-9a-f-]{36}$ ]] || { echo "project_import: the task started without a session"; kanna read "Importing"; return 1; }
