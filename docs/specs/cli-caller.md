@@ -28,7 +28,7 @@ This is step one of splitting the logical layout (the daemon's: panes, tabs, win
 
 | Command, with no target | From a Kanna terminal | From anywhere else |
 |---|---|---|
-| `open` (any pane type, `--tab`, `--split`) | beside the caller, in its window or workspace ([workspaces](workspaces.md#3-commands-target-and-reply)); from a planning terminal, a new window | refused: `add --window WINDOW (or --window new)` |
+| `open` (any pane type, `--tab`, `--split`) | beside the caller, in its window or workspace ([workspaces](workspaces.md#3-commands-target-and-reply)); from a planning terminal, a tab of its planner, in its Desk ([Desk windows](desk-windows.md)) | refused: `add --window WINDOW (or --window new)` |
 | `open --dock` | refused: a docked pane is a task's agent, so make a task (`task new`, then `task pick`) ([every task starts on the Shelf](tasks-start-on-the-shelf.md)) | the same |
 | `comment FILE:LINE`, `markup FILE` | the caller's window: a code or markdown pane already showing the file there is reused, else one opens beside the caller | refused: `add --window WINDOW (or --window new)`; with `--window W`, a pane showing the file in W is reused |
 | `open code FILE` | reuses a code pane showing FILE in the caller's window | needs `--window W`, and then reuses one in W |
@@ -40,7 +40,7 @@ This is step one of splitting the logical layout (the daemon's: panes, tabs, win
 
 - **An unknown caller** (`$KANNA_TERMINAL` names no pane of this Kanna, as from another machine with `--host`, or a pane in no window or workspace) is refused, never sent to the front window: the daemon says `no_caller` or `not_found`, the app's screenshot `not_shown`.
 - **`--mux kmux`** is unchanged: kmux has no caller, and its `open` goes to its key window ([workspaces §8](workspaces.md#8-backport-to-kmux)).
-- The CLI checks before it connects (`unplaced` in `crates/kanna/src/lib.rs`), so a refused command starts nothing. The parse table stays kmux's, so kmux's examples still parse to kmux's requests.
+- The CLI checks before it connects (the `unplaced` step of each command's `flow`, which `crates/kanna/src/lib.rs` runs), so a refused command starts nothing. The parse table stays kmux's, so kmux's examples still parse to kmux's requests.
 
 ## 2. Desks by project
 

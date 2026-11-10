@@ -7,8 +7,9 @@ usage: scripts/build-linux.sh [production|staging|dev] [--arch x86_64|aarch64] [
 
 Builds Kanna's Linux tarball on this Mac or a Linux machine: the daemon, keeper and CLI
 cross-compiled with Zig (baseline CPU, glibc 2.35), Kanna's skills and release.json, as
-DIR/Kanna-VERSION-linux-ARCH.tar.gz (default DIR: target/release-linux). KANNA_VERSION sets
-the version. docs/specs/machine-update.md says what's in it.
+DIR/Kanna-VERSION-linux-ARCH.tar.gz (default DIR: target/release-linux). The version is the
+last vX.Y.Z tag's, as X.Y.Z-dev unless KANNA_VERSION sets it. docs/specs/machine-versions.md
+says what's in it.
 USAGE
   exit 2
 }
@@ -36,7 +37,7 @@ step() { echo "==> $*"; }
 
 commit="$(git -C "$repo_root" rev-parse HEAD)"
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]] || commit="$commit-dirty"
-version="${KANNA_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo_root/Cargo.toml" | head -1)}"
+version="$(kanna_version "$repo_root")" || fail "can't work out the version"
 case "$channel" in staging) name=Kanna-Staging ;; *) name=Kanna ;; esac
 
 zig="$(kanna_zig "$repo_root")"
@@ -75,10 +76,10 @@ rm -rf "$stage"
 mkdir -p "$stage/kanna/kanna-skills"
 cp "$built/kanna" "$built/kanna-daemon" "$built/kanna-keeper" "$repo_root/apps/kanna/Resources/planner.sh" "$stage/kanna/"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$stage/kanna/kanna-skills/"; done
-protocols="$(sed -n 's/^pub const PROTOCOLS: \[u32; 2\] = \[\([0-9]*\), \([0-9]*\)\];/[\1, \2]/p' "$repo_root/crates/kanna-build/src/lib.rs")"
-[[ -n "$protocols" ]] || fail "can't read PROTOCOLS from crates/kanna-build/src/lib.rs"
+protocol="$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);/\1/p' "$repo_root/crates/kanna-build/src/lib.rs")"
+[[ -n "$protocol" ]] || fail "can't read PROTOCOL from crates/kanna-build/src/lib.rs"
 cat > "$stage/kanna/release.json" <<JSON
-{"commit": "$commit", "version": "$version", "channel": "$channel", "os": "linux", "arch": "$arch", "protocols": $protocols}
+{"commit": "$commit", "version": "$version", "channel": "$channel", "os": "linux", "arch": "$arch", "protocol": $protocol}
 JSON
 tarball="$out/$name-$version-linux-$arch.tar.gz"
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$tarball.new" -C "$stage" kanna

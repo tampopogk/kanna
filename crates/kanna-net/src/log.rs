@@ -17,6 +17,18 @@ impl View {
         self.names.values().filter(|keys| keys.len() == 1).filter_map(|keys| keys.iter().next()).filter(|key| !self.revoked.contains(*key)).cloned().collect()
     }
 
+    pub fn is_phone(&self, key: &str) -> bool {
+        self.descriptors.get(key).is_some_and(|d| d["role"] == "phone")
+    }
+
+    pub fn machines(&self) -> BTreeSet<String> {
+        self.trusted().into_iter().filter(|key| !self.is_phone(key)).collect()
+    }
+
+    pub fn phones(&self) -> BTreeSet<String> {
+        self.trusted().into_iter().filter(|key| self.is_phone(key)).collect()
+    }
+
     pub fn resolve(&self, name: &str, key: &str) -> Result<(), Refused> {
         match self.names.get(name) {
             None => Err(Refused::new("unpaired")),
@@ -145,11 +157,15 @@ impl PeerLog {
         let body = &entry["body"];
         let ancestors = self.ancestors(&body["parents"]);
         let past = self.view_of(ancestors.iter());
-        if !past.trusted().contains(body["signer"].as_str().unwrap_or_default()) {
+        let signer = body["signer"].as_str().unwrap_or_default();
+        if !past.trusted().contains(signer) {
             return Err(Refused::new("untrusted_signer"));
         }
         let payload = &body["payload"];
         let key = payload["key"].as_str().unwrap_or_default();
+        if past.is_phone(signer) && (body["kind"] != "revoke" || key != signer) {
+            return Err(Refused::new("untrusted_signer"));
+        }
         match body["kind"].as_str() {
             Some("add") => {
                 if past.revoked.contains(key) {
@@ -244,13 +260,13 @@ impl PeerLog {
         if view.revoked.contains(key) {
             return Err(untrusted());
         }
-        if view.trusted().contains(key) {
+        if view.machines().contains(key) {
             return Ok(());
         }
         let certificate = certificate.ok_or_else(untrusted)?;
         let body = &certificate["body"];
         verify(body["device"].as_str().unwrap_or_default(), certificate["signature"].as_str().unwrap_or_default(), &canonical(body))?;
-        if body["domain"] != format!("{DOMAIN}/app").as_str() || body["key"] != key || !view.trusted().contains(body["device"].as_str().unwrap_or_default()) {
+        if body["domain"] != format!("{DOMAIN}/app").as_str() || body["key"] != key || !view.machines().contains(body["device"].as_str().unwrap_or_default()) {
             return Err(untrusted());
         }
         Ok(())
@@ -393,6 +409,33 @@ pub mod tests {
         other.bootstrap();
         let entries = a.log().entries();
         assert_eq!(code(other.log().merge(&entries)), "wrong_log");
+    }
+
+    fn phone_on(a: &mut Device) -> Device {
+        let phone = Device::new("iphone-test");
+        let mut payload = phone.descriptor();
+        payload["role"] = json!("phone");
+        let entry = a.entry("add", payload);
+        a.log().merge(&[entry]).unwrap();
+        phone
+    }
+
+    #[test]
+    fn a_phone_is_no_machine_and_signs_only_its_own_revocation() {
+        let (mut a, _, c) = machines();
+        let mut phone = phone_on(&mut a);
+        let view = a.log().view();
+        assert!(view.phones().contains(&phone.key()));
+        assert!(!view.machines().contains(&phone.key()));
+        assert_eq!(a.log().accept_endpoint(&phone.key(), None).unwrap_err().code, "untrusted_endpoint");
+        phone.log = Some(a.log().clone());
+        let add = phone.entry("add", c.descriptor());
+        assert_eq!(code(a.log().merge(&[add])), "untrusted_signer");
+        let other = phone.entry("revoke", json!({ "key": c.key() }));
+        assert_eq!(code(a.log().merge(&[other])), "untrusted_signer");
+        let own = phone.entry("revoke", json!({ "key": phone.key() }));
+        a.log().merge(&[own]).unwrap();
+        assert!(a.log().view().revoked.contains(&phone.key()));
     }
 
     fn permutations(items: &[Value]) -> Vec<Vec<Value>> {

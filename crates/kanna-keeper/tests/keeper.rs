@@ -1,4 +1,4 @@
-use kanna_keeper::client::{Client, Exited, SpawnRequest};
+use kanna_keeper::client::{Client, Exited, Heard, SpawnRequest};
 use kanna_keeper::ExitStatus;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -1023,6 +1023,33 @@ fn the_upgrades_pause_counts_against_a_waiting_spawns_timeout() {
 }
 
 #[test]
+fn spawns_sent_together_answer_in_turn_while_other_requests_are_answered() {
+    let f = Fixture::new();
+    let mut c = f.client();
+    let first = c.send_spawn(&SpawnRequest::command("t1", "echo one; exit 4")).unwrap();
+    let second = c.send_spawn(&SpawnRequest::command("t2", "echo two")).unwrap();
+    let failed = c.send_spawn(&SpawnRequest::command("t1", "true")).unwrap();
+    assert_eq!(c.hello().unwrap().1, f.keeper_pid());
+    let mut spawned = std::collections::HashMap::new();
+    wait_for("three spawn replies", || {
+        for heard in c.poll().unwrap() {
+            match heard {
+                Heard::Spawned(tag, pty) => drop(spawned.insert(tag, pty)),
+                Heard::Exited(exit) => panic!("{}'s exit came before the replies", exit.id),
+            }
+        }
+        spawned.len() == 3
+    });
+    let one = spawned.remove(&first).unwrap().unwrap();
+    let two = spawned.remove(&second).unwrap().unwrap();
+    assert_eq!((one.id.as_str(), two.id.as_str()), ("t1", "t2"));
+    let error = spawned.remove(&failed).unwrap().unwrap_err().to_string();
+    assert!(error.contains("exists"), "{error}");
+    let (exit, out) = exit_reading(&mut c, &one.master);
+    assert_eq!((exit.id.as_str(), exit.status), ("t1", ExitStatus::Code(4)), "{out}");
+}
+
+#[test]
 fn stop_closes_every_pty_and_exits_once_they_are_gone() {
     let mut f = Fixture::new();
     let mut c = f.client();
@@ -1038,4 +1065,69 @@ fn stop_closes_every_pty_and_exits_once_they_are_gone() {
         assert!(!alive(pid), "{pid} outlived its keeper");
     }
     assert!(!f.state().join("keeper.pid").exists());
+}
+
+#[test]
+fn a_move_takes_every_session_to_another_folder_on_the_same_pid() {
+    let f = Fixture::new();
+    let mut c = f.client();
+    let before = c.info().unwrap();
+    let agent = c.spawn(&SpawnRequest::command("agent", "echo agent-ready; while read line; do echo \"agent:$line\"; done")).unwrap();
+    read_until(&agent.master, "agent-ready");
+    let shell = c.spawn(&SpawnRequest::command("shell", "echo shell-ready; read code; exit $code")).unwrap();
+    read_until(&shell.master, "shell-ready");
+
+    let to = f.dir.join("moved");
+    let other = Command::new(BIN).arg("--state-dir").arg(&to).env("KANNA_KEEPER_IDLE_MS", "30000").stdin(Stdio::null()).spawn().unwrap();
+    let mut other = KilledOnDrop(other);
+    wait_for("the other keeper", || Client::connect(&to.join("keeper.sock")).is_ok());
+    let refused = c.move_to(&to).unwrap_err().to_string();
+    assert!(refused.contains("a keeper already runs for"), "{refused}");
+    assert!(f.socket().exists() && alive(agent.pid), "a refused move leaves it where it was");
+    let _ = other.0.kill();
+    let _ = other.0.wait();
+
+    let after = c.move_to(&to).unwrap();
+    assert_eq!(after.pid, before.pid, "the same process");
+    wait_for("the old socket to go", || !f.socket().exists());
+    assert!(!f.state().join("keeper.pid").exists());
+    assert_eq!(std::fs::read_to_string(to.join("keeper.pid")).unwrap().trim(), before.pid.to_string());
+    let ours = std::fs::OpenOptions::new().write(true).open(f.state().join("keeper.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(ours.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0, "the old folder's lock is free");
+    for pid in [agent.pid, shell.pid] {
+        assert_eq!(ps(pid, "ppid"), before.pid.to_string(), "still the keeper's child");
+    }
+
+    let mut there = Client::connect(&to.join("keeper.sock")).unwrap();
+    let mut adopted = there.adopt().unwrap();
+    adopted.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(adopted.iter().map(|p| (p.id.as_str(), p.pid)).collect::<Vec<_>>(), [("agent", agent.pid), ("shell", shell.pid)]);
+    write(&adopted[0].master, "moved\n");
+    read_until(&agent.master, "agent:moved");
+    write(&shell.master, "4\n");
+    let exit = exits_reading(&mut there, &[&shell.master], 1).remove(0);
+    assert_eq!((exit.id.as_str(), exit.pid, exit.status), ("shell", shell.pid, ExitStatus::Code(4)));
+    there.close("agent").unwrap();
+    wait_for("the agent to end", || !alive(agent.pid));
+}
+
+#[test]
+fn hello_says_which_ops_the_keeper_takes() {
+    let f = Fixture::new();
+    let hello = f.client().info().unwrap();
+    assert!(hello.build.is_some() && hello.can("move") && hello.can("upgrade"), "{hello:?}");
+}
+
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "needs the keeper's debug-build test hooks")]
+fn a_keeper_from_before_moves_says_so_and_refuses_one() {
+    for (old, build) in [("unbuilt", false), ("unmovable", true)] {
+        let f = Fixture::with(&[("KANNA_KEEPER_TEST_AS_OLD", old)]);
+        let mut c = f.client();
+        let hello = c.info().unwrap();
+        assert_eq!((hello.build.is_some(), hello.can("move")), (build, false), "{old}: {hello:?}");
+        let refused = c.move_to(&f.dir.join("moved")).unwrap_err().to_string();
+        assert!(refused.contains("unknown op \"move\""), "{old}: {refused}");
+        assert!(f.socket().exists(), "{old}: it stays");
+    }
 }

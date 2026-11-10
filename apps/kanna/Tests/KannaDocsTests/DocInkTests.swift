@@ -20,7 +20,7 @@ struct DocInkTests {
     }
 
     @Test func theSpecsExampleIsTypedAsTheSpecShowsIt() {
-        let message = DocStore.message(thread(Self.specInk), file: "docs/specs/tab-container.md", text: "",
+        let message = Doc.message(thread(Self.specInk), file: "docs/specs/tab-container.md", text: "",
                                        mark: ".kanna/docs/marks/docs__specs__tab-container.md-c2.png")
         #expect(message == """
         [kanna comment c2 · docs/specs/tab-container.md:7]
@@ -45,7 +45,7 @@ struct DocInkTests {
             InkMark(kind: .writing, strokes: [[[620, 4], [640, 12]], [[630, 20], [650, 24]]], anchor: name),
             InkMark(kind: .cross, strokes: [[[700, 0], [720, 20]], [[720, 0], [700, 20]]], anchor: theme),
         ])
-        let lines = DocStore.message(thread(ink, id: "c1"), file: "references/mockups/settings.html", text: "",
+        let lines = Doc.message(thread(ink, id: "c1"), file: "references/mockups/settings.html", text: "",
                                      mark: ".kanna/docs/marks/references__mockups__settings.html-c1.png").components(separatedBy: "\n")
         #expect(lines == [
             "[kanna comment c1 · references/mockups/settings.html:33]",
@@ -63,7 +63,7 @@ struct DocInkTests {
 
     @Test func oneMarkAroundNothingAndAReplyUnderIt() {
         let ink = DocInk(marks: [InkMark(kind: .circle, strokes: [[[0, 0], [10, 10]]], anchor: Self.click, note: "two\nlines\u{1b}[2J")])
-        #expect(DocStore.message(thread(ink), file: "a.md", text: "And this?") == """
+        #expect(Doc.message(thread(ink), file: "a.md", text: "And this?") == """
         [kanna comment c2 · a.md:14]
         > ink, 1 mark, numbered in the picture:
         > 1 circle at line 14, around nothing
@@ -72,22 +72,19 @@ struct DocInkTests {
         """)
     }
 
-    @Test func inkThreadsRoundTripThroughTheThreadFile() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("kanna-ink-\(UUID().uuidString)").resolvingSymlinksInPath()
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".git"), withIntermediateDirectories: true)
-        let store = DocStore(file: root.appendingPathComponent("docs/specs/tab-container.md").path)
-        try store.update { record in
-            record.threads.append(thread(Self.specInk))
-            record.next = 3
-        }
-        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: store.path))) as! [String: Any]
+    @Test func inkThreadsRoundTripThroughTheThreadRecord() throws {
+        var record = DocRecord(file: "docs/specs/tab-container.md")
+        record.threads.append(thread(Self.specInk))
+        record.next = 3
+        let data = try JSONEncoder().encode(record)
+        let saved = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let first = (saved["threads"] as! [[String: Any]])[0]
         let marks = (first["ink"] as! [String: Any])["marks"] as! [[String: Any]]
         #expect(first["quote"] as? String == "")
         #expect(marks.map { $0["kind"] as? String } == ["circle", "writing", "arrow", "strike"])
         #expect(marks[2]["side"] as? String == "after" && marks[2]["note"] as? String == "say this up front")
         #expect((marks[0]["anchor"] as! [String: Any])["line"] as? Int == 7)
-        #expect(store.read().threads == [thread(Self.specInk)])
+        #expect(try JSONDecoder().decode(DocRecord.self, from: data).threads == [thread(Self.specInk)])
     }
 
     @Test func oldThreadsLoadWithoutInkAndUnknownKindsStillLoad() throws {

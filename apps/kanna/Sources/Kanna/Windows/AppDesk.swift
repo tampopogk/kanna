@@ -56,6 +56,14 @@ extension AppController {
 
     func isDesk(_ window: String) -> Bool { physical.desk(window) != nil }
 
+    func publishDesks() {
+        let local = { (id: String?) -> JSON in id.flatMap { MachineIDs.machine(of: $0) == nil ? JSON.string($0) : nil } ?? .null }
+        let desks: JSON = .array(physical.desks.map { ["id": .string($0.id), "planner": local($0.planner), "shows": local($0.shows), "project": $0.project.map { .string($0) } ?? .null] })
+        guard desks != sentDesks, links?.link(nil) != nil else { return }
+        sentDesks = desks
+        route("desks", ["desks": desks], on: .some(nil))
+    }
+
     func address(_ window: String) -> [String: JSON] {
         guard let desk = physical.desk(window) else { return ["window": .string(window)] }
         return (desk.shows ?? desk.planner).map { ["workspace": .string($0)] } ?? ["window": "new"]
@@ -68,7 +76,7 @@ extension AppController {
     func deskShowing(_ workspace: String) -> DeskRecord? { physical.desks.first { $0.shows == workspace } }
 
     @discardableResult
-    func activateTask(_ task: String, into window: String?, front: Bool = true, origin: Origin = .app) -> (moved: Bool, desk: String)? {
+    func activateTask(_ task: String, into window: String?, front: Bool = true, origin: Origin = .app, by: String? = nil) -> (moved: Bool, desk: String)? {
         guard let workspace = workspace(ofTask: task) else { return nil }
         if let there = deskShowing(workspace) {
             show(window: there.id, origin: origin)
@@ -76,9 +84,15 @@ extension AppController {
         }
         var desk = physical.desks.first { $0.active == workspace } ?? deskFor(task: task, given: window, front: front)
         if let old = desk.shows ?? desk.active, old != workspace { physical.leave(old) }
+        let changed = desk.active != workspace
         desk.shows = workspace
         desk.active = workspace
         physical.setDesk(desk)
+        if changed {
+            var args: [String: JSON] = ["action": "activated", "task": .string(task)]
+            if let by { args["by"] = .string(by) }
+            request("tasks", args)
+        }
         show(window: desk.id, origin: origin)
         return (true, desk.id)
     }
@@ -166,7 +180,7 @@ extension AppController {
         if let planner = desk.planner {
             closingPlanners.insert(planner)
             let pane = published["workspaces"]?.array?.first { $0["id"]?.string == planner }?["dock"]?["pane"]?.string
-            if let pane { request("close", ["task": .string(pane)]) { [weak self] _ in self?.closingPlanners.remove(planner) } }
+            if let pane { request("tasks", ["action": "let-go", "task": .string(pane)]) { [weak self] _ in self?.closingPlanners.remove(planner) } }
         }
         restate()
         refresh()
@@ -182,7 +196,7 @@ extension AppController {
             switch args["action"]?.string {
             case "activate":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "activate needs a task") }
-                guard let activated = activateTask(task, into: args["by"]?.string.flatMap { self.desk(of: $0) }?.id, front: false, origin: origin(args)) else { throw KannaError("not_found", "\(task) isn't on this app's Desk") }
+                guard let activated = activateTask(task, into: args["by"]?.string.flatMap { self.desk(of: $0) }?.id, front: false, origin: origin(args), by: args["by"]?.string) else { throw KannaError("not_found", "\(task) isn't on this app's Desk") }
                 return ["task": .string(task), "moved": .bool(activated.moved), "desk": .string(activated.desk)]
             case "park":
                 guard let task = args["task"]?.string else { throw KannaError("bad_request", "park needs a task") }

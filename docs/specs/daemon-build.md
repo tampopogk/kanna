@@ -4,7 +4,7 @@
 
 A relaunched app whose bundled daemon differs from the one running replaces it. Nothing is lost: the keeper holds the ptys, and the next daemon adopts them.
 
-**Only the local daemon follows the app's build.** A daemon on another machine is checked by a protocol range and never stopped by an app ([your machines](machines.md#5-the-app-link-over-the-network)).
+**Only the local daemon follows the app's build.** A daemon on another machine is checked by protocol and never stopped by an app ([your machines](machines.md#5-the-app-link-over-the-network)).
 
 ## 1. The build ID
 
@@ -39,7 +39,8 @@ sequenceDiagram
     D2->>A: ok, daemon {pid, build: B2}, panes (the same IDs)
 ```
 
-- **Only with no app attached.** A second app gets `app_attached` as before, whatever its build, so two running apps of different builds can't take turns stopping each other's daemon.
+- **Only with no app of this machine attached.** A second app of this machine gets `app_attached` as before, whatever its build, so two running apps of different builds can't take turns stopping each other's daemon. Remote apps don't count: they're never asked their build, and when the daemon stops they redial the one that follows.
+- **Before the protocol:** this check comes first, so an update that raises the protocol still replaces this Mac's daemon. Only a remote app, or a hello without `build`, is refused with `other_protocol`.
 - **A hello without `build`** (an older app, the test apps) is accepted, as before.
 - **The app** answers `other_build` by retrying at once rather than backing off, and starts its daemon at once on the socket the refusal handed it ([daemon socket](daemon-socket.md)); at most one start every 10 s still holds, so an app whose bundle changed under it can't loop.
 

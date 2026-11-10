@@ -47,4 +47,4 @@ git -C ~/work/ghostty push origin kanna4-merge:kanna4
 
 ## 3. Why
 
-The protocols Kanna reads (OSC 9;4 progress, [OSC 7501 program status](agent-status.md#4-the-agents-own-report-osc-7501)) and fixes to the terminal keep landing in Ghostty's `main`. A cherry-pick brings one without what it builds on (OSC 7501 needed hand edits around the XTCHECKSUM options `kanna4` lacked), and every one makes the next merge harder. Following `main` keeps `kanna4` easy to rebase onto, and Kanna on the Ghostty everyone else tests.
+The protocols Kanna reads (OSC 9;4 progress, [OSC 7501 program status](agent-status.md#3-the-report-osc-7501)) and fixes to the terminal keep landing in Ghostty's `main`. A cherry-pick brings one without what it builds on (OSC 7501 needed hand edits around the XTCHECKSUM options `kanna4` lacked), and every one makes the next merge harder. Following `main` keeps `kanna4` easy to rebase onto, and Kanna on the Ghostty everyone else tests.

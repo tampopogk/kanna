@@ -23,7 +23,6 @@
           "enum": [
             "claude",
             "codex",
-            "copilot",
             "opencode",
             "agy"
           ]
@@ -46,11 +45,11 @@
       "additionalProperties": false
     },
     "shelf": {
-      "description": "A repo's Shelf: the tasks Kanna has brought in that aren't on the Desk.",
+      "description": "The Shelf: the tasks Kanna has brought in that aren't on the Desk.",
       "type": "object",
       "properties": {
         "runners": {
-          "description": "How many of a repo's Shelf tasks run at once. Waiting tasks start by themselves, oldest first, skipping blocked ones, and Kanna stops each when its agent's turn ends (it asks you something or it's finished), freeing its place for the next; move a stopped task to the Desk to resume it. 0 turns this off: Kanna starts and stops none. Read every few seconds.",
+          "description": "In ~/.kanna-v4/config.json, how many Shelf tasks run at once on this machine, across all repos; it isn't synced, so each machine has its own. In a repo's .kanna/config.json, a lower cap for that repo: it can't raise the machine's number. Waiting tasks start by themselves, oldest first across all repos, skipping blocked ones, and Kanna stops each when its agent's turn ends (it asks you something or it's finished), freeing its place for the next; move a stopped task to the Desk to resume it. Desk tasks don't count. 0 turns this off, for the machine in your file and for the repo in a repo's: Kanna starts and stops none. Read every few seconds.",
           "type": "integer",
           "minimum": 0,
           "maximum": 10,
@@ -78,14 +77,13 @@
       "type": "object",
       "properties": {
         "agent": {
-          "description": "The agent a new task runs when kanna task new has no --agent: an agent Kanna knows (claude, codex, copilot, opencode, agy), or in your ~/.kanna-v4/config.json any command that starts one (\"claude --model opus\"). A repo's .kanna/config.json may only name an agent, so a repo you clone can't make Kanna run a command of its choosing. Read when a task is made; the task keeps it.",
+          "description": "The agent a new task runs when kanna task new has no --agent: an agent Kanna knows (claude, codex, opencode, agy), or in your ~/.kanna-v4/config.json any command that starts one (\"claude --model opus\"). A repo's .kanna/config.json may only name an agent, so a repo you clone can't make Kanna run a command of its choosing. Read when a task is made; the task keeps it.",
           "type": "string",
           "minLength": 1,
           "default": "claude",
           "examples": [
             "claude",
             "codex",
-            "copilot",
             "opencode",
             "agy"
           ]
@@ -115,9 +113,84 @@
       "type": "object",
       "properties": {
         "prompts": {
-          "description": "Whether the agents Kanna starts ask permission before running commands and editing files (\"ask\"), or skip their permission prompts (\"skip\": claude --dangerously-skip-permissions, codex --yolo, copilot --yolo, agy --dangerously-skip-permissions). An agent command that already picks its own mode keeps it. Only ~/.kanna-v4/config.json sets this: a repo's .kanna/config.json that sets it is ignored, so a cloned repo can't turn your prompts off. Unset, agents ask, and the planning terminal asks you once and writes your answer here. Read when an agent's command is built.",
-          "enum": ["ask", "skip"],
+          "description": "Whether the agents Kanna starts ask permission before running commands and editing files (\"ask\"), or skip their permission prompts (\"skip\": claude --dangerously-skip-permissions, codex --yolo, agy --dangerously-skip-permissions). An agent command that already picks its own mode keeps it. Only ~/.kanna-v4/config.json sets this: a repo's .kanna/config.json that sets it is ignored, so a cloned repo can't turn your prompts off. Unset, agents ask, and the planning terminal asks you once and writes your answer here. Read when an agent's command is built.",
+          "enum": [
+            "ask",
+            "skip"
+          ],
           "default": "ask"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pipelines": {
+      "description": "The software factory's runs (docs/specs/software-factory.md).",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "description": "The command that runs each agent a pipeline's stages name, when it isn't the agent's own name on your PATH: {\"claude\": \"~/bin/claude-wrapper\"}. Only ~/.kanna-v4/config.json sets this: a repo's .kanna/config.json that sets it is ignored, so a cloned repo can't make a run start a command. Read as a stage's agent starts.",
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "claude",
+              "codex",
+              "opencode",
+              "agy"
+            ]
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "pricing": {
+          "description": "What a model's tokens cost, in dollars per million, for stages whose agent doesn't report a cost (docs/specs/software-factory.md §5): {\"gpt-5\": {\"in\": 2.5, \"out\": 10, \"cached\": 0.25}}. cached and written default to in. Read as a visit ends.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "in": {
+                "type": "number",
+                "minimum": 0
+              },
+              "out": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cached": {
+                "type": "number",
+                "minimum": 0
+              },
+              "written": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "in",
+              "out"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "workers": {
+          "description": "How many of a run's workers run at once: a fan-out's instances (each STAGE.KEY) and attempts (xN by STAGE) start as others end. Read from the repo's .kanna/config.json, then ~/.kanna-v4/config.json, as a fan-out starts its workers.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
+        }
+      },
+      "additionalProperties": false
+    },
+    "merge": {
+      "description": "The merge queue (docs/specs/merge-queue.md): kanna task merge hands a task's branch to it, and it merges the branch onto main, runs these tests on that merge and moves main to it if they pass, or if an agent judges that no failure is the branch's doing. Read from the repo's .kanna/config.json only. A repo's .kanna/pipelines/merge-queue.kojo replaces it.",
+      "type": "object",
+      "properties": {
+        "test": {
+          "description": "The shell command the merge queue runs on each merge, in the queue's worktree: exit 0 lands it, and when it fails an agent judges whether what fails is the branch's doing. Without it (and without .kanna/pipelines/merge-queue.kojo), kanna task merge is refused.",
+          "type": "string",
+          "minLength": 1
         }
       },
       "additionalProperties": false

@@ -61,7 +61,7 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
   "reason": "NSInternalInconsistencyException: debug.crash in a draw",
   "stack": [{ "image": "Kanna", "symbol": "Kanna.CrashView.draw(__C.CGRect) -> ()", "offset": 112 }],
   "signature": "a41c09e2d7f3b815",
-  "build": { "id": "5d1f…", "channel": "dev", "commit": "26e83e2c", "version": "0.1.0" },
+  "build": { "id": "5d1f…", "channel": "dev", "commit": "26e83e2c", "version": "4.1.1-dev" },
   "panes": [{ "id": "term-41", "name": "agent", "type": "term" }]
 }
 ```
@@ -83,7 +83,7 @@ One JSON file per crash, `<state folder>/crashes/<time>-<process>.json`, such as
 | Process | How it catches a crash | Then |
 |---|---|---|
 | app | `NSApplicationCrashOnExceptions` (registered at launch), so an exception AppKit would log and swallow, in an event or a draw or layer display, ends in `+[NSApplication _crashOnException:]`, which traps (SIGTRAP). An exception preprocessor (`objc_setExceptionPreprocessor`) keeps the last exception thrown, so that SIGTRAP, or a SIGABRT, within 5 s of one is recorded as the exception, with its own stack; `NSSetUncaughtExceptionHandler` and `reportException:` record the others. Handlers for SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE and SIGABRT, on an alternate stack, record the rest. A Rust panic in the app's library goes through the same hook as the daemon's. | the default handler runs again: the process dies of the signal and macOS writes its `.ips` |
-| daemon | a panic hook | the panic goes on as before: on the main thread the daemon exits, and the app starts another ([app link §4](app-link.md#4-the-app-starts-the-daemon)) |
+| daemon | a panic hook | the panic goes on as before: on the main thread, a command's or a launched future's included (tokio would swallow those, so `Timed` exits 101), the daemon exits, and the app starts another ([app link §4](app-link.md#4-the-app-starts-the-daemon)) |
 | keeper | a panic hook | as before; a crash never restarts the keeper |
 
 **GhosttyKit is built without Sentry** (`-Dsentry=false` in `scripts/build-ghosttykit.sh`). Ghostty's own crash reporter starts on a thread of its own from `ghostty_init`, takes over the crash signals, writes a `.ghosttycrash` minidump in `~/.local/state/ghostty/crash` and exits with status 6. That is what happened at 08:31:19: no handler of Kanna's ran and macOS wrote no `.ips`. The build store keys GhosttyKit by that script's hash, so the flag rebuilds it everywhere ([build store](build-store.md)).

@@ -17,6 +17,10 @@ enum TerminalDebug {
                 _ = ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
             }
             if let zoom = args["zoom"]?.number { view.zoom(by: Int(zoom)) }
+            if let lines = args["scroll"]?.number {
+                view.scrolled?()
+                ghostty_surface_mouse_scroll(surface, 0, lines, 0)
+            }
             if case .object(let click)? = args["click"] { try Self.click(view, click) }
             let size = ghostty_surface_size(surface)
             var colors = ghostty_surface_colors_s()
@@ -35,6 +39,7 @@ enum TerminalDebug {
                 "gridWidth": .number(Double(view.canvas.frame.width)), "scale": .number(Double(view.window?.backingScaleFactor ?? 0)),
                 "marginColor": view.marginColor.map { .string($0) } ?? .null,
             ]
+            if let grid = view.grid { reply["grid"] = [.number(Double(grid.cols)), .number(Double(grid.rows))] }
             if let progress = view.progress {
                 reply["progress"] = ["state": .number(Double(progress.state.rawValue)), "value": .number(Double(progress.progress))]
             }

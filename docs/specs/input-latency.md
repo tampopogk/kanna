@@ -9,7 +9,7 @@ A key typed in a terminal reaches its program, and the program's echo is drawn, 
 1. [What was slow](#1-what-was-slow)
 2. [Measuring a keystroke](#2-measuring-a-keystroke)
 3. [The byte path](#3-the-byte-path)
-4. [The app link, protocol 3](#4-the-app-link-protocol-3)
+4. [Output acks](#4-output-acks)
 5. [Readings](#5-readings)
 6. [Tested](#6-tested)
 7. [Glossary](#7-glossary)
@@ -79,14 +79,15 @@ flowchart LR
 - **Input:** the app link's reader thread hands `input` straight to the terminal's pty writer. The main loop never sees it.
 - **Output:** each terminal's pty reader feeds its screen and outbox, and sends the outbox to the app itself, as a chunk of at most 64 KiB. It tells the main loop only what's the main loop's: a new folder (OSC 7), or an outbox that overflowed.
 - **One chunk in flight per terminal:** the next waits for the app's `taken`; until then output gathers in the outbox.
-- **The pty waits for a slow app:** while a shown terminal has a chunk in flight and 1 MiB waiting, its reader stops reading the pty, as a terminal emulator does, so the program writes only as fast as the app draws. It waits at most 1s for a `taken`, then reads on; past 4 MiB the outbox **overflows** and the app gets a snapshot once it takes the chunk it has. A terminal the app doesn't show is never held: the daemon keeps its screen current and sends nothing.
+- **Each app on its own:** with several apps a terminal has an outbox and a chunk in flight for each, and an echo goes first only to the app that typed.
+- **The pty waits for a slow app:** while a shown terminal has, for every app showing it, a chunk in flight and 1 MiB waiting, its reader stops reading the pty, as a terminal emulator does, so the program writes only as fast as the app draws. It waits at most 1s for a `taken`, then reads on; past 4 MiB the outbox **overflows** and the app gets a snapshot once it takes the chunk it has. A terminal the app doesn't show is never held: the daemon keeps its screen current and sends nothing.
 - **The echo goes first:** the link writer has two lanes. A chunk carrying a keystroke's echo goes in the urgent lane, written before other terminals' queued output, unless its own terminal already has something queued (a snapshot, a grid), so a terminal's messages are never reordered.
 - **In order with the output:** a snapshot and its `grid`, a `grid` after a resize, and `exited` are queued under the lock the reader feeds the screen with; `grid` and `exited` go after whatever output is still waiting.
 - **`task_scripts::git_dir`** reads the worktree's `.git` (a folder, or a file naming it) instead of running git.
 
-## 4. The app link, protocol 3
+## 4. Output acks
 
-`kanna_build::PROTOCOLS` is `[2, 3]` (and the app's `Protocols.mine`). Protocol 3 adds one message: the app sends `taken {terminal}` after each `output` once the terminal's surface has taken it (or at once, for a terminal it has no view of). In protocol 2 the daemon sends output as it comes, unacknowledged, with the 16 MiB catch-up rule ([app link](app-link.md#3-rules)); an app or remote machine of protocol 2 keeps working.
+Protocol 3 added one message, and every protocol since has it: the app sends `taken {terminal}` after each `output` once the terminal's surface has taken it (or at once, for a terminal it has no view of), and the daemon sends a terminal's next chunk only after it. Protocol 2's output without acks is gone, now that a build speaks one protocol ([versions §2](machine-versions.md#2-protocols)).
 
 ## 5. Readings
 
@@ -107,7 +108,7 @@ flowchart LR
 ## 6. Tested
 
 - **e2e `typing_latency`** (defaults: one `yes` beside the typed pane, four in hidden tabs): at least 54 of 60 keys drawn, and `key.drawn` p95 within `KANNA_LATENCY_BOUND` (100ms).
-- **`app_link.rs`:** an echo isn't held behind another terminal's flood with an app that never acks it; a stalled app gets one chunk of a flood, nothing more until its `taken`, then a snapshot and output again, and the daemon stays under 150 MB; a protocol-2 app still falls behind and catches up as before; a replica fed every `output` and `grid` misses nothing and repeats nothing.
+- **`app_link.rs`:** an echo isn't held behind another terminal's flood with an app that never acks it; a stalled app gets one chunk of a flood, nothing more until its `taken`, then a snapshot and output again, and the daemon stays under 150 MB; a replica fed every `output` and `grid` misses nothing and repeats nothing.
 - **Unit:** the outbox's lanes (an echo goes ahead of other terminals' output, never its own); a feed's chunks, overflow and snapshot; `git_dir` agrees with git for a repo and a linked worktree; the daemon's percentiles.
 
 ## 7. Glossary
