@@ -46,7 +46,7 @@ stateDiagram-v2
     TaskView --> DeskView: Done · Move to Shelf (no task active)
 ```
 
-- **⌘. toggles.** From the active task it shows the Desk view; the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
+- **⌘. toggles.** From the active task it shows the Desk view, on the tab it showed last ([the Desk view's tab](desk-view-tab.md)); the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
 - **"Pull back the task parked last" becomes "the active task".** With none active (it was Done or moved to the Shelf), ⌘. makes the Desk's ⌘1 task active: the one left last. That was the old "task parked last", so the key does what it did.
 - **Making a task active** (click, ⌘1, ⌘2, `kanna task activate`) leaves the one active before on the Desk, not active, as pulling parked it before. It counts as left then, even when the Desk view was showing, so it becomes ⌘1.
 - **The Desk's tasks are listed oldest first**, by when each task was made, as the Shelf sorts ([tasks](tasks.md)). The active task stays in its place in that order; only its row's highlight marks it. A task that needs you stays in its place too: its status dot shows it.
@@ -83,8 +83,8 @@ stateDiagram-v2
 | | `Windows/Machines.swift` | "keep their places on the Shelf" → "on the Desk" |
 | Menus | `Windows/Menus.swift` | Task menu: Park/Unpark → Show Desk / Show Active Task (⌘.), Move to Backlog → Move to Shelf, Pull Shelf Task N → Desk Task N; ⌘. becomes the toggle |
 | Toasts | `Windows/Toasts.swift` | none visible; a click makes a Desk task active, or moves a Shelf task to the Desk |
-| CLI help | `crates/kanna/src/commands.rs` | `task` summary, usage, notes, examples; `workspace` and `open` notes ("on a Desk, on the Shelf or in the backlog") |
-| CLI output | `crates/kanna/src/output.rs` | `task list` WHERE and time; `task` replies (§3); workspace places "on the Shelf" → "on the Desk", "in the backlog" → "on the Shelf" |
+| CLI help | `crates/kanna/src/commands/task.rs`, `workspace.rs`, `open.rs` | `task` summary, usage, notes, examples; `workspace` and `open` notes ("on a Desk, on the Shelf or in the backlog") |
+| CLI output | `crates/kanna/src/commands/task.rs`, `workspace.rs` | `task list` WHERE and time; `task` replies (§3); workspace places "on the Shelf" → "on the Desk", "in the backlog" → "on the Shelf" |
 | Errors | `crates/kanna-daemon/src/tasks.rs`, `AppDesk.swift`, `lib.rs` | "N tasks on the Shelf: move one to the backlog with `kanna task defer`", "isn't on this app's Shelf", "no backlog task", "isn't a task: … a Desk or the Shelf, or in the backlog" |
 | Daemon log | `tasks.rs` | "runs in the backlog", "is on mac's Shelf" |
 | Config | `schemas/config.schema.json`, `tasks.rs` `runners()`, `lib.rs` `CONFIG_HELP` | `shelf.runners`, described as the Shelf's; `backlog.runners` stays in the schema marked as the old name and is read when `shelf.runners` isn't set in that file; the planning terminal's description |

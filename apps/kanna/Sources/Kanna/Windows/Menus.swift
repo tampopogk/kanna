@@ -26,8 +26,14 @@ extension AppController {
             return submenu
         }
         let app = menu("Kanna", [])
+        app.addItem(withTitle: "About \(KannaBuild.name)", action: #selector(showAbout), keyEquivalent: "").target = self
+        app.addItem(.separator())
         if Self.instanceName != "default" {
             app.addItem(withTitle: "Instance: \(Self.instanceName)", action: nil, keyEquivalent: "")
+            app.addItem(.separator())
+        }
+        if let updates {
+            app.addItem(updates.menuItem)
             app.addItem(.separator())
         }
         let accounts = app.addItem(withTitle: "Agent Accounts", action: nil, keyEquivalent: "")
@@ -412,11 +418,15 @@ extension AppController {
             controller?.tabBar.onPage?(String(next.dropFirst(5)))
             return
         }
-        if controller?.page != nil {
+        if controller?.shownPage != nil {
             controller?.page = nil
             refresh()
         }
         layoutCommand("focus", ["tab": .string(next), "keep": "dock"])
+    }
+
+    @objc func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationVersion: KannaBuild.version, .version: KannaBuild.buildLabel])
     }
 
     @objc func showAccounts() { accountsTerminal("kanna accounts; exec \"${SHELL:-/bin/sh}\" -l") }

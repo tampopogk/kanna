@@ -51,6 +51,7 @@ struct DeskTask: Equatable {
         case "working": return .controlAccentColor
         case "needs-you": return .systemOrange
         case "idle": return .systemGreen
+        case "failed": return .systemRed
         default: return .tertiaryLabelColor
         }
     }
@@ -68,6 +69,9 @@ struct ShelfTask: Equatable {
     var branch: String? = nil
     var stack: String? = nil
     var status: String? = nil
+    var queue: QueueSpot? = nil
+    var failed: String? = nil
+    var failedEntry: String? = nil
 
     static func stack(_ entry: JSON) -> String? {
         func names(_ key: String) -> String {
@@ -75,12 +79,13 @@ struct ShelfTask: Equatable {
             return list.compactMap { $0["name"]?.string.map { "\u{201C}\($0)\u{201D}" } ?? $0["id"]?.string }.joined(separator: ", ")
         }
         if entry["conflict"]?.string != nil { return "its blockers' branches conflict" }
-        let stale = names("stale"), bases = names("bases")
-        if !stale.isEmpty { return "stale · behind " + stale }
-        let ready: String? = entry["ready"]?["head"]?.string != nil ? "ready" : nil
-        let after: String? = bases.isEmpty ? nil : "merges after " + bases
-        let said = [ready, after].compactMap { $0 }
-        return said.isEmpty ? nil : said.joined(separator: " · ")
+        switch entry["merge"]?.string {
+        case "stale": return "stale · behind " + names("stale")
+        case "after": return "merges after " + names("bases")
+        case "conflicts": return "conflicts"
+        case "ready": return "ready"
+        default: return nil
+        }
     }
 
     static func program(_ command: String?) -> String? {
@@ -100,7 +105,7 @@ struct ShelfTask: Equatable {
 
     var dashed: Bool { blocked || stack?.hasPrefix("its blockers") == true }
 
-    var dot: String? { !dashed && ["working", "needs-you", "idle"].contains(status) ? status : nil }
+    var dot: String? { failed != nil && status != "working" ? "failed" : !dashed && ["working", "needs-you", "idle"].contains(status) ? status : nil }
 
     @MainActor var after: String {
         let made = "made " + DeskTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
@@ -137,6 +142,42 @@ struct ShelfTask: Equatable {
             }
         }
         return out
+    }
+}
+
+struct QueueSpot: Equatable {
+    let position: Int
+    let state: String
+    var stage: String? = nil
+    var since: Double? = nil
+    var after: String? = nil
+    var main: String? = nil
+    var merge: String? = nil
+    var why: String? = nil
+    var by: String? = nil
+
+    init?(_ entry: JSON?) {
+        guard let entry, let state = entry["state"]?.string else { return nil }
+        position = Int(entry["position"]?.number ?? 0)
+        self.state = state
+        stage = entry["stage"]?.string
+        since = entry["since"]?.number
+        after = entry["afterName"]?.string ?? entry["after"]?.string
+        main = entry["main"]?.string
+        merge = entry["merge"]?.string
+        why = entry["why"]?.string
+        by = entry["by"]?.string
+    }
+
+    @MainActor var said: String {
+        let main = self.main ?? "main"
+        switch state {
+        case "testing":
+            let stage = self.stage.flatMap { $0 == "test" ? nil : $0 } ?? "testing"
+            return "\(stage) on \(main) + its branch · \(DeskTask.ago(since).replacingOccurrences(of: "now", with: "just started"))"
+        case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
+        default: return after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"
+        }
     }
 }
 
@@ -415,6 +456,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     var onActivate: ((String) -> Void)?
     var onStart: ((String) -> Void)?
     var onShelve: ((String) -> Void)?
+    var onLog: ((String) -> Void)?
     var onLeaveSearch: (() -> Void)?
     private var shown: DeskPage?
     private let scroller = NSScrollView()
@@ -482,6 +524,12 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     var shelfRows: [(task: String, center: NSPoint)] {
         rowViews.compactMap { $0 as? ShelfRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
+    }
+
+    private(set) var groupTitles: [String] = []
+
+    var shelfLogs: [(task: String, center: NSPoint)] {
+        rowViews.compactMap { $0 as? ShelfRow }.compactMap { row in row.logCenter.map { (row.task.id, $0) } }
     }
 
     var blockedShelf: [JSON] {
@@ -621,6 +669,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     private func lay(_ page: DeskPage, top: CGFloat) {
         let span = Perf.begin(.desk, "DeskView.lay")
         document.subviews.filter { $0 !== search && $0 !== searchKey && $0 !== zone && $0 !== dropNote && !($0 is DeskRow) && !($0 is ShelfRow) }.forEach { $0.removeFromSuperview() }
+        groupTitles = []
         let (deskBefore, shelfBefore) = (deskKept, shelfKept)
         (deskKept, shelfKept) = ([:], [:])
         var made = 0
@@ -677,6 +726,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
                 made += 1
                 let row = ShelfRow(task: task, full: page.full, width: width + 20, query: query, selected: chosen)
                 row.onPress = { [weak self] in self?.start(task.id) }
+                row.onLog = { [weak self] in task.failedEntry.map { self?.onLog?($0) } }
                 return row
             }()
             shelfKept[task.id] = row
@@ -715,6 +765,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     }
 
     private func header(_ title: String, detail: String?, count: String, y: CGFloat, left: CGFloat, width: CGFloat) -> (bottom: CGFloat, title: NSTextField, tally: NSTextField) {
+        groupTitles.append(title)
         let head = label(title, weight: .semibold)
         head.frame.origin = NSPoint(x: left, y: y)
         if let detail {
@@ -845,7 +896,9 @@ private final class ShelfRow: NSView {
     let task: ShelfTask
     let selected: Bool
     var onPress: (() -> Void)?
+    var onLog: (() -> Void)?
     private let go: NSTextField
+    private let log = NSTextField(labelWithString: "Log")
     private let sub = NSTextField(labelWithString: "")
     private let full: Bool
     private let query: String
@@ -875,6 +928,15 @@ private final class ShelfRow: NSView {
         go.sizeToFit()
         go.frame.origin = NSPoint(x: width - go.frame.width - 10, y: (52 - go.frame.height) / 2)
         [name, sub, go].forEach(addSubview)
+        if task.failedEntry != nil {
+            log.font = .systemFont(ofSize: 12)
+            log.textColor = .controlAccentColor
+            log.sizeToFit()
+            log.frame.origin = NSPoint(x: go.frame.minX - log.frame.width - 14, y: go.frame.minY)
+            name.frame.size.width = log.frame.minX - 40
+            sub.frame.size.width = log.frame.minX - 40
+            addSubview(log)
+        }
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -882,11 +944,17 @@ private final class ShelfRow: NSView {
 
     var label: String { go.stringValue }
 
+    var logCenter: NSPoint? { log.superview === self ? convert(NSPoint(x: log.frame.midX, y: log.frame.midY), to: nil) : nil }
+
     var subText: String { sub.stringValue }
 
     func refresh() {
         let small = NSFont.systemFont(ofSize: 12)
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
+        if let failed = task.failed {
+            detail.append(NSAttributedString(string: "merge failed", attributes: [.font: small, .foregroundColor: NSColor.systemRed]))
+            detail.append(NSAttributedString(string: " · \(failed) · its agent has the reasons · ", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
         if let stack = task.stack {
             let color: NSColor = stack.hasPrefix("ready") ? .systemGreen : stack.hasPrefix("merges") ? .secondaryLabelColor : .systemOrange
             detail.append(NSAttributedString(string: stack + " · ", attributes: [.font: small, .foregroundColor: color]))
@@ -932,7 +1000,10 @@ private final class ShelfRow: NSView {
         paint()
     }
 
-    override func mouseDown(with event: NSEvent) { onPress?() }
+    override func mouseDown(with event: NSEvent) {
+        if log.superview === self, log.frame.insetBy(dx: -8, dy: -10).contains(convert(event.locationInWindow, from: nil)) { return onLog?() ?? () }
+        onPress?()
+    }
 }
 
 @MainActor

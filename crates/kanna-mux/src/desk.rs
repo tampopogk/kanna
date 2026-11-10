@@ -92,7 +92,15 @@ impl Model {
                 }
                 Ok(reply([("task", self.agent(0).into()), ("workspace", self.workspaces[0].id.clone().into()), ("was", was)]))
             }
-            other => Err(bad_request(format!("unknown task action \"{other}\" (list, find, hold or claim)"))),
+            "planner" => {
+                let reference = string("task").ok_or_else(|| bad_request("planner needs a planning terminal"))?;
+                let app = string("app").ok_or_else(|| bad_request("planner needs who has it"))?;
+                let s = self.find_workspace(reference, panes).filter(|s| !self.workspaces[*s].is_task()).ok_or_else(|| not_found(format!("{reference} isn't a planner")))?;
+                let was = self.workspaces[s].place.to_json();
+                self.workspaces[s].place = Where::Planner(app.into());
+                Ok(reply([("task", self.agent(s).into()), ("workspace", self.workspaces[s].id.clone().into()), ("was", was)]))
+            }
+            other => Err(bad_request(format!("unknown task action \"{other}\" (list, find, hold, claim or planner)"))),
         }
     }
 
