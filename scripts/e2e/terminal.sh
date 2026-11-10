@@ -1,4 +1,15 @@
 ghostty_config() { printf '%s\n' "$@" >"$KANNA_GHOSTTY_CONFIG"; }
+inset() { python3 -c 'import json, math, sys
+m = json.loads(sys.argv[1])
+padding = math.floor(2 * m["scale"])
+cols = math.floor((m["gridWidth"] * m["scale"] - 2 * padding) / m["cellWidth"])
+ok = m["inset"] == 2 and m["gridWidth"] == m["width"] - 4 and m["cols"] == cols and m["marginColor"] == m["background"]
+print("inset %s, grid %s of %s pt, %s cols (want %s), margin %s on %s" % (m["inset"], m["gridWidth"], m["width"], m["cols"], cols, m["marginColor"], m["background"]))
+sys.exit(0 if ok else 1)' "$1"; }
+margins() { python3 -c 'import json, sys
+p = json.loads(sys.argv[1])["panes"][0]
+rgb = lambda c: bytes.fromhex(c.lstrip("#"))
+sys.exit(0 if all(max(abs(x - y) for x, y in zip(rgb(m), rgb(p["background"]))) <= 2 for m in p["margins"]) else 1)' "$1"; }
 
 scenario terminal_colours M4
 terminal_colours() {
@@ -11,10 +22,13 @@ terminal_colours() {
   kanna open --window new --name terminal_colours --cmd "$(probe '\033]11;?\007\033]10;?\007\033]4;1;?\007\033[?996n' n 1)" >/dev/null || return 1
   check wait_for 5 shows terminal_colours 'GOT ^]11;rgb:1212/3434/5656~^]10;rgb:e5e5/d4d4/b0b0~^]4;1;rgb:0101/0202/fefe~^\[?997;1n' || { kanna read terminal_colours; return 1; }
   check test "$(terminal settings.cursorStyle '{"pane":"terminal_colours"}')" == bar || return 1
-  local drawn
-  drawn="$(raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"terminal_colours.png"}}' | field panes.0.background)"
+  local drawn shot
+  check inset "$(raw '{"id":1,"cmd":"debug.terminal","args":{"pane":"terminal_colours"}}')" || return 1
+  shot="$(raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"terminal_colours.png"}}')"
+  drawn="$(field panes.0.background <<<"$shot")"
   cp "$KANNA_STATE_DIR/terminal_colours.png" "$out/terminal_colours-dark.png" 2>/dev/null
   check near "$drawn" '#123456' || return 1
+  check margins "$shot" || { echo "$shot"; return 1; }
   kanna open --window win-1 --name terminal_coloursb --cmd "$(probe '\033[?2031h' n 1)" >/dev/null || return 1
   check wait_for 5 shows terminal_coloursb READY || return 1
   terminal background '{"pane":"terminal_colours","appearance":"light"}' >/dev/null
@@ -23,9 +37,12 @@ terminal_colours() {
   kanna open --window win-1 --name terminal_coloursc --cmd "$(probe '\033]11;?\007')" >/dev/null || return 1
   check wait_for 5 shows terminal_coloursc 'GOT ^]11;rgb:f0f0/f0f0/e0e0~' || return 1
   sleep 0.5
-  drawn="$(raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"terminal_colours-light.png"}}' | field panes.0.background)"
+  shot="$(raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"terminal_colours-light.png"}}')"
+  drawn="$(field panes.0.background <<<"$shot")"
   cp "$KANNA_STATE_DIR/terminal_colours-light.png" "$out/terminal_colours-light.png" 2>/dev/null
   check near "$drawn" '#f0f0e0' || return 1
+  check margins "$shot" || { echo "$shot"; return 1; }
+  check inset "$(raw '{"id":1,"cmd":"debug.terminal","args":{"pane":"terminal_colours"}}')" || return 1
   colours_theme 'light:GitHub Light Default,dark:GitHub Dark Default' '#ffffff' '#0d1117' none || return 1
   local ghostty="${KANNA_E2E_GHOSTTY:-/Applications/Ghostty.app}"
   if [[ -f "$ghostty/Contents/Resources/ghostty/themes/Dracula" ]]; then
@@ -134,15 +151,22 @@ mouse_keys_focus() {
 
 scenario font_size_scrollback M4
 font_size_scrollback() {
+  ghostty_config 'window-padding-x = 2'
   start_daemon && start_app || return 1
   kanna open --window new --name font_size_scrollback >/dev/null || return 1
   kanna send font_size_scrollback 'seq 1 3000' || return 1
   check wait_for 5 shows font_size_scrollback '^3000$' || return 1
+  check inset "$(raw '{"id":1,"cmd":"debug.terminal","args":{"pane":"font_size_scrollback"}}')" || return 1
+  local shot
+  shot="$(raw '{"id":1,"cmd":"debug.snapshot","args":{"marker":"3000"}}')"
+  check margins "$shot" || { echo "$shot"; return 1; }
+  check test "$(field panes.0.marker.inked <<<"$shot")" == 4 || { echo "$shot"; return 1; }
   local cols wide cell
   cols="$(terminal cols '{"pane":"font_size_scrollback"}')" cell="$(terminal cellWidth '{"pane":"font_size_scrollback"}')"
   terminal cols '{"pane":"font_size_scrollback","zoom":1}' >/dev/null
   check wait_for 5 eval '[[ "$(terminal cellWidth "{\"pane\":\"font_size_scrollback\"}")" -gt "$cell" ]]' || return 1
   check wait_for 5 eval '[[ "$(terminal cols "{\"pane\":\"font_size_scrollback\"}")" -lt "$cols" ]]' || return 1
+  check inset "$(raw '{"id":1,"cmd":"debug.terminal","args":{"pane":"font_size_scrollback"}}')" || return 1
   terminal cols '{"pane":"font_size_scrollback","zoom":0}' >/dev/null
   terminal cols '{"pane":"font_size_scrollback","zoom":-1}' >/dev/null
   check wait_for 5 eval '[[ "$(terminal cols "{\"pane\":\"font_size_scrollback\"}")" -gt "$cols" ]]' || return 1
