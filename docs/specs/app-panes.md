@@ -37,7 +37,7 @@ sequenceDiagram
 | `update {pane, state?, error?, url?, title?, device?, zoom?}` | app | the view is `running` or `failed` (with `error`); the page moved (`url`, applied as kmux's page moves, history included); the page's title changed (`title`, `""` for none: it names the pane's tab, [tab names](tab-names.md)); the simulator chosen; the markdown zoom |
 | `pane {pane: record}` | daemon | the record after an `update` |
 | requests (`{id, cmd, args}`) | app | `navigate` from the views (the URL editor, a markdown link, back and forward), answered as any client's |
-| `debug.web`, `debug.md`, `debug.ios` (with an `id`) | daemon | kmux's commands for these panes (the page's URL and text; the rendered markdown; a tap or Home on the simulator), passed on like `debug.text` |
+| `debug.web`, `debug.md`, `debug.ios` (with an `id`) | daemon | kmux's commands for these panes (the page's URL as its machine names it, `loaded` as WebKit loaded it through a [port tunnel](port-tunnels.md) or `kanna-file:`, and its text; the rendered markdown; a tap or Home on the simulator), passed on like `debug.text` |
 
 ## 3. Rules
 
