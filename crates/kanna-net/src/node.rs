@@ -271,8 +271,11 @@ impl Node {
                     let conn = state.conns.get(key).filter(|c| c.close_reason().is_none());
                     let selected = conn.and_then(|c| c.paths().iter().find(|p| p.is_selected()).map(|p| (p.is_ip(), p.rtt().as_secs_f64() * 1000.0, matches!(p.remote_addr(), iroh::TransportAddr::Ip(socket) if crate::client::local(socket.ip())))));
                     let path = selected.map(|(ip, _, _)| if ip { "direct" } else { "relay" });
-                    let mut addrs = strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default());
+                    let mut addrs: Vec<String> = conn.map(|c| c.paths().iter().filter_map(|p| match p.remote_addr() { iroh::TransportAddr::Ip(socket) => Some(socket.to_string()), _ => None }).collect()).unwrap_or_default();
+                    addrs.extend(strings(&view.descriptors.get(key).map(|d| d["addrs"].clone()).unwrap_or_default()));
                     addrs.extend(state.addrs.get(key).cloned().unwrap_or_default());
+                    let mut seen = std::collections::HashSet::new();
+                    addrs.retain(|a| seen.insert(a.clone()));
                     let relay = state.relay.as_ref().map(|r| r.url.to_string()).or_else(|| view.descriptors.get(key).and_then(|d| d["relay"].as_str().map(String::from)));
                     peers.push(json!({
                         "name": name,
