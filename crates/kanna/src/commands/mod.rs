@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod agents;
 pub mod arrange;
 pub mod build;
+pub mod builds;
 pub mod capabilities;
 pub mod close;
 pub mod comment;

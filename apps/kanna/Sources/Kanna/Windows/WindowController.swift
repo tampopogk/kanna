@@ -18,10 +18,12 @@ final class WindowController: NSObject, NSWindowDelegate {
     let deskStrip = DeskStrip()
     let deskView = DeskView()
     let machinesPage = MachinesPage()
+    let buildsPage = BuildsPage()
     let statsPage = StatsPage()
     let schedulesPage = SchedulesPage()
     let queuePage = MergeQueuePage()
-    static let pages = ["Desk", "Machines", "Stats", "Schedules", MergeQueuePage.title]
+    static let pages = ["Desk", "Machines", "Builds", "Stats", "Schedules", MergeQueuePage.title]
+    var builds: [BuildMac] = []
     var queue: [QueueEntry]?
     var stats: StatsReport?
     var schedules: [ScheduleRow]?
@@ -91,6 +93,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         content.addSubview(deskStrip)
         content.addSubview(deskView)
         content.addSubview(machinesPage)
+        content.addSubview(buildsPage)
         content.addSubview(statsPage)
         content.addSubview(schedulesPage)
         content.addSubview(queuePage)
@@ -99,6 +102,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         deskStrip.isHidden = true
         deskView.isHidden = true
         machinesPage.isHidden = true
+        buildsPage.isHidden = true
         statsPage.isHidden = true
         schedulesPage.isHidden = true
         queuePage.isHidden = true
@@ -226,9 +230,10 @@ final class WindowController: NSObject, NSWindowDelegate {
             if !showsDeskView { deskView.clearSearch() }
         }
         machinesPage.isHidden = pageShown != Self.pages[1]
-        statsPage.isHidden = pageShown != Self.pages[2]
-        schedulesPage.isHidden = pageShown != Self.pages[3]
-        queuePage.isHidden = pageShown != Self.pages[4]
+        buildsPage.isHidden = pageShown != Self.pages[2]
+        statsPage.isHidden = pageShown != Self.pages[3]
+        schedulesPage.isHidden = pageShown != Self.pages[4]
+        queuePage.isHidden = pageShown != Self.pages[5]
         if deskStrip.isHidden == (desk && !taskless) { deskStrip.isHidden = !desk || taskless }
         if taskless {
         } else if desk {
@@ -268,12 +273,15 @@ final class WindowController: NSObject, NSWindowDelegate {
             machinesPage.frame = below
             machinesPage.show(machines, phones: phones)
         } else if pageShown == Self.pages[2] {
+            buildsPage.frame = below
+            buildsPage.show(builds)
+        } else if pageShown == Self.pages[3] {
             statsPage.frame = below
             statsPage.show(stats, project: project)
-        } else if pageShown == Self.pages[3] {
+        } else if pageShown == Self.pages[4] {
             schedulesPage.frame = below
             schedulesPage.show(schedules, here: schedulesRepo)
-        } else if pageShown == Self.pages[4] {
+        } else if pageShown == Self.pages[5] {
             queuePage.frame = below
             queuePage.show(queue)
         }

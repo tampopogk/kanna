@@ -9,9 +9,11 @@ mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
+mod build_queue;
 mod cli;
 mod guests;
 mod instance_move;
+mod ios_apps;
 mod tasks;
 mod db;
 mod desk_news;
@@ -468,6 +470,8 @@ fn run() -> Result<(), String> {
     scheduler.watch_deliveries(&tasks);
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
+    builds::install(&state_dir, &core, build_callers.clone());
+    ios_apps::install(&state_dir, &core, build_callers.clone());
     if cfg!(target_os = "macos") {
         guests.start();
     }
