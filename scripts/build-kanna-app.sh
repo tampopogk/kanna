@@ -86,6 +86,10 @@ cp "$product_dir/Kanna" "$app/Contents/MacOS/Kanna"
 cp "$signed/kanna-daemon" "$signed/kanna-keeper" "$signed/kanna" "$app/Contents/Helpers/"
 cp "$repo_root/assets/Kanna.icns" "$app/Contents/Resources/Kanna.icns"
 cp "$repo_root/LICENSE" "$app/Contents/Resources/"
+ghostty_share="$repo_root/target/ghosttykit/share"
+[[ -f "$ghostty_share/terminfo/78/xterm-ghostty" ]] || { echo "build-kanna-app: GhosttyKit has no Ghostty resources ($ghostty_share)" >&2; exit 1; }
+cp -R "$ghostty_share/ghostty" "$ghostty_share/terminfo" "$ghostty_share/ghostty-version" "$app/Contents/Resources/"
+chmod -R u+w "$app/Contents/Resources"
 install -m 755 "$repo_root/apps/kanna/Resources/planner.sh" "$app/Contents/Resources/"
 mkdir -p "$app/Contents/Resources/kanna-skills"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$app/Contents/Resources/kanna-skills/"; done

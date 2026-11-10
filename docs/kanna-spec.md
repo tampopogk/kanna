@@ -68,7 +68,7 @@ flowchart TB
 | [Diff viewer](specs/diff-viewer.md) | `git diff` in a native pane beside the agent, following the worktree |
 | [File panes](specs/file-panes.md) | the daemon reads and watches a markdown or code pane's file; the app only draws |
 | [Doc markup](specs/doc-markup.md) | Commenting on a doc with the agent beside it |
-| [Terminal behaviour](specs/terminal.md) · [terminal links](specs/terminal-links.md) | What a terminal does, who answers the program; which links open |
+| [Terminal behaviour](specs/terminal.md) · [terminal links](specs/terminal-links.md) · [Ghostty's resources](specs/ghostty-resources.md) | What a terminal does, who answers the program; which links open; where themes, terminfo and shell integration come from |
 | [The shell a command runs in](specs/command-shell.md) | Commands start in an interactive login shell |
 
 **The CLI**

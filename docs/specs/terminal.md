@@ -41,7 +41,7 @@ flowchart LR
 
 ## 2. The config
 
-The app loads Ghostty's config as kmux does (`ghostty_config_load_default_files`, then the files they include, then `finalize`), so a Kanna terminal looks and behaves as the user's Ghostty does. Ghostty's `reload_config` (⌘⇧, by default) reloads it; a conditional theme (`theme = light:…,dark:…`) follows the app's light/dark appearance:
+The app loads Ghostty's config as kmux does (`ghostty_config_load_default_files`, then the files they include, then `finalize`), so a Kanna terminal looks and behaves as the user's Ghostty does. Ghostty's `reload_config` (⌘⇧, by default) reloads it; a conditional theme (`theme = light:…,dark:…`) follows the app's light/dark appearance. Named themes come from the user's themes folder, an installed Ghostty.app, or the few Kanna.app ships, and the app logs Ghostty's config diagnostics ([Ghostty's resources](ghostty-resources.md)):
 
 ```mermaid
 sequenceDiagram
@@ -120,7 +120,7 @@ sequenceDiagram
 
 **Not done:** OSC 5522 (kitty's clipboard protocol) gets only part of its replies; kitty graphics aren't in a snapshot, so images go when the app relaunches; an empty OSC 7 is ignored; a title isn't shown again after a relaunch until the program sets it.
 
-**Checked by** `crates/kanna-vt/tests/terminal.rs` (colour answers, scheme reports, cursor defaults, title and cwd changes, snapshots after widening), `crates/kanna-daemon/tests/terminal_behaviour.rs` (colour queries from the app's theme, also after a restart; scheme reports; the shell's folder in `list`), `apps/kanna/Tests/KannaLinksTests` (every link rule), `apps/kanna/Tests/KannaDropTests` (escaping dropped paths), and of `scripts/e2e-kanna.sh`: `terminal_colours` (theme and light/dark, with screenshots), `cwd_title`, `clipboard` (⌘V in a pane and in a docked one, OSC 52, selection), `system_clipboard` (with `KANNA_DEBUG=1` and no `KANNA_TEST_EFFECTS`, the surface reads the system clipboard and ⌘V pastes it, without writing it), `mouse_keys_focus` (kitty keys, mouse and focus reports after a relaunch), `font_size_scrollback`, `links_bell_notify` (links, bell, notifications, progress), `chrome_and_drops` (dropped files and images), `task_restart_typing` (typing into an agent's pane after its task stops and starts again, also across a daemon restart).
+**Checked by** `crates/kanna-vt/tests/terminal.rs` (colour answers, scheme reports, cursor defaults, title and cwd changes, snapshots after widening), `crates/kanna-daemon/tests/terminal_behaviour.rs` (colour queries from the app's theme, also after a restart; scheme reports; the shell's folder in `list`), `apps/kanna/Tests/KannaLinksTests` (every link rule), `apps/kanna/Tests/KannaDropTests` (escaping dropped paths), and of `scripts/e2e-kanna.sh`: `terminal_colours` (theme and light/dark, with screenshots; Ghostty's named themes, from Kanna.app and from Ghostty.app), `cwd_title`, `clipboard` (⌘V in a pane and in a docked one, OSC 52, selection), `system_clipboard` (with `KANNA_DEBUG=1` and no `KANNA_TEST_EFFECTS`, the surface reads the system clipboard and ⌘V pastes it, without writing it), `mouse_keys_focus` (kitty keys, mouse and focus reports after a relaunch), `font_size_scrollback`, `links_bell_notify` (links, bell, notifications, progress), `chrome_and_drops` (dropped files and images), `task_restart_typing` (typing into an agent's pane after its task stops and starts again, also across a daemon restart).
 
 ## 8. Glossary
 
