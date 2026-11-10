@@ -1,10 +1,13 @@
-use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER};
-use crate::{Failure, ALPN, DEFAULT_PORT};
+use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER, MAX_LINE};
+use crate::{relay_mode, Failure, Relay, ALPN, DEFAULT_PORT};
+use iroh::dns::{BoxIter, DnsError, DnsResolver, Resolver, TxtRecordData};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -13,20 +16,86 @@ use tokio::io::{AsyncWriteExt, BufReader};
 pub struct Client {
     endpoint: Endpoint,
     conns: Arc<Mutex<HashMap<String, Connection>>>,
+    relays: Arc<Mutex<Vec<Relay>>>,
     ports: Arc<Mutex<HashMap<(String, u16), Port>>>,
 }
 
+type Target = (Vec<String>, Option<Relay>, Value);
+
 struct Port {
     local: u16,
-    target: Arc<Mutex<(Vec<String>, Value)>>,
+    target: Arc<Mutex<Target>>,
     accepting: tokio::task::JoinHandle<()>,
     _open: tokio::sync::watch::Sender<()>,
 }
 
+type Lookup<T> = Pin<Box<dyn Future<Output = Result<BoxIter<T>, DnsError>> + Send>>;
+
+#[derive(Debug)]
+struct SystemDns;
+
+async fn looked_up(host: String) -> Vec<IpAddr> {
+    tokio::net::lookup_host((host, 0)).await.map(|found| found.map(|socket| socket.ip()).collect()).unwrap_or_default()
+}
+
+impl Resolver for SystemDns {
+    fn lookup_ipv4(&self, host: String) -> Lookup<Ipv4Addr> {
+        Box::pin(async move {
+            let found: Vec<Ipv4Addr> = looked_up(host).await.into_iter().filter_map(|ip| if let IpAddr::V4(v4) = ip { Some(v4) } else { None }).collect();
+            Ok(Box::new(found.into_iter()) as BoxIter<Ipv4Addr>)
+        })
+    }
+
+    fn lookup_ipv6(&self, host: String) -> Lookup<Ipv6Addr> {
+        Box::pin(async move {
+            let found: Vec<Ipv6Addr> = looked_up(host).await.into_iter().filter_map(|ip| if let IpAddr::V6(v6) = ip { Some(v6) } else { None }).collect();
+            Ok(Box::new(found.into_iter()) as BoxIter<Ipv6Addr>)
+        })
+    }
+
+    fn lookup_txt(&self, _host: String) -> Lookup<TxtRecordData> {
+        Box::pin(async { Ok(Box::new(std::iter::empty()) as BoxIter<TxtRecordData>) })
+    }
+
+    fn clear_cache(&self) {}
+
+    fn reset(&self) -> Box<dyn Resolver> {
+        Box::new(SystemDns)
+    }
+}
+
+pub struct LineSend(SendStream);
+
+pub struct LineRecv(BufReader<RecvStream>);
+
+impl LineSend {
+    pub async fn write(&mut self, line: &Value) -> Result<(), Failure> {
+        write_line(&mut self.0, line).await.map_err(|e| Failure::new("unreachable", format!("lost it: {e}")))
+    }
+}
+
+impl LineRecv {
+    pub async fn read(&mut self) -> Result<Value, Failure> {
+        read_line(&mut self.0, MAX_LINE).await.map_err(|e| Failure::new("unreachable", format!("lost it: {e}")))
+    }
+}
+
 impl Client {
     pub async fn start(secret: SecretKey) -> Result<Client, String> {
-        let endpoint = Endpoint::builder(presets::Minimal).secret_key(secret).relay_mode(RelayMode::Disabled).bind().await.map_err(|e| format!("can't open the app's endpoint: {e}"))?;
-        Ok(Client { endpoint, conns: Arc::default(), ports: Arc::default() })
+        Client::with(Endpoint::builder(presets::Minimal).secret_key(secret)).await
+    }
+
+    pub async fn start_phone(secret: SecretKey) -> Result<Client, String> {
+        Client::with(Endpoint::builder(presets::Minimal).secret_key(secret).dns_resolver(DnsResolver::custom(SystemDns))).await
+    }
+
+    pub async fn start_relay_only(secret: SecretKey) -> Result<Client, String> {
+        Client::with(Endpoint::builder(presets::Minimal).secret_key(secret).clear_ip_transports()).await
+    }
+
+    async fn with(builder: iroh::endpoint::Builder) -> Result<Client, String> {
+        let endpoint = builder.relay_mode(relay_mode()).bind().await.map_err(|e| format!("can't open the app's endpoint: {e}"))?;
+        Ok(Client { endpoint, conns: Arc::default(), relays: Arc::default(), ports: Arc::default() })
     }
 
     pub fn key(&self) -> String {
@@ -37,7 +106,7 @@ impl Client {
         self.conns.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    async fn connect(&self, key: &str, addrs: &[String]) -> Result<(Connection, bool), Failure> {
+    async fn connect(&self, key: &str, addrs: &[String], relay: Option<&Relay>) -> Result<(Connection, bool), Failure> {
         if let Some(conn) = self.conns().get(key).filter(|c| c.close_reason().is_none()).cloned() {
             return Ok((conn, false));
         }
@@ -46,17 +115,29 @@ impl Client {
         for socket in resolve(addrs).await {
             addr = addr.with_ip_addr(socket);
         }
+        if let Some(relay) = relay {
+            let known = self.relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).contains(relay);
+            if !known {
+                self.endpoint.insert_relay(relay.url.clone(), relay.config()).await;
+                self.relays.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(relay.clone());
+            }
+            addr = addr.with_relay_url(relay.url.clone());
+        }
         let conn = match tokio::time::timeout(DIAL, self.endpoint.connect(addr, ALPN)).await {
             Ok(Ok(conn)) => conn,
             Ok(Err(e)) => return Err(Failure::new("unreachable", format!("can't reach it: {e}"))),
             Err(_) => return Err(Failure::new("unreachable", format!("can't reach it within {}s", DIAL.as_secs()))),
         };
-        self.conns().insert(key.to_string(), conn.clone());
+        let mut conns = self.conns();
+        if let Some(first) = conns.get(key).filter(|c| c.close_reason().is_none()) {
+            return Ok((first.clone(), false));
+        }
+        conns.insert(key.to_string(), conn.clone());
         Ok((conn, true))
     }
 
-    pub async fn open(&self, key: &str, addrs: &[String], header: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
-        let (mut conn, mut fresh) = self.connect(key, addrs).await?;
+    pub async fn open(&self, key: &str, addrs: &[String], relay: Option<&Relay>, header: Value) -> Result<(SendStream, BufReader<RecvStream>, Value), Failure> {
+        let (mut conn, mut fresh) = self.connect(key, addrs, relay).await?;
         loop {
             match open(&conn, &header).await {
                 Ok(opened) => return Ok(opened),
@@ -65,14 +146,19 @@ impl Client {
                     if fresh || failure.code != "unreachable" {
                         return Err(failure);
                     }
-                    (conn, fresh) = self.connect(key, addrs).await?;
+                    (conn, fresh) = self.connect(key, addrs, relay).await?;
                 }
             }
         }
     }
 
-    pub async fn link(&self, key: &str, addrs: &[String], cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
-        let (mut send, mut recv, _) = self.open(key, addrs, json!({ "kind": "control", "cert": cert })).await?;
+    pub async fn lines(&self, key: &str, addrs: &[String], relay: Option<&Relay>, header: Value) -> Result<(LineSend, LineRecv, Value), Failure> {
+        let (send, recv, ack) = self.open(key, addrs, relay, header).await?;
+        Ok((LineSend(send), LineRecv(recv), ack))
+    }
+
+    pub async fn link(&self, key: &str, addrs: &[String], relay: Option<&Relay>, cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
+        let (mut send, mut recv, _) = self.open(key, addrs, relay, json!({ "kind": "control", "cert": cert })).await?;
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|e| Failure::new("failed", e.to_string()))?;
         let ours = ours.set_nonblocking(true).and_then(|()| tokio::net::UnixStream::from_std(ours)).map_err(|e| Failure::new("failed", e.to_string()))?;
         let (mut from_app, mut to_app) = ours.into_split();
@@ -97,17 +183,17 @@ impl Client {
         self.ports.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    pub async fn port_open(&self, key: &str, addrs: &[String], cert: &Value, port: u16) -> Result<u16, Failure> {
+    pub async fn port_open(&self, key: &str, addrs: &[String], relay: Option<&Relay>, cert: &Value, port: u16) -> Result<u16, Failure> {
         if port == 0 {
             return Err(Failure::new("bad_request", "port 0 isn't a port"));
         }
         if let Some(open) = self.ports().get(&(key.to_string(), port)).filter(|p| !p.accepting.is_finished()) {
-            *open.target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (addrs.to_vec(), cert.clone());
+            *open.target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (addrs.to_vec(), relay.cloned(), cert.clone());
             return Ok(open.local);
         }
         let listener = tokio::net::TcpListener::bind((IpAddr::from([127, 0, 0, 1]), 0)).await.map_err(|e| Failure::new("failed", format!("can't listen on this Mac's loopback: {e}")))?;
         let local = listener.local_addr().map_err(|e| Failure::new("failed", e.to_string()))?.port();
-        let target = Arc::new(Mutex::new((addrs.to_vec(), cert.clone())));
+        let target = Arc::new(Mutex::new((addrs.to_vec(), relay.cloned(), cert.clone())));
         let (open, closed) = tokio::sync::watch::channel(());
         let accepting = tokio::spawn({
             let (client, key, target) = (self.clone(), key.to_string(), target.clone());
@@ -116,9 +202,9 @@ impl Client {
                     let _ = tcp.set_nodelay(true);
                     let (client, key, target, mut closed) = (client.clone(), key.clone(), target.clone(), closed.clone());
                     tokio::spawn(async move {
-                        let (addrs, cert) = target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+                        let (addrs, relay, cert) = target.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
                         let tunnel = async {
-                            if let Ok((send, recv, _)) = client.open(&key, &addrs, json!({ "kind": "port", "cert": cert, "port": port })).await {
+                            if let Ok((send, recv, _)) = client.open(&key, &addrs, relay.as_ref(), json!({ "kind": "port", "cert": cert, "port": port })).await {
                                 splice(tcp, send, recv).await;
                             }
                         };
@@ -163,6 +249,16 @@ impl Client {
         json!({ "path": if path.is_ip() { "direct" } else { "relay" }, "lan": path.is_ip() && lan, "rtt_ms": path.rtt().as_secs_f64() * 1000.0, "remote": remote })
     }
 
+    pub fn forget(&self, key: &str) {
+        if let Some(conn) = self.conns().remove(key) {
+            conn.close(0u32.into(), b"forgotten");
+        }
+    }
+
+    pub async fn network_changed(&self) {
+        self.endpoint.network_change().await;
+    }
+
     pub async fn close(&self) {
         self.endpoint.close().await;
     }
@@ -183,7 +279,7 @@ async fn open(conn: &Connection, header: &Value) -> Result<(SendStream, BufReade
 
 async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     let mut found = vec![];
-    for addr in addrs {
+    for addr in addrs.iter().filter(|addr| !addr.contains("://")) {
         if let Ok(socket) = addr.parse::<SocketAddr>() {
             found.push(socket);
             continue;
@@ -196,8 +292,8 @@ async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     found
 }
 
-fn local(ip: IpAddr) -> bool {
-    match ip {
+pub(crate) fn local(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])),
         IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
     }

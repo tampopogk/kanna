@@ -94,14 +94,7 @@ On the [app link](app-link.md#2-messages), as diffs have:
 
 ## 5. Not in this change
 
-The markdown pane still touches the filesystem in a few places; each moves to the daemon the same way, in Machines 4 (task-4053):
-
-- **Images** in a markdown pane (`MarkdownRenderer.imageAttachment`).
-- **Following a link** to another file (`MarkdownPaneView.action` checks the target's type).
-- **Comments' store** next to a doc (`DocStore`, [doc markup](doc-markup.md)), still polled by the markdown pane.
-- **`app.snap`** (`AppCommands.swift`), which reads a file to snap a comment to its scope.
-- **Page comments** (`PageMarkup`, [doc markup](doc-markup.md)), which read a local page's HTML and stamp.
-- **A doc's diff** ([markdown diff](markdown-diff.md)): the pane runs `git merge-base` and `git show` in the file's folder for the base, every 2 s, and a range's two versions.
+Images, links, comment threads, `app.snap`, page comments and a doc's diff base moved to the daemon in Machines 4: [files and threads](files-and-threads.md).
 
 ## 6. Glossary
 

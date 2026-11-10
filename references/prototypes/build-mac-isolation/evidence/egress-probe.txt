@@ -1,0 +1,10 @@
+proxy github.com:443 (allowlisted)             200
+proxy example.com:443 (not allowlisted)        000
+proxy 172.16.0.1:443 (LAN)                     000
+proxy 127.0.0.1:48800 via host (broker)        000
+proxy no capability                            000
+proxy plain http github                        403
+direct github.com (no proxy)                   000
+direct 172.16.0.1 (no proxy)                   000
+direct 192.168.64.1 (no proxy)                 000
+route: writing to routing socket: not in table

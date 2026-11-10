@@ -1,11 +1,12 @@
 #!/bin/sh
 
-kanna= zsh= repos="$HOME/.kanna-v4/repos"
+kanna= zsh= repos="$HOME/.kanna-v4/repos" mine="$HOME/.kanna-v4/config.json"
 while [ $# -gt 0 ]; do
   case $1 in
     --kanna) kanna=$2; shift 2 ;;
     --zsh) zsh=$2; shift 2 ;;
     --repos) repos=$2; shift 2 ;;
+    --config) mine=$2; shift 2 ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -279,8 +280,6 @@ where() {
   moved
 }
 
-mine="${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
-
 current() {
   [ -f "$1" ] || return 1
   case $(jq -r '.version // empty' "$1" 2>/dev/null) in
@@ -319,12 +318,14 @@ while [ $# -ge 4 ]; do
   shift 4
 done
 
-if [ -n "$kanna" ]; then
+if [ -n "$kanna" ] && [ -z "$KANNA_PLANNER_AGENT" ]; then
   "$kanna" agents setup --ask
   "$kanna" agents update --ask
 fi
 
-if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+if [ -n "$KANNA_PLANNER_AGENT" ]; then
+  :
+elif [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
   where
 elif misplaced .; then
   if project asked | jq -e '.never == true' >/dev/null 2>&1; then
@@ -336,14 +337,14 @@ elif misplaced .; then
 fi
 
 if [ -z "$installed" ]; then
-  echo "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here."
+  echo "No agent Kanna knows is installed (claude, codex, opencode or agy). Install one, then start it here."
   shell
 fi
 
 count=$(printf '%s' "$installed" | grep -c .)
 chosen=
 top=$(git rev-parse --show-toplevel 2>/dev/null)
-wanted=$(setting planning.agent ${top:+"$top/.kanna/config.json"} "$mine")
+wanted=${KANNA_PLANNER_AGENT:-$(setting planning.agent ${top:+"$top/.kanna/config.json"} "$mine")}
 if [ -n "$wanted" ]; then
   chosen=$(printf '%s' "$installed" | awk -F '\t' -v n="$wanted" '$1 == n { print; exit }')
   [ -n "$chosen" ] || say "planning.agent is $wanted, which isn't installed."
@@ -378,6 +379,9 @@ if [ -z "$chosen" ]; then
 fi
 
 prompts=$(setting agents.prompts "$mine")
+if [ -n "$KANNA_PLANNER_AGENT" ] && [ "$prompts" != skip ]; then
+  prompts=ask
+fi
 case $prompts in
   ask|skip) ;;
   *)

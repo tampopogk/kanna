@@ -41,6 +41,8 @@ Tab completes `kanna` commands the way you'd hope: the command, its options, the
 | `--cmd ` | commands on your PATH |
 | `--app ` | `.app` bundles; `--device `: the simulators, booted ones marked |
 | `--instance ` | the running instances |
+| `kanna schedule add ` | the rule's first word (`daily`, `weekdays`, `weekends`, `every`, the days), then a few times or intervals, then `planner` and the tasks ([scheduler](scheduler.md)) |
+| `kanna schedule remove `, `pause`, `resume`, `run`, `reply` | the schedules: a name, or the ID of one without, with its rule and target |
 | `-` | the command's options, then the global ones, each with its help |
 
 ## 3. Rules

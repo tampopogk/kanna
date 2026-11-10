@@ -1,0 +1,5 @@
+module KannaCallTreeC {
+    header "../../../../crates/kanna-calltree/include/kanna_calltree.h"
+    link "kanna_ffi"
+    export *
+}

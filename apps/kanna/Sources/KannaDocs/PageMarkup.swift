@@ -1,4 +1,5 @@
 import AppKit
+import KannaLinks
 import WebKit
 
 @MainActor
@@ -24,25 +25,25 @@ public final class PageMarkupView: NSView {
     }
 
     public static func page(for url: URL?) -> String? {
-        guard let url, url.isFileURL, ["html", "htm"].contains(url.pathExtension.lowercased()) else { return nil }
-        var directory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), !directory.boolValue else { return nil }
-        return url.path
+        guard let path = MachineFileURL.path(of: url), ["html", "htm"].contains((path as NSString).pathExtension.lowercased()) else { return nil }
+        return path
     }
 
     public let path: String
     public let webView: WKWebView
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { drawMarks() } } }
-    public var onSend: ((String, String, @escaping (String?) -> Void) -> Void)?
+    public var onSend: DocSend?
+    public var agentName: ((String) -> String)? { didSet { agentChanged() } }
 
     let bar = DocBar()
     let panel = ThreadPanel()
     let overlay = PageLayer()
-    let store: DocStore
+    public var changeThreads: DocChanger?
+    public private(set) var docName: String
     var record: DocRecord
-    var storeStamp: Date?
-    var fileStamp: Date?
+    var threadsLoaded = false
+    var source: String?
     var pageHashValue = ""
     var boxes: [String: NSRect] = [:]
     var active: String?
@@ -59,16 +60,14 @@ public final class PageMarkupView: NSView {
     public init(path: String, webView: WKWebView) {
         self.path = path
         self.webView = webView
-        store = DocStore(file: path)
-        record = store.read()
-        storeStamp = store.stamp
-        fileStamp = Self.modified(path)
+        docName = (path as NSString).lastPathComponent
+        record = DocRecord(file: path)
         super.init(frame: .zero)
         addSubview(webView)
         addSubview(overlay)
         addSubview(bar)
         addSubview(panel)
-        bar.path.stringValue = store.relativeName
+        bar.path.stringValue = docName
         bar.threads.onPress = { [weak self] in self?.toggleThreads() }
         panel.emptyText = "No comments yet. Select text and press ⌘↵, ⌘-click a part of the page, or ⌘-drag a box."
         panel.onSelect = { [weak self] id in self?.reveal(id) }
@@ -95,16 +94,12 @@ public final class PageMarkupView: NSView {
         flags = nil
     }
 
-    private static func modified(_ path: String) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
-    }
-
     public override func layout() {
         super.layout()
         let barHeight: CGFloat = 34
         let side = threadsVisible ? ThreadPanel.width : 0
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
-        webView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side), height: max(0, bounds.height - barHeight))
+        webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - barHeight))
         overlay.frame = webView.frame
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
@@ -124,30 +119,55 @@ public final class PageMarkupView: NSView {
         }
         bar.threads.on = threadsVisible
         needsLayout = true
+        if !showThreads { closeBox() }
+        drawMarks()
     }
 
     func agentChanged() {
-        bar.agent.set(agent.map { "Agent: \($0)" } ?? "No agent: comments are saved, not sent")
+        bar.agent.set(agent.map { "Agent: \(agentName?($0) ?? $0)" } ?? "No agent: comments are saved, not sent")
         bar.agent.warn = agent == nil
         bar.needsLayout = true
-        if let agent, record.agent != agent {
-            try? store.update { $0.agent = agent }
-            storeStamp = store.stamp
-            record = store.read()
+        if threadsLoaded, let agent, record.agent != agent { change(.agent(agent)) }
+    }
+
+    func change(_ change: DocChange, then: (@MainActor (String?) -> Void)? = nil) {
+        guard let changeThreads else { return }
+        changeThreads(change) { [weak self] answer in
+            guard let self else { return }
+            if let error = answer.error {
+                bar.agent.set("Not saved: \(error)")
+                bar.agent.warn = true
+                bar.needsLayout = true
+            }
+            if let record = answer.record { show(threads: record) }
+            then?(answer.id)
         }
     }
 
+    public func show(threads: DocRecord) {
+        if !threadsLoaded {
+            threadsLoaded = true
+            if let agent, threads.agent != agent { change(.agent(agent)) }
+        }
+        guard threads != record else { return }
+        record = threads
+        refresh()
+    }
+
+    public func show(name: String) {
+        guard name != docName else { return }
+        docName = name
+        bar.path.stringValue = name
+        bar.needsLayout = true
+    }
+
+    public func show(source: String) {
+        defer { self.source = source }
+        guard let shown = self.source, shown != source, box == nil else { return }
+        webView.reload()
+    }
+
     private func tick() {
-        let stamp = Self.modified(path)
-        if stamp != fileStamp {
-            fileStamp = stamp
-            if box == nil { webView.reload() }
-        }
-        if store.stamp != storeStamp {
-            storeStamp = store.stamp
-            record = store.read()
-            refresh()
-        }
         if waits() != shownWaits { drawMarks() }
     }
 
@@ -164,6 +184,10 @@ public final class PageMarkupView: NSView {
     public var areaRects: [String: NSRect] { overlay.areas.mapValues { overlay.convert($0.frame, to: self) } }
     public var pageHash: String { pageHashValue }
     public var cards: [String: CardState] { panel.cardStates.mapValues { var card = $0; card.rect = convert(card.rect, from: nil); card.field = convert(card.field, from: nil); return card } }
+
+    public var marksShown: Bool { showThreads }
+    public var barText: [String] { [bar.path, bar.agent.label, bar.threads.label].filter { !$0.isHidden && $0.superview?.isHidden == false }.map(\.stringValue) }
+    public func pressThreads() { bar.threads.onPress?() }
 
     public var typingDots: [String] { overlay.marks.filter { $0.typing }.compactMap(\.thread) }
 
@@ -209,7 +233,7 @@ public final class PageMarkupView: NSView {
         overlay.marks = []
         overlay.areas = [:]
         let view = overlay.bounds
-        for thread in record.threads where onPage(thread) {
+        for thread in record.threads where showThreads && onPage(thread) {
             guard let rect = boxes[thread.id] else { continue }
             let area = MarkArea()
             area.frame = rect
@@ -235,7 +259,7 @@ public final class PageMarkupView: NSView {
         }
         overlay.point(at: overlay.pointer)
         panel.show(record.threads, active: active, waits: waits, notes: notes())
-        bar.threads.set("Threads \(record.threads.filter(\.isOpen).count)")
+        bar.threads.set("Threads (\(record.threads.filter(\.isOpen).count))")
         bar.needsLayout = true
     }
 
@@ -311,12 +335,14 @@ public final class PageMarkupView: NSView {
     }
 
     func boxOrigin(below rect: NSRect, height: CGFloat) -> NSPoint {
-        let x = max(8, min(rect.minX, overlay.bounds.width - CommentBox.width - 8))
+        let covered = threadsVisible ? ThreadPanel.width : 0
+        let x = max(8, min(rect.minX, overlay.bounds.width - covered - CommentBox.width - 8))
         let y = min(rect.maxY + 6, max(8, overlay.bounds.height - height - 8))
         return NSPoint(x: x, y: y)
     }
 
     func openComposer(_ spot: PageSpot, rect: NSRect) {
+        if !showThreads { toggleThreads() }
         closeBox()
         pending = (spot, rect)
         overlay.draft = rect
@@ -324,8 +350,8 @@ public final class PageMarkupView: NSView {
         anchor(box, below: rect)
         (box.button("post") as? Chip)?.onPress = { [weak self] in self?.post() }
         box.field.onKey = { [weak self] event in
-            if event.keyCode == 36, event.modifierFlags.contains(.command) { self?.post(); return true }
-            if event.keyCode == 53 { self?.closeBox(); return true }
+            if BoxField.sends(event) { self?.post(); return true }
+            if BoxField.cancels(event) { self?.closeBox(); return true }
             return false
         }
         show(box)
@@ -349,8 +375,8 @@ public final class PageMarkupView: NSView {
         }
         (box.button("send") as? Chip)?.onPress = send
         box.field.onKey = { [weak self] event in
-            if event.keyCode == 53 { self?.closeBox(); return true }
-            guard event.keyCode == 36, !event.modifierFlags.contains(.shift) else { return false }
+            if BoxField.cancels(event) { self?.closeBox(); return true }
+            guard BoxField.sends(event) else { return false }
             send()
             return true
         }
@@ -391,31 +417,22 @@ public final class PageMarkupView: NSView {
     }
 
     func post() {
-        guard let pending, let text = box.map({ DocStore.clean($0.field.trimmed) }), !text.isEmpty else { return }
+        guard let pending, let text = box.map({ Doc.clean($0.field.trimmed) }), !text.isEmpty else { return }
         closeBox()
         Task { [weak self] in
             guard let self else { return }
             let png = await snapshot(pending.rect)
             let spot = pending.spot
-            let source = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            let line = spot.text.isEmpty ? 1 : DocStore.line(of: spot.text, in: source, near: 1)
-            let quote = DocStore.clean(spot.text.isEmpty ? (spot.selector.isEmpty ? "a box" : spot.selector) : spot.text)
-            let id = try? store.update { record -> String in
-                let id = "c\(record.next)"
-                record.next += 1
-                record.threads.append(DocThread(id: id, quote: quote, prefix: "", suffix: "", line: line, state: "open", status: "sent",
-                                                messages: [DocMessage(who: "you", text: text, at: DocStore.now())], error: nil, page: spot))
-                return id
+            let line = spot.text.isEmpty ? 1 : Doc.line(of: spot.text, in: source ?? "", near: 1)
+            let quote = Doc.clean(spot.text.isEmpty ? (spot.selector.isEmpty ? "a box" : spot.selector) : spot.text)
+            let thread = DocThread(id: "", quote: quote, prefix: "", suffix: "", line: line, state: "open", status: "waiting",
+                                   messages: [DocMessage(who: "you", text: text, at: Doc.now())], error: nil, page: spot)
+            change(.post(thread, mark: png)) { [weak self] id in
+                guard let self, let id else { return }
+                active = id
+                refresh()
+                deliver(id, text)
             }
-            guard let id else { return }
-            if let png, let mark = try? store.saveMark(id, png: png) {
-                try? store.update { record in
-                    if let index = record.threads.firstIndex(where: { $0.id == id }) { record.threads[index].mark = mark }
-                }
-            }
-            active = id
-            reloadThreads()
-            deliver(id, text)
         }
     }
 
@@ -442,22 +459,12 @@ public final class PageMarkupView: NSView {
     }
 
     func reply(_ id: String, _ text: String) {
-        let text = DocStore.clean(text)
-        try? store.update { record in
-            guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-            record.threads[index].messages.append(DocMessage(who: "you", text: text, at: DocStore.now()))
-            record.threads[index].state = "open"
-        }
-        reloadThreads()
-        deliver(id, text)
+        let text = Doc.clean(text)
+        change(.edit(id, DocEdit(state: "open", status: "waiting", error: .some(nil), message: DocMessage(who: "you", text: text, at: Doc.now())))) { [weak self] _ in self?.deliver(id, text) }
     }
 
     func setState(_ id: String, open: Bool) {
-        try? store.update { record in
-            guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-            record.threads[index].state = open ? "open" : "resolved"
-        }
-        reloadThreads()
+        change(.edit(id, DocEdit(state: open ? "open" : "resolved")))
     }
 
     func reveal(_ id: String) {
@@ -472,29 +479,15 @@ public final class PageMarkupView: NSView {
         }
     }
 
-    private func reloadThreads() {
-        record = store.read()
-        storeStamp = store.stamp
-        refresh()
-    }
-
     private func deliver(_ id: String, _ text: String) {
-        guard var thread = record.threads.first(where: { $0.id == id }), DocStore.isThreadID(id) else { return }
-        let source = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-        if let page = thread.page, !page.text.isEmpty { thread.line = DocStore.line(of: page.text, in: source, near: thread.line) }
-        let message = DocStore.clean(DocStore.message(thread, file: store.relativeName, text: text, mark: store.mark(id)))
-        let finish: (String?) -> Void = { [weak self] error in
-            guard let self else { return }
-            try? store.update { record in
-                guard let index = record.threads.firstIndex(where: { $0.id == id }) else { return }
-                record.threads[index].status = error == nil ? "sent" : "unsent"
-                record.threads[index].error = error
-                record.threads[index].line = thread.line
-            }
-            reloadThreads()
+        guard var thread = record.threads.first(where: { $0.id == id }), Doc.isThreadID(id) else { return }
+        if let page = thread.page, !page.text.isEmpty { thread.line = Doc.line(of: page.text, in: source ?? "", near: thread.line) }
+        let message = Doc.clean(Doc.message(thread, file: docName, text: text, mark: thread.mark))
+        let finish: (DocDelivery) -> Void = { [weak self] delivery in
+            self?.change(.edit(id, DocEdit(delivered: delivery, line: thread.line)))
         }
-        guard let agent, let onSend else { return finish("no agent") }
-        onSend(agent, message, finish)
+        guard let agent, let onSend else { return finish(.failed("no agent")) }
+        onSend(agent, message, path, id, finish)
     }
 
     static let script = #"""

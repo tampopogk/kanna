@@ -61,12 +61,16 @@ flowchart TB
 | [Restarting the daemon](specs/daemon-restart.md) | Terminals on disk, adopting the keeper's ptys |
 | [Pane sizes](specs/pane-sizes.md) | A program sees its view's size across a relaunch and a restart, and on the Shelf and in the backlog |
 | [The daemon's socket](specs/daemon-socket.md) | The app keeps `kanna.sock`'s listener, so it answers through a daemon restart |
+| [The daemon's runtime](specs/daemon-runtime.md) | The main loop on tokio: handlers await, nothing blocks it |
 | [The layout](specs/layout.md) | One layout model in the app; layout steps; saving, restoring; working with the app closed |
 | [Windows, tabs and splits](specs/windows.md) · [menus](specs/menus.md) · [zoom](specs/zoom.md) · [docked pane](specs/docked-pane.md) | The windows, their actions and debug commands |
-| [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) · [markdown diff](specs/markdown-diff.md) | The app's panes, lent to the daemon |
-| [Code viewer](specs/code-viewer.md) · [code tour](specs/code-tour.md) | A highlighted code pane; the agent commenting on code |
+| [Web, markdown and iOS panes](specs/app-panes.md) · [markdown keys](specs/markdown-keys.md) · [markdown diff](specs/markdown-diff.md) · [scroll anchor](specs/scroll-anchor.md) | The app's panes, lent to the daemon |
+| [Code viewer](specs/code-viewer.md) · [code tour](specs/code-tour.md) · [find bar](specs/find-bar.md) | A highlighted code pane; the agent commenting on code |
 | [Diff viewer](specs/diff-viewer.md) | `git diff` in a native pane beside the agent, following the worktree |
+| [Commit graph](specs/commit-graph.md) | `git log` as a graph in a native pane, with task branches labelled and long merges folded |
 | [File panes](specs/file-panes.md) | the daemon reads and watches a markdown or code pane's file; the app only draws |
+| [Files and threads](specs/files-and-threads.md) | images, links, comment threads, a doc's diff base and screenshots go through the daemon, so a remote task's panes work |
+| [Serial monitor](specs/serial-monitor.md) | A pane on a serial port the daemon owns, shared with `kanna serial` for agents |
 | [Doc markup](specs/doc-markup.md) | Commenting on a doc with the agent beside it |
 | [Terminal behaviour](specs/terminal.md) · [terminal links](specs/terminal-links.md) | What a terminal does, who answers the program; which links open |
 | [The shell a command runs in](specs/command-shell.md) | Commands start in an interactive login shell |
@@ -83,22 +87,27 @@ flowchart TB
 | [Sizing and arranging panes](specs/arranging-panes.md) | Fractions, the layout expression, `kanna.yaml` |
 | [Mux backends](specs/backends.md) | kmux, tmux, cmux; choosing one; the adapter interface; open questions |
 | [Instances](specs/instances.md) · [build channels](specs/build-channels.md) · [stopping an instance](specs/instance-stop.md) | Separate Kannas for developing Kanna, and quitting one |
+| [Which kanna a shell runs](specs/cli-per-instance.md) | `KANNA_CLI` in a Kanna terminal; the global link `~/.local/bin/kanna`, owned Production > Staging > Dev |
 | [Tab completion](specs/tab-completion.md) · [screenshot](specs/screenshot.md) | Completing commands in zsh and bash; a PNG of a pane or window |
 
 **Tasks and agents**
 
 | Spec | What it covers |
 |---|---|
-| [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [internal names](specs/internal-names.md) · [new Desk](specs/new-desk.md) · [a Desk's project](specs/desk-project.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
+| [Desk](specs/desk.md) · [Desk view](specs/desk-view.md) · [the Desk view's tab](specs/desk-view-tab.md) · [drag to the Shelf](specs/desk-row-shelve.md) · [Shelf row status](specs/shelf-row-status.md) · [internal names](specs/internal-names.md) · [new Desk](specs/new-desk.md) · [a Desk's project](specs/desk-project.md) · [planning terminal](specs/planning-agent.md) · [planner resume](specs/planner-resume.md) | A window holding up to three tasks, one active; ⌘. shows the Desk view |
 | [Project folder](specs/project-folder.md) | Every project lives in `~/.kanna-v4/repos/OWNER/NAME`; `kanna project import` copies one there |
-| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [stacked tasks](specs/stacked-tasks.md) · [task IDs](specs/task-ids.md) · [task list](specs/task-list.md) · [task scripts](specs/task-scripts.md) · [agent messaging](specs/agent-messaging.md) | One agent in one worktree; the Shelf |
-| [Software factory](specs/software-factory.md) · [pipeline language](specs/pipeline-language.md) · [build order](specs/software-factory-build-order.md) | Any task's agent builds a change through a pipeline of stages (agents, commands, your approval, merges), driven by the daemon in hidden workers, with every run measured |
+| [Tasks](specs/tasks.md) · [Shelf runners](specs/shelf-runners.md) · [keeper loss](specs/keeper-loss.md) · [Shelf search](specs/shelf-search.md) · [blocked tasks](specs/task-dependencies.md) · [stacked tasks](specs/stacked-tasks.md) · [merge queue](specs/merge-queue.md) · [task IDs](specs/task-ids.md) · [task list](specs/task-list.md) · [task scripts](specs/task-scripts.md) · [durable panes](specs/durable-panes.md) · [agent messaging](specs/agent-messaging.md) · [Desk news for the planner](specs/desk-news.md) | One agent in one worktree; the Shelf |
+| [Software factory](specs/software-factory.md) · [Kojo](specs/kojo.md) · [pipeline metrics](specs/pipeline-metrics.md) · [run commands](specs/run-commands.md) · [pipeline revisions](specs/pipeline-revisions.md) · [build order](specs/software-factory-build-order.md) | Any task's agent builds a change through a pipeline of stages (agents, commands, your approval, merges), driven by the daemon in workers whose terminals are the task's background terminals, with every run measured |
 | [Agent status](specs/agent-status.md) | Working, needs you, idle, exited |
 | [Toasts](specs/toasts.md) | Notices the daemon raises in the app, such as messages that wait |
 | [Crashes](specs/crashes.md) | Crash records from the app, daemon and keeper; relaunching a crashed app; the banner, `kanna crashes`, and telling the planner |
 | [Agent setup](specs/agent-setup.md) | Kanna's skills where agents find them |
 | [Codex's app-server](specs/codex-app-server.md) | Every Codex runs attached to a server of its own, Kanna's door for messages |
 | [Quiz](specs/quiz.md) | Questions on what landed on main |
+| [Kanna on the phone](specs/mobile-app.md) | A native iPhone app: chat with the repo's planner, the Shelf, Stats, Machines, and a quiz map |
+| [Stats](specs/stats.md) | The project's numbers over 30 days: quiz, main, tasks |
+| [Schedules tab](specs/schedules-tab.md) | Every repo's schedules, their firings, and pause, run and remove |
+| [Merge queue tab](specs/merge-queue-tab.md) | The repo's merge queue: the entries in line and lately ended, and the picked entry's terminal or log |
 | [The database](specs/database.md) | Tasks and their history in `kanna.db` |
 | [Settings](specs/settings.md) | Kanna's own settings |
 
@@ -109,5 +118,7 @@ flowchart TB
 | [Deployment target](specs/deployment-target.md) | Everything built for the app's macOS |
 | [Build speed](specs/build-speed.md) · [build architectures](specs/build-architectures.md) · [build targets](specs/build-targets.md) · [build store](specs/build-store.md) | Fast worktree builds; arm64 and x86_64; worktree builds on another volume; shared pinned builds, one profile, eviction |
 | [Release](specs/release.md) | Signed, notarized DMGs published on GitHub |
+| [Release candidates](specs/release-candidates.md) | A staging release soaks, then its commit is promoted to production |
+| [Auto update](specs/auto-update.md) | Ask-first updates on macOS with Sparkle |
 | [Privacy prompts](specs/privacy-prompts.md) | What macOS asks Kanna for, and dev builds signed so the answers last |
 | [Kanna Cloud: installing a host](specs/cloud-provisioning.md) | Ubuntu on a Kanna Cloud R720 through its iDRAC alone |

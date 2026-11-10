@@ -1,4 +1,4 @@
-use crate::rules::{Agent, RuleSet};
+use crate::version::numbers;
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::fd::RawFd;
@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 pub const PROGRAMS: &[(&str, &str)] =
-    &[("claude", "claude"), ("codex", "codex"), ("opencode", "opencode"), ("copilot", "copilot"), ("agy", "antigravity"), ("antigravity", "antigravity"), ("mock-agent", "mock")];
+    &[("claude", "claude"), ("codex", "codex"), ("opencode", "opencode"), ("agy", "antigravity"), ("antigravity", "antigravity"), ("mock-agent", "mock")];
 
 const INTERPRETERS: &[&str] = &["node", "bun", "deno", "python", "python3", "ruby", "perl", "sh", "bash", "zsh", "dash", "fish"];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -43,12 +43,11 @@ pub fn foreground_group(fd: RawFd) -> Option<i32> {
     (group > 0).then_some(group)
 }
 
-pub fn identify(group: i32, rules: &RuleSet) -> Option<Program> {
+pub fn identify(group: i32) -> Option<Program> {
     let mut members = group_members(group);
     members.sort_by_key(|pid| (*pid != group, *pid));
     let processes: Vec<Process> = members.into_iter().filter_map(process).collect();
-    let found = processes.iter().filter_map(recognise).find(|p| p.executable.is_some()).or_else(|| processes.iter().find_map(recognise))?;
-    rules.agent(&found.agent).is_some().then_some(found)
+    processes.iter().filter_map(recognise).find(|p| p.executable.is_some()).or_else(|| processes.iter().find_map(recognise))
 }
 
 pub fn group_argv(group: i32) -> Vec<Vec<String>> {
@@ -99,7 +98,41 @@ pub fn recognise(process: &Process) -> Option<Program> {
     }
     let script = process.argv.iter().skip(1).take_while(|a| *a != "-c" && *a != "-e").find(|a| !a.starts_with('-'))?;
     let agent = known_agent(Path::new(script).file_stem()?.to_str()?)?;
-    Some(Program { agent: agent.into(), pid: process.pid, executable: None })
+    let executable = resolved(Path::new(script)).filter(|path| agent_of(path) == Some(agent));
+    Some(Program { agent: agent.into(), pid: process.pid, executable })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub pid: i32,
+    pub parent: i32,
+    pub group: i32,
+    pub zombie: bool,
+}
+
+pub fn outside_group(rows: &[Row], agent: i32) -> Vec<i32> {
+    let Some(group) = rows.iter().find(|r| r.pid == agent).map(|r| r.group) else { return vec![] };
+    let mut under = vec![agent];
+    let mut seen = vec![agent];
+    let mut found = Vec::new();
+    while let Some(parent) = under.pop() {
+        for row in rows.iter().filter(|r| r.parent == parent) {
+            if seen.contains(&row.pid) {
+                continue;
+            }
+            seen.push(row.pid);
+            under.push(row.pid);
+            if row.group != group && !row.zombie {
+                found.push(row.pid);
+            }
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
+pub fn background(agent: i32) -> Vec<Process> {
+    outside_group(&tree(agent), agent).into_iter().map(|pid| process(pid).unwrap_or(Process { pid, executable: None, argv: vec![] })).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -123,9 +156,9 @@ pub enum Version {
     Pending,
 }
 
-pub fn version(program: &Program, agent: &Agent) -> Version {
-    let (Some(executable), Some(pattern)) = (program.executable.as_deref().and_then(resolved), agent.probe_pattern().cloned()) else { return Version::Known(None) };
-    if agent_of(&executable) != Some(program.agent.as_str()) || agent.name() != program.agent {
+pub fn version(program: &Program) -> Version {
+    let Some(executable) = program.executable.as_deref().and_then(resolved) else { return Version::Known(None) };
+    if agent_of(&executable) != Some(program.agent.as_str()) {
         return Version::Known(None);
     }
     let modified = std::fs::metadata(&executable).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
@@ -141,7 +174,7 @@ pub fn version(program: &Program, agent: &Agent) -> Version {
     std::thread::Builder::new()
         .name("kanna.probe".into())
         .spawn(move || {
-            let found = probe(&executable, PROBE_TIMEOUT).and_then(|text| pattern.captures(&text).and_then(|c| c.get(1).or_else(|| c.get(0))).map(|m| m.as_str().chars().take(64).collect()));
+            let found = probe(&executable, PROBE_TIMEOUT).as_deref().and_then(numbers).map(|n| n.iter().map(u64::to_string).collect::<Vec<_>>().join("."));
             probes().lock().unwrap_or_else(|e| e.into_inner()).insert(key, Probed::Done(found));
         })
         .map(|_| Version::Pending)
@@ -194,6 +227,47 @@ fn group_members(group: i32) -> Vec<i32> {
         pids.push(group);
     }
     pids
+}
+
+#[cfg(target_os = "macos")]
+fn row(pid: i32) -> Option<Row> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+    (got == size).then_some(Row { pid, parent: info.pbi_ppid as i32, group: info.pbi_pgid as i32, zombie: info.pbi_status == libc::SZOMB })
+}
+
+#[cfg(target_os = "macos")]
+fn children(parent: i32) -> Vec<i32> {
+    let mut pids = vec![0i32; 64];
+    loop {
+        let count = unsafe { libc::proc_listchildpids(parent, pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as libc::c_int) };
+        if count <= 0 {
+            return vec![];
+        }
+        if (count as usize) < pids.len() {
+            pids.truncate(count as usize);
+            pids.retain(|pid| *pid > 0);
+            return pids;
+        }
+        pids = vec![0i32; pids.len() * 4];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tree(agent: i32) -> Vec<Row> {
+    let mut rows: Vec<Row> = row(agent).into_iter().collect();
+    let mut next = 0;
+    while next < rows.len() && rows.len() < 4096 {
+        let parent = rows[next].pid;
+        next += 1;
+        for pid in children(parent) {
+            if !rows.iter().any(|r| r.pid == pid) {
+                rows.extend(row(pid).filter(|r| r.parent == parent));
+            }
+        }
+    }
+    rows
 }
 
 #[cfg(target_os = "macos")]
@@ -266,6 +340,20 @@ fn group_members(group: i32) -> Vec<i32> {
 }
 
 #[cfg(target_os = "linux")]
+fn tree(_agent: i32) -> Vec<Row> {
+    let row = |pid: i32| {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(") ")?;
+        let mut fields = rest.split_whitespace();
+        let state = fields.next()?;
+        let parent = fields.next()?.parse().ok()?;
+        let group = fields.next()?.parse().ok()?;
+        Some(Row { pid, parent, group, zombie: state == "Z" })
+    };
+    std::fs::read_dir("/proc").map(|entries| entries.flatten().filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok()).filter_map(row).collect()).unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
 fn process(pid: i32) -> Option<Process> {
     let executable = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
     let argv: Vec<String> = std::fs::read(format!("/proc/{pid}/cmdline"))
@@ -292,6 +380,11 @@ fn group_members(group: i32) -> Vec<i32> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn tree(_agent: i32) -> Vec<Row> {
+    vec![]
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn process(_pid: i32) -> Option<Process> {
     None
 }
@@ -299,7 +392,6 @@ fn process(_pid: i32) -> Option<Process> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::Source;
     use std::os::unix::fs::PermissionsExt;
 
     fn proc(executable: &str, argv: &[&str]) -> Process {
@@ -318,6 +410,37 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn background_work_is_a_live_descendant_outside_the_agents_group() {
+        let row = |pid, parent, group, zombie| Row { pid, parent, group, zombie };
+        let rows = [row(10, 1, 10, false), row(11, 10, 10, false), row(12, 10, 12, false), row(13, 12, 12, false), row(14, 11, 14, false), row(15, 10, 15, true), row(16, 1, 16, false), row(17, 13, 10, false)];
+        assert_eq!(outside_group(&rows, 10), vec![12, 13, 14], "an MCP server or helper in its group isn't work; a shell in its own is, with what it runs, however deep");
+        assert_eq!(outside_group(&rows, 99), Vec::<i32>::new(), "an agent that's gone has none");
+        assert_eq!(outside_group(&[row(10, 1, 10, false), row(11, 10, 10, false)], 10), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn a_running_agents_background_shell_is_found_until_it_exits() {
+        use std::os::unix::process::CommandExt;
+        let mut agent = Command::new("/bin/bash").args(["-c", "sleep 30 & set -m; sleep 1 & exec sleep 30"]).process_group(0).spawn().unwrap();
+        let pid = agent.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut found = background(pid);
+        while found.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            found = background(pid);
+        }
+        let names: Vec<String> = found.iter().map(|p| p.argv.join(" ")).collect();
+        assert_eq!(names, vec!["sleep 1".to_string()], "the child in the agent's own group isn't work");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !background(pid).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(background(pid).is_empty(), "an exited child, even unreaped, isn't work");
+        let _ = agent.kill();
+        let _ = agent.wait();
     }
 
     #[test]
@@ -354,7 +477,8 @@ mod tests {
         );
         assert_eq!(found(proc("/opt/vendor/codex/codex", &["/opt/vendor/codex/codex", "--yolo"])).map(|f| f.0), Some("codex".into()));
         assert_eq!(found(proc("/usr/local/bin/node", &["node", "/n/lib/node_modules/@openai/codex/bin/codex.js", "resume"])), Some(("codex".into(), None)));
-        assert_eq!(found(proc("/usr/bin/python3", &["/usr/bin/python3", "/t/mock-agent"])), Some(("mock".into(), None)));
+        assert_eq!(found(proc("/usr/bin/python3", &["/usr/bin/python3", "/t/mock-agent"])), Some(("mock".into(), Some("/t/mock-agent".into()))), "a script named as its agent is what's asked its version");
+        assert_eq!(found(proc("/usr/bin/python3", &["python3", "/t/claude", "--resume"])), Some(("claude".into(), Some("/t/claude".into()))));
         assert_eq!(found(proc("/bin/zsh", &["-zsh"])), None);
         assert_eq!(found(proc("/bin/zsh", &["zsh", "-l"])), None);
         assert_eq!(found(proc("/bin/zsh", &["zsh", "-l", "-c", "/t/mock-agent"])), None);
@@ -379,15 +503,13 @@ mod tests {
         let real = script(&versions, "2.1.296", "echo '2.1.296 (Claude Code)'");
         let found = recognise(&proc(real.to_str().unwrap(), &["claude"])).unwrap();
         assert_eq!(found.executable, Some(std::fs::canonicalize(&real).unwrap()));
-        let text = r#"{"schema":1,"agent":"claude","version":"1","engine":1,"versionProbe":{"pattern":"(\\d+\\.\\d+\\.\\d+)"},"rules":[]}"#;
-        let agent = Agent::parse(text, Source::Bundled).unwrap();
         let forged = Program { agent: "claude".into(), pid: 1, executable: Some(evil.clone()) };
-        assert!(matches!(super::version(&forged, &agent), Version::Known(None)));
-        let mut version = super::version(&found, &agent);
+        assert!(matches!(super::version(&forged), Version::Known(None)));
+        let mut version = super::version(&found);
         let deadline = Instant::now() + Duration::from_secs(5);
         while matches!(version, Version::Pending) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
-            version = super::version(&found, &agent);
+            version = super::version(&found);
         }
         assert!(matches!(version, Version::Known(Some(ref v)) if v == "2.1.296"));
         assert!(!ran.exists(), "a binary that only claimed the agent's name ran");
@@ -403,33 +525,36 @@ mod tests {
     }
 
     #[test]
-    fn rules_cannot_choose_what_runs() {
+    fn the_version_probe_runs_only_the_agent_with_version() {
         let dir = scratch("probe");
-        let marker = dir.join("ran-the-rule");
         let args = dir.join("args");
         let codex = script(&dir, "codex", &format!("printf '%s|' \"$@\" > {}; echo 'codex-cli 9.8.7'", args.display()));
-        let text = format!(
-            r#"{{"schema":1,"agent":"codex","version":"1","engine":1,"programs":["evil"],
-                "versionProbe":{{"argv":["/bin/sh","-c","touch {m}"],"args":["-c","touch {m}"],"pattern":"(\\d+\\.\\d+\\.\\d+)"}},"rules":[]}}"#,
-            m = marker.display()
-        );
-        let agent = Agent::parse(&text, Source::Remote("https://example.com/codex.json".into())).unwrap();
         let program = Program { agent: "codex".into(), pid: 1, executable: Some(codex.clone()) };
-        let mut version = super::version(&program, &agent);
+        let mut version = super::version(&program);
         let deadline = Instant::now() + Duration::from_secs(5);
         while matches!(version, Version::Pending) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
-            version = super::version(&program, &agent);
+            version = super::version(&program);
         }
         assert!(matches!(version, Version::Known(Some(ref v)) if v == "9.8.7"));
         assert_eq!(std::fs::read_to_string(&args).unwrap(), "--version|");
-        assert!(!marker.exists(), "the rule file's command ran");
-        assert_eq!(recognise(&proc("/usr/bin/evil", &["evil"])), None);
         let relative = Program { agent: "codex".into(), pid: 1, executable: None };
-        assert!(matches!(super::version(&relative, &agent), Version::Known(None)));
+        assert!(matches!(super::version(&relative), Version::Known(None)));
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn a_group_s_members_are_every_process_in_it_not_only_its_leader() {
+        let group = unsafe { libc::getpgrp() };
+        let me = std::process::id() as i32;
+        let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
+        let members = group_members(group);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(members.contains(&group) && members.contains(&(child.id() as i32)), "{members:?}");
+        assert!(group == me || members.contains(&me), "{members:?}");
+    }
+
     #[test]
     fn this_process_reads_its_own_arguments() {
         let me = process(std::process::id() as i32).unwrap();

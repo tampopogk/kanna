@@ -42,6 +42,7 @@ flowchart LR
 - **A workspace has a Desk part and windows of its own.** The Desk part (the docked agent and its tabs) is what an app's Desk shows. Its own windows are ordinary windows with their own IDs; each app keeps their frames ([windows](windows.md#2-what-the-app-keeps)).
 - **A window isn't a workspace.** In the daemon it's one of a workspace's windows, or free (in no workspace); a Desk is the app's.
 - **`where`** is one of: on an app's Desk (`{"desk": "mac"}`), on the Shelf (`"shelf"`), or a Desk's planner (`{"planner": "mac"}`). A layout saved before version 4 has the old values (`"backlog"`, `{"shelf": app}`), read as these ([internal names](internal-names.md)).
+- **A workspace has background members:** terminals of the task's that are in none of its tabs, such as a run's stage terminals ([software factory §6.1](software-factory.md#61-sequential-runs-as-built)). The layout keeps them in the workspace's `background` list. They run as any terminal (`kanna read`, `kanna send`, agent status), and nothing draws them: no tab, dock or window holds them, the Desk, the Shelf and tab counts leave them out, and `focus` and `zoom` refuse them (`background`). `kanna move PANE --tab` shows one in a new tab of its workspace and `kanna move PANE --background` puts a terminal of a task's tab back; its ID and its task stay. A hang-up of the task's terminals (`kanna task stop`, a Shelf runner) leaves them running; closing the task closes them with its other panes.
 - **What shows is each app's.** An app shows a workspace, its windows included, while one of its Desks shows it as the active task; the rest of its claims are on its Desk, not shown. Hidden or not, panes keep running, the Desk part at the Desk's size ([pane sizes](pane-sizes.md)) and each window at the size it last had.
 
 Green: workspaces and their windows. Blue: the app's Desks and free windows. A Shelf task gets a workspace when it first starts; until then it's only a name and a first message ([tasks](tasks.md#3-the-shelf)).
@@ -62,6 +63,9 @@ Each one changes `where`, an app's Desk, or which workspace a window or pane is 
 | Its agent's pane closes | gone: its tabs leave for a new free window, its windows become free | — |
 | `open --window new`, or a tab torn off, from the workspace | a new window of the workspace | on screen if the workspace is |
 | A tab torn off a free window | — | a new free window |
+| `open --background --workspace ws-3` (the daemon's, for a run's stage) | the terminal joins ws-3's background | — |
+| `kanna move PANE --tab` on a background member | it joins a new tab of its workspace | shown if the workspace is |
+| `kanna move PANE --background` | a terminal of a task's workspace leaves its tab for the background | its tab goes if it was the last pane |
 | `move PANE --window W`, a tab dragged to W | the pane or tab joins W's workspace, or W if it's free | — |
 | `kanna window assign W task-1dfb` | W becomes one of task-1dfb's windows | W shows while task-1dfb is on a Desk |
 | `kanna window free W` | W leaves its workspace | W shows |
@@ -100,8 +104,9 @@ Replies say which workspace and where it is. A window is named when the pane is 
 | zoom, in no window | `spec is zoomed in ws-3 (task-1dfb, on the Desk; run again to unzoom)` |
 | assign | `assigned win-41 to ws-3 (task-1dfb, on the Desk)` |
 | free | `win-41 is free (out of ws-3)` |
+| move --background | `term-9 is in the background of ws-3 (task-1dfb, on the Shelf)` |
 
-Layout replies carry `workspace: {id, where}`, or null in a free window, beside `window` and `tab`. `window` is null for a pane in a workspace's Desk part. The daemon adds `task` and `name` to a workspace that's a task's, in every reply. `kanna workspace list --all --json` has `workspaces`, each with its dock, tabs, shown tab, focus, zoom and windows.
+Layout replies carry `workspace: {id, where}`, or null in a free window, beside `window` and `tab`; a background member's carry `background: true` with no window or tab. `window` is null for a pane in a workspace's Desk part. The daemon adds `task` and `name` to a workspace that's a task's, in every reply. `kanna workspace list --all --json` has `workspaces`, each with its dock, tabs, shown tab, focus, zoom and windows.
 
 ## 4. Kinds of window, and the planning terminal
 
@@ -124,11 +129,13 @@ The saved layout (in `kanna.db`, [database](database.md)) is `version: 3`: `wind
     { "id": "ws-1", "where": { "desk": "mac" }, "leftAt": 1792183838,
       "dock": { "pane": "term-12", "edge": "left", "width": 0.4, "frozen": true },
       "tabs": [], "active": "tab-9", "focused": "term-13", "zoomed": null,
-      "windows": [{ "id": "win-41", "tabs": [], "active": "tab-12", "focused": "term-20", "zoomed": null }] },
+      "windows": [{ "id": "win-41", "tabs": [], "active": "tab-12", "focused": "term-20", "zoomed": null }],
+      "background": ["term-31"] },
     { "id": "ws-5", "where": "shelf", "dock": {}, "tabs": [], "windows": [] },
     { "id": "ws-7", "where": { "planner": "mac" }, "dock": { "pane": "term-2", "edge": "left", "width": 0.4 }, "tabs": [], "windows": [] }] }
 ```
 
+- **`background`** lists the workspace's background members; it's left out when empty, and a member whose terminal is gone is dropped on restore.
 - **Older files load.** Version 1's windows with a dock, and version 2's workspaces on a Desk or the old Shelf, become workspaces on `mac`'s Desk (`{"desk": "mac"}`); a Desk's lead becomes a planner; version 2's task-named workspaces get `ws-N` IDs, their windows following. Version 3's places keep their old names (`{"shelf": app}` a Desk, `"backlog"` the Shelf, `parkedAt`) and are read as version 4's ([internal names](internal-names.md)). The app makes its Desks from the planners it hasn't seen. The next save writes version 4.
 - **The daemon finds each task's workspace** from the listing it asks for once the app attaches: the workspace whose dock is the task's agent pane. A start records the workspace the reply to its docked, frozen `open` names. Both go in the task's `doc` in `kanna.db` ([database](database.md)).
 - **kmux's debug state stays kmux's version 1.** `debug.saveState` writes free windows plainly and each workspace in `parked` with its `where`, so `debug.restoreState` reads it back.
@@ -153,8 +160,8 @@ flowchart TB
 
 - **One `Tabs`** (tabs, shown tab, focus, zoom) is what a free window, a workspace's Desk part and each of its windows hold. Tab and pane ops are written once on it.
 - **desk.rs** keeps the task actions: `list` (an app's claims), `find` (a task's agent and workspace), `hold` (to the Shelf) and `claim` (onto an app's Desk).
-- **owner.rs** `view` lists every window and every workspace, each with its `where`, dock, tabs and windows; each app composes its Desks from them ([each app's Desks](app-desk.md)).
-- **kanna CLI:** `output.rs` writes the replies in [3](#3-commands-target-and-reply); `crates/kanna/tests/cli.rs` checks them.
+- **owner.rs** `view` lists every window and every workspace, each with its `where`, dock, tabs, windows and `background`; each app composes its Desks from them ([each app's Desks](app-desk.md)).
+- **kanna CLI:** `commands/workspace.rs` writes the replies in [3](#3-commands-target-and-reply); `crates/kanna/tests/cli.rs` checks them.
 - **kanna-mux tests:** owner tests check claims, holds, planners, a workspace's tabs, focus and zoom with no window, `window assign` and `free`, and version-1 and version-2 files. `protocol_cases` (kmux's) pass natively and behind `LayoutOwner`, but for kmux's dock cases, since a docked pane is a task's agent in its own workspace.
 
 ## 7. The branches waiting for review
@@ -200,6 +207,7 @@ flowchart LR
 |---|---|
 | **Task** | A unit of work: one agent in one repo ([tasks](tasks.md)) |
 | **Workspace** | How a task is presented: its Desk part (agent dock, tabs, shown tab, focus, zoom) and its windows, with an ID of its own (`ws-3`) |
+| **Background member** | A terminal of a workspace in none of its tabs: running, drawn nowhere until shown |
 | **Desk part** | The docked agent and its tabs: what a Desk shows of a workspace |
 | **Desk** | An app's project window and its up to three tasks: the Desk view, or the active task's workspace's Desk part |
 | **Planner** | A Desk's workspace with no task: its planning terminal |

@@ -7,11 +7,15 @@ import Markdown
 @MainActor
 public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public static let zoomSteps: [CGFloat] = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+    public static let pageZooms: ClosedRange<CGFloat> = 0.5...4
 
     public var onFocus: (() -> Void)? { didSet { textView.onFocus = onFocus } }
     public var onOpenMarkdown: ((String) -> Void)?
+    public var onOpenCode: ((String, Int) -> Void)?
     public var onHistory: ((Bool) -> Void)?
     public var onZoom: (() -> Void)?
+    public var onComments: ((NSView) -> Void)?
+    public var agentName: ((String) -> String)? { didSet { agentChanged() } }
     public var startScrollY: CGFloat?
     public var contextMenu: (() -> NSMenu?)? { didSet { textView.contextMenu = contextMenu } }
     public let path: String
@@ -23,6 +27,8 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public var diffRange: (from: String, to: String)? { diffBase.flatMap(MarkdownDiff.range) }
     public var keyView: NSView { textView }
     public var zoom: CGFloat { scrollView.magnification }
+    public private(set) var textSize: CGFloat
+    public var pageZoom: CGFloat { scrollView.magnification / textSize }
     public private(set) var renderMs: Double = 0
     public private(set) var parseMs: Double = 0
 
@@ -32,6 +38,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public let overview = OverviewView()
     public internal(set) var overviewShown = false
     public internal(set) var overviewWanted = false
+    var fullSize: MarkdownFullSizeLayout?
     public internal(set) var pictures = 0
     var revision = 0
     var drawnKey: MarkdownPictureKey?
@@ -40,20 +47,30 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     var overviewObservers: [NSObjectProtocol] = []
     private let diagrams = DiagramCache()
     private var document = Document(parsing: "")
-    private var imageStamps: [String: ImageStamp] = [:]
     private var entries: [DiffEntry]?
-    private var baseCommit: String?
-    private var ticks = 0
-    private var disk: String?
-    private var held: String?
+    private var disk: (text: String, compared: MarkdownComparison?)?
+    private var held: (text: String, compared: MarkdownComparison?)?
     private var poll: Timer?
-    private var magnifyObserver: NSObjectProtocol?
+    private var magnifyObservers: [NSObjectProtocol] = []
+    private var liveMagnify = false
+    private var reportedZoom: (text: CGFloat, page: CGFloat)?
+    private var kept: (position: ReadingPosition, top: CGFloat)?
+    private var anchor: ReadingPosition?
     let bar = DocBar()
     let panel = ThreadPanel()
-    let store: DocStore
+    public var changeThreads: DocChanger?
+    public var readFile: ((String, Bool, @escaping @MainActor (Result<MarkdownFile, MarkdownFile.Failure>) -> Void) -> Void)?
+    public var canReveal = true
+    public private(set) var docName: String
     var record: DocRecord
-    var storeStamp: Date?
+    var threadsLoaded = false
     var source = ""
+    private var images: [String: (data: Data, image: NSImage)] = [:]
+    private var fetchImages = false
+    private var imagePaths: Set<String> = []
+    private var imageStamps: [String: String] = [:]
+    private var probing = 0
+    private var rerender = false
     var anchors: [String: NSRange] = [:]
     var active: String?
     var box: CommentBox?
@@ -62,7 +79,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     var forcedThreads = false
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { refreshPanel() } } }
-    public var onSend: ((String, String, @escaping (String?) -> Void) -> Void)?
+    public var onSend: DocSend?
     public var onTourStep: ((String) -> Void)?
     var tourUnrevealed = false
     public var tour: DocTourStep? {
@@ -73,13 +90,13 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         }
     }
 
-    public init(path: String, zoom: CGFloat = 1, markup: Bool = false, diff: String? = nil) {
+    public init(path: String, textSize: CGFloat = 1, pageZoom: CGFloat = 1, markup: Bool = false, diff: String? = nil) {
         self.path = path
+        self.textSize = min(max(textSize, Self.zoomSteps.first!), Self.zoomSteps.last!)
         self.markup = markup && diff.flatMap(MarkdownDiff.range) == nil
         diffBase = diff
-        store = DocStore(file: path)
-        record = store.read()
-        storeStamp = store.stamp
+        docName = (path as NSString).lastPathComponent
+        record = DocRecord(file: path)
         let storage = NSTextStorage()
         storage.addLayoutManager(layoutManager)
         let container = NSTextContainer(size: NSSize(width: 600, height: CGFloat.greatestFiniteMagnitude))
@@ -91,28 +108,43 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         scrollView.contentView = CenteringClipView()
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
         scrollView.allowsMagnification = true
-        scrollView.minMagnification = Self.zoomSteps.first!
-        scrollView.maxMagnification = 4
-        scrollView.magnification = zoom
+        setMagnification(pageZoom: pageZoom)
+        reportedZoom = (self.textSize, self.pageZoom)
         scrollView.backgroundColor = MarkdownTheme.background
         addSubview(scrollView)
         setUpOverview()
-        bar.path.stringValue = store.relativeName
+        bar.path.stringValue = docName
         bar.diff.isHidden = diff == nil
         bar.diff.onPress = { [weak self] in self?.jump(by: 1) }
+        bar.comments.onPress = { [weak self] in
+            guard let self else { return }
+            onComments?(bar.comments)
+        }
         textView.onChangeKey = diff == nil ? nil : { [weak self] step in self?.jump(by: step) }
         showComments()
         textView.delegate = self
         scrollView.onSwipe = { [weak self] back in self?.onHistory?(back) }
-        magnifyObserver = NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.needsLayout = true
-                self?.onZoom?()
-            }
-        }
+        magnifyObservers = [
+            NotificationCenter.default.addObserver(forName: NSScrollView.willStartLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.liveMagnify = true }
+            },
+            NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveMagnifyNotification, object: scrollView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.liveMagnify = false
+                    self?.reportZoom()
+                }
+            },
+            NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.liveMagnify else { return }
+                    self.reportZoom()
+                }
+            },
+        ]
         poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
         }
@@ -140,19 +172,14 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public func set(markup on: Bool) {
         let on = on && diffRange == nil
         guard on != markup else { return }
-        let position = readingPosition()
         markup = on
         showComments()
         layoutSubtreeIfNeeded()
-        if let position { restoreReadingPosition(position) }
     }
 
     private func showComments() {
-        if markup || diffBase != nil {
-            if bar.superview == nil { addSubview(bar) }
-        } else {
-            bar.removeFromSuperview()
-        }
+        if bar.superview == nil { addSubview(bar) }
+        bar.comments.isHidden = markup || diffRange != nil
         bar.agent.isHidden = !markup
         bar.threads.isHidden = !markup
         if markup {
@@ -167,41 +194,46 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     func showHeld() {
-        if let held { show(text: held) }
+        if let held { show(text: held.text, compared: held.compared) }
     }
 
     public func stop() {
         poll?.invalidate()
         poll = nil
-        magnifyObserver.map(NotificationCenter.default.removeObserver)
-        magnifyObserver = nil
+        magnifyObservers.forEach(NotificationCenter.default.removeObserver)
+        magnifyObservers = []
         stopOverview()
     }
 
     public override func layout() {
         super.layout()
-        let barHeight: CGFloat = markup || diffBase != nil ? 34 : 0
+        let barHeight: CGFloat = 34
         let height = max(0, bounds.height - barHeight)
         let shown = sides(height: height)
         let side = shown.comments ? ThreadPanel.width : 0
         let rule = shown.overview ? OverviewMetrics.width : 0
         overviewShown = shown.overview
+        let frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - rule), height: height)
+        let position = anchor ?? (frame.width != scrollView.frame.width ? readingPosition() : nil)
+        anchor = nil
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
-        scrollView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side - rule), height: height)
+        scrollView.frame = frame
         scrollView.hasVerticalScroller = !shown.overview
-        overview.frame = NSRect(x: bounds.width - side - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
+        overview.frame = NSRect(x: bounds.width - OverviewMetrics.width, y: 0, width: OverviewMetrics.width, height: height)
         overview.isHidden = !shown.overview
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
-        panel.frame = NSRect(x: bounds.width - side, y: 0, width: side, height: height)
-        updateInset()
-        if overviewShown {
-            if drawnKey != pictureKey { overviewChanged() }
-            updateOverviewViewport()
-        }
+        panel.frame = NSRect(x: max(0, bounds.width - rule - side), y: 0, width: side, height: height)
+        if updateInset(), sides(height: height).overview != shown.overview { needsLayout = true }
         if let y = startScrollY, bounds.height > 0 {
             startScrollY = nil
             scroll(toY: y)
+        } else if let position {
+            restoreReadingPosition(position)
+        }
+        if overviewShown {
+            if drawnKey != pictureKey { overviewChanged() }
+            updateOverviewViewport()
         }
     }
 
@@ -224,56 +256,64 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         }
     }
 
-    private func updateInset() {
-        let width = scrollView.contentSize.width
+    @discardableResult
+    private func updateInset() -> Bool {
+        let width = (scrollView.contentSize.width / textSize).rounded(.down)
         let inset = MarkdownOverviewLayout.inset(width)
         let size = NSSize(width: inset, height: 22)
         if textView.textContainerInset != size { textView.textContainerInset = size }
         textView.layoutWidth = width
-        textView.tail = (scrollView.contentSize.height * 0.4).rounded()
-        if textView.frame.width != width { textView.frame.size.width = width }
+        textView.tail = (scrollView.contentSize.height / textSize * 0.4).rounded()
+        guard textView.frame.width != width else { return false }
+        textView.frame.size.width = width
+        return true
     }
 
-    public func show(text: String) {
-        guard pending == nil else { return held = text }
+    public func show(text: String, compared: MarkdownComparison? = nil) {
+        guard pending == nil else { return held = (text, compared) }
         held = nil
-        guard text != disk, diffRange == nil || disk == nil else { return }
-        disk = text
-        load(text)
+        guard disk.map({ diffRange == nil && ($0.text != text || $0.compared != compared) }) ?? true else { return }
+        disk = (text, compared)
+        load(text, compared: compared)
+    }
+
+    public func show(name: String) {
+        guard name != docName else { return }
+        docName = name
+        bar.path.stringValue = name
+        bar.needsLayout = true
     }
 
     private func check() {
         let span = Perf.begin(.markdown, "markdown.check")
         defer { Perf.end(span) }
-        reloadThreadsIfChanged()
         refreshPanel()
-        if pending == nil, imagesChanged() { render() }
-        guard pending == nil, diffRange == nil, let diffBase, let disk else { return }
-        ticks += 1
-        if ticks % 4 == 0, let commit = baseCommit,
-           MarkdownDiff.mergeBase(URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path, diffBase) != commit {
-            load(disk)
+        if pending == nil { probeImages() }
+    }
+
+    private func probeImages() {
+        guard probing == 0, let readFile else { return }
+        for path in imagePaths {
+            probing += 1
+            readFile(path, false) { [weak self] result in
+                guard let self else { return }
+                probing -= 1
+                let stamp = try? result.get().stamp
+                if stamp != imageStamps[path] { fetch([path]) }
+            }
         }
     }
 
-    private func imagesChanged() -> Bool {
-        let folder = URL(fileURLWithPath: path).deletingLastPathComponent()
-        return imageStamps.contains { ImageStamp($0.key, folder: folder) != $0.value }
-    }
-
-    private func load(_ disk: String) {
+    private func load(_ text: String, compared: MarkdownComparison?) {
         let span = Perf.begin(.markdown, "markdown.load")
         defer { Perf.end(span) }
-        var text = disk
         var old: String??
-        if let range = diffRange {
-            switch MarkdownDiff.versions(of: path, from: range.from, to: range.to) {
-            case .success(let versions):
-                text = versions.new
-                old = .some(versions.old)
-                diffError = nil
-            case .failure(let failure):
-                diffError = failure.message
+        diffError = nil
+        if diffRange != nil {
+            switch compared {
+            case .range(let before)?: old = .some(before)
+            case .failed(let message)?: diffError = message
+            default: break
             }
         }
         source = text
@@ -283,19 +323,17 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         entries = nil
         if let old {
             entries = MarkdownDiff.entries(old: old.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }, new: document)
-        } else if let diffBase, diffRange == nil {
-            switch MarkdownDiff.base(of: path, against: diffBase) {
-            case .success(let base):
-                baseCommit = base.commit
-                diffError = nil
-                let old = base.text.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }
+        } else if diffBase != nil, diffRange == nil {
+            switch compared {
+            case .base(let base)?:
+                let old = base.map { Document(parsing: MarkdownRenderer.fencingFrontMatter($0), options: [.disableSmartOpts]) }
                 entries = MarkdownDiff.entries(old: old, new: document)
-            case .failure(let failure):
-                baseCommit = nil
-                diffError = failure.message
+            case .failed(let message)?: diffError = message
+            default: break
             }
         }
         parseMs = Date().timeIntervalSince(start) * 1000
+        fetchImages = true
         render()
     }
 
@@ -303,9 +341,14 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         let start = Date()
         let position = readingPosition()
         var renderer = MarkdownRenderer(folder: URL(fileURLWithPath: path).deletingLastPathComponent(), diagrams: diagrams)
+        renderer.images = images.mapValues(\.image)
         let text = entries.map { renderer.render($0) } ?? renderer.render(document)
         diagrams.keep(only: Set(renderer.diagramSources))
-        imageStamps = renderer.images
+        imagePaths = Set(renderer.imagePaths)
+        if fetchImages {
+            fetchImages = false
+            fetch(imagePaths)
+        }
         updateInset()
         textView.finder.noteClientStringWillChange()
         textView.textStorage?.setAttributedString(text)
@@ -316,6 +359,39 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         needsLayout = true
         overviewChanged()
         renderMs = Date().timeIntervalSince(start) * 1000
+    }
+
+    private func fetch(_ paths: Set<String>) {
+        guard let readFile else { return }
+        for path in paths {
+            readFile(path, true) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let file):
+                    imageStamps[path] = file.stamp
+                    guard let data = file.data, images[path]?.data != data else { return }
+                    guard let image = NSImage(data: data) else {
+                        guard images.removeValue(forKey: path) != nil else { return }
+                        return renderSoon()
+                    }
+                    images[path] = (data, image)
+                case .failure:
+                    imageStamps.removeValue(forKey: path)
+                    guard images.removeValue(forKey: path) != nil else { return }
+                }
+                renderSoon()
+            }
+        }
+    }
+
+    private func renderSoon() {
+        guard !rerender else { return }
+        rerender = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            rerender = false
+            render()
+        }
     }
 
     private func refreshChanges() {
@@ -354,40 +430,81 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     }
 
     public func zoom(by step: Int) {
-        let steps = Self.zoomSteps, now = zoom
+        let steps = Self.zoomSteps, now = textSize
         let target = step == 0 ? 1 : step > 0 ? (steps.first { $0 > now + 0.001 } ?? steps.last!) : (steps.last { $0 < now - 0.001 } ?? steps.first!)
-        let visible = scrollView.contentView.bounds
-        scrollView.setMagnification(target, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+        guard target != textSize else { return }
+        anchor = readingPosition()
+        let page = pageZoom
+        let clip = scrollView.contentView
+        let across = textView.frame.width > 0 ? clip.bounds.minX / textView.frame.width : 0
+        textSize = target
+        setMagnification(pageZoom: page)
         needsLayout = true
+        layoutSubtreeIfNeeded()
+        clip.scroll(to: NSPoint(x: across * textView.frame.width, y: clip.bounds.minY))
+        scrollView.reflectScrolledClipView(clip)
+        reportZoom()
+    }
+
+    public func set(pageZoom: CGFloat) {
+        let visible = scrollView.contentView.bounds
+        scrollView.setMagnification(textSize * min(max(pageZoom, Self.pageZooms.lowerBound), Self.pageZooms.upperBound), centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+        reportZoom()
+    }
+
+    private func setMagnification(pageZoom: CGFloat) {
+        scrollView.minMagnification = textSize * Self.pageZooms.lowerBound
+        scrollView.maxMagnification = textSize * Self.pageZooms.upperBound
+        scrollView.magnification = textSize * min(max(pageZoom, Self.pageZooms.lowerBound), Self.pageZooms.upperBound)
+    }
+
+    private func reportZoom() {
+        let now = (text: textSize, page: pageZoom)
+        guard reportedZoom.map({ $0.text != now.text || abs($0.page - now.page) > 0.0001 }) ?? true else { return }
+        reportedZoom = now
         onZoom?()
     }
 
-    private struct ReadingPosition {
+    struct ReadingPosition: Equatable {
+        static let top = ReadingPosition(index: -1, fraction: 0)
         let index: Int
-        let offset: CGFloat
+        let fraction: CGFloat
     }
 
-    private func lineTop(at index: Int) -> CGFloat {
+    private func lineRect(at index: Int) -> NSRect {
         let length = textView.textStorage?.length ?? 0
-        guard length > 0 else { return 0 }
+        guard length > 0 else { return .zero }
         let glyph = layoutManager.glyphIndexForCharacter(at: min(index, length - 1))
-        return layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + textView.textContainerOrigin.y
+        return layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).offsetBy(dx: 0, dy: textView.textContainerOrigin.y)
     }
 
-    private func readingPosition() -> ReadingPosition? {
+    private func lineTop(at index: Int) -> CGFloat { lineRect(at: index).minY }
+
+    func readingPosition() -> ReadingPosition? {
         guard let container = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 else { return nil }
-        let visible = scrollView.contentView.bounds
-        guard visible.minY > 1 else { return nil }
-        layoutManager.ensureLayout(for: container)
-        let point = NSPoint(x: 0, y: max(0, visible.minY - textView.textContainerOrigin.y))
-        let index = layoutManager.characterIndexForGlyph(at: layoutManager.glyphIndex(for: point, in: container))
-        return ReadingPosition(index: index, offset: lineTop(at: index) - visible.minY)
+        let top = scrollView.contentView.bounds.minY
+        guard top > 1 else { return .top }
+        if let kept, abs(kept.top - top) < 0.5 { return kept.position }
+        let band = NSRect(x: 0, y: max(0, top - textView.textContainerOrigin.y), width: container.size.width, height: 1)
+        let glyphs = layoutManager.glyphRange(forBoundingRect: band, in: container)
+        let index = layoutManager.characterIndexForGlyph(at: glyphs.length > 0 ? glyphs.location : layoutManager.glyphIndex(for: band.origin, in: container))
+        let line = lineRect(at: index)
+        return ReadingPosition(index: index, fraction: line.height > 0 ? (top - line.minY) / line.height : 0)
     }
 
-    private func restoreReadingPosition(_ position: ReadingPosition) {
+    func restoreReadingPosition(_ position: ReadingPosition) {
         guard let container = textView.textContainer else { return }
-        layoutManager.ensureLayout(for: container)
-        textView.scroll(NSPoint(x: 0, y: max(0, lineTop(at: position.index) - position.offset)))
+        let clip = scrollView.contentView
+        var y: CGFloat = 0
+        if position != .top {
+            layoutManager.ensureLayout(for: container)
+            textView.sizeToFit()
+            let line = lineRect(at: position.index)
+            y = max(0, line.minY + position.fraction * line.height)
+        }
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+        scrollView.reflectScrolledClipView(clip)
+        kept = position == .top ? nil : (position, clip.bounds.minY)
     }
 
     @discardableResult
@@ -407,8 +524,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public enum LinkAction: Equatable {
         case scroll(String)
         case openWeb(URL)
-        case showMarkdown(String)
-        case reveal(URL)
+        case file(URL, line: Int?)
         case ignore
     }
 
@@ -418,17 +534,13 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
             return ["http", "https", "mailto"].contains(scheme) ? .openWeb(url) : .ignore
         }
         var file = target.hasPrefix("file://") ? (URL(string: target)?.path ?? "") : target
+        let fragment = target.firstIndex(of: "#").map { String(target[target.index(after: $0)...]) }
         if let hash = file.firstIndex(of: "#") { file = String(file[..<hash]) }
         file = file.removingPercentEncoding ?? file
         guard !file.isEmpty else { return .ignore }
-        let url = (file.hasPrefix("/") ? URL(fileURLWithPath: file)
-            : URL(fileURLWithPath: documentPath).deletingLastPathComponent().appendingPathComponent(file)).standardizedFileURL
-        let real = url.resolvingSymlinksInPath()
-        guard let type = (try? FileManager.default.attributesOfItem(atPath: real.path))?[.type] as? FileAttributeType else { return .ignore }
-        if type == .typeRegular, ["md", "markdown", "mdown"].contains(real.pathExtension.lowercased()) {
-            return .showMarkdown(real.path)
-        }
-        return .reveal(url)
+        let line = fragment.flatMap { $0.hasPrefix("L") ? Int($0.dropFirst()) : nil }.flatMap { $0 > 0 ? $0 : nil }
+        return .file((file.hasPrefix("/") ? URL(fileURLWithPath: file)
+            : URL(fileURLWithPath: documentPath).deletingLastPathComponent().appendingPathComponent(file)).standardizedFileURL, line: line)
     }
 
     var openWeb: (URL) -> Void = { NSWorkspace.shared.open($0) }
@@ -439,12 +551,21 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         return true
     }
 
-    func follow(_ target: String) {
+    public func follow(_ target: String) {
         switch Self.action(for: target, from: path) {
         case .scroll(let fragment): scroll(toAnchor: fragment)
         case .openWeb(let url): openWeb(url)
-        case .showMarkdown(let file): onOpenMarkdown?(file)
-        case .reveal(let url): reveal(url)
+        case .file(let url, let line):
+            readFile?(url.path, false) { [weak self] result in
+                guard let self, case .success(let file) = result else { return }
+                if file.type == "file", let line {
+                    onOpenCode?(file.path, line)
+                } else if file.type == "file", ["md", "markdown", "mdown"].contains((file.path as NSString).pathExtension.lowercased()) {
+                    onOpenMarkdown?(file.path)
+                } else if canReveal {
+                    reveal(url)
+                }
+            }
         case .ignore: break
         }
     }
@@ -484,7 +605,63 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
 
     public var scrollTop: CGFloat { scrollView.contentView.bounds.minY }
 
+    public var top: (text: String, fraction: CGFloat)? {
+        guard let position = readingPosition(), let storage = textView.textStorage else { return nil }
+        guard position != .top else { return ("", 0) }
+        let string = storage.string as NSString
+        let line = string.lineRange(for: NSRange(location: min(position.index, string.length), length: 0))
+        let text = storage.attribute(.attachment, at: min(position.index, storage.length - 1), effectiveRange: nil) == nil ? string.substring(with: line) : "[picture at \(position.index)]"
+        return (text.trimmingCharacters(in: .whitespacesAndNewlines), position.fraction)
+    }
+
+    public var scrollLeft: CGFloat { scrollView.contentView.bounds.minX }
+
+    public var topCharacter: Int? {
+        guard let container = textView.textContainer, (textView.textStorage?.length ?? 0) > 0 else { return nil }
+        layoutManager.ensureLayout(for: container)
+        let point = NSPoint(x: 0, y: max(0, scrollView.contentView.bounds.minY - textView.textContainerOrigin.y))
+        var line = NSRange()
+        layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndex(for: point, in: container), effectiveRange: &line)
+        return layoutManager.characterIndexForGlyph(at: line.location)
+    }
+
+    public var lineStarts: [Int] {
+        guard let container = textView.textContainer, let storage = textView.textStorage, storage.length > 0 else { return [] }
+        layoutManager.ensureLayout(for: container)
+        var out: [Int] = []
+        layoutManager.enumerateLineFragments(forGlyphRange: layoutManager.glyphRange(for: container)) { [layoutManager] _, _, _, glyphs, _ in
+            out.append(layoutManager.characterIndexForGlyph(at: glyphs.location))
+        }
+        return out
+    }
+
     public func scroll(toY y: CGFloat) { textView.scroll(NSPoint(x: 0, y: max(0, y))) }
+}
+
+public struct MarkdownFile: Equatable, Sendable {
+    public var path: String
+    public var type: String
+    public var data: Data?
+    public var stamp: String?
+
+    public init(path: String, type: String, data: Data?, stamp: String? = nil) {
+        self.path = path
+        self.type = type
+        self.data = data
+        self.stamp = stamp
+    }
+
+    public struct Failure: Error, Equatable {
+        public var message: String
+
+        public init(_ message: String) { self.message = message }
+    }
+}
+
+public enum MarkdownComparison: Equatable, Sendable {
+    case base(String?)
+    case range(String?)
+    case failed(String)
 }
 
 final class MarkdownScrollView: NSScrollView {
@@ -530,26 +707,19 @@ public final class MarkdownTextView: NSTextView {
     var onCommentKey: (() -> Bool)?
     var onChangeKey: ((Int) -> Void)?
     var onMatches: (() -> Void)?
-    let finder = NSTextFinder()
-    private lazy var finderClient = TextFinderClient(textView: self)
-    private var matchObserver: NSKeyValueObservation?
+    let finder = PaneFinder()
     private var bracket: Character?
     private var count = ""
 
     func startFinder(in container: NSScrollView) {
-        finder.client = finderClient
-        finder.findBarContainer = container
-        finder.isIncrementalSearchingEnabled = true
-        finder.incrementalSearchingShouldDimContentView = false
-        matchObserver = finder.observe(\.incrementalMatchRanges) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.needsDisplay = true
-                self?.onMatches?()
-            }
+        finder.attach(self, in: container)
+        finder.onMatches = { [weak self] in
+            self?.needsDisplay = true
+            self?.onMatches?()
         }
     }
 
-    var matches: [NSRange] { finder.incrementalMatchRanges.map(\.rangeValue) }
+    var matches: [NSRange] { finder.matches }
 
     public override func performTextFinderAction(_ sender: Any?) {
         guard let tag = (sender as? NSValidatedUserInterfaceItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return }

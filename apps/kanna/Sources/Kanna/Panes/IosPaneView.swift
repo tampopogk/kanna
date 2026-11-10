@@ -78,6 +78,24 @@ enum Simulator {
         try await simctl("bootstatus", device.udid, "-b")
     }
 
+    static func tooOld(_ version: [Int], for wanted: [Int]) -> Bool {
+        let trimmed = { (list: [Int]) in Array(list.reversed().drop { $0 == 0 }.reversed()) }
+        return trimmed(version).lexicographicallyPrecedes(trimmed(wanted))
+    }
+
+    static func checkFits(_ app: String, on device: Device) throws {
+        guard let info = Bundle(path: app)?.infoDictionary else { throw Failure(message: "no app at \(app)") }
+        let name = (app as NSString).lastPathComponent
+        if let platform = info["DTPlatformName"] as? String, platform != "iphonesimulator" {
+            throw Failure(message: "\(name) was built for \(platform), not the simulator (build with -sdk iphonesimulator)")
+        }
+        guard let minimum = info["MinimumOSVersion"] as? String else { return }
+        if tooOld(device.version, for: minimum.split(separator: ".").compactMap { Int($0) }) {
+            let have = device.version.map(String.init).joined(separator: ".")
+            throw Failure(message: "\(name) needs iOS \(minimum) and \(device.name) runs iOS \(have). Build it with IPHONEOS_DEPLOYMENT_TARGET=\(have), or add that runtime to this Mac.")
+        }
+    }
+
     static func launch(_ app: String, on device: Device) async throws -> String {
         var bundleID = app
         var name = app
@@ -149,6 +167,29 @@ final class IosPaneView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    private var question: IosApproval?
+    private var answered: ((Bool) -> Void)?
+
+    func ask(_ text: String, done: @escaping (Bool) -> Void) {
+        question?.removeFromSuperview()
+        let approval = IosApproval(text: text) { [weak self] run in _ = self?.answer(run) }
+        addSubview(approval)
+        question = approval
+        answered = done
+        show(status: nil)
+        needsLayout = true
+    }
+
+    @discardableResult
+    func answer(_ run: Bool) -> Bool {
+        guard let done = answered else { return false }
+        answered = nil
+        question?.removeFromSuperview()
+        question = nil
+        done(run)
+        return true
+    }
+
     func show(status text: String?) {
         status.stringValue = text ?? ""
         status.isHidden = text == nil
@@ -193,6 +234,12 @@ final class IosPaneView: NSView {
         let width = status.frame.width + 22
         status.frame.origin = NSPoint(x: screenView.frame.midX - width / 2 + 22, y: screenView.frame.midY - status.frame.height / 2)
         spinner.frame = NSRect(x: screenView.frame.midX - width / 2, y: screenView.frame.midY - 8, width: 16, height: 16)
+        if let question {
+            let inset = min(16, screenView.frame.width / 12)
+            let area = screenView.frame.insetBy(dx: inset, dy: 0)
+            let height = question.height(for: area.width)
+            question.frame = NSRect(x: area.minX, y: (screenView.frame.midY - height / 2).rounded(), width: area.width, height: height)
+        }
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -231,4 +278,50 @@ final class IosPaneView: NSView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? { contextMenu?() }
+}
+
+@MainActor
+private final class IosApproval: NSView {
+    private let text: NSTextField
+    private let run = NSButton(title: "Run", target: nil, action: nil)
+    private let decline = NSButton(title: "Don't Run", target: nil, action: nil)
+    private let done: (Bool) -> Void
+
+    init(text words: String, done: @escaping (Bool) -> Void) {
+        text = NSTextField(wrappingLabelWithString: words)
+        self.done = done
+        super.init(frame: .zero)
+        text.font = .systemFont(ofSize: 12)
+        text.textColor = .white
+        text.alignment = .center
+        addSubview(text)
+        for (button, action) in [(run, #selector(accept)), (decline, #selector(refuse))] {
+            button.target = self
+            button.action = action
+            button.controlSize = .small
+            button.bezelStyle = .rounded
+            addSubview(button)
+        }
+        run.keyEquivalent = "\r"
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func height(for width: CGFloat) -> CGFloat {
+        text.preferredMaxLayoutWidth = width
+        return text.sizeThatFits(NSSize(width: width, height: 1000)).height + 40
+    }
+
+    override func layout() {
+        super.layout()
+        run.sizeToFit()
+        decline.sizeToFit()
+        let total = run.frame.width + decline.frame.width + 8
+        decline.frame.origin = NSPoint(x: (bounds.width - total) / 2, y: 0)
+        run.frame.origin = NSPoint(x: decline.frame.maxX + 8, y: 0)
+        text.frame = NSRect(x: 0, y: 34, width: bounds.width, height: bounds.height - 34)
+    }
+
+    @objc private func accept() { done(true) }
+    @objc private func refuse() { done(false) }
 }

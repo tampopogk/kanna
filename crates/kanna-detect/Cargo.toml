@@ -3,13 +3,10 @@ name = "kanna-detect"
 version.workspace = true
 edition.workspace = true
 license = "FSL-1.1-MIT"
-description = "Agent status from a terminal's screen: per-agent rule files, their three sources (bundled, the rules site, a local override) and the agent's foreground program and version. Ported from Kanna v3's kanna3-detect."
+description = "Kanna's agents: which programs they are, the version each needs to report its status (OSC 7501), how each quits, and a turn's end. Ported in part from Kanna v3's kanna3-detect."
 
 [dependencies]
 libc = "0.2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "1"

@@ -17,6 +17,7 @@ final class GhosttyRuntime {
     var onTitle: ((TerminalSurfaceView, String) -> Void)?
     var onProgress: ((TerminalSurfaceView, ghostty_action_progress_report_s) -> Void)?
     var onClose: ((TerminalSurfaceView) -> Void)?
+    var onScrollbar: ((TerminalSurfaceView, ghostty_action_scrollbar_s) -> Void)?
 
     init(recording: Bool = ProcessInfo.processInfo.environment["KANNA_TEST_EFFECTS"] == "1") throws {
         guard let cfg = Self.loadConfig() else { throw Self.error("ghostty_config_new failed") }
@@ -202,6 +203,9 @@ final class GhosttyRuntime {
             return true
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
             return false
+        case GHOSTTY_ACTION_SCROLLBAR:
+            onScrollbar?(view, action.action.scrollbar)
+            return onAction?(view, action) ?? true
         default:
             return onAction?(view, action) ?? false
         }

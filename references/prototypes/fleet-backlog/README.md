@@ -29,6 +29,16 @@ default scenario command for a quick demonstration.
 
 ## Store decision: iroh-docs, with an explicit HLC projection
 
+**Superseded in the product (2026-10-26, with the user):** Fleet 10 keeps the
+same immutable field operations and HLC projection in `kanna.db` (SQLite),
+synced over a `kanna/1` `sync` stream by a version vector per device, not in
+iroh-docs. A grant's retired permission, outbox and owner write then commit in
+one transaction; the records go through the same peer-log admission as every
+`kanna/1` stream; and no namespace secret, redb or blob store is needed. The cost
+is a small sync protocol of our own. See
+[machine tasks §1](../../../docs/specs/machine-tasks.md#1-the-replicated-shelf).
+The comparison below is the model's original reasoning.
+
 Choose **iroh-docs** for Fleet 10. It provides replicas with entries identified by
 namespace, author and key; entries reference content by hash and size. This fits
 Kanna's existing iroh peer transport. The content is separate from the replica,

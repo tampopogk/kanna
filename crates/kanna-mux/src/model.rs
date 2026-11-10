@@ -96,11 +96,20 @@ pub struct Model {
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) counters: (usize, usize, usize),
     pub(crate) orphans: Vec<Tabs>,
+    pub(crate) desks: Vec<DeskWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DeskWindow {
+    pub(crate) id: String,
+    pub(crate) planner: Option<String>,
+    pub(crate) shows: Option<String>,
+    pub(crate) project: Option<String>,
 }
 
 impl Default for Model {
     fn default() -> Model {
-        Model { windows: vec![], workspaces: vec![], counters: (0, 0, 0), orphans: vec![] }
+        Model { windows: vec![], workspaces: vec![], counters: (0, 0, 0), orphans: vec![], desks: vec![] }
     }
 }
 
@@ -300,6 +309,21 @@ impl Model {
         self.workspaces.iter().position(|s| s.dock.pane == pane)
     }
 
+    pub fn background_ws(&self, pane: &str) -> Option<usize> {
+        self.workspaces.iter().position(|s| s.background.iter().any(|p| p == pane))
+    }
+
+    fn refuse_background(&self, pane: &str, panes: &Panes) -> Result<(), KmuxError> {
+        match self.background_ws(pane) {
+            Some(s) => {
+                let label = panes.get(pane).map_or_else(|| pane.to_string(), |p| p.label());
+                let name = panes.get(pane).and_then(|p| p.name.clone()).unwrap_or_else(|| pane.to_string());
+                Err(KmuxError::new("background", format!("{label} is in {}'s background, in no tab: show it with `kanna move {name} --tab`", self.workspaces[s].id)))
+            }
+            None => Ok(()),
+        }
+    }
+
     pub fn lead_window(&self, id: &str) -> Option<usize> {
         self.windows.iter().position(|w| w.leads(id))
     }
@@ -331,7 +355,7 @@ impl Model {
 
     pub fn placed(&self) -> Vec<String> {
         let windows = self.windows.iter().flat_map(|w| w.tabs.panes().into_iter().chain(w.lead.iter().map(|l| l.pane.clone())));
-        windows.chain(self.workspaces.iter().flat_map(|s| std::iter::once(s.dock.pane.clone()).chain(s.tabs.panes()))).collect()
+        windows.chain(self.workspaces.iter().flat_map(|s| std::iter::once(s.dock.pane.clone()).chain(s.tabs.panes()).chain(s.background.iter().cloned()))).collect()
     }
 
     pub fn workspace_panes(&self, s: usize) -> Vec<String> {
@@ -342,24 +366,6 @@ impl Model {
 
     pub fn workspace_windows(&self, id: &str) -> Vec<&Window> {
         self.windows.iter().filter(|w| w.workspace.as_deref() == Some(id)).collect()
-    }
-
-    pub fn rename_pane(&mut self, from: &str, to: &str) {
-        for window in &mut self.windows {
-            window.tabs.rename(from, to);
-            if let Some(lead) = window.lead.as_mut().filter(|lead| lead.pane == from) {
-                lead.pane = to.into();
-            }
-        }
-        for ws in &mut self.workspaces {
-            ws.tabs.rename(from, to);
-            if ws.dock.pane == from {
-                ws.dock.pane = to.into();
-            }
-        }
-        for tabs in &mut self.orphans {
-            tabs.rename(from, to);
-        }
     }
 
     fn wide(&self, h: Holder, t: usize, pane: &str) -> bool {
@@ -428,6 +434,10 @@ impl Model {
     }
 
     pub(crate) fn detach(&mut self, id: &str) {
+        if let Some(s) = self.background_ws(id) {
+            self.workspaces[s].background.retain(|p| p != id);
+            return;
+        }
         if let Some(w) = self.lead_window(id) {
             self.windows[w].lead = None;
             return;
@@ -448,13 +458,40 @@ impl Model {
     }
 
     fn dissolve(&mut self, s: usize) {
-        let ws = self.workspaces.remove(s);
+        let mut ws = self.workspaces.remove(s);
         for window in &mut self.windows {
             if window.workspace.as_deref() == Some(ws.id.as_str()) {
                 window.workspace = None;
             }
         }
+        for pane in std::mem::take(&mut ws.background) {
+            self.counters.0 += 1;
+            ws.tabs.count += 1;
+            let mut tab = Tab::new(format!("tab-{}", self.counters.0), ws.tabs.count);
+            tab.root = Some(Node::Pane(pane));
+            ws.tabs.tabs.push(tab);
+        }
         self.orphans.push(ws.tabs);
+    }
+
+    fn to_background(&mut self, id: &str, from: Holder, panes: &Panes) -> Result<Map, KmuxError> {
+        let label = panes.display(id);
+        if self.dock_ws(id).is_some() {
+            return Err(docked(format!("{label} is its task's agent, which stays in its dock")));
+        }
+        let Some(s) = self.ws_of(from).filter(|&s| self.workspaces[s].is_task()) else {
+            return Err(KmuxError::new("not_a_task", format!("{label} is in no task's workspace, and only a task's workspace has a background")));
+        };
+        if self.background_ws(id).is_none() {
+            self.detach(id);
+            self.workspaces[s].background.push(id.into());
+            self.drop_empty();
+        }
+        let s = self.background_ws(id).unwrap_or(s);
+        let mut out = self.at(Holder::Workspace(s));
+        out.insert("pane".into(), panes.display(id).into());
+        out.insert("background".into(), Value::Bool(true));
+        Ok(out)
     }
 
     fn swap(&mut self, a: &str, b: &str) {
@@ -508,7 +545,44 @@ impl Model {
 
     fn workspace_holder(&mut self, reference: &str) -> Result<Holder, KmuxError> {
         let s = self.ws_index(reference).ok_or_else(|| not_found(format!("no workspace \"{reference}\"")))?;
-        Ok(if self.workspaces[s].is_task() { Holder::Workspace(s) } else { Holder::Window(self.make_window()) })
+        Ok(Holder::Workspace(s))
+    }
+
+    pub(crate) fn desk_workspace(&self, reference: &str) -> Option<usize> {
+        let desk = self.desks.iter().find(|d| d.id == reference)?;
+        desk.shows.as_deref().or(desk.planner.as_deref()).and_then(|ws| self.ws_index(ws))
+    }
+
+    pub(crate) fn window_holder(&mut self, reference: Option<&str>) -> Result<Holder, KmuxError> {
+        if let Some(s) = reference.and_then(|r| self.desk_workspace(r)) {
+            return Ok(Holder::Workspace(s));
+        }
+        Ok(Holder::Window(self.target_window(reference)?))
+    }
+
+    pub(crate) fn desk_of(&self, s: usize) -> Option<&str> {
+        let id = &self.workspaces[s].id;
+        let shown = self.desks.iter().find(|d| d.shows.as_ref() == Some(id));
+        shown.or_else(|| self.desks.iter().find(|d| d.planner.as_ref() == Some(id))).map(|d| d.id.as_str())
+    }
+
+    fn set_desks(&mut self, args: &Value) -> Result<Map, KmuxError> {
+        let list = args.get("desks").and_then(Value::as_array).ok_or_else(|| bad_request("desks needs a list of desks"))?;
+        let field = |desk: &Value, key: &str| desk.get(key).and_then(Value::as_str).map(String::from);
+        self.desks = list.iter().filter_map(|d| Some(DeskWindow { id: field(d, "id")?, planner: field(d, "planner"), shows: field(d, "shows"), project: field(d, "project") })).collect();
+        Ok(reply([("desks", self.desks.len().into())]))
+    }
+
+    fn desk_rows(&self) -> Value {
+        Value::Array(
+            self.desks
+                .iter()
+                .map(|d| {
+                    let workspace = d.shows.as_deref().or(d.planner.as_deref()).filter(|ws| self.ws_index(ws).is_some());
+                    crate::json::json!({ "id": d.id, "desk": true, "workspace": workspace, "planner": d.planner, "deskView": d.shows.is_none(), "project": d.project })
+                })
+                .collect(),
+        )
     }
 
     fn need_tab(&self, reference: Option<&str>) -> Result<(Holder, usize), KmuxError> {
@@ -523,7 +597,10 @@ impl Model {
 
     pub(crate) fn spot_of(&self, h: Holder) -> (Option<String>, Value) {
         let window = self.window_of(h).map(|w| self.windows[w].id.clone());
-        let workspace = self.ws_of(h).map_or(Value::Null, |s| self.workspaces[s].summary());
+        let mut workspace = self.ws_of(h).map_or(Value::Null, |s| self.workspaces[s].summary());
+        if let (Some(desk), Value::Object(fields)) = (self.ws_of(h).and_then(|s| self.desk_of(s)), &mut workspace) {
+            fields.insert("desk".into(), desk.into());
+        }
         (window, workspace)
     }
 
@@ -563,6 +640,7 @@ impl Model {
     fn focus(&mut self, args: &Value, panes: &Panes) -> Result<Map, KmuxError> {
         if let Some(reference) = string(args, "pane") {
             let id = panes.need(Some(reference))?.id.clone();
+            self.refuse_background(&id, panes)?;
             return match self.focus_pane(&id) {
                 Some(h) => Ok(self.at(h)),
                 None => Ok(reply([("window", Value::Null)])),
@@ -580,14 +658,15 @@ impl Model {
             return Ok(self.at(h));
         }
         if args.get("window").is_some() {
-            let w = self.target_window(string(args, "window"))?;
-            return Ok(self.at(Holder::Window(w)));
+            let h = self.window_holder(string(args, "window"))?;
+            return Ok(self.at(h));
         }
         Err(bad_request("focus needs a pane, tab or window"))
     }
 
     fn zoom(&mut self, args: &Value, panes: &Panes) -> Result<Map, KmuxError> {
         let id = panes.need(string(args, "pane"))?.id.clone();
+        self.refuse_background(&id, panes)?;
         let h = self.holder_of(&id).ok_or_else(|| not_found(format!("no pane \"{id}\"")))?;
         let was = self.tabs(h).zoomed() == Some(&id);
         self.focus_pane(&id);
@@ -631,7 +710,13 @@ impl Model {
         if self.frozen_dock(&id).is_some() {
             return Err(frozen(format!("{} is frozen in its dock and doesn't move", panes.get(&id).map_or_else(|| id.clone(), |p| p.label()))));
         }
-        let from = self.holder_of(&id).ok_or_else(|| not_found(format!("no pane \"{id}\"")))?;
+        let from = self.holder_of(&id).or_else(|| self.background_ws(&id).map(Holder::Workspace)).ok_or_else(|| not_found(format!("no pane \"{id}\"")))?;
+        if args.get("background").is_some_and(|b| b == &Value::Bool(true)) {
+            if ["to", "tab", "window", "workspace", "dock"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null())) {
+                return Err(bad_request("move --background goes on its own: it keeps the pane in its own task's workspace"));
+            }
+            return self.to_background(&id, from, panes);
+        }
         let unmoved = self.at(from);
         let from_tab = self.locate(&id).map(|l| self.tabs(l.holder).tabs[l.tab].id.clone());
         if let Some(edge) = Edge::read(args.get("dock"))? {
@@ -656,11 +741,15 @@ impl Model {
                 return Ok(unmoved);
             }
             self.refuse_frozen_pane(&target, panes)?;
+            self.refuse_background(&target, panes)?;
             if self.lead_window(&target).is_some() {
                 return Err(KmuxError::new("lead", format!("{label} is its window's lead; nothing drops on it")));
             }
             if side != "swap" && self.dock_ws(&target).is_some() {
                 return Err(docked(format!("{label} is docked and holds one pane; drop on its middle to swap")));
+            }
+            if side == "swap" && self.background_ws(&id).is_some() {
+                return Err(bad_request(format!("{} is in its workspace's background, so it has no place to swap: give --side left, right, top or bottom", panes.display(&id))));
             }
             if side == "swap" {
                 self.swap(&id, &target);
@@ -717,7 +806,7 @@ impl Model {
         let destination = match args.get("window") {
             None if args.get("workspace").is_some() => self.workspace_holder(string(args, "workspace").unwrap_or_default())?,
             Some(window) if window.as_str() == Some("new") => Holder::Window(self.window_for(self.ws_of(source))),
-            Some(window) => Holder::Window(self.target_window(window.as_str())?),
+            Some(window) => self.window_holder(window.as_str())?,
             None => source,
         };
         let mut index = None;
@@ -929,7 +1018,7 @@ impl Model {
             return Some(s);
         }
         let id = panes.need(Some(reference)).ok()?.id.clone();
-        self.dock_ws(&id).or_else(|| self.holder_of(&id).and_then(|h| self.ws_of(h)))
+        self.dock_ws(&id).or_else(|| self.background_ws(&id)).or_else(|| self.holder_of(&id).and_then(|h| self.ws_of(h)))
     }
 
     pub(crate) fn export_node(node: &Node) -> Value {
@@ -986,24 +1075,30 @@ impl Model {
 
 impl LayoutHost for Model {
     fn commands(&self) -> &'static [&'static str] {
-        &["focus", "zoom", "rename-tab", "move", "move-tab", "resize", "arrange", "task", "window"]
+        &["focus", "zoom", "rename-tab", "move", "move-tab", "resize", "arrange", "task", "window", "desks"]
     }
 
     fn features(&self) -> &'static [&'static str] {
         &["windows", "tabs", "fractionalSizing", "zoom", "dock"]
     }
 
-    fn rename(&mut self, from: &str, to: &str) {
-        self.rename_pane(from, to);
-    }
-
     fn place(&mut self, pane: &str, at: &Placement, _panes: &Panes) -> Result<Option<String>, KmuxError> {
         if at.lead {
             return self.lead(pane, at.window.as_deref()).map(Some);
         }
+        if at.background {
+            let reference = at.workspace.as_deref().ok_or_else(|| bad_request("a background terminal needs the task's workspace"))?;
+            let s = self.find_workspace(reference, _panes).filter(|&s| self.workspaces[s].is_task()).ok_or_else(|| not_found(format!("no task's workspace \"{reference}\"")))?;
+            self.workspaces[s].background.push(pane.into());
+            return Ok(None);
+        }
         if at.planner {
             let s = self.dock_workspace(pane, Edge::Left, Where::Planner(at.app.clone().unwrap_or_else(|| MAC_APP.into())), false);
             self.workspaces[s].left_at = None;
+            return Ok(None);
+        }
+        if at.quiz {
+            self.dock_workspace(pane, Edge::Left, Where::Quiz(at.app.clone().unwrap_or_else(|| MAC_APP.into())), false);
             return Ok(None);
         }
         if let Some(edge) = at.dock {
@@ -1012,13 +1107,11 @@ impl LayoutHost for Model {
             return Ok(None);
         }
         let caller = at.opener.as_deref().or(at.from.as_deref()).and_then(|c| self.holder_of(c).map(|h| (c, h)));
-        let planning = |model: &Model, h: Holder| matches!(h, Holder::Workspace(s) if !model.workspaces[s].is_task());
         let (mut h, mut beside, mut new_tab) = (None, None, at.new_tab);
         match (at.window.as_deref(), caller) {
             _ if at.window.is_none() && at.workspace.is_some() => h = Some(self.workspace_holder(at.workspace.as_deref().unwrap_or_default())?),
             (Some("new"), Some((_, from))) => h = Some(Holder::Window(self.window_for(self.ws_of(from)))),
-            (Some(window), _) => h = Some(Holder::Window(self.target_window(Some(window))?)),
-            (None, Some((_, from))) if planning(self, from) => h = Some(Holder::Window(self.make_window())),
+            (Some(window), _) => h = Some(self.window_holder(Some(window))?),
             (None, Some((c, from))) => {
                 h = Some(from);
                 let side = self.side(from).as_deref() == Some(c);
@@ -1077,15 +1170,18 @@ impl LayoutHost for Model {
 
     fn location(&self, pane: &str) -> Option<Spot> {
         if let Some(w) = self.lead_window(pane) {
-            return Some(Spot { window: Some(self.windows[w].id.clone()), tab: None, dock: None, workspace: Value::Null });
+            return Some(Spot { window: Some(self.windows[w].id.clone()), tab: None, dock: None, workspace: Value::Null, background: false });
         }
         if let Some(s) = self.dock_ws(pane) {
             let (window, workspace) = self.spot_of(Holder::Workspace(s));
-            return Some(Spot { window, tab: None, dock: Some(self.workspaces[s].dock.edge).filter(|_| self.workspaces[s].is_task()), workspace });
+            return Some(Spot { window, tab: None, dock: Some(self.workspaces[s].dock.edge).filter(|_| self.workspaces[s].is_task()), workspace, background: false });
+        }
+        if let Some(s) = self.background_ws(pane) {
+            return Some(Spot { window: None, tab: None, dock: None, workspace: self.workspaces[s].summary(), background: true });
         }
         let location = self.locate(pane)?;
         let (window, workspace) = self.spot_of(location.holder);
-        Some(Spot { window, tab: Some(self.tabs(location.holder).tabs[location.tab].id.clone()), dock: None, workspace })
+        Some(Spot { window, tab: Some(self.tabs(location.holder).tabs[location.tab].id.clone()), dock: None, workspace, background: false })
     }
 
     fn panes_in(&mut self, scope: &Scope) -> Result<Vec<String>, KmuxError> {
@@ -1103,8 +1199,29 @@ impl LayoutHost for Model {
         }
     }
 
+    fn background_of(&self, task: &str) -> Vec<String> {
+        self.dock_ws(task).or_else(|| self.ws_index(task)).map_or(vec![], |s| self.workspaces[s].background.clone())
+    }
+
     fn remove(&mut self, pane: &str) {
         self.detach(pane);
+    }
+
+    fn remember(&mut self) {
+        for tabs in self.windows.iter_mut().map(|w| &mut w.tabs).chain(self.workspaces.iter_mut().map(|s| &mut s.tabs)) {
+            tabs.remember();
+        }
+    }
+
+    fn dock_of(&self, pane: &str) -> Option<String> {
+        let s = self.ws_of(self.holder_of(pane)?)?;
+        Some(self.workspaces[s].dock.pane.clone()).filter(|dock| dock != pane)
+    }
+
+    fn showing(&self, from: &str, among: &[String]) -> Option<String> {
+        let h = self.holder_of(from)?;
+        let mine: Vec<String> = among.iter().filter(|id| self.locate(id).is_some_and(|l| l.holder == h)).cloned().collect();
+        self.tabs(h).latest(&mine).cloned()
     }
 
     fn close_task(&mut self, task: &str) {
@@ -1126,6 +1243,7 @@ impl LayoutHost for Model {
             "arrange" => self.arrange(args, panes),
             "task" => self.task(args, panes),
             "window" => self.window_command(args, panes),
+            "desks" => self.set_desks(args),
             _ => Err(bad_request(format!("unknown command \"{cmd}\""))),
         }
     }
@@ -1136,6 +1254,10 @@ impl LayoutHost for Model {
 
     fn hidden_windows(&self, _panes: &Panes) -> Value {
         Value::Array(vec![])
+    }
+
+    fn desks(&self) -> Value {
+        self.desk_rows()
     }
 
     fn workspaces(&self, panes: &Panes) -> Value {
@@ -1158,6 +1280,7 @@ impl LayoutHost for Model {
                     out["zoomed"] = ws.tabs.zoomed().map_or(Value::Null, |p| panes.display(p).into());
                     out["windows"] = Value::Array(self.workspace_windows(&ws.id).iter().map(|w| Value::String(w.id.clone())).collect());
                     out["panes"] = Value::Array(self.workspace_panes(s).iter().map(|p| Value::String(p.clone())).collect());
+                    out["background"] = Value::Array(ws.background.iter().map(|p| Value::String(p.clone())).collect());
                     out
                 })
                 .collect(),
