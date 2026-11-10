@@ -342,6 +342,19 @@ extension AppController {
             out["captures"] = .array(code.highlights.spans.prefix(200).map { .array([.number(Double($0.range.location)), .number(Double($0.range.length)), .string($0.capture)]) })
             return out
         }
+        commands["debug.run"] = { [weak self] args in
+            guard let self, let id = args["pane"]?.string, let run = contents.run(id) else { throw KannaError("wrong_type", "not a running run pane") }
+            if let action = args["press"]?.string { run.press(action, note: args["note"]?.string) }
+            guard let notice = run.notice else { return ["failure": run.failure.map { .string($0) } ?? .null] }
+            let graph = run.graph
+            return ["run": .string(notice.run), "state": .string(notice.state), "badge": .string(notice.badge), "subtitle": .string(run.subtitle),
+                    "enabled": .object(run.enabled.mapValues { .bool($0) }), "card": notice.card.map { .string($0.title) } ?? .null, "cardShown": .bool(run.cardShown),
+                    "tiles": .array(run.tiles.map { .array([.string($0.value), .string($0.label)]) }), "rows": .array(run.rows.map { .array($0.map { .string($0) }) }),
+                    "workers": .array(run.workerLines.map { .string($0) }), "legend": .array(run.legend.map { .string($0) }), "flash": run.flashed.map { .string($0) } ?? .null,
+                    "nodes": .array(graph.nodes.map { .object(["id": .string($0.node.id), "state": $0.node.state.map { .string($0) } ?? .null, "visits": .number(Double($0.node.visits)),
+                                                              "frame": .array([$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height].map { .number(Double($0)) })]) }),
+                    "edges": .array(graph.edges.map { .object(["from": .string($0.edge.from), "to": .string($0.edge.to), "route": .string($0.edge.route), "taken": .bool($0.edge.taken)]) })]
+        }
         commands["debug.serial"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let serial = contents.serial(id) else { throw KannaError("wrong_type", "not a running serial pane") }
             if let text = args["type"]?.string { serial.type(text, ending: args["ending"]?.bool ?? true) }
