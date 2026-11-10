@@ -190,5 +190,15 @@ g merge -q --no-ff -m "Merge branch 'release-back'" origin/release/4.1.1 && g pu
 release --staging || { fail "next version: exit $?"; show; }
 [[ "$(on_origin refs/tags/v4.1.2-staging.1)" == "$(g rev-parse HEAD)" && "$(on_origin refs/heads/release/4.1.2)" == "$(g rev-parse HEAD)" ]] || fail "next version: 4.1.2's first candidate and branch aren't at main"
 
+g tag -a v4.1.2-staging.2 -m "by hand" "$off" && g push -q origin refs/tags/v4.1.2-staging.2
+release --promote v4.1.2-staging.2 --no-soak --yes && fail "promote of a hand-made tag off main: ran"
+said "isn't a pick of a commit on origin/main" || { fail "promote of a hand-made tag off main: wrong refusal"; show; }
+git -C "$origin" update-ref -d refs/tags/v4.1.2-staging.2 && g tag -d v4.1.2-staging.2 >/dev/null
+g checkout -q --detach origin/release/4.1.2 && commit direct "pushed straight to the branch" >/dev/null && g push -q origin HEAD:refs/heads/release/4.1.2 && g checkout -q main
+before="$(builds)"
+release --staging && fail "a release branch with a commit that isn't a pick: ran"
+said "\"pushed straight to the branch\" isn't a pick of a commit on origin/main" || { fail "a release branch with a commit that isn't a pick: wrong refusal"; show; }
+[[ "$(builds)" == "$before" ]] || fail "a release branch with a commit that isn't a pick: built"
+
 [[ $failed -eq 0 ]] && echo "release: all passed"
 exit $failed

@@ -155,6 +155,18 @@ release_worktree() {
 }
 
 problems=()
+check_lineage() {
+  local cut each parents origin_commit
+  cut="$(git merge-base "$1" origin/main)" || { problems+=("$(short "$1") shares no history with origin/main"); return 0; }
+  for each in $(git rev-list "$cut..$1"); do
+    parents="$(git rev-list --parents -n 1 "$each" | wc -w)"
+    origin_commit="$(git log -1 --format=%b "$each" | sed -n 's/^(cherry picked from commit \([0-9a-f]\{40\}\))$/\1/p' | tail -1)"
+    if [[ "$parents" -ne 2 || -z "$origin_commit" ]] || ! git merge-base --is-ancestor "$origin_commit" origin/main 2>/dev/null; then
+      problems+=("$(git log -1 --format='%h "%s"' "$each") isn't a pick of a commit on origin/main: a release holds only main's commits and picks of them (release.sh --pick)")
+    fi
+  done
+}
+
 settle_problems() {
   [[ ${#problems[@]} -gt 0 ]] || return 0
   local p
@@ -449,6 +461,7 @@ run_staging() {
   if git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
     commit="$(git rev-parse "refs/remotes/origin/$branch")"
     echo "    building origin/$branch at $(short "$commit")"
+    check_lineage "$commit"
   else
     commit="$(git rev-parse HEAD)"
     cut_branch="$branch"
@@ -563,12 +576,16 @@ run_promote() {
   elif [[ -n "$last_tag" ]] && ! newer "$version" "${last_tag#v}"; then
     problems+=("$version isn't newer than the last release, $last_tag")
   fi
+  check_lineage "$commit"
+  ! git rev-parse --verify --quiet "refs/remotes/origin/release/$base" >/dev/null || git merge-base --is-ancestor "$commit" "refs/remotes/origin/release/$base" ||
+    problems+=("$candidate's commit $(short "$commit") isn't on origin/release/$base")
   soaked "$age" || problems+=("$candidate is $(span "$age") old and the soak is $soak_days days: wait, or say --soak DAYS or --no-soak")
   later="$(candidates "$base" | tail -1)"
   [[ "$later" == "$candidate" ]] || echo "    note: $later is a later candidate of $base"
   settle_problems
 
   preflight_credentials
+  github release view "$candidate" --repo "$repo" >/dev/null 2>&1 || fail "$repo has no pre-release $candidate: only a candidate release.sh --staging published can be promoted"
   if $tag_exists; then
     ! github release view "$tag" --repo "$repo" >/dev/null 2>&1 || fail "$repo already has a release $tag"
     echo "    $tag is already on origin at $(short "$commit") without a release: carrying on with it"
