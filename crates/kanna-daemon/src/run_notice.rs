@@ -1,4 +1,5 @@
 use crate::db::{Revision, RunEvent, RunRow, StageRow};
+use crate::pipelines;
 use kanna_mux::json::{json, num, opt, string, Value};
 use kanna_pipe::{Kind, Pipeline, Verdict, DONE};
 
@@ -98,10 +99,10 @@ fn revisions(input: &Inputs) -> Vec<Value> {
 
 fn sum(stages: &[StageRow], key: &str) -> Value {
     let agents: Vec<&StageRow> = stages.iter().filter(|s| s.kind == "agent" && counted(s)).collect();
-    if agents.is_empty() || agents.iter().any(|s| s.doc.get(key).and_then(Value::as_f64).is_none()) {
+    if agents.is_empty() || agents.iter().any(|s| pipelines::measured(&s.doc, key).is_none()) {
         return Value::Null;
     }
-    num(agents.iter().filter_map(|s| s.doc.get(key).and_then(Value::as_f64)).sum())
+    num(agents.iter().filter_map(|s| pipelines::measured(&s.doc, key)).sum())
 }
 
 pub fn place(pipeline: &Pipeline, row: &RunRow, stages: &[StageRow]) -> (String, usize, usize) {
@@ -165,8 +166,8 @@ pub fn notice(input: &Inputs) -> Value {
             json!({
                 "n": i + 1, "stage": s.stage, "visit": s.visit, "kind": s.kind, "who": who(pipeline, s),
                 "startedAt": num(s.started_at), "endedAt": s.ended_at.map_or(Value::Null, num),
-                "verdict": opt(s.verdict.as_deref()), "turns": s.doc.get("turns").cloned().unwrap_or(Value::Null),
-                "tokens": s.doc.get("tokens").cloned().unwrap_or(Value::Null), "note": note(s), "terminal": opt(s.terminal.as_deref()),
+                "verdict": opt(s.verdict.as_deref()), "turns": pipelines::measured(&s.doc, "turns").map_or(Value::Null, num),
+                "tokens": pipelines::measured(&s.doc, "tokens").map_or(Value::Null, num), "note": note(s), "terminal": opt(s.terminal.as_deref()),
             })
         })
         .collect();
@@ -281,6 +282,13 @@ mod tests {
         assert_eq!((numbers["visits"].as_u64(), numbers["rework"].as_u64(), numbers["interventions"].as_u64()), (Some(10), Some(2), Some(1)));
         assert_eq!((numbers["sessions"].clone(), numbers["budget"].clone(), numbers["tokens"].clone(), numbers["turns"].clone()), (json!(8), json!(40), Value::Null, Value::Null));
         assert_eq!(numbers["lines"], json!({ "added": 212, "removed": 48, "files": 3 }));
+        let mut measured: Vec<StageRow> = stages.to_vec();
+        for (i, s) in measured.iter_mut().enumerate().filter(|(_, s)| s.kind == "agent") {
+            s.doc["usage"] = json!({ "turns": 2, "in": 100, "written": 10, "out": 40 + i, "cached": 900, "cost": 0.5 });
+        }
+        let out2 = notice(&Inputs { row: &row, pipeline: &pipeline, stages: &measured, events: &events, revisions: &[], task_name: None, lines: None, now: 200.0 });
+        assert_eq!((out2["numbers"]["turns"].clone(), out2["numbers"]["cost"].clone()), (json!(12), json!(3)));
+        assert_eq!(out2["visits"][0]["tokens"], json!(150));
         let rows = out["visits"].as_array().unwrap();
         assert_eq!(rows.len(), 10);
         assert_eq!((rows[0]["n"].as_u64(), rows[0]["who"].as_str(), rows[0]["note"].as_str()), (Some(1), Some("claude"), Some("Plan")));

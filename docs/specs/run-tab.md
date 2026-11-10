@@ -48,7 +48,7 @@ A notice is one JSON object, built from the run's rows, its revision's parsed pi
 - **Rework loops:** fail arrows taken, as the mockup counts them.
 - **Interventions:** events `answered`, `paused`, `resumed`, `skipped`, `retried`, `typed`, `stopped`, `revision` not made by the daemon or a stage.
 - **Lines:** `git diff --shortstat` of the run's branch from its base.
-- **Not recorded yet:** turns and tokens come with Factory 7; until then they're `null`, `cost` is `null` unless every agent visit has them, and the tab shows a dash.
+- **Turns, tokens and cost** are a visit's measured `usage` ([pipeline metrics](pipeline-metrics.md)): tokens are in, cache writes and out, as the Stats tab counts them. A visit not measured yet, or whose agent left no session file, has `null`; a run's sum is `null` unless every agent visit has one, and the tab shows a dash.
 
 ## 3. The graph
 

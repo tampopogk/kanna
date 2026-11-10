@@ -5284,7 +5284,8 @@ r = json.loads(sys.argv[1])
 assert r["project"] == sys.argv[2], r["project"]
 assert len(r["days"]) == 30, r["days"]
 s = {x["id"]: x for x in r["sections"]}
-assert list(s) == ["quiz", "main", "tasks", "agents", "code"], list(s)
+assert list(s) == ["quiz", "main", "tasks", "agents", "code", "pipelines"], list(s)
+assert s["pipelines"]["empty"].startswith("No pipeline runs yet"), s["pipelines"]
 t = {(sid, x["id"]): x for sid, sec in s.items() for x in sec["tiles"]}
 assert t["quiz", "right"]["value"] == 75 and t["quiz", "right"]["note"] == "of 4 answers", t["quiz", "right"]
 assert t["quiz", "misses"]["value"] == 1, t["quiz", "misses"]
@@ -6778,6 +6779,129 @@ assert v[0]["doc"]["replies"] == 1 and "paused" not in v[0]["doc"], v[0]["doc"]'
   check wait_for 10 test ! -d "$slow_worker" || { echo "pipeline_run: the closed task's run kept its worktree"; return 1; }
   check test ! -d "$repo/.kanna-worktrees/$task-run-5" || { echo "pipeline_run: the closed task's second run kept its worktree"; return 1; }
   check test -n "$(git -C "$repo" branch --list "run/$task-4")" -a -n "$(git -C "$repo" branch --list "run/$task-5")" || { echo "pipeline_run: the closed task's run branches are gone"; return 1; }
+}
+
+scenario pipeline_stats M4
+pipeline_stats() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/stats-factory" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  python3 -c 'import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["pipelines"] = {"agents": {"claude": sys.argv[2]}}; json.dump(c, open(p, "w"))' "$KANNA_AGENTS_HOME/.kanna-v4/config.json" "$fake/claude" || { echo "pipeline_stats line $LINENO"; return 1; }
+  CLAUDE_CONFIG_DIR="$KANNA_STATE_DIR/claude" start_daemon && start_app || { echo "pipeline_stats line $LINENO"; return 1; }
+  mkdir -p "$repo/.kanna/pipelines" "$repo/.kanna/prompts" && git -C "$repo" init -q -b main || { echo "pipeline_stats line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
+  cat >"$fake/usage.sh" <<USAGE
+session="$KANNA_STATE_DIR/claude/projects/-mock/\$KANNA_MOCK_SESSION.jsonl"
+mkdir -p "\$(dirname "\$session")"
+printf '{"type":"assistant","timestamp":"2100-01-01T00:00:00.000Z","message":{"id":"m-%s","model":"mock-model","usage":{"input_tokens":%s,"output_tokens":%s,"cache_read_input_tokens":500,"cache_creation_input_tokens":50},"content":[{"type":"tool_use","id":"t-%s"}]}}\n' "\$KANNA_MOCK_SESSION" "\$1" "\$2" "\$KANNA_MOCK_SESSION" >>"\$session"
+USAGE
+  cat >"$fake/review.sh" <<REVIEW
+n=\$(cat "$fake/reviews" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >"$fake/reviews"
+sh "$fake/usage.sh" 400 100
+verdict=pass; [ "\$n" -eq 1 ] && verdict=fail
+printf 'Looked.\n\`\`\`json name=findings\n[{"severity": "bug", "file": "a", "line": 1, "what": "x"}, {"severity": "nit", "what": "y"}]\n\`\`\`\n' >"\$KANNA_ANSWER"
+"\$KANNA_CLI" run done "\$verdict"
+REVIEW
+  printf '{"version": 1, "pipelines": {"pricing": {"mock-model": {"in": 2, "out": 10}}}}\n' >"$repo/.kanna/config.json"
+  machine_runners 1
+  printf 'budget = 9 sessions, 30m\nbuild  = claude\ncheck  = run sh check.sh\n\nbuild -> check\ncheck -[fail, max 2]-> build\ncheck -> done\n' >"$repo/.kanna/pipelines/alpha.kojo"
+  printf 'budget = 9 sessions, 30m\nbuild  = claude\nreview = claude verdict\n\nbuild -> review\nreview -[fail, max 2]-> build\nreview -> done\n' >"$repo/.kanna/pipelines/beta.kojo"
+  printf 'Build it.\nmock: run sh %s 3000 700 && echo "$KANNA_RUN $KANNA_STAGE" >>"built-$KANNA_RUN.txt" && git add -A . && git commit -qm build && echo Built. >"$KANNA_ANSWER" && "$KANNA_CLI" run done\n' "$fake/usage.sh" >"$repo/.kanna/prompts/build.md"
+  printf 'Review it.\nmock: run sh %s\n' "$fake/review.sh" >"$repo/.kanna/prompts/review.md"
+  cat >"$repo/check.sh" <<CHECK
+n=\$(cat "$fake/checks" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >"$fake/checks"
+if [ "\$n" -eq 1 ]; then echo "test parses ... FAILED"; exit 1; fi
+CHECK
+  printf '.kanna/tmp\n' >"$repo/.gitignore"
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "pipeline_stats line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Compare" "run $bin/kanna run start alpha" --agent "$fake/claude") >/dev/null || { echo "pipeline_stats line $LINENO"; return 1; }
+  local task; task="$(tid 1)"
+  local folder="$repo/.kanna-worktrees/$task"
+  held() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+print([t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0].get("held") or "-")' "$task"; }
+  states() { kanna run list --all --json | python3 -c 'import json, sys
+print(" ".join(x["state"] for x in json.load(sys.stdin)["runs"]))'; }
+  next() { local said=""; said="$(cd "$folder" && KANNA_TERMINAL="$(held)" kanna run start "$1" 2>&1)" || { echo "next $1: $said" >>"$out/next.log"; return 1; }; }
+  check wait_for 40 eval '[[ "$(states)" == done ]]' || { echo "pipeline_stats: the first run didn't hand back: $(states)"; tail -20 "$out/daemon.log"; return 1; }
+  check wait_for 30 next alpha || { echo "pipeline_stats: the second run didn't start"; cat "$out/next.log"; return 1; }
+  check wait_for 40 eval '[[ "$(states)" == "done done" ]]' || { echo "pipeline_stats: the second run: $(states)"; return 1; }
+  check wait_for 30 next beta || { echo "pipeline_stats: the third run didn't start"; return 1; }
+  check wait_for 40 eval '[[ "$(states)" == "done done done" ]]' || { echo "pipeline_stats: the third run: $(states)"; kanna run list --all; return 1; }
+  check wait_for 30 next beta || { echo "pipeline_stats: the fourth run didn't start"; return 1; }
+  check wait_for 40 eval '[[ "$(states)" == "done done done done" ]]' || { echo "pipeline_stats: the fourth run: $(states)"; return 1; }
+  local first; first="$(git -C "$repo" rev-parse "run/$task-1")"
+  git -C "$repo" merge -q --no-ff -m "Merge run/$task-1" "run/$task-1" && git -C "$repo" merge -q --no-ff -m "Merge run/$task-2" "run/$task-2" && git -C "$repo" merge -q --no-ff -m "Merge run/$task-3" "run/$task-3" || { echo "pipeline_stats line $LINENO"; return 1; }
+  git -C "$repo" checkout -q -b fix-it && git -C "$repo" commit -q --allow-empty -m "Fix the build" -m "Fixes: $first" && git -C "$repo" checkout -q main && git -C "$repo" merge -q --no-ff -m "Merge fix-it" fix-it || { echo "pipeline_stats line $LINENO"; return 1; }
+  local json
+  landed() { json="$(cd "$repo" && kanna stats pipelines --json)" && python3 -c 'import json, sys; r = json.loads(sys.argv[1]); sys.exit(0 if sum(p["landed"] for p in r["pipelines"]) == 3 else 1)' "$json"; }
+  check wait_for 20 landed || { echo "pipeline_stats: three landed runs never showed: $json"; return 1; }
+  check wait_for 10 eval 'json="$(cd "$repo" && kanna stats pipelines --json)"; python3 -c "import json, sys; r = json.loads(sys.argv[1]); sys.exit(0 if r[\"runs\"][0][\"bugsTracedBack\"] == 1 else 1)" "$json"' || { echo "pipeline_stats: the fix wasn't traced to the first run: $json"; return 1; }
+  check python3 -c 'import json, sys
+r = json.loads(sys.argv[1])
+assert r["days"] == 30 and "F1 is about 0.6" in r["caveat"], r["caveat"]
+p = {x["pipeline"]: x for x in r["pipelines"]}
+assert list(p) == ["alpha", "beta"] and [x["series"] for x in r["pipelines"]] == [0, 1], r["pipelines"]
+a, b = p["alpha"], p["beta"]
+assert a["runs"] == 2 and a["landed"] == 2 and a["landedShare"] == 1, a
+assert b["runs"] == 2 and b["landed"] == 1 and b["landedShare"] == 0.5, b
+assert len(a["hash"]) > 4 and a["hash"] != b["hash"] and a["revision"] == 1, a
+assert a["medians"]["reworkLoops"] == 1 and b["medians"]["reworkLoops"] == 1, (a, b)
+assert a["medians"]["timeToLand"] > 0 and a["medians"]["activeTime"] > 0 and a["medians"]["findings"] is None, a
+assert b["medians"]["findings"] == 3, b
+assert a["medians"]["bugsTracedBack"] == 0.5, a
+runs = r["runs"]
+one, two, three, four = runs
+assert [x["pipeline"] for x in runs] == ["alpha", "alpha", "beta", "beta"], runs
+assert [x["outcome"] for x in runs] == ["landed", "landed", "landed", "handed back"], runs
+assert one["visits"] == 4 and one["sessions"] == 2 and one["failingTests"] == 1 and one["failedRuns"] == 1 and one["reworkByStage"] == {"build": 1, "check": 1}, one
+assert one["tokens"] == {"total": 7500, "in": 6000, "out": 1400, "cached": 1000, "written": 100}, one["tokens"]
+assert one["turns"] == 2 and one["tools"] == 2 and one["commits"] == 2 and one["added"] == 2 and one["files"] == 2, one
+assert one["cost"] == 6000 * 2 / 1e6 + 1400 * 10 / 1e6 + 1000 * 2 / 1e6 + 100 * 2 / 1e6, one["cost"]
+assert one["timeToLand"] >= one["timeToHandBack"] > 0 and one["landing"], one
+assert three["findings"] == {"bug": 2, "nit": 2} and three["reworkLoops"] == 2 and three["visits"] == 4, three
+assert four["findings"] == {"bug": 1, "nit": 1} and four["timeToLand"] is None and four["timeToHandBack"] > 0, four
+assert one["qualityDelta"]["erosion"] is not None or two["qualityDelta"]["erosion"] is not None, one
+machines = {(x["pipeline"], x["stage"]) for x in r["stages"]}
+assert machines == {("alpha", "build"), ("alpha", "check"), ("beta", "build"), ("beta", "review")} and all(x["machine"] and x["visits"] for x in r["stages"]), r["stages"]
+tiles = {x["id"]: x for x in r["sections"][0]["tiles"]}
+assert [c["text"] for c in tiles["pipelines"]["chart"]["rows"][1]["cells"]][:3] == ["beta rev 1", "2", "1 (50%)"], tiles["pipelines"]["chart"]["rows"]
+assert len(tiles["run-land"]["chart"]["points"]) == 3 and len(tiles["run-land"]["chart"]["medians"]) == 2, tiles["run-land"]
+assert len(tiles["run-tokens"]["chart"]["points"]) == 4, tiles["run-tokens"]' "$json" || { echo "pipeline_stats: kanna stats pipelines said: $json"; return 1; }
+  local printed; printed="$(cd "$repo" && kanna stats pipelines)"
+  grep -qE 'alpha rev 1 +2 +2 \(100%\)' <<<"$printed" || { echo "pipeline_stats: kanna stats pipelines prints"; echo "$printed"; return 1; }
+  (cd "$repo" && kanna stats pipelines --days 0 --json) | python3 -c 'import json, sys; r = json.load(sys.stdin); sys.exit(0 if r["days"] is None and len(r["runs"]) == 4 else 1)' || { echo "pipeline_stats: --days 0 isn't every run"; return 1; }
+  local shown; shown="$(kanna run show "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["runs"][0]["run"])' "$json")" --json)"
+  python3 -c 'import json, sys
+s = json.loads(sys.argv[1])
+assert s["metrics"]["tokens"]["total"] == 7500, s["metrics"]
+u = s["visits"][0]["doc"]["usage"]
+assert (u["turns"], u["tools"], u["in"], u["out"], u["cached"], u["written"], u["model"], u["costBy"]) == (1, 1, 3000, 700, 500, 50, "mock-model", "pricing"), u
+assert s["visits"][0]["doc"]["commits"] == 1 and s["visits"][0]["doc"]["added"] == 1 and s["visits"][1]["doc"]["failing"] == 1, s["visits"][:2]' "$shown" || { echo "pipeline_stats: kanna run show said: $shown"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "pipeline_stats line $LINENO: $opened"; return 1; }
+  d="${BASH_REMATCH[1]}"
+  raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\",\"size\":[1900,1300]}}" >/dev/null
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Stats\",\"window\":\"$d\"}}" >/dev/null
+  check wait_for 10 eval '[[ "$(desk stats "$d")" == *run-land* ]]' || { echo "pipeline_stats: the Stats tab has no Pipelines section"; desk statsSections "$d"; return 1; }
+  check python3 -c 'import json, sys
+shown = {x["id"]: x for x in json.loads(sys.argv[1]) if x["section"] == "pipelines"}
+assert [r[:3] for r in shown["pipelines"]["table"]] == [["alpha rev 1", "2", "2 (100%)"], ["beta rev 1", "2", "1 (50%)"]], shown["pipelines"]
+assert shown["run-land"]["dots"] == 3 and shown["run-tokens"]["dots"] == 4 and shown["run-rework"]["dots"] == 4, shown["run-land"]
+assert len(shown["recent"]["table"]) == 4 and shown["machines"]["table"], shown["recent"]
+assert "F1 is about 0.6" in shown["pipelines"]["note"], shown["pipelines"]["note"]' "$(desk stats "$d")" || { desk stats "$d"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"statsChip\":\"30 days\",\"window\":\"$d\"}}" >/dev/null
+  sleep 0.5; snap "$d" pipeline_stats-dark >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 0.5
+  snap "$d" pipeline_stats-light >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"statsChip\":\"beta\",\"window\":\"$d\"}}" >/dev/null
+  check wait_for 5 eval 'python3 -c "import json, sys; s = {x[\"id\"]: x for x in json.loads(sys.argv[1]) if x[\"section\"] == \"pipelines\"}; sys.exit(0 if len(s[\"pipelines\"][\"table\"]) == 1 and s[\"run-tokens\"][\"dots\"] == 2 else 1)" "$(desk stats "$d")"' || { echo "pipeline_stats: hiding beta left its rows"; desk stats "$d"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"statsChip\":\"beta\",\"window\":\"$d\"}}" >/dev/null
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"statsChip\":\"Table view\",\"window\":\"$d\"}}" >/dev/null
+  check wait_for 5 eval '[[ "$(desk statsSections "$d")" == *"\"tableView\": true"* ]]' || { echo "pipeline_stats: Table view didn't take"; desk statsSections "$d"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"statsChip\":\"90 days\",\"window\":\"$d\"}}" >/dev/null
+  check wait_for 5 eval '[[ "$(desk statsSections "$d")" == *"\"on\": ["*"90 days"* ]]' || { echo "pipeline_stats: 90 days didn't take"; desk statsSections "$d"; return 1; }
 }
 
 scenario pipeline_fanout M4

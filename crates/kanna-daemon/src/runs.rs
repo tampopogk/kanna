@@ -1,7 +1,10 @@
 use crate::db::{Db, RunRow, StageRow};
+use crate::pipelines;
 use crate::run_notice;
 use crate::task_scripts;
 use crate::tasks::{self, git, Entry, Tasks};
+use crate::usage;
+use crate::runtime;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, PaneState, PaneType, Responder, WeakCore};
 use kanna_pipe::{Arrow, Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
@@ -605,6 +608,21 @@ pub fn failure_lines(output: &str) -> Vec<String> {
     tail.iter().filter(|l| FAILURE_MARKS.iter().any(|m| l.contains(m))).map(|l| l.to_string()).collect()
 }
 
+pub fn failing_tests(lines: &[String]) -> usize {
+    let summary = regex::Regex::new(r"^\s*(test result:|failures:|error: test failed|\d+ (passed|failed)|=+ .* =+$)|\b\d+ (passed|failed)\b").expect("pattern");
+    lines.iter().filter(|l| !summary.is_match(l)).count()
+}
+
+pub fn findings(answer: &str) -> Option<BTreeMap<String, u64>> {
+    let (_, body) = outputs(answer).into_iter().find(|(key, _)| key == "findings")?;
+    let list: Value = serde_json::from_str(&body).ok()?;
+    let mut by = BTreeMap::new();
+    for finding in list.as_array()? {
+        *by.entry(string(finding, "severity").unwrap_or("unrated").to_string()).or_insert(0) += 1;
+    }
+    Some(by)
+}
+
 pub fn command_feedback(output: &str) -> String {
     let text = plain(output);
     let lines: Vec<&str> = text.lines().collect();
@@ -791,6 +809,68 @@ fn patch(doc: &mut Value, with: Value) {
     }
 }
 
+struct Measured {
+    row: i64,
+    session: Option<String>,
+    doc: Value,
+}
+
+struct Measuring {
+    row: i64,
+    agent: Option<String>,
+    session: Option<String>,
+    folder: Option<String>,
+    repo: String,
+    branch: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    since: f64,
+}
+
+impl Measuring {
+    fn of(row: &StageRow, repo: &str, session: Option<String>, end: Option<String>) -> Measuring {
+        let paused = row.doc.get("paused").and_then(|p| string(p, "session")).map(String::from);
+        Measuring {
+            row: row.id,
+            agent: row.agent.clone(),
+            session: row.session.clone().or(session).or(paused),
+            folder: row.worktree.clone(),
+            repo: repo.to_string(),
+            branch: row.branch.clone(),
+            start: string(&row.doc, "start").map(String::from),
+            end: end.or_else(|| string(&row.doc, "end").map(String::from)).filter(|e| !e.is_empty()),
+            since: row.started_at,
+        }
+    }
+
+    fn session(&self) -> Option<String> {
+        let started = UNIX_EPOCH + Duration::from_secs_f64(self.since.max(0.0));
+        self.session.clone().or_else(|| tasks::first_session_since(self.agent.as_deref()?, Path::new(self.folder.as_deref()?), started))
+    }
+
+    fn take(&self) -> Measured {
+        let repo = Path::new(&self.repo);
+        let session = self.session();
+        let usage = self.agent.as_deref().zip(session.as_deref()).and_then(|(agent, session)| usage::of(agent, session, self.since));
+        let mut doc = json!({ "measured": true, "usage": usage.map_or(Value::Null, |u| u.doc(&tasks::pricing(&tasks::config_files(repo)))) });
+        let end = self.end.clone().or_else(|| git(repo, &["rev-parse", "--verify", self.branch.as_deref()?]).ok());
+        if let Some((start, end)) = self.start.as_deref().filter(|s| !s.is_empty()).zip(end) {
+            let span = format!("{start}..{end}");
+            if let Ok(numstat) = git(repo, &["diff", "--numstat", "--no-renames", &span]) {
+                let rows: Vec<Vec<&str>> = numstat.lines().map(|l| l.splitn(3, '\t').collect()).collect();
+                let sum = |column: usize| rows.iter().filter_map(|r| r.get(column)?.parse::<u64>().ok()).sum::<u64>();
+                doc["files"] = json!(rows.len());
+                doc["added"] = json!(sum(0));
+                doc["deleted"] = json!(sum(1));
+            }
+            if let Some(commits) = git(repo, &["rev-list", "--count", &span]).ok().and_then(|n| n.trim().parse::<u64>().ok()) {
+                doc["commits"] = json!(commits);
+            }
+        }
+        Measured { row: self.row, session, doc }
+    }
+}
+
 fn carried(next: &Next, ended: &Ended, stage: &str, ask: bool) -> Option<Feedback> {
     let noted = ask && !ended.feedback.trim().is_empty();
     match (next, ended.verdict) {
@@ -937,7 +1017,24 @@ impl Runs {
             log!("kanna-daemon: {} carries on ({}, {at})", entry.row.id, entry.row.state);
             live.push(entry);
         }
-        Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() }
+        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() };
+        for (row, repo) in this.db.unmeasured().unwrap_or_default() {
+            this.measure(Measuring::of(&row, &repo, None, None));
+        }
+        this
+    }
+
+    fn measure(&self, measuring: Measuring) {
+        if measuring.row == 0 {
+            return;
+        }
+        let db = self.db.clone();
+        runtime::spawn("runs.measure", async move {
+            let Some(measured) = runtime::off_loop(move || measuring.take()).await else { return };
+            if let Err(error) = db.patch_stage(measured.row, measured.session.as_deref(), &measured.doc) {
+                log!("kanna-daemon: couldn't save visit {}'s numbers: {error}", measured.row);
+            }
+        });
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -1180,8 +1277,12 @@ impl Runs {
             .flat_map(|l| l.visits.iter())
             .map(|v| json!({ "stage": v.row.stage, "instance": opt(v.row.instance.as_deref()), "kind": v.row.kind, "terminal": opt(v.row.terminal.as_deref()), "worktree": opt(v.row.worktree.as_deref()) }))
             .collect();
+        let events = self.db.run_events(&row.id).map_err(failed)?;
+        let stages = self.db.stages(&row.id).map_err(failed)?;
+        let visits = visits.into_iter().zip(&stages).map(|(mut visit, stage)| { visit["interventions"] = json!(pipelines::visit_interventions(stage, &stages, &events)); visit }).collect();
         Ok(Map::from_iter([
             ("run".to_string(), self.row_value(&row)),
+            ("metrics".to_string(), pipelines::numbers(&row, &stages, &events, 0, now()).value()),
             ("revision".to_string(), revision.map_or(Value::Null, |r| json!({ "n": r.n, "by": r.by, "hash": r.hash, "at": num(r.at), "text": r.doc.get("text").cloned().unwrap_or(Value::Null) }))),
             ("visits".to_string(), Value::Array(visits)),
             ("workers".to_string(), Value::Array(workers)),
@@ -1578,7 +1679,7 @@ impl Runs {
         let n = visit.n;
         if let Work::Ask { .. } = &visit.work {
             if late && self.mark_ending(id, n) {
-                self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None });
+                self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None }, None);
             }
             return;
         }
@@ -1589,7 +1690,7 @@ impl Runs {
                 Work::Agent { .. } => self.park(id, n),
                 _ if self.mark_ending(id, n) => {
                     let (id, ended) = (id.to_string(), visit.clone());
-                    self.end_visit(visit, move |this| this.rerun(&id, &ended, "interrupted"));
+                    self.end_visit(visit, move |this, _| this.rerun(&id, &ended, "interrupted"));
                 }
                 _ => {}
             }
@@ -1919,7 +2020,7 @@ impl Runs {
             Some(("answered", Some(by.clone()), json!({ "stage": stage, "answer": said, "note": note })))
         });
         log!("kanna-daemon: {}'s {stage} is answered {said} by the {by}", row.id);
-        self.finished(&row.id, visit.n, Ended { verdict: Some(verdict), shown: verdict.name(), answer: note.clone(), feedback: note.clone(), full: String::new(), failures: None, note: None, by: Some(by.clone()) });
+        self.finished(&row.id, visit.n, Ended { verdict: Some(verdict), shown: verdict.name(), answer: note.clone(), feedback: note.clone(), full: String::new(), failures: None, note: None, by: Some(by.clone()) }, None);
         Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage)), ("answer".to_string(), json!(said)), ("by".to_string(), json!(by))]))
     }
 
@@ -1979,7 +2080,7 @@ impl Runs {
         });
         log!("kanna-daemon: {}'s {} is skipped by the {by}", row.id, visit.label());
         let (id, n) = (row.id.clone(), visit.n);
-        self.end_visit(&visit, move |this| this.finished(&id, n, ended));
+        self.end_visit(&visit, move |this, said| this.finished(&id, n, ended, said));
         Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage.name))]))
     }
 
@@ -1992,31 +2093,31 @@ impl Runs {
         });
         log!("kanna-daemon: {}'s {} runs again for the {by}", row.id, visit.label());
         let (id, ended) = (row.id.clone(), visit.clone());
-        self.end_visit(&visit, move |this| this.rerun(&id, &ended, "retried"));
+        self.end_visit(&visit, move |this, _| this.rerun(&id, &ended, "retried"));
         Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage.name))]))
     }
 
-    fn end_visit(self: &Rc<Self>, visit: &Visit, then: impl FnOnce(&Rc<Self>) + 'static) {
+    fn end_visit(self: &Rc<Self>, visit: &Visit, then: impl FnOnce(&Rc<Self>, Option<String>) + 'static) {
         let this = Rc::downgrade(self);
         let pane = visit.row.terminal.clone().filter(|_| !visit.paused);
         let closing = pane.clone();
-        let finish = move || {
+        let finish = move |said: Option<String>| {
             let Some(this) = this.upgrade() else { return };
             if let Some(pane) = &closing {
                 this.close(pane);
             }
-            then(&this);
+            then(&this, said);
         };
         match (&visit.work, pane) {
             (Work::Agent { agent }, Some(pane)) => match self.tasks.upgrade() {
-                Some(tasks) => tasks.end_agent(&pane, agent, move |_| finish()),
-                None => finish(),
+                Some(tasks) => tasks.end_agent(&pane, agent, finish),
+                None => finish(None),
             },
             (Work::Command { .. }, Some(pane)) => match self.core.upgrade().filter(|core| alive(core, &pane)) {
-                Some(core) => core.end(&pane, move |_| finish()),
-                None => finish(),
+                Some(core) => core.end(&pane, move |_| finish(None)),
+                None => finish(None),
             },
-            _ => finish(),
+            _ => finish(None),
         }
     }
 
@@ -2147,10 +2248,10 @@ impl Runs {
 
     fn quit_then(self: &Rc<Self>, id: &str, n: u32, pane: &str, agent: &str, ended: Ended) {
         let (this, id, closing) = (Rc::downgrade(self), id.to_string(), pane.to_string());
-        let finish = move |_: Option<String>| {
+        let finish = move |said: Option<String>| {
             let Some(this) = this.upgrade() else { return };
             this.retire(&id, &closing);
-            this.finished(&id, n, ended);
+            this.finished(&id, n, ended, said);
         };
         match self.tasks.upgrade() {
             Some(tasks) => tasks.end_agent(pane, agent, finish),
@@ -2204,7 +2305,7 @@ impl Runs {
         let finish = move || {
             let Some(this) = this.upgrade() else { return };
             this.retire(&id, &closing);
-            this.finished(&id, n, ended);
+            this.finished(&id, n, ended, None);
         };
         match self.core.upgrade().filter(|core| alive(core, pane)) {
             Some(core) => core.end(pane, move |_| finish()),
@@ -2227,6 +2328,9 @@ impl Runs {
         row.verdict = Some(verdict.into());
         if row.id != 0 {
             let _ = self.db.put_stage(&row);
+        }
+        if let Some(repo) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.repo.clone()) {
+            self.measure(Measuring::of(&row, &repo, None, None));
         }
         let (stage, n) = (row.stage.clone(), visit.n);
         self.update(id, |live| {
@@ -2516,13 +2620,15 @@ impl Runs {
         self.tell(id, &format!("{name} asks: {question}\nAsk the user in your chat, and answer as they say: `kanna run answer {id} yes \"NOTE\"` or `kanna run answer {id} no \"NOTE\"` (the note goes to the next stage). The task shows needs you until one of you answers."));
     }
 
-    fn finished(self: &Rc<Self>, id: &str, n: u32, ended: Ended) {
+    fn finished(self: &Rc<Self>, id: &str, n: u32, ended: Ended, said: Option<String>) {
         let Some(visit) = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit(n).cloned()) else { return };
         self.drop_job(&visit);
         let worktree = visit.worktree();
         let end = git(Path::new(&worktree), &["rev-parse", "--verify", "HEAD"]).unwrap_or_default();
         let start = string(&visit.row.doc, "start").unwrap_or("").to_string();
         let commits = if start.is_empty() || end.is_empty() { 0 } else { git(Path::new(&worktree), &["rev-list", "--count", &format!("{start}..{end}")]).ok().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0) };
+        let Some(repo) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.repo.clone()) else { return };
+        let measuring = Measuring::of(&visit.row, &repo, said, Some(end.clone()));
         let mut row = visit.row.clone();
         row.ended_at = Some(now());
         row.verdict = Some(ended.shown.to_string());
@@ -2535,10 +2641,19 @@ impl Runs {
             answer.truncate(cut);
         }
         let score = matches!(visit.role, Role::Score(..)).then(|| score_of(&fs::read_to_string(&ended.full).unwrap_or_default(), ended.verdict));
-        row.doc = json!({ "answer": answer, "feedback": ended.feedback, "failures": ended.failures, "note": opt(ended.note.as_deref()), "end": end, "commits": commits, "score": score, "by": opt(ended.by.as_deref()) });
+        let failed_verdict = ended.verdict == Some(Verdict::Fail);
+        let failing = ended.failures.as_ref().filter(|_| failed_verdict).map(|lines| failing_tests(lines));
+        let mut kept = json!({ "answer": answer, "feedback": ended.feedback, "failures": ended.failures, "note": opt(ended.note.as_deref()), "end": end, "commits": commits, "score": score, "by": opt(ended.by.as_deref()), "feedbackSize": ended.feedback.len(), "failing": failing, "findings": findings(&ended.answer) });
+        for key in ["question", "replies", "waited", "log"] {
+            if let Some(value) = row.doc.get(key) {
+                kept[key] = value.clone();
+            }
+        }
+        row.doc = kept;
         if let Err(error) = self.db.put_stage(&row) {
             log!("kanna-daemon: couldn't save {id}'s {} visit: {error}", visit.label());
         }
+        self.measure(measuring);
         log!("kanna-daemon: {id}: {}'s visit ended {}{}", visit.label(), ended.shown, score.map_or(String::new(), |s| format!(", score {s}")));
         if ends_owned(self.owned(id), ended.note.as_deref()) {
             let stage = visit.label();
@@ -2809,6 +2924,9 @@ impl Runs {
                 row.ended_at = Some(now());
                 row.verdict = Some("stopped".into());
                 let _ = self.db.put_stage(&row);
+                if let Some(repo) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.repo.clone()) {
+                    self.measure(Measuring::of(&row, &repo, None, None));
+                }
             }
             if let (Some(pane), false) = (row.terminal.clone(), visit.ending || visit.paused) {
                 match (&visit.work, self.tasks.upgrade()) {
@@ -3437,6 +3555,22 @@ mod tests {
         assert_eq!(Doc::from_value(&doc.to_value()), doc);
         assert_eq!(Role::from_value(&Role::Score(Some(1), false).to_value()), Role::Score(Some(1), false));
         assert_eq!(Role::from_value(&Role::Main(None).to_value()), Role::Main(None));
+    }
+
+    #[test]
+    fn findings_come_from_the_block_named_findings_by_severity() {
+        let answer = "All in all:\n```json name=findings\n[{\"severity\": \"bug\", \"file\": \"a.rs\", \"line\": 1, \"what\": \"x\"}, {\"severity\": \"nit\"}, {\"severity\": \"nit\"}, {\"what\": \"y\"}]\n```\nfail";
+        assert_eq!(findings(answer), Some(BTreeMap::from([("bug".to_string(), 1), ("nit".to_string(), 2), ("unrated".to_string(), 1)])));
+        assert_eq!(findings("```json name=findings\n[]\n```"), Some(BTreeMap::new()), "a review that found nothing still counts as a review");
+        assert_eq!(findings("no block"), None);
+        assert_eq!(findings("```json name=findings\nnot json\n```"), None);
+    }
+
+    #[test]
+    fn failing_tests_are_the_failure_lines_without_their_summaries() {
+        let output = "test a ... ok\ntest gutter_colors ... FAILED\ntest diff_theme ... FAILED\n\nfailures:\ntest result: FAILED. 3 passed; 2 failed; 0 ignored\nerror: test failed, to rerun pass `-p x`\n";
+        let lines = failure_lines(output);
+        assert_eq!(failing_tests(&lines), 2, "{lines:?}");
     }
 
     #[test]

@@ -62,6 +62,8 @@ mod store;
 mod stacks;
 mod task_events;
 mod task_scripts;
+mod pipelines;
+mod usage;
 mod terminals;
 mod transfer;
 mod toasts;

@@ -574,6 +574,13 @@ extension AppController {
             guard controller.deskView.visibleShelf.contains(task) else { throw KannaError("not_found", "\(task) is scrolled out of \(id)'s view") }
             window = controller.window
             point = spot.center
+        } else if let title = args["statsChip"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let chip = controller.statsPage.chips[title] else { throw KannaError("not_found", "no chip \(title) in \(id)'s Stats") }
+            controller.statsPage.scrollToPipelines()
+            controller.statsPage.displayIfNeeded()
+            window = controller.window
+            point = chip.convert(NSPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: nil)
         } else if let tile = args["stats"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let list = controller.statsPage.lists[tile], let spot = list.center(of: Int(args["row"]?.number ?? 0)) else { throw KannaError("not_found", "no row \(Int(args["row"]?.number ?? 0)) in \(id)'s Stats list \(tile)") }
