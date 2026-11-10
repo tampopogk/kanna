@@ -442,6 +442,12 @@ fn run() -> Result<(), String> {
     *tasks.run_of.borrow_mut() = Some(Box::new(move |task| staging.upgrade().and_then(|runs| runs.stage_of(task))));
     let heeding = wire.clone();
     *runs.heed.borrow_mut() = Some(Box::new(move |terminal| heeding.heed(terminal)));
+    let waking = Rc::downgrade(&runs);
+    tasks.on_worker(Box::new(move || {
+        if let Some(runs) = waking.upgrade() {
+            runs.wake();
+        }
+    }));
     let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
     *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = stopping.upgrade() {
@@ -655,6 +661,13 @@ fn run() -> Result<(), String> {
         }),
         app_attached: Box::new(move || attached.upgrade().is_some_and(|app| app.attached_here())),
     });
+    let showing = Rc::downgrade(&app);
+    *runs.on_show.borrow_mut() = Some(Box::new(move |pane| {
+        if let Some(app) = showing.upgrade() {
+            let (responder, _reply) = kanna_mux::responder();
+            app.forward("focus", json!({ "pane": pane }), responder);
+        }
+    }));
     let (shown, statuses) = (core.weak(), Rc::downgrade(&app));
     *runs.on_status.borrow_mut() = Some(Box::new(move |pane| {
         if let (Some(core), Some(app)) = (shown.upgrade(), statuses.upgrade()) {
@@ -957,6 +970,7 @@ fn run() -> Result<(), String> {
                     app.status(&pane, core.pane(&pane).and_then(|p| p.status().map(String::from)).as_deref());
                     tasks.status(&pane, status, ended);
                     runs.status(&pane, ended);
+                    tasks.worker_status(&pane, ended);
                 }
             }
             Event::Reported { terminal, serial, kept } => {
