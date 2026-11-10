@@ -20,12 +20,15 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod comment_targets;
+mod instance;
+mod merging;
 mod moving;
 mod phone;
 
+pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
 
-const WORKTREES: &str = ".kanna-worktrees";
+pub const WORKTREES: &str = ".kanna-worktrees";
 
 const SCRATCH: &str = ".kanna/tmp";
 
@@ -49,7 +52,7 @@ pub struct Entry {
     pub workspace: Option<String>,
     pub birth: Option<String>,
     pub on: Vec<String>,
-    pub ready: Option<Mark>,
+    pub claimed: Option<Mark>,
     pub bases: Vec<Base>,
     pub stale: Vec<String>,
     pub conflict: Option<Conflict>,
@@ -57,6 +60,8 @@ pub struct Entry {
     pub sent: Vec<Sent>,
     pub notes: Vec<Note>,
     pub claim: Option<String>,
+    pub queued: Option<String>,
+    pub merge_failed: Option<Value>,
 }
 
 impl Entry {
@@ -76,10 +81,12 @@ impl Entry {
             "stopped": opt(self.stopped.as_deref()),
             "workspace": opt(self.workspace.as_deref()),
             "on": self.on,
-            "ready": self.ready.as_ref().map_or(Value::Null, Mark::to_value),
+            "ready": self.claimed.as_ref().map_or(Value::Null, Mark::to_value),
             "bases": Value::Array(self.bases.iter().map(Base::to_value).collect()),
             "stale": self.stale,
             "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
+            "queued": opt(self.queued.as_deref()),
+            "mergeFailed": self.merge_failed.clone().unwrap_or(Value::Null),
         })
     }
 
@@ -102,7 +109,7 @@ impl Entry {
                 "workspace": opt(self.workspace.as_deref()),
                 "birth": opt(self.birth.as_deref()),
                 "on": self.on,
-                "ready": self.ready.as_ref().map_or(Value::Null, Mark::to_value),
+                "ready": self.claimed.as_ref().map_or(Value::Null, Mark::to_value),
                 "bases": Value::Array(self.bases.iter().map(Base::to_value).collect()),
                 "stale": self.stale,
                 "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
@@ -110,6 +117,8 @@ impl Entry {
                 "sent": Value::Array(self.sent.iter().map(Sent::to_value).collect()),
                 "notes": Note::values(&self.notes),
                 "claim": opt(self.claim.as_deref()),
+                "queued": opt(self.queued.as_deref()),
+                "mergeFailed": self.merge_failed.clone().unwrap_or(Value::Null),
             }),
         }
     }
@@ -132,7 +141,7 @@ impl Entry {
             workspace: text("workspace"),
             birth: text("birth"),
             on: strings(&row.doc, "on"),
-            ready: Mark::from_value(row.doc.get("ready")),
+            claimed: Mark::from_value(row.doc.get("ready")),
             bases: Base::list(row.doc.get("bases")),
             stale: stacks::ids(row.doc.get("stale")),
             conflict: Conflict::from_value(row.doc.get("conflict")),
@@ -140,6 +149,8 @@ impl Entry {
             sent: Sent::list(row.doc.get("sent")),
             notes: Note::list(row.doc.get("notes")),
             claim: text("claim"),
+            queued: text("queued"),
+            merge_failed: row.doc.get("mergeFailed").filter(|v| v.is_object()).cloned(),
         }
     }
 
@@ -156,14 +167,13 @@ impl Entry {
             None => format!("{command} {told}"),
         };
         let Some(agent) = agent else { return first(command) };
-        match (&self.session, &self.folder, session.zip(agent.named), agent.latest) {
-            (Some(resume), _, _, _) => match agent.named {
+        match (&self.session, session.zip(agent.named)) {
+            (Some(resume), _) => match agent.named {
                 Some(flag) => format!("{command} {} {} || {}", agent.resume, quote(resume), first(format!("{command} {flag} {}", quote(resume)))),
                 None => format!("{command} {} {}", agent.resume, quote(resume)),
             },
-            (None, Some(_), _, Some(latest)) => format!("{command} {latest}"),
-            (None, None, Some((new, flag)), _) => first(format!("{command} {flag} {new}")),
-            _ => first(command),
+            (None, Some((new, flag))) => first(format!("{command} {flag} {new}")),
+            (None, None) => first(command),
         }
     }
 
@@ -195,9 +205,12 @@ const CONTEXT_RANGE: std::ops::RangeInclusive<u64> = 100_000..=1_000_000;
 const CONFIG_VERSION: u64 = 1;
 
 /// Kanna's settings files for a folder, the first that sets a key winning: the repo's `.kanna/config.json`, then `~/.kanna-v4/config.json`.
+fn my_config() -> PathBuf {
+    crate::agents::home().join(".kanna-v4/config.json")
+}
+
 pub fn config_files(folder: &Path) -> Vec<PathBuf> {
-    let home = crate::agents::home();
-    project(folder.to_str()).map(|repo| repo.join(".kanna/config.json")).into_iter().chain([home.join(".kanna-v4/config.json")]).collect()
+    project(folder.to_str()).map(|repo| repo.join(".kanna/config.json")).into_iter().chain([my_config()]).collect()
 }
 
 fn configured<T>(files: &[PathBuf], section: &str, key: &str, read: impl Fn(&Value) -> Option<T>, expected: &str) -> Option<T> {
@@ -271,6 +284,19 @@ pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     configured(std::slice::from_ref(mine), "pipelines", "agents", read, "an object of agent names to commands").flatten().unwrap_or_else(|| agent.into())
 }
 
+pub fn pricing(files: &[PathBuf]) -> Value {
+    configured(files, "pipelines", "pricing", |value| value.is_object().then(|| value.clone()), "an object of models to their prices per million tokens").unwrap_or(Value::Null)
+}
+
+pub const WORKERS: usize = 3;
+
+pub const WORKERS_MAX: usize = 10;
+
+pub fn pipeline_workers(files: &[PathBuf]) -> usize {
+    let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| (1..=WORKERS_MAX).contains(n));
+    configured(files, "pipelines", "workers", read, "a number of workers from 1 to 10").unwrap_or(WORKERS)
+}
+
 pub fn build_mac(mine: &Path) -> Option<String> {
     let read = |value: &Value| value.as_str().map(str::trim).filter(|m| !m.is_empty()).map(String::from);
     configured(std::slice::from_ref(&mine.to_path_buf()), "build", "mac", read, "the name of one of your machines")
@@ -280,15 +306,19 @@ pub const RUNNERS: usize = 3;
 
 const RUNNERS_MAX: usize = 10;
 
-pub fn runners(files: &[PathBuf]) -> usize {
+fn runners_in(file: &Path) -> Option<usize> {
     let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| *n <= RUNNERS_MAX);
-    files
-        .iter()
-        .find_map(|file| {
-            let file = std::slice::from_ref(file);
-            configured(file, "shelf", "runners", read, "a number of tasks from 0 to 10").or_else(|| configured(file, "backlog", "runners", read, "a number of tasks from 0 to 10"))
-        })
-        .unwrap_or(RUNNERS)
+    let file = [file.to_path_buf()];
+    configured(&file, "shelf", "runners", read, "a number of tasks from 0 to 10").or_else(|| configured(&file, "backlog", "runners", read, "a number of tasks from 0 to 10"))
+}
+
+pub fn machine_runners(mine: &Path) -> usize {
+    runners_in(mine).unwrap_or(RUNNERS)
+}
+
+pub fn runners(files: &[PathBuf]) -> usize {
+    let Some((mine, repos)) = files.split_last() else { return RUNNERS };
+    repos.iter().filter_map(|file| runners_in(file)).fold(machine_runners(mine), usize::min)
 }
 
 pub fn scripts(files: &[PathBuf]) -> Scripts {
@@ -467,16 +497,15 @@ struct Agent {
     prompt: Option<&'static str>,
     named: Option<&'static str>,
     resume: &'static str,
-    latest: Option<&'static str>,
     find: Option<fn(&Path) -> Option<String>>,
     compact: Option<&'static str>,
 }
 
 const AGENTS: &[Agent] = &[
-    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
-    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
-    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
+    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", find: None, compact: None },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
+    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", find: Some(opencode_session), compact: None },
+    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", find: None, compact: None },
 ];
 
 fn agent(command: &str) -> Option<&'static Agent> {
@@ -488,7 +517,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
 
@@ -523,7 +552,7 @@ fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime
     None
 }
 
-fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
+pub fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
     match agent(program)?.names[0] {
         "codex" => {
             let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
@@ -618,7 +647,6 @@ pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, pro
     let mut line = in_its_terminal(&line);
     match (resume, session, agent(command)) {
         (true, Some(session), Some(agent)) => line += &format!(" {} {}", agent.resume, quote(session)),
-        (true, None, Some(Agent { latest: Some(latest), .. })) => line += &format!(" {latest}"),
         (false, Some(session), Some(Agent { named: Some(flag), .. })) => line += &format!(" {flag} {}", quote(session)),
         _ => {}
     }
@@ -673,6 +701,7 @@ fn allowed(on: &[String], name: &str) -> bool {
 
 enum Candidate {
     Wake(Entry),
+    Resume(Entry),
     Here(Entry),
     There { task: String, birth: String, owner: String },
     Take { task: String, birth: String, owner: String },
@@ -855,17 +884,27 @@ struct Starting {
     responder: Answer,
 }
 
+type Then = Box<dyn FnOnce(Option<String>)>;
+
 struct Quitting {
     agent: String,
     by: Instant,
     quit: Option<Quit>,
     hung_up: bool,
     fallback: Vec<String>,
+    rest: Option<(String, Instant)>,
     look: Option<Instant>,
     looked_by: Instant,
     keys: Vec<String>,
     next: Option<Instant>,
-    then: Vec<Box<dyn FnOnce(Option<String>)>>,
+    then: Vec<Then>,
+}
+
+struct Finishing {
+    agent: String,
+    turn: Turn,
+    by: Instant,
+    then: Vec<Then>,
 }
 
 #[derive(Clone, Debug)]
@@ -887,11 +926,17 @@ const SETUP_EVERY: Duration = Duration::from_secs(1);
 
 const QUIT_WAIT: Duration = Duration::from_secs(5);
 
+const REST_EVERY: Duration = Duration::from_secs(1);
+
+const TURN_WAIT: Duration = Duration::from_secs(60);
+
 const KEY_WAIT: Duration = Duration::from_millis(500);
 
 const LOOK_EVERY: Duration = Duration::from_millis(100);
 
 const LOOK_WAIT: Duration = Duration::from_secs(1);
+
+const KEEPER_LOST: &str = "keeper lost";
 
 const FILL_EVERY: Duration = Duration::from_secs(2);
 
@@ -945,7 +990,9 @@ pub struct Tasks {
     next: Cell<u64>,
     turns: RefCell<HashMap<String, Turn>>,
     quitting: RefCell<HashMap<String, Quitting>>,
+    finishing: RefCell<HashMap<String, Finishing>>,
     launching: RefCell<HashSet<String>>,
+    once_started: RefCell<HashMap<String, Vec<Box<dyn FnOnce(&Rc<Tasks>)>>>>,
     finding: RefCell<HashSet<String>>,
     failed: RefCell<HashSet<String>>,
     setting_up: RefCell<HashMap<String, SettingUp>>,
@@ -959,6 +1006,9 @@ pub struct Tasks {
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub run_of: RefCell<Option<Box<dyn Fn(&str) -> Option<String>>>>,
+    pub on_stop: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub on_start: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
     pub age: RefCell<Option<Box<dyn Fn(&str) -> Option<Duration>>>>,
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
@@ -994,10 +1044,13 @@ pub struct Tasks {
     again: Cell<bool>,
     listening: Cell<bool>,
     listen_again: Cell<bool>,
+    merges: RefCell<HashMap<String, task_events::Check>>,
     heads: RefCell<Option<std::sync::mpsc::Sender<stacks::Heads>>>,
     following: RefCell<HashSet<PathBuf>>,
     news: RefCell<News>,
     ending: RefCell<HashMap<String, Option<String>>>,
+    moving_instance: RefCell<Option<String>>,
+    pub move_hooks: RefCell<Option<instance::MoveHooks>>,
 }
 
 #[derive(Clone)]
@@ -1131,7 +1184,9 @@ impl Tasks {
             spoke: RefCell::default(),
             turns: RefCell::default(),
             quitting: RefCell::default(),
+            finishing: RefCell::default(),
             launching: RefCell::default(),
+            once_started: RefCell::default(),
             finding: RefCell::default(),
             failed: RefCell::default(),
             setting_up: RefCell::default(),
@@ -1148,6 +1203,9 @@ impl Tasks {
             background: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
+            run_of: RefCell::default(),
+            on_stop: RefCell::default(),
+            on_start: RefCell::default(),
             on_delivered: RefCell::default(),
             age: RefCell::default(),
             warned: RefCell::default(),
@@ -1175,11 +1233,14 @@ impl Tasks {
             watching: Cell::new(false),
             again: Cell::new(false),
             listening: Cell::new(false),
+            merges: RefCell::new(HashMap::new()),
             listen_again: Cell::new(false),
             heads: RefCell::default(),
             following: RefCell::default(),
             news: RefCell::default(),
             ending: RefCell::default(),
+            moving_instance: RefCell::default(),
+            move_hooks: RefCell::default(),
         }
     }
 
@@ -1278,15 +1339,11 @@ impl Tasks {
                 }
             }
         }
-        if let Some(row) = self.db.task(reference).ok().flatten() {
-            return Ok(Some(row.id));
+        let elsewhere: Vec<String> = self.replica.borrow().records().filter(|r| r.text("state").is_some_and(|s| s != "done")).map(|r| r.task.clone()).filter(|id| id == reference || (!start.is_empty() && id.strip_prefix(db::TASK).is_some_and(|hex| hex.starts_with(start)))).collect();
+        if let [one] = elsewhere.as_slice() {
+            return Ok(Some(one.clone()));
         }
-        let replica = self.replica.borrow();
-        let elsewhere: Vec<String> = replica.records().filter(|r| r.text("state").is_some_and(|s| s != "done")).map(|r| r.task.clone()).filter(|id| id == reference || (!start.is_empty() && id.strip_prefix(db::TASK).is_some_and(|hex| hex.starts_with(start)))).collect();
-        Ok(match elsewhere.as_slice() {
-            [one] => Some(one.clone()),
-            _ => None,
-        })
+        Ok(self.db.task(reference).ok().flatten().map(|row| row.id))
     }
 
     pub fn agent(&self, reference: &str, then: impl FnOnce(Result<String, KmuxError>) + 'static) {
@@ -1338,7 +1395,12 @@ impl Tasks {
             return vec![];
         }
         let open = self.open_tasks();
-        entry.after.iter().filter(|id| open.iter().any(|e| e.id == **id && (e.ready.is_none() || !e.stale.is_empty())) || (!self.is_open(id) && self.replica.borrow().open_task(id))).cloned().collect()
+        entry.after.iter().filter(|id| open.iter().any(|e| e.id == **id && (e.claimed.is_none() || !e.stale.is_empty())) || (!self.is_open(id) && self.replica.borrow().open_task(id))).cloned().collect()
+    }
+
+    fn runs_elsewhere(&self, record: &replica::Record) -> bool {
+        let replica = self.replica.borrow();
+        record.text("state").is_some_and(|s| s != "done") && record.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&record.task)
     }
 
     fn ambiguous(&self, id: &str) -> bool {
@@ -1350,7 +1412,7 @@ impl Tasks {
     }
 
     fn stack_of(&self, entry: &Entry) -> Vec<Base> {
-        entry.after.iter().filter_map(|id| self.known(id)).filter_map(|e| e.ready.map(|mark| Base { id: e.id, branch: mark.branch, head: mark.head })).collect()
+        entry.after.iter().filter_map(|id| self.known(id)).filter_map(|e| e.claimed.map(|mark| Base { id: e.id, branch: mark.branch, head: mark.head })).collect()
     }
 
     fn conflicted(&self, entry: &Entry) -> Option<String> {
@@ -1395,6 +1457,9 @@ impl Tasks {
         self.stack_fields(entry, &mut value);
         value["branch"] = opt(entry.folder.as_deref().and_then(branch_of).as_deref());
         value["project"] = opt(identity(&entry.repo).as_deref());
+        if entry.queued.is_some() {
+            value["queue"] = self.queue_info(entry);
+        }
         value
     }
 
@@ -1435,6 +1500,9 @@ impl Tasks {
         self.placed(&entry.repo)?;
         if let Some(to) = self.moving_to(&entry.id) {
             return Err(KmuxError::new("moving", format!("{} is moving to {to}: it carries on there", self.short(&entry.id))));
+        }
+        if let Some(queued) = &entry.queued {
+            return Err(KmuxError::new("queued", format!("{} is in the merge queue ({queued}): `kanna task merge --cancel {}` takes it out", self.short(&entry.id), self.short(&entry.id))));
         }
         if entry.folder.is_some() || entry.held.is_some() {
             return Ok(());
@@ -1954,6 +2022,16 @@ impl Tasks {
         }
     }
 
+    pub fn stopped_on_shelf(&self) -> Vec<Value> {
+        let Some(core) = self.core.upgrade() else { return vec![] };
+        self.entries
+            .borrow()
+            .iter()
+            .filter(|e| e.held.as_deref().is_none_or(|pane| !alive(&core, pane)))
+            .filter_map(|e| e.workspace.as_ref().map(|ws| json!({ "workspace": ws, "task": e.id, "name": opt(e.name.as_deref()) })))
+            .collect()
+    }
+
     pub fn refs(&self) -> Vec<kanna_log::TaskRef> {
         let worktree = |e: &Entry| e.folder.clone().unwrap_or_else(|| Path::new(&e.repo).join(WORKTREES).join(&e.id).to_string_lossy().into_owned());
         let open = |e: &Entry, place: Place| kanna_log::TaskRef { id: e.id.clone(), name: e.name.clone(), place: place.as_str().into(), repo: e.repo.clone(), worktree: Some(worktree(e)), branch: None, tip: None };
@@ -1972,6 +2050,25 @@ impl Tasks {
         let inside = |entry: &Entry| entry.folder.as_deref().is_some_and(|f| folder.starts_with(f) || same_folder(Path::new(f), folder));
         let running: Vec<Entry> = self.running.borrow().iter().map(|r| r.entry.clone()).collect();
         running.into_iter().chain(self.entries.borrow().iter().cloned()).find(inside)
+    }
+
+    fn run_stage(&self, task: &str) -> Option<String> {
+        self.run_of.borrow().as_ref().and_then(|run_of| run_of(task))
+    }
+
+    pub fn agent_pane(&self, task: &str) -> Option<String> {
+        let running = self.running.borrow().iter().find(|r| r.entry.id == task).map(|r| r.pane.clone());
+        running.or_else(|| self.entries.borrow().iter().find(|e| e.id == task).and_then(|e| e.held.clone()))
+    }
+
+    pub fn waits_on_you(&self, pane: &str) -> bool {
+        self.core.upgrade().and_then(|core| core.pane(pane)).is_some_and(|p| p.waits_on_you)
+    }
+
+    fn started_again(&self, pane: &str) {
+        if let (Some(id), Some(on_start)) = (self.task_of(pane), self.on_start.borrow().as_ref()) {
+            on_start(&id);
+        }
     }
 
     pub fn task_of(&self, pane: &str) -> Option<String> {
@@ -2011,7 +2108,12 @@ impl Tasks {
         self.warned.borrow_mut().remove(pane);
         let quitting = self.quitting.borrow_mut().remove(pane);
         if let Some(quitting) = quitting {
-            return self.quitted(pane, quitting);
+            return self.quitted(pane, quitting.quit, quitting.then);
+        }
+        let finishing = self.finishing.borrow_mut().remove(pane);
+        if let Some(finishing) = finishing {
+            let quit = kanna_detect::program::known_agent(&finishing.agent).and_then(Quit::of);
+            return self.quitted(pane, quit, finishing.then);
         }
         if !self.stopping.borrow_mut().remove(pane) {
             self.note(pane, Change::new("exited").by(Some("daemon")).with("code", json!(code)));
@@ -2042,6 +2144,15 @@ impl Tasks {
         }
     }
 
+    pub fn close_ended_planners(&self) {
+        let Some(core) = self.core.upgrade() else { return };
+        let windowless = self.windowless.borrow().as_ref().map_or(vec![], |panes| panes());
+        for pane in self.planners().into_iter().filter(|pane| !windowless.contains(pane) && !alive(&core, pane)) {
+            log!("kanna-daemon: the planner in {pane} has no terminal running, so its Desk gets a new planner");
+            core.handle(json!({ "cmd": "close", "args": { "task": pane } }), |_| {});
+        }
+    }
+
     pub fn status(self: &Rc<Self>, pane: &str, status: Option<&str>, ended: bool) {
         let now = Instant::now();
         if let Some(status) = status.filter(|_| !self.ending(pane)) {
@@ -2060,6 +2171,17 @@ impl Tasks {
                 turn.see(Some(Status::Working), now);
             }
             turn.see(status, now);
+        }
+        if let Some(finishing) = self.finishing.borrow_mut().get_mut(pane) {
+            if ended {
+                finishing.turn.see(Some(Status::Working), now);
+            }
+            finishing.turn.see(status, now);
+        }
+        if status == Some(Status::Idle) {
+            if let Some((_, at)) = self.quitting.borrow_mut().get_mut(pane).and_then(|q| q.rest.as_mut()) {
+                *at = now;
+            }
         }
         self.find_session(pane);
         self.saw_status(pane, status);
@@ -2113,8 +2235,30 @@ impl Tasks {
             let session = entry.found_session().await;
             let Some(this) = this.upgrade() else { return };
             this.launching.borrow_mut().remove(&entry.id);
+            this.settled(&entry.id);
             entry.session = session;
             then(&this, entry);
+        });
+    }
+
+    fn is_starting(&self, id: &str) -> bool {
+        self.pending.borrow().values().any(|p| p.entry.id == id) || self.launching.borrow().contains(id)
+    }
+
+    fn settled(self: &Rc<Self>, id: &str) {
+        if !self.once_started.borrow().contains_key(id) {
+            return;
+        }
+        let (this, id) = (Rc::downgrade(self), id.to_string());
+        crate::runtime::spawn("a pick waiting for its task to start", async move {
+            let Some(this) = this.upgrade() else { return };
+            if this.is_starting(&id) {
+                return;
+            }
+            let waiting = this.once_started.borrow_mut().remove(&id).unwrap_or_default();
+            for then in waiting {
+                then(&this);
+            }
         });
     }
 
@@ -2133,8 +2277,9 @@ impl Tasks {
         {
             let mut turns = self.turns.borrow_mut();
             let quitting = self.quitting.borrow();
+            let finishing = self.finishing.borrow();
             for (pane, _) in &running {
-                if !quitting.contains_key(pane) {
+                if !quitting.contains_key(pane) && !finishing.contains_key(pane) {
                     turns.entry(pane.clone()).or_insert_with(|| {
                         let mut turn = Turn::underway();
                         turn.see(core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse), now);
@@ -2148,6 +2293,7 @@ impl Tasks {
             let hang_up = keys.is_empty();
             q.hung_up = hang_up;
             q.look = None;
+            q.rest = None;
             if !hang_up {
                 q.keys = keys;
                 q.next = Some(now);
@@ -2162,6 +2308,18 @@ impl Tasks {
             } else {
                 log!("kanna-daemon: {agent} in {pane} didn't exit in {}s, so it gets its quit keys", QUIT_WAIT.as_secs());
             }
+        }
+        let finished: Vec<String> = self.finishing.borrow().iter().filter(|(_, f)| f.by <= now || f.turn.ended(now).is_some()).map(|(pane, _)| pane.clone()).collect();
+        for pane in finished {
+            let Some(finishing) = self.finishing.borrow_mut().remove(&pane) else { continue };
+            if finishing.by <= now {
+                log!("kanna-daemon: {} in {pane} is still in its turn after {}s, so it's brought to rest", finishing.agent, TURN_WAIT.as_secs());
+            }
+            self.end_agent_then(&pane, &finishing.agent, finishing.then);
+        }
+        let resting: Vec<String> = self.quitting.borrow().iter().filter(|(_, q)| !q.hung_up && q.rest.as_ref().is_some_and(|(_, at)| *at <= now)).map(|(pane, _)| pane.clone()).collect();
+        for pane in resting {
+            self.rest(&pane);
         }
         let looking: Vec<String> = self.quitting.borrow().iter().filter(|(_, q)| !q.hung_up && q.look.is_some_and(|at| at <= now)).map(|(pane, _)| pane.clone()).collect();
         for pane in looking {
@@ -2204,10 +2362,11 @@ impl Tasks {
             self.sync_all();
         }
         let turns = self.turns.borrow().values().filter_map(|t| if t.waiting() { Some(now + BACKGROUND_EVERY) } else { t.due() }).min();
-        let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next, q.look]).flatten().min();
+        let quits = self.quitting.borrow().values().filter(|q| !q.hung_up).flat_map(|q| [Some(q.by), q.next, q.look, q.rest.as_ref().map(|(_, at)| *at)]).flatten().min();
+        let finishing = self.finishing.borrow().values().flat_map(|f| [Some(f.by), f.turn.due()]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         let news = self.tell_planners(now);
-        [turns, quits, setups, self.fill_at.get(), mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
+        [turns, quits, finishing, setups, self.fill_at.get(), mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
     }
 
     fn look_for_background(&self, now: Instant) {
@@ -2271,9 +2430,35 @@ impl Tasks {
     }
 
     pub fn end_agent(self: &Rc<Self>, pane: &str, agent: &str, then: impl FnOnce(Option<String>) + 'static) {
+        self.end_agent_then(pane, agent, vec![Box::new(then)]);
+    }
+
+    pub fn end_agent_after_turn(self: &Rc<Self>, pane: &str, agent: &str, then: impl FnOnce(Option<String>) + 'static) {
         let Some(core) = self.core.upgrade().filter(|core| alive(core, pane)) else { return then(None) };
         if let Some(quitting) = self.quitting.borrow_mut().get_mut(pane) {
             return quitting.then.push(Box::new(then));
+        }
+        if let Some(finishing) = self.finishing.borrow_mut().get_mut(pane) {
+            return finishing.then.push(Box::new(then));
+        }
+        let Some(status) = core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse) else { return self.end_agent(pane, agent, then) };
+        self.turns.borrow_mut().remove(pane);
+        let now = Instant::now();
+        let by = now + if status == Status::Idle { QUIT_WAIT } else { TURN_WAIT };
+        let agent = kanna_detect::program::known_agent(program(agent)).unwrap_or(program(agent)).to_string();
+        log!("kanna-daemon: {agent} in {pane} ends its own task, so it quits when its turn ends");
+        self.finishing.borrow_mut().insert(pane.to_string(), Finishing { agent, turn: Turn::underway(), by, then: vec![Box::new(then)] });
+    }
+
+    fn end_agent_then(self: &Rc<Self>, pane: &str, agent: &str, mut then: Vec<Then>) {
+        if let Some(finishing) = self.finishing.borrow_mut().remove(pane) {
+            then.extend(finishing.then);
+        }
+        let Some(core) = self.core.upgrade().filter(|core| alive(core, pane)) else {
+            return then.into_iter().for_each(|then| then(None));
+        };
+        if let Some(quitting) = self.quitting.borrow_mut().get_mut(pane) {
+            return quitting.then.extend(then);
         }
         self.turns.borrow_mut().remove(pane);
         let known = kanna_detect::program::known_agent(program(agent));
@@ -2281,19 +2466,56 @@ impl Tasks {
         let keys = quit.as_ref().map_or(vec![], |q| q.keys.clone());
         let agent = known.unwrap_or(program(agent)).to_string();
         let none = keys.is_empty();
-        let idle = core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse) == Some(Status::Idle);
-        let exit = quit.as_ref().and_then(|q| q.exit.as_ref()).filter(|_| idle && !none).map(|exit| exit.text.clone());
-        let (keys, fallback) = if exit.is_some() { (vec![], keys) } else { (keys, vec![]) };
+        let status = core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse);
+        let exit = quit.as_ref().and_then(|q| q.exit.as_ref()).filter(|_| !none).map(|exit| exit.text.clone());
+        let rest = quit.as_ref().and_then(|q| q.rest.clone()).filter(|_| exit.is_some() && matches!(status, Some(Status::Working | Status::NeedsYou)));
+        let exit = exit.filter(|_| status == Some(Status::Idle));
+        let (keys, fallback) = if exit.is_some() || rest.is_some() { (vec![], keys) } else { (keys, vec![]) };
         let now = Instant::now();
         let look = exit.is_some().then_some(now + LOOK_EVERY);
-        self.quitting.borrow_mut().insert(pane.to_string(), Quitting { agent: agent.clone(), by: now + QUIT_WAIT, quit, hung_up: none, fallback, look, looked_by: now + LOOK_WAIT, keys, next: None, then: vec![Box::new(then)] });
+        let resting = rest.is_some();
+        let rest = rest.map(|key| (key, now));
+        self.quitting.borrow_mut().insert(pane.to_string(), Quitting { agent: agent.clone(), by: now + QUIT_WAIT, quit, hung_up: none, fallback, rest, look, looked_by: now + LOOK_WAIT, keys, next: None, then });
         if none {
             log!("kanna-daemon: {agent} in {pane} has no quit keys, so it's hung up");
             return core.end(pane, |_| {});
         }
         match exit {
             Some(text) => self.type_quit(pane, &agent, "send", json!({ "pane": pane, "text": text, "enter": false })),
+            None if resting => self.rest(pane),
             None => self.press(pane),
+        }
+    }
+
+    fn rest(self: &Rc<Self>, pane: &str) {
+        let Some(core) = self.core.upgrade() else { return };
+        let idle = core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse) == Some(Status::Idle);
+        let now = Instant::now();
+        let (agent, key, exit) = {
+            let mut quitting = self.quitting.borrow_mut();
+            let Some(q) = quitting.get_mut(pane) else { return };
+            let Some((key, at)) = q.rest.as_mut() else { return };
+            if !idle {
+                *at = now + REST_EVERY;
+                (q.agent.clone(), Some(key.clone()), None)
+            } else {
+                q.rest = None;
+                q.look = Some(now + LOOK_EVERY);
+                q.looked_by = now + LOOK_WAIT;
+                q.by = now + QUIT_WAIT;
+                (q.agent.clone(), None, q.quit.as_ref().and_then(|quit| quit.exit.as_ref()).map(|exit| exit.text.clone()))
+            }
+        };
+        match (key, exit) {
+            (Some(key), _) => {
+                log!("kanna-daemon: {agent} in {pane} isn't at rest, so it gets {key}");
+                self.type_quit(pane, &agent, "send-key", json!({ "pane": pane, "keys": [key] }))
+            }
+            (None, Some(text)) => {
+                log!("kanna-daemon: {agent} in {pane} is at rest, so it's told to exit");
+                self.type_quit(pane, &agent, "send", json!({ "pane": pane, "text": text, "enter": false }))
+            }
+            (None, None) => {}
         }
     }
 
@@ -2361,12 +2583,12 @@ impl Tasks {
         });
     }
 
-    fn quitted(self: &Rc<Self>, pane: &str, quitting: Quitting) {
+    fn quitted(self: &Rc<Self>, pane: &str, quit: Option<Quit>, then: Vec<Then>) {
         let Some(core) = self.core.upgrade() else { return };
         core.handle(json!({ "cmd": "read", "args": { "pane": pane } }), move |reply| {
             let text = string(&reply, "text").unwrap_or_default();
-            let session = quitting.quit.as_ref().and_then(|q| q.session_in(text));
-            for then in quitting.then {
+            let session = quit.as_ref().and_then(|q| q.session_in(text));
+            for then in then {
                 then(session.clone());
             }
         });
@@ -2420,6 +2642,9 @@ impl Tasks {
     }
 
     fn fill(self: &Rc<Self>, core: &CoreHandle) {
+        if self.moving_instance.borrow().is_some() {
+            return;
+        }
         self.adopt();
         let entries = self.entries.borrow().clone();
         let machines = self.machines();
@@ -2430,73 +2655,92 @@ impl Tasks {
         let mut asked: HashSet<String> = asking.iter().map(|(_, task)| task.clone()).collect();
         self.refused.borrow_mut().retain(|_, until| *until > now);
         let heard = self.heard_from_all(&machines);
+        let total = machine_runners(&my_config());
+        let taken: Vec<&str> = entries.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).map(|e| e.repo.as_str()).chain(asking.iter().map(|(repo, _)| repo.as_str())).collect();
+        let mut busy = taken.len();
+        let mut limits: HashMap<String, (usize, usize)> = HashMap::new();
+        let mut queue: Vec<(Hlc, String, Candidate)> = Vec::new();
         for repo in repos {
             let slots = runners(&config_files(Path::new(&repo)));
             if slots == 0 || self.placed(&repo).is_err() {
                 continue;
             }
             let mine: Vec<&Entry> = entries.iter().filter(|e| e.repo == repo).collect();
-            let mut busy = mine.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).count() + asking.iter().filter(|(r, _)| *r == repo).count();
-            for candidate in self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now) {
-                if busy >= slots && !self.told_by_you(&candidate) {
-                    continue;
+            let waiting = self.candidates(core, &repo, &mine, &starting, &machines, heard, &asked, now);
+            queue.extend(waiting.into_iter().map(|(born, candidate)| (born, repo.clone(), candidate)));
+            limits.insert(repo.clone(), (taken.iter().filter(|r| **r == repo).count(), slots));
+        }
+        queue.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, repo, candidate) in queue {
+            if matches!(&candidate, Candidate::There { task, .. } | Candidate::Take { task, .. } if asked.contains(task)) {
+                continue;
+            }
+            let Some((in_repo, slots)) = limits.get_mut(&repo) else { continue };
+            if (busy >= total || *in_repo >= *slots) && !self.told_by_you(&candidate) {
+                continue;
+            }
+            busy += 1;
+            *in_repo += 1;
+            match candidate {
+                Candidate::Wake(entry) => {
+                    log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {total} here, {repo})", entry.id);
+                    self.wake(core, entry, "message");
                 }
-                busy += 1;
-                match candidate {
-                    Candidate::Wake(entry) => {
-                        log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {slots} in {repo})", entry.id);
-                        self.wake(core, entry);
-                    }
-                    Candidate::Here(entry) => {
-                        let (this, id) = (Rc::downgrade(self), entry.id.clone());
-                        log!("kanna-daemon: {id} runs on the Shelf ({busy} of {slots} in {repo})");
-                        self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
-                            if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                                log!("kanna-daemon: {id} couldn't run on the Shelf: {}", error.message);
-                                if error.code != "conflict" {
-                                    this.failed.borrow_mut().insert(id);
-                                }
+                Candidate::Resume(entry) => {
+                    log!("kanna-daemon: {}'s agent ended with the keeper, so it runs on the Shelf again ({busy} of {total} here, {repo})", entry.id);
+                    self.wake(core, entry, KEEPER_LOST);
+                }
+                Candidate::Here(entry) => {
+                    let (this, id) = (Rc::downgrade(self), entry.id.clone());
+                    log!("kanna-daemon: {id} runs on the Shelf ({busy} of {total} here, {repo})");
+                    self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+                        if let (Err(error), Some(this)) = (result, this.upgrade()) {
+                            log!("kanna-daemon: {id} couldn't run on the Shelf: {}", error.message);
+                            if error.code != "conflict" {
+                                this.failed.borrow_mut().insert(id);
                             }
-                        })));
-                    }
-                    Candidate::There { task, birth, owner } => {
-                        log!("kanna-daemon: asks {} for {task} ({busy} of {slots} in {repo})", machines.name_of(&owner));
-                        asked.insert(task.clone());
-                        let args = json!({ "action": "ask", "task": task, "birth": birth });
-                        self.send_to(&owner.clone(), args, Asked::Ask { task, birth, owner, repo: repo.clone() });
-                    }
-                    Candidate::Take { task, birth, owner } => {
-                        log!("kanna-daemon: {task}'s owner {} has been away {}s, so it runs here ({busy} of {slots} in {repo})", machines.name_of(&owner), takeover_after().as_secs());
-                        asked.insert(task.clone());
-                        if let Err(error) = self.replica.borrow_mut().take(&self.db, &task, &birth, &owner) {
-                            log!("kanna-daemon: couldn't take {task}: {error}");
-                            continue;
                         }
-                        self.sync_at.set(Instant::now());
-                        self.adopt();
-                        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == task).cloned() else { continue };
-                        let this = Rc::downgrade(self);
-                        self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
-                            if let (Err(error), Some(this)) = (result, this.upgrade()) {
-                                log!("kanna-daemon: {task} couldn't run on the Shelf: {}", error.message);
-                                this.failed.borrow_mut().insert(task);
-                            }
-                        })));
+                    })));
+                }
+                Candidate::There { task, birth, owner } => {
+                    log!("kanna-daemon: asks {} for {task} ({busy} of {total} here, {repo})", machines.name_of(&owner));
+                    asked.insert(task.clone());
+                    let args = json!({ "action": "ask", "task": task, "birth": birth });
+                    self.send_to(&owner.clone(), args, Asked::Ask { task, birth, owner, repo: repo.clone() });
+                }
+                Candidate::Take { task, birth, owner } => {
+                    log!("kanna-daemon: {task}'s owner {} has been away {}s, so it runs here ({busy} of {total} here, {repo})", machines.name_of(&owner), takeover_after().as_secs());
+                    asked.insert(task.clone());
+                    if let Err(error) = self.replica.borrow_mut().take(&self.db, &task, &birth, &owner) {
+                        log!("kanna-daemon: couldn't take {task}: {error}");
+                        continue;
                     }
+                    self.sync_at.set(Instant::now());
+                    self.adopt();
+                    let Some(entry) = self.entries.borrow().iter().find(|e| e.id == task).cloned() else { continue };
+                    let this = Rc::downgrade(self);
+                    self.prepare(entry, None, Some("daemon".into()), Answer::Then(Box::new(move |result| {
+                        if let (Err(error), Some(this)) = (result, this.upgrade()) {
+                            log!("kanna-daemon: {task} couldn't run on the Shelf: {}", error.message);
+                            this.failed.borrow_mut().insert(task);
+                        }
+                    })));
                 }
             }
         }
     }
 
-    fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<Candidate> {
+    fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<(Hlc, Candidate)> {
         let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
-        let woken = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
+        let lost = |e: &Entry| e.stopped.is_none() && e.held.as_deref().is_some_and(|pane| core.pane(pane).is_some_and(|p| p.lost()));
+        let resumed = mine.iter().filter(|e| lost(e) && e.queued.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Resume((*e).clone())));
+        let woken = mine.iter().filter(|e| !lost(e) && e.queued.is_none() && mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
         let new = mine
             .iter()
             .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
             .filter(|e| heard || e.birth.is_none() || e.on == [machines.me.name.clone()])
             .map(|e| (order(e), Candidate::Here((*e).clone())));
-        let mut waiting: Vec<(Hlc, Candidate)> = woken.chain(new).collect();
+        let mut waiting: Vec<(Hlc, Candidate)> = resumed.chain(woken).chain(new).collect();
         let others = || {
             let replica = self.replica.borrow();
             let any = replica.records().any(|r| r.text("state") == Some("waiting") && r.text("owner").is_some_and(|o| o != replica.me()));
@@ -2524,8 +2768,7 @@ impl Tasks {
                 }
             }
         }
-        waiting.sort_by(|a, b| a.0.cmp(&b.0));
-        waiting.into_iter().map(|(_, candidate)| candidate).collect()
+        waiting
     }
 
     fn told_by_you(&self, candidate: &Candidate) -> bool {
@@ -2533,11 +2776,27 @@ impl Tasks {
         self.waiting.borrow().iter().any(|m| m.recipient == entry.id && (m.sender == USER || m.sender == PHONE))
     }
 
-    fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
+    pub fn resume_lost(self: &Rc<Self>) {
+        let Some(core) = self.core.upgrade() else { return };
+        let lost: Vec<Running> = self.running.borrow().iter().filter(|r| core.pane(&r.pane).is_some_and(|p| p.lost())).cloned().collect();
+        for Running { pane, entry, .. } in lost {
+            log!("kanna-daemon: {}'s agent in {pane} ended with the keeper, so it resumes its conversation", entry.id);
+            self.resumed(entry, move |tasks, entry| {
+                let (this, id) = (Rc::downgrade(tasks), entry.id.clone());
+                tasks.revive(&pane, Some(tasks.again(&entry)), move |result| match (result, this.upgrade()) {
+                    (Ok(pane), Some(this)) => this.note(&pane, Change::new("started").by(Some("daemon")).with("why", json!(KEEPER_LOST))),
+                    (Err(error), _) => log!("kanna-daemon: {id} couldn't resume after the keeper was lost: {}", error.message),
+                    _ => {}
+                });
+            });
+        }
+    }
+
+    fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry, why: &'static str) {
         let id = entry.id.clone();
         let this = Rc::downgrade(self);
         let failed = move |error: KmuxError| {
-            log!("kanna-daemon: {id} couldn't run for its message: {}", error.message);
+            log!("kanna-daemon: {id} couldn't run ({why}): {}", error.message);
             if let Some(this) = this.upgrade() {
                 this.failed.borrow_mut().insert(id);
             }
@@ -2549,10 +2808,11 @@ impl Tasks {
                 this.revive(&pane, Some(this.again(&entry)), move |result| {
                     let Some(this) = weak.upgrade() else { return };
                     this.launching.borrow_mut().remove(&id);
+                    this.settled(&id);
                     match result {
                         Ok(pane) => {
                             this.restarted(&pane);
-                            this.note(&pane, Change::new("started").by(Some("daemon")).with("why", json!("message")));
+                            this.note(&pane, Change::new("started").by(Some("daemon")).with("why", json!(why)));
                         }
                         Err(error) => failed(error),
                     }
@@ -2627,6 +2887,7 @@ impl Tasks {
         core.add_command(
             "replica",
             Rc::new(move |args, responder| match this.upgrade() {
+                Some(this) if this.holds_for_move(&args) => responder.reply(Err(this.moving_refusal())),
                 Some(this) if string(&args, "action") == Some("transfer") => this.take_transfer(&args, responder),
                 Some(this) => responder.reply(this.replica_command(&args)),
                 None => responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))),
@@ -2645,12 +2906,16 @@ impl Tasks {
                         Err(error) => return responder.reply(Err(error)),
                     }
                 }
+                if this.blocked_by_move(&args) {
+                    return responder.reply(Err(this.moving_refusal()));
+                }
                 match args.get("action").and_then(Value::as_str) {
                     Some("new") => this.adding(args, responder),
                     Some("resolve") => responder.reply(this.find(&args)),
+                    Some("locate") => responder.reply(this.locate(&args)),
+                    Some("sender") => responder.reply(this.sending_as(&args)),
                     Some("edit") => responder.reply(this.edit(&args)),
                     Some("ready") => this.mark_ready(args, responder),
-                    Some("unready") => responder.reply(this.unmark(&args)),
                     Some("name") => this.name(&args, responder),
                     Some("list") => this.listed(&args, responder),
                     Some("done") => this.done(&args, responder),
@@ -2673,7 +2938,7 @@ impl Tasks {
                     Some("subscribe") => responder.reply(this.subscribe(&args, true)),
                     Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
                     Some("hearing") => responder.reply(this.hearing(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, unready, name, list, show, resolve, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -2892,7 +3157,51 @@ impl Tasks {
         Ok(Map::from_iter([("task".to_string(), json!(id)), ("events".to_string(), Value::Array(events))]))
     }
 
+    fn locate(&self, args: &Value) -> Result<Map, KmuxError> {
+        let reference = string(args, "task").ok_or_else(|| bad("say which task or pane"))?;
+        let roster = self.machines();
+        let mut out = Map::from_iter([("me".to_string(), json!(roster.me.name))]);
+        if let Some(pane) = self.core.upgrade().and_then(|core| core.pane(reference)) {
+            out.insert("pane".into(), json!(pane.id));
+            return Ok(out);
+        }
+        let Some(id) = self.resolve(reference)? else { return Ok(out) };
+        let task = |name: Option<String>| json!({ "id": id, "short": self.short(&id), "name": opt(name.as_deref()) });
+        if self.is_open(&id) {
+            let (_, name, pane) = self.about(&id)?;
+            out.insert("task".into(), task(name));
+            out.insert("pane".into(), opt(pane.as_deref()));
+            return Ok(out);
+        }
+        let replica = self.replica.borrow();
+        let Some(record) = replica.births(&id).into_iter().find(|r| r.text("state").is_some_and(|s| s != "done")) else {
+            drop(replica);
+            out.insert("task".into(), task(self.known(&id).and_then(|e| e.name)));
+            out.insert("done".into(), json!(true));
+            return Ok(out);
+        };
+        let owner = record.text("owner").unwrap_or_default().to_string();
+        out.insert("task".into(), task(record.text("name").map(String::from)));
+        drop(replica);
+        if owner.is_empty() || owner == roster.me.key {
+            out.insert("pane".into(), Value::Null);
+            return Ok(out);
+        }
+        out.insert("machine".into(), json!(roster.name_of(&owner)));
+        let peer = roster.peers.iter().find(|p| p.key == owner);
+        out.insert("host".into(), opt(peer.map(|p| if p.name.is_empty() { p.key.as_str() } else { p.name.as_str() })));
+        Ok(out)
+    }
+
+    fn sending_as(&self, args: &Value) -> Result<Map, KmuxError> {
+        let (from, repo) = self.sender(args);
+        Ok(Map::from_iter([("from".to_string(), json!(from)), ("repo".to_string(), opt(repo.as_deref()))]))
+    }
+
     pub fn sender(&self, args: &Value) -> (String, Option<String>) {
+        if let Some(from) = string(args, "sender").filter(|from| db::is_task_id(from) || *from == PLANNER) {
+            return (from.to_string(), string(args, "repo").map(String::from));
+        }
         let Some(pane) = who(args) else { return (USER.into(), None) };
         if let Some(id) = self.task_of(pane) {
             let repo = self.known(&id).map(|e| e.repo);
@@ -3122,7 +3431,7 @@ impl Tasks {
             }
         }
         for (pane, list) in by_pane {
-            if self.delivering.borrow().contains(&pane) || self.quitting.borrow().contains_key(&pane) || self.setting_up.borrow().contains_key(&pane) {
+            if self.delivering.borrow().contains(&pane) || self.quitting.borrow().contains_key(&pane) || self.finishing.borrow().contains_key(&pane) || self.setting_up.borrow().contains_key(&pane) {
                 continue;
             }
             let Some(ready) = self.ready.borrow().get(&pane).copied() else { continue };
@@ -3480,15 +3789,18 @@ impl Tasks {
         let core = self.core.upgrade();
         let entries = self.entries.borrow().clone();
         let replied: HashSet<String> = self.waiting.borrow().iter().filter(|m| m.recipient == PLANNER).map(|m| m.sender.clone()).collect();
+        let mut merging: Vec<Value> = entries.iter().filter(|e| e.queued.is_some() && repo.is_none_or(|r| e.repo == r)).map(|e| self.described(e)).collect();
+        merging.sort_by_key(|v| v["queue"]["position"].as_u64().unwrap_or(u64::MAX));
         let tasks = entries
             .iter()
-            .filter(|e| repo.is_none_or(|r| e.repo == r))
+            .filter(|e| repo.is_none_or(|r| e.repo == r) && e.queued.is_none())
             .map(|e| {
                 let mut value = self.described(e);
                 let pane = e.held.as_deref().zip(core.as_ref()).and_then(|(pane, core)| core.pane(pane).map(|p| (alive(core, pane), p)));
                 value["running"] = json!(pane.as_ref().is_some_and(|(running, _)| *running));
                 value["status"] = opt(pane.as_ref().and_then(|(_, p)| p.status()));
                 value["replied"] = json!(replied.contains(&e.id));
+                value["run"] = opt(self.run_stage(&e.id).as_deref());
                 value
             })
             .collect();
@@ -3500,6 +3812,7 @@ impl Tasks {
             .map(|r| {
                 let mut value = json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id), "branch": opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()) });
                 self.stack_fields(&r.entry, &mut value);
+                value["run"] = opt(self.run_stage(&r.entry.id).as_deref());
                 value
             })
             .collect();
@@ -3519,17 +3832,24 @@ impl Tasks {
         let replica = self.replica.borrow();
         let mut records: Vec<&replica::Record> = replica
             .records()
-            .filter(|r| r.text("state").is_some_and(|s| s != "done") && r.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&r.task))
+            .filter(|r| self.runs_elsewhere(r))
             .filter(|r| repo.is_none() || (project.is_some() && r.text("project") == project.as_deref()))
             .collect();
         records.sort_by_key(|r| r.born());
-        let elsewhere = records
+        let row = |r: &replica::Record| {
+            let mut value = r.to_value();
+            value["id"] = json!(r.task);
+            value["machine"] = json!(machines.name_of(r.text("owner").unwrap_or_default()));
+            value["madeAt"] = num(r.born().ms as f64 / 1000.0);
+            value
+        };
+        let (mine, others): (Vec<&replica::Record>, Vec<&replica::Record>) = records.into_iter().partition(|r| r.text("claim") == Some(machines.me.name.as_str()));
+        let elsewhere = others.into_iter().map(row).collect();
+        let claimed = mine
             .into_iter()
             .map(|r| {
-                let mut value = r.to_value();
-                value["id"] = json!(r.task);
-                value["machine"] = json!(machines.name_of(r.text("owner").unwrap_or_default()));
-                value["madeAt"] = num(r.born().ms as f64 / 1000.0);
+                let mut value = row(r);
+                value["leftAt"] = r.since("claim").map_or(Value::Null, |at| num((at.ms / 1000) as f64));
                 value
             })
             .collect();
@@ -3538,13 +3858,23 @@ impl Tasks {
             .filter(|r| r.runs().len() > 1 && r.text("state") != Some("done"))
             .map(|r| (r.task.clone(), json!(r.runs().into_iter().map(|device| machines.name_of(device)).collect::<Vec<_>>())))
             .collect();
-        let mut reply = Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("agent".to_string(), json!(agent)), ("elsewhere".to_string(), Value::Array(elsewhere)), ("twice".to_string(), Value::Object(twice))]);
+        let mut reply = Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("agent".to_string(), json!(agent)), ("elsewhere".to_string(), Value::Array(elsewhere)), ("claimed".to_string(), Value::Array(claimed)), ("twice".to_string(), Value::Object(twice)), ("merging".to_string(), Value::Array(merging))]);
         if args.get("done").and_then(Value::as_bool) == Some(true) {
             let done = self.db.done_tasks().unwrap_or_else(|error| {
                 eprintln!("kanna-daemon: can't read the done tasks in {}: {error}", db::FILE);
                 vec![]
             });
             let open = self.open_tasks();
+            let finished_elsewhere = |id: &str| replica.births(id).into_iter().filter(|r| r.text("state") == Some("done")).filter_map(|r| r.written("state")).map(|at| at.ms as f64 / 1000.0).reduce(f64::max);
+            let mut done: Vec<(db::Row, f64)> = done
+                .into_iter()
+                .filter(|(row, _)| !replica.births(&row.id).into_iter().any(|r| self.runs_elsewhere(r)))
+                .map(|(row, at)| {
+                    let at = at.or_else(|| finished_elsewhere(&row.id)).unwrap_or(row.made_at);
+                    (row, at)
+                })
+                .collect();
+            done.sort_by(|(_, a), (_, b)| b.total_cmp(a));
             let ids: Vec<&str> = open.iter().map(|e| e.id.as_str()).chain(done.iter().map(|(row, _)| row.id.as_str())).collect();
             let done = done
                 .iter()
@@ -3596,6 +3926,10 @@ impl Tasks {
         }
     }
 
+    fn unanswered(&self) -> Responder {
+        kanna_mux::responder().0
+    }
+
     fn take(&self, id: &str) -> Option<Entry> {
         let mut entries = self.entries.borrow_mut();
         let at = entries.iter().position(|e| e.id == id)?;
@@ -3624,6 +3958,16 @@ impl Tasks {
         if let Some(pane) = pane.clone().filter(|pane| alive(&core, pane)) {
             let agent = entry.as_ref().map_or_else(|| core.pane(&pane).and_then(|p| p.command).unwrap_or_default(), |e| e.agent.clone());
             let (this, args) = (Rc::downgrade(self), args.clone());
+            if by.as_deref() == Some(pane.as_str()) {
+                let task = entry.as_ref().map_or_else(|| pane.clone(), |e| self.short(&e.id));
+                responder.reply(Ok(Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("after_turn".to_string(), json!(true))])));
+                let responder = self.unanswered();
+                return self.end_agent_after_turn(&pane.clone(), &agent, move |session| {
+                    let Some(this) = this.upgrade() else { return };
+                    this.keep_session(&pane, session);
+                    this.done(&args, responder)
+                });
+            }
             return self.end_agent(&pane.clone(), &agent, move |session| {
                 let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
                 this.keep_session(&pane, session);
@@ -3667,7 +4011,7 @@ impl Tasks {
         if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()).with("branch", opt(entry.folder.as_deref().and_then(branch_of).as_deref())))) {
             return responder.reply(Err(error));
         }
-        self.tell_planner(&entry, What::Ended { on_desk: false }, by.as_deref());
+        self.tell_planner(&entry, if entry.queued.is_some() { What::Landed } else { What::Ended { on_desk: false } }, by.as_deref());
         let short = self.short(&entry.id);
         self.take(&entry.id);
         if let Some(pane) = &entry.held {
@@ -3977,14 +4321,28 @@ impl Tasks {
 
     fn pick(self: &Rc<Self>, args: &Value, responder: Responder) {
         let Some(id) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
-        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(id))) };
-        if self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
-            return responder.reply(Err(bad(format!("{id} is starting"))));
+        let app = string(args, "desk").map(|desk| self.app_of(desk)).or_else(|| string(args, "app").map(String::from)).unwrap_or_else(|| self.claimant.borrow().clone());
+        let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else {
+            let on_desk = self.running.borrow().iter().find(|r| r.entry.id == id && r.place == Place::Desk).map(|r| (r.pane.clone(), r.entry.clone()));
+            let Some((pane, entry)) = on_desk else { return responder.reply(Err(not_found(id))) };
+            let desk = self.desk_of(&app);
+            if entry.claim.as_deref() == Some(desk.as_str()) {
+                return responder.reply(Ok(Self::reply_out(&entry.id, &pane, entry.folder.as_deref(), Some(&app))));
+            }
+            let mut args = args.clone();
+            args["desk"] = json!(desk);
+            return self.hold(pane, entry, Place::Desk, who(&args).map(String::from), false, move |this, held| match held {
+                Ok(_) => this.pick(&args, responder),
+                Err(error) => responder.reply(Err(error)),
+            });
+        };
+        if self.is_starting(&entry.id) {
+            let args = args.clone();
+            return self.once_started.borrow_mut().entry(entry.id).or_default().push(Box::new(move |this| this.pick(&args, responder)));
         }
         if let Err(error) = self.startable(&entry) {
             return responder.reply(Err(error));
         }
-        let app = string(args, "desk").map(|desk| self.app_of(desk)).or_else(|| string(args, "app").map(String::from)).unwrap_or_else(|| self.claimant.borrow().clone());
         let freed = string(args, "room").map(String::from);
         self.room(entry, app, who(args).map(String::from), freed, Answer::To(responder));
     }
@@ -3995,7 +4353,7 @@ impl Tasks {
         let by = who(args).map(String::from);
         let found = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
         if let Some(entry) = found {
-            if self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
+            if self.is_starting(&entry.id) {
                 return responder.reply(Err(bad(format!("{reference} is starting"))));
             }
             if let Err(error) = self.startable(&entry) {
@@ -4067,7 +4425,15 @@ impl Tasks {
                 "idle" => Some("finished"),
                 _ => None,
             });
-            this.end_agent(&pane.clone(), &agent, move |session| {
+            let own = by.as_deref() == Some(pane.as_str());
+            let responder = if own {
+                responder.reply(Ok(Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("place".to_string(), json!(place)), ("after_turn".to_string(), json!(true))])));
+                this.unanswered()
+            } else {
+                responder
+            };
+            let ending = pane.clone();
+            let then = move |session: Option<String>| {
                 let (Some(tasks), Some(core)) = (tasks.upgrade(), weak.upgrade()) else { return responder.reply(Err(gone())) };
                 tasks.keep_session(&pane, session);
                 if let Some(last) = last {
@@ -4075,10 +4441,18 @@ impl Tasks {
                 }
                 let session = tasks.pane_entry(&pane).and_then(|e| e.session);
                 tasks.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
+                if let (Some(id), Some(on_stop)) = (tasks.task_of(&pane), tasks.on_stop.borrow().as_ref()) {
+                    on_stop(&id);
+                }
                 tasks.refill();
                 let out = Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("place".to_string(), json!(place))]);
                 core.hang_up(&pane.clone(), move |hung_up| responder.reply(hung_up.map(|_| out)));
-            });
+            };
+            if own {
+                this.end_agent_after_turn(&ending, &agent, then)
+            } else {
+                this.end_agent(&ending, &agent, then)
+            }
         };
         if let Some(entry) = found {
             let pane = entry.held.clone().filter(|pane| self.core.upgrade().is_some_and(|core| core.pane(pane).is_some()));
@@ -4119,12 +4493,12 @@ impl Tasks {
         });
     }
 
-    fn revive(&self, pane: &str, command: Option<String>, done: impl FnOnce(Result<String, KmuxError>) + 'static) {
+    fn revive(self: &Rc<Self>, pane: &str, command: Option<String>, done: impl FnOnce(Result<String, KmuxError>) + 'static) {
         let Some(core) = self.core.upgrade() else { return done(Err(gone())) };
         if let Some(command) = command {
             core.set_command(pane, command);
         }
-        let (weak, old) = (core.weak(), pane.to_string());
+        let (weak, old, this) = (core.weak(), pane.to_string(), Rc::downgrade(self));
         core.handle(json!({ "cmd": "restart", "args": { "pane": pane } }), move |reply| {
             if let Some(error) = failed(&reply) {
                 return done(Err(error));
@@ -4134,6 +4508,9 @@ impl Tasks {
             core.wake(&task.clone(), move |woken| {
                 if let Err(error) = woken {
                     log!("kanna-daemon: couldn't start {task}'s terminals again: {}", error.message);
+                }
+                if let Some(this) = this.upgrade() {
+                    this.started_again(&task);
                 }
                 done(Ok(task))
             });
@@ -4516,6 +4893,7 @@ impl Tasks {
 
     pub fn worktree_made(self: &Rc<Self>, token: u64, result: Result<Made, String>) {
         let Some(mut starting) = self.pending.borrow_mut().remove(&token) else { return };
+        self.settled(&starting.entry.id);
         match result {
             Ok(Made::Worktree { folder, branch, bases }) => {
                 (starting.entry.bases, starting.entry.conflict) = (bases, None);
@@ -4549,26 +4927,35 @@ impl Tasks {
         let recorded = self.running.borrow().iter().find(|r| r.pane == pane.id).map(|r| (r.entry.clone(), r.place));
         let Some((entry, from)) = recorded else { return responder.reply(Err(KmuxError::new("not_found", format!("no running task \"{reference}\"")))) };
         let by = who(args).map(String::from);
-        let this = Rc::downgrade(self);
         let id = pane.id.clone();
+        self.hold(id.clone(), entry, from, by, true, move |this, held| {
+            let value = match held {
+                Ok(entry) => entry.to_value(),
+                Err(error) => return responder.reply(Err(error)),
+            };
+            let running = this.core.upgrade().is_some_and(|core| alive(&core, &id));
+            responder.reply(Ok(Map::from_iter([("task".to_string(), value), ("pane".to_string(), json!(id)), ("running".to_string(), json!(running))])));
+        });
+    }
+
+    fn hold(self: &Rc<Self>, id: String, entry: Entry, from: Place, by: Option<String>, tell: bool, then: impl FnOnce(&Rc<Self>, Result<Entry, KmuxError>) + 'static) {
+        let Some(core) = self.core.upgrade() else { return };
+        let this = Rc::downgrade(self);
         core.handle(json!({ "cmd": "task", "args": { "action": "hold", "task": id } }), move |reply| {
             let Some(this) = this.upgrade() else { return };
             if let Some(error) = failed(&reply) {
-                return responder.reply(Err(error));
+                return then(&this, Err(error));
             }
             this.running.borrow_mut().retain(|r| r.pane != id);
             let entry = Entry { held: Some(id.clone()), claim: None, ..entry };
             let change = Change { from: Some(from), to: Some(Place::Shelf), ..Change::new("shelved") }.by(by.as_deref());
             let saved = this.store(&entry, Place::Shelf, Some(&id), Some(change));
-            this.tell_planner(&entry, What::Shelved, by.as_deref());
-            let value = entry.to_value();
-            insert_in_order(&mut this.entries.borrow_mut(), entry);
-            this.changed();
-            if let Err(error) = saved {
-                return responder.reply(Err(error));
+            if tell {
+                this.tell_planner(&entry, What::Shelved, by.as_deref());
             }
-            let running = this.core.upgrade().is_some_and(|core| alive(&core, &id));
-            responder.reply(Ok(Map::from_iter([("task".to_string(), value), ("pane".to_string(), json!(id)), ("running".to_string(), json!(running))])));
+            insert_in_order(&mut this.entries.borrow_mut(), entry.clone());
+            this.changed();
+            then(&this, saved.map(|_| entry));
         });
     }
 
@@ -4577,7 +4964,7 @@ impl Tasks {
         let Starting { entry, app, by, responder } = starting;
         self.launching.borrow_mut().insert(entry.id.clone());
         let name = entry.name.clone().filter(|n| core.pane(n).is_none());
-        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some()) && entry.folder.is_none()).then(uuid).and_then(Result::ok);
+        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some()) && entry.session.is_none()).then(uuid).and_then(Result::ok);
         let first = entry.command(session.as_deref());
         let setup = self.setup_first(&entry, Path::new(&folder), &first);
         let mut args = json!({ "type": "term", "dock": "left", "frozen": true, "task": entry.id, "cwd": folder, "cmd": setup.as_ref().map_or(first, |(command, _)| command.clone()), "wait": false });
@@ -4593,6 +4980,7 @@ impl Tasks {
         core.handle(json!({ "cmd": "open", "args": args }), move |reply| {
             let Some(this) = this.upgrade() else { return };
             this.launching.borrow_mut().remove(&entry.id);
+            this.settled(&entry.id);
             if let Some(error) = failed(&reply) {
                 return responder.reply(Err(error));
             }
@@ -4767,24 +5155,44 @@ impl Tasks {
     fn where_of(&self, base: &Base) -> Where {
         match self.open_tasks().into_iter().find(|e| e.id == base.id).and_then(|e| e.folder) {
             Some(folder) => Where::Folder(PathBuf::from(folder)),
-            None => Where::Branch(self.known(&base.id).and_then(|e| e.ready).map(|m| m.branch).filter(|b| !b.is_empty()).unwrap_or_else(|| base.branch.clone())),
+            None => Where::Branch(self.known(&base.id).and_then(|e| e.claimed).map(|m| m.branch).filter(|b| !b.is_empty()).unwrap_or_else(|| base.branch.clone())),
         }
     }
 
     fn merge_target(&self, id: &str, seen: Option<String>) -> String {
-        let ready = self.known(id).and_then(|e| e.ready).unwrap_or_default();
+        let ready = self.known(id).and_then(|e| e.claimed).unwrap_or_default();
         seen.or(Some(ready.head)).filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_else(|| self.branch_name(id))
     }
 
     fn branch_name(&self, id: &str) -> String {
         let known = self.known(id);
-        let ready = known.as_ref().and_then(|e| e.ready.as_ref()).map(|m| m.branch.clone()).filter(|b| !b.is_empty());
+        let ready = known.as_ref().and_then(|e| e.claimed.as_ref()).map(|m| m.branch.clone()).filter(|b| !b.is_empty());
         ready.or_else(|| known.and_then(|e| e.folder).and_then(|f| branch_of(&f))).filter(|b| b.bytes().all(|c| c.is_ascii_alphanumeric() || b"._/-".contains(&c))).unwrap_or_else(|| id.to_string())
+    }
+
+    pub(super) fn merge_label(&self, entry: &Entry) -> Option<&'static str> {
+        if !entry.stale.is_empty() {
+            return Some("stale");
+        }
+        if !entry.bases.is_empty() {
+            return Some("after");
+        }
+        let claim = entry.claimed.as_ref()?;
+        let merges = self.merges.borrow();
+        let check = merges.get(&entry.id).filter(|c| c.tip == claim.head)?;
+        Some(if check.conflicts.is_empty() { "ready" } else { "conflicts" })
     }
 
     fn stack_fields(&self, entry: &Entry, value: &mut Value) {
         let named = |id: &str| json!({ "id": id, "name": opt(self.known(id).and_then(|e| e.name).as_deref()) });
-        value["ready"] = entry.ready.as_ref().map_or(Value::Null, Mark::to_value);
+        let label = self.merge_label(entry);
+        value["claim"] = entry.claimed.as_ref().map_or(Value::Null, Mark::to_value);
+        value["ready"] = json!(label == Some("ready"));
+        value["merge"] = opt(label);
+        value["mainConflicts"] = match label {
+            Some("conflicts") => self.merges.borrow().get(&entry.id).map_or(Value::Null, |c| json!(c.conflicts)),
+            _ => Value::Null,
+        };
         value["stale"] = Value::Array(entry.stale.iter().map(|id| named(id)).collect());
         value["bases"] = Value::Array(entry.bases.iter().map(|b| {
             let mut base = named(&b.id);
@@ -4844,11 +5252,8 @@ impl Tasks {
                 bases.push(base);
                 continue;
             }
-            if open.iter().any(|e| e.id == base.id && !e.stale.is_empty()) {
-                return Err(KmuxError::new("stale", format!("{} is stale itself: it catches up first, and you get a message when it's ready again", self.label(&base.id))));
-            }
             if !contained {
-                return Err(KmuxError::new("behind", format!("{} isn't in this branch yet: merge it first (git merge {now}), rerun the tests, then mark it ready", self.label(&base.id))));
+                return Err(KmuxError::new("behind", format!("{} isn't in this branch yet: merge it first (git merge {now}), rerun the tests, then run `kanna task ready`", self.label(&base.id))));
             }
             bases.push(Base { head: now, branch: self.branch_name(&base.id), ..base });
         }
@@ -4856,31 +5261,19 @@ impl Tasks {
         let mark = Mark { head: head.clone(), branch: branch.clone(), at: now() };
         let change = Change::new("ready").by(who(args)).with("head", json!(head)).with("branch", json!(branch));
         let entry = self.alter(&id, change, |e| {
-            e.ready = Some(mark.clone());
+            e.claimed = Some(mark.clone());
             e.stale.clear();
             e.bases = bases.clone();
         }).ok_or_else(|| not_found(reference))?;
         log!("kanna-daemon: {id} is ready at {head}");
-        let behind: Vec<String> = self.open_tasks().into_iter().filter(|e| !e.stale.is_empty() && e.bases.iter().any(|b| b.id == id)).map(|e| e.id).collect();
+        let behind: Vec<String> = self.open_tasks().into_iter().filter(|e| e.stale.contains(&id)).map(|e| e.id).collect();
         for task in behind {
-            self.emit(&task, TaskEvent::BaseMoved, format!("{} is ready again: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready set`.", self.label(&id)), None);
+            self.emit(&task, TaskEvent::BaseMoved, format!("{} is ready again at a new commit: merge it into your branch (git merge {head}), rerun the tests, then run `kanna task ready`.", self.label(&id)), None);
         }
         let freed: Vec<Value> = blocked.iter().filter_map(|e| self.known(&e.id)).filter(|e| self.waits(e).is_empty()).map(|e| json!({ "id": e.id, "name": opt(e.name.as_deref()) })).collect();
         self.changed();
         self.refill();
         Ok(Map::from_iter([("task".to_string(), self.described(&entry)), ("freed".to_string(), Value::Array(freed))]))
-    }
-
-    fn unmark(&self, args: &Value) -> Result<Map, KmuxError> {
-        let reference = string(args, "task").ok_or_else(|| bad("say which task"))?;
-        let id = self.resolve(reference)?.ok_or_else(|| not_found(reference))?;
-        let entry = self.open_tasks().into_iter().find(|e| e.id == id).ok_or_else(|| KmuxError::new("done", format!("{} is done", self.short(&id))))?;
-        let entry = match entry.ready {
-            None => entry,
-            Some(_) => self.alter(&id, Change::new("unready").by(who(args)).with("why", json!("cleared")), |e| e.ready = None).ok_or_else(|| not_found(reference))?,
-        };
-        self.changed();
-        Ok(Map::from_iter([("task".to_string(), self.described(&entry))]))
     }
 
     fn follow(&self) {
@@ -4925,7 +5318,7 @@ impl Tasks {
         let mut probes: Vec<task_events::Probe> = vec![];
         for entry in self.open_tasks() {
             let Some(folder) = entry.folder.clone() else { continue };
-            let task = task_events::TaskProbe { id: entry.id.clone(), folder: PathBuf::from(folder), conflicts: hears_conflicts(&entry), commits: entry.hears.hears(TaskEvent::MainMoved) };
+            let task = task_events::TaskProbe { id: entry.id.clone(), folder: PathBuf::from(folder), conflicts: hears_conflicts(&entry), commits: entry.hears.hears(TaskEvent::MainMoved), checked: self.merges.borrow().get(&entry.id).cloned() };
             match probes.iter_mut().find(|p| p.repo == Path::new(&entry.repo)) {
                 Some(probe) => probe.tasks.push(task),
                 None => probes.push(task_events::Probe { repo: PathBuf::from(&entry.repo), last: self.last_main(&entry.repo), tasks: vec![task] }),
@@ -4939,7 +5332,17 @@ impl Tasks {
     }
 
     fn listened(&self, seen: Vec<task_events::Seen>) {
-        let moved = seen.iter().any(|repo| !repo.tasks.is_empty());
+        let before: Vec<(String, Option<&'static str>)> = self.open_tasks().iter().map(|e| (e.id.clone(), self.merge_label(e))).collect();
+        for (id, check) in seen.iter().flat_map(|repo| repo.checks.iter()) {
+            match check {
+                Some(check) => self.merges.borrow_mut().insert(id.clone(), check.clone()),
+                None => self.merges.borrow_mut().remove(id),
+            };
+        }
+        let open: HashSet<String> = self.open_tasks().into_iter().map(|e| e.id).collect();
+        self.merges.borrow_mut().retain(|id, _| open.contains(id));
+        let relabelled = self.open_tasks().iter().any(|e| before.iter().find(|(id, _)| *id == e.id).is_none_or(|(_, was)| *was != self.merge_label(e)));
+        let moved = relabelled || seen.iter().any(|repo| !repo.tasks.is_empty());
         for repo in seen {
             let key = repo.repo.to_string_lossy().into_owned();
             if self.last_main(&key).as_ref() != Some(&repo.main) {
@@ -5039,7 +5442,7 @@ impl Tasks {
     fn probes(&self) -> Vec<stacks::Probe> {
         self.open_tasks()
             .into_iter()
-            .filter(|e| e.ready.is_some() || !e.bases.is_empty())
+            .filter(|e| e.claimed.is_some() || !e.bases.is_empty() || !e.stale.is_empty())
             .filter_map(|e| {
                 let folder = e.folder.clone()?;
                 Some(stacks::Probe { id: e.id.clone(), repo: PathBuf::from(&e.repo), at: Where::Folder(PathBuf::from(folder)), bases: e.bases.iter().map(|b| (b.clone(), self.where_of(b))).collect() })
@@ -5056,7 +5459,7 @@ impl Tasks {
     }
 
     fn settle(&self, seen: Vec<stacks::Seen>) {
-        let tasks: Vec<stacks::Task> = self.open_tasks().into_iter().map(|e| stacks::Task { id: e.id, ready: e.ready, bases: e.bases, stale: e.stale }).collect();
+        let tasks: Vec<stacks::Task> = self.open_tasks().into_iter().map(|e| stacks::Task { id: e.id, claimed: e.claimed, bases: e.bases, stale: e.stale }).collect();
         let steps = stacks::settle(&tasks, &seen);
         if steps.is_empty() {
             return;
@@ -5064,37 +5467,32 @@ impl Tasks {
         for step in steps {
             match step {
                 Step::Unready { id } => {
-                    log!("kanna-daemon: {id}'s branch moved, so it isn't ready");
-                    self.alter(&id, Change::new("unready").by(Some("daemon")).with("why", json!("moved")), |e| e.ready = None);
+                    log!("kanna-daemon: {id}'s branch moved, so its claim is gone");
+                    self.alter(&id, Change::new("unready").by(Some("daemon")).with("why", json!("moved")), |e| e.claimed = None);
                 }
                 Step::Merged { id, base, main } => {
                     log!("kanna-daemon: {base}'s work is in main, so {id} isn't stacked on it");
                     let Some(left) = self.alter(&id, Change::new("base merged").by(Some("daemon")).with("base", json!(base)), |e| e.bases.retain(|b| b.id != base)) else { continue };
                     let main = main.unwrap_or_else(|| "main".into());
                     let rest = match left.bases.is_empty() {
-                        true => format!(" Nothing you build on is outside {main} now: you're an ordinary task again, and can merge into {main} once you're done."),
+                        true => format!(" Nothing you build on is outside {main} now: you can merge into {main} once you're done."),
                         false => format!(" You still merge after {}.", left.bases.iter().map(|b| self.label(&b.id)).collect::<Vec<_>>().join(", ")),
                     };
-                    self.emit(&id, TaskEvent::BaseMerged, format!("{}'s work is in {main} now: merge {main} into your branch (git merge {main}).{rest}", self.label(&base)), None);
+                    self.emit(&id, TaskEvent::BaseMerged, format!("{}'s work is in {main} now.{rest}", self.label(&base)), None);
                 }
-                Step::Stale { id, behind, waiting } => {
-                    log!("kanna-daemon: {id} is stale: behind {behind:?}, on stale {waiting:?}");
-                    let all: Vec<String> = behind.iter().chain(waiting.iter()).cloned().collect();
-                    self.alter(&id, Change::new("stale").by(Some("daemon")).with("behind", json!(all)), |e| {
-                        e.ready = None;
-                        e.stale = all.clone();
-                    });
-                    let mut said = vec![];
-                    if !behind.is_empty() {
-                        let names: Vec<String> = behind.iter().map(|b| self.label(b)).collect();
-                        let merges: Vec<String> = behind.iter().map(|b| format!("git merge {}", self.merge_target(b, seen_head(&seen, &id, b)))).collect();
-                        said.push(format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready set`.", names.join(", "), merges.join("; ")));
+                Step::Stale { id, behind, new } => {
+                    log!("kanna-daemon: {id} is stale: behind {behind:?}");
+                    self.alter(&id, Change::new("stale").by(Some("daemon")).with("behind", json!(behind)), |e| e.stale = behind.clone());
+                    if new.is_empty() {
+                        continue;
                     }
-                    if !waiting.is_empty() {
-                        let names: Vec<String> = waiting.iter().map(|b| self.label(b)).collect();
-                        said.push(format!("{} is stale, so this task is too: what it builds on moved. Wait for it: you get a message when it's ready again; then merge its branch, rerun the tests and run `kanna task ready set`.", names.join(", ")));
-                    }
-                    self.emit(&id, TaskEvent::BaseMoved, said.join(" "), None);
+                    let names: Vec<String> = new.iter().map(|b| self.label(b)).collect();
+                    let merges: Vec<String> = new.iter().map(|b| format!("git merge {}", self.merge_target(b, seen_head(&seen, &id, b)))).collect();
+                    self.emit(&id, TaskEvent::BaseMoved, format!("{} moved since this task was built on it, so this task is stale: merge it into your branch ({}), rerun the tests, then run `kanna task ready`.", names.join(", "), merges.join("; ")), None);
+                }
+                Step::Fresh { id } => {
+                    log!("kanna-daemon: {id} has every base's head in its branch");
+                    self.alter(&id, Change::new("fresh").by(Some("daemon")), |e| e.stale.clear());
                 }
             }
         }
@@ -5128,7 +5526,8 @@ mod tests {
         assert!(id.len() == 36 && id.chars().nth(14) == Some('4'), "{id}");
         assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "/bin/claude --dangerously-skip-permissions --continue", "a task Kanna didn't start resumes the folder's latest session");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions {}", told_task(Some("go"))), "a task with no session of its own starts fresh");
+        assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))), "and names the session it starts");
         entry.session = Some(id.clone());
         let told = told_task(entry.message.as_deref());
         assert_eq!(entry.command_with(None, Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --resume '{id}' || /bin/claude --dangerously-skip-permissions --session-id '{id}' {told}"), "claude refuses the second if the first found a conversation");
@@ -5139,13 +5538,31 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_task_resumes_its_own_session_and_the_latest_only_until_it_s_found() {
+    fn a_codex_task_resumes_only_its_own_session() {
         let mut entry = started("codex");
         assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "codex can't be given a session ID");
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume --last");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "until its session is known, it starts fresh");
         entry.session = Some("01a13ca7-c348-70f2-82e8-f27af07b17f5".into());
         assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume '01a13ca7-c348-70f2-82e8-f27af07b17f5'");
+    }
+
+    #[test]
+    fn a_codex_task_whose_first_start_failed_starts_fresh_past_the_agent_s_newer_session_elsewhere() {
+        let dir = std::env::temp_dir().join(format!("kanna-codex-failed-{}", std::process::id()));
+        let (worktree, elsewhere, sessions) = (dir.join("r/.kanna-worktrees/task-0000c0de"), dir.join("Documents/Codex/other"), dir.join("sessions"));
+        fs::create_dir_all(&worktree).unwrap();
+        let made = fs::metadata(&worktree).and_then(|m| m.created()).ok();
+        let day = sessions.join("2099/01/01");
+        fs::create_dir_all(&day).unwrap();
+        let meta = json!({ "timestamp": "2099-01-01T00-00-00", "type": "session_meta", "payload": { "id": "users-own", "cwd": elsewhere } });
+        fs::write(day.join("rollout-2099-01-01T00-00-00-users-own.jsonl"), format!("{meta}\n")).unwrap();
+        let mut entry = started("codex");
+        entry.folder = Some(worktree.to_string_lossy().into_owned());
+        entry.session = latest_codex_session(&sessions, &worktree, made);
+        assert_eq!(entry.session, None, "the agent's newer session elsewhere isn't the task's");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "so it starts fresh from its first message");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -5178,11 +5595,11 @@ mod tests {
     }
 
     #[test]
-    fn an_antigravity_task_continues_its_worktree_s_conversation() {
+    fn an_antigravity_task_resumes_only_the_conversation_it_said() {
         let mut entry = started("/usr/local/bin/agy");
         assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --continue");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
         entry.session = Some("c1".into());
         assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --conversation 'c1'");
     }
@@ -5692,7 +6109,11 @@ mod tests {
         let keys: Vec<&String> = schema["properties"]["agents"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["prompts"]);
         let keys: Vec<&String> = schema["properties"]["pipelines"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["agents"]);
+        assert_eq!(keys, ["agents", "pricing", "workers"]);
+        let workers = &schema["properties"]["pipelines"]["properties"]["workers"];
+        assert_eq!((workers["default"].clone(), workers["minimum"].clone(), workers["maximum"].clone()), (json!(WORKERS), json!(1), json!(WORKERS_MAX)));
+        let keys: Vec<&String> = schema["properties"]["merge"]["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["test"]);
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["pipelines"]["properties"]["agents"]["propertyNames"]["enum"], json!(names));
         assert_eq!((tasks["agent"]["default"].clone(), tasks["agent"]["examples"].clone()), (json!(DEFAULT_AGENT), json!(names)));
@@ -5704,7 +6125,18 @@ mod tests {
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), false, first), format!("claude --session-id 'u-1' {first}"));
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), true, first), format!("claude --resume 'u-1' {first}"));
         assert!(stage_agent("codex", None, None, Prompts::Ask, Some("r-2"), true, first).ends_with(&format!(" resume 'r-2' {first}")));
-        assert!(stage_agent("codex", None, None, Prompts::Ask, None, true, first).ends_with(&format!(" resume --last {first}")));
+        assert!(!stage_agent("codex", None, None, Prompts::Ask, None, true, first).contains("resume"));
+    }
+
+    #[test]
+    fn pricing_comes_from_the_repo_s_settings() {
+        let folder = std::env::temp_dir().join(format!("kanna-pricing-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let repo = folder.join("repo.json");
+        fs::write(&repo, r#"{"pipelines": {"pricing": {"gpt": {"in": 2, "out": 8}}}}"#).unwrap();
+        assert_eq!(pricing(&[repo, folder.join("missing.json")]), json!({ "gpt": { "in": 2, "out": 8 } }));
+        assert_eq!(pricing(&[folder.join("missing.json")]), Value::Null);
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]
@@ -5759,26 +6191,34 @@ mod tests {
     }
 
     #[test]
-    fn shelf_runners_come_from_the_repos_config_then_yours() {
+    fn shelf_runners_are_yours_and_a_repo_can_only_lower_them() {
         let dir = std::env::temp_dir().join(format!("kanna-runners-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let (repo, mine) = (dir.join("repo.json"), dir.join("mine.json"));
         let files = [repo.clone(), mine.clone()];
-        assert_eq!(runners(&files), RUNNERS);
-        fs::write(&mine, r#"{"backlog": {"runners": 0}}"#).unwrap();
-        assert_eq!(runners(&files), 0, "0 turns it off");
-        fs::write(&repo, r#"{"backlog": {"runners": 5}}"#).unwrap();
-        assert_eq!(runners(&files), 5, "the repo's wins");
-        fs::write(&repo, r#"{"backlog": {"runners": 11}}"#).unwrap();
-        assert_eq!(runners(&files), 0, "a bad value leaves it to the next file");
-        fs::write(&repo, r#"{"backlog": {"runners": -1}}"#).unwrap();
-        assert_eq!(runners(&[repo.clone()]), RUNNERS);
+        assert_eq!((runners(&files), machine_runners(&mine)), (RUNNERS, RUNNERS));
+        fs::write(&repo, r#"{"shelf": {"runners": 5}}"#).unwrap();
+        assert_eq!(runners(&files), RUNNERS, "a repo can't raise the default");
+        fs::write(&mine, r#"{"shelf": {"runners": 6}}"#).unwrap();
+        assert_eq!(runners(&files), 5, "a repo's lower cap holds");
+        assert_eq!(machine_runners(&mine), 6, "the machine's total isn't the repo's");
+        fs::write(&repo, r#"{"shelf": {"runners": 8}}"#).unwrap();
+        assert_eq!(runners(&files), 6, "a repo can't raise yours");
+        fs::write(&repo, r#"{"shelf": {"runners": 0}}"#).unwrap();
+        assert_eq!(runners(&files), 0, "a repo can turn runners off");
+        fs::write(&repo, r#"{"shelf": {"runners": 11}}"#).unwrap();
+        assert_eq!(runners(&files), 6, "a bad value in a repo caps nothing");
         fs::write(&repo, r#"{"shelf": {"runners": 2}, "backlog": {"runners": 5}}"#).unwrap();
         assert_eq!(runners(&files), 2, "shelf.runners wins over its old name in the same file");
         fs::write(&repo, r#"{"backlog": {"runners": 4}}"#).unwrap();
-        fs::write(&mine, r#"{"shelf": {"runners": 1}}"#).unwrap();
-        assert_eq!(runners(&files), 4, "the repo's old name wins over your new one");
+        assert_eq!(runners(&files), 4, "the repo's old name still caps");
+        fs::write(&mine, r#"{"backlog": {"runners": 0}}"#).unwrap();
+        assert_eq!((runners(&files), machine_runners(&mine)), (0, 0), "0 of yours turns it off everywhere");
+        fs::write(&mine, r#"{"backlog": {"runners": 2}, "shelf": {"runners": 11}}"#).unwrap();
+        assert_eq!(machine_runners(&mine), 2, "a bad value leaves it to the old name");
+        fs::write(&mine, r#"{"shelf": {"runners": -1}}"#).unwrap();
+        assert_eq!(machine_runners(&mine), RUNNERS);
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -5873,7 +6313,7 @@ mod tests {
 
     #[test]
     fn entries_round_trip_through_the_db() {
-        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, ready: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }] };
+        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, claimed: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }], queued: Some("queue-1".into()), merge_failed: Some(json!({ "why": "test failed" })) };
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).held, None, "a task on the Shelf isn't held");
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the Shelf");
@@ -6142,9 +6582,18 @@ mod tests {
         let core = kanna_mux::Core::default();
         let mut alive = Pane::new("term-7", None, kanna_mux::PaneType::Term);
         alive.state = PaneState::Running;
-        core.install_panes(vec![alive], 0, 7, 0);
+        let mut lost_pane = Pane::new("term-8", None, kanna_mux::PaneType::Term);
+        lost_pane.state = PaneState::Exited;
+        let mut hung_up = Pane::new("term-9", None, kanna_mux::PaneType::Term);
+        (hung_up.state, hung_up.exit_code, hung_up.hung_up) = (PaneState::Exited, Some(129), true);
+        let mut exited = Pane::new("term-10", None, kanna_mux::PaneType::Term);
+        (exited.state, exited.exit_code) = (PaneState::Exited, Some(0));
+        core.install_panes(vec![alive, lost_pane, hung_up, exited], 0, 10, 0);
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
         let task = |id: &str, made_at: f64, folder: Option<&str>| Entry { id: id.into(), repo: "/r".into(), agent: "codex".into(), made_at, folder: folder.map(String::from), ..Default::default() };
+        let lost = Entry { held: Some("term-8".into()), ..task("task-lost", 1.5, Some("/r/8")) };
+        let stopped_by_you = Entry { held: Some("term-9".into()), ..task("task-stopped-by-you", 0.2, Some("/r/9")) };
+        let agent_exited = Entry { held: Some("term-10".into()), ..task("task-agent-exited", 0.3, Some("/r/10")) };
         let running = Entry { held: Some("term-7".into()), ..task("task-running", 0.0, Some("/r/0")) };
         let stopped_old = task("task-stopped-old", 1.0, Some("/r/1"));
         let quiet = task("task-quiet", 2.0, Some("/r/2"));
@@ -6152,13 +6601,16 @@ mod tests {
         let new_with_mail = task("task-new-with-mail", 4.0, None);
         let stopped_new = task("task-stopped-new", 5.0, Some("/r/5"));
         let new_new = task("task-new-new", 6.0, None);
-        let mine = [&new_new, &stopped_new, &running, &new_with_mail, &quiet, &stopped_old, &new_old];
+        let mine = [&new_new, &stopped_new, &running, &new_with_mail, &quiet, &stopped_old, &new_old, &lost, &stopped_by_you, &agent_exited];
         for (id, recipient) in [(1, "task-stopped-new"), (2, "task-running"), (3, "task-new-with-mail"), (4, "task-stopped-old")] {
             tasks.waiting.borrow_mut().push(Message { id, recipient: recipient.into(), repo: "/r".into(), sender: "user".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
         }
         let handle = tasks.core.upgrade().unwrap();
-        let queue: Vec<String> = tasks.candidates(&handle, "/r", &mine, &HashSet::new(), &tasks.machines(), true, &HashSet::new(), Instant::now()).into_iter().map(|candidate| match candidate {
+        let mut waiting = tasks.candidates(&handle, "/r", &mine, &HashSet::new(), &tasks.machines(), true, &HashSet::new(), Instant::now());
+        waiting.sort_by(|a, b| a.0.cmp(&b.0));
+        let queue: Vec<String> = waiting.into_iter().map(|(_, candidate)| match candidate {
             Candidate::Wake(entry) => format!("wake {}", entry.id),
+            Candidate::Resume(entry) => format!("resume {}", entry.id),
             Candidate::Here(entry) => format!("start {}", entry.id),
             Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
         }).collect();
@@ -6167,7 +6619,7 @@ mod tests {
         tasks.waiting.borrow_mut().push(Message { id: 5, recipient: "task-quiet".into(), repo: "/r".into(), sender: "task-other".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
         assert!(!tasks.told_by_you(&wake("task-quiet")), "a task's message takes its turn");
         assert!(!tasks.told_by_you(&Candidate::Here(task("task-new-old", 0.0, None))));
-        assert_eq!(queue, ["wake task-stopped-old", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, and a running or quiet stopped task isn't in it");
+        assert_eq!(queue, ["wake task-stopped-old", "resume task-lost", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, a task whose agent ended with the keeper takes its turn, and a running, quiet stopped, stopped-by-you or exited task isn't in it");
         fs::remove_dir_all(&state).unwrap();
     }
 
@@ -6615,7 +7067,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stacked_chain_starts_on_ready_work_goes_stale_when_a_base_moves_and_catches_up_one_level_at_a_time() {
+    fn a_stacked_chain_starts_on_claimed_work_goes_stale_only_where_a_base_head_is_missing_and_clears_by_merging() {
         let state = std::env::temp_dir().join(format!("kanna-stacked-{}", std::process::id()));
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
@@ -6663,47 +7115,55 @@ mod tests {
         let fc = start(&c);
         assert_eq!(head(&fc), head(&fb), "C starts from B's branch");
         watch();
-        assert!(entry(&b).stale.is_empty() && entry(&c).stale.is_empty() && entry(&a).ready.is_some(), "nothing moved");
+        assert!(entry(&b).stale.is_empty() && entry(&c).stale.is_empty() && entry(&a).claimed.is_some(), "nothing moved");
 
         sh(&fa, "echo a2 >a && git commit -q -am a2");
         watch();
-        assert!(entry(&a).ready.is_none(), "A's branch moved, so it isn't ready");
+        assert!(entry(&a).claimed.is_none(), "A's branch moved, so its claim is gone");
         assert_eq!(entry(&b).stale, vec![a.clone()]);
-        assert!(entry(&b).ready.is_none(), "a stale task isn't ready");
-        assert_eq!(entry(&c).stale, vec![b.clone()], "the staleness ripples down the chain");
-        assert_eq!((mail(&b), mail(&c)), (1, 1), "each stale task is told");
+        assert!(entry(&b).claimed.is_some(), "B's commit hasn't changed, so its claim stays underneath");
+        assert_eq!(tasks.merge_label(&entry(&b)), Some("stale"));
+        assert!(entry(&c).stale.is_empty(), "C has B's head, so it isn't stale");
+        assert_eq!((mail(&b), mail(&c)), (1, 0), "the stale task is told");
         let told = tasks.waiting.borrow().iter().find(|m| m.recipient == b).cloned().unwrap();
         assert!(told.text.contains(&format!("git merge {}", head(&fa))), "it merges A's commit, never a branch name: {}", told.text);
+        assert!(told.text.ends_with("then run `kanna task ready`."), "{}", told.text);
         assert_eq!(told.mode.as_deref(), Some(messages::PROMPTING), "Kanna's messages come in the envelope");
         watch();
-        assert_eq!((mail(&b), mail(&c)), (1, 1), "once");
+        assert_eq!(mail(&b), 1, "once");
         assert_eq!(ready(&b).unwrap_err().code, "behind", "B hasn't merged A's new work");
-        assert_eq!(ready(&c).unwrap_err().code, "stale", "C can't catch up before B");
 
         sh(&fb, &format!("git merge -q --no-edit {}", head(&fa)));
-        ready(&b).unwrap();
-        assert!(entry(&b).stale.is_empty() && entry(&b).ready.is_some());
-        assert_eq!(mail(&c), 2, "C hears B is ready again");
         watch();
-        assert_eq!(entry(&c).stale, vec![b.clone()], "C stays stale until it catches up too");
+        assert!(entry(&b).stale.is_empty(), "merging A clears it at once");
+        assert!(entry(&b).claimed.is_none(), "and moved B, so it has no claim until it claims again");
+        assert_eq!(entry(&c).stale, vec![b.clone()], "B's head isn't in C now");
+        assert_eq!(mail(&c), 1);
+        ready(&b).unwrap();
+        assert_eq!(mail(&c), 2, "C hears B is ready again");
         assert_eq!(ready(&c).unwrap_err().code, "behind");
         sh(&fc, &format!("git merge -q --no-edit {}", head(&fb)));
-        ready(&c).unwrap();
         watch();
-        assert!(entry(&c).stale.is_empty() && entry(&c).ready.is_some(), "C caught up");
+        assert!(entry(&c).stale.is_empty());
+        ready(&c).unwrap();
+        assert_eq!(tasks.merge_label(&entry(&c)), Some("after"), "C merges after B");
 
-        tasks.unmark(&json!({ "task": c })).unwrap();
-        assert!(entry(&c).ready.is_none(), "unready clears it");
         sh(&state, &format!("git merge -q --no-edit {}", head(&fa)));
         watch();
         assert!(entry(&b).bases.is_empty(), "A is in main, so B is an ordinary task again");
-        assert_eq!(mail(&b), 2, "and is told to merge main");
+        assert_eq!(mail(&b), 2, "and is told so");
+        let merged = tasks.waiting.borrow().iter().filter(|m| m.recipient == b).last().cloned().unwrap();
+        assert!(!merged.text.contains("git merge"), "merging main would cost its claim: {}", merged.text);
+        assert!(entry(&b).claimed.is_some(), "B's commit hasn't changed");
+        tasks.listened(task_events::look(tasks.main_probes()));
+        assert_eq!(tasks.merge_label(&entry(&b)), Some("ready"), "it merges into main cleanly, behind it or not");
+        assert_eq!(tasks.described(&entry(&b))["ready"], json!(true));
         assert_eq!(entry(&c).bases.len(), 1, "C still merges after B");
         let again = Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0);
         let kept = again.entries.borrow().iter().find(|e| e.id == c).cloned().unwrap();
-        assert_eq!((kept.bases, kept.ready), (entry(&c).bases, None), "the stack survives a restart");
+        assert_eq!((kept.bases, kept.claimed), (entry(&c).bases, entry(&c).claimed), "the stack and the claim survive a restart");
         let events = tasks.db.events(&b).unwrap().into_iter().map(|e| e.what).collect::<Vec<_>>();
-        assert!(["ready", "stale", "base merged"].iter().all(|what| events.iter().any(|e| e == what)), "{events:?}");
+        assert!(["ready", "stale", "fresh", "unready", "base merged"].iter().all(|what| events.iter().any(|e| e == what)), "{events:?}");
         let _ = fs::remove_dir_all(&state);
     }
 
@@ -6790,6 +7250,44 @@ mod tests {
         assert!(told(&tasks, &a).is_empty());
         assert!(tasks.known(&a).unwrap().sent[0].about.is_none(), "the conflict is over");
 
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn a_claimed_task_is_ready_only_while_it_merges_into_main_cleanly_at_the_commit_it_claimed() {
+        let (state, _core, tasks) = main_rig("ready", "f g");
+        let (a, fa) = rig_task(&tasks, &state, "A");
+        let (calm, fc) = rig_task(&tasks, &state, "Calm");
+        rig_sh(&fa, "echo a >f && git commit -q -am a");
+        rig_sh(&fc, "echo c >g && git commit -q -am c");
+        let label = |id: &str| tasks.merge_label(&tasks.known(id).unwrap());
+        let loose = || git(&state, &["count-objects"]).unwrap();
+        listen(&tasks);
+        assert_eq!(label(&a), None, "not claimed");
+        tasks.mark(&json!({ "task": a })).unwrap();
+        tasks.mark(&json!({ "task": calm })).unwrap();
+        assert_eq!((label(&a), label(&calm)), (Some("ready"), Some("ready")));
+
+        rig_sh(&state, "echo main >f && git commit -q -am m1");
+        let before = loose();
+        listen(&tasks);
+        assert_eq!(label(&a), Some("conflicts"), "main moved into a conflict");
+        assert_eq!(label(&calm), Some("ready"), "behind main with no conflict is still ready");
+        assert_eq!(tasks.described(&tasks.known(&a).unwrap())["mainConflicts"], json!(["f"]));
+        assert!(tasks.known(&a).unwrap().claimed.is_some(), "the claim stays underneath");
+        assert_eq!(loose(), before, "the check writes nothing into the repo");
+
+        rig_sh(&fa, "git merge -q main; echo merged >f && git commit -q -am merged");
+        tasks.watched(stacks::look(tasks.probes()));
+        listen(&tasks);
+        assert!(tasks.known(&a).unwrap().claimed.is_none(), "fixing it moved the branch");
+        assert_eq!(label(&a), None);
+        tasks.mark(&json!({ "task": a })).unwrap();
+        assert_eq!(label(&a), Some("ready"));
+
+        rig_sh(&state, &format!("git merge -q --no-edit {}", git(&fc, &["rev-parse", "HEAD"]).unwrap()));
+        listen(&tasks);
+        assert_eq!(label(&calm), None, "merged: nothing left to merge");
         let _ = fs::remove_dir_all(&state);
     }
 
@@ -6961,6 +7459,7 @@ mod tests {
         tasks: RefCell<Weak<Tasks>>,
         deaf: Cell<bool>,
         ignores_exit: Cell<bool>,
+        restless: Cell<bool>,
         draft: Cell<bool>,
         slow: Cell<bool>,
         starting: RefCell<Vec<String>>,
@@ -7009,6 +7508,16 @@ mod tests {
             done.reply(Ok(Map::new()));
             let program = program(pane.command.as_deref().unwrap_or_default()).to_string();
             let presses = self.typed.borrow().iter().filter(|k| k.starts_with(&format!("{}: ctrl+c", pane.id))).count();
+            if keys == ["esc"] && !self.deaf.get() && !self.restless.get() {
+                let (Some(core), tasks, id) = (self.core.borrow().as_ref().and_then(WeakCore::upgrade), self.tasks.borrow().clone(), pane.id.clone()) else { return };
+                core.clone().later(move || {
+                    core.with_pane_mut(&id, |p| p.status = Some("idle".into()));
+                    if let Some(tasks) = tasks.upgrade() {
+                        tasks.status(&id, Some("idle"), true);
+                    }
+                });
+                return;
+            }
             let entered = keys == ["return"] && !self.ignores_exit.get();
             if !self.deaf.get() && (entered || presses == if program == "claude" { 2 } else { 1 }) {
                 let line = if program == "claude" { format!("Resume this session with:\nclaude --resume {SAID}\n") } else { format!("To continue this session, run: {program} resume {SAID}\n") };
@@ -7236,25 +7745,141 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_that_isnt_idle_gets_its_keys_since_exit_could_land_as_an_answer() {
+    fn an_agent_at_work_or_asking_is_brought_to_rest_with_esc_and_then_told_to_exit() {
         for status in ["working", "needs-you"] {
             let t = Stopping::new(status);
-            let (pane, entry) = t.agent("claude", Place::Shelf);
+            let (pane, entry) = t.agent_with("codex", Place::Shelf, None);
             t.status(&pane, status);
             t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
-            assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "{status}");
+            assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: esc"), format!("{pane}: paste /exit"), format!("{pane}: return")], "{status}: /exit only once it's idle, so a dialog doesn't take it as its answer");
+            assert!(t.agents.hung_up.borrow().is_empty(), "{status}");
+            assert_eq!(t.session(&pane).as_deref(), Some(SAID), "{status}");
         }
     }
 
     #[test]
+    fn a_runner_brings_an_agent_that_needs_you_to_rest_before_it_exits() {
+        let t = Stopping::new("asks");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        t.status(&pane, "needs-you");
+        t.tasks.quit(&pane, &entry, Status::NeedsYou);
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: esc"), format!("{pane}: paste /exit"), format!("{pane}: return")]);
+        assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
+    }
+
+    #[test]
+    fn an_agent_that_doesnt_rest_is_pressed_again_until_the_limit_and_then_gets_its_keys() {
+        let t = Stopping::new("restless");
+        t.agents.restless.set(true);
+        let (pane, entry) = t.agent("claude", Place::Desk);
+        t.status(&pane, "working");
+        let (responder, reply) = kanna_mux::responder();
+        t.tasks.stop(&json!({ "task": entry.id }), responder);
+        t.settle(|| t.agents.typed.borrow().len() == 2);
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: esc"), format!("{pane}: esc")], "pressed again a second later, as opencode needs");
+        t.tasks.quitting.borrow_mut().get_mut(&pane).unwrap().by = Instant::now();
+        t.settle(|| !alive(&t.core, &pane));
+        assert_eq!(t.agents.typed.borrow()[2..], [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")]);
+        assert!(t.agents.hung_up.borrow().is_empty());
+        drop(reply);
+    }
+
+    #[test]
+    fn an_agent_with_no_report_gets_its_keys_since_esc_at_rest_could_open_a_dialog() {
+        let t = Stopping::new("unknown");
+        let (pane, entry) = t.agent("claude", Place::Desk);
+        t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")]);
+    }
+
+    #[test]
     fn a_draft_in_the_box_is_never_sent() {
-        let t = Stopping::new("draft");
-        t.agents.draft.set(true);
+        for status in ["idle", "working"] {
+            let t = Stopping::new(&format!("draft-{status}"));
+            t.agents.draft.set(true);
+            let (pane, entry) = t.agent("claude", Place::Shelf);
+            t.status(&pane, status);
+            t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
+            let rest = if status == "working" { vec![format!("{pane}: esc")] } else { vec![] };
+            assert_eq!(t.agents.typed.borrow()[rest.len()..], [format!("{pane}: paste /exit"), format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "{status}: enter is never pressed");
+            assert_eq!(t.agents.typed.borrow()[..rest.len()], rest[..]);
+            assert!(t.agents.hung_up.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn done_from_its_own_agent_answers_first_and_quits_it_by_exit_once_its_turn_ends() {
+        let t = Stopping::new("own-done");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        t.status(&pane, "working");
+        let answer = t.answer(|tasks, responder| tasks.done(&json!({ "task": entry.id, "by": pane }), responder)).unwrap();
+        assert_eq!(answer["after_turn"], true);
+        for _ in 0..20 {
+            t.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(t.agents.typed.borrow().is_empty(), "its turn goes on: the agent reads the answer and finishes");
+        assert_eq!(t.tasks.entries.borrow().len(), 1);
+        t.status(&pane, "idle");
+        t.tasks.status(&pane, Some("idle"), true);
+        t.settle(|| t.tasks.entries.borrow().is_empty());
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: paste /exit"), format!("{pane}: return")], "no esc, no ctrl+c: nothing's interrupted");
+        assert!(t.agents.hung_up.borrow().is_empty());
+    }
+
+    #[test]
+    fn own_done_from_an_agent_with_no_report_quits_it_at_once_since_its_turns_end_cant_be_seen() {
+        let t = Stopping::new("own-unknown");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        let answer = t.answer(|tasks, responder| tasks.done(&json!({ "task": entry.id, "by": pane }), responder)).unwrap();
+        assert_eq!(answer["after_turn"], true);
+        t.settle(|| t.tasks.entries.borrow().is_empty());
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")]);
+    }
+
+    #[test]
+    fn own_done_waits_for_a_fresh_report_since_the_idle_it_sees_may_be_stale() {
+        let t = Stopping::new("own-stale");
         let (pane, entry) = t.agent("claude", Place::Shelf);
         t.status(&pane, "idle");
-        t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id }), responder)).unwrap();
-        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: paste /exit"), format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "enter is never pressed");
-        assert!(t.agents.hung_up.borrow().is_empty());
+        t.answer(|tasks, responder| tasks.done(&json!({ "task": entry.id, "by": pane }), responder)).unwrap();
+        for _ in 0..20 {
+            t.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(t.agents.typed.borrow().is_empty(), "the idle it had is from before the command");
+        t.tasks.status(&pane, Some("working"), false);
+        t.tasks.status(&pane, Some("idle"), true);
+        t.settle(|| t.tasks.entries.borrow().is_empty());
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: paste /exit"), format!("{pane}: return")]);
+    }
+
+    #[test]
+    fn own_stop_waits_for_the_turn_too_and_a_turn_past_the_limit_is_brought_to_rest() {
+        let t = Stopping::new("own-stop");
+        let (pane, entry) = t.agent_with("codex", Place::Desk, None);
+        t.status(&pane, "working");
+        let answer = t.answer(|tasks, responder| tasks.stop(&json!({ "task": entry.id, "by": pane }), responder)).unwrap();
+        assert_eq!(answer["after_turn"], true);
+        t.pump();
+        assert!(t.agents.typed.borrow().is_empty());
+        t.tasks.finishing.borrow_mut().get_mut(&pane).unwrap().by = Instant::now();
+        t.settle(|| !alive(&t.core, &pane));
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: esc"), format!("{pane}: paste /exit"), format!("{pane}: return")]);
+        assert_eq!(t.session(&pane).as_deref(), Some(SAID));
+    }
+
+    #[test]
+    fn done_from_elsewhere_while_its_own_done_waits_quits_it_now() {
+        let t = Stopping::new("both");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        t.status(&pane, "working");
+        t.answer(|tasks, responder| tasks.done(&json!({ "task": entry.id, "by": pane }), responder)).unwrap();
+        t.answer(|tasks, responder| tasks.done(&json!({ "task": entry.id }), responder)).unwrap();
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: esc"), format!("{pane}: paste /exit"), format!("{pane}: return")]);
+        assert!(t.tasks.entries.borrow().is_empty());
+        assert!(t.tasks.finishing.borrow().is_empty());
     }
 
     #[test]
@@ -7311,6 +7936,39 @@ mod tests {
         t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
         assert_eq!(*t.agents.hung_up.borrow(), [pane.as_str()]);
         assert_eq!(t.session(&pane).as_deref(), Some("given"));
+    }
+
+    #[test]
+    fn a_pick_of_a_task_the_shelf_is_starting_waits_for_it_and_moves_it_to_the_desk() {
+        let t = Stopping::new("pick-starting");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        let folder = t.state.to_string_lossy().to_string();
+        t.tasks.entries.borrow_mut()[0].repo = folder;
+        t.core.handle_blocking(json!({ "cmd": "task", "args": { "action": "hold", "task": pane } }));
+        t.tasks.launching.borrow_mut().insert(entry.id.clone());
+        let (responder, reply) = kanna_mux::responder();
+        t.tasks.pick(&json!({ "task": entry.id }), responder);
+        let mut reply = Box::pin(reply);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        for _ in 0..5 {
+            t.pump();
+            assert!(reply.as_mut().poll(&mut cx).is_pending(), "it waits while the task starts");
+        }
+        assert_eq!(t.tasks.entries.borrow().len(), 1, "still on the Shelf");
+        t.tasks.launching.borrow_mut().remove(&entry.id);
+        t.tasks.settled(&entry.id);
+        let by = Instant::now() + Duration::from_secs(5);
+        let answer = loop {
+            if let std::task::Poll::Ready(answer) = reply.as_mut().poll(&mut cx) {
+                break answer.unwrap();
+            }
+            assert!(Instant::now() < by, "no answer");
+            t.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(answer["pane"], pane.as_str());
+        let desk = t.tasks.running.borrow().iter().map(|r| (r.entry.id.clone(), r.place)).collect::<Vec<_>>();
+        assert_eq!(desk, [(entry.id.clone(), Place::Desk)]);
     }
 
     #[test]

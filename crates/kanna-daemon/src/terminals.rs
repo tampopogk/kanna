@@ -386,6 +386,23 @@ impl Terminals {
         Some(Attach { snapshot: Ok(()), exit_code: t.exit_code.filter(|_| t.exit_reported) })
     }
 
+    pub fn picture(&self, id: &str) -> Result<Map, KmuxError> {
+        let live = self.live.borrow();
+        let Some(t) = live.get(id) else { return Err(KmuxError::new("stopped", format!("{id} isn't running"))) };
+        if t.running().is_none() {
+            return Err(KmuxError::new("stopped", format!("{id} isn't running")));
+        }
+        let feed = Feed::lock(&t.feed);
+        let snapshot = feed.save().map_err(|error| KmuxError::new("unavailable", format!("can't read {id}'s screen: {error}")))?;
+        Ok(Map::from_iter([
+            ("data".to_string(), json!(BASE64.encode(&snapshot))),
+            ("cols".to_string(), json!(feed.cols)),
+            ("rows".to_string(), json!(feed.rows)),
+            ("width".to_string(), json!(t.pixels.0)),
+            ("height".to_string(), json!(t.pixels.1)),
+        ]))
+    }
+
     pub fn hide(&self, conn: u64, id: &str) {
         if let Some(terminal) = self.live.borrow().get(id) {
             Feed::lock(&terminal.feed).hide(conn);
@@ -500,7 +517,7 @@ impl Terminals {
         self.live.borrow().iter().filter(|(_, t)| t.running().is_some()).map(|(id, _)| id.clone()).collect()
     }
 
-    pub fn restore(&self, adopted: Vec<Adopted>, mut reports: HashMap<String, Kept>) -> Restored {
+    pub fn restore(&self, adopted: Vec<Adopted>, mut reports: HashMap<String, Kept>, placed: &[String]) -> Restored {
         let saved = self.store.load();
         let (mut counter, mut terminals, mut numbered) = (saved.counter, saved.terminals, saved.ptys);
         for id in saved.records.iter().flat_map(|r| [&r.id, &r.pane, &r.keeper]).chain(adopted.iter().map(|a| &a.id)) {
@@ -533,8 +550,13 @@ impl Terminals {
                     restored.exited += 1;
                     self.ended(&record, self.store.snapshot(&record.id))
                 }
-                None => {
+                None if placed.contains(&record.pane) => {
                     log!("kanna-daemon: {} ended while no daemon was running, and the keeper has no exit for it", pane.label());
+                    pane.state = PaneState::Exited;
+                    restored.exited += 1;
+                    self.ended(&record, self.store.snapshot(&record.id))
+                }
+                None => {
                     restored.dropped += 1;
                     continue;
                 }
@@ -926,6 +948,40 @@ mod tests {
                 }
             }
         })
+    }
+
+    struct NoSpawner;
+
+    impl Spawner for NoSpawner {
+        fn spawn(&self, _: &Spec) -> std::io::Result<u64> {
+            Ok(0)
+        }
+        fn close(&self, _: &str) {}
+        fn acknowledge_exit(&self, _: &str) {}
+    }
+
+    #[test]
+    fn a_started_terminal_is_told_its_daemons_kanna() {
+        let dir = std::env::temp_dir().join(format!("kdt-cli{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Helpers")).unwrap();
+        for binary in ["kanna", "kanna-daemon"] {
+            std::fs::write(dir.join("Helpers").join(binary), "").unwrap();
+        }
+        let cli = crate::cli::beside(&dir.join("Helpers/kanna-daemon"));
+        let mut env = vec![("KANNA_SOCKET".to_string(), "/s/kanna.sock".to_string())];
+        env.extend(crate::cli::env(cli.as_deref()));
+        let (events, _inbox) = crate::runtime::channel();
+        let terminals = Terminals::new(Rc::new(NoSpawner), Store::open(&dir).unwrap(), events.clone(), env, Arc::new(Wire::new(events)));
+        let spec = terminals.spec(&Pane::new("term-7", None, PaneType::Term), "t1");
+        let var = |name: &str| spec.env.iter().rev().find(|(key, _)| key == name).and_then(|(_, value)| value.clone());
+        let named = var(crate::cli::VAR).expect("KANNA_CLI is set");
+        assert_eq!(Path::new(&named), dir.join("Helpers/kanna"));
+        assert!(Path::new(&named).is_file(), "it names a kanna that exists");
+        assert_eq!(Path::new(&named).parent(), dir.join("Helpers/kanna-daemon").parent(), "beside the daemon");
+        assert_eq!((var("KANNA_SOCKET").as_deref(), var("KANNA_TERMINAL").as_deref()), (Some("/s/kanna.sock"), Some("term-7")));
+        drop(terminals);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

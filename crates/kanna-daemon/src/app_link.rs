@@ -123,6 +123,7 @@ const SNAPSHOT_RETRY: Duration = Duration::from_millis(100);
 pub const APP_PREFIX: &str = "debug.";
 
 pub const APP_ASK: &str = "app.";
+const VIEWLESS: [&str; 1] = ["app.snap"];
 
 pub const RELAY_TOKEN: &str = "machine.relay_token";
 
@@ -248,6 +249,7 @@ pub struct AppLink {
     files: Rc<Files>,
     threads: Rc<Files>,
     serial: Rc<Serial>,
+    runs: RefCell<std::rc::Weak<crate::runs::Runs>>,
     layout: Rc<DaemonLayout>,
     apps: RefCell<BTreeMap<u64, Connection>>,
     sizes: RefCell<Sizes>,
@@ -282,6 +284,7 @@ impl AppLink {
             files,
             threads,
             serial,
+            runs: RefCell::new(std::rc::Weak::new()),
             layout,
             apps: RefCell::default(),
             sizes: RefCell::default(),
@@ -477,6 +480,10 @@ impl AppLink {
         }));
     }
 
+    pub fn stats_changed(&self, repo: &str) {
+        self.notify("stats", json!({ "repo": repo }));
+    }
+
     pub fn folder(&self, pane: &str, cwd: &str) {
         if self.attached() {
             let notice = self.folder_notice(pane, cwd);
@@ -494,7 +501,7 @@ impl AppLink {
     }
 
     pub fn toast(&self, record: &Value) -> bool {
-        let Some(conn) = self.target() else { return false };
+        let Some(conn) = self.viewer(record) else { return false };
         self.notify_to(conn, "toast", record.clone());
         true
     }
@@ -524,8 +531,37 @@ impl AppLink {
         self.apps.borrow().values().any(|app| app.remote.is_none())
     }
 
-    pub fn answers(&self) -> bool {
-        self.target().is_some()
+    pub fn answers_for(&self, args: &Value) -> bool {
+        self.viewer(args).is_some()
+    }
+
+    fn viewer(&self, args: &Value) -> Option<u64> {
+        let shown_by = self.shown_by(args);
+        let apps = self.apps.borrow();
+        let holder = shown_by.and_then(|client| apps.iter().find(|(_, app)| app.client == client && app.remote.is_none() == (client == kanna_mux::MAC_APP)).map(|(conn, _)| *conn));
+        drop(apps);
+        holder.or_else(|| self.target())
+    }
+
+    fn shown_by(&self, args: &Value) -> Option<String> {
+        let view = self.layout.view();
+        let workspaces = view["workspaces"].as_array()?;
+        let has = |w: &&Value, pane: &str| w["panes"].as_array().is_some_and(|panes| panes.iter().any(|p| p == pane));
+        let named = args["workspace"].as_str().or_else(|| args["workspace"]["id"].as_str());
+        let workspace = match (named, string(args, "window")) {
+            (Some(id), _) => workspaces.iter().find(|w| w["id"] == id),
+            (None, Some(window)) => {
+                let id = view["windows"].as_array()?.iter().find(|w| w["id"] == window).and_then(|w| string(w, "workspace"))?.to_string();
+                workspaces.iter().find(|w| w["id"] == id.as_str())
+            }
+            (None, None) => {
+                let pane = ["pane", "from", "task"].iter().find_map(|key| string(args, key)).filter(|pane| !pane.contains('@'))?;
+                let pane = self.core.upgrade().and_then(|core| core.pane(pane)).map_or_else(|| pane.to_string(), |p| p.id);
+                workspaces.iter().find(|w| has(w, &pane))
+            }
+        }?;
+        let place = &workspace["where"];
+        ["desk", "planner", "quiz"].iter().find_map(|key| string(place, key)).map(String::from)
     }
 
     fn target(&self) -> Option<u64> {
@@ -576,6 +612,9 @@ impl AppLink {
         }
         self.threads.leave(|view| view.starts_with(&prefix));
         self.serial.leave_views(|view| view.starts_with(&prefix));
+        if let Some(runs) = self.runs.borrow().upgrade() {
+            runs.leave_views(|view| view.starts_with(&prefix));
+        }
         let driven = self.sizes.borrow_mut().gone(conn);
         for (terminal, driver) in driven {
             self.drive(&terminal, Some(driver));
@@ -657,8 +696,25 @@ impl AppLink {
                 self.answer_subscribe(conn, &message, reply);
                 return None;
             }
+            ("run.subscribe", Some(view)) => {
+                let runs = self.runs.borrow().upgrade();
+                let reply = runs.map_or_else(|| Err(KmuxError::new("app_gone", "the daemon is stopping")), |runs| runs.subscribe(&view, &args));
+                self.answer_subscribe(conn, &message, reply);
+                return None;
+            }
+            ("run.unsubscribe", Some(view)) => {
+                if let Some(runs) = self.runs.borrow().upgrade() {
+                    runs.unsubscribe(&view);
+                }
+                return None;
+            }
             ("serial.unsubscribe", Some(view)) => {
                 self.serial.unsubscribe(&view);
+                return None;
+            }
+            ("terminal.picture", _) => {
+                let reply = self.terminals.picture(string(&args, "terminal").unwrap_or_default());
+                self.answer_subscribe(conn, &message, reply);
                 return None;
             }
             ("file.unsubscribe", Some(view)) => {
@@ -812,6 +868,14 @@ impl AppLink {
         }
     }
 
+    pub fn connect_runs(&self, runs: &Rc<crate::runs::Runs>) {
+        *self.runs.borrow_mut() = Rc::downgrade(runs);
+    }
+
+    pub fn run(&self, views: &[String], payload: &Value) {
+        self.to_viewers("run", views, payload);
+    }
+
     pub fn serial(&self, views: &[String], payload: &Value) {
         self.to_viewers("serial", views, payload);
     }
@@ -871,7 +935,7 @@ impl AppLink {
     }
 
     pub fn forward(&self, cmd: &str, mut args: Value, responder: Responder) {
-        if !self.answers() {
+        if !self.attached() {
             return responder.reply(Err(no_app(cmd)));
         }
         if let (Some(reference), Some(core)) = (string(&args, "pane").filter(|p| !p.contains('@')).map(String::from), self.core.upgrade()) {
@@ -880,15 +944,22 @@ impl AppLink {
                 None => return responder.reply(Err(KmuxError::new("not_found", format!("no pane \"{reference}\"")))),
             }
         }
-        self.ask(cmd, args, responder);
-    }
-
-    fn ask(&self, cmd: &str, args: Value, responder: Responder) {
-        self.ask_within(cmd, args, self.timeout, responder);
+        let viewless = VIEWLESS.contains(&cmd);
+        let any = || {
+            let apps = self.apps.borrow();
+            Some(self.last_used.get()).filter(|conn| apps.contains_key(conn)).or_else(|| apps.keys().next_back().copied())
+        };
+        let conn = self.viewer(&args).or_else(|| any().filter(|_| viewless));
+        let Some(conn) = conn else { return responder.reply(Err(no_app(cmd))) };
+        self.ask_to(conn, cmd, args, self.timeout, responder);
     }
 
     pub fn ask_within(&self, cmd: &str, args: Value, within: Duration, responder: Responder) {
         let Some(conn) = self.target() else { return responder.reply(Err(no_app(cmd))) };
+        self.ask_to(conn, cmd, args, within, responder);
+    }
+
+    fn ask_to(&self, conn: u64, cmd: &str, args: Value, within: Duration, responder: Responder) {
         let id = self.next_id.get() + 1;
         self.next_id.set(id);
         self.pending.borrow_mut().insert(id, (Instant::now() + within, conn, responder));

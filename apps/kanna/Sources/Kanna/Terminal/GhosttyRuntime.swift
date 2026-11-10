@@ -71,7 +71,11 @@ final class GhosttyRuntime {
 
     private static func loadConfig() -> ghostty_config_t? {
         guard let cfg = ghostty_config_new() else { return nil }
-        ghostty_config_load_default_files(cfg)
+        if let only = ProcessInfo.processInfo.environment["KANNA_GHOSTTY_CONFIG"], !only.isEmpty {
+            ghostty_config_load_file(cfg, only)
+        } else {
+            ghostty_config_load_default_files(cfg)
+        }
         ghostty_config_load_recursive_files(cfg)
         ghostty_config_finalize(cfg)
         return cfg
