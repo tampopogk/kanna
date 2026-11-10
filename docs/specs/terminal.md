@@ -41,7 +41,7 @@ flowchart LR
 
 ## 2. The config
 
-The app loads Ghostty's config as kmux does (`ghostty_config_load_default_files`, then the files they include, then `finalize`), so a Kanna terminal looks and behaves as the user's Ghostty does. Ghostty's `reload_config` (⌘⇧, by default) reloads it; a conditional theme (`theme = light:…,dark:…`) follows the app's light/dark appearance:
+The app loads Ghostty's config as kmux does (`ghostty_config_load_default_files`, then the files they include, then `finalize`), so a Kanna terminal looks and behaves as the user's Ghostty does. `KANNA_GHOSTTY_CONFIG=FILE` loads that one file (and the files it includes) instead of the default files: `scripts/e2e-kanna.sh` points it at an empty file in each scenario's state folder, which a scenario fills to set its own theme, so no user config (on macOS, also `~/Library/Application Support/com.mitchellh.ghostty/config`, read after the XDG one) reaches a test. Ghostty's `reload_config` (⌘⇧, by default) reloads it; a conditional theme (`theme = light:…,dark:…`) follows the app's light/dark appearance:
 
 ```mermaid
 sequenceDiagram
