@@ -1933,6 +1933,20 @@ mod tests {
     }
 
     #[test]
+    fn the_checkpoint_thread_makes_no_file_once_the_db_is_open() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-files-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir).unwrap();
+        let wal = dir.join(format!("{FILE}-wal"));
+        fs::remove_file(&wal).unwrap();
+        std::thread::sleep(CHECKPOINT_EVERY + std::time::Duration::from_millis(500));
+        assert!(!wal.exists(), "the thread's first checkpoint made the WAL again");
+        drop(db);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_wal_is_checkpointed_beside_the_loop() {
         let dir = std::env::temp_dir().join(format!("kanna-checkpoint-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
