@@ -42,7 +42,33 @@ terminal_colours() {
   cp "$KANNA_STATE_DIR/terminal_colours-light.png" "$out/terminal_colours-light.png" 2>/dev/null
   check near "$drawn" '#f0f0e0' || return 1
   check margins "$shot" || { echo "$shot"; return 1; }
-  check inset "$(raw '{"id":1,"cmd":"debug.terminal","args":{"pane":"terminal_colours"}}')"
+  check inset "$(raw '{"id":1,"cmd":"debug.terminal","args":{"pane":"terminal_colours"}}')" || return 1
+  colours_theme 'light:GitHub Light Default,dark:GitHub Dark Default' '#ffffff' '#0d1117' none || return 1
+  local ghostty="${KANNA_E2E_GHOSTTY:-/Applications/Ghostty.app}"
+  if [[ -f "$ghostty/Contents/Resources/ghostty/themes/Dracula" ]]; then
+    colours_theme 'light:iTerm2 Solarized Light,dark:Dracula' '#fdf6e3' '#282a36' "$ghostty" || return 1
+  else
+    echo "terminal_colours: no Ghostty.app here; not checking themes from it"
+  fi
+  colours_theme 'Dracula' '' '' none
+}
+colours_theme() {
+  local from light="$2" dark="$3"
+  stop_app
+  ghostty_config "theme = $1"
+  mkdir -p "$KANNA_STATE_DIR/xdg" && check test ! -e "$KANNA_STATE_DIR/xdg/ghostty/themes" || return 1
+  from=$(($(wc -l <"$out/app.log" 2>/dev/null || echo 0) + 1))
+  XDG_CONFIG_HOME="$KANNA_STATE_DIR/xdg" KANNA_GHOSTTY_APP="$4" start_app || return 1
+  if [[ -z "$2" ]]; then
+    check wait_for 5 eval 'tail -n +$from "$out/app.log" | grep -q "Ghostty config: theme \"Dracula\" not found"' || return 1
+    check eval 'tail -n +$from "$out/app.log" | grep -q "Kanna ships only these themes: .*GitHub Dark Default"'
+    return
+  fi
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(terminal settings.background "{\"pane\":\"terminal_colours\"}")" == "$dark" ]]' || { terminal settings.scheme '{"pane":"terminal_colours"}'; terminal settings.background '{"pane":"terminal_colours"}'; return 1; }
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(terminal settings.background "{\"pane\":\"terminal_colours\"}")" == "$light" ]]' || { terminal settings.scheme '{"pane":"terminal_colours"}'; terminal settings.background '{"pane":"terminal_colours"}'; return 1; }
+  check eval '! tail -n +$from "$out/app.log" | grep -q "Ghostty config:"'
 }
 
 scenario cwd_title M4
