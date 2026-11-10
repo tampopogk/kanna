@@ -677,7 +677,7 @@ fn pipeline_check_prints_the_worst_case_or_each_error_at_its_line() {
     for name in ["plan", "build", "fix", "review"] {
         std::fs::copy(repo.join(format!(".kanna/prompts/{name}.md")), dir.join(format!(".kanna/prompts/{name}.md"))).unwrap();
     }
-    std::fs::copy(repo.join(".kanna/pipelines/feature.kojo"), dir.join(".kanna/pipelines/feature.kojo")).unwrap();
+    std::fs::copy(repo.join("crates/kanna-pipe/tests/examples/feature.kojo"), dir.join(".kanna/pipelines/feature.kojo")).unwrap();
     std::fs::write(dir.join(".kanna/pipelines/broken.kojo"), "budget = 2 sessions\nb = claude prompt build\nb -> c\n").unwrap();
     assert!(std::process::Command::new("git").arg("init").arg("-q").current_dir(&dir).status().unwrap().success());
     let checked = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "feature"]).ok();

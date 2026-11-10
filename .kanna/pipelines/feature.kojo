@@ -9,7 +9,7 @@ join    = merge build                          # the parts' branches into the ru
 check   = run scripts/check.sh                 # build and unit tests; exit 0 passes
 review  = codex:high prompt review verdict     # fresh reviewer; reports pass or fail
 fix     = claude prompt fix guard check        # rolled back if check gets worse
-e2e     = run scripts/e2e-kanna.sh on mini     # on another Mac, off your dev Mac
+e2e     = run scripts/e2e-kanna.sh           # here: `on mini` comes back with stages on other machines (build order 8)
 
 plan -> build -> join -> check
 check  -[fail, max 3, progress]-> fix -> check
