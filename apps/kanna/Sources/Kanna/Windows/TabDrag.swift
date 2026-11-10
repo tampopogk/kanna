@@ -367,7 +367,9 @@ final class TabDrag {
 
     private func tearOff(at point: NSPoint) {
         let frame = app.newWindowFrame(at: point, size: size)
+        app.arriving = (frame, !still)
         app.layoutCommand("move-tab", ["tab": .string(tab), "window": "new"]) { [self] reply in
+            app.arriving = nil
             guard reply["ok"]?.bool == true, let id = reply["window"]?.string else { return home() }
             app.physical.setFrame(id, frame)
             let deadline = CACurrentMediaTime() + 1
