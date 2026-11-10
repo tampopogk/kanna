@@ -142,6 +142,13 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "workers": {
+          "description": "How many of a run's workers run at once: a fan-out's instances (each STAGE.KEY) and attempts (xN by STAGE) start as others end. Read from the repo's .kanna/config.json, then ~/.kanna-v4/config.json, as a fan-out starts its workers.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
         }
       },
       "additionalProperties": false
