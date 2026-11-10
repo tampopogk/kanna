@@ -97,7 +97,7 @@ sequenceDiagram
 
 ## Merging
 
-A stacked task shouldn't merge into main before its bases have. Kanna doesn't merge branches, so it shows this rather than refusing a `git merge`:
+A stacked task shouldn't merge into main before its bases have. `kanna task merge` refuses it ([merge queue](merge-queue.md#2-merging-a-task)), and Kanna shows it:
 
 - **`kanna task list`** says `merges after "A"` on a stacked task whose bases aren't in main, `--json` gives them as `"bases"` and `"merge": "after"`, and the Desk view's row and the phone show it. It's never `ready`, claimed or not.
 - **The `kanna-tasks` skill** tells an agent not to merge its branch while `kanna task list` says it merges after another task.

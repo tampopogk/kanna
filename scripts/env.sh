@@ -5,6 +5,7 @@ KANNA_GHOSTTY_COMMIT="4e28443e32fe8b0f88934d6a1159c42561f1931a"
 
 KANNA_UPDATE_FEEDS="https://kanna.build/appcast"
 KANNA_UPDATE_PUBLIC_KEY="${KANNA_UPDATE_PUBLIC_KEY:-hjHTuszAUmqmKN6ANvmQQhTlzLs3Tm15WPEudwaMwgU=}"
+KANNA_SOAK_DAYS="${KANNA_SOAK_DAYS:-3}"
 
 KANNA_ZIG_VERSION="0.17.0"
 KANNA_ZIG_SHA256_aarch64_macos="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
@@ -75,17 +76,17 @@ kanna_version() {
 kanna_cargo_stamp() {
   cargo_triple="${3:-$(kanna_host_triple)}"
   cargo_dir="$(kanna_rust_dir "$1" "$cargo_triple")" || return 1
-  stamp="$cargo_dir/macos-deployment-target"
-  [ "$(cat "$stamp" 2>/dev/null)" = "$2" ] && return
+  cargo_stamp="$cargo_dir/macos-deployment-target"
+  [ "$(cat "$cargo_stamp" 2>/dev/null)" = "$2" ] && return
   if [ -d "$cargo_dir" ]; then
-    echo "==> $cargo_dir was built for macOS $(cat "$stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
+    echo "==> $cargo_dir was built for macOS $(cat "$cargo_stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
     if [ "$cargo_triple" = "$(kanna_host_triple)" ]; then
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" >&2 || return 1
     else
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" --target "$cargo_triple" >&2 || return 1
     fi
   fi
-  mkdir -p "$cargo_dir" && echo "$2" > "$stamp"
+  mkdir -p "$cargo_dir" && echo "$2" > "$cargo_stamp"
 }
 
 kanna_zig_build() {

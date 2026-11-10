@@ -8,18 +8,31 @@ pub const COMMAND: Command = Command {
     name: "stats",
     group: "Information",
     summary: "Print this project's numbers over the last 30 days, as the Desk view's Stats tab shows them.",
-    usage: "kanna stats",
-    options: &[],
-    notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality isn't measured yet. Each line is a number, its note and a sparkline of its 30 days, oldest first.",
-    examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them.")],
+    usage: "kanna stats\n       kanna stats pipelines [--json] [--days N]",
+    options: &[("--days N", "pipelines: runs started in the last N days; 0 for every run. Default: 30.")],
+    notes: "Run in the repo: its main checkout's numbers, from the daemon on this machine. Quiz: the share of your kept quiz answers right in the 30 days before each day, by kind and by area, and the misses not asked again. Main: commits and merges per day, from the daemon's samples of main's first-parent commits, taken when you ask. Tasks: made, first started and done per day, and the time from made to done. Code quality: how good the code on main is, measured at each of its commits. Pipelines: runs compared by pipeline and revision. It answers at once with what's stored: while the daemon catches up behind it, a line under the title (`status` with --json) says what it's doing. Each line is a number, its note and a sparkline of its 30 days, oldest first. pipelines prints the runs compared, with --json the numbers per pipeline, per run and per stage and machine.",
+    examples: &[("kanna stats", "This project's numbers."), ("kanna stats --json", "The sections and tiles, as the Stats tab draws them."), ("kanna stats pipelines --days 90", "Runs of the last 90 days by pipeline and revision.")],
     parse,
     show,
     flow: Flow::PLAIN,
 };
 
-fn parse(_: &mut Argv) -> Result<Value, Failure> {
+fn parse(args: &mut Argv) -> Result<Value, Failure> {
+    let days = args.option("--days")?;
+    let what = args.positional();
     let repo = repo_here().map_err(|_| usage("stats", "stats are a git repo's: run this in one"))?;
-    Ok(json!({ "repo": repo }))
+    let mut out = json!({ "repo": repo });
+    match what.as_deref() {
+        None if days.is_some() => return Err(usage("stats", "--days is for stats pipelines")),
+        None => return Ok(out),
+        Some("pipelines") => out["pipelines"] = json!(true),
+        Some(other) => return Err(usage("stats", &format!("unknown \"{other}\" (pipelines)"))),
+    }
+    if let Some(days) = days {
+        let days = days.parse::<u32>().map_err(|_| usage("stats", "--days takes a number of days"))?;
+        out["days"] = json!(days);
+    }
+    Ok(out)
 }
 
 pub fn show(_: &Value, reply: &Value) -> String {
@@ -47,6 +60,21 @@ pub fn show(_: &Value, reply: &Value) -> String {
                 }
                 continue;
             }
+            if chart["kind"] == "table" {
+                rows.push([head, label, String::new(), String::new(), String::new()]);
+                for line in table_lines(chart) {
+                    rows.push([String::new(), format!("  {line}"), String::new(), String::new(), String::new()]);
+                }
+                if let Some(note) = tile["note"].as_str().filter(|n| !n.is_empty()) {
+                    rows.push([String::new(), format!("  {note}"), String::new(), String::new(), String::new()]);
+                }
+                continue;
+            }
+            if chart["kind"] == "runs" {
+                let medians: Vec<&str> = chart["medians"].as_array().into_iter().flatten().filter_map(|m| m["label"].as_str()).collect();
+                rows.push([head, format!("{label}: {}", medians.join(", ")), String::new(), String::new(), String::new()]);
+                continue;
+            }
             if chart["kind"] == "ranked" {
                 rows.push([head, label, String::new(), String::new(), String::new()]);
                 for row in chart["rows"].as_array().into_iter().flatten() {
@@ -66,7 +94,18 @@ pub fn show(_: &Value, reply: &Value) -> String {
     let widths = [width(0), width(1), width(2), width(3)];
     let mut out = vec![];
     if let Some(project) = reply["project"].as_str() {
-        out.push(format!("{} · main · last 30 days", home_relative(project)));
+        let window = match reply.get("days") {
+            Some(Value::Number(days)) => format!("last {days} days"),
+            Some(Value::Null) => "all runs".to_string(),
+            _ => "last 30 days".to_string(),
+        };
+        out.push(format!("{} · main · {window}", home_relative(project)));
+    }
+    if let Some(status) = reply["status"].as_str() {
+        out.push(status.to_string());
+    }
+    if reply["sections"].as_array().is_some_and(Vec::is_empty) {
+        out.push("No numbers yet: run this again in a moment.".to_string());
     }
     for row in &rows {
         let line = if row[2].is_empty() && row[4].is_empty() {
@@ -77,6 +116,22 @@ pub fn show(_: &Value, reply: &Value) -> String {
         out.push(line.trim_end().to_string());
     }
     out.join("\n")
+}
+
+fn table_lines(chart: &Value) -> Vec<String> {
+    let columns = chart["columns"].as_array().cloned().unwrap_or_default();
+    let cells = |row: &Value| -> Vec<String> { row["cells"].as_array().into_iter().flatten().map(|c| c["text"].as_str().unwrap_or("").to_string()).collect() };
+    let mut lines: Vec<Vec<String>> = vec![columns.iter().map(|c| c["title"].as_str().unwrap_or("").replace('\n', " ")).collect()];
+    lines.extend(chart["rows"].as_array().into_iter().flatten().map(cells));
+    let width = |column: usize| lines.iter().filter_map(|l| l.get(column)).map(|t| t.chars().count()).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..columns.len()).map(width).collect();
+    lines
+        .iter()
+        .map(|line| {
+            let cell = |(i, text): (usize, &String)| if columns[i]["right"] == true { format!("{text:>w$}", w = widths[i]) } else { format!("{text:<w$}", w = widths[i]) };
+            line.iter().enumerate().map(cell).collect::<Vec<_>>().join("  ").trim_end().to_string()
+        })
+        .collect()
 }
 
 fn spark(values: &[Value], max: Option<f64>) -> String {
@@ -131,6 +186,26 @@ mod tests {
     }
 
     #[test]
+    fn stats_pipelines_asks_for_its_window_and_prints_tables_and_medians() {
+        let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
+        assert_eq!(parse("kanna stats pipelines").unwrap().1, json!({ "repo": repo, "pipelines": true }));
+        assert_eq!(parse("kanna stats pipelines --days 0").unwrap().1, json!({ "repo": repo, "pipelines": true, "days": 0 }));
+        assert!(parse("kanna stats --days 3").is_err());
+        assert!(parse("kanna stats pipelines --days soon").is_err());
+        let reply = json!({ "project": "/r", "days": 90, "sections": [{ "id": "pipelines", "title": "Pipelines", "tiles": [
+            { "id": "pipelines", "label": "", "value": null, "note": "Per run: medians.", "chart": { "kind": "table", "columns": [{ "title": "Pipeline" }, { "title": "Time to land,\nmedian", "right": true }], "rows": [{ "cells": [{ "text": "feature rev 2" }, { "text": "3.4h" }] }] } },
+            { "id": "run-land", "label": "Time to land", "value": null, "note": "", "chart": { "kind": "runs", "medians": [{ "label": "feature rev 2 median 3.4h" }] } },
+        ] }] });
+        let text = show(&json!({}), &reply);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "/r · main · last 90 days");
+        assert_eq!(lines[2], "             Pipeline       Time to land, median");
+        assert_eq!(lines[3], "             feature rev 2                  3.4h");
+        assert_eq!(lines[4], "             Per run: medians.");
+        assert_eq!(lines[5], "           Time to land: feature rev 2 median 3.4h");
+    }
+
+    #[test]
     fn stats_print_a_line_a_tile_with_its_sparkline() {
         let repo = parse("kanna quiz history").unwrap().1["repo"].clone();
         assert_eq!(parse("kanna stats").unwrap().1, json!({ "repo": repo }));
@@ -153,6 +228,12 @@ mod tests {
         let text = show(&json!({}), &reply);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "/r · main · last 30 days");
+        let mut updating = reply.clone();
+        updating["status"] = json!("Updating: running coverage");
+        let shown = show(&json!({}), &updating);
+        assert_eq!(shown.lines().nth(1), Some("Updating: running coverage"));
+        assert_eq!(shown.lines().nth(2), Some(lines[1]));
+        assert_eq!(show(&json!({}), &json!({ "project": "/r", "sections": [], "status": null })), "/r · main · last 30 days\nNo numbers yet: run this again in a moment.");
         assert_eq!(lines[1], "Quiz          Answers right     79%  of 95 answers              ▅█");
         assert_eq!(lines[2], "              By kind");
         assert_eq!(lines[3], "                why             92%  11/12");

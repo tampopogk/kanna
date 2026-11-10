@@ -58,6 +58,8 @@ pub trait TaskBook {
 
 pub type CommandHandler = Rc<dyn Fn(Value, Responder)>;
 
+pub type OpenPrep = Rc<dyn Fn(&mut Value) -> Result<(), KmuxError>>;
+
 pub type PrefixHandler = Rc<dyn Fn(&str, Value, Responder)>;
 
 pub const TASKS_PER_PROJECT: usize = 3;
@@ -130,6 +132,7 @@ struct Inner {
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
     new_run: RefCell<Vec<Rc<dyn Fn(&str)>>>,
     ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
+    preps: RefCell<HashMap<&'static str, OpenPrep>>,
 }
 
 pub struct Core(CoreHandle);
@@ -180,6 +183,7 @@ impl Core {
             waiters: RefCell::new(HashMap::new()),
             new_run: RefCell::new(vec![]),
             ended: RefCell::new(vec![]),
+            preps: RefCell::new(HashMap::new()),
         })))
     }
 }
@@ -197,6 +201,7 @@ impl Drop for Core {
         inner.driver.borrow_mut().take();
         inner.waiters.borrow_mut().clear();
         inner.extra.borrow_mut().clear();
+        inner.preps.borrow_mut().clear();
         inner.prefixes.borrow_mut().clear();
         inner.front.borrow_mut().take();
         inner.host.borrow_mut().take();
@@ -320,6 +325,15 @@ impl CoreHandle {
 
     pub fn add_command(&self, name: &str, handler: CommandHandler) {
         self.0.extra.borrow_mut().insert(name.into(), handler);
+    }
+
+    pub fn on_open(&self, kind: PaneType, prep: OpenPrep) {
+        self.0.preps.borrow_mut().insert(kind.as_str(), prep);
+    }
+
+    fn prep_open(&self, args: &mut Value) -> Result<(), KmuxError> {
+        let prep = string(args, "type").and_then(|kind| self.0.preps.borrow().get(kind).cloned());
+        prep.map_or(Ok(()), |prep| prep(args))
     }
 
     pub fn set_tasks(&self, book: Rc<dyn TaskBook>) {
@@ -533,7 +547,7 @@ impl CoreHandle {
     }
 
     async fn woken(&self, task: &str) -> Result<Vec<String>, KmuxError> {
-        let held = self.terminals_of(task, |p| p.hung_up && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
+        let held = self.terminals_of(task, |p| (p.hung_up || p.lost()) && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
         let mut woken = vec![];
         for id in &held {
             let snapshot = self.reload(id, true).await;
@@ -678,7 +692,8 @@ impl CoreHandle {
             Some(cmd) => {
                 let cmd = cmd.to_string();
                 let mut args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-                match if matches!(cmd.as_str(), "window" | "open") { self.task_workspace(&mut args) } else { Ok(()) } {
+                let prepared = if cmd == "open" { self.prep_open(&mut args) } else { Ok(()) };
+                match prepared.and_then(|()| if matches!(cmd.as_str(), "window" | "open") { self.task_workspace(&mut args) } else { Ok(()) }) {
                     Ok(()) => self.run(&cmd, args).await,
                     Err(error) => Err(error),
                 }
@@ -864,6 +879,12 @@ impl CoreHandle {
         if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial) {
             return Err(bad_request("path is only for markdown, code, diff, log and serial panes"));
         }
+        if kind == PaneType::Run && empty("run") {
+            return Err(bad_request("run panes need a run: its ID"));
+        }
+        if args.get("run").is_some() && kind != PaneType::Run {
+            return Err(bad_request("run is only for run panes"));
+        }
         if (args.get("baud").is_some() || args.get("lineEnding").is_some()) && kind != PaneType::Serial {
             return Err(bad_request("baud and lineEnding are only for serial panes"));
         }
@@ -1034,6 +1055,9 @@ impl CoreHandle {
                 pane.git_args = Some(diff.unwrap_or_default());
                 pane.view = view;
             }
+            if kind == PaneType::Run {
+                pane.run = field("run");
+            }
             if kind == PaneType::Serial {
                 pane.baud = baud;
                 pane.line_ending = line_ending;
@@ -1180,7 +1204,16 @@ impl CoreHandle {
         let (path, first, last) = (comment.path.clone(), comment.first, comment.last);
         let placeless = ["name", "tab", "dock", "split", "size"].iter().all(|key| args.get(*key).is_none());
         let from = string(args, "from");
-        let found = if placeless { self.showing(&path, from, string(args, "window")).await? } else { None };
+        let found = match string(args, "pane") {
+            Some(pane) => {
+                let id = self.state().panes.pane(pane).filter(|p| p.kind == PaneType::Code && p.path.as_deref() == Some(path.as_str())).map(|p| p.id.clone());
+                let id = id.ok_or_else(|| KmuxError::new("not_found", format!("{pane} isn't a code pane showing {path}")))?;
+                let location = self.layout(json!({ "op": "location", "pane": id })).await?;
+                Some((id, location))
+            }
+            None if placeless => self.showing(&path, from, string(args, "window")).await?,
+            None => None,
+        };
         let (id, location, was_open) = match found {
             Some((id, location)) => {
                 {

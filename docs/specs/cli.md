@@ -54,7 +54,7 @@ Decided; everything else is kmux's.
 | `send-key PANE KEY...` | — (`send` types a line and presses Return; `debug.key` goes through the app's window) | presses keys in a terminal, encoded for the program's current modes, without the app ([commands](commands.md#3-send-key)) | agents answer another agent's menu, interrupt a command or submit a prompt; kmux's research recommends cmux's `send-key`, and kmux gets it from this port |
 | `diagrams check FILE...`; `open md`'s failure lines and `diagrams` field | — | checks a markdown file's mermaid diagrams and [call trees](call-tree.md), without the app, and exits 1 if one won't draw; `open md` prints the same failures on stderr ([diagram check](diagram-check.md)) | agents present docs whose diagrams they never saw |
 | `pipeline check NAME\|FILE`, `pipeline list` | — | checks a software-factory pipeline (`.kanna/pipelines/NAME.kojo`) without the app, errors as `FILE:LINE: message`, and prints its worst case against its budget; `list` does every pipeline in the repo ([Kojo](kojo.md#6-checks-on-the-file)) | agents and you write pipelines before a run reads them |
-| `run start PIPELINE [--request FILE\|TEXT]`, `run list [--all]`, `run show [RUN] [--json]`, `run log [RUN]`, `run stop [RUN]`, `run resume [RUN] [TEXT]`, `run done [pass\|fail]`, `run need TEXT` | — | runs a pipeline for the task whose terminal starts it, in workers the daemon drives (the daemon's `run` command), and reads, resumes or stops runs; a stage's agent reports it's done or needs you ([software factory](software-factory.md#7-cli)) | a task's agent builds its change through a pipeline |
+| `run start PIPELINE [--request FILE\|TEXT]`, `run list [--all]`, `run show [RUN] [--json]`, `run log [RUN]`, `run answer [RUN] yes\|no [NOTE]`, `run pause\|skip\|retry\|stop [RUN]`, `run resume [RUN] [TEXT]`, `run done [pass\|fail]`, `run need TEXT` | — | runs a pipeline for the task whose terminal starts it, in workers the daemon drives (the daemon's `run` command), and reads, answers, pauses, resumes, skips, retries or stops runs; a stage's agent reports it's done or needs you ([software factory](software-factory.md#7-cli)) | a task's agent builds its change through a pipeline |
 | `--` | — (`--json` is taken from anywhere, so it can't be typed) | ends the options: `kanna send term-1 -- --json` | text that looks like an option |
 | `--mux`, `KANNA_MUX` | — | `kanna` (default) or `kmux` | kanna can drive a kmux too ([backends](backends.md)) |
 | `markup FILE.md\|FILE.html [--to PANE]`, `markup PANE [--to PANE \| --off]`, `markup comments\|show\|reply\|resolve\|reopen` | — | opens a doc with comments, or turns them on or off in a pane; `open` shows docs without them; the rest read and answer its threads, in the doc's thread file, without the daemon ([doc markup](doc-markup.md)) | review with an agent is opt-in |
@@ -87,7 +87,7 @@ Decided; everything else is kmux's.
 
 ## 3. Reaching Kanna
 
-The CLI never starts a daemon: it starts Kanna.app, which does. When a command fails against a daemon of another build (`capabilities` answers `build`), it adds a line saying so and to relaunch Kanna.app ([daemon build](daemon-build.md)). Which daemon it talks to: [instances](instances.md#2-which-instance-a-command-goes-to).
+The CLI never starts a daemon: it starts Kanna.app, which does. When a command fails against a daemon of another build (`capabilities` answers `build`), it adds a line saying so and to relaunch Kanna.app ([daemon build](daemon-build.md)). Which daemon it talks to: [instances](instances.md#2-which-instance-a-command-goes-to). Which `kanna` binary a shell runs: [which kanna a shell runs](cli-per-instance.md).
 
 ```mermaid
 sequenceDiagram
@@ -173,7 +173,7 @@ flowchart LR
 | `commands/mod.rs` | `Command`, `Flow`, `COMMANDS` (one line per command: the order help prints), lookup, and the tests that span commands (kmux's `requests`, `usage_errors_say_what_to_do`, every documented example parses) |
 | `commands/shared.rs` | what several commands' parsing uses: `usage`, `pane`, `target`, `caller`, `repo_here`, `absolute`, `file_line` |
 | `output.rs` | what several commands' printing uses: `join`, `label`, `state`, `whose`, `moved`, `tilde`, `ago`, `expression`, task ID shortening |
-| `commands/help.rs`, `config.rs`, `completions.rs`, `instances.rs`, `raw.rs`, `build.rs`, `guests.rs` | commands outside the table, which `lib.rs` or `main` calls by name |
+| `commands/help.rs`, `config.rs`, `completions.rs`, `instances.rs`, `raw.rs`, `build.rs`, `builds.rs`, `guests.rs` | commands outside the table, which `lib.rs` or `main` calls by name |
 | `threads.rs`, `complete.rs`, `target.rs`, `args.rs`, `route.rs` | not one command's: comment threads, tab completion, reaching a Kanna, argument words, which machine a task's command goes to |
 
 Something moves to `shared.rs` or `output.rs` when a second command needs it, and back when only one does.

@@ -248,11 +248,16 @@ extension AppController {
         deskMade[MachineIDs.machine(of: pane) ?? ""]?[pane] ?? .max
     }
 
+    func deskTaskID(_ pane: String) -> String? {
+        deskIDs[MachineIDs.machine(of: pane) ?? ""]?[pane]
+    }
+
     func stack(_ pane: String) -> String? {
         deskStacks[MachineIDs.machine(of: pane) ?? ""]?[pane]
     }
 
     func shelfChanged(_ tasks: [JSON], desk: [JSON], on machine: String?) {
+        deskIDs[machine ?? ""] = Dictionary(desk.compactMap { entry in entry["pane"]?.string.flatMap { pane in entry["id"]?.string.map { (pane, $0) } } }, uniquingKeysWith: { first, _ in first })
         deskMade[machine ?? ""] = Dictionary(desk.enumerated().compactMap { at, entry in entry["pane"]?.string.map { ($0, at) } }, uniquingKeysWith: { first, _ in first })
         deskStacks[machine ?? ""] = Dictionary(desk.compactMap { entry in entry["pane"]?.string.flatMap { pane in ShelfTask.stack(entry).map { (pane, $0) } } }, uniquingKeysWith: { first, _ in first })
         let tag: JSON = machine.map { .string($0) } ?? .null
@@ -271,6 +276,7 @@ extension AppController {
     func mergeShelves() {
         let merged: [JSON] = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
         shelf = DeskOrder.byAge(merged, made: { (entry: JSON) -> Double in entry["madeAt"]?.number ?? 0 }, tie: { (entry: JSON) -> String in MachineIDs.bare(entry["id"]?.string ?? "") })
+        queueChanged()
     }
 
     func location(ofEntry entry: JSON) -> String? {
@@ -294,13 +300,14 @@ extension AppController {
             guard let id = entry["id"]?.string, let name = entry["name"]?.string else { return nil }
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
+            let running = entry["running"]?.bool == true && entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } != "exited"
             let status = offline(entry["machine"]?.string) ? nil : entry["running"]?.bool == true ? entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } : ShelfTask.last(stopped: entry["stopped"]?.string)
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status)
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status, queue: QueueSpot(entry["queue"]), failed: entry["mergeFailed"]?["why"]?.string, running: running, failedEntry: entry["mergeFailed"]?["queue"]?.string)
         }
     }
 
     func runningOnShelf(in root: String?) -> [JSON] {
-        shelf.filter { $0["running"]?.bool == true && inProject($0, root) }.compactMap { entry in
+        shelf.filter { $0["running"]?.bool == true && QueueSpot($0["queue"]) == nil && inProject($0, root) }.compactMap { entry in
             entry["held"]?.string.map { pane in
                 let ws = published["workspaces"]?.array?.first { $0["dock"]?["pane"]?.string == pane }
                 return ["task": .string(pane), "type": "term", "tabs": ws?["tabs"] ?? []]
@@ -313,16 +320,39 @@ extension AppController {
         return docked.filter { root == nil || sameProject(projectRoot($0), root) }.count
     }
 
-    private func noted(_ window: String, _ reply: JSON, otherwise: String = "it didn't start") {
+    private func noted(_ window: String, _ reply: JSON, task: String? = nil, verb: String = "start", otherwise: String? = nil) {
         guard reply["ok"]?.bool != true, let controller = controllers[window] else { return }
-        controller.note = reply["error"]?["message"]?.string ?? otherwise
+        let shelved = controller.shelf.first { $0.id == task }
+        switch reply["error"]?["code"]?.string {
+        case "task_limit":
+            controller.note = "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)."
+        case "blocked" where shelved?.blocked == true:
+            controller.note = "“\(shelved!.name)” waits for " + shelved!.waits.map { "“\($0)”" }.joined(separator: ", ") + ": it can \(verb) once that's done."
+        default:
+            controller.note = reply["error"]?["message"]?.string ?? otherwise ?? "it didn't \(verb)"
+        }
         refresh()
     }
 
     func shelveTask(_ task: String, from window: String) {
         controllers[window]?.note = ""
         request("tasks", ["action": "shelve", "task": .string(task)]) { [weak self] reply in
-            self?.noted(window, reply, otherwise: "it didn't move")
+            self?.noted(window, reply, task: task, verb: "move")
+        }
+    }
+
+    func takeOut(_ task: String, from window: String) {
+        controllers[window]?.note = ""
+        request("queue", ["action": "cancel", "task": .string(task)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it stayed in the merge queue")
+        }
+    }
+
+    func resumeQueued(_ run: String, from window: String) {
+        controllers[window]?.note = ""
+        request("run", ["action": "resume", "run": .string(run)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it stays paused")
+            self?.queueChanged()
         }
     }
 
@@ -331,8 +361,17 @@ extension AppController {
         let click = Clicks.pick(task, desk: controllers[window]?.deskTasks.map(\.id) ?? [])
         request("tasks", ["action": "pick", "task": .string(task)], reply: { [weak self] reply in
             if reply["ok"]?.bool != true { Clicks.failed(task) }
-            self?.noted(window, reply)
+            self?.noted(window, reply, task: task, verb: "move")
         }, sent: Clicks.sent(click))
+    }
+
+    func runTask(_ task: String, from window: String) {
+        guard let shelved = controllers[window]?.shelf.first(where: { $0.id == task }) else { return }
+        controllers[window]?.note = ""
+        let verb = shelved.running ? "stop" : "start"
+        request("tasks", ["action": .string(verb), "task": .string(task)]) { [weak self] reply in
+            self?.noted(window, reply, task: task, verb: verb)
+        }
     }
 
     func newDesk() {
