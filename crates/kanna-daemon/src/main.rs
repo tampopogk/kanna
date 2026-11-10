@@ -9,9 +9,11 @@ mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
+mod build_queue;
 mod cli;
 mod guests;
 mod instance_move;
+mod ios_apps;
 mod tasks;
 mod db;
 mod desk_news;
@@ -40,6 +42,7 @@ mod stats;
 mod quality;
 mod coverage;
 mod reader;
+mod run_notice;
 mod runtime;
 mod runs;
 mod schedule;
@@ -59,6 +62,8 @@ mod store;
 mod stacks;
 mod task_events;
 mod task_scripts;
+mod pipelines;
+mod usage;
 mod terminals;
 mod transfer;
 mod toasts;
@@ -117,6 +122,7 @@ enum Shutdown {
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Output { terminal: String, serial: u64 },
+    Typed { terminal: String },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
@@ -157,6 +163,7 @@ impl Event {
         match self {
             Event::Request(..) => "loop.request",
             Event::Output { .. } => "loop.output",
+            Event::Typed { .. } => "loop.typed",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
@@ -433,6 +440,10 @@ fn run() -> Result<(), String> {
             queue.task_closed(task);
         }
     }));
+    let staging = Rc::downgrade(&runs);
+    *tasks.run_of.borrow_mut() = Some(Box::new(move |task| staging.upgrade().and_then(|runs| runs.stage_of(task))));
+    let heeding = wire.clone();
+    *runs.heed.borrow_mut() = Some(Box::new(move |terminal| heeding.heed(terminal)));
     let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
     *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = stopping.upgrade() {
@@ -459,6 +470,8 @@ fn run() -> Result<(), String> {
     scheduler.watch_deliveries(&tasks);
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
+    builds::install(&state_dir, &core, build_callers.clone());
+    ios_apps::install(&state_dir, &core, build_callers.clone());
     if cfg!(target_os = "macos") {
         guests.start();
     }
@@ -608,6 +621,7 @@ fn run() -> Result<(), String> {
     tasks.repair_comment_targets();
     tasks.settle_statuses();
     tasks.close_ended_planners();
+    tasks.resume_lost();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -649,7 +663,16 @@ fn run() -> Result<(), String> {
             app.status(pane, core.pane(pane).and_then(|p| p.status().map(String::from)).as_deref());
         }
     }));
-    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let (stats_link, stats_phone) = (Rc::downgrade(&app), Rc::downgrade(&phone));
+    *stats.on_change.borrow_mut() = Some(Box::new(move |repo| {
+        if let Some(app) = stats_link.upgrade() {
+            app.stats_changed(repo);
+        }
+        if let Some(phone) = stats_phone.upgrade() {
+            phone.stats_changed(repo);
+        }
+    }));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -705,6 +728,13 @@ fn run() -> Result<(), String> {
             app.diff(views, payload);
         }
     }));
+    app.connect_runs(&runs);
+    let run_link = Rc::downgrade(&app);
+    *runs.on_run.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = run_link.upgrade() {
+            app.run(views, payload);
+        }
+    }));
     let log_link = Rc::downgrade(&app);
     *logs.on_log.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = log_link.upgrade() {
@@ -737,11 +767,15 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shelved = Rc::downgrade(&tasks);
     let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
-        Rc::new(move |args, responder| {
+        Rc::new(move |mut args, responder| {
             if let Some(link) = screenshot.upgrade() {
+                if args.get("pane").is_some() {
+                    args["stopped"] = Value::Array(shelved.upgrade().map(|tasks| tasks.stopped_on_shelf()).unwrap_or_default());
+                }
                 screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
@@ -922,6 +956,11 @@ fn run() -> Result<(), String> {
                     app.resync(conn, &terminal);
                 }
             }
+            Event::Typed { terminal } => {
+                if let Some(pane) = terminals.pane_of(&terminal) {
+                    runs.typed(&pane);
+                }
+            }
             Event::Drained { terminal, serial } => {
                 if let Some(code) = terminals.drained(&terminal, serial) {
                     ended(&terminals, &tasks, &app, &terminal, code);
@@ -968,7 +1007,7 @@ fn run() -> Result<(), String> {
             }
             Event::Serial(event) => serial.event_in(event),
             Event::Sampled(sampled) => stats.sampled(sampled),
-            Event::Covered(covered) => stats.coverage().covered(covered),
+            Event::Covered(covered) => stats.covered(covered),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {
