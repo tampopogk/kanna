@@ -19,7 +19,7 @@ flowchart TB
 
 ## Download
 
-[Download Kanna](https://github.com/tampopogk/kanna/releases/latest): `Kanna-X.Y.Z-arm64.dmg` for Apple silicon, `Kanna-X.Y.Z-x86_64.dmg` for Intel. Open it and drag Kanna to Applications. Releases are cut with `scripts/release.sh` ([release](docs/specs/release.md)).
+[Download Kanna](https://github.com/tampopogk/kanna/releases/latest): `Kanna-X.Y.Z-arm64.dmg` for Apple silicon, `Kanna-X.Y.Z-x86_64.dmg` for Intel. Open it and drag Kanna to Applications. Releases are cut with `scripts/release.sh` ([release](docs/specs/release.md)): a staging candidate soaks, then is promoted ([release candidates](docs/specs/release-candidates.md)).
 
 ## Build
 
