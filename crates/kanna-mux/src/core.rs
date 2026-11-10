@@ -1,5 +1,5 @@
 use crate::error::KmuxError;
-use crate::exec::{sleep, Executor, Signal, Turns, Wakeup};
+use crate::exec::{Signal, Timed, Timing, Turns};
 use crate::instance::{Instance, DEFAULT_NAME};
 use crate::json::{is_true, json, num, string, Map, Value};
 use crate::layout::{place_request, scope_request, Edge, LayoutHost, LayoutLink, LocalLayout, Placement, Scope, SplitSide};
@@ -24,6 +24,10 @@ pub trait PaneHost {
     fn start(&self, pane: &Pane);
     fn stop(&self, pane: &Pane);
     fn send(&self, pane: &Pane, text: &str, done: Responder);
+    fn paste(&self, pane: &Pane, text: &str, done: Responder) {
+        let _ = text;
+        done.reply(Err(KmuxError::new("unsupported", format!("{} can't take a paste here", pane.label()))));
+    }
     fn send_keys(&self, pane: &Pane, keys: Vec<String>, done: Responder) {
         let _ = keys;
         done.reply(Err(KmuxError::new("unsupported", format!("{} can't take keys here", pane.label()))));
@@ -53,6 +57,8 @@ pub trait TaskBook {
 }
 
 pub type CommandHandler = Rc<dyn Fn(Value, Responder)>;
+
+pub type OpenPrep = Rc<dyn Fn(&mut Value) -> Result<(), KmuxError>>;
 
 pub type PrefixHandler = Rc<dyn Fn(&str, Value, Responder)>;
 
@@ -92,11 +98,31 @@ struct State {
     saved_state: Option<Value>,
 }
 
+struct Driver {
+    runtime: Option<tokio::runtime::Runtime>,
+    local: tokio::task::LocalSet,
+}
+
+impl Drop for Driver {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+impl Driver {
+    fn new() -> Driver {
+        Driver { runtime: Some(tokio::runtime::Builder::new_current_thread().enable_all().build().expect("start kanna-mux's runtime")), local: tokio::task::LocalSet::new() }
+    }
+}
+
 struct Inner {
     state: RefCell<State>,
     layout: Rc<dyn LayoutLink>,
     turns: Rc<Turns>,
-    exec: Rc<Executor>,
+    driver: RefCell<Option<Rc<Driver>>>,
+    timing: RefCell<Option<Timing>>,
     host: RefCell<Option<Rc<dyn PaneHost>>>,
     on_change: RefCell<Option<Rc<dyn Fn()>>>,
     extra: RefCell<HashMap<String, CommandHandler>>,
@@ -104,8 +130,9 @@ struct Inner {
     front: RefCell<Option<CommandHandler>>,
     tasks: RefCell<Option<Rc<dyn TaskBook>>>,
     waiters: RefCell<HashMap<String, Vec<Rc<Signal>>>>,
-    renamed: RefCell<Vec<Rc<dyn Fn(&str, &str)>>>,
+    new_run: RefCell<Vec<Rc<dyn Fn(&str)>>>,
     ended: RefCell<Vec<Rc<dyn Fn(&str)>>>,
+    preps: RefCell<HashMap<&'static str, OpenPrep>>,
 }
 
 pub struct Core(CoreHandle);
@@ -145,7 +172,8 @@ impl Core {
                 ios_start_timeout: Duration::from_secs(180),
                 saved_state: None,
             }),
-            exec: Rc::default(),
+            driver: RefCell::new(Some(Rc::new(Driver::new()))),
+            timing: RefCell::new(None),
             host: RefCell::new(None),
             on_change: RefCell::new(None),
             extra: RefCell::new(HashMap::new()),
@@ -153,8 +181,9 @@ impl Core {
             front: RefCell::new(None),
             tasks: RefCell::new(None),
             waiters: RefCell::new(HashMap::new()),
-            renamed: RefCell::new(vec![]),
+            new_run: RefCell::new(vec![]),
             ended: RefCell::new(vec![]),
+            preps: RefCell::new(HashMap::new()),
         })))
     }
 }
@@ -169,13 +198,22 @@ impl Deref for Core {
 impl Drop for Core {
     fn drop(&mut self) {
         let inner = &self.0 .0;
-        inner.exec.clear();
+        inner.driver.borrow_mut().take();
         inner.waiters.borrow_mut().clear();
         inner.extra.borrow_mut().clear();
+        inner.preps.borrow_mut().clear();
         inner.prefixes.borrow_mut().clear();
         inner.front.borrow_mut().take();
         inner.host.borrow_mut().take();
         inner.on_change.borrow_mut().take();
+    }
+}
+
+fn request_name(request: &Value) -> String {
+    let cmd = request.get("cmd").and_then(Value::as_str).unwrap_or("?");
+    match request.get("args").and_then(|args| args.get("action")).and_then(Value::as_str) {
+        Some(action) => format!("{cmd} {action}"),
+        None => cmd.to_string(),
     }
 }
 
@@ -224,8 +262,8 @@ impl CoreHandle {
         self.state().panes.use_content_ids();
     }
 
-    pub fn on_renamed(&self, renamed: Rc<dyn Fn(&str, &str)>) {
-        self.0.renamed.borrow_mut().push(renamed);
+    pub fn on_new_run(&self, new_run: Rc<dyn Fn(&str)>) {
+        self.0.new_run.borrow_mut().push(new_run);
     }
 
     pub fn on_ended(&self, ended: Rc<dyn Fn(&str)>) {
@@ -239,8 +277,30 @@ impl CoreHandle {
         }
     }
 
-    pub fn set_wakeup(&self, wakeup: Option<Wakeup>) {
-        self.0.exec.set_wakeup(wakeup);
+    pub fn set_timing(&self, timing: Option<Timing>) {
+        *self.0.timing.borrow_mut() = timing;
+    }
+
+    fn driver(&self) -> Option<Rc<Driver>> {
+        self.0.driver.borrow().clone()
+    }
+
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+        let driver = self.driver().expect("the core is stopped");
+        driver.local.block_on(driver.runtime.as_ref().expect("the runtime lives as long as its driver"), future)
+    }
+
+    pub fn enter(&self) -> tokio::task::LocalEnterGuard {
+        self.driver().expect("the core is stopped").local.enter()
+    }
+
+    pub fn turn(&self) {
+        self.block_on(tokio::task::yield_now());
+    }
+
+    fn launch(&self, name: String, future: impl Future<Output = ()> + 'static) {
+        let Some(driver) = self.driver() else { return };
+        driver.local.spawn_local(Timed { name, future: Box::pin(future), timing: self.0.timing.borrow().clone() });
     }
 
     pub fn set_instance(&self, instance: Instance) {
@@ -265,6 +325,15 @@ impl CoreHandle {
 
     pub fn add_command(&self, name: &str, handler: CommandHandler) {
         self.0.extra.borrow_mut().insert(name.into(), handler);
+    }
+
+    pub fn on_open(&self, kind: PaneType, prep: OpenPrep) {
+        self.0.preps.borrow_mut().insert(kind.as_str(), prep);
+    }
+
+    fn prep_open(&self, args: &mut Value) -> Result<(), KmuxError> {
+        let prep = string(args, "type").and_then(|kind| self.0.preps.borrow().get(kind).cloned());
+        prep.map_or(Ok(()), |prep| prep(args))
     }
 
     pub fn set_tasks(&self, book: Rc<dyn TaskBook>) {
@@ -382,6 +451,19 @@ impl CoreHandle {
         }
     }
 
+    pub fn set_agent(&self, id: &str, agent: &str) {
+        let updated = self.with_pane_mut(id, |pane| {
+            pane.agent = Some(agent.to_string());
+            pane.clone()
+        });
+        if let Some(pane) = updated {
+            self.changed();
+            if let Some(host) = self.host() {
+                host.update(&pane);
+            }
+        }
+    }
+
     pub fn set_command(&self, id: &str, command: String) {
         if self.with_pane_mut(id, |pane| pane.command = Some(command)).is_some() {
             self.changed();
@@ -409,44 +491,39 @@ impl CoreHandle {
 
     pub fn handle(&self, request: Value, reply: impl FnOnce(Value) + 'static) {
         let core = self.clone();
-        self.0.exec.spawn(Box::pin(async move { reply(core.respond(request).await) }));
-        self.0.exec.run();
+        let name = request_name(&request);
+        self.launch(name, async move { reply(core.respond(request).await) });
     }
 
     pub fn handle_blocking(&self, request: Value) -> Value {
         let answer = Rc::new(RefCell::new(None));
-        let slot = answer.clone();
-        self.handle(request, move |reply| *slot.borrow_mut() = Some(reply));
-        loop {
-            if let Some(reply) = answer.borrow_mut().take() {
-                return reply;
-            }
-            if !self.0.exec.has_ready() {
-                self.0.exec.wait(self.0.exec.next_deadline());
-            }
-            self.0.exec.run();
-        }
+        let answered = Rc::new(Signal::default());
+        let (slot, done) = (answer.clone(), answered.clone());
+        self.handle(request, move |reply| {
+            *slot.borrow_mut() = Some(reply);
+            done.set();
+        });
+        self.block_on(answered.wait());
+        let reply = answer.borrow_mut().take();
+        reply.expect("the request was answered")
     }
 
     pub fn end(&self, id: &str, done: impl FnOnce(Result<(), KmuxError>) + 'static) {
         let core = self.clone();
         let id = id.to_string();
-        self.0.exec.spawn(Box::pin(async move { done(core.ended(&id).await) }));
-        self.0.exec.run();
+        self.launch("end".to_string(), async move { done(core.ended(&id).await) });
     }
 
     pub fn hang_up(&self, task: &str, done: impl FnOnce(Result<Vec<String>, KmuxError>) + 'static) {
         let core = self.clone();
         let task = task.to_string();
-        self.0.exec.spawn(Box::pin(async move { done(core.hung_up(&task).await) }));
-        self.0.exec.run();
+        self.launch("hang up".to_string(), async move { done(core.hung_up(&task).await) });
     }
 
     pub fn wake(&self, task: &str, done: impl FnOnce(Result<Vec<String>, KmuxError>) + 'static) {
         let core = self.clone();
         let task = task.to_string();
-        self.0.exec.spawn(Box::pin(async move { done(core.woken(&task).await) }));
-        self.0.exec.run();
+        self.launch("wake".to_string(), async move { done(core.woken(&task).await) });
     }
 
     async fn terminals_of(&self, task: &str, keep: impl Fn(&Pane) -> bool) -> Result<Vec<String>, KmuxError> {
@@ -470,7 +547,7 @@ impl CoreHandle {
     }
 
     async fn woken(&self, task: &str) -> Result<Vec<String>, KmuxError> {
-        let held = self.terminals_of(task, |p| p.hung_up && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
+        let held = self.terminals_of(task, |p| (p.hung_up || p.lost()) && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
         let mut woken = vec![];
         for id in &held {
             let snapshot = self.reload(id, true).await;
@@ -500,19 +577,14 @@ impl CoreHandle {
             let signal = Rc::new(Signal::default());
             self.0.waiters.borrow_mut().entry(id.into()).or_default().push(signal.clone());
             let mut wait = pin!(signal.wait());
-            let mut timer = pin!(sleep(self.0.exec.clone(), left));
+            let mut timer = pin!(tokio::time::sleep(left));
             poll_fn(|cx| if wait.as_mut().poll(cx).is_ready() || timer.as_mut().poll(cx).is_ready() { Poll::Ready(()) } else { Poll::Pending }).await;
         }
         Ok(())
     }
 
     pub fn later(&self, f: impl FnOnce() + 'static) {
-        self.0.exec.spawn(Box::pin(async move { f() }));
-    }
-
-    pub fn poll(&self) -> Option<Instant> {
-        self.0.exec.run();
-        self.0.exec.next_deadline()
+        self.launch("later".to_string(), async move { f() });
     }
 
     pub fn update(&self, id: &str, state: PaneState, exit_code: Option<i64>, error: Option<String>) {
@@ -530,14 +602,13 @@ impl CoreHandle {
             self.notify_ended(id);
         }
         self.changed();
-        self.0.exec.run();
     }
 
     pub fn note_numbers(&self, numbers: &HashMap<String, usize>) {
         self.state().panes.note_numbers(numbers);
     }
 
-    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+    pub fn install_panes(&self, panes: Vec<Pane>, counter: usize, terminals: usize, ptys: usize) {
         {
             let mut s = self.state();
             let mut all: Vec<Pane> = s.panes.iter().cloned().collect();
@@ -545,7 +616,7 @@ impl CoreHandle {
                 known.tour = panes.iter().find(|p| p.id == known.id).and_then(|p| p.tour.clone());
             }
             all.extend(panes.into_iter().filter(|p| s.panes.get(&p.id).is_none()));
-            s.panes.install(all, counter, terminals);
+            s.panes.install(all, counter, terminals, ptys);
         }
         self.changed();
     }
@@ -560,7 +631,6 @@ impl CoreHandle {
             self.resume(id);
         }
         self.changed();
-        self.0.exec.run();
     }
 
     pub fn set_pid(&self, id: &str, pid: Option<i64>) {
@@ -595,7 +665,7 @@ impl CoreHandle {
         let signal = Rc::new(Signal::default());
         self.0.waiters.borrow_mut().entry(id.into()).or_default().push(signal.clone());
         let mut wait = pin!(signal.wait());
-        let mut timer = pin!(sleep(self.0.exec.clone(), timeout));
+        let mut timer = pin!(tokio::time::sleep(timeout));
         let timed_out = poll_fn(|cx| {
             if wait.as_mut().poll(cx).is_ready() {
                 Poll::Ready(false)
@@ -622,7 +692,8 @@ impl CoreHandle {
             Some(cmd) => {
                 let cmd = cmd.to_string();
                 let mut args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-                match if matches!(cmd.as_str(), "window" | "open") { self.task_workspace(&mut args) } else { Ok(()) } {
+                let prepared = if cmd == "open" { self.prep_open(&mut args) } else { Ok(()) };
+                match prepared.and_then(|()| if matches!(cmd.as_str(), "window" | "open") { self.task_workspace(&mut args) } else { Ok(()) }) {
                     Ok(()) => self.run(&cmd, args).await,
                     Err(error) => Err(error),
                 }
@@ -808,6 +879,12 @@ impl CoreHandle {
         if args.get("path").is_some() && !matches!(kind, PaneType::Md | PaneType::Code | PaneType::Diff | PaneType::Log | PaneType::Serial) {
             return Err(bad_request("path is only for markdown, code, diff, log and serial panes"));
         }
+        if kind == PaneType::Run && empty("run") {
+            return Err(bad_request("run panes need a run: its ID"));
+        }
+        if args.get("run").is_some() && kind != PaneType::Run {
+            return Err(bad_request("run is only for run panes"));
+        }
         if (args.get("baud").is_some() || args.get("lineEnding").is_some()) && kind != PaneType::Serial {
             return Err(bad_request("baud and lineEnding are only for serial panes"));
         }
@@ -841,7 +918,7 @@ impl CoreHandle {
             Some(agent) => Some(self.need_pane(Some(agent))?.id),
             None => None,
         };
-        let placed = ["window", "workspace", "dock", "lead", "planner"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
+        let placed = ["window", "workspace", "dock", "lead", "planner", "quiz"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)));
         if let Some(from) = string(args, "from").filter(|from| !placed && self.state().panes.pane(from).is_none()) {
             return Err(KmuxError::new("no_caller", format!("{from} isn't one of this Kanna's panes, so there's no window of yours here: say where with --window WINDOW (or --window new)")));
         }
@@ -883,29 +960,30 @@ impl CoreHandle {
         let shelf = is_true(args, "shelf");
         let claimed = string(args, "claim").map(String::from);
         let planner = is_true(args, "planner");
+        let quiz = is_true(args, "quiz");
         if dock.is_some() && args.get("window").is_some() {
             return Err(bad_request("a docked pane is a task's agent, in its own workspace, not in a window"));
         }
-        if shelf && dock.is_none() || claimed.is_some() && dock.is_none() && !planner {
-            return Err(bad_request("claim is for a docked pane or a planner, and shelf for a docked pane"));
+        if shelf && dock.is_none() || claimed.is_some() && dock.is_none() && !planner && !quiz {
+            return Err(bad_request("claim is for a docked pane, a planner or a quiz writer, and shelf for a docked pane"));
         }
         if shelf && claimed.is_some() {
             return Err(bad_request("a task is on the Shelf or on an app's Desk, not both"));
         }
         let background = is_true(args, "background");
-        if background && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || shelf || claimed.is_some() || string(args, "workspace").is_none() || ["window", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
+        if background && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || planner || quiz || shelf || claimed.is_some() || string(args, "workspace").is_none() || ["window", "lead"].iter().any(|key| args.get(*key).is_some_and(|v| !v.is_null() && v != &Value::Bool(false)))) {
             return Err(bad_request("a background terminal is in its task's workspace and nowhere else: it takes a workspace, and no window, dock, split, size or tab"));
         }
         let lead = is_true(args, "lead");
         if lead && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || string(args, "window").is_none()) {
             return Err(bad_request("a window's lead is a terminal in a window, with no dock, split, size or tab"));
         }
-        if planner && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
-            return Err(bad_request("a planner is a terminal of its own, with no dock, split, size, tab or window"));
+        if (planner || quiz) && (kind != PaneType::Term || dock.is_some() || split.is_some() || size.is_some() || new_tab || args.get("window").is_some()) {
+            return Err(bad_request("a planner or a quiz writer is a terminal of its own, with no dock, split, size, tab or window"));
         }
         let app = match (dock, shelf) {
             (Some(_), false) => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
-            _ if planner => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
+            _ if planner || quiz => Some(claimed.unwrap_or_else(|| MAC_APP.into())),
             _ => None,
         };
 
@@ -925,12 +1003,12 @@ impl CoreHandle {
             self.room_for_task(string(args, "cwd"), app).await?;
         }
         let id = self.state().panes.next_id(kind);
-        let placeless = !new_tab && !lead && !planner && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() && args.get("workspace").is_none();
-        let opener = string(args, "from").filter(|_| !lead && !planner && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
+        let placeless = !new_tab && !lead && !planner && !quiz && dock.is_none() && split.is_none() && size.is_none() && args.get("window").is_none() && args.get("workspace").is_none();
+        let opener = string(args, "from").filter(|_| !lead && !planner && !quiz && dock.is_none()).and_then(|from| self.state().panes.pane(from).map(|p| p.id.clone()));
         let from = opener.clone().filter(|_| placeless);
         let cwd = match string(args, "cwd") {
             Some(cwd) => Some(cwd.to_string()),
-            None if kind == PaneType::Term && dock.is_none() && !lead && !planner => self.task_folder(opener.as_deref(), string(args, "window"), string(args, "workspace")).await,
+            None if kind == PaneType::Term && dock.is_none() && !lead && !planner && !quiz => self.task_folder(opener.as_deref(), string(args, "window"), string(args, "workspace")).await,
             None => None,
         };
         let at = Placement {
@@ -947,6 +1025,7 @@ impl CoreHandle {
             shelf,
             lead,
             planner,
+            quiz,
             background,
         };
         let placed = self.layout(place_request(&Pane::new(&id, name.clone(), kind), &at)).await?;
@@ -975,6 +1054,9 @@ impl CoreHandle {
             if matches!(kind, PaneType::Diff | PaneType::Log) {
                 pane.git_args = Some(diff.unwrap_or_default());
                 pane.view = view;
+            }
+            if kind == PaneType::Run {
+                pane.run = field("run");
             }
             if kind == PaneType::Serial {
                 pane.baud = baud;
@@ -1292,18 +1374,12 @@ impl CoreHandle {
         if let Some(host) = self.host() {
             host.stop(&pane);
         }
-        let renamed = self.state().panes.renew_terminal(id);
-        let id = match &renamed {
-            Some(to) => {
-                let _ = self.layout(json!({ "op": "rename", "from": id, "to": to })).await;
-                let hooks: Vec<Rc<dyn Fn(&str, &str)>> = self.0.renamed.borrow().clone();
-                for hook in hooks {
-                    hook(id, to);
-                }
-                to.as_str()
+        if pane.terminal.is_some() {
+            let hooks: Vec<Rc<dyn Fn(&str)>> = self.0.new_run.borrow().clone();
+            for hook in hooks {
+                hook(id);
             }
-            None => id,
-        };
+        }
         if let Some(pane) = self.state().panes.get_mut(id) {
             pane.state = PaneState::Starting;
             pane.pid = None;
@@ -1337,7 +1413,12 @@ impl CoreHandle {
         }
         let Some(host) = self.host() else { return Ok(Map::new()) };
         let (responder, answer) = responder();
-        host.send(&pane, string(args, "text").unwrap_or(""), responder);
+        let text = string(args, "text").unwrap_or("");
+        if args.get("enter").and_then(Value::as_bool) == Some(false) {
+            host.paste(&pane, text, responder);
+        } else {
+            host.send(&pane, text, responder);
+        }
         answer.await
     }
 
@@ -1561,7 +1642,7 @@ impl CoreHandle {
             let mut s = self.state();
             let restored: Vec<Pane> = panes.into_iter().filter(|p| placed.contains(p.id.as_str())).collect();
             let ids = restored.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0));
+            s.panes.install(restored, counter, numbers.get("term").copied().unwrap_or(0), 0);
             s.panes.note_numbers(&numbers);
             ids
         };

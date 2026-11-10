@@ -37,17 +37,11 @@ struct MarkdownOverviewTests {
         #expect(shown(cutoff(zoom: 1.5), zoom: 1.5).overview)
     }
 
-    @Test func theCommentsListOutlastsTheOverview() {
-        var last = (overview: true, comments: true)
-        var seen: [String] = []
+    @Test func theCommentsListLeavesTheOverviewAlone() {
         for width in stride(from: CGFloat(1600), through: 300, by: -10) {
-            let now = shown(width, comments: true)
-            #expect(!(now.overview && !last.overview) && !(now.comments && !last.comments))
-            let name = "\(now.overview ? "overview" : "")+\(now.comments ? "list" : "")"
-            if seen.last != name { seen.append(name) }
-            last = now
+            #expect(shown(width, comments: true).overview == shown(width).overview)
+            #expect(shown(width, comments: true, forced: true).overview == shown(width).overview)
         }
-        #expect(seen == ["overview+list", "+list", "+"])
     }
 
     @Test func theListShowsAtTwiceItsWidthAlone() {

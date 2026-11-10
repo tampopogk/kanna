@@ -1,4 +1,5 @@
 import AppKit
+import KannaWindows
 
 struct GitPlace: Equatable {
     let root: String
@@ -263,8 +264,14 @@ extension AppController {
         for entry in shelves[machine ?? ""] ?? [] {
             if let location = location(ofEntry: entry), let project = entry["project"]?.string { identities[location] = project }
         }
-        shelf = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
+        mergeShelves()
         refreshSoon()
+    }
+
+    func mergeShelves() {
+        let merged: [JSON] = shelves.keys.sorted().flatMap { shelves[$0] ?? [] }
+        shelf = DeskOrder.byAge(merged, made: { (entry: JSON) -> Double in entry["madeAt"]?.number ?? 0 }, tie: { (entry: JSON) -> String in MachineIDs.bare(entry["id"]?.string ?? "") })
+        queueChanged()
     }
 
     func location(ofEntry entry: JSON) -> String? {
@@ -289,12 +296,12 @@ extension AppController {
             var waits: [String] = []
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
             let status = offline(entry["machine"]?.string) ? nil : entry["running"]?.bool == true ? entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } : ShelfTask.last(stopped: entry["stopped"]?.string)
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status)
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status, queue: QueueSpot(entry["queue"]), failed: entry["mergeFailed"]?["why"]?.string, failedEntry: entry["mergeFailed"]?["queue"]?.string)
         }
     }
 
     func runningOnShelf(in root: String?) -> [JSON] {
-        shelf.filter { $0["running"]?.bool == true && inProject($0, root) }.compactMap { entry in
+        shelf.filter { $0["running"]?.bool == true && QueueSpot($0["queue"]) == nil && inProject($0, root) }.compactMap { entry in
             entry["held"]?.string.map { pane in
                 let ws = published["workspaces"]?.array?.first { $0["dock"]?["pane"]?.string == pane }
                 return ["task": .string(pane), "type": "term", "tabs": ws?["tabs"] ?? []]
@@ -317,6 +324,21 @@ extension AppController {
         controllers[window]?.note = ""
         request("tasks", ["action": "shelve", "task": .string(task)]) { [weak self] reply in
             self?.noted(window, reply, otherwise: "it didn't move")
+        }
+    }
+
+    func takeOut(_ task: String, from window: String) {
+        controllers[window]?.note = ""
+        request("queue", ["action": "cancel", "task": .string(task)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it stayed in the merge queue")
+        }
+    }
+
+    func resumeQueued(_ run: String, from window: String) {
+        controllers[window]?.note = ""
+        request("run", ["action": "resume", "run": .string(run)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it stays paused")
+            self?.queueChanged()
         }
     }
 

@@ -102,6 +102,39 @@ pub fn recognise(process: &Process) -> Option<Program> {
     Some(Program { agent: agent.into(), pid: process.pid, executable })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub pid: i32,
+    pub parent: i32,
+    pub group: i32,
+    pub zombie: bool,
+}
+
+pub fn outside_group(rows: &[Row], agent: i32) -> Vec<i32> {
+    let Some(group) = rows.iter().find(|r| r.pid == agent).map(|r| r.group) else { return vec![] };
+    let mut under = vec![agent];
+    let mut seen = vec![agent];
+    let mut found = Vec::new();
+    while let Some(parent) = under.pop() {
+        for row in rows.iter().filter(|r| r.parent == parent) {
+            if seen.contains(&row.pid) {
+                continue;
+            }
+            seen.push(row.pid);
+            under.push(row.pid);
+            if row.group != group && !row.zombie {
+                found.push(row.pid);
+            }
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
+pub fn background(agent: i32) -> Vec<Process> {
+    outside_group(&tree(agent), agent).into_iter().map(|pid| process(pid).unwrap_or(Process { pid, executable: None, argv: vec![] })).collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ProbeKey {
     executable: PathBuf,
@@ -197,6 +230,47 @@ fn group_members(group: i32) -> Vec<i32> {
 }
 
 #[cfg(target_os = "macos")]
+fn row(pid: i32) -> Option<Row> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+    (got == size).then_some(Row { pid, parent: info.pbi_ppid as i32, group: info.pbi_pgid as i32, zombie: info.pbi_status == libc::SZOMB })
+}
+
+#[cfg(target_os = "macos")]
+fn children(parent: i32) -> Vec<i32> {
+    let mut pids = vec![0i32; 64];
+    loop {
+        let count = unsafe { libc::proc_listchildpids(parent, pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<i32>()) as libc::c_int) };
+        if count <= 0 {
+            return vec![];
+        }
+        if (count as usize) < pids.len() {
+            pids.truncate(count as usize);
+            pids.retain(|pid| *pid > 0);
+            return pids;
+        }
+        pids = vec![0i32; pids.len() * 4];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn tree(agent: i32) -> Vec<Row> {
+    let mut rows: Vec<Row> = row(agent).into_iter().collect();
+    let mut next = 0;
+    while next < rows.len() && rows.len() < 4096 {
+        let parent = rows[next].pid;
+        next += 1;
+        for pid in children(parent) {
+            if !rows.iter().any(|r| r.pid == pid) {
+                rows.extend(row(pid).filter(|r| r.parent == parent));
+            }
+        }
+    }
+    rows
+}
+
+#[cfg(target_os = "macos")]
 fn process(pid: i32) -> Option<Process> {
     let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
@@ -266,6 +340,20 @@ fn group_members(group: i32) -> Vec<i32> {
 }
 
 #[cfg(target_os = "linux")]
+fn tree(_agent: i32) -> Vec<Row> {
+    let row = |pid: i32| {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(") ")?;
+        let mut fields = rest.split_whitespace();
+        let state = fields.next()?;
+        let parent = fields.next()?.parse().ok()?;
+        let group = fields.next()?.parse().ok()?;
+        Some(Row { pid, parent, group, zombie: state == "Z" })
+    };
+    std::fs::read_dir("/proc").map(|entries| entries.flatten().filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok()).filter_map(row).collect()).unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
 fn process(pid: i32) -> Option<Process> {
     let executable = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
     let argv: Vec<String> = std::fs::read(format!("/proc/{pid}/cmdline"))
@@ -289,6 +377,11 @@ fn environ(_pid: i32) -> Vec<String> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn group_members(group: i32) -> Vec<i32> {
     vec![group]
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn tree(_agent: i32) -> Vec<Row> {
+    vec![]
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -317,6 +410,37 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn background_work_is_a_live_descendant_outside_the_agents_group() {
+        let row = |pid, parent, group, zombie| Row { pid, parent, group, zombie };
+        let rows = [row(10, 1, 10, false), row(11, 10, 10, false), row(12, 10, 12, false), row(13, 12, 12, false), row(14, 11, 14, false), row(15, 10, 15, true), row(16, 1, 16, false), row(17, 13, 10, false)];
+        assert_eq!(outside_group(&rows, 10), vec![12, 13, 14], "an MCP server or helper in its group isn't work; a shell in its own is, with what it runs, however deep");
+        assert_eq!(outside_group(&rows, 99), Vec::<i32>::new(), "an agent that's gone has none");
+        assert_eq!(outside_group(&[row(10, 1, 10, false), row(11, 10, 10, false)], 10), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn a_running_agents_background_shell_is_found_until_it_exits() {
+        use std::os::unix::process::CommandExt;
+        let mut agent = Command::new("/bin/bash").args(["-c", "sleep 30 & set -m; sleep 1 & exec sleep 30"]).process_group(0).spawn().unwrap();
+        let pid = agent.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut found = background(pid);
+        while found.is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            found = background(pid);
+        }
+        let names: Vec<String> = found.iter().map(|p| p.argv.join(" ")).collect();
+        assert_eq!(names, vec!["sleep 1".to_string()], "the child in the agent's own group isn't work");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !background(pid).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(background(pid).is_empty(), "an exited child, even unreaped, isn't work");
+        let _ = agent.kill();
+        let _ = agent.wait();
     }
 
     #[test]

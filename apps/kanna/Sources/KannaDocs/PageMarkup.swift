@@ -1,4 +1,5 @@
 import AppKit
+import KannaLinks
 import WebKit
 
 @MainActor
@@ -24,10 +25,8 @@ public final class PageMarkupView: NSView {
     }
 
     public static func page(for url: URL?) -> String? {
-        guard let url, url.isFileURL, ["html", "htm"].contains(url.pathExtension.lowercased()) else { return nil }
-        var directory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), !directory.boolValue else { return nil }
-        return url.path
+        guard let path = MachineFileURL.path(of: url), ["html", "htm"].contains((path as NSString).pathExtension.lowercased()) else { return nil }
+        return path
     }
 
     public let path: String
@@ -100,7 +99,7 @@ public final class PageMarkupView: NSView {
         let barHeight: CGFloat = 34
         let side = threadsVisible ? ThreadPanel.width : 0
         bar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
-        webView.frame = NSRect(x: 0, y: 0, width: max(0, bounds.width - side), height: max(0, bounds.height - barHeight))
+        webView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - barHeight))
         overlay.frame = webView.frame
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
@@ -336,7 +335,8 @@ public final class PageMarkupView: NSView {
     }
 
     func boxOrigin(below rect: NSRect, height: CGFloat) -> NSPoint {
-        let x = max(8, min(rect.minX, overlay.bounds.width - CommentBox.width - 8))
+        let covered = threadsVisible ? ThreadPanel.width : 0
+        let x = max(8, min(rect.minX, overlay.bounds.width - covered - CommentBox.width - 8))
         let y = min(rect.maxY + 6, max(8, overlay.bounds.height - height - 8))
         return NSPoint(x: x, y: y)
     }
@@ -350,8 +350,8 @@ public final class PageMarkupView: NSView {
         anchor(box, below: rect)
         (box.button("post") as? Chip)?.onPress = { [weak self] in self?.post() }
         box.field.onKey = { [weak self] event in
-            if event.keyCode == 36, event.modifierFlags.contains(.command) { self?.post(); return true }
-            if event.keyCode == 53 { self?.closeBox(); return true }
+            if BoxField.sends(event) { self?.post(); return true }
+            if BoxField.cancels(event) { self?.closeBox(); return true }
             return false
         }
         show(box)
@@ -375,8 +375,8 @@ public final class PageMarkupView: NSView {
         }
         (box.button("send") as? Chip)?.onPress = send
         box.field.onKey = { [weak self] event in
-            if event.keyCode == 53 { self?.closeBox(); return true }
-            guard event.keyCode == 36, !event.modifierFlags.contains(.shift) else { return false }
+            if BoxField.cancels(event) { self?.closeBox(); return true }
+            guard BoxField.sends(event) else { return false }
             send()
             return true
         }

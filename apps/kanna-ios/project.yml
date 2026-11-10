@@ -1,0 +1,62 @@
+name: Kanna
+options:
+  bundleIdPrefix: dev.kanna
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: EA4J68749Z
+    TARGETED_DEVICE_FAMILY: "1"
+    GENERATE_INFOPLIST_FILE: "YES"
+targets:
+  Kanna:
+    type: application
+    platform: iOS
+    sources: [Kanna]
+    dependencies:
+      - framework: ../../target/ios/KannaIOS.xcframework
+        embed: false
+      - sdk: libresolv.tbd
+      - sdk: SystemConfiguration.framework
+      - sdk: Security.framework
+    info:
+      path: Kanna/Info.plist
+      properties:
+        CFBundleDisplayName: Kanna Dev
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSCameraUsageDescription: Kanna reads the pairing code on your Mac with the camera.
+        NSLocalNetworkUsageDescription: Kanna reaches your machines directly on this network.
+        NSBonjourServices: ["_kanna-phone._udp"]
+    postBuildScripts:
+      - name: Version from the last tag
+        script: exec "$SRCROOT/../../scripts/ios-version.sh"
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "NO"
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.phone
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  KannaUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [KannaUITests]
+    dependencies:
+      - target: Kanna
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.kanna.phone.uitests
+schemes:
+  Kanna:
+    build:
+      targets:
+        Kanna: all
+    test:
+      targets:
+        - KannaUITests
