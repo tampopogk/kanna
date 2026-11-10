@@ -57,6 +57,13 @@ kanna task new "Add rate limiting" "Add rate limiting to the login endpoint: ...
 - **When you're stale,** you get a message from `kanna` saying which task you build on moved. Merge the commit it names into your branch, rerun your tests, commit, then `kanna task ready`. `kanna task ready` is refused until you've merged it.
 - **Don't merge into main while `kanna task list` says your task `merges after` another:** the work you build on isn't in main yet. When it lands, you get a message saying you can merge once you're done.
 
+## Merging
+
+- **"Merge" means `kanna task merge -m "SUMMARY"`,** never merging by hand: no `git merge` into main, no merging main into your branch first, no rebuild and rerun of the tests. SUMMARY is one line on what the work does (`find is case-insensitive unless the search has a capital, in every find bar`); the merge commit reads `Merge branch 'BRANCH': SUMMARY`.
+- **It hands your branch to the repo's merge queue** and returns at once: your agent quits at the end of this turn and your tabs close, so say in your chat that it's queued and end your turn. The queue merges your branch onto main, runs the repo's tests on that merge (`merge.test`, or `.kanna/pipelines/merge-queue.kojo`), and moves main to it if they pass, or if an agent judges that no failure is your branch's; then the task is Done.
+- **Refused** when your branch conflicts with main (merge main, fix, rerun your tests, commit, merge again), when it `merges after` another task, or with uncommitted changes: do what the refusal says.
+- **A message from `queue-…`** means your merge failed: it says why and where the log is, and you're back on the Shelf. Merge main into your branch, fix what failed, rerun the tests that failed, commit, then `kanna task merge` again.
+
 ## Events
 
 Kanna tells you when something your work depends on changes, with a message from `kanna` at the end of your turn. Every task hears these from the start:
@@ -116,6 +123,19 @@ Reuse those tabs during review; do not repeat the focus/zoom setup after each re
 
 If you stop to ask the user something before presenting the work, use that first presentation to show what the question is about. If it is already open for review, reuse it without changing focus or zoom. Terminals you leave running are stopped with you and run again when the task starts; what they were in the middle of is lost.
 
+## Build with a pipeline
+
+A repo with pipelines (`.kanna/pipelines/NAME.kojo`, `kanna pipeline list`) can build a change for you: a **run** takes its stages (plan, build, review, tests) one at a time in background terminals of your task, on a branch of its own, and hands the branch back to you. Your worktree and this conversation are left alone while it runs.
+
+- **Start a run only once the user has approved the spec and mockup in this chat, or once the bug is reproduced,** never on a hunch: `kanna run start feature` (or `bugfix`) from your terminal, with `--request FILE` when the request is more than the task's first message. It prints the run's ID.
+- **Show it to the user:** `kanna run show` (its visits, verdicts and the stage running now) and `kanna run log` (its events). The Run tab (`kanna open run`) isn't built yet; until it is, open `kanna run show` in a tab (`kanna open --tab --cmd 'kanna run show; read'`) when the user wants to watch.
+- **Messages from the run** come as `[message from run-ID] …`: when it waits on you, a stage needs something, it's stuck, it stops, or it's handed back. Don't answer them with `kanna task send`; act on them as below.
+- **An ask** (`[message from run-ID] STAGE asks: QUESTION`): put the question to the user in your chat, as it is, with what they need to decide (the plan, a diff), and end your turn; your task shows needs you. Answer only when the user says: `kanna run answer run-ID yes "NOTE"` or `kanna run answer run-ID no "NOTE"`, with what they said as the note: it goes to the next stage. Kanna records that you answered.
+- **A stage that needs something** (`STAGE needs you: …`) or stopped without reporting: relay it the same way, then carry it on with what the user said: `kanna run resume run-ID "ANSWER"`.
+- **Steering is the user's:** `kanna run pause`, `skip`, `retry` and `stop` only when the user asks for them. Each is recorded as an intervention.
+- **Handed back** (`handed back: … run/TASK-N is ready`): look at it (`git log HEAD..run/TASK-N`, `git diff HEAD...run/TASK-N`), take it into your worktree when it's right (`git merge --ff-only run/TASK-N`), and present it as [Present your work](#present-your-work) says: the spec, the diff, the mockup, what the run built and what it cost (`kanna run show`: its visits, sessions and interventions). The change goes to main from your worktree as any task's work.
+- **On the Shelf,** a Shelf runner stops you at your turn's end while the run goes on; the run's next message starts you again.
+
 ## Schedules
 
 When the user asks for an agent to be prompted at set times ("remind me every morning to…", "rerun the benchmark every 2h"), make a schedule rather than waiting yourself: `kanna schedule add RULE TARGET PROMPT --name NAME`. RULE is two words in local time (`daily 09:00`, `weekdays 18:00`, `mon,thu 10:30`, `every 2h`); TARGET is a task (your own ID for you, as `kanna task list` shows it) or `planner`, the repo's planning agent. At each time Kanna leaves that agent a message, as `kanna task send` does, which it gets when its turn is over as `[message from schedule NAME] PROMPT`. A message from `schedule NAME` is one of these: do what it says, as if the user had asked. When there's a result worth seeing, leave it once, briefly, with `kanna schedule reply NAME TEXT`: the user reads it beside that firing on the Desk's Schedules tab, and a schedule can't take a `kanna task send`.
@@ -128,7 +148,8 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...]` | Add a task to this repo's Shelf; `--agent`: run this agent (`codex`, …) instead of `tasks.agent`; `--after`: it can't start until those tasks are claimed ready or done |
 | `kanna task edit TASK --after TASK,...\|none` | Change what a Shelf task waits for (only when the user asks to unblock it) |
 | `kanna task ready [TASK]` | Say all that's left is to merge, at your branch's head: finished, tests passing, nothing for the user to check. The tasks waiting for it can start on it |
-| `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's then the Shelf's: ID, name, state (working, idle, needs you, stopped, merged, replied, ready (claimed and merges into main cleanly), conflicts (claimed but conflicts with main), stale with what it's behind, or blocked with what it waits for; `merges after` a task whose work isn't in main yet), an agent other than the default; `--all`: every repo's; QUERY keeps those where every word starts the task's ID or is its agent's pane ID, or is in its name, first message or branch, and a done task's ID alone says it's done, and when; `--include-done` adds done tasks under Done, newest first: with QUERY every one that matches, without it the 5 done last |
+| `kanna task merge [TASK] [-m SUMMARY]` | When the user says merge: hand the branch to the merge queue; the agent quits and the queue lands it on main once the tests pass on the merge ([Merging](#merging)) |
+| `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's, those in the merge queue (Merging: queued, testing, judging, needs you, landing), then the Shelf's: ID, name, state (working, idle, needs you, stopped, merged, replied, merge-failed, ready (claimed and merges into main cleanly), conflicts (claimed but conflicts with main), stale with what it's behind, or blocked with what it waits for; `merges after` a task whose work isn't in main yet), an agent other than the default; `--all`: every repo's; QUERY keeps those where every word starts the task's ID or is its agent's pane ID, or is in its name, first message or branch, and a done task's ID alone says it's done, and when; `--include-done` adds done tasks under Done, newest first: with QUERY every one that matches, without it the 5 done last |
 | `kanna task start TASK` | Run a task where it is: a Shelf task gets its worktree, branch and agent with the first message, and stays on the Shelf; a stopped task resumes its conversation |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (only when the user asks) |
 | `kanna task pick TASK` | Move a Shelf task to the Desk, starting it if it's stopped (three per project; refused when the Desk is full) |
@@ -137,6 +158,11 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task shelve [TASK]` | Move a Desk task back to the Shelf as it is, running or stopped (only when the user asks) |
 | `kanna task send TASK\|planner TEXT` | Leave a message for another task's agent or this repo's planning agent; Claude reads it at its next step, Codex when its turn is over (only when the user asks, or to answer a message) |
 | `kanna task messages [TASK]` | A task's messages, sent and received, and whether each was delivered |
+| `kanna run start PIPELINE [--request FILE\|TEXT]` | Start a run of the repo's pipeline for this task, once the user approved the spec and mockup or the bug is reproduced |
+| `kanna run show [RUN]` · `kanna run log [RUN]` | The run: its visits and the stage running now; its events |
+| `kanna run answer [RUN] yes\|no [NOTE]` | Answer the run's ask as the user said; the note goes to the next stage |
+| `kanna run resume [RUN] [TEXT]` | Carry on a paused run, its stage's agent getting TEXT |
+| `kanna run pause\|skip\|retry\|stop [RUN]` | Steer the run (only when the user asks) |
 | `kanna task subscribe\|unsubscribe EVENT [TASK]` | Hear an event or stop hearing it ([Events](#events)); from your terminal, your task |
 | `kanna task events [TASK]` | What a task hears, and every event message it was sent |
 | `kanna task done [TASK]` | End a task, or take it off the Shelf; says which blocked tasks can start now |
