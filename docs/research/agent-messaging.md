@@ -1,6 +1,6 @@
 # Agent messaging: how the user, the planner and tasks message each other
 
-> 2026-10-16. Research; **B was built:** [agent messaging](../specs/agent-messaging.md). Checked against the installed binaries, Claude Code 2.1.301 and Codex 0.163.0 (their `--help` and the strings in them), and against Anthropic's docs (code.claude.com/docs) and OpenAI's (developers.openai.com/codex, which now redirects to learn.chatgpt.com/docs) and `openai/codex` source. Copilot CLI, opencode and Antigravity are from their own docs only, not run.
+> 2026-10-16. Research; **B was built:** [agent messaging](../specs/agent-messaging.md), and [7](#7-messages-to-a-busy-agent) later changed when Claude gets a message. Checked against the installed binaries, Claude Code 2.1.301 and Codex 0.163.0 (their `--help` and the strings in them), and against Anthropic's docs (code.claude.com/docs) and OpenAI's (developers.openai.com/codex, which now redirects to learn.chatgpt.com/docs) and `openai/codex` source. Copilot CLI, opencode and Antigravity are from their own docs only, not run.
 
 Today the only way to tell a running agent something is to type into its terminal (`kanna send`, then often `kanna send-key return`). Typed text can land mid-turn, and it's lost if the agent isn't running. Agents can't message each other at all. **Recommendation:** an inbox per task in the daemon, delivered by typing the message into the agent's terminal **when its turn ends**, as Kanna already detects it ([4](#4-the-end-of-a-turn)). It works for every agent Kanna runs, needs no hooks, and keeps every message visible in the task's terminal.
 
@@ -12,7 +12,8 @@ Today the only way to tell a running agent something is to type into its termina
 4. [The end of a turn](#4-the-end-of-a-turn)
 5. [Stopped tasks](#5-stopped-tasks)
 6. [What the build task includes](#6-what-the-build-task-includes)
-7. [Glossary](#7-glossary)
+7. [Messages to a busy agent](#7-messages-to-a-busy-agent)
+8. [Glossary](#8-glossary)
 
 ## 1. Who messages whom
 
@@ -84,7 +85,7 @@ Delivery (B), the [Shelf runners](../specs/shelf-runners.md) and agent status al
 | Signal | claude | codex | copilot, opencode, antigravity | Tells needs you from idle | Setup | Delay |
 |---|---|---|---|---|---|---|
 | **Screen rules + 3s hold** (built) | yes | yes | yes | yes | none | 3s |
-| **OSC 7501** ([agent status §4](../specs/agent-status.md#4-the-agents-own-report-osc-7501), built) | 2.1.295+ | 0.163.0+ | no | yes (`blocked`) | none: Kanna answers the probe | none |
+| **OSC 7501** ([agent status §4](../specs/agent-status.md#3-the-report-osc-7501), built) | 2.1.295+ | 0.163.0+ | no | yes (`blocked`) | none: Kanna answers the probe | none |
 | **Stop hook** | yes; not on Esc, and not while asking (that's `PermissionRequest` or `Notification`) | yes | per their docs: copilot `agentStop`, antigravity `Stop`, opencode a plugin on `session.idle` | only with a second hook | a hook in each agent's settings; codex makes you trust it | none |
 | **codex `notify`** (`agent-turn-complete`) | – | yes | – | no | `notify` in `~/.codex/config.toml` | none |
 
@@ -127,7 +128,45 @@ flowchart TD
 
 **Not included:** hooks, MCP, channels, app-server, mid-turn delivery, iOS (it calls the same command later).
 
-## 7. Glossary
+## 7. Messages to a busy agent
+
+> 2026-11-07. Real Claude Code 2.1.319 and Codex 0.166.0, each in a pseudo-terminal in a HOME of its own against the [mock model](../../tools/agent-harness/README.md), and again as tasks of a private Kanna (e2e `real_agent_messages`). The request log shows what the model got and when. A question to Codex needs Plan mode.
+
+| Claude: message to its socket | What happened |
+|---|---|
+| Streaming an answer | Held; the answer finishes; a follow-up request in the same `working` stretch carries it, with no `done` between |
+| Posted just after `done` | A new turn at once, as at idle |
+| During a long tool call | Held; added beside the tool result in the turn's next request, as sent "while you were working". No new turn |
+| Five at once | All five in that request, in order |
+| Draft in the prompt | Stays, busy or idle, and sends unchanged on Enter |
+| Permission prompt | Prompt untouched; nothing runs until you approve; the message goes with the next request |
+| AskUserQuestion | Question untouched; the message goes with the next request, or as the next turn if you Esc |
+| Esc during the tool | The message starts a new turn at once |
+| Quit keys during a turn | The interrupt sends it to the model, then the turn is interrupted |
+| SIGKILL or SIGHUP during the tool | **Lost.** The transcript has only a `queue-operation` line, and `--resume` doesn't bring it back |
+| Sender of another permission class, busy | **Held-message dialog at once,** over the turn, and `blocked`; the turn goes on behind it |
+| The moment its socket exists | Taken as the first turn |
+
+| Codex: `turn/start` on its app-server | What happened |
+|---|---|
+| Streaming an answer | **Accepted, returning the running turn. The model response is cancelled and its text dropped;** a new request carries the message. `turn/steer` does the same |
+| During a long tool call | Accepted; the tool finishes; the next request carries it. Three in order. A draft stays |
+| Approval prompt | Accepted; prompt untouched; goes with the next request after you approve |
+| Question (`request_user_input`) | Accepted; question untouched; goes with the next request after you answer |
+
+**So:** Claude queues safely, and the two exceptions are a working Claude's memory, which a kill empties, and the permission dialog. `turn/start` is safe on Codex only between steps, and no report tells those from streaming. Its app-server has a queue for this, an experimental API read from Codex's source (`ext/queue`, `thread_queue_processor.rs`, tag `rust-v0.166.0`) and tested below. [The rules Kanna took from this](../specs/agent-messaging.md#2-delivery).
+
+| Codex: `thread/queue/add` | What happened |
+|---|---|
+| Idle | A turn starts at once; the queue is empty again |
+| Streaming an answer | The answer finishes whole; then one turn each, three in order. A draft stays |
+| During a long tool call | Held; runs after the turn |
+| Approval prompt | Held; prompt untouched; runs after the turn, once you've approved |
+| Esc | Stays queued: the idle dispatch skips an interrupted turn. It ran after the next turn, or `thread/queue/start` runs it |
+| `kill -9` of the app-server | Kept in SQLite: a new server lists it, and it runs on `thread/resume` |
+| Without `experimentalApi` | Refused |
+
+## 8. Glossary
 
 | Term | Meaning |
 |---|---|

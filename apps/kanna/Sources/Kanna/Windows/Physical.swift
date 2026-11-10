@@ -6,6 +6,8 @@ struct DeskRecord: Equatable {
     var shows: String?
     var planner: String?
     var active: String?
+    var page: String?
+    var tab: String?
 }
 
 @MainActor
@@ -17,6 +19,7 @@ final class Physical {
     private var frames: [String: NSRect] = [:]
     private var docks: [String: (width: Double, over: Double)] = [:]
     private var textSizes: [String: Double] = [:]
+    private var pageZooms: [String: Double] = [:]
     private(set) var overview = true
     private let path: String?
     private var pending: DispatchWorkItem?
@@ -35,9 +38,11 @@ final class Physical {
             docks = list.compactMapValues { dock in dock["width"]?.number.flatMap { width in dock["over"]?.number.map { (width, $0) } } }
         }
         if case .object(let list)? = saved["textSizes"] { textSizes = list.compactMapValues(\.number) }
+        if case .object(let list)? = saved["pageZooms"] { pageZooms = list.compactMapValues(\.number) }
         overview = saved["overview"]?.bool ?? true
         desks = (saved["desks"]?.array ?? []).compactMap { desk in
-            desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string, active: desk["active"]?.string ?? desk["shows"]?.string) }
+            desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string, active: desk["active"]?.string ?? desk["shows"]?.string,
+                                                page: desk["page"]?.string, tab: desk["tab"]?.string) }
         }
         order = (saved["order"]?.array ?? []).compactMap(\.string)
         deskTasks = (saved["deskTasks"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["leftAt"]?.number ?? 0) } }
@@ -61,6 +66,13 @@ final class Physical {
         changed()
     }
 
+    func setDeskTab(_ id: String, page: String?, tab: String?) {
+        guard var desk = desk(id), desk.page != page || desk.tab != tab else { return }
+        desk.page = page
+        desk.tab = tab
+        setDesk(desk)
+    }
+
     func closeDesk(_ id: String) {
         desks.removeAll { $0.id == id }
         changed()
@@ -81,8 +93,11 @@ final class Physical {
             kept.insert((entry.workspace, entry.leftAt ?? Date().timeIntervalSince1970.rounded(.down)), at: 0)
         }
         let desksKept = desks.map { desk in
-            DeskRecord(id: desk.id, project: desk.project, shows: desk.shows.flatMap { ids.contains($0) ? $0 : nil }, planner: desk.planner.flatMap { planners.contains($0) ? $0 : nil },
-                       active: desk.active.flatMap { ids.contains($0) ? $0 : nil })
+            var kept = desk
+            kept.shows = desk.shows.flatMap { ids.contains($0) ? $0 : nil }
+            kept.planner = desk.planner.flatMap { planners.contains($0) ? $0 : nil }
+            kept.active = desk.active.flatMap { ids.contains($0) ? $0 : nil }
+            return kept
         }
         guard kept.map(\.workspace) != deskTasks.map(\.workspace) || desksKept != desks else { return }
         deskTasks = kept
@@ -114,7 +129,18 @@ final class Physical {
     func textSize(_ pane: String) -> CGFloat? { textSizes[pane].map { CGFloat($0) } }
 
     func setTextSize(_ pane: String, _ size: CGFloat) {
-        textSizes[pane] = size == 1 ? nil : Double(size)
+        let value: Double? = size == 1 ? nil : Double(size)
+        guard textSizes[pane] != value else { return }
+        textSizes[pane] = value
+        changed()
+    }
+
+    func pageZoom(_ pane: String) -> CGFloat? { pageZooms[pane].map { CGFloat($0) } }
+
+    func setPageZoom(_ pane: String, _ zoom: CGFloat) {
+        let value: Double? = abs(zoom - 1) < 0.0001 ? nil : Double(zoom)
+        guard pageZooms[pane] != value else { return }
+        pageZooms[pane] = value
         changed()
     }
 
@@ -138,15 +164,16 @@ final class Physical {
     }
 
     func keep(panes: Set<String>, in view: JSON, on machine: String?) {
-        let before = (docks.count, textSizes.count, order.count)
+        let before = (docks.count, textSizes.count, pageZooms.count, order.count)
         var owners = Set((view["workspaces"]?.array ?? []).compactMap { $0["id"]?.string })
         owners.formUnion((view["windows"]?.array ?? []).compactMap { $0["id"]?.string })
         owners.formUnion(desks.map(\.id))
         let elsewhere = { (id: String) in MachineIDs.machine(of: id) != machine }
         docks = docks.filter { elsewhere($0.key) || owners.contains($0.key) }
         textSizes = textSizes.filter { elsewhere($0.key) || panes.contains($0.key) }
+        pageZooms = pageZooms.filter { elsewhere($0.key) || panes.contains($0.key) }
         order = order.filter { elsewhere($0) || owners.contains($0) }
-        if (docks.count, textSizes.count, order.count) != before { changed() }
+        if (docks.count, textSizes.count, pageZooms.count, order.count) != before { changed() }
     }
 
     func save() {
@@ -158,9 +185,11 @@ final class Physical {
             "frames": .object(frames.mapValues { ["x": .number($0.minX), "y": .number($0.minY), "w": .number($0.width), "h": .number($0.height)] }),
             "docks": .object(docks.mapValues { ["width": .number($0.width), "over": .number($0.over)] }),
             "textSizes": .object(textSizes.mapValues { .number($0) }),
+            "pageZooms": .object(pageZooms.mapValues { .number($0) }),
             "overview": .bool(overview),
             "desks": .array(desks.map { desk in
-                ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null, "active": desk.active.map { .string($0) } ?? .null]
+                ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null, "active": desk.active.map { .string($0) } ?? .null,
+                 "page": desk.page.map { .string($0) } ?? .null, "tab": desk.tab.map { .string($0) } ?? .null]
             }),
             "order": .array(order.map { .string($0) }),
             "deskTasks": .array(deskTasks.map { ["workspace": .string($0.workspace), "leftAt": .number($0.leftAt)] }),

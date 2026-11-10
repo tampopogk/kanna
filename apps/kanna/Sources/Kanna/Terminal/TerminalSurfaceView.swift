@@ -8,6 +8,8 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     var isHandlingInputEvent = false
     private var dropped: String?
     var focused: (() -> Void)?
+    var scrolled: (() -> Void)?
+    var grid: (cols: UInt16, rows: UInt16)?
     var contextMenu: (() -> NSMenu?)?
     var title = ""
     var progress: ghostty_action_progress_report_s?
@@ -304,6 +306,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
+        if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) { scrolled?() }
         let scale = event.hasPreciseScrollingDeltas ? 2.0 : 1.0
         let mods = (event.hasPreciseScrollingDeltas ? 1 : 0) | (Self.momentum(event.momentumPhase) << 1)
         ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX * scale, event.scrollingDeltaY * scale, ghostty_input_scroll_mods_t(mods))

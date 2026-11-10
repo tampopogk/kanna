@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ready To Merge</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --term: #16181c; --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --flash: rgba(122, 162, 255, .16);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --term: #fbfbfc; --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+  --flash: rgba(47, 99, 216, .12);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --term: #fbfbfc; --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+  --flash: rgba(47, 99, 216, .12);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1240px; margin: 0 auto; }
+h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 860px; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.on { border-color: var(--accent); color: var(--accent); }
+.gap { width: 10px; }
+.caption { min-height: 42px; margin-bottom: 14px; padding: 9px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; max-width: 860px; }
+.caption b { font-weight: 600; }
+.panes { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; align-items: start; }
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); }
+.bar { height: 32px; display: flex; align-items: center; gap: 12px; padding: 0 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.lights { display: flex; gap: 7px; }
+.lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.shelf { padding: 14px 22px 16px; }
+.gh { padding: 0 0 6px; color: var(--muted); font-size: 12px; }
+.gh b { color: var(--text); }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 0 -10px; border-radius: 8px; }
+.row:hover { background: var(--panel); }
+.row.changed { background: var(--flash); }
+.row .t { flex: 1; min-width: 0; }
+.row .n { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .s { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: transparent; border: 1.5px solid var(--muted); }
+.dot.working { background: var(--accent); border-color: var(--accent); }
+.dot.idle { background: var(--ok); border-color: var(--ok); }
+.dot.blocked { border-style: dotted; }
+.ready { color: var(--ok); }
+.warn { color: var(--warn); }
+.term { background: var(--term); padding: 12px 14px; font: 12px/1.65 var(--mono); overflow-x: auto; white-space: pre; }
+.term .p { color: var(--muted); }
+.term .line { display: block; margin: 0 -14px; padding: 0 14px; min-width: max-content; }
+.term .line.changed { background: var(--flash); }
+.why { margin-top: 18px; max-width: 860px; color: var(--muted); }
+.why h2 { font-size: 13px; color: var(--text); margin: 0 0 6px; }
+.why ul { margin: 0; padding-left: 18px; }
+.why li { margin-bottom: 3px; }
+.why b { color: var(--text); font-weight: 500; }
+@media (max-width: 880px) { main { padding: 16px; } .panes { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Ready means the only thing left is to merge</h1>
+    <p>The same ten tasks in the Desk view's Shelf and in <code>kanna task list</code>. Step through to see how the rows change as main and the branches move. The task names are made up.</p>
+  </div>
+  <div class="controls">
+    <button id="today">Today</button>
+    <button id="new">New</button>
+    <span class="gap"></span>
+    <button id="next">Next step</button>
+    <button id="reset">Reset</button>
+    <span class="gap"></span>
+    <button id="theme">Light / dark</button>
+  </div>
+  <div class="caption" id="caption"></div>
+  <div class="panes">
+    <div class="window">
+      <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span>Desk view</span></div>
+      <div class="shelf"><div class="gh"><b>Shelf</b></div><div id="rows"></div></div>
+    </div>
+    <div class="window">
+      <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span>Terminal</span></div>
+      <div class="term" id="term"></div>
+    </div>
+  </div>
+  <div class="why" id="why"></div>
+</main>
+<script>
+const start = () => [
+  { id: "task-1f0a", name: "Tab bar follows light mode", msg: "The tab bar ignores the light theme", age: "3h", agent: "stopped", claim: true, why: "Claimed at this commit and 40 commits behind main, with no conflict: the agent runs the tests when it merges." },
+  { id: "task-2b7c", name: "Tidy the e2e helpers", msg: "Fold the repeated helpers into one", age: "5h", agent: "stopped", claim: true, why: "Claimed at this commit, nothing in its way." },
+  { id: "task-3c11", name: "Full e2e pass", msg: "Run the whole suite on main", age: "6h", agent: "stopped", claim: true, why: "Claimed at this commit, nothing in its way." },
+  { id: "task-4d92", name: "Split the e2e scenarios", msg: "One file per area", age: "6h", agent: "stopped", claim: true, bases: ["task-3c11"], why: "Claimed, but \"Full e2e pass\" has to merge first." },
+  { id: "task-5e40", name: "Relay sign-in", msg: "Sign in to the relay from the phone", age: "7h", agent: "stopped", claim: true, why: "Claimed at this commit, nothing in its way." },
+  { id: "task-6a35", name: "Relay card", msg: "Show the relay on the machine card", age: "7h", agent: "stopped", claim: true, bases: ["task-5e40"], why: "Claimed, but \"Relay sign-in\" has to merge first." },
+  { id: "task-7b08", name: "kanna open infers the pane type", msg: "Pick md or web from the extension", age: "1d", agent: "idle", why: "Built, but its agent is waiting for you to check it on a real device, so it hasn't claimed. Today it would have." },
+  { id: "task-8c67", name: "Phone retry on wake", msg: "Retry the link when the phone wakes", age: "1d", agent: "stopped", todayStale: "Relay API", why: "Its base landed in main a while ago, so nothing is out of date. Its branch moved since its claim, so it's not ready until its agent claims again." },
+  { id: "task-9d21", name: "agent_status e2e is flaky", msg: "Make the wait follow the status", age: "20m", agent: "working", why: "Still being worked on." },
+  { id: "task-a3f6", name: "Release notes", msg: "Write the notes once the flaky test is fixed", age: "", agent: "stopped", waits: "agent_status e2e is flaky", why: "Hasn't started: it waits for a task that hasn't claimed." },
+];
+
+const steps = [
+  { say: "<b>The starting point.</b> Four tasks are ready. The two stacked ones say what they wait for, and neither counts as ready." },
+  { say: "<b>\"Relay sign-in\" merges into main.</b> \"Relay card\" hasn't moved and has it in its branch, so its claim holds and it's ready at once.", do: t => {
+    get(t, "task-5e40").merged = true;
+    const card = get(t, "task-6a35"); card.bases = []; card.why = "Same commit it claimed, and nothing left to wait for.";
+    return ["task-5e40", "task-6a35"];
+  } },
+  { say: "<b>Main moves, and \"Tidy the e2e helpers\" stops merging cleanly.</b> Kanna rechecks in the background. The claim stays underneath, and the agent hears <code>main-conflicts</code>.", do: t => {
+    const x = get(t, "task-2b7c"); x.conflicts = true; x.why = "Claimed, but it doesn't merge into main cleanly any more.";
+    return ["task-2b7c"];
+  } },
+  { say: "<b>Its agent merges main and fixes the conflict.</b> The branch moved, so the claim is gone. Nothing to clear.", do: t => {
+    const x = get(t, "task-2b7c"); x.conflicts = false; x.claim = false; x.agent = "working"; x.why = "Its branch moved since the claim.";
+    return ["task-2b7c"];
+  } },
+  { say: "<b>Its tests pass and it runs <code>kanna task ready</code>.</b> Ready again.", do: t => {
+    const x = get(t, "task-2b7c"); x.claim = true; x.agent = "idle"; x.why = "Claimed at this commit, and it merges cleanly.";
+    return ["task-2b7c"];
+  } },
+  { say: "<b>\"Full e2e pass\" gets a new commit.</b> Its claim drops, and its head is no longer in \"Split the e2e scenarios\", so that one is stale.", do: t => {
+    const x = get(t, "task-3c11"); x.claim = false; x.agent = "working"; x.why = "Its branch moved since the claim.";
+    const y = get(t, "task-4d92"); y.behind = ["task-3c11"]; y.why = "The current head of a task it builds on isn't in its branch.";
+    return ["task-3c11", "task-4d92"];
+  } },
+  { say: "<b>\"Split the e2e scenarios\" merges that commit.</b> Stale clears at once, with no command. Its branch moved, so it has no claim until its agent claims again.", do: t => {
+    const y = get(t, "task-4d92"); y.behind = []; y.claim = false; y.agent = "working"; y.why = "Stacked, and its branch moved since the claim.";
+    return ["task-4d92"];
+  } },
+];
+
+const todays = {
+  "task-1f0a": "ready", "task-2b7c": "ready", "task-3c11": "ready", "task-5e40": "ready", "task-7b08": "ready",
+};
+
+let state = start(), step = 0, mode = "new", changed = [];
+const get = (list, id) => list.find(t => t.id === id);
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const named = ids => ids.map(id => `"${get(state, id).name}"`).join(", ");
+
+function label(t) {
+  if (mode === "today") {
+    if (t.todayStale) return { desk: `stale · behind "${t.todayStale}"`, tone: "warn", state: "stale", tail: `behind "${t.todayStale}"` };
+    if (t.id === "task-4d92") return { desk: `ready · merges after "Full e2e pass"`, tone: "ready", state: "ready", tail: `merges after "Full e2e pass"` };
+    if (t.id === "task-6a35") return { desk: `ready · merges after "Relay sign-in"`, tone: "ready", state: "ready", tail: `merges after "Relay sign-in"` };
+    if (todays[t.id]) return { desk: "ready", tone: "ready", state: "ready", tail: "" };
+    return plain(t);
+  }
+  if (t.merged) return { desk: "", tone: "", state: "merged", tail: "" };
+  if (t.behind?.length) return { desk: `stale · behind ${named(t.behind)}`, tone: "warn", state: "stale", tail: `behind ${named(t.behind)}` };
+  if (t.bases?.length) return { desk: `merges after ${named(t.bases)}`, tone: "", state: plain(t).state, tail: `merges after ${named(t.bases)}` };
+  if (t.claim && t.conflicts) return { desk: "conflicts", tone: "warn", state: "conflicts", tail: "" };
+  if (t.claim) return { desk: "ready", tone: "ready", state: "ready", tail: "" };
+  return plain(t);
+}
+
+function plain(t) {
+  if (t.waits) return { desk: `waits for "${t.waits}"`, tone: "warn", state: "blocked", tail: `waits for "${t.waits}"` };
+  return { desk: "", tone: "", state: t.agent, tail: "" };
+}
+
+function render() {
+  const rows = state.map(t => {
+    const l = label(t), dot = t.waits ? "blocked" : t.agent === "stopped" ? "" : t.agent;
+    const said = l.desk ? `<span class="${l.tone}">${esc(l.desk)}</span> · ` : "";
+    const hot = mode === "new" && changed.includes(t.id) ? "changed" : "";
+    return `<div class="row ${hot}"><span class="dot ${dot}"></span><div class="t"><div class="n">${esc(t.name)}</div><div class="s">${said}${esc(t.msg)}${t.age ? " · " + t.age : ""}</div></div></div>`;
+  });
+  document.getElementById("rows").innerHTML = rows.join("");
+  const lines = state.map(t => ({ t, l: label(t) }));
+  const width = lines.reduce((w, { t }) => Math.max(w, t.name.length), 0);
+  const list = lines.map(({ t, l }) => {
+    const tone = l.state === "ready" ? "ready" : l.state === "conflicts" || l.state === "stale" ? "warn" : "";
+    const cell = `<span class="${tone}">${l.state.padEnd(9)}</span>`;
+    const hot = mode === "new" && changed.includes(t.id) ? "changed" : "";
+    return `<span class="line ${hot}">${t.id}  ${esc(t.name.padEnd(width))}  ${cell}  ${esc(l.tail)}</span>`;
+  });
+  document.getElementById("term").innerHTML = `<span class="line"><span class="p">$</span> kanna task list</span><span class="line">Shelf</span>${list.join("")}`;
+  document.getElementById("caption").innerHTML = mode === "today"
+    ? "<b>Today.</b> A label is a mark made once. Five tasks say ready, two more say ready with a wait beside it, and one is stale though main already has its base."
+    : steps[step].say;
+  document.getElementById("why").innerHTML = mode === "today" ? "" : `<h2>Why each row says what it says</h2><ul>${state.filter(t => !t.merged).map(t => `<li><b>${esc(t.name)}:</b> ${esc(t.why)}</li>`).join("")}</ul>`;
+  document.getElementById("today").className = mode === "today" ? "on" : "";
+  document.getElementById("new").className = mode === "new" ? "on" : "";
+  document.getElementById("next").disabled = mode === "today" || step === steps.length - 1;
+}
+
+document.getElementById("today").onclick = () => { mode = "today"; render(); };
+document.getElementById("new").onclick = () => { mode = "new"; render(); };
+document.getElementById("next").onclick = () => { step += 1; changed = steps[step].do(state); render(); };
+document.getElementById("reset").onclick = () => { state = start(); step = 0; changed = []; render(); };
+document.getElementById("theme").onclick = () => { const r = document.documentElement, light = getComputedStyle(r).getPropertyValue("--bg").trim() === "#ffffff"; r.dataset.theme = light ? "dark" : "light"; };
+render();
+</script>
+</body>
+</html>

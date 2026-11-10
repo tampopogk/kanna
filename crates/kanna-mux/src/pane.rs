@@ -10,10 +10,13 @@ pub enum PaneType {
     Md,
     Code,
     Diff,
+    Log,
+    Serial,
+    Run,
 }
 
 impl PaneType {
-    pub const ALL: [PaneType; 6] = [PaneType::Term, PaneType::Web, PaneType::Ios, PaneType::Md, PaneType::Code, PaneType::Diff];
+    pub const ALL: [PaneType; 9] = [PaneType::Term, PaneType::Web, PaneType::Ios, PaneType::Md, PaneType::Code, PaneType::Diff, PaneType::Log, PaneType::Serial, PaneType::Run];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -23,6 +26,9 @@ impl PaneType {
             PaneType::Md => "md",
             PaneType::Code => "code",
             PaneType::Diff => "diff",
+            PaneType::Log => "log",
+            PaneType::Serial => "serial",
+            PaneType::Run => "run",
         }
     }
 
@@ -206,16 +212,20 @@ pub struct Pane {
     pub comment: Option<Comment>,
     pub tour: Option<Tour>,
     pub stop: Option<StopMark>,
-    pub diff: Option<Vec<String>>,
+    pub git_args: Option<Vec<String>>,
     pub view: Option<String>,
     pub agent: Option<String>,
     pub markup: bool,
     pub diff_base: Option<String>,
+    pub baud: Option<u32>,
+    pub line_ending: Option<String>,
+    pub run: Option<String>,
     pub history: Option<History>,
     pub session: Option<String>,
     pub pid: Option<i64>,
     pub status: Option<String>,
     pub hung_up: bool,
+    pub waits_on_you: bool,
     pub terminal: Option<String>,
 }
 
@@ -240,22 +250,32 @@ impl Pane {
             comment: None,
             tour: None,
             stop: None,
-            diff: None,
+            git_args: None,
             view: None,
             agent: None,
             markup: false,
             diff_base: None,
+            baud: None,
+            line_ending: None,
+            run: None,
             history: None,
             session: None,
             pid: None,
             status: None,
             hung_up: false,
+            waits_on_you: false,
             terminal: None,
         }
     }
 
+    pub fn lost(&self) -> bool {
+        self.kind == PaneType::Term && self.state == PaneState::Exited && self.exit_code.is_none() && !self.hung_up
+    }
+
     pub fn status(&self) -> Option<&str> {
         match (self.kind, self.state) {
+            (PaneType::Term, PaneState::Exited) if self.waits_on_you => Some("needs-you"),
+            (PaneType::Term, _) if self.waits_on_you && self.status.as_deref() != Some("working") => Some("needs-you"),
             (PaneType::Term, PaneState::Exited) => Some("exited"),
             (PaneType::Term, _) => self.status.as_deref(),
             _ => None,
@@ -283,7 +303,9 @@ impl Pane {
             (Some(name), _) => Some(name.clone()),
             (None, PaneType::Md | PaneType::Code) => self.path.as_deref().and_then(file_name),
             (None, PaneType::Web) => self.title.clone().filter(|t| !t.trim().is_empty()).or_else(|| self.url.as_deref().and_then(host)),
-            (None, PaneType::Diff) => Some(std::iter::once("diff").chain(self.diff.iter().flatten().map(String::as_str)).collect::<Vec<_>>().join(" ")),
+            (None, PaneType::Diff | PaneType::Log) => Some(std::iter::once(self.kind.as_str()).chain(self.git_args.iter().flatten().map(String::as_str)).collect::<Vec<_>>().join(" ")),
+            (None, PaneType::Serial) => self.title.clone().filter(|t| !t.trim().is_empty()).or_else(|| self.path.as_deref().and_then(file_name).map(|n| n.trim_start_matches("cu.").to_string())),
+            (None, PaneType::Run) => Some("Run".into()),
             (None, PaneType::Term | PaneType::Ios) => None,
         };
         name.map(|n| n.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string()).filter(|n| !n.is_empty())
@@ -339,8 +361,16 @@ impl Pane {
             }
             PaneType::Diff => {
                 out.insert("path".into(), opt(self.path.as_deref()));
-                out.insert("args".into(), diff_args(self.diff.as_deref()));
+                out.insert("args".into(), diff_args(self.git_args.as_deref()));
                 out.insert("view".into(), Value::String(self.view.clone().unwrap_or_else(|| "unified".into())));
+            }
+            PaneType::Log => {
+                out.insert("path".into(), opt(self.path.as_deref()));
+                out.insert("args".into(), diff_args(self.git_args.as_deref()));
+            }
+            PaneType::Serial => serial_fields(self, &mut out),
+            PaneType::Run => {
+                out.insert("run".into(), opt(self.run.as_deref()));
             }
         }
         if let Some(stop) = &self.stop {
@@ -383,11 +413,12 @@ pub struct Panes {
     order: Vec<String>,
     counter: usize,
     terminals: usize,
+    ptys: usize,
     content: bool,
     numbers: HashMap<&'static str, usize>,
 }
 
-pub const CONTENT_PREFIXES: [&str; 5] = ["term", "file", "page", "ios", "diff"];
+pub const CONTENT_PREFIXES: [&str; 8] = ["term", "file", "page", "ios", "diff", "log", "serial", "runview"];
 
 pub fn content_prefix(kind: PaneType) -> &'static str {
     match kind {
@@ -396,6 +427,9 @@ pub fn content_prefix(kind: PaneType) -> &'static str {
         PaneType::Web => "page",
         PaneType::Ios => "ios",
         PaneType::Diff => "diff",
+        PaneType::Log => "log",
+        PaneType::Serial => "serial",
+        PaneType::Run => "runview",
     }
 }
 
@@ -411,6 +445,11 @@ pub fn terminal_number(id: &str) -> Option<usize> {
     (n > 0 && n < 1_000_000_000 && format!("term-{n}") == id).then_some(n)
 }
 
+pub fn pty_number(id: &str) -> Option<usize> {
+    let n: usize = id.strip_prefix("pty-")?.parse().ok()?;
+    (n > 0 && n < 1_000_000_000 && format!("pty-{n}") == id).then_some(n)
+}
+
 impl Panes {
     pub fn get(&self, id: &str) -> Option<&Pane> {
         self.panes.get(id)
@@ -421,7 +460,7 @@ impl Panes {
     }
 
     pub fn pane(&self, reference: &str) -> Option<&Pane> {
-        self.panes.get(reference).or_else(|| self.iter().find(|p| p.name.as_deref() == Some(reference) || p.terminal.as_deref() == Some(reference)))
+        self.panes.get(reference).or_else(|| self.iter().find(|p| p.name.as_deref() == Some(reference)))
     }
 
     pub fn need(&self, reference: Option<&str>) -> Result<&Pane, KmuxError> {
@@ -487,59 +526,32 @@ impl Panes {
         self.terminals
     }
 
+    pub fn ptys(&self) -> usize {
+        self.ptys
+    }
+
     pub fn numbers(&self) -> HashMap<String, usize> {
         self.numbers.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
     pub fn new_terminal(&mut self, id: &str) -> Option<String> {
-        let content = self.content;
         let pane = self.panes.get_mut(id).filter(|p| p.kind == PaneType::Term)?;
-        if content && pane.terminal.is_none() {
-            pane.terminal = Some(id.into());
-            return Some(id.into());
-        }
-        self.terminals += 1;
-        let terminal = format!("term-{}", self.terminals);
+        self.ptys += 1;
+        let terminal = format!("pty-{}", self.ptys);
         pane.terminal = Some(terminal.clone());
         Some(terminal)
     }
 
-    pub fn renew_terminal(&mut self, id: &str) -> Option<String> {
-        self.panes.get(id).filter(|p| self.content && p.kind == PaneType::Term && p.terminal.is_some())?;
-        self.terminals += 1;
-        let to = format!("term-{}", self.terminals);
-        self.rekey(id, &to);
-        if let Some(pane) = self.panes.get_mut(&to) {
-            pane.terminal = None;
-        }
-        Some(to)
-    }
-
-    pub fn rekey(&mut self, from: &str, to: &str) -> bool {
-        let Some(mut pane) = self.panes.remove(from) else { return false };
-        pane.id = to.into();
-        self.panes.insert(to.into(), pane);
-        for id in self.order.iter_mut().filter(|id| *id == from) {
-            *id = to.into();
-        }
-        for pane in self.panes.values_mut() {
-            if pane.agent.as_deref() == Some(from) {
-                pane.agent = Some(to.into());
-            }
-        }
-        true
-    }
-
     pub fn note_numbers(&mut self, numbers: &HashMap<String, usize>) {
         for (prefix, n) in numbers {
-            if let Some(prefix) = ["file", "page", "ios", "diff"].into_iter().find(|p| p == prefix) {
+            if let Some(prefix) = ["file", "page", "ios", "diff", "log", "serial", "runview"].into_iter().find(|p| p == prefix) {
                 let at = self.numbers.entry(prefix).or_insert(0);
                 *at = (*at).max(*n);
             }
         }
     }
 
-    pub fn install(&mut self, panes: Vec<Pane>, counter: usize, terminals: usize) {
+    pub fn install(&mut self, panes: Vec<Pane>, counter: usize, terminals: usize, ptys: usize) {
         for (prefix, n) in panes.iter().filter_map(|p| content_number(&p.id)) {
             match prefix {
                 "term" => self.terminals = self.terminals.max(n),
@@ -550,10 +562,29 @@ impl Panes {
             }
         }
         let used = panes.iter().filter_map(|p| p.terminal.as_deref().and_then(terminal_number)).max().unwrap_or(0);
+        let running = panes.iter().filter_map(|p| p.terminal.as_deref().and_then(pty_number)).max().unwrap_or(0);
         self.order = panes.iter().map(|p| p.id.clone()).collect();
         self.panes = panes.into_iter().map(|p| (p.id.clone(), p)).collect();
         self.counter = self.counter.max(counter);
         self.terminals = self.terminals.max(terminals).max(used);
+        self.ptys = self.ptys.max(ptys).max(running);
+    }
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    #[test]
+    fn a_pane_keeps_its_id_and_each_run_gets_a_terminal_of_its_own() {
+        let mut panes = Panes::default();
+        panes.use_content_ids();
+        let id = panes.make(PaneType::Term, None).id.clone();
+        assert_eq!(panes.new_terminal(&id).as_deref(), Some("pty-1"));
+        assert_eq!(panes.new_terminal(&id).as_deref(), Some("pty-2"));
+        assert_eq!((panes.get(&id).unwrap().id.as_str(), panes.get(&id).unwrap().terminal.as_deref()), ("term-1", Some("pty-2")));
+        assert!(panes.pane("pty-2").is_none(), "a pty is no way to name a pane");
+        assert_eq!(panes.make(PaneType::Term, None).id, "term-2", "panes count on their own");
     }
 }
 
@@ -575,6 +606,21 @@ mod status_tests {
         let mut web = Pane::new("p2", None, PaneType::Web);
         web.state = PaneState::Exited;
         assert!(web.summary().get("status").is_none());
+    }
+
+    #[test]
+    fn a_terminal_waiting_on_you_says_needs_you_unless_it_s_working() {
+        let mut pane = Pane::new("p1", None, PaneType::Term);
+        pane.state = PaneState::Running;
+        pane.status = Some("idle".into());
+        pane.waits_on_you = true;
+        assert_eq!(pane.status(), Some("needs-you"));
+        pane.status = Some("working".into());
+        assert_eq!(pane.status(), Some("working"));
+        pane.state = PaneState::Exited;
+        assert_eq!(pane.status(), Some("needs-you"));
+        pane.waits_on_you = false;
+        assert_eq!(pane.status(), Some("exited"));
     }
 }
 
@@ -630,7 +676,7 @@ mod tab_name_tests {
         assert_eq!(pane(PaneType::Ios, None).tab_name(), None);
         let mut diff = pane(PaneType::Diff, None);
         assert_eq!(diff.tab_name().as_deref(), Some("diff"));
-        diff.diff = Some(vec!["--merge-base".into(), "main".into()]);
+        diff.git_args = Some(vec!["--merge-base".into(), "main".into()]);
         assert_eq!(diff.tab_name().as_deref(), Some("diff --merge-base main"));
     }
 
@@ -674,5 +720,33 @@ pub fn read_view(value: Option<&Value>) -> Result<Option<String>, KmuxError> {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(view)) if view == "unified" || view == "split" => Ok(Some(view.clone())),
         Some(_) => Err(KmuxError::new("bad_request", "view must be unified or split")),
+    }
+}
+
+pub const LINE_ENDINGS: [&str; 3] = ["lf", "crlf", "cr"];
+
+pub fn serial_fields(pane: &Pane, out: &mut Map) {
+    out.insert("path".into(), opt(pane.path.as_deref()));
+    out.insert("device".into(), opt(pane.device.as_deref()));
+    out.insert("title".into(), opt(pane.title.as_deref()));
+    out.insert("baud".into(), num(pane.baud.unwrap_or(115_200) as f64));
+    out.insert("lineEnding".into(), Value::String(pane.line_ending.clone().unwrap_or_else(|| "lf".into())));
+}
+
+pub fn read_baud(value: Option<&Value>) -> Result<Option<u32>, KmuxError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => match value.as_f64() {
+            Some(n) if n >= 50.0 && n <= 20_000_000.0 && n.fract() == 0.0 => Ok(Some(n as u32)),
+            _ => Err(KmuxError::new("bad_request", "baud must be a whole number of bits a second, from 50 to 20000000")),
+        },
+    }
+}
+
+pub fn read_line_ending(value: Option<&Value>) -> Result<Option<String>, KmuxError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(ending)) if LINE_ENDINGS.contains(&ending.as_str()) => Ok(Some(ending.clone())),
+        Some(_) => Err(KmuxError::new("bad_request", "lineEnding must be lf, crlf or cr")),
     }
 }

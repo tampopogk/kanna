@@ -3,6 +3,17 @@ mod common;
 use common::{App, Instance};
 use serde_json::{json, Value};
 
+fn sources(dir: &std::path::Path) -> impl Fn(&str) -> String {
+    let dir = dir.join("src");
+    std::fs::create_dir_all(&dir).unwrap();
+    move |name: &str| {
+        let file = dir.join(name);
+        let lines: String = (1..=40).map(|n| format!("// line {n}\n")).collect();
+        std::fs::write(&file, lines).unwrap();
+        file.to_string_lossy().into_owned()
+    }
+}
+
 fn names(list: &Value) -> Vec<String> {
     list["panes"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap_or("-").to_string()).collect()
 }
@@ -34,7 +45,8 @@ fn with_no_app_every_pane_type_opens_and_an_app_shows_it_later() {
     let wrong = instance.call("markup", json!({"pane": "sh"}));
     assert_eq!(wrong["error"]["code"], "wrong_type", "{wrong}");
     assert_eq!(instance.call("debug.web", json!({"pane": "site"}))["error"]["code"], "no_app");
-    assert_eq!(instance.call("comment", json!({"path": "/tmp/a.rs", "line": 3, "text": "why"}))["error"]["code"], "no_app");
+    let src = sources(&instance.dir);
+    assert_eq!(instance.call("comment", json!({"path": src("a.rs"), "line": 3, "text": "why"}))["error"]["code"], "no_app");
     for cmd in ["send", "read"] {
         let reply = instance.call(cmd, json!({"pane": "site", "text": "x"}));
         assert_eq!(reply["error"]["code"], "wrong_type", "{cmd}: {reply}");
@@ -44,7 +56,7 @@ fn with_no_app_every_pane_type_opens_and_an_app_shows_it_later() {
     let list = instance.call("list", json!({}));
     assert_eq!(names(&list), vec!["sh", "site", "doc", "src", "phone"], "{list}");
     let capabilities = instance.call("capabilities", json!({}));
-    assert_eq!(capabilities["paneTypes"], json!(["term", "web", "ios", "md", "code", "diff"]), "{capabilities}");
+    assert_eq!(capabilities["paneTypes"], json!(["term", "web", "ios", "md", "code", "diff", "log", "serial", "run"]), "{capabilities}");
 
     let mut app = App::connect(&instance.socket());
     assert!(app.view.to_string().contains("\"page-1\""), "{}", app.view);
@@ -105,33 +117,34 @@ fn when_the_app_goes_away_its_panes_stay_and_a_waiting_open_finishes() {
 #[test]
 fn a_comment_opens_its_file_once_and_stays_on_the_pane() {
     let instance = Instance::start();
+    let src = sources(&instance.dir);
     let app = App::connect(&instance.socket());
     let _answering = app.answering();
-    let first = instance.call("comment", json!({"path": "/tmp/tour.rs", "line": 5, "text": "Queues the message."}));
+    let first = instance.call("comment", json!({"path": src("tour.rs"), "line": 5, "text": "Queues the message."}));
     assert_eq!((first["opened"].clone(), first["first"].clone(), first["last"].clone()), (json!(true), json!(5), json!(7)), "{first}");
     let id = first["pane"]["id"].as_str().unwrap().to_string();
     assert_eq!(first["pane"]["type"], "code", "{first}");
     assert_eq!(first["pane"]["line"], 5, "{first}");
-    assert_eq!(first["pane"]["comment"], json!({"path": "/tmp/tour.rs", "first": 5, "last": 7, "text": "Queues the message."}), "{first}");
+    assert_eq!(first["pane"]["comment"], json!({"path": src("tour.rs"), "first": 5, "last": 7, "text": "Queues the message."}), "{first}");
 
-    let again = instance.call("comment", json!({"path": "/tmp/tour.rs", "line": 20, "last": 24, "text": "Sends it.", "window": "win-1"}));
+    let again = instance.call("comment", json!({"path": src("tour.rs"), "line": 20, "last": 24, "text": "Sends it.", "window": "win-1"}));
     assert_eq!((again["opened"].clone(), again["pane"]["id"].clone()), (json!(false), json!(id)), "{again}");
     assert_eq!((again["first"].clone(), again["last"].clone(), again["pane"]["line"].clone()), (json!(20), json!(24), json!(20)), "{again}");
     assert_eq!(again["pane"]["comment"]["text"], "Sends it.", "{again}");
 
-    let other = instance.call("comment", json!({"path": "/tmp/other.rs", "line": 1, "text": "The other side.", "window": "win-1"}));
+    let other = instance.call("comment", json!({"path": src("other.rs"), "line": 1, "text": "The other side.", "window": "win-1"}));
     assert_eq!(other["opened"], true, "{other}");
     assert_ne!(other["pane"]["id"], json!(id), "{other}");
-    let placed = instance.call("comment", json!({"path": "/tmp/tour.rs", "line": 1, "text": "Again.", "tab": true}));
+    let placed = instance.call("comment", json!({"path": src("tour.rs"), "line": 1, "text": "Again.", "tab": true}));
     assert_eq!(placed["opened"], true, "{placed}");
 
     let list = instance.call("list", json!({}));
     let tour = list["panes"].as_array().unwrap().iter().find(|p| p["id"] == json!(id)).unwrap().clone();
     assert_eq!(tour["comment"]["first"], 20, "{list}");
     for (args, code) in [
-        (json!({"path": "/tmp/tour.rs", "line": 5}), "bad_request"),
-        (json!({"path": "/tmp/tour.rs", "line": 5, "text": "  "}), "bad_request"),
-        (json!({"path": "/tmp/tour.rs", "line": 9, "last": 3, "text": "x"}), "bad_request"),
+        (json!({"path": src("tour.rs"), "line": 5}), "bad_request"),
+        (json!({"path": src("tour.rs"), "line": 5, "text": "  "}), "bad_request"),
+        (json!({"path": src("tour.rs"), "line": 9, "last": 3, "text": "x"}), "bad_request"),
         (json!({"line": 5, "text": "x"}), "bad_request"),
     ] {
         let reply = instance.call("comment", args.clone());
@@ -142,13 +155,14 @@ fn a_comment_opens_its_file_once_and_stays_on_the_pane() {
 #[test]
 fn a_tour_steps_through_its_stops_without_the_agent() {
     let mut instance = Instance::start();
+    let src = sources(&instance.dir);
     let app = App::connect(&instance.socket());
     let _answering = app.answering();
     instance.open("agent", Some("cat"));
     let stops = json!([
-        {"path": "/tmp/tour.rs", "line": 5, "text": "Queues it."},
-        {"path": "/tmp/tour.rs", "line": 20, "last": 24, "text": "Sends it."},
-        {"path": "/tmp/other.rs", "line": 1, "text": "Takes it."},
+        {"path": src("tour.rs"), "line": 5, "text": "Queues it."},
+        {"path": src("tour.rs"), "line": 20, "last": 24, "text": "Sends it."},
+        {"path": src("other.rs"), "line": 1, "text": "Takes it."},
     ]);
     let none = instance.call("tour", json!({"action": "new", "stops": stops}));
     assert_eq!(none["error"]["code"], "bad_request", "{none}");
@@ -172,16 +186,16 @@ fn a_tour_steps_through_its_stops_without_the_agent() {
     assert_eq!(shown.iter().filter(|(_, mark)| !mark.is_null()).count(), 1, "{shown:?}");
     assert!(shown.iter().any(|(id, mark)| id == &first && mark.is_null()), "{shown:?}");
 
-    let asked = instance.call("tour", json!({"action": "add", "from": "agent", "next": true, "stops": [{"path": "/tmp/client.rs", "line": 9, "text": "An answer."}]}));
+    let asked = instance.call("tour", json!({"action": "add", "from": "agent", "next": true, "stops": [{"path": src("client.rs"), "line": 9, "text": "An answer."}]}));
     assert_eq!(asked["tour"], json!({"at": 4, "of": 4}), "{asked}");
     let back = instance.call("tour", json!({"action": "go", "from": "agent", "to": "back"}));
-    assert_eq!((back["tour"].clone(), back["path"].clone()), (json!({"at": 3, "of": 4}), json!("/tmp/other.rs")), "{back}");
-    let later = instance.call("tour", json!({"action": "add", "from": "agent", "stops": [{"path": "/tmp/end.rs", "line": 2, "text": "Last."}]}));
+    assert_eq!((back["tour"].clone(), back["path"].clone()), (json!({"at": 3, "of": 4}), json!(src("other.rs"))), "{back}");
+    let later = instance.call("tour", json!({"action": "add", "from": "agent", "stops": [{"path": src("end.rs"), "line": 2, "text": "Last."}]}));
     assert_eq!((later["tour"].clone(), later["added"].clone()), (json!({"at": 3, "of": 5}), json!(1)), "{later}");
     let listed = instance.call("tour", json!({"from": "agent"}));
     assert_eq!(listed["at"], 3, "{listed}");
     let paths: Vec<&str> = listed["stops"].as_array().unwrap().iter().map(|s| s["path"].as_str().unwrap()).collect();
-    assert_eq!(paths, ["/tmp/tour.rs", "/tmp/tour.rs", "/tmp/other.rs", "/tmp/client.rs", "/tmp/end.rs"], "{listed}");
+    assert_eq!(paths, [src("tour.rs"), src("tour.rs"), src("other.rs"), src("client.rs"), src("end.rs")], "{listed}");
     let jumped = instance.call("tour", json!({"action": "go", "from": "agent", "to": 5}));
     assert_eq!(jumped["tour"], json!({"at": 5, "of": 5}), "{jumped}");
     assert_eq!(instance.screen("agent").trim(), "", "stepping sent the agent something");
@@ -199,7 +213,7 @@ fn a_tour_steps_through_its_stops_without_the_agent() {
 
     for (args, code) in [
         (json!({"action": "new", "from": "agent", "stops": []}), "bad_request"),
-        (json!({"action": "new", "from": "agent", "stops": [{"path": "/tmp/a.rs", "line": 1, "text": "x"}, {"path": "/tmp/b.rs", "line": 9, "last": 3, "text": "x"}]}), "bad_request"),
+        (json!({"action": "new", "from": "agent", "stops": [{"path": src("a.rs"), "line": 1, "text": "x"}, {"path": src("b.rs"), "line": 9, "last": 3, "text": "x"}]}), "bad_request"),
         (json!({"action": "go", "from": "agent", "to": "next"}), "not_found"),
         (json!({"action": "go", "from": "nobody", "to": "next"}), "not_found"),
         (json!({"action": "fly", "from": "agent"}), "bad_request"),
@@ -220,6 +234,7 @@ fn a_tour_steps_through_its_stops_without_the_agent() {
 #[test]
 fn a_tour_stop_on_a_doc_is_the_agents_thread_written_once() {
     let instance = Instance::start();
+    let src = sources(&instance.dir);
     let app = App::connect(&instance.socket());
     let _answering = app.answering();
     instance.open("agent", Some("cat"));
@@ -232,7 +247,7 @@ fn a_tour_stop_on_a_doc_is_the_agents_thread_written_once() {
     assert_eq!(past["error"]["code"], "bad_request", "{past}");
     let gone = instance.call("tour", json!({"action": "new", "from": "agent", "stops": [{"path": dir.join("gone.md"), "line": 1, "text": "Gone."}]}));
     assert_eq!(gone["error"]["code"], "not_found", "{gone}");
-    let queued = instance.call("tour", json!({"action": "new", "from": "agent", "stops": [{"path": doc, "line": 4, "text": "The trip."}, {"path": "/tmp/tour.rs", "line": 5, "text": "Code."}]}));
+    let queued = instance.call("tour", json!({"action": "new", "from": "agent", "stops": [{"path": doc, "line": 4, "text": "The trip."}, {"path": src("tour.rs"), "line": 5, "text": "Code."}]}));
     assert_eq!((queued["thread"].clone(), queued["first"].clone(), queued["opened"].clone()), (json!("c1"), json!(3), json!(true)), "{queued}");
     let agent = instance.pane("agent")["id"].clone();
     assert_eq!(queued["pane"]["type"], "md", "{queued}");

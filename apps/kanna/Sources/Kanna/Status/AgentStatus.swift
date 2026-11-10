@@ -30,9 +30,9 @@ extension AppController {
     }
 
     func statusChanged(_ pane: String, _ status: String?) {
-        agentStatuses.set(pane, status, looking: lookingAt.contains(pane))
+        if agentStatuses.set(pane, status, looking: lookingAt.contains(pane)) { looked(pane) }
         contents.agentStatusChanged(pane, status)
-        if isTask(pane) { refreshSoon() }
+        if isTask(pane) || isShelfTask(pane) { refreshSoon() }
     }
 
     func folderChanged(_ pane: String, _ cwd: String, _ place: JSON?) {
@@ -47,6 +47,10 @@ extension AppController {
     }
 
     func statusSeen() {
-        agentStatuses.looked(at: lookingAt)
+        agentStatuses.looked(at: lookingAt).forEach(looked)
+    }
+
+    private func looked(_ pane: String) {
+        if isTask(pane) || isShelfTask(pane) { request("tasks", ["action": "looked", "task": .string(pane)]) }
     }
 }

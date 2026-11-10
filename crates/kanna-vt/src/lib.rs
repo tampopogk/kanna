@@ -131,6 +131,10 @@ impl ProgramState {
         }
     }
 
+    pub fn parse(text: &str) -> Option<ProgramState> {
+        [ProgramState::Idle, ProgramState::Working, ProgramState::Done, ProgramState::Blocked, ProgramState::Error].into_iter().find(|s| s.as_str() == text)
+    }
+
     fn ends_with_program(self) -> bool {
         matches!(self, ProgramState::Working | ProgramState::Blocked)
     }
@@ -151,6 +155,10 @@ impl Need {
             Need::Auth => "auth",
         }
     }
+
+    pub fn parse(text: &str) -> Option<Need> {
+        [Need::Permission, Need::Question, Need::Auth].into_iter().find(|n| n.as_str() == text)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +176,7 @@ pub struct ProgramStatus {
 struct ProgramStatuses {
     records: Vec<(u64, ProgramStatus)>,
     serial: u64,
+    turns: u64,
 }
 
 impl ProgramStatuses {
@@ -177,6 +186,14 @@ impl ProgramStatuses {
     }
 
     fn put(&mut self, status: ProgramStatus) {
+        let worked = status.id.is_empty() && self.records.iter().any(|(_, r)| r.id.is_empty() && r.state == ProgramState::Working);
+        if worked && matches!(status.state, ProgramState::Idle | ProgramState::Done) {
+            self.turns += 1;
+        }
+        self.keep(status);
+    }
+
+    fn keep(&mut self, status: ProgramStatus) {
         let serial = self.bump();
         if let Some(record) = self.records.iter_mut().find(|(_, r)| r.id == status.id) {
             *record = (serial, status);
@@ -246,6 +263,10 @@ impl Terminal {
     }
 
     pub fn from_snapshot(bytes: &[u8]) -> Result<Terminal, Error> {
+        Terminal::decode(bytes, None).map(|(terminal, _)| terminal)
+    }
+
+    fn decode(bytes: &[u8], history_rows: Option<usize>) -> Result<(Terminal, bool), Error> {
         let mut decoder: ffi::GhosttySnapshotDecoder = ptr::null_mut();
         check("ghostty_snapshot_decoder_new_buf", unsafe {
             ffi::ghostty_snapshot_decoder_new_buf(ptr::null(), &mut decoder, bytes.as_ptr(), bytes.len())
@@ -253,6 +274,7 @@ impl Terminal {
         let mut raw: ffi::GhosttyTerminal = ptr::null_mut();
         let limit = MAX_UNFINISHED_SEQUENCE_BYTES;
         let retain = true;
+        let mut more = false;
         let result = unsafe {
             check(
                 "snapshot continuation limit",
@@ -272,11 +294,23 @@ impl Terminal {
                     ),
                 )
             })
-            .and_then(|()| check("ghostty_snapshot_decoder_decode", ffi::ghostty_snapshot_decoder_decode(decoder, &mut raw)))
+            .and_then(|()| match history_rows {
+                None => check("ghostty_snapshot_decoder_decode", ffi::ghostty_snapshot_decoder_decode(decoder, &mut raw)),
+                Some(wanted) => check("ghostty_snapshot_decoder_ready", ffi::ghostty_snapshot_decoder_ready(decoder, &mut raw))
+                    .and_then(|()| history(decoder, wanted))
+                    .map(|left| more = left),
+            })
         };
         unsafe { ffi::ghostty_snapshot_decoder_free(decoder) };
-        result?;
-        Terminal::adopt(raw)
+        match result {
+            Ok(()) => Terminal::adopt(raw).map(|terminal| (terminal, more)),
+            Err(error) => {
+                if !raw.is_null() {
+                    unsafe { ffi::ghostty_terminal_free(raw) };
+                }
+                Err(error)
+            }
+        }
     }
 
     fn adopt(raw: ffi::GhosttyTerminal) -> Result<Terminal, Error> {
@@ -477,6 +511,23 @@ impl Terminal {
         unsafe { &(*self.hooks.as_ptr()).statuses }.records.iter().find(|(_, r)| r.id.is_empty()).map(|(_, r)| r.clone())
     }
 
+    pub fn program_records(&self) -> Vec<ProgramStatus> {
+        let mut records: Vec<&(u64, ProgramStatus)> = unsafe { &(*self.hooks.as_ptr()).statuses }.records.iter().collect();
+        records.sort_by_key(|(serial, _)| *serial);
+        records.into_iter().map(|(_, r)| r.clone()).collect()
+    }
+
+    pub fn restore_program_records(&mut self, records: Vec<ProgramStatus>) {
+        let statuses = &mut self.hooks().statuses;
+        for record in records {
+            statuses.keep(record);
+        }
+    }
+
+    pub fn program_turns(&self) -> u64 {
+        unsafe { (*self.hooks.as_ptr()).statuses.turns }
+    }
+
     pub fn program_status_serial(&self) -> u64 {
         unsafe { (*self.hooks.as_ptr()).statuses.serial }
     }
@@ -600,6 +651,25 @@ impl Terminal {
         })?;
         Ok(unsafe { take_buffer(out, len) })
     }
+
+    pub fn snapshot_with_history(&self, rows: usize) -> Result<(Vec<u8>, bool), Error> {
+        let (bounded, more) = Terminal::decode(&self.snapshot()?, Some(rows))?;
+        Ok((bounded.snapshot()?, more))
+    }
+}
+
+unsafe fn history(decoder: ffi::GhosttySnapshotDecoder, wanted: usize) -> Result<bool, Error> {
+    let mut kept = 0usize;
+    while kept < wanted {
+        match ffi::ghostty_snapshot_decoder_next(decoder) {
+            ffi::GHOSTTY_NO_VALUE => return Ok(false),
+            code => check("ghostty_snapshot_decoder_next", code)?,
+        }
+        let mut rows = 0usize;
+        check("snapshot history rows", ffi::ghostty_snapshot_decoder_get(decoder, ffi::GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_ROWS, &mut rows as *mut usize as *mut c_void))?;
+        kept += rows;
+    }
+    Ok(true)
 }
 
 impl Drop for Terminal {
@@ -835,6 +905,7 @@ mod abi {
             ("GHOSTTY_TERMINAL_SCREEN_ALTERNATE", GHOSTTY_TERMINAL_SCREEN_ALTERNATE as i64),
             ("GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES", GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES as i64),
             ("GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION", GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION as i64),
+            ("GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_ROWS", GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_ROWS as i64),
             ("GHOSTTY_POINT_TAG_SCREEN", GHOSTTY_POINT_TAG_SCREEN as i64),
             ("sizeof GhosttyPointCoordinate", size_of::<GhosttyPointCoordinate>() as i64),
             ("GhosttyPointCoordinate.y", offset_of!(GhosttyPointCoordinate, y) as i64),
