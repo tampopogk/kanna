@@ -14,9 +14,11 @@ final class TabBar: NSView {
     var onMoveToNewWindow: ((String) -> Void)?
     var onPage: ((String) -> Void)?
     var onCycle: ((Int) -> Void)?
-    private var shown: [(id: String, title: String, active: Bool)] = []
+    var badge: ((String) -> String?)?
+    private var shown: [(id: String, title: String, active: Bool, badge: String?)] = []
     private var shownPages: [String] = []
     private var shownPage: String?
+    private var shownCounts: [String: Int] = [:]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -35,24 +37,26 @@ final class TabBar: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func show(_ window: JSON, pages: [String] = [], page: String? = nil) {
+    func show(_ window: JSON, pages: [String] = [], page: String? = nil, counts: [String: Int] = [:]) {
         guard case .array(let list)? = window["tabs"] else { return }
         let active = page == nil ? window["tab"]?.string : nil
-        let tabs = list.compactMap { tab in tab["id"]?.string.map { (id: $0, title: tab["title"]?.string ?? $0, active: $0 == active) } }
-        guard tabs.map(\.id) != shown.map(\.id) || tabs.map(\.title) != shown.map(\.title) || tabs.map(\.active) != shown.map(\.active)
-            || pages != shownPages || page != shownPage else { return }
+        let badged = { (tab: JSON) in (tab["panes"]?.array ?? []).compactMap(\.string).lazy.compactMap { self.badge?($0) }.first }
+        let tabs = list.compactMap { tab in tab["id"]?.string.map { (id: $0, title: tab["title"]?.string ?? $0, active: $0 == active, badge: badged(tab)) } }
+        guard tabs.map(\.id) != shown.map(\.id) || tabs.map(\.title) != shown.map(\.title) || tabs.map(\.active) != shown.map(\.active) || tabs.map(\.badge) != shown.map(\.badge)
+            || pages != shownPages || page != shownPage || counts != shownCounts else { return }
+        shownCounts = counts
         shown = tabs
         shownPages = pages
         shownPage = page
         subviews.forEach { $0.removeFromSuperview() }
         for name in pages {
-            let item = PageItem(title: name, active: name == page)
+            let item = PageItem(title: name, active: name == page, count: counts[name])
             item.onSelect = { [weak self] in self?.onPage?(name) }
             item.onCycle = { [weak self] step in self?.onCycle?(step) }
             addSubview(item)
         }
         for tab in tabs {
-            let item = TabItem(id: tab.id, title: tab.title, active: tab.active)
+            let item = TabItem(id: tab.id, title: tab.title, active: tab.active, badge: tab.badge)
             item.onSelect = { [weak self] in self?.onSelect?(tab.id) }
             item.onClose = { [weak self] in self?.onClose?(tab.id) }
             item.onRename = { [weak self] title in self?.onRename?(tab.id, title) }
@@ -155,6 +159,8 @@ final class TabBar: NSView {
         }
     }
 
+    var pageCounts: [String: Int] { shownCounts }
+
     var pageItems: [(title: String, center: NSPoint)] {
         subviews.compactMap { $0 as? PageItem }.map { ($0.title, $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil)) }
     }
@@ -201,12 +207,13 @@ private final class PageItem: NSView {
         }
     }
 
-    init(title: String, active: Bool) {
+    init(title: String, active: Bool, count: Int? = nil) {
         self.title = title
         self.active = active
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 12, weight: active ? .semibold : .regular)
-        label.textColor = active ? .labelColor : .secondaryLabelColor
+        let font = NSFont.systemFont(ofSize: 12, weight: active ? .semibold : .regular)
+        let text = NSMutableAttributedString(string: title, attributes: [.font: font, .foregroundColor: active ? NSColor.labelColor : NSColor.secondaryLabelColor])
+        if let count { text.append(NSAttributedString(string: "  \(count)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.controlAccentColor])) }
+        let label = NSTextField(labelWithAttributedString: text)
         label.sizeToFit()
         super.init(frame: NSRect(x: 0, y: 0, width: label.frame.width + 24, height: TabBar.height))
         label.frame.origin = NSPoint(x: 12, y: (TabBar.height - label.frame.height) / 2)
@@ -241,7 +248,7 @@ private final class TabItem: NSView, NSTextFieldDelegate {
     var isEditing: Bool { editor != nil }
     private var cancelled = false
 
-    init(id: String, title: String, active: Bool) {
+    init(id: String, title: String, active: Bool, badge: String? = nil) {
         self.id = id
         self.active = active
         label = NSTextField(labelWithString: title)
@@ -249,15 +256,21 @@ private final class TabItem: NSView, NSTextFieldDelegate {
         label.textColor = active ? .labelColor : .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         label.sizeToFit()
-        let width = min(max(label.frame.width, 40), 220)
-        super.init(frame: NSRect(x: 0, y: 0, width: width + 34, height: TabBar.height))
+        let pill = badge.map { TabBadge(text: $0) }
+        let extra = pill.map { $0.frame.width + 16 } ?? 0
+        let width = min(max(label.frame.width, pill == nil ? 40 : 0), 220)
+        super.init(frame: NSRect(x: 0, y: 0, width: width + 34 + extra, height: TabBar.height))
         label.frame = NSRect(x: 10, y: (TabBar.height - label.frame.height) / 2, width: width, height: label.frame.height)
         addSubview(label)
+        if let pill {
+            pill.frame.origin = NSPoint(x: label.frame.maxX + 6, y: (TabBar.height - 15) / 2)
+            addSubview(pill)
+        }
         let close = NSButton(title: "×", target: self, action: #selector(closeClicked))
         close.isBordered = false
         close.font = .systemFont(ofSize: 13)
         close.contentTintColor = .tertiaryLabelColor
-        close.frame = NSRect(x: width + 14, y: (TabBar.height - 18) / 2, width: 16, height: 18)
+        close.frame = NSRect(x: width + 14 + extra, y: (TabBar.height - 18) / 2, width: 16, height: 18)
         close.toolTip = "Close tab"
         addSubview(close)
     }
@@ -329,4 +342,26 @@ private final class TabItem: NSView, NSTextFieldDelegate {
     }
 
     @objc private func closeClicked() { onClose?() }
+}
+
+private final class TabBadge: NSView {
+    let text: String
+    private let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: NSColor.secondaryLabelColor]
+
+    init(text: String) {
+        self.text = text
+        let width = ceil((text as NSString).size(withAttributes: attributes).width) + 12
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 15))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 7, yRadius: 7)
+        NSColor.separatorColor.setStroke()
+        path.lineWidth = 1
+        path.stroke()
+        let size = (text as NSString).size(withAttributes: attributes)
+        (text as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2), withAttributes: attributes)
+    }
 }

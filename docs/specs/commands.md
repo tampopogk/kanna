@@ -29,7 +29,7 @@ Every command, option, output and error is kmux's CLI's, except where [the CLI's
 | | `kanna window assign WINDOW TASK` / `kanna window free WINDOW` | Make a window one of a task's, shown and hidden with it, or free it ([workspaces](workspaces.md)). |
 | | `kanna workspace list [--all]` | Your workspace (from `$KANNA_TERMINAL`): its dock, tabs and panes, the shown tab, focus and zoom, also off screen; `--all`: every window, workspace and pane ([workspace list](workspace-list.md)). |
 | Information | `kanna capabilities` | Show what the running mux supports (and, for Kanna, whether the app is attached). |
-| | `kanna schedule add RULE TARGET PROMPT… [--name NAME] [--repo DIR]`, `schedule list`, `schedule remove NAME\|ID` | Leave a task or the planner a message at set times ([scheduler](scheduler.md)). Kanna's. |
+| | `kanna schedule add RULE TARGET PROMPT… [--name NAME] [--repo DIR]`, `schedule list`, `schedule remove\|pause\|resume\|run NAME\|ID`, `schedule reply NAME\|ID TEXT` | Leave a task or the planner a message at set times ([scheduler](scheduler.md)). Kanna's. |
 | | `kanna diagrams check FILE...` | Check that a markdown file's mermaid diagrams and [call trees](call-tree.md) draw in Kanna, without the app; `open md` prints the same failures ([diagram check](diagram-check.md)). Kanna's. |
 | | `kanna pipeline list`, `kanna pipeline check NAME\|FILE` | Check a software-factory pipeline, or list the repo's, each with its worst case, without the app ([Kojo](kojo.md#6-checks-on-the-file)). Kanna's. |
 | | `kanna machine [list\|pair [CODE]\|name\|ping\|addr\|revoke]` | Your machines: pair one with a code, list them, check one's link, give it an address, or revoke it ([machine identity](machine-identity.md#5-interfaces)). Kanna's. |

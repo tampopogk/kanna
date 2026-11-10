@@ -18,7 +18,8 @@ kanna-threads = { path = "../kanna-threads" }
 kanna-net = { path = "../kanna-net" }
 kanna-guest = { path = "../kanna-guest" }
 kanna-pipe = { path = "../kanna-pipe" }
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+kanna-quality = { path = "../kanna-quality" }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "process", "fs"] }
 notify = "8"
 base64 = "0.22"
 getrandom = "0.2"

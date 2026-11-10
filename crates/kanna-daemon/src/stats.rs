@@ -1,13 +1,17 @@
-use crate::db::{self, Answer, Db, Life, Sample};
+use crate::agent_stats;
+use crate::db::{self, AgentRow, Answer, Db, Life, Sample};
+use crate::pipelines;
+use crate::quality;
 use crate::tasks::git;
 use crate::Event;
+use kanna_quality::git::Blobs;
+use kanna_quality::tree::{Cache, Tree};
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{project, CoreHandle, KmuxError, Responder};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
 
 pub const DAYS: i64 = 30;
 
@@ -15,30 +19,57 @@ const AREAS: usize = 5;
 
 const MEDIAN_DAYS: i64 = 7;
 
+const BATCH_SECONDS: f64 = 2.0;
+
 pub struct Commit {
     pub id: String,
     pub at: f64,
     pub parents: Vec<String>,
+    pub subject: String,
+}
+
+pub struct Context<'a> {
+    pub repo: &'a Path,
+    pub tasks: &'a HashMap<String, String>,
+}
+
+pub enum Sampler {
+    Commit(fn(&Context, &Commit) -> Result<(f64, Value), String>),
+    Tree(fn(&Tree) -> (f64, Value)),
 }
 
 pub struct Metric {
     pub name: &'static str,
-    pub sample: fn(&Path, &Commit) -> Result<(f64, Value), String>,
+    pub revision: i64,
+    pub sample: Sampler,
 }
 
-pub const METRICS: &[Metric] = &[Metric { name: "commits", sample: brought }, Metric { name: "merged", sample: merge }];
+pub type Revisions = HashMap<(String, String), i64>;
 
-fn brought(repo: &Path, commit: &Commit) -> Result<(f64, Value), String> {
+pub const METRICS: &[Metric] = &[
+    Metric { name: "commits", revision: 0, sample: Sampler::Commit(brought) },
+    Metric { name: "merged", revision: 0, sample: Sampler::Commit(merge) },
+    Metric { name: "churn", revision: 0, sample: Sampler::Commit(quality::churn) },
+    Metric { name: "fixes", revision: 0, sample: Sampler::Commit(quality::fixes) },
+    Metric { name: "erosion", revision: 1, sample: Sampler::Tree(quality::erosion) },
+    Metric { name: "verbosity", revision: 1, sample: Sampler::Tree(quality::verbosity) },
+    Metric { name: "high", revision: 2, sample: Sampler::Tree(quality::high) },
+    Metric { name: "dead", revision: 2, sample: Sampler::Tree(quality::dead) },
+    Metric { name: "wrappers", revision: 2, sample: Sampler::Tree(quality::wrappers) },
+    Metric { name: "lines", revision: 1, sample: Sampler::Tree(quality::lines) },
+];
+
+fn brought(cx: &Context, commit: &Commit) -> Result<(f64, Value), String> {
     match commit.parents.first() {
         Some(first) if commit.parents.len() > 1 => {
-            let count = git(repo, &["rev-list", "--count", "--no-merges", &format!("{first}..{}", commit.id)])?;
+            let count = git(cx.repo, &["rev-list", "--count", "--no-merges", &format!("{first}..{}", commit.id)])?;
             Ok((count.trim().parse().map_err(|_| format!("git counted {count:?}"))?, json!({})))
         }
         _ => Ok((1.0, json!({}))),
     }
 }
 
-fn merge(_: &Path, commit: &Commit) -> Result<(f64, Value), String> {
+fn merge(_: &Context, commit: &Commit) -> Result<(f64, Value), String> {
     Ok((if commit.parents.len() > 1 { 1.0 } else { 0.0 }, json!({})))
 }
 
@@ -51,34 +82,100 @@ pub fn main_ref(repo: &Path) -> String {
 }
 
 pub fn first_parents(repo: &Path, since: f64) -> Result<Vec<Commit>, String> {
-    let log = git(repo, &["log", "--first-parent", &format!("--since=@{}", since as i64), "--format=%H %ct %P", &main_ref(repo)])?;
-    Ok(log
+    let log = git(repo, &["log", "--first-parent", &format!("--since=@{}", since as i64), "--format=%H%x09%ct%x09%P%x09%s", &main_ref(repo)])?;
+    let mut commits: Vec<Commit> = log
         .lines()
         .filter_map(|line| {
-            let mut words = line.split_whitespace();
-            let id = words.next()?.to_string();
-            let at: f64 = words.next()?.parse().ok()?;
-            Some(Commit { id, at, parents: words.map(String::from).collect() })
+            let mut fields = line.splitn(4, '\t');
+            let id = fields.next()?.to_string();
+            let at: f64 = fields.next()?.parse().ok()?;
+            let parents = fields.next()?.split_whitespace().map(String::from).collect();
+            Some(Commit { id, at, parents, subject: fields.next().unwrap_or("").to_string() })
         })
-        .filter(|commit| commit.at >= since)
-        .collect())
+        .collect();
+    let mut previous = f64::NEG_INFINITY;
+    for commit in commits.iter_mut().rev() {
+        commit.at = commit.at.max(previous + 0.001);
+        previous = commit.at;
+    }
+    commits.retain(|commit| commit.at >= since);
+    Ok(commits)
 }
 
-pub fn catch_up(repo: &Path, since: f64, sampled: &HashSet<(String, String)>) -> Result<Vec<Sample>, String> {
-    let mut samples = Vec::new();
-    for commit in first_parents(repo, since)?.into_iter().rev() {
-        for metric in METRICS {
-            if sampled.contains(&(commit.id.clone(), metric.name.to_string())) {
-                continue;
-            }
-            let (value, doc) = (metric.sample)(repo, &commit)?;
-            samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc });
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    Reading(usize),
+    Measuring { done: usize, of: usize },
+}
+
+fn commits_word(count: usize) -> &'static str {
+    if count == 1 {
+        "commit"
+    } else {
+        "commits"
+    }
+}
+
+impl Step {
+    fn words(self) -> String {
+        match self {
+            Step::Reading(count) => format!("reading {count} new {}", commits_word(count)),
+            Step::Measuring { done, of } => format!("measuring code, {done} of {of} {}", commits_word(of)),
         }
     }
-    Ok(samples)
 }
 
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub fn status(step: Option<Step>, covering: bool) -> Option<String> {
+    let doing: Vec<String> = step.map(Step::words).into_iter().chain(covering.then(|| "running coverage".to_string())).collect();
+    (!doing.is_empty()).then(|| format!("Updating: {}", doing.join(" · ")))
+}
+
+pub fn catch_up(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>, every: f64, deliver: &mut dyn FnMut(Vec<Sample>, Option<Step>)) -> Result<(), String> {
+    let cx = Context { repo, tasks };
+    let commits = first_parents(repo, since)?;
+    let missing = |commit: &Commit, metric: &Metric| sampled.get(&(commit.id.clone(), metric.name.to_string())) != Some(&metric.revision);
+    let reading = commits.iter().filter(|c| METRICS.iter().any(|m| matches!(m.sample, Sampler::Commit(_)) && missing(c, m))).count();
+    if reading > 0 {
+        deliver(vec![], Some(Step::Reading(reading)));
+    }
+    let mut samples = Vec::new();
+    for commit in commits.iter().rev() {
+        for metric in METRICS {
+            let Sampler::Commit(sample) = &metric.sample else { continue };
+            if missing(commit, metric) {
+                let (value, doc) = sample(&cx, commit)?;
+                samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc, revision: metric.revision });
+            }
+        }
+    }
+    let trees: Vec<&Commit> = commits.iter().filter(|c| METRICS.iter().any(|m| matches!(m.sample, Sampler::Tree(_)) && missing(c, m))).collect();
+    let progress = |done: usize| (!trees.is_empty() && done < trees.len()).then_some(Step::Measuring { done, of: trees.len() });
+    deliver(std::mem::take(&mut samples), progress(0));
+    if trees.is_empty() {
+        return Ok(());
+    }
+    let mut blobs = Blobs::open(repo)?;
+    let mut cache = Cache::default();
+    let mut batch = now();
+    for (done, commit) in trees.iter().enumerate() {
+        let tree = cache.tree(repo, &mut blobs, &commit.id)?;
+        for metric in METRICS {
+            let Sampler::Tree(sample) = &metric.sample else { continue };
+            if missing(commit, metric) {
+                let (value, doc) = sample(&tree);
+                samples.push(Sample { commit: commit.id.clone(), metric: metric.name.to_string(), at: commit.at, value, doc, revision: metric.revision });
+            }
+        }
+        if now() - batch >= every && done + 1 < trees.len() {
+            deliver(std::mem::take(&mut samples), progress(done + 1));
+            batch = now();
+        }
+    }
+    deliver(samples, None);
+    Ok(())
+}
+
+pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let of_era = year - era * 400;
@@ -122,17 +219,23 @@ fn date(day: i64) -> String {
 }
 
 pub struct Facts {
+    pub pipelines: Option<Value>,
     pub today: i64,
     pub answers: Vec<Answer>,
     pub samples: Vec<Sample>,
     pub lives: Vec<Life>,
+    pub agents: Vec<AgentRow>,
+    pub now: f64,
+    pub pending: bool,
+    pub status: Option<String>,
+    pub coverage: Option<String>,
 }
 
-fn tile(id: &str, label: &str, value: Value, unit: Option<&str>, note: String, span: u8, chart: Value) -> Value {
+pub fn tile(id: &str, label: &str, value: Value, unit: Option<&str>, note: String, span: u8, chart: Value) -> Value {
     json!({ "id": id, "label": label, "value": value, "unit": unit, "note": note, "span": span, "chart": chart })
 }
 
-fn section(id: &str, title: &str, note: &str, tiles: Vec<Value>) -> Value {
+pub fn section(id: &str, title: &str, note: &str, tiles: Vec<Value>) -> Value {
     json!({ "id": id, "title": title, "note": note, "tiles": tiles })
 }
 
@@ -144,7 +247,7 @@ fn percent(right: usize, all: usize) -> Value {
     }
 }
 
-fn median(values: &mut [f64]) -> Option<f64> {
+pub fn median(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -247,9 +350,46 @@ fn count_tile(id: &str, label: &str, days: Vec<f64>, what: &str) -> Value {
 }
 
 fn main_section(facts: &Facts) -> Value {
+    if facts.pending && facts.samples.is_empty() {
+        let mut empty = section("main", "Main", "what landed", vec![]);
+        empty["empty"] = json!("Reading main's commits.");
+        return empty;
+    }
     let first = facts.today - DAYS + 1;
     let of = |metric: &str| per_day(first, facts.samples.iter().filter(|s| s.metric == metric).map(|s| (s.at, s.value)));
     section("main", "Main", "what landed", vec![count_tile("commits", "Commits", of("commits"), "commits"), count_tile("landed", "Tasks landed", of("merged"), "merges into main")])
+}
+
+fn open_at(lives: &[Life], at: f64) -> f64 {
+    lives.iter().filter(|life| life.made < at && life.done.is_none_or(|done| done >= at)).count() as f64
+}
+
+fn open_tile(facts: &Facts, made: &[f64], done: &[f64]) -> Value {
+    let first = facts.today - DAYS + 1;
+    let open: Vec<f64> = (first..=facts.today).map(|day| open_at(&facts.lives, day_start(day + 1))).collect();
+    let today = open.last().copied().unwrap_or(0.0);
+    let change = today - open_at(&facts.lives, day_start(first));
+    let note = if change > 0.0 {
+        format!("+{change} in 30 days")
+    } else if change < 0.0 {
+        format!("\u{2212}{} in 30 days", -change)
+    } else {
+        "no change in 30 days".to_string()
+    };
+    tile("open", "Open", json!(today), None, note, 6, json!({ "kind": "flow", "values": open, "made": made, "done": done, "what": "open at the end of the day" }))
+}
+
+pub fn median_line(points: &[(i64, f64, &str)]) -> Vec<Value> {
+    (0..DAYS)
+        .map(|day| {
+            let mut near: Vec<f64> = points.iter().filter(|(d, _, _)| *d > day - MEDIAN_DAYS && *d <= day).map(|(_, s, _)| *s).collect();
+            median(&mut near).map_or(Value::Null, |m| json!(m.round()))
+        })
+        .collect()
+}
+
+pub fn dots(points: &[(i64, f64, &str)], line: Vec<Value>, what: &str) -> Value {
+    json!({ "kind": "dots", "points": points.iter().map(|(day, seconds, name)| json!({ "day": day, "value": seconds.round(), "label": name })).collect::<Vec<_>>(), "line": line, "what": what })
 }
 
 fn tasks_section(facts: &Facts) -> Value {
@@ -264,12 +404,8 @@ fn tasks_section(facts: &Facts) -> Value {
             (0..DAYS).contains(&day).then(|| (day, (done - life.made).max(0.0), life.name.as_str()))
         })
         .collect();
-    let line: Vec<Value> = (0..DAYS)
-        .map(|day| {
-            let mut near: Vec<f64> = points.iter().filter(|(d, _, _)| *d > day - MEDIAN_DAYS && *d <= day).map(|(_, s, _)| *s).collect();
-            median(&mut near).map_or(Value::Null, |m| json!(m.round()))
-        })
-        .collect();
+    let made = at(|l| Some(l.made));
+    let ended = at(|l| l.done);
     let mut all: Vec<f64> = points.iter().map(|(_, s, _)| *s).collect();
     let middle = median(&mut all);
     let lead = tile(
@@ -279,36 +415,30 @@ fn tasks_section(facts: &Facts) -> Value {
         Some("s"),
         if points.is_empty() { String::new() } else { format!("median of {}", points.len()) },
         4,
-        json!({ "kind": "dots", "points": points.iter().map(|(day, seconds, name)| json!({ "day": day, "value": seconds.round(), "label": name })).collect::<Vec<_>>(), "line": line, "what": "7-day median" }),
+        dots(&points, median_line(&points), "7-day median"),
     );
     section(
         "tasks",
         "Tasks",
         "from the Desk's and the Shelf's events",
-        vec![count_tile("made", "Made", at(|l| Some(l.made)), "tasks made"), count_tile("started", "Started", at(|l| l.started), "tasks started"), count_tile("ended", "Ended", at(|l| l.done), "tasks ended"), lead],
+        vec![open_tile(facts, &made, &ended), count_tile("made", "Made", made, "tasks made"), count_tile("started", "Started", at(|l| l.started), "tasks started"), count_tile("ended", "Ended", ended, "tasks ended"), lead],
     )
-}
-
-fn code_section() -> Value {
-    let mut code = section("code", "Code quality", "how good the code is, and its trend", vec![]);
-    code["placeholder"] = json!(true);
-    code["empty"] = json!("Not measured yet. Measures of the code on main, sampled at each new commit, come here.");
-    code
 }
 
 pub fn report(project: &str, facts: &Facts) -> Map {
     let days: Vec<String> = (facts.today - DAYS + 1..=facts.today).map(date).collect();
-    Map::from_iter([
-        ("project".to_string(), json!(project)),
-        ("days".to_string(), json!(days)),
-        ("sections".to_string(), json!([quiz(facts), main_section(facts), tasks_section(facts), code_section()])),
-    ])
+    let nothing = facts.pending && facts.answers.is_empty() && facts.samples.is_empty() && facts.lives.is_empty() && facts.agents.is_empty();
+    let sections = if nothing { json!([]) } else { Value::Array([quiz(facts), main_section(facts), tasks_section(facts), agent_stats::section_of(facts), quality::code_section(facts)].into_iter().chain(facts.pipelines.clone()).collect()) };
+    Map::from_iter([("project".to_string(), json!(project)), ("days".to_string(), json!(days)), ("status".to_string(), json!(facts.status)), ("sections".to_string(), sections)])
 }
 
 pub struct Stats {
     db: Rc<Db>,
-    events: Sender<Event>,
-    waiting: RefCell<HashMap<String, Vec<Responder>>>,
+    events: crate::runtime::Events,
+    running: RefCell<HashMap<String, Option<Step>>>,
+    caught: RefCell<HashSet<String>>,
+    coverage: Rc<crate::coverage::Coverage>,
+    pub on_change: RefCell<Option<Box<dyn Fn(&str)>>>,
 }
 
 fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
@@ -316,9 +446,44 @@ fn failed(what: &str, error: rusqlite::Error) -> KmuxError {
     KmuxError::new("failed", format!("couldn't {what}: {error}"))
 }
 
+#[derive(Clone, Copy)]
+struct Wanted {
+    only: bool,
+    days: Option<i64>,
+}
+
+struct Unlanded {
+    run: String,
+    base: String,
+    tip: String,
+    started: f64,
+}
+
+fn landings(repo: &Path, unlanded: &[Unlanded]) -> Vec<(String, String, f64)> {
+    unlanded
+        .iter()
+        .filter_map(|run| {
+            let made = git(repo, &["rev-list", "--count", &format!("{}..{}", run.base, run.tip)]).ok()?.trim().parse::<u64>().ok()?;
+            let commits = first_parents(repo, run.started - 86400.0).ok()?;
+            let reaches = |commit: &str| git(repo, &["merge-base", "--is-ancestor", &run.tip, commit]).is_ok();
+            let (commit, at) = pipelines::landing_of(&commits, reaches).filter(|_| made > 0)?;
+            Some((run.run.clone(), commit, at))
+        })
+        .collect()
+}
+
+pub struct Sampled {
+    pub repo: String,
+    pub samples: Result<Vec<Sample>, String>,
+    pub landings: Vec<(String, String, f64)>,
+    pub step: Option<Step>,
+    pub done: bool,
+}
+
 impl Stats {
-    pub fn new(db: Rc<Db>, events: Sender<Event>) -> Stats {
-        Stats { db, events, waiting: RefCell::default() }
+    pub fn new(db: Rc<Db>, events: crate::runtime::Events, state: &Path) -> Stats {
+        let coverage = Rc::new(crate::coverage::Coverage::new(db.clone(), events.clone(), state.to_path_buf()));
+        Stats { db, events, running: RefCell::default(), caught: RefCell::default(), coverage, on_change: RefCell::default() }
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -332,68 +497,159 @@ impl Stats {
         );
     }
 
+    fn days(args: &Value, key: &str) -> Option<i64> {
+        match args.get(key).and_then(Value::as_i64) {
+            Some(0) => None,
+            Some(days) => Some(days),
+            None => Some(DAYS),
+        }
+    }
+
     fn ask(&self, args: &Value, responder: Responder) {
         let Some(repo) = string(args, "repo").filter(|r| Path::new(r).is_absolute()).and_then(|r| project(Some(r))) else {
             return responder.reply(Err(KmuxError::new("bad_request", "say which repo: an absolute path to a folder in a git repo")));
         };
         let repo = repo.to_string_lossy().to_string();
-        if let Some(waiting) = self.waiting.borrow_mut().get_mut(&repo) {
-            return waiting.push(responder);
+        let covering = self.coverage.covering(&repo);
+        self.coverage.consider(&repo);
+        let wanted = Wanted { only: args.get("pipelines") == Some(&Value::Bool(true)), days: Stats::days(args, "days") };
+        let started = if self.running.borrow().contains_key(&repo) { Ok(()) } else { self.start(&repo) };
+        responder.reply(started.and_then(|()| self.read(&repo, wanted)));
+        if self.coverage.covering(&repo) != covering {
+            self.changed(&repo);
         }
-        let since = day_start(local_day(now()) - DAYS + 1);
-        let sampled = match self.db.sampled(&repo, since) {
-            Ok(sampled) => sampled,
-            Err(error) => return responder.reply(Err(failed("read the samples", error))),
-        };
-        self.waiting.borrow_mut().insert(repo.clone(), vec![responder]);
-        let events = self.events.clone();
-        std::thread::spawn(move || {
-            let samples = catch_up(&PathBuf::from(&repo), since, &sampled);
-            let _ = events.send(Event::Sampled { repo, samples });
-        });
     }
 
-    pub fn sampled(&self, repo: &str, samples: Result<Vec<Sample>, String>) {
+    fn start(&self, repo: &str) -> Result<(), KmuxError> {
+        let since = day_start(local_day(now()) - DAYS + 1);
+        let sampled = self.db.sampled(repo, since).map_err(|error| failed("read the samples", error))?;
+        let tasks = self.db.branches(repo).unwrap_or_else(|error| {
+            log!("kanna-daemon: couldn't read {repo}'s tasks' branches in {}: {error}", db::FILE);
+            HashMap::new()
+        });
+        let unlanded = self.db.runs(Some(repo)).unwrap_or_default().into_iter().filter(|r| r.outcome.as_deref() == Some("handed back") && r.doc.get("landing").is_none()).filter_map(|r| {
+            let tip = self.db.stages(&r.id).ok()?.iter().rev().find_map(|s| string(&s.doc, "end").filter(|e| !e.is_empty()).map(String::from))?;
+            Some(Unlanded { run: r.id.clone(), base: string(&r.doc, "base").unwrap_or("").to_string(), tip, started: r.started_at })
+        }).collect::<Vec<_>>();
+        self.running.borrow_mut().insert(repo.to_string(), None);
+        let events = self.events.clone();
+        let repo = repo.to_string();
+        std::thread::spawn(move || {
+            let mut deliver = |samples: Vec<Sample>, step: Option<Step>| {
+                let _ = events.send(Event::Sampled(Sampled { repo: repo.clone(), samples: Ok(samples), landings: vec![], step, done: false }));
+            };
+            let result = catch_up(&PathBuf::from(&repo), since, &sampled, &tasks, BATCH_SECONDS, &mut deliver);
+            let landings = landings(Path::new(&repo), &unlanded);
+            let _ = events.send(Event::Sampled(Sampled { repo, samples: result.map(|_| vec![]), landings, step: None, done: true }));
+        });
+        Ok(())
+    }
+
+    pub fn sampled(&self, sampled: Sampled) {
+        let Sampled { repo, samples, landings, step, done } = sampled;
+        let mut changed = !landings.is_empty();
+        for (run, commit, at) in landings {
+            if let Err(error) = self.db.patch_run(&run, &json!({ "landing": commit, "landedAt": at })) {
+                log!("kanna-daemon: couldn't save where {run} landed: {error}");
+            }
+        }
         match samples {
             Ok(samples) if !samples.is_empty() => {
-                if let Err(error) = self.db.put_samples(repo, &samples) {
+                changed = true;
+                if let Err(error) = self.db.put_samples(&repo, &samples) {
                     log!("kanna-daemon: couldn't save {} samples of {repo} in {}: {error}", samples.len(), db::FILE);
                 }
             }
             Ok(_) => {}
             Err(error) => log!("kanna-daemon: couldn't sample {repo}'s main: {error}"),
         }
-        let responders = self.waiting.borrow_mut().remove(repo).unwrap_or_default();
-        let reply = self.read(repo);
-        for responder in responders {
-            responder.reply(reply.clone());
+        if done {
+            changed |= self.running.borrow_mut().remove(&repo).flatten().is_some();
+            changed |= self.caught.borrow_mut().insert(repo.clone());
+        } else if let Some(running) = self.running.borrow_mut().get_mut(&repo) {
+            changed |= std::mem::replace(running, step) != step;
+        }
+        if changed {
+            self.changed(&repo);
         }
     }
 
-    fn read(&self, repo: &str) -> Result<Map, KmuxError> {
+    pub fn covered(&self, covered: crate::coverage::Covered) {
+        let repo = covered.repo.clone();
+        self.coverage.covered(covered);
+        self.changed(&repo);
+    }
+
+    fn changed(&self, repo: &str) {
+        if let Some(on_change) = self.on_change.borrow().as_ref() {
+            on_change(repo);
+        }
+    }
+
+    fn run_numbers(&self, repo: &str, days: Option<i64>) -> Result<(Vec<pipelines::Numbers>, HashMap<String, Vec<db::StageRow>>, f64), KmuxError> {
+        let rows = self.db.runs(Some(repo)).map_err(|e| failed("read the runs", e))?;
+        let revisions = pipelines::revisions(&rows);
+        let samples = self.db.samples_of(repo, &["fixes", "erosion", "verbosity", "coverage"]).map_err(|e| failed("read the samples", e))?;
+        let quality = pipelines::join_quality(&samples);
+        let names = self.db.names(repo).map_err(|e| failed("read the tasks", e))?;
+        let time = now();
+        let from = days.map_or_else(|| rows.iter().map(|r| r.started_at).fold(time, f64::min), |days| day_start(local_day(time) - days + 1));
+        let (mut numbers, mut stages) = (vec![], HashMap::new());
+        for row in rows.iter().filter(|r| r.started_at >= from) {
+            let visits = self.db.stages(&row.id).map_err(|e| failed("read the visits", e))?;
+            let events = self.db.run_events(&row.id).map_err(|e| failed("read the events", e))?;
+            let revision = revisions.get(&(row.pipeline.clone(), row.revision_hash.clone())).copied().unwrap_or(1);
+            let mut one = pipelines::numbers(row, &visits, &events, revision, time);
+            if let Some(name) = names.get(&row.task) {
+                one.name = name.clone();
+            }
+            if let Some(landing) = &one.landing {
+                one.quality = quality(landing);
+            }
+            numbers.push(one);
+            stages.insert(row.id.clone(), visits);
+        }
+        Ok((numbers, stages, from))
+    }
+
+    fn read(&self, repo: &str, wanted: Wanted) -> Result<Map, KmuxError> {
+        let (runs, stages, from) = self.run_numbers(repo, wanted.days)?;
+        if wanted.only {
+            let Value::Object(report) = pipelines::report(repo, &runs, &stages, wanted.days, from, now(), local_day(now())) else { return Ok(Map::new()) };
+            return Ok(report);
+        }
         let today = local_day(now());
         let since = day_start(today - DAYS + 1);
+        let running = self.running.borrow().get(repo).copied();
+        let step = running.flatten();
+        let first = running.is_some() && !self.caught.borrow().contains(repo);
         let facts = Facts {
             today,
             answers: self.db.answers(repo, false).map_err(|e| failed("read the quiz answers", e))?,
             samples: self.db.samples(repo, since).map_err(|e| failed("read the samples", e))?,
             lives: self.db.lives(repo, since).map_err(|e| failed("read the task events", e))?,
+            agents: self.db.agent_rows(repo, since).map_err(|e| failed("read the agents' status changes", e))?,
+            now: now(),
+            pipelines: Some(pipelines::section_of(&runs, &stages, wanted.days, from, now(), today)),
+            pending: step.is_some() || first,
+            status: status(step, self.coverage.covering(repo)),
+            coverage: self.coverage.status(repo),
         };
         Ok(report(repo, &facts))
     }
 }
 
-fn now() -> f64 {
+pub fn now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
 
-    fn noon(day: i64) -> f64 {
+    pub fn noon(day: i64) -> f64 {
         day_start(day) + 12.0 * 3600.0
     }
 
@@ -405,12 +661,133 @@ mod tests {
         Life { task: task.into(), name: format!("{task} name"), made, started, done }
     }
 
+    pub fn facts(today: i64, answers: Vec<Answer>, samples: Vec<Sample>, lives: Vec<Life>) -> Facts {
+        Facts { pipelines: None, today, answers, samples, lives, agents: vec![], now: day_start(today + 1), pending: false, status: None, coverage: None }
+    }
+
+    pub fn collect(repo: &Path, since: f64, sampled: &Revisions, tasks: &HashMap<String, String>) -> Vec<Sample> {
+        let mut all = Vec::new();
+        catch_up(repo, since, sampled, tasks, BATCH_SECONDS, &mut |samples, _| all.extend(samples)).unwrap();
+        all
+    }
+
     fn tiles(report: &Map, section: &str) -> Vec<Value> {
         report["sections"].as_array().unwrap().iter().find(|s| s["id"] == section).unwrap()["tiles"].as_array().unwrap().clone()
     }
 
     fn tile_of(report: &Map, section: &str, id: &str) -> Value {
         tiles(report, section).into_iter().find(|t| t["id"] == id).unwrap()
+    }
+
+    fn row(task: &str, at: f64, what: &str, status: Option<&str>) -> AgentRow {
+        AgentRow { task: task.into(), name: format!("{task} name"), at, what: what.into(), status: status.map(String::from) }
+    }
+
+    fn said(task: &str, at: f64, status: &str) -> AgentRow {
+        row(task, at, "status", Some(status))
+    }
+
+    fn agents(today: i64, rows: Vec<AgentRow>) -> Map {
+        let mut facts = facts(today, vec![], vec![], vec![]);
+        facts.agents = rows;
+        facts.now = noon(today) + 24.0 * 60.0;
+        report("/r", &facts)
+    }
+
+    #[test]
+    fn the_agents_section_comes_from_a_fixed_series_of_status_changes() {
+        let today = local_day(now());
+        let (a, b) = (noon(today - 1), noon(today));
+        const MIN: f64 = 60.0;
+        let report = agents(
+            today,
+            vec![
+                said("t1", a, "working"),
+                said("t1", a + 10.0 * MIN, "needs-you"),
+                said("t1", a + 20.0 * MIN, "working"),
+                said("t1", a + 50.0 * MIN, "idle"),
+                row("t1", a + 80.0 * MIN, "looked", None),
+                said("t2", b, "working"),
+                said("t2", b + 6.0 * MIN, "idle"),
+                row("t2", b + 6.0 * MIN + 1.0, "looked", None),
+                row("t2", b + 7.0 * MIN, "stopped", None),
+                row("t1", b, "planner", None),
+                row("t2", b + 7.0 * MIN, "done", None),
+            ],
+        );
+        let tile = |id: &str| tile_of(&report, "agents", id);
+        assert_eq!(tile("agent-time")["value"], json!(0.77), "10m + 30m + 6m");
+        assert_eq!(tile("agent-time")["unit"], json!("h"));
+        assert_eq!(tile("agent-time")["note"], json!("in 30 days · 6m today"));
+        assert_eq!(tile("agent-time")["chart"]["values"].as_array().unwrap()[29], json!(0.1));
+        assert_eq!(tile("waiting")["value"], json!(0.17), "10m");
+        assert_eq!(tile("answer")["value"], json!(600.0));
+        assert_eq!(tile("answer")["note"], json!("median of 1"));
+        assert_eq!(tile("unread")["value"], json!(1800.0), "the one looked at a second after it finished was being watched");
+        assert_eq!(tile("turns")["value"], json!(1.5));
+        assert_eq!(tile("turns")["unit"], json!("x"));
+        assert_eq!(tile("turns")["note"], json!("3 turns · 2 tasks"));
+        assert_eq!(tile("turn-length")["value"], json!(600.0), "6m, 10m, 30m");
+        assert_eq!(tile("turn-length")["note"], json!("median of 3"));
+    }
+
+    #[test]
+    fn a_restart_in_the_middle_of_a_turn_leaves_no_gap() {
+        let today = local_day(now());
+        let at = noon(today);
+        let report = agents(today, vec![said("t1", at, "working"), said("t1", at + 600.0, "working"), said("t1", at + 1200.0, "idle")]);
+        assert_eq!(tile_of(&report, "agents", "agent-time")["value"], json!(0.33), "the repeated working is one span");
+        assert_eq!(tile_of(&report, "agents", "turns")["note"], json!("1 turn · 1 task"));
+    }
+
+    #[test]
+    fn a_stopped_task_at_needs_you_waits_until_it_is_picked_or_started() {
+        let today = local_day(now());
+        let at = noon(today - 2);
+        const HOUR: f64 = 3600.0;
+        let picked = agents(today, vec![said("t1", at, "working"), said("t1", at + HOUR, "needs-you"), said("t1", at + HOUR + 1.0, "exited"), row("t1", at + HOUR + 1.0, "stopped", None), row("t1", at + 4.0 * HOUR, "picked", None)]);
+        assert_eq!(tile_of(&picked, "agents", "waiting")["value"], json!(3.0));
+        assert_eq!(tile_of(&picked, "agents", "answer")["value"], json!(10800.0));
+        let started = agents(today, vec![said("t1", at, "needs-you"), row("t1", at + 1.0, "stopped", None), row("t1", at + HOUR, "started", None)]);
+        assert_eq!(tile_of(&started, "agents", "answer")["note"], json!("median of 1"));
+        let waiting = agents(today, vec![said("t1", at, "needs-you"), said("t1", at + 1.0, "exited")]);
+        assert_eq!(tile_of(&waiting, "agents", "waiting")["value"], json!((facts_end(today) - at).div_euclid(36.0) / 100.0));
+        assert_eq!(tile_of(&waiting, "agents", "answer")["value"], Value::Null);
+        assert_eq!(tile_of(&waiting, "agents", "answer")["note"], json!("1 waiting now"));
+        let running = agents(today, vec![said("t1", at, "needs-you"), row("t1", at + HOUR, "picked", None)]);
+        assert_eq!(tile_of(&running, "agents", "answer")["note"], json!("1 waiting now"), "picking a task that's still running isn't an answer");
+        let done = agents(today, vec![said("t1", at, "needs-you"), said("t1", at + 1.0, "exited"), row("t1", at + HOUR, "done", None)]);
+        assert_eq!(tile_of(&done, "agents", "waiting")["value"], json!(1.0));
+        assert_eq!(tile_of(&done, "agents", "answer")["note"], json!(""), "done without an answer: it counts as time, never as an answer");
+    }
+
+    fn facts_end(today: i64) -> f64 {
+        noon(today) + 24.0 * 60.0
+    }
+
+    #[test]
+    fn finished_work_a_stopped_agent_left_stays_unread_until_someone_looks() {
+        let today = local_day(now());
+        let at = noon(today);
+        let rows = vec![said("t1", at, "working"), said("t1", at + 60.0, "idle"), said("t1", at + 90.0, "exited"), row("t1", at + 90.0, "stopped", None)];
+        let open = agents(today, rows.clone());
+        assert_eq!(tile_of(&open, "agents", "unread")["note"], json!("1 not looked at yet"));
+        let mut picked = rows;
+        picked.push(row("t1", at + 660.0, "picked", None));
+        assert_eq!(tile_of(&agents(today, picked), "agents", "unread")["value"], json!(600.0));
+    }
+
+    #[test]
+    fn agent_time_splits_at_midnight_and_a_project_with_no_status_says_so() {
+        let today = local_day(now());
+        let midnight = day_start(today);
+        let report = agents(today, vec![said("t1", midnight - 1800.0, "working"), said("t1", midnight + 3600.0, "idle")]);
+        let values = tile_of(&report, "agents", "agent-time")["chart"]["values"].as_array().unwrap().clone();
+        assert_eq!((values[28].clone(), values[29].clone()), (json!(0.5), json!(1.0)));
+        let empty = agents(today, vec![row("t1", midnight, "started", None)]);
+        let section = empty["sections"].as_array().unwrap().iter().find(|s| s["id"] == "agents").unwrap().clone();
+        assert_eq!(section["tiles"], json!([]));
+        assert!(section["empty"].as_str().unwrap().starts_with("No agent status"));
     }
 
     #[test]
@@ -428,12 +805,7 @@ mod tests {
     #[test]
     fn the_grade_is_the_share_right_in_the_30_days_before_each_day() {
         let today = 20393;
-        let facts = Facts {
-            today,
-            answers: vec![answer(1, today - 40, "why", "docs/specs/quiz.md", false, None), answer(2, today - 5, "why", "docs/specs/quiz.md", true, None), answer(3, today - 5, "bug", "crates/kanna-daemon/src/db.rs", false, None), answer(4, today, "bug", "crates/kanna-daemon/src/db.rs", true, None), answer(5, today, "where", "README.md", true, None)],
-            samples: vec![],
-            lives: vec![],
-        };
+        let facts = facts(today, vec![answer(1, today - 40, "why", "docs/specs/quiz.md", false, None), answer(2, today - 5, "why", "docs/specs/quiz.md", true, None), answer(3, today - 5, "bug", "crates/kanna-daemon/src/db.rs", false, None), answer(4, today, "bug", "crates/kanna-daemon/src/db.rs", true, None), answer(5, today, "where", "README.md", true, None)], vec![], vec![]);
         let report = report("/r", &facts);
         let right = tile_of(&report, "quiz", "right");
         assert_eq!(right["value"], json!(75.0));
@@ -449,12 +821,7 @@ mod tests {
     #[test]
     fn a_miss_counts_until_it_is_asked_again() {
         let today = 20393;
-        let facts = Facts {
-            today,
-            answers: vec![answer(1, today - 10, "why", "a/b/c.rs", false, None), answer(2, today - 8, "why", "a/b/c.rs", false, None), answer(3, today - 3, "why", "a/b/c.rs", true, Some(1)), answer(4, today - 1, "why", "a/b/c.rs", false, Some(2))],
-            samples: vec![],
-            lives: vec![],
-        };
+        let facts = facts(today, vec![answer(1, today - 10, "why", "a/b/c.rs", false, None), answer(2, today - 8, "why", "a/b/c.rs", false, None), answer(3, today - 3, "why", "a/b/c.rs", true, Some(1)), answer(4, today - 1, "why", "a/b/c.rs", false, Some(2))], vec![], vec![]);
         let report = report("/r", &facts);
         let misses = tile_of(&report, "quiz", "misses");
         let values = misses["chart"]["values"].as_array().unwrap();
@@ -475,7 +842,7 @@ mod tests {
         let today = 20393;
         let files = ["a/x/1", "a/x/2", "b/x/1", "c/x/1", "d/x/1", "e/x/1", "f/x/1", "g/x/1"];
         let answers = files.iter().enumerate().map(|(i, f)| answer(i as i64 + 1, today, "why", f, i % 2 == 0, None)).collect();
-        let report = report("/r", &Facts { today, answers, samples: vec![], lives: vec![] });
+        let report = report("/r", &facts(today, answers, vec![], vec![]));
         let rows = tile_of(&report, "quiz", "areas")["chart"]["rows"].as_array().unwrap().clone();
         assert_eq!(rows.len(), 6);
         assert_eq!(rows[0]["label"], json!("b/x"));
@@ -486,13 +853,15 @@ mod tests {
     }
 
     #[test]
-    fn no_answers_says_how_to_get_some_and_code_quality_is_a_placeholder() {
-        let report = report("/r", &Facts { today: 20393, answers: vec![], samples: vec![], lives: vec![] });
+    fn no_answers_says_how_to_get_some_and_no_code_says_so() {
+        let report = report("/r", &facts(20393, vec![], vec![], vec![]));
         let sections = report["sections"].as_array().unwrap();
-        assert_eq!(sections.iter().map(|s| s["id"].as_str().unwrap()).collect::<Vec<_>>(), ["quiz", "main", "tasks", "code"]);
+        assert_eq!(sections.iter().map(|s| s["id"].as_str().unwrap()).collect::<Vec<_>>(), ["quiz", "main", "tasks", "agents", "code"]);
         assert!(sections[0]["empty"].as_str().unwrap().starts_with("No quiz answers yet"));
-        assert_eq!(sections[3]["placeholder"], json!(true));
-        assert_eq!(sections[3]["tiles"], json!([]));
+        assert!(sections[3]["empty"].as_str().unwrap().starts_with("No agent status"));
+        assert_eq!(sections[4]["placeholder"], Value::Null);
+        assert_eq!(sections[4]["tiles"], json!([]));
+        assert!(sections[4]["empty"].as_str().unwrap().starts_with("No Rust or Swift code"));
         assert_eq!(report["days"].as_array().unwrap().len(), 30);
         assert_eq!(report["days"][29], json!("2025-11-01"));
     }
@@ -501,17 +870,12 @@ mod tests {
     fn tasks_count_first_starts_and_time_made_to_done() {
         let today = 20393;
         let hour = 3600.0;
-        let facts = Facts {
-            today,
-            answers: vec![],
-            samples: vec![],
-            lives: vec![
+        let facts = facts(today, vec![], vec![], vec![
                 life("old", noon(today - 50), Some(noon(today - 50)), Some(noon(today - 2))),
                 life("a", noon(today - 1), Some(noon(today - 1) + hour), Some(noon(today) + 2.0 * hour)),
                 life("b", noon(today), None, Some(noon(today) + 4.0 * hour)),
                 life("c", noon(today), Some(noon(today)), None),
-            ],
-        };
+            ]);
         let report = report("/r", &facts);
         assert_eq!(tile_of(&report, "tasks", "made")["value"], json!(2.0));
         assert_eq!(tile_of(&report, "tasks", "made")["note"], json!("today · 3 in 30 days"));
@@ -526,7 +890,58 @@ mod tests {
         assert_eq!(lead["chart"]["line"][27], json!((48.0 * 24.0 * hour).round()));
     }
 
-    fn git_in(repo: &Path, args: &[&str], at: i64) {
+    #[test]
+    fn open_tasks_at_the_end_of_each_day_come_from_made_and_done() {
+        let state = std::env::temp_dir().join(format!("kanna-stats-open-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let db = Db::open(&state);
+        let today = local_day(now());
+        let at = |day: i64, hours: f64| noon(today - day) + hours * 3600.0;
+        let mut sql = String::new();
+        for (id, repo, place, made) in [("old", "/r", "done", 50), ("stuck", "/r", "shelf", 45), ("same", "/r", "done", 5), ("new", "/r", "desk", 1), ("newer", "/r", "shelf", 0), ("legacy", "/r", "done", 60), ("elsewhere", "/o", "shelf", 3)] {
+            sql += &format!("insert into tasks (id, repo, place, made_at, doc) values ('{id}', '{repo}', '{place}', {}, '{{\"name\": \"{id}\"}}');\n", at(made, 0.0));
+            sql += &format!("insert into task_events (task, at, what) values ('{id}', {}, 'made');\n", at(made, 0.0));
+        }
+        for (id, day, hours, what) in [("old", 40, 0.0, "picked"), ("old", 2, 0.0, "done"), ("stuck", 10, 0.0, "picked"), ("stuck", 9, 0.0, "shelved"), ("same", 5, 1.0, "picked"), ("same", 5, 2.0, "done"), ("new", 0, 0.0, "picked"), ("legacy", 55, 0.0, "picked")] {
+            sql += &format!("insert into task_events (task, at, what) values ('{id}', {}, '{what}');\n", at(day, hours));
+        }
+        db.run(&sql);
+        let since = day_start(today - DAYS + 1);
+        let report = report("/r", &facts(today, vec![], vec![], db.lives("/r", since).unwrap()));
+        let open = tile_of(&report, "tasks", "open");
+        let values: Vec<f64> = open["chart"]["values"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        let mut expected = vec![2.0; 30];
+        expected[27] = 1.0;
+        expected[28] = 2.0;
+        expected[29] = 3.0;
+        assert_eq!(values, expected, "old and stuck open from before the 30 days, old done two days ago, new and newer made since; same made and done in one day; legacy done with no done event");
+        assert_eq!(open["value"], json!(3.0));
+        assert_eq!(open["note"], json!("+1 in 30 days"));
+        assert_eq!(open["span"], json!(6));
+        assert_eq!(open["chart"]["kind"], json!("flow"));
+        assert_eq!(open["chart"]["made"][24], json!(1.0));
+        assert_eq!(open["chart"]["done"][24], json!(1.0));
+        assert_eq!(open["chart"]["made"], tile_of(&report, "tasks", "made")["chart"]["values"]);
+        assert_eq!(open["chart"]["done"], tile_of(&report, "tasks", "ended")["chart"]["values"]);
+        assert_eq!(tiles(&report, "tasks").iter().map(|t| t["id"].as_str().unwrap().to_string()).collect::<Vec<_>>(), ["open", "made", "started", "ended", "lead"]);
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn open_tasks_say_their_change_over_the_30_days() {
+        let today = 20393;
+        let lives = vec![life("a", noon(today - 40), None, Some(noon(today - 3))), life("b", noon(today - 40), None, Some(noon(today))), life("c", noon(today - 40), None, None)];
+        let report = report("/r", &facts(today, vec![], vec![], lives));
+        let open = tile_of(&report, "tasks", "open");
+        assert_eq!(open["value"], json!(1.0));
+        assert_eq!(open["note"], json!("\u{2212}2 in 30 days"));
+        let none = super::report("/r", &facts(today, vec![], vec![], vec![]));
+        assert_eq!(tile_of(&none, "tasks", "open")["value"], json!(0.0));
+        assert_eq!(tile_of(&none, "tasks", "open")["note"], json!("no change in 30 days"));
+    }
+
+    pub fn git_in(repo: &Path, args: &[&str], at: i64) {
         let date = format!("@{at} +0000");
         let out = Command::new("git").current_dir(repo).args(args).env("GIT_AUTHOR_DATE", &date).env("GIT_COMMITTER_DATE", &date).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -551,50 +966,160 @@ mod tests {
     }
 
     #[test]
+    fn main_s_order_is_its_time_order_even_when_commit_times_tie_or_go_back() {
+        let repo = std::env::temp_dir().join(format!("kanna-stats-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&repo);
+        fs::create_dir_all(&repo).unwrap();
+        let today = local_day(now());
+        let noon = noon(today) as i64;
+        git_in(&repo, &["init", "-q", "-b", "main"], noon);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "root"], noon);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "same second"], noon);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "clock behind"], noon - 3600);
+        let commits = first_parents(&repo, day_start(today - DAYS + 1)).unwrap();
+        let order: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(order, ["clock behind", "same second", "root"]);
+        assert!(commits[0].at > commits[1].at && commits[1].at > commits[2].at, "{:?}", commits.iter().map(|c| c.at).collect::<Vec<_>>());
+        assert_eq!(commits[2].at, noon as f64);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
     fn the_sampler_counts_what_each_of_main_s_commits_brought_and_fills_only_what_is_missing() {
         let repo = fixture("sampler");
         let today = local_day(now());
         let since = day_start(today - DAYS + 1);
-        let samples = catch_up(&repo, since, &HashSet::new()).unwrap();
-        assert_eq!(samples.len(), 6, "three commits on main in 30 days, two metrics each");
+        let samples = collect(&repo, since, &Revisions::new(), &HashMap::new());
+        assert_eq!(samples.len(), 3 * METRICS.len(), "three commits on main in 30 days, a row per metric each");
         let of = |metric: &str| samples.iter().filter(|s| s.metric == metric).map(|s| s.value).collect::<Vec<_>>();
         assert_eq!(of("commits"), [1.0, 1.0, 2.0]);
         assert_eq!(of("merged"), [0.0, 0.0, 1.0]);
-        let sampled: HashSet<(String, String)> = samples.iter().filter(|s| s.metric == "commits").map(|s| (s.commit.clone(), s.metric.clone())).collect();
-        let rest = catch_up(&repo, since, &sampled).unwrap();
-        assert_eq!(rest.iter().map(|s| s.metric.as_str()).collect::<Vec<_>>(), ["merged", "merged", "merged"]);
-        let report = report("/r", &Facts { today, answers: vec![], samples, lives: vec![] });
+        let mut sampled: Revisions = samples.iter().filter(|s| s.metric == "commits").map(|s| ((s.commit.clone(), s.metric.clone()), s.revision)).collect();
+        let rest = collect(&repo, since, &sampled, &HashMap::new());
+        assert_eq!(rest.len(), 3 * (METRICS.len() - 1));
+        assert!(rest.iter().all(|s| s.metric != "commits"));
+        sampled.extend(rest.iter().map(|s| ((s.commit.clone(), s.metric.clone()), s.revision)));
+        let older = samples.iter().find(|s| s.metric == "erosion").unwrap();
+        sampled.insert((older.commit.clone(), older.metric.clone()), older.revision - 1);
+        let again = collect(&repo, since, &sampled, &HashMap::new());
+        assert_eq!(again.iter().map(|s| (s.commit.as_str(), s.metric.as_str())).collect::<Vec<_>>(), [(older.commit.as_str(), "erosion")], "a sample from an older definition is taken again");
+        let report = report("/r", &facts(today, vec![], samples, vec![]));
         assert_eq!(tile_of(&report, "main", "commits")["note"], json!("today · 4 in 30 days"));
         assert_eq!(tile_of(&report, "main", "commits")["value"], json!(2.0));
         assert_eq!(tile_of(&report, "main", "landed")["value"], json!(1.0));
         let _ = fs::remove_dir_all(&repo);
     }
 
-    #[test]
-    fn the_command_samples_once_and_reads_back_from_the_db() {
-        let repo = fixture("command");
-        let state = std::env::temp_dir().join(format!("kanna-stats-state-{}", std::process::id()));
+    fn run_to_the_end(stats: &Stats, events: &mut crate::runtime::Inbox) {
+        loop {
+            let Ok(Event::Sampled(sampled)) = crate::runtime::next(events, std::time::Duration::from_secs(10)) else { panic!("no samples") };
+            let done = sampled.done;
+            stats.sampled(sampled);
+            if done {
+                return;
+            }
+        }
+    }
+
+    fn asked(stats: &Stats, repo: &str) -> Map {
+        let (responder, reply) = kanna_mux::responder();
+        let mut reply = Box::pin(reply);
+        stats.ask(&json!({ "repo": repo }), responder);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Ok(report)) = reply.as_mut().poll(&mut cx) else { panic!("no reply at once") };
+        report
+    }
+
+    fn watched(name: &str) -> (PathBuf, PathBuf, Rc<Db>, Stats, crate::runtime::Inbox, Rc<RefCell<Vec<String>>>) {
+        let repo = fixture(name);
+        let state = std::env::temp_dir().join(format!("kanna-stats-state-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&state);
         fs::create_dir_all(&state).unwrap();
         let db = Rc::new(Db::open(&state));
-        let (sender, events) = std::sync::mpsc::channel();
-        let stats = Stats::new(db.clone(), sender);
-        let path = repo.to_string_lossy().to_string();
-        let (first, reply) = kanna_mux::responder();
-        let mut reply = Box::pin(reply);
-        let (second, _) = kanna_mux::responder();
-        stats.ask(&json!({ "repo": path }), first);
-        stats.ask(&json!({ "repo": path }), second);
-        let Ok(Event::Sampled { repo: sampled, samples }) = events.recv_timeout(std::time::Duration::from_secs(10)) else { panic!("no samples") };
+        let (sender, events) = crate::runtime::channel();
+        let stats = Stats::new(db.clone(), sender, &state);
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let heard = told.clone();
+        *stats.on_change.borrow_mut() = Some(Box::new(move |repo| heard.borrow_mut().push(repo.to_string())));
+        (repo, state, db, stats, events, told)
+    }
+
+    #[test]
+    fn a_request_is_answered_at_once_and_the_catch_up_carries_on_behind_it() {
+        let (repo, state, db, stats, mut events, told) = watched("command");
+        let path = fs::canonicalize(&repo).unwrap().to_string_lossy().to_string();
+        let first = asked(&stats, &path);
+        assert_eq!(first["sections"], json!([]), "no data at all is the one reply with no sections");
+        assert_eq!(asked(&stats, &path)["sections"], json!([]));
+        run_to_the_end(&stats, &mut events);
         assert!(events.try_recv().is_err(), "one catch-up for both requests");
-        stats.sampled(&sampled, samples);
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        let std::task::Poll::Ready(Ok(report)) = reply.as_mut().poll(&mut cx) else { panic!("no reply") };
-        assert_eq!(report["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        assert!(told.borrow().iter().all(|r| *r == path) && !told.borrow().is_empty(), "the clients hear each step: {told:?}");
         let since = day_start(local_day(now()) - DAYS + 1);
-        assert_eq!(db.sampled(&sampled, since).unwrap().len(), 6);
+        assert_eq!(db.sampled(&path, since).unwrap().len(), 3 * METRICS.len());
+        told.borrow_mut().clear();
+        let report = asked(&stats, &path);
+        assert_eq!(report["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        assert_eq!(report["status"], Value::Null);
+        run_to_the_end(&stats, &mut events);
+        assert_eq!(*told.borrow(), Vec::<String>::new(), "a catch-up with nothing to do tells nobody, or a client would ask for ever");
         let _ = fs::remove_dir_all(&repo);
         let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn a_reply_during_a_catch_up_has_the_old_numbers_and_the_step() {
+        let (repo, state, _db, stats, mut events, _told) = watched("status");
+        let path = fs::canonicalize(&repo).unwrap().to_string_lossy().to_string();
+        asked(&stats, &path);
+        run_to_the_end(&stats, &mut events);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "new"], now() as i64);
+        let moved = asked(&stats, &path);
+        assert_eq!(moved["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        stats.sampled(Sampled { repo: path.clone(), samples: Ok(vec![]), landings: vec![], step: Some(Step::Reading(1)), done: false });
+        let reading = asked(&stats, &path);
+        assert_eq!(reading["status"], json!("Updating: reading 1 new commit"));
+        assert_eq!(reading["sections"][1]["tiles"][0]["note"], json!("today · 4 in 30 days"));
+        stats.sampled(Sampled { repo: path.clone(), samples: Ok(vec![]), landings: vec![], step: Some(Step::Measuring { done: 3, of: 14 }), done: false });
+        assert_eq!(asked(&stats, &path)["status"], json!("Updating: measuring code, 3 of 14 commits"));
+        run_to_the_end(&stats, &mut events);
+        let done = asked(&stats, &path);
+        assert_eq!(done["status"], Value::Null);
+        assert_eq!(done["sections"][1]["tiles"][0]["note"], json!("today · 5 in 30 days"));
+        run_to_the_end(&stats, &mut events);
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn the_catch_up_says_each_step_with_real_counts() {
+        let repo = fixture("steps");
+        let since = day_start(local_day(now()) - DAYS + 1);
+        let mut steps = Vec::new();
+        catch_up(&repo, since, &Revisions::new(), &HashMap::new(), 0.0, &mut |_, step| steps.push(step)).unwrap();
+        assert_eq!(steps, [Some(Step::Reading(3)), Some(Step::Measuring { done: 0, of: 3 }), Some(Step::Measuring { done: 1, of: 3 }), Some(Step::Measuring { done: 2, of: 3 }), None]);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn the_status_line_says_what_is_going_on() {
+        assert_eq!(status(None, false), None);
+        assert_eq!(status(Some(Step::Reading(12)), false).unwrap(), "Updating: reading 12 new commits");
+        assert_eq!(status(None, true).unwrap(), "Updating: running coverage");
+        assert_eq!(status(Some(Step::Measuring { done: 3, of: 14 }), true).unwrap(), "Updating: measuring code, 3 of 14 commits · running coverage");
+    }
+
+    #[test]
+    fn only_what_is_still_to_come_says_so() {
+        let today = 20393;
+        let mut waiting = facts(today, vec![answer(1, today, "why", "a/b/c.rs", true, None)], vec![], vec![]);
+        waiting.pending = true;
+        let report = report("/r", &waiting);
+        let sections = report["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 5, "the quiz numbers are in kanna.db already");
+        assert_eq!(tiles(&report, "quiz").len(), 4);
+        assert_eq!(sections[1]["empty"], json!("Reading main's commits."));
+        assert_eq!(sections[1]["tiles"], json!([]));
+        assert_eq!(sections[4]["empty"], json!("Measuring the code on main."));
     }
 
     use std::future::Future;

@@ -75,7 +75,7 @@ With **Reduce Motion** on (System Settings › Accessibility › Display), the d
 
 ## 5. Checked by
 
-`tab_drag` of `scripts/e2e-kanna.sh`, on a private instance with `debug.drag` (which shows no ghost and runs without motion): reorder to the end and back to the front; dropping where it started, Escape (`cancel: true`) and a drop on a pane move nothing; to another window's tab and onto its +; tearing a tab off into a third window; dragging a window's last tab away closes it. `drag_panes_tabs` covers the older drops. The motion itself is reviewed by eye against the mockup.
+`tab_drag` of `scripts/e2e/windows.sh`, on a private instance with `debug.drag` (which shows no ghost and runs without motion): reorder to the end and back to the front; dropping where it started, Escape (`cancel: true`) and a drop on a pane move nothing; to another window's tab and onto its +; tearing a tab off into a third window; dragging a window's last tab away closes it. `drag_panes_tabs` covers the older drops. The motion itself is reviewed by eye against the mockup.
 
 ## 6. Glossary
 

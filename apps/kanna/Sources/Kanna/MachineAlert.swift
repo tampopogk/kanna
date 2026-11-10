@@ -9,15 +9,16 @@ enum MachineAlert {
         let addrs = (args["addrs"]?.array ?? []).compactMap(\.string)
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Add \(name) to Your Machines?"
-        var details = ["\(name) asked to join with the code you typed. Once added, it can run tasks and commands on your machines, and they on it."]
+        let phone = args["phone"]?.bool == true
+        alert.messageText = phone ? "Add \(name) to Your Phones?" : "Add \(name) to Your Machines?"
+        var details = [phone ? "\(name) scanned the code you showed. Once added, it can message this repo's planner, which may run commands." : "\(name) asked to join with the code you typed. Once added, it can run tasks and commands on your machines, and they on it."]
         details.append("Key: \(key)")
         if !addrs.isEmpty {
             details.append("Addresses: \(addrs.joined(separator: ", "))")
         }
-        details.append("Add it only if you just ran kanna machine pair on it.")
+        details.append(phone ? "Add it only if you just scanned the code on your phone." : "Add it only if you just ran kanna machine pair on it.")
         alert.informativeText = details.joined(separator: "\n\n")
-        alert.addButton(withTitle: "Add Machine")
+        alert.addButton(withTitle: phone ? "Add Phone" : "Add Machine")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         return await withCheckedContinuation { continuation in

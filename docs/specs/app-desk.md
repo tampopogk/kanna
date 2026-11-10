@@ -2,7 +2,7 @@
 
 **Status:** built · **Changes:** [presentation layers](presentation-layers.md), [Desk](desk.md), [tasks](tasks.md), [planning terminal](planning-agent.md), [database](database.md), [workspaces](workspaces.md) · **Builds on:** [presentation layers](presentation-layers.md)
 
-Each app has its own **Desks**, and the tasks on them. The **Shelf** is the daemon's, every app's: today one Mac app's, later shared. A task an app moves to its Desk is that app's **claim**: the daemon records which app has the task out, and the app decides where it shows it, and which task is active.
+Each app has its own **Desks**, and the tasks on them. The **Shelf** is the daemon's, shared by every app attached to it, this machine's own and remote ones alike. A task an app moves to its Desk is that app's **claim**: the daemon records which app has the task out, and the app decides where it shows it, and which task is active.
 
 A claim is `where: {"desk": app}` on the task's workspace, the Shelf `where: "shelf"`, and `kanna.db` stores `desk` and `shelf` ([internal names](internal-names.md)); `leftAt` is when a task was last active, and the `desk` command's `park` and `activate` show the Desk view and make a task active.
 
@@ -51,12 +51,13 @@ flowchart TB
 ## 2. Rules
 
 - **A task is out when an app claims it.** Move to Desk claims it for that app (`kanna task pick`, for the CLI's instance's app); Move to Shelf (`kanna task shelve`) drops the claim. An app's Desk tasks are the tasks it claims; every other running or stopped task is on the Shelf.
-- **An app's Desk holds three per project,** the active task included. Another app has its own three. A claim past three is refused.
+- **An app's Desk holds three per project,** the active task included, counted across machines from a replicated `claim` field. Another app has its own three. A claim past three is refused. A phone can claim for a closed app ([phone Shelf §2](mobile-shelf.md#2-pick)).
 - **[Shelf runners](shelf-runners.md) leave a claimed task alone:** they start and stop only tasks no app has out.
 - **The active task and the Desk view are the app's.** Making a task active, showing the Desk view, and which Desk shows what never reach the daemon, so two apps can show the same task on their Desks, each its own way. The CLI's `task activate`, `task park` and `kanna PATH` are relayed to the CLI's instance's app, which the CLI starts if none is running.
 - **A task's windows show in an app while its task is on one of that app's Desks,** and are hidden there otherwise; free windows show in every app.
 - **A Desk's planner is a workspace with no task,** its planning terminal docked, made when the app asks for a planning terminal (`tasks plan`) and closed when the app closes that Desk. Its ID is the Desk's, kept by the app.
 - **A task reaches a Desk only from the Shelf,** with `kanna task pick` (claimed for the CLI's instance's app) or Move to Desk; `open` docks nothing ([every task starts on the Shelf](tasks-start-on-the-shelf.md)). `kanna task activate` shows it.
+- **Picking a task that is starting waits for it:** a pick that lands while a Shelf runner, a message or another `start` is making its worktree or opening its agent is held until that start ends, then moves the running task to the Desk (or starts it, if that start failed). The Shelf's Move to Desk, the phone's pick and `kanna task pick` straight after `kanna task new` all mean the same thing whether a runner got there first or not.
 - **`activate`, `park` and `kanna PATH` reply with the Desk's ID** (`d1`, `d2`, …, the app's own), as in `term-3 is active on d1`.
 - **A Desk is a window to the CLI,** by that ID: the app tells the daemon its Desks and what each shows, and `--window d1` reaches the workspace it shows ([Desk windows](desk-windows.md)).
 - **The task list says Desk or Shelf,** and which app has it out; never which Desk window.
@@ -66,9 +67,9 @@ flowchart TB
 
 | Command | Does |
 |---|---|
-| `tasks pick {task, app?}` | Claim a task for an app (default: the instance's Mac app, `mac`), starting it if it's stopped: `kanna task pick` |
+| `tasks pick {task, app?, desk?, room?}` | Claim a task for an app (default: the instance's Mac app, `mac`), starting it if it's stopped: `kanna task pick`. `desk` names the app by its machine, the phone's way; `room` is a task just shelved to make room |
 | `tasks shelve {task}` | Drop its claim: it's on the Shelf again, running or stopped: `kanna task shelve` |
-| `task activate {task}`, `task park {task?}`, `task desk {project, new?}` | Relayed to the attached app as `desk {action, …}`, the daemon first turning a task's ID, workspace or any of its panes into its agent's pane; `no_app` without one (the CLI starts it) |
+| `task activate {task}`, `task park {task?}`, `task desk {project, new?}` | Relayed to the target app, on this machine its own and never a remote one ([app link §3](app-link.md#3-rules)), as `desk {action, …}`, the daemon first turning a task's ID, workspace or any of its panes into its agent's pane; `no_app` without one (the CLI starts it) |
 | `open {dock, claim?}`, `open {dock, shelf: true}` | A task's agent in a new workspace, claimed by an app (default `mac`) or on the Shelf; a docked pane never goes in a window |
 | `open {planner: true, claim?}` | A Desk's planner: a terminal in a workspace with no task |
 | `open {workspace: ws-N}` | Into that workspace's tabs, a planner's too; how the app opens into a Desk |

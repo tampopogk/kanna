@@ -1,4 +1,5 @@
 use crate::app_link::AppLink;
+use crate::machines::Caller;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kanna_mux::json::{string, Map, Value};
@@ -12,16 +13,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
-pub fn take(link: &AppLink, args: Value, responder: Responder) {
+pub fn take(link: &AppLink, machines: Option<Caller>, args: Value, responder: Responder) {
     let mut asked = args.clone();
     if let Some(asked) = asked.as_object_mut() {
-        for key in ["path", "dir", "force"] {
+        for key in ["path", "dir", "force", "png", "host"] {
             asked.remove(key);
         }
     }
+    if let Some(host) = string(&args, "host").map(String::from) {
+        let Some(machines) = machines else { return responder.reply(Err(KmuxError::new("unavailable", "this daemon has no endpoint, so it can't reach other machines"))) };
+        asked["png"] = json!(true);
+        let _ = std::thread::Builder::new().name("kanna.screenshot".into()).spawn(move || responder.reply(from_machine(&machines, &host, asked).and_then(|shot| save(&args, shot))));
+        return;
+    }
+    let keep = args.get("png") == Some(&Value::Bool(true));
     let (inner, answer) = kanna_mux::responder();
     link.forward("screenshot", asked, inner);
-    let _ = std::thread::Builder::new().name("kanna.screenshot".into()).spawn(move || responder.reply(block_on(answer).and_then(|shot| save(&args, shot))));
+    let _ = std::thread::Builder::new().name("kanna.screenshot".into()).spawn(move || responder.reply(block_on(answer).and_then(|shot| if keep { Ok(shot) } else { save(&args, shot) })));
+}
+
+fn from_machine(machines: &Caller, host: &str, asked: Value) -> Result<Map, KmuxError> {
+    let reply = machines.call(host, "screenshot", asked).map_err(|e| KmuxError::new(&e.code, format!("{host}: {}", e.message)))?;
+    let mut shot = reply.as_object().cloned().unwrap_or_default();
+    shot.remove("id");
+    shot.remove("ok");
+    Ok(shot)
 }
 
 fn save(args: &Value, mut shot: Map) -> Result<Map, KmuxError> {

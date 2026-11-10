@@ -102,3 +102,46 @@ fn other_terminals_show_only_exited() {
     let explained = instance.call("status", json!({"action": "explain", "pane": "shell"}));
     assert_eq!(explained["agent"], Value::Null, "{explained}");
 }
+
+fn kept_reports(instance: &Instance) -> Vec<(String, Value)> {
+    let db = rusqlite::Connection::open_with_flags(instance.dir.join("state/kanna.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let mut statement = db.prepare("select terminal, doc from status_reports order by terminal").unwrap();
+    let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap();
+    rows.map(|r| r.unwrap()).map(|(t, doc)| (t, serde_json::from_str(&doc).unwrap())).collect()
+}
+
+fn kept_state(instance: &Instance, terminal: &str) -> Option<String> {
+    let kept = kept_reports(instance);
+    let (_, doc) = kept.iter().find(|(t, _)| t == terminal)?;
+    doc["records"].as_array()?.iter().find(|r| r["id"] == "").and_then(|r| r["state"].as_str()).map(String::from)
+}
+
+#[test]
+fn an_agent_s_last_report_outlives_a_daemon_restart_and_one_sent_while_it_was_down_wins() {
+    let mut instance = Instance::start();
+    instance.open("agent", Some(&mock_agent()));
+    instance.open("shell", None);
+    let terminal = instance.pane("agent")["terminal"].as_str().unwrap().to_string();
+    becomes(&instance, "agent", "idle");
+    instance.call("send", json!({"pane": "agent", "text": "report state=idle:app=mock:msg=V2FpdGluZw=="}));
+    wait_for("the report to be kept", || kept_reports(&instance).iter().any(|(t, doc)| *t == terminal && doc["records"][0]["message"] == "Waiting"));
+    assert_eq!(kept_reports(&instance).len(), 1, "a plain terminal with no report keeps none");
+    instance.restart(libc::SIGKILL);
+    becomes(&instance, "agent", "idle");
+    let explained = instance.call("status", json!({"action": "explain", "pane": "agent"}));
+    assert_eq!(explained["reported"]["message"], "Waiting", "{explained}");
+    assert_eq!(status(&instance, "shell"), Value::Null, "a plain terminal has nothing to restore");
+    instance.restart(libc::SIGTERM);
+    becomes(&instance, "agent", "idle");
+    instance.call("send", json!({"pane": "agent", "text": "later 1.5 state=working"}));
+    wait_for("the mock to take it", || instance.screen("agent").contains("later: state=working"));
+    instance.stop(libc::SIGTERM);
+    assert_eq!(kept_state(&instance, &terminal).as_deref(), Some("idle"));
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    instance.start_again();
+    becomes(&instance, "agent", "working");
+    wait_for("the newer report to be kept", || kept_state(&instance, &terminal).as_deref() == Some("working"));
+    instance.call("send", json!({"pane": "agent", "text": "exit"}));
+    becomes(&instance, "agent", "exited");
+    wait_for("the ended terminal's report to go", || kept_reports(&instance).is_empty());
+}

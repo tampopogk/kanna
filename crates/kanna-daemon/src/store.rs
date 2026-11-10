@@ -1,7 +1,7 @@
 use crate::reader::Feed;
 use crate::settings::Settings;
 use kanna_mux::json::{json, num, opt, string, Value};
-use kanna_mux::{terminal_number, PaneState};
+use kanna_mux::{pty_number, terminal_number, PaneState};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -51,6 +51,7 @@ pub struct Record {
 pub struct Saved {
     pub counter: usize,
     pub terminals: usize,
+    pub ptys: usize,
     pub records: Vec<Record>,
 }
 
@@ -88,8 +89,9 @@ impl Record {
             }
             2 => (text("id").filter(|id| terminal_number(id).is_some())?, text("pane").filter(|pane| pane_number(pane).is_some())?),
             _ => {
-                let id = text("id").filter(|id| terminal_number(id).is_some())?;
-                (id.clone(), id)
+                let id = text("id").filter(|id| terminal_number(id).is_some() || pty_number(id).is_some())?;
+                let pane = text("pane").filter(|pane| terminal_number(pane).is_some()).or_else(|| Some(id.clone()).filter(|id| terminal_number(id).is_some()))?;
+                (id, pane)
             }
         };
         Some(Record {
@@ -208,7 +210,7 @@ impl Store {
                     let _ = fs::rename(snapshot_path(&self.dir, &record.pane), snapshot_path(&self.dir, &record.id));
                 }
             }
-            Some(Saved { counter: count("pane"), terminals: count("terminal"), records })
+            Some(Saved { counter: count("pane"), terminals: count("terminal"), ptys: count("pty"), records })
         });
         match saved {
             Some(saved) => saved,
@@ -224,7 +226,7 @@ impl Store {
         let value = json!({
             "kanna": "terminals",
             "version": VERSION,
-            "counters": { "pane": num(saved.counter as f64), "terminal": num(saved.terminals as f64) },
+            "counters": { "pane": num(saved.counter as f64), "terminal": num(saved.terminals as f64), "pty": num(saved.ptys as f64) },
             "terminals": Value::Array(saved.records.iter().map(Record::to_value).collect()),
         });
         let mut text = serde_json::to_string_pretty(&value).map_err(io::Error::other)?;
@@ -425,7 +427,7 @@ mod tests {
         let store = Store::open(&dir).unwrap();
         let mut exited = record("p3", None);
         (exited.state, exited.exit_code, exited.hung_up, exited.size) = (PaneState::Exited, Some(3), true, None);
-        let saved = Saved { counter: 7, terminals: 9, records: vec![record("p1", Some("logs")), exited] };
+        let saved = Saved { counter: 7, terminals: 9, ptys: 12, records: vec![record("p1", Some("logs")), exited] };
         store.save(&saved).unwrap();
         assert_eq!(store.load(), saved);
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
@@ -453,6 +455,16 @@ mod tests {
     }
 
     #[test]
+    fn a_pane_comes_back_with_its_own_id_behind_a_later_run() {
+        let dir = folder("runs");
+        let store = Store::open(&dir).unwrap();
+        let record = Record { id: "pty-9".into(), pane: "term-4".into(), name: None, cmd: None, cwd: None, state: PaneState::Running, exit_code: None, pid: 7, keeper: "pty-9".into(), size: None, hung_up: false };
+        store.save(&Saved { counter: 0, terminals: 4, ptys: 9, records: vec![record.clone()] }).unwrap();
+        assert_eq!(store.load().records, [record]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn settings_are_kept_privately() {
         let dir = folder("settings");
         let store = Store::open(&dir).unwrap();
@@ -474,7 +486,7 @@ mod tests {
     fn a_bad_file_is_moved_aside() {
         let dir = folder("bad");
         let store = Store::open(&dir).unwrap();
-        let twice = Saved { counter: 2, terminals: 2, records: vec![record("p1", Some("a")), record("p2", Some("a"))] };
+        let twice = Saved { counter: 2, terminals: 2, ptys: 2, records: vec![record("p1", Some("a")), record("p2", Some("a"))] };
         store.save(&twice).unwrap();
         assert_eq!(store.load(), Saved::default());
         assert!(store.dir().join(format!("{RECORDS}.bad")).exists());

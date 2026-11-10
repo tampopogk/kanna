@@ -24,6 +24,7 @@ pub struct Hello {
     pub version: u64,
     pub pid: i32,
     pub build: Option<String>,
+    pub ops: Vec<String>,
 }
 
 impl Hello {
@@ -32,7 +33,12 @@ impl Hello {
             version: reply["version"].as_u64().unwrap_or(0),
             pid: reply["pid"].as_i64().unwrap_or(0) as i32,
             build: reply["build"].as_str().map(String::from),
+            ops: reply["ops"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect(),
         }
+    }
+
+    pub fn can(&self, op: &str) -> bool {
+        self.ops.iter().any(|o| o == op)
     }
 }
 
@@ -186,6 +192,11 @@ impl Client {
 
     pub fn upgrade(&mut self, binary: &Path) -> io::Result<Hello> {
         let (reply, _) = self.request(json!({"op": "upgrade", "binary": binary.to_string_lossy()}), |_, _| {})?;
+        Ok(Hello::from_reply(&reply))
+    }
+
+    pub fn move_to(&mut self, dir: &Path) -> io::Result<Hello> {
+        let (reply, _) = self.request(json!({"op": "move", "dir": dir.to_string_lossy()}), |_, _| {})?;
         Ok(Hello::from_reply(&reply))
     }
 

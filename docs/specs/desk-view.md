@@ -6,9 +6,9 @@ Kanna's task words say where a task is from the user's side. The **Desk** holds 
 
 | Desk view | The active task |
 |---|---|
-| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, the strip below starting with a muted ⌘. Desk, then the Desk's other tasks in key order, each key before its name: ⌘1 on the one left last, then ⌘2, the one that needs you showing it in amber where it is](desk-view-task.png) |
+| ![The Desk view: the planning agent on the left; the Desk's tasks oldest first, the active one highlighted in its place, a hovered row showing ⌘2, and the Shelf below](desk-view.png) | ![The active task: its agent docked, its tabs, and the strip below, one task hovered to show its key](desk-view-task.png) |
 
-*(From the mockup: `#picture-desk&hover=p3` and `#picture`.)*
+*(From the mockup: `#picture-desk&hover=p3` and `#picture-needs&hover=p3`.)*
 
 ## Contents
 
@@ -46,14 +46,17 @@ stateDiagram-v2
     TaskView --> DeskView: Done · Move to Shelf (no task active)
 ```
 
-- **⌘. toggles.** From the active task it shows the Desk view; the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
+- **⌘. toggles.** From the active task it shows the Desk view, on the tab it showed last ([the Desk view's tab](desk-view-tab.md)); the task stays active and running, its tabs, focus and zoom as they were. From the Desk view it shows the active task again. Task menu: **Show Desk** / **Show Active Task** (⌘.), named for where it goes.
 - **"Pull back the task parked last" becomes "the active task".** With none active (it was Done or moved to the Shelf), ⌘. makes the Desk's ⌘1 task active: the one left last. That was the old "task parked last", so the key does what it did.
 - **Making a task active** (click, ⌘1, ⌘2, `kanna task activate`) leaves the one active before on the Desk, not active, as pulling parked it before. It counts as left then, even when the Desk view was showing, so it becomes ⌘1.
 - **The Desk's tasks are listed oldest first**, by when each task was made, as the Shelf sorts ([tasks](tasks.md)). The active task stays in its place in that order; only its row's highlight marks it. A task that needs you stays in its place too: its status dot shows it.
 - **⌘1 and ⌘2 pick among the Desk's tasks other than the active one** by recency, not by place: ⌘1 the one left most recently, ⌘2 the one left longest ago. ⌘1 pressed again goes back to the task you came from; ⌘2 pressed again cycles through the Desk whatever its number of tasks: through all three, or, with two, back and forth (with one other task ⌘1 and ⌘2 both go to it). With no task active they work the same over the Desk's tasks. Those two cover a full Desk, so there's no ⌘3. The Task menu has Desk Task 1 and 2, each enabled whenever its key does something.
 - **A task shows the key that's uniquely its own,** the same in the strip and in the Desk view: ⌘1 on the task left last, ⌘2 on the one left longest ago when that's another task. With two tasks the other shows ⌘1; with no task active and three on the Desk, the middle one has no key. The Desk view's rows are oldest first, so their keys aren't in numeric order there.
-- **Hover hints.** A row shows its hint only while hovered: "⌘N · Make active →", or the active task's "⌘. · Back to it".
-- **The strip** starts with a muted "⌘. Desk" that shows the Desk view when clicked, then the Desk's other tasks in key order: the ⌘1 task first (the one left last), then the ⌘2 task, then any task with no key. So it reorders as you switch tasks, and only then: a task that needs you keeps its place and its key, and shows it in amber, "needs you" in place of its time. Each shows its key, muted, before its name, all the time. Then "N on the Shelf".
+- **Hover hints.** A row shows its hint only while hovered or selected: "⌘N · Make active →", or the active task's "⌘. · Back to it", beside the keys of [the Desk view's selection](desk-keys.md).
+- **The keyboard:** ⌘F selects a row, ↑ ↓ move over the Desk's rows and the Shelf's, ↩ picks or makes active, ⇧⌘⌫ moves to the Shelf ([Desk view keys](desk-keys.md)).
+- **The strip** (pictured above) goes in key order: the ⌘1 task, then ⌘2, then any task with no key. So it reorders as you switch tasks, and only then: a task that needs you keeps its place and its key. A task's key shows on hover ([Desk](desk.md#3-the-desks-tasks)).
+- **Dragging a Desk row onto the Shelf** moves that task there as it is: [Drag a Desk task to the Shelf](desk-row-shelve.md).
+- **A running Shelf task's row** shows its status: [Shelf row status](shelf-row-status.md).
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
 - **The encouraging line** moves on each time the Desk view shows (before: each time the Desk was cleared).
 - **Closing a Desk window** leaves its tasks on the Desk, none active (before: it parked its task).
@@ -81,8 +84,8 @@ stateDiagram-v2
 | | `Windows/Machines.swift` | "keep their places on the Shelf" → "on the Desk" |
 | Menus | `Windows/Menus.swift` | Task menu: Park/Unpark → Show Desk / Show Active Task (⌘.), Move to Backlog → Move to Shelf, Pull Shelf Task N → Desk Task N; ⌘. becomes the toggle |
 | Toasts | `Windows/Toasts.swift` | none visible; a click makes a Desk task active, or moves a Shelf task to the Desk |
-| CLI help | `crates/kanna/src/commands.rs` | `task` summary, usage, notes, examples; `workspace` and `open` notes ("on a Desk, on the Shelf or in the backlog") |
-| CLI output | `crates/kanna/src/output.rs` | `task list` WHERE and time; `task` replies (§3); workspace places "on the Shelf" → "on the Desk", "in the backlog" → "on the Shelf" |
+| CLI help | `crates/kanna/src/commands/task.rs`, `workspace.rs`, `open.rs` | `task` summary, usage, notes, examples; `workspace` and `open` notes ("on a Desk, on the Shelf or in the backlog") |
+| CLI output | `crates/kanna/src/commands/task.rs`, `workspace.rs` | `task list` WHERE and time; `task` replies (§3); workspace places "on the Shelf" → "on the Desk", "in the backlog" → "on the Shelf" |
 | Errors | `crates/kanna-daemon/src/tasks.rs`, `AppDesk.swift`, `lib.rs` | "N tasks on the Shelf: move one to the backlog with `kanna task defer`", "isn't on this app's Shelf", "no backlog task", "isn't a task: … a Desk or the Shelf, or in the backlog" |
 | Daemon log | `tasks.rs` | "runs in the backlog", "is on mac's Shelf" |
 | Config | `schemas/config.schema.json`, `tasks.rs` `runners()`, `lib.rs` `CONFIG_HELP` | `shelf.runners`, described as the Shelf's; `backlog.runners` stays in the schema marked as the old name and is read when `shelf.runners` isn't set in that file; the planning terminal's description |
@@ -106,5 +109,5 @@ stateDiagram-v2
 | **Desk** | A project's window, and the up to three tasks it holds |
 | **Active task** | The Desk task shown with its agent and tabs; stays active while the Desk view shows |
 | **Desk view** | The planning agent, the Desk's tasks and the Shelf, in the Desk window |
-| **Strip** | The line under the active task: ⌘. Desk, the Desk's other tasks, the Shelf's count |
+| **Strip** | The line under the active task |
 | **Shelf** | A project's tasks Kanna has brought in, waiting; `shelf.runners` of them run at once |

@@ -111,7 +111,7 @@ pub enum Heads {
     Changed(Option<Vec<PathBuf>>),
 }
 
-pub fn follow_heads(events: Sender<Event>) -> Sender<Heads> {
+pub fn follow_heads(events: crate::runtime::Events) -> Sender<Heads> {
     let (to, inbox) = mpsc::channel();
     let changes = to.clone();
     std::thread::spawn(move || {
@@ -126,7 +126,7 @@ pub fn follow_heads(events: Sender<Event>) -> Sender<Heads> {
     to
 }
 
-fn heads(mut watcher: impl Watcher, inbox: Receiver<Heads>, events: Sender<Event>) {
+fn heads(mut watcher: impl Watcher, inbox: Receiver<Heads>, events: crate::runtime::Events) {
     let mut dirs: HashMap<PathBuf, PathBuf> = HashMap::new();
     loop {
         let Ok(first) = inbox.recv() else { return };
@@ -260,7 +260,7 @@ pub fn look(probes: Vec<Probe>) -> Vec<Seen> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Task {
     pub id: String,
-    pub ready: Option<Mark>,
+    pub claimed: Option<Mark>,
     pub bases: Vec<Base>,
     pub stale: Vec<String>,
 }
@@ -269,52 +269,38 @@ pub struct Task {
 pub enum Step {
     Unready { id: String },
     Merged { id: String, base: String, main: Option<String> },
-    Stale { id: String, behind: Vec<String>, waiting: Vec<String> },
+    Stale { id: String, behind: Vec<String>, new: Vec<String> },
+    Fresh { id: String },
 }
 
 pub fn settle(tasks: &[Task], seen: &[Seen]) -> Vec<Step> {
-    let seen_of = |id: &str| seen.iter().find(|s| s.id == id);
+    let seen_of = |id: &str| seen.iter().find(|s| s.id == id && s.head.is_some());
     let mut steps = vec![];
     for task in tasks {
-        if let (Some(mark), Some(head)) = (&task.ready, seen_of(&task.id).and_then(|s| s.head.as_ref())) {
-            if *head != mark.head {
-                steps.push(Step::Unready { id: task.id.clone() });
-            }
+        let Some(seen) = seen_of(&task.id) else { continue };
+        if task.claimed.as_ref().is_some_and(|mark| seen.head.as_ref() != Some(&mark.head)) {
+            steps.push(Step::Unready { id: task.id.clone() });
         }
     }
-    let mut behind: HashMap<&str, Vec<String>> = HashMap::new();
-    let mut merged: HashSet<(&str, &str)> = HashSet::new();
     for task in tasks {
         let Some(seen) = seen_of(&task.id) else { continue };
-        for base in seen.bases.iter().filter(|b| task.bases.iter().any(|t| t.id == b.id)) {
-            if base.merged {
-                merged.insert((&task.id, &base.id));
-                steps.push(Step::Merged { id: task.id.clone(), base: base.id.clone(), main: seen.main.clone() });
-            } else if !base.contained {
-                behind.entry(&task.id).or_default().push(base.id.clone());
+        let mut behind = vec![];
+        for base in &task.bases {
+            match seen.bases.iter().find(|b| b.id == base.id) {
+                Some(b) if b.merged => steps.push(Step::Merged { id: task.id.clone(), base: b.id.clone(), main: seen.main.clone() }),
+                Some(b) if !b.contained => behind.push(b.id.clone()),
+                _ => {}
             }
         }
+        if behind == task.stale {
+            continue;
+        }
+        steps.push(match behind.is_empty() {
+            true => Step::Fresh { id: task.id.clone() },
+            false => Step::Stale { id: task.id.clone(), new: behind.iter().filter(|b| !task.stale.contains(b)).cloned().collect(), behind },
+        });
     }
-    let mut stale: HashSet<&str> = tasks.iter().filter(|t| !t.stale.is_empty()).map(|t| t.id.as_str()).collect();
-    loop {
-        let mut grew = false;
-        for task in tasks {
-            if stale.contains(task.id.as_str()) {
-                continue;
-            }
-            let waiting: Vec<String> = task.bases.iter().filter(|b| !merged.contains(&(task.id.as_str(), b.id.as_str())) && stale.contains(b.id.as_str())).map(|b| b.id.clone()).collect();
-            let behind = behind.get(task.id.as_str()).cloned().unwrap_or_default();
-            if behind.is_empty() && waiting.is_empty() {
-                continue;
-            }
-            stale.insert(&task.id);
-            steps.push(Step::Stale { id: task.id.clone(), behind, waiting });
-            grew = true;
-        }
-        if !grew {
-            return steps;
-        }
-    }
+    steps
 }
 
 #[cfg(test)]
@@ -323,7 +309,7 @@ mod tests {
     use std::process::Command;
 
     fn task(id: &str, ready: Option<&str>, bases: &[&str]) -> Task {
-        Task { id: id.into(), ready: ready.map(|head| Mark { head: head.into(), ..Default::default() }), bases: bases.iter().map(|b| Base { id: (*b).into(), ..Default::default() }).collect(), stale: vec![] }
+        Task { id: id.into(), claimed: ready.map(|head| Mark { head: head.into(), ..Default::default() }), bases: bases.iter().map(|b| Base { id: (*b).into(), ..Default::default() }).collect(), stale: vec![] }
     }
 
     fn seen(id: &str, head: &str, bases: &[(&str, bool, bool)]) -> Seen {
@@ -331,36 +317,33 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_task_whose_head_moves_is_unready_and_everything_stacked_on_it_goes_stale_down_the_chain() {
+    fn a_claimed_task_whose_head_moves_loses_its_claim_and_only_the_tasks_built_right_on_it_go_stale() {
         let tasks = [task("a", Some("a1"), &[]), task("b", Some("b1"), &["a"]), task("c", None, &["b"])];
         let still = [seen("a", "a1", &[]), seen("b", "b1", &[("a", false, true)]), seen("c", "c1", &[("b", false, true)])];
         assert!(settle(&tasks, &still).is_empty(), "nothing moved");
         let moved = [seen("a", "a2", &[]), seen("b", "b1", &[("a", false, false)]), seen("c", "c1", &[("b", false, true)])];
-        assert_eq!(
-            settle(&tasks, &moved),
-            vec![Step::Unready { id: "a".into() }, Step::Stale { id: "b".into(), behind: vec!["a".into()], waiting: vec![] }, Step::Stale { id: "c".into(), behind: vec![], waiting: vec!["b".into()] }]
-        );
+        assert_eq!(settle(&tasks, &moved), vec![Step::Unready { id: "a".into() }, Step::Stale { id: "b".into(), behind: vec!["a".into()], new: vec!["a".into()] }], "b keeps its claim, and c still has b's head");
     }
 
     #[test]
-    fn a_stale_task_stays_stale_until_it_is_marked_ready_and_only_then_its_dependents_wait_on_it_no_more() {
-        let mut tasks = [task("a", None, &[]), task("b", None, &["a"]), task("c", None, &["b"])];
+    fn stale_is_what_git_says_so_merging_the_base_clears_it_at_once() {
+        let mut tasks = [task("a", None, &[]), task("b", None, &["a", "x"])];
         tasks[1].stale = vec!["a".into()];
-        tasks[2].stale = vec!["b".into()];
-        let caught_up = [seen("a", "a2", &[]), seen("b", "b2", &[("a", false, true)]), seen("c", "c1", &[("b", false, false)])];
-        assert!(settle(&tasks, &caught_up).is_empty(), "staleness is cleared by ready, not by git");
-        tasks[1] = task("b", Some("b2"), &["a"]);
-        assert!(settle(&tasks, &caught_up).is_empty(), "c is stale already");
-        tasks[2].stale.clear();
-        assert_eq!(settle(&tasks, &caught_up), vec![Step::Stale { id: "c".into(), behind: vec!["b".into()], waiting: vec![] }], "c is behind b's new head");
+        let still = [seen("b", "b1", &[("a", false, false), ("x", false, true)])];
+        assert!(settle(&tasks, &still).is_empty(), "still behind a, told once already");
+        let more = [seen("b", "b1", &[("a", false, false), ("x", false, false)])];
+        assert_eq!(settle(&tasks, &more), vec![Step::Stale { id: "b".into(), behind: vec!["a".into(), "x".into()], new: vec!["x".into()] }]);
+        let caught_up = [seen("b", "b2", &[("a", false, true), ("x", false, true)])];
+        assert_eq!(settle(&tasks, &caught_up), vec![Step::Fresh { id: "b".into() }], "no command clears it");
     }
 
     #[test]
-    fn a_base_in_main_is_dropped_and_holds_nothing_back() {
-        let mut tasks = [task("a", None, &[]), task("b", None, &["a"])];
-        tasks[0].stale = vec!["x".into()];
-        let merged = [seen("b", "b1", &[("a", true, true)])];
-        assert_eq!(settle(&tasks, &merged), vec![Step::Merged { id: "b".into(), base: "a".into(), main: Some("main".into()) }]);
+    fn a_base_in_main_is_dropped_and_leaves_nothing_stale() {
+        let mut tasks = [task("a", None, &[]), task("b", None, &["a"]), task("c", None, &[])];
+        tasks[1].stale = vec!["a".into()];
+        tasks[2].stale = vec!["gone".into()];
+        let merged = [seen("b", "b1", &[("a", true, true)]), seen("c", "c1", &[])];
+        assert_eq!(settle(&tasks, &merged), vec![Step::Merged { id: "b".into(), base: "a".into(), main: Some("main".into()) }, Step::Fresh { id: "b".into() }, Step::Fresh { id: "c".into() }], "a task stale on a base it no longer has is fresh");
     }
 
     fn sh(dir: &Path, script: &str) {
@@ -416,20 +399,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         sh(&dir, "git init -q -b main && git config user.name e && git config user.email e@e && git commit -q --allow-empty -m first && git worktree add -q -b t wt");
-        let (events, inbox) = mpsc::channel();
+        let (events, mut inbox) = crate::runtime::channel();
         let heads = follow_heads(events);
         heads.send(Heads::Repos(HashSet::from([dir.clone()]))).unwrap();
-        assert!(matches!(inbox.recv_timeout(Duration::from_secs(5)), Ok(Event::Heads)), "following a repo looks at it once");
-        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "nothing moved");
+        assert!(matches!(crate::runtime::next(&mut inbox, Duration::from_secs(5)), Ok(Event::Heads)), "following a repo looks at it once");
+        assert!(crate::runtime::next(&mut inbox, Duration::from_millis(800)).is_err(), "nothing moved");
         sh(&dir.join("wt"), "echo x >x");
-        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "a file in a worktree isn't a head");
+        assert!(crate::runtime::next(&mut inbox, Duration::from_millis(800)).is_err(), "a file in a worktree isn't a head");
         sh(&dir.join("wt"), "git add x && git commit -q -m x");
-        assert!(matches!(inbox.recv_timeout(Duration::from_secs(5)), Ok(Event::Heads)), "a commit moves its branch");
+        assert!(matches!(crate::runtime::next(&mut inbox, Duration::from_secs(5)), Ok(Event::Heads)), "a commit moves its branch");
         heads.send(Heads::Repos(HashSet::new())).unwrap();
         std::thread::sleep(QUIET * 2);
         while inbox.try_recv().is_ok() {}
         sh(&dir.join("wt"), "git commit -q --allow-empty -m y");
-        assert!(inbox.recv_timeout(Duration::from_millis(800)).is_err(), "an unfollowed repo is left alone");
+        assert!(crate::runtime::next(&mut inbox, Duration::from_millis(800)).is_err(), "an unfollowed repo is left alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
