@@ -150,6 +150,12 @@ struct StatsSection: Codable, Equatable, Identifiable {
 struct StatsPage: Codable, Equatable {
     var days: [String]
     var sections: [StatsSection]
+    var status: String?
+
+    func keeping(_ shown: StatsPage?) -> StatsPage {
+        guard sections.isEmpty, let shown, !shown.sections.isEmpty else { return self }
+        return StatsPage(days: shown.days, sections: shown.sections, status: status)
+    }
 }
 
 struct Named: Codable, Equatable {
@@ -210,6 +216,7 @@ enum Notice {
     case planner(repo: String, status: String, since: Double)
     case tasks(repo: String)
     case quiz(repo: String)
+    case stats(repo: String)
     case projects
 }
 
@@ -252,6 +259,7 @@ protocol Backend: AnyObject {
     func stats(repo: String) async throws -> StatsPage
     func move(repo: String, machine: String) async throws -> Moved
     func close()
+    func unlink()
     func forget()
     func link() async -> Link
     func highlight(file: String, text: String) -> [TextSpan]

@@ -249,6 +249,7 @@ pub struct AppLink {
     files: Rc<Files>,
     threads: Rc<Files>,
     serial: Rc<Serial>,
+    runs: RefCell<std::rc::Weak<crate::runs::Runs>>,
     layout: Rc<DaemonLayout>,
     apps: RefCell<BTreeMap<u64, Connection>>,
     sizes: RefCell<Sizes>,
@@ -283,6 +284,7 @@ impl AppLink {
             files,
             threads,
             serial,
+            runs: RefCell::new(std::rc::Weak::new()),
             layout,
             apps: RefCell::default(),
             sizes: RefCell::default(),
@@ -478,6 +480,10 @@ impl AppLink {
         }));
     }
 
+    pub fn stats_changed(&self, repo: &str) {
+        self.notify("stats", json!({ "repo": repo }));
+    }
+
     pub fn folder(&self, pane: &str, cwd: &str) {
         if self.attached() {
             let notice = self.folder_notice(pane, cwd);
@@ -606,6 +612,9 @@ impl AppLink {
         }
         self.threads.leave(|view| view.starts_with(&prefix));
         self.serial.leave_views(|view| view.starts_with(&prefix));
+        if let Some(runs) = self.runs.borrow().upgrade() {
+            runs.leave_views(|view| view.starts_with(&prefix));
+        }
         let driven = self.sizes.borrow_mut().gone(conn);
         for (terminal, driver) in driven {
             self.drive(&terminal, Some(driver));
@@ -685,6 +694,18 @@ impl AppLink {
             ("serial.subscribe", Some(view)) => {
                 let reply = self.serial.subscribe(&view, &args);
                 self.answer_subscribe(conn, &message, reply);
+                return None;
+            }
+            ("run.subscribe", Some(view)) => {
+                let runs = self.runs.borrow().upgrade();
+                let reply = runs.map_or_else(|| Err(KmuxError::new("app_gone", "the daemon is stopping")), |runs| runs.subscribe(&view, &args));
+                self.answer_subscribe(conn, &message, reply);
+                return None;
+            }
+            ("run.unsubscribe", Some(view)) => {
+                if let Some(runs) = self.runs.borrow().upgrade() {
+                    runs.unsubscribe(&view);
+                }
                 return None;
             }
             ("serial.unsubscribe", Some(view)) => {
@@ -845,6 +866,14 @@ impl AppLink {
                 self.notify_to(conn, cmd, payload.clone());
             }
         }
+    }
+
+    pub fn connect_runs(&self, runs: &Rc<crate::runs::Runs>) {
+        *self.runs.borrow_mut() = Rc::downgrade(runs);
+    }
+
+    pub fn run(&self, views: &[String], payload: &Value) {
+        self.to_viewers("run", views, payload);
     }
 
     pub fn serial(&self, views: &[String], payload: &Value) {

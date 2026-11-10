@@ -32,7 +32,6 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     private(set) var loads = 0
 
     private let files: MachineFiles?
-    var pagePath: @MainActor (URL?) -> String? = { PageMarkupView.page(for: $0) }
 
     init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default(), files: MachineFiles? = nil) {
         markable = markup
@@ -43,6 +42,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
+        if TerminalSurfaceView.ignoresOcclusion { webView.ignoreOcclusion() }
         webView.navigationDelegate = self
         titled = webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             MainActor.assumeIsolated { self?.onTitleChange?(view.title ?? "") }
@@ -76,7 +76,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     }
 
     private func markUp(_ url: URL?) {
-        let local = pagePath(url)
+        let local = PageMarkupView.page(for: url)
         showBar(markable ? nil : local)
         let page = markable ? local : nil
         guard page != markup?.path else { return }
@@ -245,6 +245,13 @@ final class FocusReportingWebView: WKWebView {
             extra.removeItem(item)
             menu.addItem(item)
         }
+    }
+
+    func ignoreOcclusion() {
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard let method = class_getInstanceMethod(WKWebView.self, selector) else { return }
+        unsafeBitCast(method_getImplementation(method), to: Setter.self)(self, selector, false)
     }
 
     func zoom(to target: CGFloat, around point: NSPoint) {

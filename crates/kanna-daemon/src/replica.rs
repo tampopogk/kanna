@@ -61,6 +61,10 @@ impl Record {
         self.fields.get(field).map_or(&Value::Null, |(_, value)| value)
     }
 
+    pub fn written(&self, field: &str) -> Option<&Hlc> {
+        self.fields.get(field).map(|(at, _)| at)
+    }
+
     pub fn text(&self, field: &str) -> Option<&str> {
         self.get(field).as_str().filter(|s| !s.is_empty())
     }
@@ -75,6 +79,10 @@ impl Record {
 
     pub fn keys_after(&self, prefix: &str) -> Vec<&str> {
         self.fields.iter().filter(|(_, (_, value))| !value.is_null()).filter_map(|(field, _)| field.strip_prefix(prefix)).collect()
+    }
+
+    pub fn since(&self, field: &str) -> Option<&Hlc> {
+        self.fields.get(field).map(|(at, _)| at)
     }
 
     pub fn born(&self) -> Hlc {
