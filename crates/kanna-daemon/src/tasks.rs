@@ -6994,7 +6994,7 @@ mod tests {
         pane.status = Some("working".into());
         core.install_panes(vec![pane], 0, 7, 0);
         let (events, _inbox) = crate::runtime::channel();
-        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), events));
         tasks.install(&core);
         let socket = state.join("agent.sock");
         *tasks.channel.borrow_mut() = Some(Box::new(move |_| Some(Channel::Claude(Ok(socket.clone())))));
