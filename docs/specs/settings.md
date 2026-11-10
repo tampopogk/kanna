@@ -52,6 +52,7 @@ flowchart LR
 | `tasks.teardown` | none | A shell command run in a task's agent pane, in its worktree, when it's Done: the task is Done once it succeeds, and Kanna cleans it up ([task scripts](task-scripts.md#3-teardown-and-cleanup)) |
 | `tasks.timeout` | `600` | Seconds `tasks.setup` and `tasks.teardown` each get, from 1 to 86400, before Kanna stops them |
 | `pipelines.agents` | none | The command each agent a [pipeline](software-factory.md)'s stages name runs as, when it isn't the agent's own name on your PATH: `{"claude": "~/bin/claude-wrapper"}`. Only `~/.kanna-v4/config.json` sets it: a repo's file that sets it is ignored and logged, so a cloned repo's pipeline can't make a run start a command. |
+| `machine.roles` | none | In your file only: the roles this machine declares, a list of names (`["e2e"]`), beside `mac` or `linux` from its system. A run's stage placed `on` a role runs on a machine that declares it ([remote stages §1](remote-stages.md#1-placement)). |
 | `pipelines.workers` | `3` | How many of a run's workers run at once (1 to 10): a fan-out's instances (`each`) and attempts (`xN by`) start as others end ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)). |
 
 <a id="agent-prompts"></a>
