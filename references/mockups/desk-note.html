@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desk Note Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { border-color: var(--accent); color: var(--accent); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 720px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { font-size: 12px; font-weight: 600; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 38%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; }
+.term .p { color: var(--warn); } .term .m { color: var(--machine); }
+.term .cur { display: inline-block; width: 7px; height: 14px; vertical-align: -2px; background: var(--text); }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); position: relative; }
+.list { flex: 1; overflow: auto; padding: 40px 48px; }
+.list .sub { color: var(--muted); margin: 0 0 22px; }
+.group { margin-bottom: 22px; max-width: 760px; }
+.group .gh { padding: 0 0 6px; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.group .gh b { color: var(--text); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.working { background: var(--accent); } .dot.idle { background: var(--ok); }
+.dot.ring { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 0 -10px; border-radius: 8px; cursor: pointer; }
+.row:hover, .row.sel { background: var(--panel); }
+.row .t { flex: 1; min-width: 0; }
+.row .t .n { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.waiting .t .n { font-weight: 500; }
+.row .t .s { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .go { color: var(--muted); white-space: nowrap; }
+
+.old { color: var(--warn); font-size: 12px; margin: 6px 0 0; min-height: 16px; }
+.note { flex: none; display: flex; align-items: center; gap: 12px; padding: 9px 20px 9px 48px; border-top: 1px solid var(--line); background: var(--panel); color: var(--warn); font-size: 12px; }
+.note span { flex: 1; min-width: 0; }
+.note i { font-style: normal; color: var(--muted); cursor: pointer; padding: 0 4px; }
+.note i:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>The Desk view's note stays in sight</h1>
+    <p>The Desk is full and the Shelf is long. Click a Shelf row (or raise a toast's click): the note says why nothing moved. Today it is the last line of the list, under every Shelf row, so with a long Shelf it lands off screen. Here it is a strip along the bottom edge of the Desk view, outside the scrolled list: it shows wherever the list is scrolled, and goes with the next thing you do there, or its ×.</p>
+    <div class="controls">
+      <button id="theme">Light / dark</button>
+      <button id="toast">Click a Shelf task's toast</button>
+      <button id="today">As it is today</button>
+      <button id="reset">Reset</button>
+    </div>
+  </div>
+  <div id="stage"></div>
+</main>
+<script>
+const FULL = "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row).";
+const desk = [
+  ["idle", "Tidy the e2e helpers", "claude · idle · 30m ago · e2e-helpers"],
+  ["working", "Doc markup reference model", "claude · working · task-doc-markup"],
+  ["working", "Rename a task from the strip", "claude · working · just now · task-p11"],
+];
+const shelf = [
+  ["agent_status e2e is flaky", "agent_status waits 5s for 'working' after answering the mock agent"],
+  ["kanna open infers the pane type", "kanna open FILE should pick md or web from the file's extension"],
+  ["Release notes", "Write the 0.9 notes once the flaky test is fixed"],
+  ["Tab bar follows light mode", "The tab bar keeps its dark fill when the system turns light"],
+  ["Stats tab: fixes per week", "Chart the Fixes: trailers by the week they landed"],
+  ["Quiz picks from last week's merges", "Weight the questions towards what landed most recently"],
+  ["Merge queue shows the failing stage", "Say which stage failed in the row, not only in the log"],
+  ["Phone: pull to refresh the Shelf", "The phone's Shelf only refreshes when the app comes to the front"],
+  ["Crash banner links the record", "Clicking the banner should open the crash record's folder"],
+  ["Schedules: skip a firing", "Let a schedule skip its next firing without turning it off"],
+  ["Keeper upgrade keeps scrollback", "A keeper upgrade drops the scrollback of terminals over 10k lines"],
+  ["Search the Shelf by machine", "A word that names a machine should match the tasks that run on it"],
+  ["Diff view wraps long lines", "Long lines run off the right edge of the diff pane"],
+  ["Toast for a finished build", "Raise a toast when a build the user started finishes"],
+  ["Rename a Desk from its title", "Double-click a Desk's title to rename it"],
+  ["Log pane follows the tail", "Keep the log scrolled to the end unless the user scrolled up"],
+];
+let s = { note: "", sel: -1, today: false, top: 0 };
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function render() {
+  const list = document.querySelector(".list");
+  if (list) s.top = list.scrollTop;
+  document.getElementById("stage").innerHTML = `<div class="window">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where">Desk</span></div>
+    <div class="content">
+      <div class="agent"><div class="head">Planning · ~/work/kanna-v4 · main</div><div class="term"><span class="p">&gt;</span> You are the Kanna planning agent.
+
+<span class="m">●</span> In kanna-v4: 3 on the Desk, ${shelf.length} on the Shelf. What are we working on?
+
+<span class="p">&gt;</span> <span class="cur"></span></div></div>
+      <div class="docs"><div class="list"><p class="sub">Breathe. Then pick the next one.</p>
+        <div class="group"><div class="gh"><span><b>Desk</b> · ~/work/kanna-v4</span><span>3 of 3 tasks</span></div>
+          ${desk.map(d => `<div class="row"><span class="dot ${d[0]}"></span><div class="t"><div class="n">${esc(d[1])}</div><div class="s">${esc(d[2])}</div></div></div>`).join("")}</div>
+        <div class="group"><div class="gh"><span><b>Shelf</b></span><span>${shelf.length} waiting</span></div>
+          ${shelf.map((t, i) => `<div class="row waiting ${i === s.sel ? "sel" : ""}" data-move="${i}"><span class="dot ring"></span><div class="t"><div class="n">${esc(t[0])}</div><div class="s">${esc(t[1])} · from the planning agent</div></div><span class="go">Desk full</span></div>`).join("")}
+          ${s.today ? `<p class="old">${esc(s.note)}</p>` : ""}</div>
+      </div>${!s.today && s.note ? `<div class="note"><span>${esc(s.note)}</span><i data-close title="Dismiss">×</i></div>` : ""}</div>
+    </div></div>`;
+  document.querySelector(".list").scrollTop = s.top;
+  document.getElementById("today").classList.toggle("on", s.today);
+}
+
+document.addEventListener("click", e => {
+  if (e.target.closest("[data-close]")) { s.note = ""; return render(); }
+  const row = e.target.closest("[data-move]");
+  if (row) { s.sel = Number(row.dataset.move); s.note = FULL; render(); }
+});
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
+document.getElementById("toast").onclick = () => { s.sel = -1; s.note = FULL; render(); };
+document.getElementById("today").onclick = () => { s.today = !s.today; render(); };
+document.getElementById("reset").onclick = () => { s = { note: "", sel: -1, today: false, top: 0 }; render(); };
+
+const hash = location.hash;
+if (hash.includes("picture")) document.body.classList.add("picture");
+if (hash.includes("light")) document.documentElement.dataset.theme = "light";
+if (hash.includes("today")) s.today = true;
+const picked = hash.match(/sel=(\d+)/);
+if (picked) { s.sel = Number(picked[1]); s.note = FULL; }
+render();
+if (picked) document.querySelector(".row.sel").scrollIntoView({ block: "center" });
+</script>
+</body>
+</html>
