@@ -14,6 +14,11 @@ struct QueueEntry: Equatable {
     let landed: String?
     let why: String?
     let terminal: String?
+    let run: String?
+    let stage: String?
+    let needs: String?
+    let told: String?
+    let judged: Bool
     var after: String?
 
     init(_ json: JSON) {
@@ -30,7 +35,14 @@ struct QueueEntry: Equatable {
         landed = doc?["landed"]?.string
         why = doc?["why"]?.string
         terminal = json["terminal"]?.string
+        run = json["run"]?.string
+        stage = doc?["stage"]?.string
+        needs = state == "testing" ? doc?["needs"]?.string : nil
+        told = doc?["told"]?.string
+        judged = doc?["result"]?["verdict"]?.string != nil
     }
+
+    var judging: Bool { state == "testing" && stage == "judge" }
 
     var live: Bool { ["queued", "testing", "landing"].contains(state) }
 
@@ -45,12 +57,14 @@ struct QueueEntry: Equatable {
     @MainActor var said: String {
         let main = self.main ?? "main"
         switch state {
+        case "testing" where needs != nil:
+            return ["needs you", needs, Self.clock(from: since)].compactMap { $0 }.joined(separator: " · ")
         case "testing":
-            let on = ["testing on \(main)", Self.short(base)].compactMap { $0 }.joined(separator: " ")
+            let on = ["\(judging ? "judging a failure" : "testing") on \(main)", Self.short(base)].compactMap { $0 }.joined(separator: " ")
             return [on + (branch.map { " + \($0)" } ?? ""), Self.clock(from: since)].compactMap { $0 }.joined(separator: " · ")
         case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
         case "failed": return ["failed", why, DeskTask.ago(endedAt), "back on the Shelf"].compactMap { $0 }.joined(separator: " · ")
-        case "landed": return [Self.short(landed).map { "landed as \($0)" } ?? "landed", DeskTask.ago(endedAt), Self.clock(from: since, to: endedAt).map { "tested in \($0)" }].compactMap { $0 }.joined(separator: " · ")
+        case "landed": return [Self.short(landed).map { "landed as \($0)" } ?? "landed", DeskTask.ago(endedAt), Self.clock(from: since, to: endedAt).map { "tested in \($0)" }, judged ? "passed by the judge" : nil].compactMap { $0 }.joined(separator: " · ")
         default: return ([after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"] + [branch].compactMap { $0 }).joined(separator: " · ")
         }
     }
@@ -80,6 +94,7 @@ final class MergeQueuePage: NSView {
     private var asked: String?
     private var body = NSRect.zero
     var onTakeOut: ((String) -> Void)?
+    var onResume: ((String) -> Void)?
     var onPick: (() -> Void)?
     var onLog: ((String) -> Void)?
 
@@ -127,16 +142,17 @@ final class MergeQueuePage: NSView {
 
     var entries: [QueueEntry] { shown ?? [] }
     var selected: QueueEntry? { entries.first { $0.id == picked } ?? entries.first }
-    var wantedTerminal: String? { isHidden ? nil : selected?.terminal }
+    var wantedTerminal: String? { isHidden || selected?.needs != nil ? nil : selected?.terminal }
     var hostedTerminal: String? { hosted?.superview === self ? hosted?.id : nil }
     var detail: String { head.stringValue }
     var logShown: String? { logScroller.isHidden ? nil : logText.string }
     var waitingText: String? { waiting.isHidden ? nil : waiting.stringValue }
 
-    func center(of entry: String, takeOut: Bool = false) -> NSPoint? {
+    func center(of entry: String, takeOut: Bool = false, resume: Bool = false) -> NSPoint? {
         guard let row = document.subviews.compactMap({ $0 as? QueueRowView }).first(where: { $0.entry.id == entry || $0.entry.task == entry }) else { return nil }
+        if resume, row.entry.needs == nil { return nil }
         document.scrollToVisible(row.frame)
-        return row.convert(takeOut ? row.takeOutCenter : NSPoint(x: 40, y: row.bounds.midY), to: nil)
+        return row.convert(resume ? row.resumeCenter : takeOut ? row.takeOutCenter : NSPoint(x: 40, y: row.bounds.midY), to: nil)
     }
 
     func show(_ entries: [QueueEntry]?) {
@@ -221,6 +237,7 @@ final class MergeQueuePage: NSView {
             let row = QueueRowView(entry: entry, width: width + 20, selected: entry.id == chosen)
             row.onPick = { [weak self] in self?.pick(entry.id) }
             row.onTakeOut = { [weak self] in self?.onTakeOut?(entry.task) }
+            row.onResume = { [weak self] in entry.run.map { self?.onResume?($0) } }
             row.frame.origin = NSPoint(x: left - 10, y: y)
             document.addSubview(row)
             y += row.frame.height
@@ -241,16 +258,20 @@ final class MergeQueuePage: NSView {
         var left = "", right = "", wait: String?, text: String?
         if let entry {
             switch entry.state {
+            case "testing" where entry.needs != nil:
+                left = "Needs you · " + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
+                right = "paused"
+                text = [entry.told ?? entry.needs, "Resume carries it on as it is. To answer it in words, run: kanna run resume \(entry.run ?? "RUN") \"…\"\nTake out sends the task back to the Shelf. The entries behind it wait until one of those."].compactMap { $0 }.joined(separator: "\n\n")
             case "testing", "landing":
-                left = "Tester · " + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
+                left = (entry.judging ? "Judge · " : "Tests · ") + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
                 right = entry.state == "landing" ? "landing" : ["running", QueueEntry.clock(from: entry.since)].compactMap { $0 }.joined(separator: " · ")
-                if entry.terminal == nil { wait = entry.state == "landing" ? (entry.why.map { "Its tests are done. It waits to land: \($0)" } ?? "Its tests are done. It's landing.") : "Its tester is starting." }
+                if entry.terminal == nil { wait = entry.state == "landing" ? (entry.why.map { "Its tests are done. It waits to land: \($0)" } ?? "Its tests are done. It's landing.") : entry.judging ? "Its judge is starting, or waits for a command it asked for." : "Its tests are starting." }
             case "queued":
                 left = [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
                 right = "waiting"
-                wait = entry.after.map { "Waiting. Its tester starts once \u{201C}\($0)\u{201D} lands or fails, and its terminal shows here." } ?? "Waiting. Its tester starts next, and its terminal shows here."
+                wait = entry.after.map { "Waiting. Its tests start once \u{201C}\($0)\u{201D} lands or fails, and their terminal shows here." } ?? "Waiting. Its tests start next, and their terminal shows here."
             default:
-                left = "Tester's answer and test.log · " + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
+                left = (entry.judged ? "Judge's answer and test.log · " : "test.log · ") + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
                 right = entry.state == "failed" ? "failed \(DeskTask.ago(entry.endedAt))" : "landed \(DeskTask.ago(entry.endedAt))"
                 if log?.id == entry.id {
                     let parts = [log?.note ?? (entry.state == "failed" ? entry.why : nil), log?.text.map { "──────── test.log ────────\n\($0)" }].compactMap { $0 }
@@ -286,7 +307,7 @@ final class MergeQueuePage: NSView {
             logText.textColor = .labelColor
             logText.frame.size.width = logScroller.contentSize.width
         }
-        if entry?.terminal == nil, hosted?.superview === self {
+        if entry?.terminal == nil || entry?.needs != nil, hosted?.superview === self {
             hosted?.removeFromSuperview()
             hosted = nil
         }
@@ -310,7 +331,9 @@ private final class QueueRowView: NSView {
     let entry: QueueEntry
     var onPick: (() -> Void)?
     var onTakeOut: (() -> Void)?
+    var onResume: (() -> Void)?
     private let go = NSTextField(labelWithString: "Take out")
+    private let carry = NSTextField(labelWithString: "Resume")
     private let selected: Bool
     private var hover = false
 
@@ -328,17 +351,24 @@ private final class QueueRowView: NSView {
         name.lineBreakMode = .byTruncatingTail
         let sub = NSTextField(labelWithString: "")
         let small = NSFont.systemFont(ofSize: 12)
-        let said = NSMutableAttributedString(string: entry.said, attributes: [.font: small, .foregroundColor: entry.state == "landing" && entry.why != nil ? NSColor.systemOrange : NSColor.secondaryLabelColor])
+        let said = NSMutableAttributedString(string: entry.said, attributes: [.font: small, .foregroundColor: entry.needs != nil || (entry.state == "landing" && entry.why != nil) ? NSColor.systemOrange : NSColor.secondaryLabelColor])
         if entry.state == "failed" { said.addAttribute(.foregroundColor, value: NSColor.systemRed, range: NSRange(location: 0, length: 6)) }
         sub.attributedStringValue = said
         sub.lineBreakMode = .byTruncatingTail
         if entry.live {
-            name.frame = NSRect(x: 30, y: 8, width: width - 140, height: 18)
-            sub.frame = NSRect(x: 30, y: 27, width: width - 140, height: 17)
+            let room: CGFloat = entry.needs == nil ? 140 : 210
+            name.frame = NSRect(x: 30, y: 8, width: width - room, height: 18)
+            sub.frame = NSRect(x: 30, y: 27, width: width - room, height: 17)
             go.font = small
             go.sizeToFit()
             go.frame.origin = NSPoint(x: width - go.frame.width - 10, y: (tall - go.frame.height) / 2)
             addSubview(go)
+            if entry.needs != nil {
+                carry.font = small
+                carry.sizeToFit()
+                carry.frame.origin = NSPoint(x: go.frame.minX - carry.frame.width - 18, y: go.frame.minY)
+                addSubview(carry)
+            }
         } else {
             name.sizeToFit()
             name.frame = NSRect(x: 30, y: 6, width: min(name.frame.width, (width - 50) * 0.5), height: 18)
@@ -351,6 +381,7 @@ private final class QueueRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     var takeOutCenter: NSPoint { NSPoint(x: go.frame.midX, y: go.frame.midY) }
+    var resumeCenter: NSPoint { NSPoint(x: carry.frame.midX, y: carry.frame.midY) }
 
     override func draw(_ dirtyRect: NSRect) {
         let ring = NSBezierPath(ovalIn: NSRect(x: 10.5, y: bounds.midY - 4, width: 8, height: 8))
@@ -366,7 +397,7 @@ private final class QueueRowView: NSView {
             NSColor.systemGreen.setFill()
             ring.fill()
         default:
-            DeskTask.color("working").setFill()
+            (entry.needs == nil ? DeskTask.color("working") : NSColor.systemOrange).setFill()
             ring.fill()
         }
     }
@@ -374,6 +405,7 @@ private final class QueueRowView: NSView {
     private func paint() {
         layer?.backgroundColor = selected ? resolved(.quaternaryLabelColor) : hover ? resolved(.quaternaryLabelColor.withAlphaComponent(0.5)) : nil
         go.textColor = hover ? .controlAccentColor : .tertiaryLabelColor
+        carry.textColor = .controlAccentColor
     }
 
     override func viewDidMoveToWindow() { paint() }
@@ -396,6 +428,7 @@ private final class QueueRowView: NSView {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if entry.live, go.frame.insetBy(dx: -8, dy: -8).contains(point) { return onTakeOut?() ?? () }
+        if entry.needs != nil, carry.frame.insetBy(dx: -8, dy: -8).contains(point) { return onResume?() ?? () }
         onPick?()
     }
 }

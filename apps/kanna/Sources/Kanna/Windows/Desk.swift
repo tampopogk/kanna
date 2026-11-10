@@ -334,6 +334,14 @@ extension AppController {
         }
     }
 
+    func resumeQueued(_ run: String, from window: String) {
+        controllers[window]?.note = ""
+        request("run", ["action": "resume", "run": .string(run)]) { [weak self] reply in
+            self?.noted(window, reply, otherwise: "it stays paused")
+            self?.queueChanged()
+        }
+    }
+
     func startTask(_ task: String, from window: String) {
         controllers[window]?.note = ""
         let click = Clicks.pick(task, desk: controllers[window]?.deskTasks.map(\.id) ?? [])
