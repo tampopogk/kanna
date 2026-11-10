@@ -1397,6 +1397,11 @@ impl Tasks {
         entry.after.iter().filter(|id| open.iter().any(|e| e.id == **id && (e.claimed.is_none() || !e.stale.is_empty())) || (!self.is_open(id) && self.replica.borrow().open_task(id))).cloned().collect()
     }
 
+    fn runs_elsewhere(&self, record: &replica::Record) -> bool {
+        let replica = self.replica.borrow();
+        record.text("state").is_some_and(|s| s != "done") && record.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&record.task)
+    }
+
     fn ambiguous(&self, id: &str) -> bool {
         self.replica.borrow().births(id).len() > 1
     }
@@ -3816,7 +3821,7 @@ impl Tasks {
         let replica = self.replica.borrow();
         let mut records: Vec<&replica::Record> = replica
             .records()
-            .filter(|r| r.text("state").is_some_and(|s| s != "done") && r.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&r.task))
+            .filter(|r| self.runs_elsewhere(r))
             .filter(|r| repo.is_none() || (project.is_some() && r.text("project") == project.as_deref()))
             .collect();
         records.sort_by_key(|r| r.born());
@@ -3849,6 +3854,16 @@ impl Tasks {
                 vec![]
             });
             let open = self.open_tasks();
+            let finished_elsewhere = |id: &str| replica.births(id).into_iter().filter(|r| r.text("state") == Some("done")).filter_map(|r| r.written("state")).map(|at| at.ms as f64 / 1000.0).reduce(f64::max);
+            let mut done: Vec<(db::Row, f64)> = done
+                .into_iter()
+                .filter(|(row, _)| !replica.births(&row.id).into_iter().any(|r| self.runs_elsewhere(r)))
+                .map(|(row, at)| {
+                    let at = at.or_else(|| finished_elsewhere(&row.id)).unwrap_or(row.made_at);
+                    (row, at)
+                })
+                .collect();
+            done.sort_by(|(_, a), (_, b)| b.total_cmp(a));
             let ids: Vec<&str> = open.iter().map(|e| e.id.as_str()).chain(done.iter().map(|(row, _)| row.id.as_str())).collect();
             let done = done
                 .iter()
