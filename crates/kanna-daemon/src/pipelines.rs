@@ -119,13 +119,13 @@ pub fn numbers(row: &RunRow, stages: &[StageRow], events: &[RunEvent], revision:
         visits: stages.len(),
         ..Numbers::default()
     };
-    let mut seen: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut seen: BTreeMap<(&str, Option<&str>), u64> = BTreeMap::new();
     for stage in stages {
         let doc = &stage.doc;
         let waited = doc.get("waited").and_then(Value::as_f64).unwrap_or(0.0);
         out.waited += waited;
         out.active += (stage.ended_at.unwrap_or(now) - stage.started_at - waited).max(0.0);
-        let visits = seen.entry(&stage.stage).or_insert(0);
+        let visits = seen.entry((&stage.stage, stage.instance.as_deref())).or_insert(0);
         *visits += 1;
         if *visits > 1 {
             out.rework += 1;
@@ -160,7 +160,7 @@ pub fn numbers(row: &RunRow, stages: &[StageRow], events: &[RunEvent], revision:
         out.added += number(doc, "added");
         out.deleted += number(doc, "deleted");
     }
-    out.at = stages.last().filter(|s| s.ended_at.is_none()).map(|s| (s.stage.clone(), seen.get(s.stage.as_str()).copied().unwrap_or(1) as i64));
+    out.at = stages.last().filter(|s| s.ended_at.is_none()).map(|s| (s.stage.clone(), seen.get(&(s.stage.as_str(), s.instance.as_deref())).copied().unwrap_or(1) as i64));
     let kept: BTreeMap<String, u64> = row.doc.get("interventions").and_then(Value::as_object).map_or_else(BTreeMap::new, |m| m.iter().map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0))).filter(|(_, n)| *n > 0).collect());
     if kept.is_empty() {
         for kind in events.iter().filter_map(|e| intervention(e, stages)) {
@@ -592,6 +592,20 @@ mod tests {
         assert_eq!(n.to_hand_back, Some(100.0));
         assert_eq!((n.to_land, n.outcome.as_str()), (None, "handed back"));
         assert_eq!(visit_interventions(&stages[1], &stages, &events), BTreeMap::from([("resumed".to_string(), 1)]));
+    }
+
+    #[test]
+    fn a_fan_out_s_instances_are_one_visit_each_not_rework() {
+        let mut a = visit("build", 0.0, 10.0, "agent", "done", json!({}));
+        a.instance = Some("parser".into());
+        let mut b = a.clone();
+        b.instance = Some("lexer".into());
+        let mut again = a.clone();
+        again.started_at = 20.0;
+        let n = numbers(&run("r", "p", "h", 0.0, "running", json!({})), &[a.clone(), b], &[], 1, 30.0);
+        assert_eq!(n.rework, 0);
+        let n = numbers(&run("r", "p", "h", 0.0, "running", json!({})), &[a, again], &[], 1, 30.0);
+        assert_eq!(n.rework, 1);
     }
 
     #[test]

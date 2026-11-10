@@ -66,7 +66,7 @@ flowchart LR
 | time to hand back | started to handed back |
 | active time | the sum of the visits, less what they waited |
 | sessions, turns, tools, tokens, cost, commits, files, lines | sums over the visits; a file changed by two visits counts twice |
-| rework loops | visits of any stage beyond its first, by stage |
+| rework loops | visits of any stage beyond its first, by stage; a fan-out's instances (`each`, `xN`) are each their own stage, so running them side by side isn't rework |
 | interventions | by kind: the run's own count, kept as you answer, pause, skip, retry or resume ([software factory §6.2](software-factory.md#62-gates-and-steering-as-built)); for a run from before it, `run_events` from anyone but the daemon or the stage's own terminal |
 | outcome | `landed`, `handed back`, `stopped` (why), `stuck` |
 

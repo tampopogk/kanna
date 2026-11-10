@@ -289,6 +289,15 @@ pub fn pricing(files: &[PathBuf]) -> Value {
     configured(files, "pipelines", "pricing", |value| value.is_object().then(|| value.clone()), "an object of models to their prices per million tokens").unwrap_or(Value::Null)
 }
 
+pub const WORKERS: usize = 3;
+
+pub const WORKERS_MAX: usize = 10;
+
+pub fn pipeline_workers(files: &[PathBuf]) -> usize {
+    let read = |value: &Value| value.as_u64().map(|n| n as usize).filter(|n| (1..=WORKERS_MAX).contains(n));
+    configured(files, "pipelines", "workers", read, "a number of workers from 1 to 10").unwrap_or(WORKERS)
+}
+
 pub fn build_mac(mine: &Path) -> Option<String> {
     let read = |value: &Value| value.as_str().map(str::trim).filter(|m| !m.is_empty()).map(String::from);
     configured(std::slice::from_ref(&mine.to_path_buf()), "build", "mac", read, "the name of one of your machines")
@@ -6059,7 +6068,9 @@ mod tests {
         let keys: Vec<&String> = schema["properties"]["agents"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["prompts"]);
         let keys: Vec<&String> = schema["properties"]["pipelines"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["agents", "pricing"]);
+        assert_eq!(keys, ["agents", "pricing", "workers"]);
+        let workers = &schema["properties"]["pipelines"]["properties"]["workers"];
+        assert_eq!((workers["default"].clone(), workers["minimum"].clone(), workers["maximum"].clone()), (json!(WORKERS), json!(1), json!(WORKERS_MAX)));
         let keys: Vec<&String> = schema["properties"]["merge"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["test"]);
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();

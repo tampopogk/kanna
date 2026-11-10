@@ -925,7 +925,7 @@ mod tests {
         assert!(!said.contains("in the background and wait"), "{said}");
         let pipeline = kanna_pipe::parse(&test_pipeline("sh test.sh", "claude")).unwrap();
         let feedback = runs::Feedback { stage: TEST.into(), text: "FAILED a".into(), full: "/w/.kanna/tmp/stage-1.log".into() };
-        let whole = runs::prompt(pipeline.stage(JUDGE).unwrap(), &said, "Merge branch 'add-a': Add a", Some(&feedback), &BTreeMap::new(), ".kanna/tmp/answer-2.md");
+        let whole = runs::prompt(pipeline.stage(JUDGE).unwrap(), &said, "Merge branch 'add-a': Add a", None, Some(&feedback), &BTreeMap::new(), ".kanna/tmp/answer-2.md");
         assert!(whole.contains("# Feedback from test\n\nFAILED a\n\nAll of its output is in `/w/.kanna/tmp/stage-1.log`.\n"), "{whole}");
     }
 
