@@ -1165,7 +1165,7 @@ impl Runs {
                     }
                     return;
                 }
-                if core.pane(&pane).is_none() {
+                if core.pane(&pane).is_none_or(|p| p.lost()) {
                     return self.interrupted(id, &visit);
                 }
                 if !alive(&core, &pane) {
@@ -1180,7 +1180,7 @@ impl Runs {
                 if exit.is_file() {
                     return self.command_ended(id, &pane, log, exit);
                 }
-                if core.pane(&pane).is_none() {
+                if core.pane(&pane).is_none_or(|p| p.lost()) {
                     return self.interrupted(id, &visit);
                 }
                 if !alive(&core, &pane) {
@@ -1662,6 +1662,9 @@ impl Runs {
 
     fn interrupted(self: &Rc<Self>, id: &str, visit: &Visit) {
         log!("kanna-daemon: {id}'s {} visit lost its terminal, so it's recorded interrupted and runs again", visit.row.stage);
+        if let Some(pane) = visit.row.terminal.as_deref() {
+            self.close(pane);
+        }
         self.rerun(id, visit, "interrupted");
     }
 

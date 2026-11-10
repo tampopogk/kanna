@@ -533,7 +533,7 @@ impl CoreHandle {
     }
 
     async fn woken(&self, task: &str) -> Result<Vec<String>, KmuxError> {
-        let held = self.terminals_of(task, |p| p.hung_up && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
+        let held = self.terminals_of(task, |p| (p.hung_up || p.lost()) && !matches!(p.state, PaneState::Starting | PaneState::Running)).await?;
         let mut woken = vec![];
         for id in &held {
             let snapshot = self.reload(id, true).await;

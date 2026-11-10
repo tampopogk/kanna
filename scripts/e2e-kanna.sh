@@ -7564,23 +7564,71 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   check test "$(phone_place)" == daemon || { echo "phone_chat: the new planner isn't windowless: $(phone_place)"; return 1; }
 }
 
-scenario desk_planner_keeper_lost M4
-desk_planner_keeper_lost() {
-  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
-  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+scenario keeper_lost M4
+keeper_lost() {
+  local me=keeper_lost repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$KANNA_STATE_DIR/bin/claude" ran="$KANNA_STATE_DIR/merge-ran"
+  mkdir -p "$repo/.kanna" "${agent%/*}" && ln -s "$mock_agent" "$agent" || { echo "$me line $LINENO"; return 1; }
+  git -C "$repo" init -q -b main && git -C "$repo" config user.email e@e && git -C "$repo" config user.name e || { echo "$me line $LINENO"; return 1; }
+  printf '{"version": 1, "merge": {"test": "if [ -e %s ]; then exit 0; fi; touch %s; sleep 900"}}\n' "$ran" "$ran" >"$repo/.kanna/config.json"
+  printf '.kanna/tmp/\n' >"$repo/.gitignore"
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "$me line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  start_daemon && start_app || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
-  (cd "$repo" && kanna .) >/dev/null || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  start_daemon && start_app || { echo "$me line $LINENO"; return 1; }
+  (cd "$repo" && kanna .) >/dev/null || { echo "$me line $LINENO"; return 1; }
+  in_repo() { (cd "$repo" && kanna "$@"); }
   desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  row() { in_repo task list | awk -v name="$1" '$2 == name { print $3 }'; }
+  session() { pane "$1" cmd | grep -oE -- "--resume '[0-9a-f-]{36}'" | grep -oE '[0-9a-f-]{36}'; }
+  resumed() {
+    local name="$1" id="$2" was="$3"
+    check wait_for 20 eval 'is "$name" state running && shows "$name" "resumed $was"' || { echo "$me: $name didn't resume its session $was"; kanna read "$name"; return 1; }
+    check test "$(pane "$name" id) $(session "$name")" == "$id $was" || { echo "$me: $name is $(pane "$name" id) with session $(session "$name"), not $id with $was"; return 1; }
+    kanna read "$name" | tr -d '\r\n' | grep -q -- "args: --dangerously-skip-permissions --resume $was" || { echo "$me: $name's agent didn't start with its resuming command"; kanna read "$name"; return 1; }
+    ! kanna read "$name" | grep -qE "^session |already in use|No conversation found" || { echo "$me: $name started a new session"; kanna read "$name"; return 1; }
+    check wait_for 10 is "$name" status idle || { echo "$me: $name, resumed, is $(pane "$name" status), not idle"; return 1; }
+  }
   check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { kanna workspace list --all; return 1; }
-  local planner keeper; planner="$(desk lead)"; keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
-  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "desk_planner_keeper_lost: $keeper isn't this run's keeper"; return 1; }
+  local name n
+  for name in Ready Busy Active Stopped Exited Queued; do
+    in_repo task new "$name" "$([[ "$name" == Busy ]] && echo "work 900" || echo "say hi")" --agent "$agent" >/dev/null || { echo "$me line $LINENO"; return 1; }
+  done
+  for n in 1 2 3; do kanna task pick "$(tid $n)" >/dev/null || { echo "$me line $LINENO"; return 1; }; done
+  kanna task activate "$(tid 3)" >/dev/null || { echo "$me line $LINENO"; return 1; }
+  for n in 4 5 6; do kanna task start "$(tid $n)" >/dev/null || { echo "$me line $LINENO"; return 1; }; done
+  for name in Ready Active Stopped Exited Queued; do check wait_for 15 eval 'shows "$name" SAID && is "$name" status idle' || { echo "$me: $name didn't start"; kanna read "$name"; return 1; }; done
+  check wait_for 10 is Busy status working || { echo "$me: Busy isn't working"; return 1; }
+  (cd "$repo/.kanna-worktrees/$(tid 1)" && echo ready >ready.txt && git add -A && git commit -qm ready) && kanna task ready "$(tid 1)" >/dev/null || { echo "$me line $LINENO"; return 1; }
+  kanna task stop "$(tid 4)" >/dev/null && check wait_for 10 is Stopped state exited || { echo "$me: Stopped didn't stop"; return 1; }
+  kanna send Exited exit >/dev/null && check wait_for 10 is Exited state exited || { echo "$me: Exited's agent didn't exit"; kanna read Exited; return 1; }
+  (cd "$repo/.kanna-worktrees/$(tid 6)" && echo queued >queued.txt && git add -A && git commit -qm queued) && in_repo task merge "$(tid 6)" -m "queued: add it" >/dev/null || { echo "$me line $LINENO"; return 1; }
+  check wait_for 30 test -e "$ran" || { echo "$me: the queue's tests didn't start"; in_repo task list; return 1; }
+  machine_runners 1
+  in_repo task new Runner "work 900" --agent "$agent" >/dev/null || { echo "$me line $LINENO"; return 1; }
+  check wait_for 15 eval 'is Runner state running && is Runner status working' || { echo "$me: a runner didn't start Runner"; in_repo task list; return 1; }
+  check test "$(row Ready) $(row Busy) $(row Active) $(row Stopped) $(row Exited) $(row Runner) $(row Queued)" == "ready working idle stopped stopped working testing" || { echo "$me: before the keeper is lost"; in_repo task list; return 1; }
+  local planner keeper active ids="" sessions=""; planner="$(desk window.lead.pane)" active="$(desk window.active)" keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
+  for name in Ready Busy Active Runner; do ids="$ids $(pane "$name" id)" sessions="$sessions $(session "$name")"; done
+  [[ "$(wc -w <<<"$sessions")" -eq 4 && "$active" == "$(pane Active id)" ]] || { echo "$me: the tasks' sessions are [$sessions], the active task $active"; return 1; }
+  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "$me: $keeper isn't this run's keeper"; return 1; }
   stop_app; stop_daemon
   kill "$keeper"
-  check wait_for 5 eval '! kill -0 $keeper' || { echo "desk_planner_keeper_lost: this run's keeper didn't stop"; return 1; }
-  start_daemon && start_app || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
-  check wait_for 15 eval '[[ "$(desk lead)" == term-* ]] && is "$(desk lead)" state running' || { echo "desk_planner_keeper_lost: the Desk got no running planner: $(desk lead)"; kanna workspace list --all; return 1; }
-  check test "$(desk lead)" != "$planner" || { echo "desk_planner_keeper_lost: the lost pane came back"; return 1; }
+  check wait_for 5 eval '! kill -0 $keeper' || { echo "$me: this run's keeper didn't stop"; return 1; }
+  start_daemon && start_app || { echo "$me line $LINENO"; return 1; }
+  local i=1
+  for name in Ready Busy Active Runner; do
+    resumed "$name" "$(cut -d' ' -f$((i + 1)) <<<"$ids")" "$(cut -d' ' -f$((i + 1)) <<<"$sessions")" || return 1
+    i=$((i + 1))
+  done
+  check test "$(row Ready) $(row Busy) $(row Active) $(row Runner)" == "ready idle idle idle" || { echo "$me: the resumed tasks' rows"; in_repo task list; return 1; }
+  check test "$(desk window.active)" == "$active" || { echo "$me: the active task was $active and is $(desk window.active)"; return 1; }
+  grep -q "$(tid 7)'s agent ended with the keeper, so it runs on the Shelf again (1 of 1 here" "$out/daemon.log" || { echo "$me: Runner wasn't started again by a runner"; grep "$(tid 7)" "$out/daemon.log" | tail -5; return 1; }
+  check test "$(pane Stopped state) $(pane Exited state) $(row Stopped) $(row Exited)" == "exited exited stopped stopped" || { echo "$me: a task that was stopped, or whose agent had exited, started"; in_repo task list; return 1; }
+  check wait_for 60 git -C "$repo" cat-file -e main:queued.txt || { echo "$me: the queued merge didn't land after its tests ran again"; in_repo task list --include-done; grep -n "interrupted\|$(tid 6)" "$out/daemon.log" | tail -8; return 1; }
+  grep -q "test visit lost its terminal, so it's recorded interrupted and runs again" "$out/daemon.log" || { echo "$me: the lost test run wasn't recorded interrupted"; return 1; }
+  kanna task park Active >/dev/null || { echo "$me line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ "$(desk lead)" == term-* ]] && is "$(desk lead)" state running' || { echo "$me: the Desk got no running planner: $(desk lead)"; kanna workspace list --all; return 1; }
+  check test "$(desk lead)" != "$planner" || { echo "$me: the lost planner pane came back"; return 1; }
+  check test "$(pane Stopped state) $(pane Exited state)" == "exited exited" || { echo "$me: a stopped task started later"; return 1; }
 }
 
 machine_vm() {
