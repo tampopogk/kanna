@@ -185,6 +185,8 @@ impl Event {
     }
 }
 
+const PANICKED: i32 = 101;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -200,9 +202,13 @@ fn main() {
         }
     }
     let unstamped = std::panic::take_hook();
+    let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
         eprint!("{} ", stamp());
-        unstamped(info)
+        unstamped(info);
+        if std::thread::current().id() == main_thread {
+            std::process::exit(PANICKED);
+        }
     }));
     match run() {
         Ok(()) => {}
