@@ -966,6 +966,14 @@ fn gone() -> KmuxError {
     KmuxError::new("app_gone", "the daemon is stopping")
 }
 
+struct ThreadEvent {
+    pane: String,
+    comment: Comment,
+    state: String,
+    text: String,
+    at: Instant,
+}
+
 fn hears_conflicts(entry: &Entry) -> bool {
     entry.bases.is_empty() && entry.hears.hears(TaskEvent::MainConflicts)
 }
@@ -1003,6 +1011,7 @@ pub struct Tasks {
     keeping: RefCell<HashSet<String>>,
     fill_at: Cell<Option<Instant>>,
     waiting: RefCell<Vec<Message>>,
+    thread_events: RefCell<Vec<ThreadEvent>>,
     ready: RefCell<HashMap<String, Ready>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub windowless: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
@@ -1202,6 +1211,7 @@ impl Tasks {
             keeping: RefCell::default(),
             fill_at: Cell::new(Some(Instant::now())),
             waiting: RefCell::new(waiting),
+            thread_events: RefCell::default(),
             ready: RefCell::default(),
             planners: RefCell::default(),
             windowless: RefCell::default(),
@@ -2043,6 +2053,16 @@ impl Tasks {
         }
     }
 
+    pub fn stopped_on_shelf(&self) -> Vec<Value> {
+        let Some(core) = self.core.upgrade() else { return vec![] };
+        self.entries
+            .borrow()
+            .iter()
+            .filter(|e| e.held.as_deref().is_none_or(|pane| !alive(&core, pane)))
+            .filter_map(|e| e.workspace.as_ref().map(|ws| json!({ "workspace": ws, "task": e.id, "name": opt(e.name.as_deref()) })))
+            .collect()
+    }
+
     pub fn refs(&self) -> Vec<kanna_log::TaskRef> {
         let worktree = |e: &Entry| e.folder.clone().unwrap_or_else(|| Path::new(&e.repo).join(WORKTREES).join(&e.id).to_string_lossy().into_owned());
         let open = |e: &Entry, place: Place| kanna_log::TaskRef { id: e.id.clone(), name: e.name.clone(), place: place.as_str().into(), repo: e.repo.clone(), worktree: Some(worktree(e)), branch: None, tip: None };
@@ -2352,6 +2372,7 @@ impl Tasks {
             self.setting_up.borrow_mut().remove(&pane);
             self.set_up(&pane, &setting);
         }
+        let events = self.flush_thread_events(&core, now);
         let mail = self.deliver(&core, now);
         self.look_for_background(now);
         let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !(self.has_mail(pane) && self.ready.borrow().get(*pane).is_some_and(|r| r.at().is_some()))).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now).map(|why| (pane.clone(), why))).collect();
@@ -2378,7 +2399,7 @@ impl Tasks {
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         let news = self.tell_planners(now);
         let workers = self.tick_workers();
-        [turns, quits, finishing, setups, self.fill_at.get(), mail, news, workers, Some(self.sync_at.get())].into_iter().flatten().min()
+        [turns, quits, finishing, setups, self.fill_at.get(), events, mail, news, workers, Some(self.sync_at.get())].into_iter().flatten().min()
     }
 
     fn look_for_background(&self, now: Instant) {
@@ -2947,11 +2968,12 @@ impl Tasks {
                     Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("comment") => this.comment(&args, responder),
+                    Some("thread_event") => responder.reply(this.thread_event(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
                     Some("subscribe") => responder.reply(this.subscribe(&args, true)),
                     Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
                     Some("hearing") => responder.reply(this.hearing(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, thread_event, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -3285,6 +3307,7 @@ impl Tasks {
             (Some(file), Some(thread)) if Path::new(file).is_absolute() => Comment { file: file.into(), thread: thread.into() },
             _ => return responder.reply(Err(bad("a comment needs its doc (an absolute path) and its thread"))),
         };
+        self.thread_events.borrow_mut().retain(|event| event.comment != comment);
         if let Some((recipient, repo)) = self.comment_recipient(&pane) {
             let reply = self.queue(&recipient, &repo, USER, text, None, Some(&comment)).map(|message| {
                 log!("kanna-daemon: {}'s comment {} waits for {}", comment.file, comment.thread, self.label_of(&recipient));
@@ -3298,6 +3321,59 @@ impl Tasks {
                 None => Ok(Map::from_iter([("state".to_string(), json!("sent"))])),
             })
         });
+    }
+
+    fn thread_event(&self, args: &Value) -> Result<Map, KmuxError> {
+        let core = self.core.upgrade().ok_or_else(gone)?;
+        let (Some(pane), Some(text), Some(state)) = (string(args, "pane").map(|pane| core.pane(pane).map_or_else(|| pane.to_string(), |p| p.id)), string(args, "text").filter(|t| !t.trim().is_empty()), string(args, "state")) else {
+            return Err(bad("a thread event needs the agent's pane, its text and the thread's state"));
+        };
+        let comment = match (string(args, "doc"), string(args, "thread")) {
+            (Some(file), Some(thread)) if Path::new(file).is_absolute() => Comment { file: file.into(), thread: thread.into() },
+            _ => return Err(bad("a thread event needs its doc (an absolute path) and its thread")),
+        };
+        let mut events = self.thread_events.borrow_mut();
+        let undone = events.iter().position(|event| event.comment == comment).map(|at| events.remove(at)).is_some_and(|event| event.state != state);
+        if !undone {
+            events.push(ThreadEvent { pane, comment, state: state.into(), text: text.into(), at: Instant::now() });
+        }
+        Ok(Map::new())
+    }
+
+    fn flush_thread_events(&self, core: &CoreHandle, now: Instant) -> Option<Instant> {
+        let mut quiet: HashMap<String, Instant> = HashMap::new();
+        for event in self.thread_events.borrow().iter() {
+            quiet.insert(event.pane.clone(), event.at + messages::THREAD_EVENT_QUIET);
+        }
+        let (due, held): (Vec<ThreadEvent>, Vec<ThreadEvent>) = self.thread_events.take().into_iter().partition(|event| quiet[&event.pane] <= now);
+        *self.thread_events.borrow_mut() = held;
+        let mut panes: Vec<&str> = vec![];
+        for event in &due {
+            if !panes.contains(&event.pane.as_str()) {
+                panes.push(&event.pane);
+            }
+        }
+        for pane in panes {
+            let list: Vec<&ThreadEvent> = due.iter().filter(|event| event.pane == pane).collect();
+            match self.comment_recipient(&pane) {
+                Some((recipient, repo)) => {
+                    for event in list {
+                        if let Err(error) = self.queue(&recipient, &repo, USER, &event.text, None, Some(&event.comment)) {
+                            log!("kanna-daemon: {}'s {} event is lost: {}", event.comment.file, event.comment.thread, error.message);
+                        }
+                    }
+                }
+                None => {
+                    let text = list.iter().map(|event| event.text.as_str()).collect::<Vec<_>>().join("\n\n");
+                    core.handle(json!({ "cmd": "send", "args": { "pane": pane, "text": text } }), |reply| {
+                        if let Some(error) = failed(&reply) {
+                            log!("kanna-daemon: a thread event wasn't typed: {}", error.message);
+                        }
+                    });
+                }
+            }
+        }
+        self.thread_events.borrow().iter().map(|event| quiet[&event.pane]).min()
     }
 
     fn comment_recipient(&self, pane: &str) -> Option<(String, String)> {
@@ -6924,6 +7000,50 @@ mod tests {
         t.tasks.handed("term-7".into(), vec![message], Channel::Codex(Ok(t.socket.clone())), Err("codex's app-server refused thread/queue/add: unknown variant".into()));
         assert_eq!(*t.warned.borrow(), ["codex's app-server refused thread/queue/add: unknown variant"]);
         assert_eq!(t.delivered(), 0);
+    }
+
+    #[test]
+    fn thread_events_wait_for_quiet_cancel_out_and_give_way_to_a_comment() {
+        let state = std::env::temp_dir().join(format!("kanna-thread-events-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        fs::create_dir_all(state.join(".git")).unwrap();
+        fs::write(state.join(".kanna/config.json"), r#"{"shelf": {"runners": 0}}"#).unwrap();
+        let doc = state.join("a.md");
+        let core = kanna_mux::Core::default();
+        let mut pane = Pane::new("term-7", None, kanna_mux::PaneType::Term);
+        pane.state = PaneState::Running;
+        pane.status = Some("working".into());
+        core.install_panes(vec![pane], 0, 7, 0);
+        let (events, _inbox) = crate::runtime::channel();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
+        tasks.install(&core);
+        let socket = state.join("agent.sock");
+        *tasks.channel.borrow_mut() = Some(Box::new(move |_| Some(Channel::Claude(Ok(socket.clone())))));
+        tasks.entries.borrow_mut().push(Entry { id: "task-1dfb12c2".into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some("term-7".into()), ..Default::default() });
+        let event = |thread: &str, state_: &str| {
+            let verb = if state_ == "open" { "reopened" } else { "resolved" };
+            core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "thread_event", "pane": "term-7", "text": format!("[kanna {verb} {thread} · a.md:3]"), "doc": doc, "thread": thread, "state": state_ } }))
+        };
+        let queued = || tasks.waiting.borrow().iter().map(|m| m.text.clone()).collect::<Vec<_>>();
+        let age = || tasks.thread_events.borrow_mut().iter_mut().for_each(|e| e.at -= messages::THREAD_EVENT_QUIET);
+
+        assert_eq!(event("c1", "resolved")["ok"], json!(true));
+        event("c2", "resolved");
+        event("c3", "resolved");
+        event("c3", "open");
+        tasks.tick();
+        assert!(queued().is_empty(), "held for more of them");
+        age();
+        tasks.tick();
+        assert_eq!(queued(), ["[kanna resolved c1 · a.md:3]", "[kanna resolved c2 · a.md:3]"], "together, and c3's undone resolve says nothing");
+        assert!(tasks.thread_events.borrow().is_empty());
+
+        event("c4", "resolved");
+        let reply = core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": "term-7", "text": "[kanna comment c4 · a.md:3]\nNo, wait.", "doc": doc, "thread": "c4" } }));
+        assert_eq!(reply["state"], json!("waiting"), "{reply}");
+        assert!(tasks.thread_events.borrow().is_empty(), "the reply reopened it, so the agent never hears it was resolved");
+        fs::remove_dir_all(&state).unwrap();
     }
 
     #[test]

@@ -731,7 +731,7 @@ fn run() -> Result<(), String> {
     let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
     crashes.install(&core);
     let posting = Rc::downgrade(&tasks);
-    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), "kanna", text).map_err(|error| error.message)));
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), messages::KANNA, text).map_err(|error| error.message)));
     let banner_link = Rc::downgrade(&app);
     *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
     crashes.scan();
@@ -780,11 +780,15 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shelved = Rc::downgrade(&tasks);
     let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
-        Rc::new(move |args, responder| {
+        Rc::new(move |mut args, responder| {
             if let Some(link) = screenshot.upgrade() {
+                if args.get("pane").is_some() {
+                    args["stopped"] = Value::Array(shelved.upgrade().map(|tasks| tasks.stopped_on_shelf()).unwrap_or_default());
+                }
                 screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
