@@ -271,6 +271,26 @@ async fn an_app_certified_by_a_paired_machine_holds_a_link_until_its_machine_is_
 
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_phone_skips_a_relay_saved_as_an_address_and_dials_again_after_forgetting_a_link() {
+    let (mbp, _) = machine("mbp", json!({})).await;
+    let (vm, _) = machine("linux-vm", json!({})).await;
+    pair(&mbp, &vm).await.unwrap();
+    let client = Client::start_phone(SecretKey::generate()).await.unwrap();
+    let cert = mbp.certify(&client.key()).unwrap();
+    let addrs = ["relay:https://relay.example.com:8444/".to_string(), format!("127.0.0.1:{}", vm.port())];
+
+    let began = std::time::Instant::now();
+    let _first = client.link(&vm.key(), &addrs, None, &cert).await.unwrap();
+    assert!(began.elapsed() < std::time::Duration::from_secs(2), "a relay's URL was looked up as a host: {:?}", began.elapsed());
+    assert!(!client.path(&vm.key()).is_null());
+
+    client.forget(&vm.key());
+    assert!(client.path(&vm.key()).is_null());
+    let _second = client.link(&vm.key(), &addrs, None, &cert).await.unwrap();
+    assert!(!client.path(&vm.key()).is_null());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_its_machine_is_revoked() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (mbp, _) = machine("mbp", json!({})).await;
@@ -466,4 +486,62 @@ async fn an_app_given_only_a_key_reaches_a_machine_through_its_relay() {
     let (again, _) = machine("mbp", saved).await;
     assert_eq!((again.status()["relay"].clone(), again.relay_token()), (json!(moved), Some("s3cret".to_string())), "the relay and its token are kept across a restart");
     assert_eq!(again.set_relay(None, None).await.unwrap()["relay"], Value::Null);
+}
+
+async fn phone_of(machine: &Node) -> (Client, SecretKey, Value) {
+    let secret = SecretKey::generate();
+    let client = Client::start(secret.clone()).await.unwrap();
+    let mut offer = machine.offer_phone().unwrap();
+    offer["addrs"] = json!([format!("127.0.0.1:{}", machine.port())]);
+    let joined = kanna_net::phone::join(&client, &secret, &offer).await.unwrap();
+    (client, secret, joined)
+}
+
+fn here(machine: &Node) -> Vec<String> {
+    vec![format!("127.0.0.1:{}", machine.port())]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_pairs_opens_its_stream_and_nothing_else_until_revoked() {
+    let (a, host) = machine("studio", Value::Null).await;
+    let (phone, _, joined) = phone_of(&a).await;
+    assert_eq!(joined["name"], kanna_net::phone::name_of(&phone.key()));
+    assert_eq!(host.asked.lock().unwrap().last().unwrap()["phone"], true);
+    let status = a.status();
+    assert_eq!(status["phones"][0]["key"], phone.key());
+    assert!(status["peers"].as_array().unwrap().iter().all(|p| p["key"] != phone.key()));
+    let header = json!({ "kind": "phone", "phone": kanna_net::phone::VERSION });
+    let (_send, mut recv, ack) = phone.lines(&a.key(), &here(&a), None, header.clone()).await.unwrap();
+    assert_eq!(ack["name"], "studio");
+    assert_eq!(phone.lines(&a.key(), &here(&a), None, json!({ "kind": "control", "protocol": 4 })).await.err().unwrap().code, "unpaired");
+    let stale = phone.lines(&a.key(), &here(&a), None, json!({ "kind": "phone", "phone": 99 })).await.err().unwrap();
+    assert_eq!(stale.code, "other_phone_version");
+    a.revoke(&kanna_net::phone::name_of(&phone.key())).await.unwrap();
+    assert!(recv.read().await.is_err());
+    assert_eq!(phone.lines(&a.key(), &here(&a), None, header).await.err().unwrap().code, "revoked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_opens_no_phone_stream() {
+    let (a, _) = machine("studio", Value::Null).await;
+    let (_phone, _, _) = phone_of(&a).await;
+    let secret = SecretKey::generate();
+    let stranger = Client::start(secret).await.unwrap();
+    let failure = stranger.lines(&a.key(), &here(&a), None, json!({ "kind": "phone", "phone": 1 })).await.err().unwrap();
+    assert_eq!(failure.code, "not_a_phone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_needs_the_code_and_the_yes() {
+    let (a, host) = machine("studio", Value::Null).await;
+    let secret = SecretKey::generate();
+    let client = Client::start(secret.clone()).await.unwrap();
+    let mut offer = a.offer_phone().unwrap();
+    offer["addrs"] = json!(here(&a));
+    let mut wrong = offer.clone();
+    wrong["code"] = json!("00");
+    assert_eq!(kanna_net::phone::join(&client, &secret, &wrong).await.err().unwrap().code, "pake_confirmation_failed");
+    *host.yes.lock().unwrap() = false;
+    assert_eq!(kanna_net::phone::join(&client, &secret, &offer).await.err().unwrap().code, "gesture_required");
+    assert!(a.status()["phones"].as_array().unwrap().is_empty());
 }

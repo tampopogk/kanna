@@ -43,7 +43,7 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(Command::new("git").args(["-c", "user.email=e@e", "-c", "user.name=e"]).args(args).current_dir(dir).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success(), "git {args:?}");
 }
 
-/// A clone of the team's notes repo where this machine's Kanna keeps its projects, with this many runners.
+/// A clone of the team's notes repo where this machine's Kanna keeps its projects, and this machine's runners.
 fn clone(daemon: &Daemon, runners: usize) -> PathBuf {
     let repo = daemon.dir.join("home/.kanna-v4/repos/team/notes");
     std::fs::create_dir_all(repo.join(".kanna")).unwrap();
@@ -56,7 +56,8 @@ fn clone(daemon: &Daemon, runners: usize) -> PathBuf {
 }
 
 fn set_runners(repo: &Path, runners: usize) {
-    std::fs::write(repo.join(".kanna/config.json"), json!({ "version": 1, "shelf": { "runners": runners } }).to_string()).unwrap();
+    let mine = repo.ancestors().nth(3).unwrap().join("config.json");
+    std::fs::write(mine, json!({ "version": 1, "shelf": { "runners": runners } }).to_string()).unwrap();
 }
 
 fn agent(daemon: &Daemon) -> String {
@@ -107,6 +108,29 @@ fn log_says(daemon: &Daemon, text: &str) -> bool {
 }
 
 #[test]
+fn a_machine_full_with_one_repo_asks_for_no_task_in_another() {
+    let (mbp, vm) = (machine("mbp"), machine("vm"));
+    pair(&mbp, &vm);
+    let (here, there) = (clone(&mbp, 0), clone(&vm, 0));
+    let codex = agent(&mbp);
+    let other = vm.dir.join("home/.kanna-v4/repos/team/other");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(&other, &["remote", "add", "origin", "https://example.com/team/other.git"]);
+    let other = other.canonicalize().unwrap();
+
+    let local = new_task(&vm, &other, &["Local", "work 15", "--agent", &agent(&vm)]);
+    set_runners(&there, 1);
+    within(15, "vm to run its own repo's task", || started(&vm).contains(&local));
+    let far = new_task(&mbp, &here, &["Far", "work 1", "--agent", &codex]);
+    within(10, "vm to know the task", || record(&vm, &far)["state"] == "waiting");
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(holds(&mbp, &far) && !started(&vm).contains(&far), "the one runner is taken, by a task in another repo");
+    within(60, "vm to ask for the task once its runner is free", || started(&vm).contains(&far));
+}
+
+#[test]
 fn two_machines_share_one_repo_s_shelf_and_each_task_runs_once_oldest_first() {
     let (mbp, vm) = (machine("mbp"), machine("vm"));
     pair(&mbp, &vm);
@@ -137,6 +161,8 @@ fn two_machines_share_one_repo_s_shelf_and_each_task_runs_once_oldest_first() {
     assert!(listed.lines().any(|l| l.starts_with(&first[..9]) && l.contains("on vm")), "mbp lists the task vm runs: {listed}");
     within(10, "mbp to see that vm owns and started the first task", || record(&mbp, &first)["state"] == "started");
     assert_eq!(record(&mbp, &first)["owner"].as_str(), Some(key(&vm).as_str()));
+    let with_done = ask(&mbp, "tasks", json!({ "action": "list", "done": true }));
+    assert!(!with_done["done"].as_array().unwrap().iter().any(|t| t["id"] == first.as_str()), "a task granted away isn't done: {with_done}");
 
     within(30, "the first task's turn to end", || ask(&vm, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().any(|t| t["id"] == first.as_str() && t["running"] == false));
     vm.kanna(&["task", "done", &first, "--keep"]).ok();
@@ -282,4 +308,103 @@ fn a_task_both_machines_ran_while_apart_is_listed_as_ran_twice_on_both() {
         });
     }
     assert!(holds(&mbp, &task) && holds(&vm, &task), "each keeps its copy until the user ends one");
+}
+
+fn phone(daemon: &Daemon, request: &str, mut args: Value) -> Value {
+    args["request"] = json!(request);
+    ask(daemon, "phone", args)
+}
+
+fn listed(tasks: &Value, id: &str) -> Value {
+    tasks["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).cloned().unwrap_or(Value::Null)
+}
+
+#[test]
+fn a_phone_reads_and_steers_tasks_on_other_machines_through_its_planner_machine() {
+    let (studio, mut vm) = (quick("studio"), quick("vm"));
+    pair(&studio, &vm);
+    let (here, there) = (clone(&studio, 0), clone(&vm, 0));
+    let (codex, far) = (agent(&studio), agent(&vm));
+    ask(&studio, "projects", json!({ "action": "touch", "folder": here }));
+    ask(&vm, "projects", json!({ "action": "touch", "folder": there }));
+    let repo = phone(&studio, "hello", json!({}))["projects"][0]["repo"].as_str().unwrap().to_string();
+
+    let tasks: Vec<String> = ["One", "Two", "Three"].iter().map(|name| new_task(&vm, &there, &[name, "the brief", "--agent", &far])).collect();
+    let mine = new_task(&studio, &here, &["Mine", "mine", "--agent", &codex]);
+    let spare = new_task(&vm, &there, &["Spare", "spare", "--agent", &far]);
+    within(15, "studio to know vm's tasks", || record(&studio, &spare)["state"] == "waiting");
+
+    let shelf = phone(&studio, "tasks.list", json!({ "repo": repo }));
+    assert_eq!(listed(&shelf, &tasks[0])["machine"], "vm", "{shelf}");
+    assert!(listed(&shelf, &tasks[0])["unreachable"].is_null(), "live from the machine that has it: {shelf}");
+    assert_eq!(listed(&shelf, &tasks[0])["status"], "waiting");
+    let desks: Vec<&str> = shelf["desks"].as_array().unwrap().iter().filter_map(|d| d["machine"].as_str()).collect();
+    assert_eq!(desks, ["studio", "vm"], "both are Macs, neither open: {shelf}");
+    assert_eq!(phone(&studio, "task.read", json!({ "task": spare }))["task"]["message"], "spare");
+
+    assert_eq!(phone(&studio, "task.send", json!({ "task": spare, "id": "n1", "text": "and this" }))["state"], "waiting");
+    within(15, "the note to reach studio's replica", || record(&studio, &spare)["notes"][0]["text"] == "and this");
+    assert_eq!(phone(&studio, "task.read", json!({ "task": spare }))["thread"][0]["text"], "and this");
+
+    for task in &tasks {
+        let picked = phone(&studio, "task.pick", json!({ "task": task, "desk": "studio" }));
+        assert_eq!(picked["ok"], true, "{picked}");
+    }
+    within(15, "the claims to reach studio", || tasks.iter().all(|task| record(&studio, task)["claim"] == "studio"));
+    assert_eq!(listed(&phone(&studio, "tasks.list", json!({ "repo": repo })), &tasks[0])["desk"], "studio");
+
+    let full = phone(&studio, "task.pick", json!({ "task": mine, "desk": "studio" }));
+    assert_eq!(full["error"]["code"], "task_limit", "three on other machines fill a Desk here: {full}");
+    let made_room = phone(&studio, "task.pick", json!({ "task": mine, "desk": "studio", "room": tasks[2] }));
+    assert_eq!(made_room["ok"], true, "{made_room}");
+    within(15, "the shelve to reach studio", || record(&studio, &tasks[2])["claim"].is_null());
+
+    let moved = spare.clone();
+    set_runners(&there, 0);
+    vm.stop();
+    let last = phone(&studio, "tasks.list", json!({ "repo": repo }));
+    assert_eq!(listed(&last, &moved)["unreachable"], true, "as last known: {last}");
+    assert_eq!(listed(&last, &moved)["name"], "Spare");
+    assert_eq!(phone(&studio, "task.read", json!({ "task": moved }))["task"]["message"], "spare", "the record, with vm away");
+
+    set_runners(&here, 1);
+    within(60, "studio to take vm's task over and run it", || started(&studio).contains(&moved));
+    let pane = ask(&studio, "tasks", json!({ "action": "list" }))["shelf"].as_array().unwrap().iter().find(|t| t["id"] == moved).and_then(|t| t["held"].as_str().map(String::from)).unwrap();
+    within(15, "a note granted away to go with the first message", || studio.kanna(&["read", &pane]).ok().replace(['\n', '\r'], "").contains("[message from phone] and this"));
+}
+
+fn list_in(daemon: &Daemon, repo: &Path, args: &[&str]) -> String {
+    let mut all = vec!["task", "list"];
+    all.extend(args);
+    let output = cli(&daemon.dir).current_dir(repo).env("KANNA_SOCKET", daemon.socket()).args(&all).output().unwrap();
+    Run::from(&all, output).ok()
+}
+
+#[test]
+fn a_task_on_this_app_s_desk_lists_under_its_desk_wherever_it_runs_and_the_machine_running_it_says_whose_desk() {
+    let (mbp, studio) = (machine("mbp"), machine("studio"));
+    pair(&mbp, &studio);
+    let (here, there) = (clone(&mbp, 0), clone(&studio, 0));
+    let codex = agent(&studio);
+    let task = new_task(&studio, &there, &["Studio work", "work 1", "--agent", &codex]);
+    let picked = ask(&studio, "tasks", json!({ "action": "pick", "task": task, "desk": "mbp" }));
+    assert_eq!(picked["ok"], true, "{picked}");
+    within(15, "mbp to see the Studio started the task for mbp's Desk", || record(&mbp, &task)["claim"] == "mbp" && record(&mbp, &task)["state"] == "started");
+
+    let listed = list_in(&mbp, &here, &[]);
+    let desk = listed.split("\n\n").next().unwrap();
+    assert!(desk.starts_with("Desk\n") && desk.lines().any(|l| l.starts_with(&task[..9]) && l.contains("Studio work") && l.ends_with("on studio")), "mbp's Desk has the task the Studio runs: {listed}");
+    assert!(!listed.contains("Other machines"), "and not under Other machines too: {listed}");
+    let json: Value = serde_json::from_str(&list_in(&mbp, &here, &["--json"])).unwrap();
+    let on_desk = json["tasks"].as_array().unwrap().iter().find(|t| t["task"] == task.as_str()).cloned().unwrap_or(Value::Null);
+    assert_eq!(on_desk["machine"], "studio", "{json}");
+    assert!(json["elsewhere"].as_array().unwrap().iter().all(|t| t["id"] != task.as_str()), "{json}");
+
+    let there_listed = list_in(&studio, &there, &[]);
+    assert!(there_listed.starts_with("Desk\n(empty)\n"), "the Studio's own Desk doesn't have mbp's task: {there_listed}");
+    assert!(there_listed.contains("\n\nOther Desks\n") && there_listed.lines().any(|l| l.starts_with(&task[..9]) && l.ends_with("on mbp's Desk")), "it says whose Desk: {there_listed}");
+    let json: Value = serde_json::from_str(&list_in(&studio, &there, &["--json"])).unwrap();
+    assert!(json["tasks"].as_array().unwrap().is_empty(), "{json}");
+    assert_eq!(json["otherDesks"][0]["task"], task.as_str(), "{json}");
+    assert_eq!(json["otherDesks"][0]["desk"], "mbp", "{json}");
 }

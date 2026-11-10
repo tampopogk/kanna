@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="45 45 422 422">
+  <defs>
+    <linearGradient id="p0" gradientUnits="userSpaceOnUse" x1="112" y1="0" x2="158" y2="0"><stop offset="0" stop-color="#FA3183"/><stop offset="1" stop-color="#FF930B"/></linearGradient>
+    <linearGradient id="p1" gradientUnits="userSpaceOnUse" x1="180" y1="0" x2="354" y2="0"><stop offset="0" stop-color="#FA3183"/><stop offset="1" stop-color="#FF920D"/></linearGradient>
+    <linearGradient id="p3" gradientUnits="userSpaceOnUse" x1="112" y1="0" x2="158" y2="0"><stop offset="0" stop-color="#D61FB8"/><stop offset="1" stop-color="#FB3182"/></linearGradient>
+    <linearGradient id="p4" gradientUnits="userSpaceOnUse" x1="180" y1="0" x2="293" y2="0"><stop offset="0" stop-color="#D61FB8"/><stop offset="1" stop-color="#FA3183"/></linearGradient>
+    <linearGradient id="p7" gradientUnits="userSpaceOnUse" x1="112" y1="0" x2="158" y2="0"><stop offset="0" stop-color="#144EB6"/><stop offset="1" stop-color="#5531B4"/></linearGradient>
+    <linearGradient id="p8" gradientUnits="userSpaceOnUse" x1="180" y1="0" x2="227" y2="0"><stop offset="0" stop-color="#3246B3"/><stop offset="1" stop-color="#6C3EB0"/></linearGradient>
+    <linearGradient id="p9" gradientUnits="userSpaceOnUse" x1="246" y1="0" x2="293" y2="0"><stop offset="0" stop-color="#5644AA"/><stop offset="1" stop-color="#8148A0"/></linearGradient>
+    <linearGradient id="p11" gradientUnits="userSpaceOnUse" x1="180" y1="0" x2="227" y2="0"><stop offset="0" stop-color="#2B54B3"/><stop offset="1" stop-color="#3E58A9"/></linearGradient>
+    <linearGradient id="p12" gradientUnits="userSpaceOnUse" x1="246" y1="0" x2="293" y2="0"><stop offset="0" stop-color="#4D5BA1"/><stop offset="1" stop-color="#5F619A"/></linearGradient>
+    <linearGradient id="p13" gradientUnits="userSpaceOnUse" x1="313" y1="0" x2="360" y2="0"><stop offset="0" stop-color="#696994"/><stop offset="1" stop-color="#7A6F8E"/></linearGradient>
+    <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="0" y1="45" x2="0" y2="467"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.62" stop-color="#FFFFFF"/><stop offset="1" stop-color="#F3F3F4"/></linearGradient>
+  </defs>
+  <rect x="45" y="45" width="422" height="422" fill="url(#bg)"/>
+  <rect x="112" y="82" width="46" height="33.5" rx="16.75" fill="url(#p0)"/>
+  <rect x="180" y="82" width="174" height="33.5" rx="16.75" fill="url(#p1)"/>
+  <rect x="377" y="82" width="24" height="33.5" rx="12.0" fill="#14DE53"/>
+  <rect x="112" y="161" width="46" height="33.5" rx="16.75" fill="url(#p3)"/>
+  <rect x="180" y="161" width="113" height="33.5" rx="16.75" fill="url(#p4)"/>
+  <rect x="112" y="240" width="46" height="33.5" rx="16.75" fill="#A32ADB"/>
+  <rect x="180" y="240" width="47" height="33.5" rx="16.75" fill="#A32ADB"/>
+  <rect x="112" y="318.5" width="46" height="33.5" rx="16.75" fill="url(#p7)"/>
+  <rect x="180" y="318.5" width="47" height="33.5" rx="16.75" fill="url(#p8)"/>
+  <rect x="246" y="318.5" width="47" height="33.5" rx="16.75" fill="url(#p9)"/>
+  <rect x="112" y="397" width="46" height="33.5" rx="16.75" fill="#144EB6"/>
+  <rect x="180" y="397" width="47" height="33.5" rx="16.75" fill="url(#p11)"/>
+  <rect x="246" y="397" width="47" height="33.5" rx="16.75" fill="url(#p12)"/>
+  <rect x="313" y="397" width="47" height="33.5" rx="16.75" fill="url(#p13)"/>
+</svg>

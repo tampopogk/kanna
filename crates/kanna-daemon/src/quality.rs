@@ -351,9 +351,9 @@ pub fn code_section(facts: &Facts) -> Value {
     let verbosity = of(facts, "verbosity");
     let churn = of(facts, "churn");
     let note = "how good the code on main is, and its trend";
-    if erosion.is_empty() && of(facts, "coverage").is_empty() && facts.sampling.is_none() {
+    if erosion.is_empty() && of(facts, "coverage").is_empty() {
         let mut empty = section("code", "Code quality", note, vec![]);
-        empty["empty"] = json!("No Rust or Swift code on main in the last 30 days.");
+        empty["empty"] = json!(if facts.pending { "Measuring the code on main." } else { "No Rust or Swift code on main in the last 30 days." });
         return empty;
     }
     let from = settled(&of(facts, "lines"), first);
@@ -371,11 +371,7 @@ pub fn code_section(facts: &Facts) -> Value {
     tiles.push(list("flagged", "Most flagged patterns", flagged(verbosity.last().copied()), "lines in code a rule would rewrite", "No rule matched."));
     tiles.push(list("hotspots", "Hotspots", hotspots(erosion.last().copied(), &churn), "landings that changed it × its cognitive complexity", "Nothing changed in 30 days."));
     tiles.push(list("uncovered", "Least covered changed files", least_covered(facts), "changed lines tests didn't run", "No coverage run yet."));
-    let mut code = section("code", "Code quality", note, tiles);
-    if let Some(sampling) = &facts.sampling {
-        code["note"] = json!(format!("{note} · {sampling}"));
-    }
-    code
+    section("code", "Code quality", note, tiles)
 }
 
 #[cfg(test)]
@@ -444,7 +440,7 @@ mod tests {
     }
 
     fn tile_of(report: &kanna_mux::json::Map, id: &str) -> Value {
-        report["sections"][3]["tiles"].as_array().unwrap().iter().find(|t| t["id"] == id).cloned().unwrap_or_else(|| panic!("no tile {id}"))
+        report["sections"][4]["tiles"].as_array().unwrap().iter().find(|t| t["id"] == id).cloned().unwrap_or_else(|| panic!("no tile {id}"))
     }
 
     #[test]
@@ -497,7 +493,7 @@ mod tests {
         let fix = samples.iter().filter(|s| s.metric == "fixes" && s.value == 1.0).collect::<Vec<_>>();
         assert_eq!(fix.len(), 1, "the fix-busy landing, sampled for the factory's stats though Code quality doesn't show it");
         assert_eq!(fix[0].doc["blamed"], json!(landing));
-        let ids: Vec<&str> = report["sections"][3]["tiles"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
+        let ids: Vec<&str> = report["sections"][4]["tiles"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
         assert!(!ids.iter().any(|id| ["fixed", "fixes", "tofix", "causes", "fix-areas"].contains(id)), "fixes are the factory's, not the code's: {ids:?}");
         assert_eq!(tile_of(&report, "hotspots")["chart"]["rows"][0]["detail"], json!("src/lib.rs"));
         assert_eq!(tile_of(&report, "lines-covered")["note"], json!("not set up: stats.coverage in ~/.kanna-v4/config.json"));

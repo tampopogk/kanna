@@ -34,19 +34,20 @@ sequenceDiagram
 - **Resume keeps the session's own:** `codex resume ID --remote unix://SOCKET` brings the session back on a new server, with the permissions it was started with; the TUI gets no permission flags or `-c`, since Codex refuses them when resuming against a server ("Permission overrides are not supported when resuming a remote task").
 - **The socket** is `codex-PID.sock` in Kanna's state folder's `codex/`, or in `/tmp/kanna-UID` when that path is too long for a Unix socket; a leftover from a helper that's gone is removed at the next start.
 - **Only you can reach it:** the server takes any connection without auth, and a turn on it runs with the agent's permissions, so the folder must be yours alone: the helper makes it 0700 (tightening one of yours that others could open) and checks it's a real folder, owned by you, that no one else can open (a `/tmp` name someone else made first, or a symlink, fails), else Codex runs on its own.
-- **Quitting:** its quit keys work as before ([Shelf runners](shelf-runners.md#2-how-its-built)); attached, Codex says its session as `codex --remote unix://SOCKET resume ID`, which Kanna reads like `codex resume ID`.
+- **Quitting:** `/exit` and its quit keys work as before ([Shelf runners](shelf-runners.md#2-how-its-built)); attached, Codex says its session as `codex --remote unix://SOCKET resume ID`, which Kanna reads like `codex resume ID`.
 - **If the server won't start,** the helper says so in the terminal and runs Codex on its own (`--no-daemon`): it works, but takes no messages.
 
 ## 2. Delivering a message
 
 | Step | JSON-RPC over a WebSocket on the socket |
 |---|---|
-| Hello | `initialize`, then `initialized` |
+| Hello | `initialize` with `experimentalApi`, then `initialized` |
 | Find the session | `thread/loaded/list`, then `thread/read` each: the one that isn't `ephemeral` (Codex also loads a thread to title the session) |
-| Deliver | `turn/start` with the message as text input |
+| Deliver | `thread/queue/add` with the message as text input; `turn/start` at its prompt if Codex refuses the queue |
+| Follow | `thread/queue/list`, every 2s while a message is queued; `thread/queue/start` when it's stuck after Esc |
 
 - **Kanna finds the socket** from the arguments of the pane's Codex: the `--remote unix://SOCKET` its TUI was started with.
-- **Only at its prompt:** Kanna starts the turn once the agent is idle, as for any message.
+- **Queued at any time:** on a busy Codex, `turn/start` [drops the answer it's streaming](agent-messaging.md#2-delivery), and the queue doesn't.
 
 ## 3. Costs
 
@@ -64,4 +65,4 @@ sequenceDiagram
 |---|---|
 | **App-server** | Codex's JSON-RPC server: it runs sessions, and TUIs and other clients attach to it |
 | **Helper** | `kanna-daemon --codex-remote`: starts the server, runs the TUI attached to it, stops the server after. On SIGHUP (its terminal closed), SIGTERM or SIGINT it sends both SIGTERM, SIGKILLs whichever is left after 5 s, and exits, so no server outlives its terminal. A signal thread waits for those signals (retrying `sigwait` if it fails) and ends the helper with `_exit`, so it never runs `exit` alongside the main thread |
-| **Session thread** | The thread a Codex session runs in; `turn/start` on it is a new prompt |
+| **Session thread** | The thread a Codex session runs in; a queued message runs on it as a new prompt |

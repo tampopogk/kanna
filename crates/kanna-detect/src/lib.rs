@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod last_words;
 pub mod program;
 pub mod quit;
 pub mod turn;

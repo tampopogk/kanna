@@ -35,7 +35,7 @@ public final class DiffPaneView: NSView {
     private var overviewStale = true
     private var overviewQueued = false
     private var settingObserver: NSObjectProtocol?
-    private var columns: [DiffColumn] = []
+    var columns: [DiffColumn] = []
     private var fontSize = CodeTheme.fontSize
     private var shown: Set<String> = []
     private var waiting: Set<String> = []
@@ -125,7 +125,9 @@ public final class DiffPaneView: NSView {
         columns.map { column in
             let clip = column.scrollView.contentView
             return ["x": clip.bounds.minX, "y": clip.bounds.minY, "inset_left": clip.contentInsets.left, "inset_top": clip.contentInsets.top,
-                    "gutter": column.gutter.ruleThickness, "clip_x": clip.frame.minX, "frame_x": column.scrollView.frame.minX, "text_x": column.textView.frame.minX]
+                    "gutter": column.gutter.ruleThickness, "clip_x": clip.frame.minX, "frame_x": column.scrollView.frame.minX, "text_x": column.textView.frame.minX,
+                    "text_height": column.textView.frame.height,
+                    "find_bar": column.textView.finder.isVisible ? 1 : 0, "find_matches": Double(column.textView.matches.count)]
         }
     }
 
@@ -561,6 +563,25 @@ public final class DiffPaneView: NSView {
         return column.textView.visibleRows(in: column.textView.visibleRect)?.lowerBound
     }
 
+    var topSpot: (row: Int, fraction: CGFloat)? {
+        guard let column = columns.first else { return nil }
+        let clip = column.scrollView.contentView
+        guard clip.bounds.minY > -clip.contentInsets.top + 0.5 else { return nil }
+        let y = clip.bounds.minY + clip.contentInsets.top
+        guard let row = column.textView.visibleRows(in: NSRect(x: 0, y: y, width: max(1, column.textView.bounds.width), height: 1))?.lowerBound,
+              let rect = column.textView.rect(ofRow: row), rect.height > 0 else { return nil }
+        return (row, (y - rect.minY) / rect.height)
+    }
+
+    func restore(_ spot: (row: Int, fraction: CGFloat)?) {
+        guard let column = columns.first else { return }
+        let clip = column.scrollView.contentView
+        var y = -clip.contentInsets.top
+        if let spot, let rect = column.textView.rect(ofRow: spot.row) { y = max(y, rect.minY + spot.fraction * rect.height - clip.contentInsets.top) }
+        clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+        column.scrollView.reflectScrolledClipView(clip)
+    }
+
     func scroll(toRow index: Int, top: Bool) {
         guard let rect = columns[0].textView.rect(ofRow: index) else { return }
         let clip = columns[0].scrollView.contentView
@@ -626,9 +647,11 @@ public final class DiffPaneView: NSView {
     public func zoom(by step: Int) {
         let target = step == 0 ? CodeTheme.fontSize : Self.clamp(fontSize + CGFloat(step))
         guard target != fontSize else { return }
+        let top = topSpot
         fontSize = target
         rebuild()
         applyHighlights()
+        restore(top)
         onZoom?()
     }
 

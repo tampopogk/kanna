@@ -29,11 +29,43 @@
       ]
     },
     {
+      "match": "OWN_STOP",
+      "tool": "\"$KANNA_CLI\" task stop",
+      "args": {"sandbox_permissions": "use_default"},
+      "after_tool": [
+        "OWN_STOP_DONE: the task stops when this turn ends."
+      ]
+    },
+    {
+      "match": "OWN_DONE",
+      "tool": "\"$KANNA_CLI\" task done",
+      "args": {"sandbox_permissions": "use_default"},
+      "after_tool": [
+        "OWN_DONE_DONE: the task is done when this turn ends."
+      ]
+    },
+    {
+      "match": "LONG_SLEEP",
+      "tool": "sleep 12",
+      "args": {"sandbox_permissions": "use_default", "yield_time_ms": 30000},
+      "after_tool": [
+        "LONG_TOOL_DONE"
+      ]
+    },
+    {
       "match": "BACKGROUND_TURN",
       "tool": "sleep 600",
       "args": {"tty": true, "yield_time_ms": 1000, "sandbox_permissions": "use_default"},
       "after_tool": [
         "BACKGROUND_DONE: the command runs on in a background terminal."
+      ]
+    },
+    {
+      "match": "SHELL_IN_BACKGROUND",
+      "tool": "sleep 8 && touch background-done.txt",
+      "claude_args": {"run_in_background": true},
+      "after_tool": [
+        "SHELL_IN_BACKGROUND_DONE: the command runs on in the background."
       ]
     }
   ]

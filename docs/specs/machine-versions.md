@@ -13,7 +13,7 @@ Kanna releases a Linux tarball beside the DMGs, and you install it on your own L
 
 ## 1. The Linux tarball
 
-`scripts/build-linux.sh [production|staging|dev] [--arch x86_64|aarch64] [--out DIR]` builds it on the Mac (or on Linux): the daemon, keeper and CLI cross-compiled with Zig as C compiler and linker, for glibc 2.35 (Ubuntu 22.04 and later) at the `baseline` CPU (the R720s' Ivy Bridge), with debug info stripped. `KANNA_VERSION` sets the version. `scripts/release.sh` builds the x86_64 one after the DMGs, checks it was built from the release's commit, and publishes it with them; an aarch64 one is built by hand with `--arch aarch64`.
+`scripts/build-linux.sh [production|staging|dev] [--arch x86_64|aarch64] [--out DIR]` builds it on the Mac (or on Linux): the daemon, keeper and CLI cross-compiled with Zig as C compiler and linker, for glibc 2.35 (Ubuntu 22.04 and later) at the `baseline` CPU (the R720s' Ivy Bridge), with debug info stripped. Its version is [the last tag's](release.md#versions), `X.Y.Z-dev`, unless `KANNA_VERSION` sets it. `scripts/release.sh` builds the x86_64 one after the DMGs, checks it was built from the release's commit, and publishes it with them; an aarch64 one is built by hand with `--arch aarch64`.
 
 ```
 Kanna-4.1.0-linux-x86_64.tar.gz        (Kanna-Staging-… on staging)
@@ -24,11 +24,11 @@ Kanna-4.1.0-linux-x86_64.tar.gz        (Kanna-Staging-… on staging)
     └── release.json                     {commit, version, channel, os, arch, protocol}
 ```
 
-`release.json` says what the tarball holds; `commit` is `<sha>` or `<sha>-dirty`. `scripts/server-setup.sh --tarball FILE` checks it's for this OS and architecture and installs it ([setup §3](machine-setup.md#3-running-the-setup)); its own builds from a checkout write the same `release.json`.
+`release.json` says what the tarball holds; `commit` is `<sha>` or `<sha>-dirty`. `scripts/server-setup.sh --tarball FILE` checks it's for this OS and architecture and installs it ([setup §3](machine-setup.md#3-running-the-setup)); its own builds from a checkout write the same `release.json`, with the version `kanna-build` prints.
 
 ## 2. Protocols
 
-`kanna_build::PROTOCOL` is the one protocol this build speaks, now 4; Kanna.app's `Protocols.mine` must be the same (a test in `kanna-build` checks). Any change an older build can't follow raises it, and two ends work together only when theirs are equal. Nothing translates between protocols: you update the older side ([setup §4](machine-setup.md#4-joining-and-updating)).
+`kanna_build::PROTOCOL` is the one protocol this build speaks, now 5; Kanna.app's `Protocols.mine` must be the same (a test in `kanna-build` checks). Any change an older build can't follow raises it, and two ends work together only when theirs are equal. Nothing translates between protocols: you update the older side ([setup §4](machine-setup.md#4-joining-and-updating)).
 
 - **Between daemons:** every stream header carries `protocol`, and the ack carries the receiver's `protocol` and `release`. If the header's protocol isn't the receiver's, the stream is refused with `other_protocol` and the receiver's `release`. The opener checks the ack's protocol is its own. Either way, the caller reports which side is older, for example `vm runs Kanna 4.2.0 (aaaaaaaa), protocol 5, and this machine speaks 4; this machine is older: update it`, or `…; it's older: update Kanna on vm`. A build from before protocol 4 sends `protocols`, a range, and no `protocol`, so it counts as older (`an older protocol`). `pair` streams aren't checked, so you can pair a machine before updating it. A daemon from slice 6 that still sends an `update` stream is answered `unknown_stream`.
 - **The app:** `app.hello` carries `protocol` and the daemon answers as [links §2](machine-links.md#2-the-hello) says: if it's not the daemon's, `other_protocol` with the daemon's `protocol`, `commit` and `version`, and the daemon **keeps running**. The Machines tab shows that machine as **Incompatible** (in red, as Offline is), with a note that says which side is older and a tooltip that leads with the fix (`KannaMachines`'s `Protocols.otherProtocol`):
