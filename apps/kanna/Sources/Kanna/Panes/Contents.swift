@@ -321,7 +321,7 @@ final class Contents {
                 for (key, value) in args { call[key] = .string(value) }
                 self?.onCall?("run", call) { answer in
                     if answer["ok"]?.bool != true { view?.flash(answer["error"]?["message"]?.string ?? "couldn't \(action) the run") }
-                    else if action == "edit", let file = answer["file"]?.string { view?.say("edit \((file as NSString).abbreviatingWithTildeInPath), then run: kanna run edit \(runID) FILE") }
+                    else if action == "edit", let file = answer["file"]?.string { view?.say("\((file as NSString).lastPathComponent) is read-only here: edit the file, then kanna run edit FILE applies it") }
                 }
             }
             runContents[id] = runID

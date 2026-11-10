@@ -82,12 +82,13 @@ The code pane is read-only and can't save a file ([code viewer §2](code-viewer.
 ## 5. How it's built
 
 - **`kanna-pipe`:** `emitted` returns a `Refused` (the errors, and the merged text when the errors are in it); `diff` is a line diff of two texts.
+- **Core:** `comment {pane}` puts a comment on that code pane, wherever its workspace is.
 - **`run_revisions.doc`:** `text`, `file`, `prompts`, `worst`, and from revision 2 on `diff` (`[sign, line]` pairs), `summary`, `added`, `removed`, and a stage's `block`.
 - **Events:** `revision {n, hash, summary}` and `refused {errors, stage, block | text}`, `by` as the revision's.
 - **Run notice:** `revisions`, one entry per revision (`n`, `by`, `at`, `hash`, `summary`, `added`, `removed`, `worst`, `budget`, `diff`) and per refusal (`n: null`, `by`, `at`, `errors`).
 - **Visit:** `doc.revision {n, summary}` or `doc.refused [errors]`.
 - **Draft:** written to a new file and renamed into place, never through a link a stage left there.
-- **`debug.run`:** `revisions` (the lines), `diff` (the open diffs' lines), `said`; `{diff: N}` opens or closes revision N's diff.
+- **`debug.run`:** `revisions` (the lines), `diff` (the open diffs' lines), `said`; `{diff: N}` opens or closes revision N's diff, `{reveal: "revision"}` scrolls to the revisions.
 - **e2e `pipeline_revisions`:** the mock agent's plan emits a `lint` stage, which runs; on its second visit it emits a stage that exists, which is refused and reaches `lint` as feedback; Edit pipeline opens the draft; an edit with an unbounded loop is refused and shown in the pane; an edit adding a stage is applied and that stage runs after the visit that was open.
 
 ## 6. Not built yet

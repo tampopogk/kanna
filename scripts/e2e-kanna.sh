@@ -6752,7 +6752,7 @@ print(next((t.get("held") or t.get("pane") for t in (l["shelf"] + (l.get("desk")
   check wait_for 30 eval '[[ "$(visits)" == "plan:done lint:pass check:open " ]]' || { echo "pipeline_revisions: the emitted stage didn't run after plan: $(visits)"; kanna run log "$run"; tail -20 "$out/daemon.log"; return 1; }
   check test "$(revisions)" == "1 file,2 stage:plan," || { echo "pipeline_revisions: the revisions are $(revisions)"; return 1; }
   local text; text="$(kanna run show "$run" --json | field revision.text)"
-  [[ "$text" == *$'check  = run sh check.sh\nlint = run sh lint.sh\n\nplan -> lint\nplan -> check\n'*$'check -> done\nlint -> check\n' ]] || { echo "pipeline_revisions: revision 2 reads: $text"; return 1; }
+  [[ "$text" == *$'check  = run sh check.sh\nlint = run sh lint.sh\n\nplan -> lint\nplan -> check\n'*$'check -> done\nlint -> check' ]] || { echo "pipeline_revisions: revision 2 reads: $text"; return 1; }
   check test "$(sqlite3 -readonly "$db" "select revision_hash = (select hash from run_revisions where run = '$run' and n = 2) from runs")" == 1 || { echo "pipeline_revisions: the run's hash isn't revision 2's"; return 1; }
   [[ "$(kanna run log "$run")" == *"revision    2 by stage plan: added lint · 2 arrows added"* ]] || { echo "pipeline_revisions: the log doesn't say revision 2"; kanna run log "$run"; return 1; }
 
@@ -6774,7 +6774,7 @@ assert [l for l in diff if l[0] != " "] == ["+lint = run sh lint.sh", "+plan -> 
   local w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "pipeline_revisions line $LINENO: $opened"; return 1; }
   w="${BASH_REMATCH[1]}"
   (cd "$repo" && kanna task activate "$task") >/dev/null || { echo "pipeline_revisions line $LINENO"; return 1; }
-  kanna focus "$tab" >/dev/null && sleep 1 && snap "$w" pipeline_revisions-diff >/dev/null
+  check test "$(shown diff ',"diff":2')" == "[]" || { echo "pipeline_revisions: hide diff left revision 2's diff open"; return 1; }
 
   touch "$KANNA_STATE_DIR/go1"
   check wait_for 40 eval '[[ "$(visits)" == "plan:done lint:pass check:fail plan:done lint:pass check:open " ]]' || { echo "pipeline_revisions: the run didn't come back to check: $(visits)"; kanna run log "$run"; return 1; }
@@ -6789,7 +6789,7 @@ assert [l for l in diff if l[0] != " "] == ["+lint = run sh lint.sh", "+plan -> 
 
   local edit; edit="$(shown said ',"press":"edit"')"
   local draft="$folder-run-1/.kanna/tmp/pipeline.kojo"
-  check wait_for 10 eval '[[ "$(shown said)" == "edit "*"/pipeline.kojo, then run: kanna run edit $run FILE" ]]' || { echo "pipeline_revisions: Edit pipeline said: $(shown said) / $(shown flash)"; return 1; }
+  check wait_for 10 eval '[[ "$(shown said)" == "pipeline.kojo is read-only here: edit the file, then kanna run edit FILE applies it" ]]' || { echo "pipeline_revisions: Edit pipeline said: $(shown said) / $(shown flash)"; return 1; }
   check test -f "$draft" || { echo "pipeline_revisions: no draft at $draft"; ls "$folder-run-1/.kanna/tmp"; return 1; }
   check test "$(cat "$draft")" == "$text" || { echo "pipeline_revisions: the draft isn't revision 2"; return 1; }
   code_pane() { kanna workspace list --all --json | python3 -c 'import json, sys
@@ -6803,23 +6803,25 @@ print(next((p["id"] for p in json.load(sys.stdin)["panes"] if p.get("path") == s
   local refused; refused="$(kanna run edit "$run" "$draft" 2>&1)" && { echo "pipeline_revisions: an unbounded loop was applied: $refused"; return 1; }
   [[ "$refused" == *"$draft:8: "* ]] || { echo "pipeline_revisions: the refused edit said: $refused"; return 1; }
   check test "$(revisions)" == "1 file,2 stage:plan," -a "$(events refused)" == "stage:plan user " || { echo "pipeline_revisions: after the refused edit: $(revisions) $(events refused)"; return 1; }
-  check wait_for 10 eval '[[ "$(pane "$code" comment | field text)" == "Not applied: $run is still at revision 2."*"line 8: "* ]]' || { echo "pipeline_revisions: the pane doesn't show the errors: $(pane "$code" comment)"; return 1; }
+  local nl=$'\n'
+  check wait_for 10 eval '[[ "$(pane "$code" comment | field text)" == "Not applied: $run is still at revision 2.${nl}line 8: "* ]]' || { echo "pipeline_revisions: the pane doesn't show the errors: $(pane "$code" comment)"; return 1; }
   check test "$(pane "$code" comment | field first)" == 8 || { echo "pipeline_revisions: the errors aren't on line 8: $(pane "$code" comment)"; return 1; }
   sleep 1; snap "$w" pipeline_revisions-refused >/dev/null
 
-  printf '%s' "$text" | sed -e 's/^check -> done$/check -> last/' >"$draft" && printf 'last = run touch .kanna\/tmp\/lasted\nlast -> done\n' >>"$draft"
+  printf '%s\n' "$text" | sed -e 's/^check -> done$/check -> last/' >"$draft" && printf 'last = run touch .kanna\/tmp\/lasted\nlast -> done\n' >>"$draft"
   local applied; applied="$(kanna run edit "$run" "$draft" 2>&1)" || { echo "pipeline_revisions: the edit was refused: $applied"; return 1; }
   [[ "$applied" == "$run: revision 3 by you: added last · 2 arrows added · 1 arrow removed (worst case 3 sessions); it applies from the next arrow" ]] || { echo "pipeline_revisions: the edit said: $applied"; return 1; }
   check test "$(revisions)" == "1 file,2 stage:plan,3 user," -a "$(events revision)" == "stage:plan user " || { echo "pipeline_revisions: after the edit: $(revisions) $(events revision)"; return 1; }
   check wait_for 10 eval '[[ "$(code_pane)" == - ]]' || { echo "pipeline_revisions: the draft's pane is still open after the edit was applied"; return 1; }
   check wait_for 10 eval '[[ "$(shown tiles | python3 -c "import json, sys; print(json.load(sys.stdin)[5][0])")" == 1 ]]' || { echo "pipeline_revisions: your revision isn't an intervention: $(shown tiles)"; return 1; }
   check test "$(shown nodes | python3 -c 'import json, sys; print(" ".join(n["id"] for n in json.load(sys.stdin)))')" == "plan lint check last done" || { echo "pipeline_revisions: the graph after the edit is $(shown nodes)"; return 1; }
-  [[ "$(shown revisions)" == *"Revision 3 by you at "*": added last · 2 arrows added · 1 arrow removed · worst case 3 of 6 sessions · show diff"* ]] || { echo "pipeline_revisions: the Run tab's revisions are $(shown revisions)"; return 1; }
+  lines() { shown revisions | python3 -c 'import json, sys; print("\n".join(json.load(sys.stdin)))'; }
+  [[ "$(lines)" == *"Refused: an edit by you at "*$'\n'"pipeline.kojo:8: "*"Revision 3 by you at "*": added last · 2 arrows added · 1 arrow removed · worst case 3 of 6 sessions · show diff" ]] || { echo "pipeline_revisions: the Run tab's revisions are $(shown revisions)"; return 1; }
   [[ "$(kanna run show "$run")" == *"interventions: 1 revision"* ]] || { echo "pipeline_revisions: run show doesn't count the revision"; kanna run show "$run"; return 1; }
-  check test "$(sqlite3 -readonly "$db" "select json_extract(doc, '\$.taken') from runs")" == "[2,2,1,1,0,2,0]" || { echo "pipeline_revisions: the arrow counts after the edit are $(sqlite3 -readonly "$db" "select json_extract(doc, '\$.taken') from runs")"; return 1; }
+  check test "$(sqlite3 -readonly "$db" "select json_extract(doc, '\$.taken') from runs")" == "[2,0,1,0,2,0]" || { echo "pipeline_revisions: the arrow counts after the edit are $(sqlite3 -readonly "$db" "select json_extract(doc, '\$.taken') from runs")"; return 1; }
   local same; same="$(kanna run edit "$run" "$draft" 2>&1)" && { echo "pipeline_revisions: the same text made a revision: $same"; return 1; }
   [[ "$same" == *"nothing to apply"* ]] || { echo "pipeline_revisions: the same text said: $same"; return 1; }
-  kanna focus "$tab" >/dev/null; raw "{\"id\":1,\"cmd\":\"debug.run\",\"args\":{\"pane\":\"$tab\",\"diff\":3}}" >/dev/null
+  kanna focus "$tab" >/dev/null; raw "{\"id\":1,\"cmd\":\"debug.run\",\"args\":{\"pane\":\"$tab\",\"diff\":3,\"reveal\":\"revision\"}}" >/dev/null
   sleep 1; snap "$w" pipeline_revisions-run >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null; sleep 1; snap "$w" pipeline_revisions-run-light >/dev/null
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null

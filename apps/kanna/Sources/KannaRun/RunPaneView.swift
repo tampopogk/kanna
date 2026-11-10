@@ -88,6 +88,10 @@ public final class RunPaneView: NSView, NSTextFieldDelegate {
         document.toggleDiff(n)
     }
 
+    public func reveal(_ spot: String) {
+        document.reveal(spot)
+    }
+
     public func stop() {
         ticker?.invalidate()
         ticker = nil
@@ -359,6 +363,7 @@ final class RunDocument: NSView {
         spots["workers"] = y
         y += 22 + CGFloat(max(1, n.workers.count)) * 20 + 20
         frame = NSRect(x: 0, y: 0, width: self.width, height: max(y, superview?.bounds.height ?? 0))
+        toggles = []
         needsDisplay = true
     }
 
@@ -372,6 +377,11 @@ final class RunDocument: NSView {
     func toggleDiff(_ n: Int) {
         if !expanded.insert(n).inserted { expanded.remove(n) }
         rebuild(width: width)
+    }
+
+    func reveal(_ spot: String) {
+        guard let y = spots[spot] else { return }
+        scroll(NSPoint(x: 0, y: max(0, min(y - 14, frame.height - (superview?.bounds.height ?? 0)))))
     }
 
     private let revisionLine: CGFloat = 20
