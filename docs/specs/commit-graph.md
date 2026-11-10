@@ -99,7 +99,7 @@ So that main reads as a line of merges, a branch merged into main's first-parent
 - **Selecting a commit** (a click, `j`/`k`) shows its **detail** on the right: subject and full message, hash (with **Copy hash**), author, date, parents (a click selects one, unfolding if needed), labels, and its files with lines added and removed (a merge's against its first parent). The detail is fetched when selected (`log.commit`), not sent with the rows.
 - **↩ or a double-click opens the commit's diff** in a diff pane on the same Desk: `kanna open diff HASH^!` (its changes against its first parent; for a root commit, against the empty tree).
 - **⌘C copies the selected commit's full hash;** the context menu has Copy hash and Copy subject.
-- **⌘F finds** in subjects and hash prefixes, every commit of the range, folded or not: matching rows are tinted, ↩ and ⇧↩ (or ⌘G, ⇧⌘G) go to the next and previous, the bar says `3 of 26`. Esc closes it.
+- **⌘F finds** in subjects and hash prefixes, every commit of the range, folded or not, subjects case-insensitive unless the search has a capital ([find bar](find-bar.md)): matching rows are tinted, ↩ and ⇧↩ (or ⌘G, ⇧⌘G) go to the next and previous, the bar says `3 of 26`. Esc closes it.
 - **The detail hides when the pane is narrower than 820 pt,** at the default font size (the rows need about 480 pt beside the graph); the selection still works, and ↩ still opens the diff.
 - **Zoom** (⌘= ⌘− ⌘0), 9 to 32 pt, kept with the pane; rows and lanes scale with it.
 - **Light and dark** follow the app.

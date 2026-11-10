@@ -58,6 +58,11 @@ extension AppController {
             if let title = args["item"]?.string { try choose(menuItem: title) }
             return ["items": .array(menuItems)]
         }
+        commands["debug.about"] = { _ in
+            func lines(_ view: NSView) -> [String] { ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(lines) }
+            let shown = NSApp.windows.filter(\.isVisible).compactMap { $0.contentView.map(lines) }
+            return ["lines": .array((shown.first { $0.contains { $0.hasPrefix("Version ") } } ?? []).map { .string($0) })]
+        }
         commands["debug.rename"] = { [weak self] args in
             guard let tab = args["tab"]?.string, let title = args["title"]?.string else { throw KannaError("bad_request", "debug.rename needs a tab and a title") }
             self?.layoutCommand("rename-tab", ["tab": .string(tab), "title": .string(title)])
@@ -166,7 +171,7 @@ extension AppController {
             }
             let page = controller.deskView
             let scrolled: JSON = ["top": .number(Double(page.scrollTop)), "height": .number(Double(page.contentHeight)),
-                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf), "dots": .array(page.shelfDots)]
+                                  "visible": .number(Double(page.visibleHeight)), "shelf": .array(page.visibleShelf.map { .string($0) }), "blocked": .array(page.blockedShelf), "stacked": .array(page.stackedShelf), "dots": .array(page.shelfDots), "groups": .array(page.groupTitles.map { .string($0) })]
             let search: JSON = ["shown": .bool(page.searchShown), "focused": .bool(page.searching), "query": .string(page.query),
                                 "found": .array(page.found.map { .string($0) }), "selected": .number(Double(page.selected)),
                                 "left": .number(Double(page.searchFrame.minX)), "right": .number(Double(page.searchFrame.maxX))]
@@ -179,6 +184,10 @@ extension AppController {
                     "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "statsPage": .bool(!controller.statsPage.isHidden), "stats": .array(controller.statsPage.shownTiles), "statsSections": .array(controller.statsPage.shownSections),
+                    "queuePage": .bool(!controller.queuePage.isHidden), "queueCount": controller.tabBar.pageCounts[MergeQueuePage.title].map { .number(Double($0)) } ?? .null,
+                    "queue": .array(controller.queuePage.entries.map { ["id": .string($0.id), "task": .string($0.task), "name": .string($0.name), "state": .string($0.state), "said": .string($0.said), "terminal": $0.terminal.map { .string($0) } ?? .null, "needs": $0.needs.map { .string($0) } ?? .null] }),
+                    "queuePicked": controller.queuePage.selected.map { .string($0.task) } ?? .null, "queueTerminal": controller.queuePage.hostedTerminal.map { .string($0) } ?? .null,
+                    "queueDetail": .string(controller.queuePage.detail), "queueLog": controller.queuePage.logShown.map { .string($0) } ?? .null, "queueWaiting": controller.queuePage.waitingText.map { .string($0) } ?? .null,
                     "schedulesPage": .bool(!controller.schedulesPage.isHidden), "scheduleGroups": .array(controller.schedulesPage.groupOrder.map { $0.map { .string($0) } ?? .null }),
                     "schedules": .array(controller.schedulesPage.rows.map { row in
                         ["id": .string(row.id), "name": .string(row.name), "repo": row.repo.map { .string($0) } ?? .null, "rule": .string(row.rule), "target": .string(row.target), "next": .string(row.next), "waiting": .bool(row.waiting), "paused": .bool(row.paused),
@@ -190,6 +199,15 @@ extension AppController {
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
                     "keyboard": Self.paneHolding(controller.window.firstResponder).map { .string($0) } ?? .null,
                     "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow)]
+        }
+        commands["debug.pairPhone"] = { [weak self] args in
+            guard let self else { return [:] }
+            if args["cancel"]?.bool == true {
+                PhonePairing.shown?.cancelled()
+            } else if PhonePairing.shown == nil {
+                controllers.values.first?.machinesPage.pair?()
+            }
+            return ["sheet": .bool(PhonePairing.shown?.attached == true), "code": PhonePairing.shown?.scanned.map { .string($0) } ?? .null]
         }
         commands["debug.web"] = { [weak self] args in
             guard let self, let id = args["pane"]?.string, let web = contents.web(id) else { throw KannaError("wrong_type", "not a web pane") }
@@ -205,7 +223,7 @@ extension AppController {
                 return ["editor": .string(shown)]
             }
             let text = try? await web.webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String
-            var reply: [String: JSON] = ["url": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)), "page_width": .number(Double(web.webView.frame.width)),
+            var reply: [String: JSON] = ["url": web.webView.url.map { .string(web.unmap($0).absoluteString) } ?? .null, "loaded": web.webView.url.map { .string($0.absoluteString) } ?? .null, "text": .string(text ?? ""), "zoom": .number(Double(web.zoom)), "page_width": .number(Double(web.webView.frame.width)),
                                          "notice": web.shownNotice.map { .string($0) } ?? .null, "markup": .bool(web.markable),
                                          "view": .string(Self.identity(web)), "web_view": .string(Self.identity(web.webView)), "loads": .number(Double(web.loads))]
             guard let markup = web.markup else { return reply }
@@ -545,6 +563,16 @@ extension AppController {
             guard let controller = controllers[id], let spot = controller.schedulesPage.center(of: control) else { throw KannaError("not_found", "no \(control) on \(id)'s Schedules page") }
             window = controller.window
             point = spot
+        } else if let entry = args["queue"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let spot = controller.queuePage.center(of: entry, takeOut: args["takeOut"]?.bool == true, resume: args["resume"]?.bool == true) else { throw KannaError("not_found", "no \(entry) on \(id)'s Merge queue tab") }
+            window = controller.window
+            point = spot
+        } else if let task = args["shelfLog"]?.string {
+            let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
+            guard let controller = controllers[id], let spot = controller.deskView.shelfLogs.first(where: { $0.task == task }) else { throw KannaError("not_found", "\(task) has no Log on \(id)'s Shelf") }
+            window = controller.window
+            point = spot.center
         } else if let page = args["page"]?.string {
             let id = args["window"]?.string ?? keyWindow?["id"]?.string ?? ""
             guard let controller = controllers[id], let spot = controller.tabBar.pageItems.first(where: { $0.title == page }) else { throw KannaError("not_found", "no \(page) tab on \(id)") }
@@ -629,14 +657,25 @@ extension AppController {
         var steps = [0.1, 0.1, 0.1, 0.1, 0.1]
         if case .array(let list)? = args["steps"] { steps = list.compactMap(\.number) }
         let area = view.visibleRect.intersection(view.bounds)
-        let point = view.convert(NSPoint(x: area.midX, y: area.midY), to: nil)
+        var point = view.convert(NSPoint(x: area.midX, y: area.midY), to: nil)
+        if case .array(let list)? = args["at"] {
+            let at = list.compactMap(\.number).map { CGFloat($0) }
+            guard at.count == 2 else { throw KannaError("bad_request", "at is [x, y]") }
+            point = view.convert(NSPoint(x: at[0], y: view.isFlipped ? at[1] : view.bounds.height - at[1]), to: nil)
+        }
+        var drift = NSPoint.zero
+        if case .array(let list)? = args["drift"] {
+            let by = list.compactMap(\.number).map { CGFloat($0) }
+            guard by.count == 2 else { throw KannaError("bad_request", "drift is [x, y]") }
+            drift = NSPoint(x: by[0], y: -by[1])
+        }
         let height = NSScreen.screens.first?.frame.height ?? 0
         let gesture = CGEventType(rawValue: 29)!
         let gestureKind = CGEventField(rawValue: 110)!
         let magnification = CGEventField(rawValue: 113)!
         let phaseField = CGEventField(rawValue: 132)!
         let zoomGesture: Int64 = 8
-        var zooms: [JSON] = [], renders: [JSON] = [], tops: [JSON] = [], widths: [JSON] = []
+        var zooms: [JSON] = [], renders: [JSON] = [], tops: [JSON] = [], widths: [JSON] = [], spots: [JSON] = []
         let phases = [(1, 0.0)] + steps.map { (2, $0) } + [(4, 0.0)]
         for (phase, value) in phases {
             guard let cg = CGEvent(source: nil) else { continue }
@@ -647,6 +686,7 @@ extension AppController {
             cg.setIntegerValueField(phaseField, value: Int64(phase))
             guard let event = NSEvent(cgEvent: cg) else { continue }
             window.sendEvent(event)
+            point = NSPoint(x: point.x + drift.x, y: point.y + drift.y)
             try await Task.sleep(for: .milliseconds(40))
             if phase == 2, let markdown = contents.markdown(id) {
                 zooms.append(.number(Double(markdown.zoom)))
@@ -655,9 +695,12 @@ extension AppController {
                 widths.append(.number(Double(markdown.layoutWidth)))
             } else if phase == 2, let web = contents.web(id) {
                 zooms.append(.number(Double(web.zoom)))
+                if let spot = try? await web.webView.evaluateJavaScript("[visualViewport.pageLeft, visualViewport.pageTop, visualViewport.scale]") as? [Double] {
+                    spots.append(.array(spot.map { .number($0) }))
+                }
             }
         }
-        return ["zooms": .array(zooms), "render_ms": .array(renders), "top_lines": .array(tops), "layout_widths": .array(widths)]
+        return ["zooms": .array(zooms), "render_ms": .array(renders), "top_lines": .array(tops), "layout_widths": .array(widths), "spots": .array(spots)]
     }
 }
 

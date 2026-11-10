@@ -22,6 +22,7 @@ pub struct State {
     pub next_serial: u64,
     pub nofile: Option<(u64, u64)>,
     pub requester: Requester,
+    pub from_dir: Option<String>,
     pub conns: Vec<ConnState>,
     pub ptys: Vec<PtyState>,
     pub pending: Vec<PendingState>,
@@ -96,6 +97,7 @@ impl State {
             "next_serial": self.next_serial,
             "nofile": self.nofile.map(|(cur, max)| json!([cur, max])),
             "requester": {"conn": self.requester.conn, "req": self.requester.tag, "from": self.requester.from},
+            "from_dir": self.from_dir,
             "conns": self.conns.iter().map(|c| json!({"serial": c.serial, "fd": c.fd, "inbuf": c.inbuf})).collect::<Vec<_>>(),
             "ptys": self.ptys.iter().map(|p| with_exit(
                 json!({"id": p.id, "pid": p.pid, "cmd": p.cmd, "cwd": p.cwd, "master": p.master}),
@@ -132,6 +134,7 @@ impl State {
                 tag: requester["req"].clone(),
                 from: requester["from"].as_str().map(String::from),
             },
+            from_dir: v["from_dir"].as_str().map(String::from),
             conns: list(v, "conns")?
                 .iter()
                 .map(|c| {
@@ -383,6 +386,7 @@ mod tests {
             next_serial: 9,
             nofile: Some((256, u64::MAX)),
             requester: Requester { conn: 2, tag: json!(7), from: Some("abc".into()) },
+            from_dir: Some("/old".into()),
             conns: vec![ConnState { serial: 2, fd: 5, inbuf: b"{\"op\":\"hel".to_vec() }],
             ptys: vec![
                 PtyState { id: "t1".into(), pid: 100, cmd: vec!["-sh".into()], cwd: "/".into(), master: 6, exit: None },

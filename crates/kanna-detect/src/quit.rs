@@ -7,14 +7,34 @@ include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 #[serde(deny_unknown_fields)]
 struct File {
     agent: String,
+    #[serde(default)]
+    exit: Option<ExitFile>,
+    #[serde(default)]
+    rest: Option<String>,
     keys: Vec<String>,
     #[serde(default)]
     session: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExitFile {
+    text: String,
+    #[serde(rename = "box")]
+    shown: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Exit {
+    pub text: String,
+    pub shown: Regex,
+}
+
 #[derive(Clone, Debug)]
 pub struct Quit {
     pub agent: String,
+    pub exit: Option<Exit>,
+    pub rest: Option<String>,
     pub keys: Vec<String>,
     pub session: Option<Regex>,
 }
@@ -26,7 +46,8 @@ impl Quit {
         if session.as_ref().is_some_and(|r| r.captures_len() < 2) {
             return Err("session needs a group that captures the ID".into());
         }
-        Ok(Quit { agent: file.agent, keys: file.keys, session })
+        let exit = file.exit.map(|exit| Regex::new(&exit.shown).map(|shown| Exit { text: exit.text, shown }).map_err(|e| format!("exit: {e}"))).transpose()?;
+        Ok(Quit { agent: file.agent, exit, rest: file.rest, keys: file.keys, session })
     }
 
     pub fn of(agent: &str) -> Option<Quit> {
@@ -50,6 +71,7 @@ mod tests {
         for (name, text) in BUNDLED_QUIT.iter().copied() {
             let quit = Quit::parse(text).unwrap_or_else(|e| panic!("{name}.json: {e}"));
             assert_eq!(quit.agent, name);
+            assert_eq!(quit.rest.as_deref(), Some("esc"), "{name} rests with esc");
             assert!(crate::program::known_agents().contains(&name), "{name} isn't an agent Kanna knows");
         }
     }
@@ -85,6 +107,29 @@ mod tests {
         assert_eq!(claude.session_in(&format!("claude --resume {id}\nclaude --model m --resume {later}\n")).as_deref(), Some(later), "the last one it said");
         assert_eq!(claude.session_in(&format!("use claude with --resume {id}\n")), None, "prose, not a command");
         assert_eq!(claude.session_in(&format!("claude-code --resume {id}\n")), None, "another program");
+    }
+
+    #[test]
+    fn the_box_holds_only_the_exit_command_on_each_agents_real_screen() {
+        let rule = "─".repeat(40);
+        let screens = [
+            ("claude", format!("  ❯ /exit    Exit the CLI\n{rule}\n❯ /exit\n{rule}\n"), format!("{rule}\n❯ my draft/exit\n{rule}\n"), format!("{rule}\n❯ line one\n  /exit\n{rule}\n")),
+            ("codex", "› /exit  exit Codex\n\n› /exit\n\n  mock-model default\n".into(), "\n\n› my draft/exit\n\n  mock-model default\n".into(), "\n\n› line one\n  /exit\n\n  mock-model default\n".into()),
+            ("antigravity", format!("{rule}\n> /exit\n{rule}\n> /exit  Exit the CLI\n"), format!("{rule}\n> my draft/exit\n{rule}\n"), format!("{rule}\n> line one\n  /exit\n{rule}\n")),
+            ("opencode", "   ┃ /exit       Exit the app      ┃\n   ┃\n   ┃  /exit\n   ┃\n   ┃  Build\n".into(), "   ┃\n   ┃  my draft/exit\n   ┃\n   ┃  Build\n".into(), "   ┃\n   ┃  line one\n   ┃  /exit\n   ┃\n   ┃  Build\n".into()),
+        ];
+        for (agent, only, draft, lines) in screens {
+            let exit = Quit::of(agent).unwrap().exit.unwrap();
+            assert_eq!(exit.text, "/exit", "{agent}");
+            assert!(exit.shown.is_match(&only), "{agent} holds only /exit: {only}");
+            assert!(!exit.shown.is_match(&draft), "{agent}: a draft before it");
+            assert!(!exit.shown.is_match(&lines), "{agent}: a draft of several lines");
+        }
+        let claude = Quit::of("claude").unwrap().exit.unwrap();
+        assert!(claude.shown.is_match(&format!("{rule}\n❯\u{a0}/exit\n{rule}\n")), "claude's prompt ends in a no-break space");
+        let codex = Quit::of("codex").unwrap().exit.unwrap();
+        assert!(!codex.shown.is_match("\n\n› /exit\n  second line\n\n"), "a draft after it");
+        assert!(Quit::parse(r#"{"agent": "x", "keys": [], "exit": {"text": "/exit", "box": "("}}"#).is_err());
     }
 
     #[test]

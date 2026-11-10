@@ -45,7 +45,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// A clone of the team's notes repo in this machine's own home folder, with one runner.
+/// A clone of the team's notes repo in this machine's own home folder, on a machine with one runner.
 fn clone(daemon: &Daemon) -> PathBuf {
     let repo = daemon.dir.join("home/.kanna-v4/repos/team/notes");
     std::fs::create_dir_all(repo.join(".kanna")).unwrap();
@@ -54,7 +54,7 @@ fn clone(daemon: &Daemon) -> PathBuf {
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "first"]);
     git(&repo, &["remote", "add", "origin", ORIGIN]);
-    std::fs::write(repo.join(".kanna/config.json"), json!({ "version": 1, "shelf": { "runners": 1 } }).to_string()).unwrap();
+    std::fs::write(daemon.dir.join("home/.kanna-v4/config.json"), json!({ "version": 1, "shelf": { "runners": 1 } }).to_string()).unwrap();
     daemon.kanna_in(&repo, &["task", "list"]).ok();
     repo.canonicalize().unwrap()
 }
@@ -96,7 +96,7 @@ fn record(daemon: &Daemon, task: &str) -> Value {
     ask(daemon, "replica", json!({ "action": "list" }))["records"].as_array().unwrap().iter().find(|r| r["task"] == task).cloned().unwrap_or(Value::Null)
 }
 
-/// Runs a task on mbp to the end of its turn, with work left uncommitted and a tab open.
+/// Runs a task on mbp to the end of its first turn, with work left uncommitted and a tab open.
 fn started_task(mbp: &Daemon, repo: &Path, agent: &str) -> (String, String, String) {
     let task = new_task(mbp, repo, &["Notes", "work 1", "--agent", agent, "--on", "mbp"]);
     within(30, "the task to start on mbp", || shelf_task(mbp, &task)["held"].is_string());
@@ -111,8 +111,14 @@ fn started_task(mbp: &Daemon, repo: &Path, agent: &str) -> (String, String, Stri
     std::fs::write(Path::new(&folder).join("README.md"), "# Notes\n\nchanged\n").unwrap();
     let opened = ask(mbp, "open", json!({ "type": "md", "path": format!("{folder}/draft.md"), "from": pane, "tab": true }));
     assert_eq!(opened["ok"], true, "{opened}");
-    within(30, "the task's turn to end", || shelf_task(mbp, &task)["running"] == false);
+    within(30, "its first turn to end, so a Shelf runner stops it", || shelf_task(mbp, &task)["running"] == false);
     (task, folder, session)
+}
+
+fn resumed(daemon: &Daemon, task: &str, session: &str) {
+    daemon.kanna(&["task", "start", task]).ok();
+    let pane = shelf_task(daemon, task)["held"].as_str().unwrap().to_string();
+    within(30, "it to carry on here", || screen(daemon, &pane).contains(&format!("resumed {session}")));
 }
 
 /// Checks that a moved task carries on on this machine from the handoff its agent wrote in `session`.
@@ -135,6 +141,7 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
 
     let claude = mock(&mbp, "claude");
     let (task, folder, session) = started_task(&mbp, &here, &claude);
+    resumed(&mbp, &task, &session);
     let moved = mbp.kanna(&["task", "move", &task, "vm", "--json"]).json();
     let there_folder = moved["folder"].as_str().unwrap_or_else(|| panic!("{moved}")).to_string();
     assert!(there_folder.starts_with(&there.to_string_lossy().into_owned()), "vm uses its own clone's path: {there_folder}");
@@ -148,7 +155,10 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
     assert!(shelf_task(&mbp, &task).is_null(), "the task left mbp's Shelf");
     assert!(!Path::new(&folder).exists(), "and its worktree there");
     within(10, "mbp to see vm own it", || record(&mbp, &task)["owner"].as_str() == Some(key(&vm).as_str()));
-    mbp.kanna(&["task", "start", &task]).fails(4, "no task");
+    mbp.kanna(&["task", "start", &task]).fails(1, &format!("vm: {task} is running"));
+    mbp.kanna(&["task", "send", &task[..9], "after the move"]).ok();
+    let held = vm.kanna(&["task", "messages", &task]).ok();
+    assert!(held.contains("after the move"), "the done row mbp kept doesn't stop a message reaching vm: {held}");
 
     let codex = mock(&mbp, "codex");
     let (task, folder, session) = started_task(&mbp, &here, &codex);
@@ -200,9 +210,7 @@ fn a_task_a_machine_cant_take_or_whose_agent_writes_no_handoff_stays_where_it_wa
     let claude = mock(&mbp, "claude");
     let (task, folder, session) = started_task(&mbp, &here, &claude);
     let head = git(Path::new(&folder), &["rev-parse", "HEAD"]);
-    mbp.kanna(&["task", "start", &task]).ok();
-    let pane = shelf_task(&mbp, &task)["held"].as_str().unwrap().to_string();
-    within(30, "it to carry on here", || screen(&mbp, &pane).contains(&format!("resumed {session}")));
+    resumed(&mbp, &task, &session);
     mbp.kanna(&["task", "move", &task, "vm"]).fails(1, "has no clone");
     assert_eq!(git(Path::new(&folder), &["rev-parse", "HEAD"]), head, "nothing was committed");
     std::thread::sleep(Duration::from_secs(1));

@@ -1,4 +1,6 @@
 {
   "agent": "opencode",
+  "exit": {"text": "/exit", "box": "(┃|Exit the app +┃)\\n *┃  /exit *\\n *┃ *\\n"},
+  "rest": "esc",
   "keys": ["ctrl+c", "ctrl+c"]
 }
