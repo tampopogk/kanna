@@ -16,6 +16,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var views: [String: JSON] = [:]
     var shelves: [String: [JSON]] = [:]
     var deskMade: [String: [String: Int]] = [:]
+    var deskIDs: [String: [String: String]] = [:]
     var deskStacks: [String: [String: String]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
@@ -441,7 +442,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
             return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
-                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id))
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id), task: deskTaskID(id))
         }
     }
 
@@ -754,6 +755,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
         controller.deskView.onShelve = { [weak self] task in self?.shelveTask(task, from: id) }
+        controller.deskView.onRun = { [weak self] task in self?.runTask(task, from: id) }
+        controller.deskView.onKeyed = { [weak self] _ in self?.deskKeysChanged() }
         controller.deskView.onLog = { [weak self, weak controller] entry in
             guard let self, let controller else { return }
             showQueue(controller, at: entry)
@@ -776,6 +779,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onBecomeKey = { [weak self, weak controller] in
             guard let self, let controller else { return }
             if controller.window.isKeyWindow { physical.setFront(id) }
+            deskKeysChanged()
             if let window = window(id) { controller.render(window, panes) }
             placeToasts()
         }
