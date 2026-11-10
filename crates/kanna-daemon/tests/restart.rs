@@ -423,3 +423,27 @@ fn an_app_that_does_not_keep_the_socket_gets_none_and_the_daemon_unlinks_it() {
     instance.stop(libc::SIGTERM);
     assert!(!instance.socket().exists(), "the daemon left its socket with no app keeping it");
 }
+
+#[test]
+fn a_terminal_that_ended_unseen_comes_back_exited_and_a_planner_without_one_is_closed_for_a_new_one() {
+    let mut instance = Instance::start();
+    let unseen = instance.open("unseen", Some("echo unseen-out; exec sleep 600"));
+    wait_for("unseen's output", || shows(&instance, &unseen, "unseen-out"));
+    let unseen_pid = instance.pane("unseen")["pid"].as_i64().unwrap();
+    let opened = instance.call("open", json!({"type": "term", "planner": true, "cwd": instance.dir.to_string_lossy(), "cmd": "exec sleep 600", "wait": false}));
+    let planner = opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("{opened}")).to_string();
+    let planner_terminal = opened["pane"]["terminal"].as_str().unwrap().to_string();
+    let listed = |instance: &Instance| instance.call("list", json!({}))["panes"].as_array().unwrap().iter().filter_map(|p| p["id"].as_str().map(String::from)).collect::<Vec<_>>();
+    assert!(listed(&instance).contains(&planner));
+
+    instance.stop(libc::SIGTERM);
+    keeper(&instance, json!({"op": "close", "id": unseen}));
+    keeper(&instance, json!({"op": "close", "id": planner_terminal}));
+    wait_for("the keeper to end unseen", || !alive(unseen_pid));
+    instance.start_again();
+
+    let pane = instance.pane("unseen");
+    assert_eq!(pane["state"].as_str(), Some("exited"), "a terminal that ended while no daemon ran is shown ended, not starting: {pane}");
+    assert!(shows(&instance, &unseen, "unseen-out"), "with its last screen: {}", instance.screen(&unseen));
+    wait_for("the planner with no terminal to be closed", || !listed(&instance).contains(&planner));
+}

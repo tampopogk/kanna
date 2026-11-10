@@ -18,6 +18,9 @@ pub enum What {
     Picked,
     Shelved,
     Ended { on_desk: bool },
+    Queued,
+    Landed,
+    MergeFailed,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -33,7 +36,7 @@ pub struct Item {
 
 impl Item {
     pub fn new(repo: &str, task: &str, short: &str, name: Option<&str>, what: What, at: Instant) -> Item {
-        let merge = if matches!(what, What::Ended { .. }) { Merge::Pending } else { Merge::Unknown };
+        let merge = if matches!(what, What::Ended { .. } | What::Landed) { Merge::Pending } else { Merge::Unknown };
         Item { repo: repo.into(), task: task.into(), short: short.into(), name: name.map(String::from), what, merge, at }
     }
 
@@ -50,6 +53,10 @@ impl Item {
             (What::Ended { on_desk: true }, _) => format!("{name} ended and left the Desk"),
             (What::Ended { on_desk: false }, Merge::Into(into)) => format!("{name} merged into {into} and left the Shelf"),
             (What::Ended { on_desk: false }, _) => format!("{name} was taken off the Shelf"),
+            (What::Queued, _) => format!("{name} went into the merge queue"),
+            (What::Landed, Merge::Into(into)) => format!("{name} merged into {into} and left the merge queue"),
+            (What::Landed, _) => format!("{name} landed and left the merge queue"),
+            (What::MergeFailed, _) => format!("{name} didn't merge: it's back on the Shelf, and its agent has the log"),
         }
     }
 }

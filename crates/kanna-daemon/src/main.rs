@@ -9,6 +9,7 @@ mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
+mod cli;
 mod guests;
 mod instance_move;
 mod tasks;
@@ -27,6 +28,7 @@ mod codex_remote;
 mod messages;
 mod project_import;
 mod projects;
+mod queue;
 mod quiz;
 mod quiz_map;
 mod quiz_round;
@@ -266,7 +268,7 @@ fn run() -> Result<(), String> {
     }
 
     let (events, mut inbox) = runtime::channel();
-    let retired = instance_move::settle(&state_dir, &socket);
+    let retired = instance_move::settle(&state_dir, &socket)?;
     let socket = kanna_build::own_socket(&given);
     let socket_path = socket.to_string_lossy().into_owned();
     let db = Rc::new(db::Db::open(&state_dir).map_err(|error| format!("can't keep the records in {}: {error}", state_dir.display()))?);
@@ -324,7 +326,19 @@ fn run() -> Result<(), String> {
 
     let mut env = vec![("KANNA_SOCKET".to_string(), socket_path.clone()), ("KANNA_INSTANCE".to_string(), instance.clone()), ("AGY_CLI_OSC7501".to_string(), "on".to_string())];
     env.extend(shell::env(&state_dir, &kanna_keeper::login_shell(), std::env::var("ZDOTDIR").ok()));
-    let kanna_cli = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("kanna"))).unwrap_or_default();
+    let own_cli = std::env::current_exe().ok().and_then(|exe| cli::beside(&exe));
+    env.extend(cli::env(own_cli.as_deref()));
+    if let Some(own_cli) = own_cli.as_deref().filter(|_| app_bundle().is_some() && state_dir == build.instance_folder(&support_folder(), kanna_build::DEFAULT_INSTANCE)) {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        match cli::claim(&home, own_cli, cli::Owner::of(&build)) {
+            cli::Claim::Linked => log!("kanna-daemon: ~/{} is {}", cli::LINK, own_cli.display()),
+            cli::Claim::Higher(other) => log!("kanna-daemon: ~/{} stays {}", cli::LINK, other.display()),
+            cli::Claim::NotALink => log!("kanna-daemon: ~/{} is a file, left alone", cli::LINK),
+            cli::Claim::Failed(error) => log!("kanna-daemon: can't link {error}"),
+            cli::Claim::Mine | cli::Claim::NotOffered => {}
+        }
+    }
+    let kanna_cli = own_cli.unwrap_or_default();
     if let Some(shim) = builds::install_shim(&state_dir, &kanna_cli, builds::shim_wanted()) {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
         env.push(("PATH".to_string(), format!("{}:{path}", shim.display())));
@@ -399,10 +413,24 @@ fn run() -> Result<(), String> {
     }));
     let runs = Rc::new(runs::Runs::open(db.clone(), core.weak(), Rc::downgrade(&tasks)));
     runs.install(&core);
+    let queue = Rc::new(queue::Queue::open(db.clone(), Rc::downgrade(&tasks), Rc::downgrade(&runs)));
+    queue.install(&core, &runs);
+    let needing = Rc::downgrade(&toasts);
+    *queue.on_needs.borrow_mut() = Some(Box::new(move |entry, title, why| {
+        let Some(toasts) = needing.upgrade() else { return };
+        let toast = toasts::Toast { title: title.to_string(), detail: Some(why.to_string()), pane: None, task: None, key: Some(format!("queue:{entry}:{why}")), from: None };
+        if let Err(error) = toasts.raise(toast) {
+            log!("kanna-daemon: can't raise a toast for {entry}: {}", error.message);
+        }
+    }));
     let closing = Rc::downgrade(&runs);
+    let leaving = Rc::downgrade(&queue);
     *tasks.on_close.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = closing.upgrade() {
             runs.task_closed(task);
+        }
+        if let Some(queue) = leaving.upgrade() {
+            queue.task_closed(task);
         }
     }));
     let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
@@ -556,7 +584,8 @@ fn run() -> Result<(), String> {
             return Err(format!("can't take the terminals back from the keeper: {error}"));
         }
     };
-    let restored = terminals.restore(adopted, reports::load(&db));
+    let placed: Vec<String> = layout.saved_panes().into_iter().map(|p| p.id).collect();
+    let restored = terminals.restore(adopted, reports::load(&db), &placed);
     reports::keep_only(&db, &terminals.running());
     if restored != Restored::default() {
         log!(
@@ -569,10 +598,16 @@ fn run() -> Result<(), String> {
     }
     core.note_numbers(&layout.content_numbers());
     core.install_panes(layout.saved_panes(), 0, 0, 0);
+    let unbacked: Vec<String> = core.with_panes(|panes| panes.iter().filter(|p| p.kind == kanna_mux::PaneType::Term && p.state == kanna_mux::PaneState::Starting).map(|p| p.id.clone()).collect());
+    for pane in &unbacked {
+        log!("kanna-daemon: {pane} has no terminal behind it, so it's shown ended");
+        core.with_pane_mut(pane, |pane| pane.state = kanna_mux::PaneState::Exited);
+    }
     layout.restore(&core.with_panes(kanna_mux::pane_table));
     serial.restore(core.with_panes(|panes| panes.iter().cloned().collect()));
     tasks.repair_comment_targets();
     tasks.settle_statuses();
+    tasks.close_ended_planners();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -582,10 +617,11 @@ fn run() -> Result<(), String> {
     let app_timeout = std::env::var("KANNA_APP_TIMEOUT_MS").ok().and_then(|ms| ms.parse().ok()).map(Duration::from_millis).unwrap_or(APP_TIMEOUT);
     let app = Rc::new(AppLink::new(core.weak(), terminals.clone(), diffs.clone(), (files.clone(), threads.clone()), serial.clone(), layout.clone(), app_timeout, build_id.clone(), server.listener()));
     let closing = machines.as_ref().map(Rc::downgrade);
-    let (counting, stopping_terminals, moving_keeper, quitting, attached) = (Rc::downgrade(&terminals), Rc::downgrade(&terminals), Rc::downgrade(&keeper), Rc::downgrade(&app), Rc::downgrade(&app));
+    let (counting, stopping_terminals, asking_keeper, moving_keeper, quitting, attached) = (Rc::downgrade(&terminals), Rc::downgrade(&terminals), Rc::downgrade(&keeper), Rc::downgrade(&keeper), Rc::downgrade(&app), Rc::downgrade(&app));
     *tasks.move_hooks.borrow_mut() = Some(tasks::MoveHooks {
         socket: socket.clone(),
         terminals: Box::new(move || counting.upgrade().map_or(0, |t| t.running().len())),
+        keeper_moves: Box::new(move || asking_keeper.upgrade().map_or_else(|| Err("the keeper is gone".into()), |keeper| keeper.can_move())),
         close_endpoint: Box::new(move || {
             if let Some(machines) = closing.as_ref().and_then(std::rc::Weak::upgrade) {
                 machines.close_from_loop();
@@ -834,7 +870,7 @@ fn run() -> Result<(), String> {
         let ticks = if shutdown.is_none() {
             crashes.tick(Instant::now(), app.attached_here());
             tasks.sweep();
-            [tasks.tick(), scheduler.tick(), runs.tick()].into_iter().flatten().min()
+            [tasks.tick(), scheduler.tick(), runs.tick(), queue.tick()].into_iter().flatten().min()
         } else {
             Some(Instant::now() + Duration::from_millis(100))
         };
@@ -917,7 +953,10 @@ fn run() -> Result<(), String> {
                 }
             }
             Event::Stacks { seen } => tasks.watched(seen),
-            Event::Heads => tasks.heads_moved(),
+            Event::Heads => {
+                tasks.heads_moved();
+                queue.refs_moved();
+            }
             Event::Turn { token } => tasks.next_turn(token),
             Event::Merged { task, merge } => tasks.merged(&task, merge),
             Event::Diff { id, diff } => diffs.loaded(&id, diff),

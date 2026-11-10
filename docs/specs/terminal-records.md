@@ -18,7 +18,7 @@ A record is the only link from a pty to its pane, which makes it lasting state l
 
 ## 1. The table
 
-**terminals** (migration 28): one row per terminal the daemon keeps.
+**terminals** (migration 29): one row per terminal the daemon keeps.
 
 | Column | Type | Holds |
 |---|---|---|

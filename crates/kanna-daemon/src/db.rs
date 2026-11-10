@@ -317,6 +317,19 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         primary key (repo, subsystem)
     );
 "), Step::Sql("
+    create table merge_queue (
+        id text primary key,
+        repo text not null,
+        task text not null,
+        head text not null,
+        state text not null check (state in ('queued', 'testing', 'landing', 'landed', 'failed', 'cancelled')),
+        queued_at real not null,
+        ended_at real,
+        run text,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+    create index merge_queue_by_repo on merge_queue (repo, state, queued_at);
+"), Step::Sql("
     create table terminals (
         id text primary key,
         pane text not null unique,
@@ -620,11 +633,12 @@ impl Drop for Checkpoints {
 
 const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn checkpointing(path: PathBuf) -> Option<Checkpoints> {
+fn checkpointing(path: &Path) -> Option<Checkpoints> {
+    let conn = Connection::open(path).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
+    conn.query_row("pragma schema_version", [], |_| Ok(())).ok()?;
     let (stop, stopping) = std::sync::mpsc::channel::<()>();
     let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
-        let Ok(conn) = Connection::open(&path) else { return };
-        let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
         while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopping.recv_timeout(CHECKPOINT_EVERY) {
             let started = std::time::Instant::now();
             let _ = conn.query_row("pragma wal_checkpoint(passive)", [], |_| Ok(()));
@@ -747,8 +761,11 @@ impl Db {
         } else {
             let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
         }
-        if db.conn.path().is_some_and(|file| !file.is_empty()) && db.conn.pragma_update(None, "wal_autocheckpoint", 0).is_ok() {
-            db.checkpoints = checkpointing(path);
+        if db.conn.path().is_some_and(|file| !file.is_empty()) {
+            db.checkpoints = checkpointing(&path);
+            if db.checkpoints.is_some() {
+                let _ = db.conn.pragma_update(None, "wal_autocheckpoint", 0);
+            }
         }
         Ok(db)
     }
@@ -1500,6 +1517,19 @@ impl Db {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct QueueRow {
+    pub id: String,
+    pub repo: String,
+    pub task: String,
+    pub head: String,
+    pub state: String,
+    pub queued_at: f64,
+    pub ended_at: Option<f64>,
+    pub run: Option<String>,
+    pub doc: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct RunRow {
     pub id: String,
     pub task: String,
@@ -1581,6 +1611,32 @@ fn stage_row(r: &rusqlite::Row) -> rusqlite::Result<StageRow> {
 }
 
 impl Db {
+    pub fn new_queue_id(&self) -> rusqlite::Result<String> {
+        loop {
+            let id = format!("queue-{}", &random_id()?["task-".len()..]);
+            if self.conn.query_row("select 1 from merge_queue where id = ?1", [&id], |_| Ok(())).optional()?.is_none() {
+                return Ok(id);
+            }
+        }
+    }
+
+    pub fn put_queued(&self, row: &QueueRow) -> rusqlite::Result<()> {
+        self.conn
+            .execute(
+                "insert into merge_queue (id, repo, task, head, state, queued_at, ended_at, run, doc) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                 on conflict (id) do update set state = excluded.state, ended_at = excluded.ended_at, run = excluded.run, doc = excluded.doc",
+                params![row.id, row.repo, row.task, row.head, row.state, row.queued_at, row.ended_at, row.run, row.doc.to_string()],
+            )
+            .map(|_| ())
+    }
+
+    pub fn queued(&self, live: bool) -> rusqlite::Result<Vec<QueueRow>> {
+        let filter = if live { "where state in ('queued', 'testing', 'landing')" } else { "" };
+        let mut statement = self.conn.prepare(&format!("select id, repo, task, head, state, queued_at, ended_at, run, doc from merge_queue {filter} order by queued_at, id"))?;
+        let rows = statement.query_map([], |r| Ok(QueueRow { id: r.get(0)?, repo: r.get(1)?, task: r.get(2)?, head: r.get(3)?, state: r.get(4)?, queued_at: r.get(5)?, ended_at: r.get(6)?, run: r.get(7)?, doc: doc_of(r.get(8)?) }))?;
+        rows.collect()
+    }
+
     pub fn new_run_id(&self) -> rusqlite::Result<String> {
         loop {
             let id = format!("run-{}", &random_id()?["task-".len()..]);
@@ -1863,6 +1919,13 @@ mod tests {
         drop(db);
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn the_checkpoint_connection_is_open_before_the_database_is_handed_over() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-gone-{}", std::process::id()));
+        assert!(checkpointing(&dir.join(FILE)).is_none(), "a folder that's gone is known at once, not on the thread");
+    }
+
     use kanna_mux::json::json;
 
     fn folder(name: &str) -> PathBuf {
