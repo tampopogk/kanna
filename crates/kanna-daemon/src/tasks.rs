@@ -5031,6 +5031,7 @@ impl Tasks {
         self.launching.borrow_mut().insert(entry.id.clone());
         let name = entry.name.clone().filter(|n| core.pane(n).is_none());
         let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some()) && entry.session.is_none()).then(uuid).and_then(Result::ok);
+        let turn = if entry.session.is_none() && entry.brief().is_some() { Turn::told() } else { Turn::default() };
         let first = entry.command(session.as_deref());
         let setup = self.setup_first(&entry, Path::new(&folder), &first);
         let mut args = json!({ "type": "term", "dock": "left", "frozen": true, "task": entry.id, "cwd": folder, "cmd": setup.as_ref().map_or(first, |(command, _)| command.clone()), "wait": false });
@@ -5071,7 +5072,7 @@ impl Tasks {
             let out = Self::reply_out(&ran.id, &pane, Some(&folder), app.as_deref());
             let published = match &app {
                 Some(app) => this.started(&pane, ran, app, by.as_deref()),
-                None => this.running_here(&pane, ran, by.as_deref()),
+                None => this.running_here(&pane, ran, turn, by.as_deref()),
             };
             this.with_branch(published.map(|_| out), &folder, branch, responder);
         });
@@ -5160,9 +5161,9 @@ impl Tasks {
         }
     }
 
-    fn running_here(&self, pane: &str, ran: Entry, by: Option<&str>) -> Result<(), KmuxError> {
+    fn running_here(&self, pane: &str, ran: Entry, turn: Turn, by: Option<&str>) -> Result<(), KmuxError> {
         let entry = Entry { held: Some(pane.to_string()), stopped: None, ..ran };
-        self.turns.borrow_mut().insert(pane.to_string(), Turn::default());
+        self.turns.borrow_mut().insert(pane.to_string(), turn);
         let saved = self.store(&entry, Place::Shelf, Some(pane), Some(Change::new("started").by(by)));
         if let Some(found) = self.entries.borrow_mut().iter_mut().find(|e| e.id == entry.id) {
             *found = entry;
