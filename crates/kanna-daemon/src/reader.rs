@@ -2,8 +2,8 @@ use crate::perf;
 use crate::settings::Settings;
 use crate::wire::Wire;
 use crate::Event;
-use kanna_detect::{Activity, Screen};
 use kanna_vt::{Key, Lines, Mode, ProgramStatus, Terminal};
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 const OUTBOX: usize = 4 << 20;
+
+pub const REPLAY: usize = 512 << 10;
 
 const QUIET: Duration = Duration::from_millis(50);
 
@@ -30,14 +32,15 @@ const HOLD_LIMIT: Duration = Duration::from_secs(1);
 const ECHO_LIMIT: Duration = Duration::from_secs(1);
 
 pub struct Keystroke {
+    conn: u64,
     typed: Instant,
     written: Option<Instant>,
 }
 
 pub type Typing = Arc<Mutex<Option<Keystroke>>>;
 
-pub fn typed(typing: &Typing, at: Instant) {
-    typing.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(Keystroke { typed: at, written: None });
+pub fn typed(typing: &Typing, conn: u64, at: Instant) {
+    typing.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(Keystroke { conn, typed: at, written: None });
 }
 
 pub fn written(typing: &Typing) {
@@ -47,33 +50,81 @@ pub fn written(typing: &Typing) {
     }
 }
 
-fn echoed(typing: &Typing) -> Option<Instant> {
+fn echoed(typing: &Typing) -> Option<(u64, Instant)> {
     let mut pending = typing.lock().unwrap_or_else(PoisonError::into_inner);
-    let typed = pending.as_ref().filter(|k| k.written.is_some())?.typed;
+    let (conn, typed) = pending.as_ref().filter(|k| k.written.is_some()).map(|k| (k.conn, k.typed))?;
     *pending = None;
-    (typed.elapsed() < ECHO_LIMIT).then_some(typed)
+    (typed.elapsed() < ECHO_LIMIT).then_some((conn, typed))
+}
+
+#[derive(Default)]
+pub struct Viewer {
+    outbox: Vec<u8>,
+    pub overflowed: bool,
+    posted: bool,
+    echo: Option<Instant>,
+    pub inflight: bool,
+}
+
+impl Viewer {
+    pub fn chunk(&mut self, most: usize, written: u64) -> Option<Chunk> {
+        if self.outbox.is_empty() {
+            return None;
+        }
+        let bytes = if self.outbox.len() <= most {
+            std::mem::take(&mut self.outbox)
+        } else {
+            let rest = self.outbox.split_off(most);
+            std::mem::replace(&mut self.outbox, rest)
+        };
+        if let Some(typed) = self.echo.filter(|_| self.outbox.is_empty()) {
+            perf::since("echo.taken", typed);
+        }
+        let offset = written - self.outbox.len() as u64;
+        Some(Chunk { bytes, offset, typed: if self.outbox.is_empty() { self.echo.take() } else { None } })
+    }
+
+    pub fn discard(&mut self) {
+        *self = Viewer::default();
+    }
 }
 
 pub struct Feed {
     screen: Terminal,
-    outbox: Vec<u8>,
-    overflowed: bool,
+    pub viewers: HashMap<u64, Viewer>,
+    written: u64,
+    replay: VecDeque<u8>,
+    grids: VecDeque<(u64, u16, u16)>,
     posted: bool,
     pub unsaved: bool,
     pub cols: u16,
     pub rows: u16,
     cwd: Option<String>,
-    activity: Activity,
     statuses_serial: u64,
     statuses_owner: Option<i32>,
-    echo: Option<Instant>,
-    pub shown: bool,
-    pub inflight: bool,
 }
 
 pub struct Noticed {
-    pub overflowed: bool,
+    pub overflowed: Vec<u64>,
     pub cwd: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Replayed {
+    Output(Vec<u8>, u64),
+    Grid(u16, u16),
+}
+
+pub struct Snapshot {
+    pub data: Vec<u8>,
+    pub offset: u64,
+    pub more: bool,
+}
+
+pub struct Chunk {
+    pub bytes: Vec<u8>,
+    pub offset: u64,
+    pub typed: Option<Instant>,
 }
 
 impl Feed {
@@ -92,7 +143,7 @@ impl Feed {
 
     fn with(screen: Terminal, unsaved: bool) -> io::Result<Arc<Mutex<Feed>>> {
         let (cols, rows) = screen.size();
-        Ok(Arc::new(Mutex::new(Feed { screen, outbox: Vec::new(), overflowed: false, posted: false, unsaved, cols, rows, cwd: None, activity: Activity::default(), statuses_serial: 0, statuses_owner: None, echo: None, shown: false, inflight: false })))
+        Ok(Arc::new(Mutex::new(Feed { screen, viewers: HashMap::new(), written: 0, replay: VecDeque::new(), grids: VecDeque::new(), posted: false, unsaved, cols, rows, cwd: None, statuses_serial: 0, statuses_owner: None })))
     }
 
     pub fn apply(&mut self, settings: &Settings) -> Vec<u8> {
@@ -125,66 +176,91 @@ impl Feed {
     pub fn push(&mut self, bytes: &[u8]) -> (bool, Vec<u8>) {
         self.screen.write(bytes);
         self.unsaved = true;
-        self.changed();
         let replies = self.screen.take_replies();
         if self.screen.take_changed().pwd {
             if let Some(cwd) = cwd_from_url(&self.screen.pwd()) {
                 self.cwd = Some(cwd);
             }
         }
-        if self.overflowed || self.outbox.len() + bytes.len() > OUTBOX {
-            self.outbox = Vec::new();
-            self.overflowed = true;
-        } else {
-            self.outbox.extend_from_slice(bytes);
+        self.written += bytes.len() as u64;
+        self.replay.extend(bytes);
+        if self.replay.len() > REPLAY {
+            let excess = self.replay.len() - REPLAY;
+            self.replay.drain(..excess);
+            let start = self.written - REPLAY as u64;
+            while self.grids.front().is_some_and(|(at, _, _)| *at < start) {
+                self.grids.pop_front();
+            }
         }
-        let post = (self.overflowed || self.cwd.is_some()) && !std::mem::replace(&mut self.posted, true);
+        let mut post = self.cwd.is_some() && !std::mem::replace(&mut self.posted, true);
+        for viewer in self.viewers.values_mut() {
+            if viewer.overflowed || viewer.outbox.len() + bytes.len() > OUTBOX {
+                viewer.outbox = Vec::new();
+                viewer.overflowed = true;
+                post |= !std::mem::replace(&mut viewer.posted, true);
+            } else {
+                viewer.outbox.extend_from_slice(bytes);
+            }
+        }
         (post, replies)
     }
 
     pub fn noticed(&mut self) -> Noticed {
-        let waiting = self.overflowed && self.inflight;
-        self.posted = waiting;
-        Noticed { overflowed: self.overflowed && !waiting, cwd: self.cwd.take() }
+        self.posted = false;
+        let mut overflowed = Vec::new();
+        for (conn, viewer) in self.viewers.iter_mut().filter(|(_, viewer)| viewer.overflowed) {
+            viewer.posted = viewer.inflight;
+            if !viewer.inflight {
+                overflowed.push(*conn);
+            }
+        }
+        overflowed.sort();
+        Noticed { overflowed, cwd: self.cwd.take() }
     }
 
     pub fn holds(&self) -> bool {
-        self.shown && self.inflight && self.outbox.len() >= HOLD
+        !self.viewers.is_empty() && self.viewers.values().all(|viewer| viewer.inflight && viewer.outbox.len() >= HOLD)
     }
 
-    pub fn overflowed(&self) -> bool {
-        self.overflowed
+    pub fn written(&self) -> u64 {
+        self.written
     }
 
-    pub fn chunk(&mut self, most: usize) -> Option<(Vec<u8>, Option<Instant>)> {
-        if self.outbox.is_empty() {
+    pub fn show(&mut self, conn: u64) {
+        self.viewers.insert(conn, Viewer::default());
+    }
+
+    pub fn hide(&mut self, conn: u64) {
+        self.viewers.remove(&conn);
+    }
+
+    pub fn snapshot(&mut self, history: Option<usize>) -> Result<Snapshot, kanna_vt::Error> {
+        let (data, more) = match history {
+            Some(rows) => self.screen.snapshot_with_history(rows)?,
+            None => (self.screen.snapshot()?, false),
+        };
+        Ok(Snapshot { data, offset: self.written, more })
+    }
+
+    pub fn replay(&self, from: u64) -> Option<Vec<Replayed>> {
+        let start = self.written - self.replay.len() as u64;
+        if from < start || from > self.written {
             return None;
         }
-        let bytes = if self.outbox.len() <= most {
-            std::mem::take(&mut self.outbox)
-        } else {
-            let rest = self.outbox.split_off(most);
-            std::mem::replace(&mut self.outbox, rest)
-        };
-        if let Some(typed) = self.echo.filter(|_| self.outbox.is_empty()) {
-            perf::since("echo.taken", typed);
+        let mut replayed = Vec::new();
+        let mut at = from;
+        let grids = self.grids.iter().filter(|(offset, _, _)| *offset >= from).map(|&(offset, cols, rows)| (offset, Some((cols, rows))));
+        for (offset, grid) in grids.chain([(self.written, None)]) {
+            if offset > at {
+                let bytes = self.replay.range((at - start) as usize..(offset - start) as usize).copied().collect();
+                replayed.push(Replayed::Output(bytes, offset));
+                at = offset;
+            }
+            if let Some((cols, rows)) = grid {
+                replayed.push(Replayed::Grid(cols, rows));
+            }
         }
-        Some((bytes, if self.outbox.is_empty() { self.echo.take() } else { None }))
-    }
-
-    pub fn discard(&mut self) {
-        self.outbox = Vec::new();
-        self.overflowed = false;
-        self.echo = None;
-        self.inflight = false;
-    }
-
-    pub fn snapshot(&mut self) -> Result<Vec<u8>, kanna_vt::Error> {
-        let snapshot = self.screen.snapshot()?;
-        self.outbox = Vec::new();
-        self.overflowed = false;
-        self.echo = None;
-        Ok(snapshot)
+        Some(replayed)
     }
 
     pub fn save(&self) -> Result<Vec<u8>, kanna_vt::Error> {
@@ -195,20 +271,13 @@ impl Feed {
         self.screen.set_cell_pixels(u32::from(width / cols.max(1)), u32::from(height / rows.max(1)));
         if (cols, rows) != (self.cols, self.rows) {
             (self.cols, self.rows) = (cols, rows);
+            self.grids.push_back((self.written, cols, rows));
             self.unsaved = true;
-            self.changed();
-            if let Err(error) = self.screen.resize(cols, rows) {
+                if let Err(error) = self.screen.resize(cols, rows) {
                 log!("kanna-daemon: couldn't make {id}'s screen {cols}×{rows}: {error}");
             }
         }
         self.screen.take_replies()
-    }
-
-    fn changed(&mut self) {
-        let now = Instant::now();
-        self.activity.changed = Some(now);
-        self.activity.dirty_since.get_or_insert(now);
-        self.activity.held_since = if self.screen.mode(Mode::SYNC_OUTPUT) { Some(self.activity.held_since.unwrap_or(now)) } else { None };
     }
 
     pub fn claim_statuses(&mut self, group: impl FnOnce() -> Option<i32>) {
@@ -226,29 +295,30 @@ impl Feed {
         }
     }
 
+    pub fn restore_statuses(&mut self, owner: Option<i32>, records: Vec<ProgramStatus>) {
+        self.screen.restore_program_records(records);
+        self.statuses_serial = self.screen.program_status_serial();
+        self.statuses_owner = owner;
+    }
+
+    pub fn statuses_serial(&self) -> u64 {
+        self.screen.program_status_serial()
+    }
+
+    pub fn kept_statuses(&self) -> (Option<i32>, Vec<ProgramStatus>) {
+        (self.statuses_owner, self.screen.program_records())
+    }
+
     pub fn reported(&self, group: Option<i32>) -> Option<ProgramStatus> {
         self.screen.program_status().filter(|_| group.is_some() && self.statuses_owner == group)
     }
 
+    pub fn turns(&self) -> u64 {
+        self.screen.program_turns()
+    }
+
     pub fn program_statuses(&self) -> Vec<ProgramStatus> {
         self.screen.program_statuses()
-    }
-
-    pub fn settle(&mut self) {
-        self.activity.dirty_since = None;
-    }
-
-    pub fn activity(&self) -> Activity {
-        self.activity
-    }
-
-    pub fn status_screen(&mut self) -> Screen {
-        self.activity.dirty_since = None;
-        self.status_screen_peek()
-    }
-
-    pub fn status_screen_peek(&self) -> Screen {
-        Screen { lines: self.screen.text(Lines::Screen).lines().map(str::to_owned).collect(), title: self.screen.title(), progress: self.screen.progress().as_str().into() }
     }
 
     pub fn text(&self, lines: Option<usize>) -> String {
@@ -310,7 +380,7 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, typing: Typing, wire: Arc<Wire>, replies: Sender<Vec<u8>>, events: Sender<Event>) -> io::Result<Reader> {
+    pub fn start(id: &str, serial: u64, master: OwnedFd, feed: Arc<Mutex<Feed>>, typing: Typing, wire: Arc<Wire>, replies: Sender<Vec<u8>>, events: crate::runtime::Events) -> io::Result<Reader> {
         let (asleep, wake) = pipe()?;
         let pane = id.to_string();
         let thread = std::thread::Builder::new()
@@ -355,7 +425,7 @@ struct Pty {
     typing: Typing,
     wire: Arc<Wire>,
     replies: Sender<Vec<u8>>,
-    events: Sender<Event>,
+    events: crate::runtime::Events,
 }
 
 impl Pty {
@@ -432,15 +502,17 @@ fn read(mut pty: Pty) {
             }
         };
         let echo = echoed(&pty.typing);
-        if let Some(typed) = echo {
+        if let Some((_, typed)) = echo {
             perf::since("echo.read", typed);
         }
         let (post, replies) = {
             let mut feed = Feed::lock(&pty.feed);
             let pushed = feed.push(&buffer[..n]);
             feed.claim_statuses(|| kanna_detect::program::foreground_group(pty.master.as_raw_fd()));
-            if echo.is_some() {
-                feed.echo = feed.echo.or(echo);
+            if let Some((conn, typed)) = echo {
+                if let Some(viewer) = feed.viewers.get_mut(&conn) {
+                    viewer.echo = viewer.echo.or(Some(typed));
+                }
             }
             pty.wire.deliver(&pty.pane, &mut feed);
             if !released && draining.is_none() && feed.holds() {
@@ -448,7 +520,7 @@ fn read(mut pty: Pty) {
             }
             pushed
         };
-        if let Some(typed) = echo {
+        if let Some((_, typed)) = echo {
             perf::since("echo.parsed", typed);
         }
         if !replies.is_empty() {
@@ -523,28 +595,71 @@ pub(crate) mod tests {
 
     #[test]
     fn a_snapshot_replaces_the_outbox_unless_it_fails() {
-        let f = feed(20, 5, "before");
+        let f = feed(20, 5, "");
         let mut f = Feed::lock(&f);
+        f.show(1);
+        f.push(b"before");
         f.push(&overlong_osc());
-        assert!(f.snapshot().is_err());
-        assert!(f.chunk(16).is_some_and(|(bytes, _)| bytes.len() == 16), "the outbox is kept, and taken a chunk at a time");
+        assert!(f.snapshot(None).is_err());
+        let written = f.written();
+        assert!(f.viewers.get_mut(&1).unwrap().chunk(16, written).is_some_and(|chunk| chunk.bytes.len() == 16 && chunk.offset == 16), "the outbox is kept, and taken a chunk at a time");
         f.push(b"\x07after");
-        let snapshot = f.snapshot().unwrap();
-        assert!(f.chunk(usize::MAX).is_none());
-        assert_eq!(Terminal::from_snapshot(&snapshot).unwrap().text(Lines::Screen), "beforeafter");
+        let snapshot = f.snapshot(None).unwrap();
+        f.show(1);
+        assert!(f.viewers[&1].outbox.is_empty());
+        assert_eq!(snapshot.offset, (6 + overlong_osc().len() + 6) as u64);
+        assert_eq!(Terminal::from_snapshot(&snapshot.data).unwrap().text(Lines::Screen), "beforeafter");
     }
 
     #[test]
     fn an_outbox_past_its_limit_overflows_and_a_snapshot_starts_it_over() {
         let f = Feed::new(80, 24, &Settings::default()).unwrap();
         let mut f = Feed::lock(&f);
+        f.show(1);
         let line = vec![b'x'; 1 << 20];
         let posts: Vec<bool> = (0..5).map(|_| f.push(&line).0).collect();
         assert_eq!(posts, [false, false, false, false, true], "the main loop hears once, when it overflows");
-        assert!(f.overflowed());
-        assert!(f.noticed().overflowed);
-        f.snapshot().unwrap();
-        assert!(!f.overflowed() && f.chunk(usize::MAX).is_none());
+        assert!(f.viewers[&1].overflowed);
+        assert_eq!(f.noticed().overflowed, [1]);
+        f.show(1);
+        assert!(!f.viewers[&1].overflowed && f.viewers[&1].outbox.is_empty());
+    }
+
+    #[test]
+    fn a_slow_viewer_overflows_alone_and_holds_nothing_back() {
+        let f = Feed::new(80, 24, &Settings::default()).unwrap();
+        let mut f = Feed::lock(&f);
+        f.show(1);
+        f.show(2);
+        let line = vec![b'x'; 1 << 20];
+        f.viewers.get_mut(&1).unwrap().inflight = true;
+        f.viewers.get_mut(&2).unwrap().inflight = true;
+        f.push(&line);
+        assert!(f.holds(), "both are that far behind, so the program waits for the first to catch up");
+        let written = f.written();
+        let fast = f.viewers.get_mut(&2).unwrap();
+        fast.chunk(usize::MAX, written).unwrap();
+        fast.inflight = false;
+        assert!(!f.holds(), "one app keeping up keeps the program going");
+        let mut posts = vec![];
+        for _ in 0..4 {
+            posts.push(f.push(&line).0);
+            let written = f.written();
+            f.viewers.get_mut(&2).unwrap().chunk(usize::MAX, written).unwrap();
+        }
+        assert_eq!(posts, [false, false, false, true], "the main loop hears once, for the slow app");
+        assert!(f.viewers[&1].overflowed && !f.viewers[&2].overflowed);
+        assert!(f.noticed().overflowed.is_empty(), "the slow app has a chunk out, so it starts over once it takes it");
+        f.viewers.get_mut(&1).unwrap().inflight = false;
+        assert_eq!(f.noticed().overflowed, [1]);
+    }
+
+    #[test]
+    fn an_echo_goes_only_to_the_app_that_typed() {
+        let typing = Typing::default();
+        typed(&typing, 2, Instant::now());
+        written(&typing);
+        assert_eq!(echoed(&typing).map(|(conn, _)| conn), Some(2));
     }
 
     #[test]
@@ -555,8 +670,53 @@ pub(crate) mod tests {
         for i in 0..3000 {
             f.push(format!("\x1b[38;5;{}m\x1b[48;2;{i};1;2m{line}\x1b[0m\r\n", i % 256).as_bytes());
         }
-        let snapshot = f.snapshot().unwrap();
-        assert!(snapshot.len() < crate::settings::MAX_SCROLLBACK_BYTES, "{} bytes", snapshot.len());
+        let snapshot = f.snapshot(None).unwrap();
+        assert!(snapshot.data.len() < crate::settings::MAX_SCROLLBACK_BYTES, "{} bytes", snapshot.data.len());
+        assert!(!snapshot.more);
+        let bounded = f.snapshot(Some(100)).unwrap();
+        assert!(bounded.data.len() * 4 < snapshot.data.len(), "{} of {} bytes", bounded.data.len(), snapshot.data.len());
+        assert!(bounded.more);
+    }
+
+    #[test]
+    fn a_bounded_snapshot_in_the_alternate_screen_still_says_the_shell_has_more() {
+        let f = feed(80, 24, "");
+        let mut f = Feed::lock(&f);
+        for i in 0..5000 {
+            f.push(format!("line {i}\r\n").as_bytes());
+        }
+        f.push(b"\x1b[?1049h full screen");
+        let bounded = f.snapshot(Some(100)).unwrap();
+        assert!(bounded.more);
+    }
+
+    #[test]
+    fn a_replay_gives_the_output_and_sizes_since_an_offset_in_order() {
+        let f = feed(20, 5, "one ");
+        let mut f = Feed::lock(&f);
+        f.push(b"two ");
+        f.resize("t", 30, 6, 0, 0);
+        f.push(b"three");
+        assert_eq!(f.replay(4), Some(vec![Replayed::Output(b"two ".to_vec(), 8), Replayed::Grid(30, 6), Replayed::Output(b"three".to_vec(), 13)]));
+        assert_eq!(f.replay(8), Some(vec![Replayed::Grid(30, 6), Replayed::Output(b"three".to_vec(), 13)]));
+        assert_eq!(f.replay(13), Some(vec![]));
+        assert_eq!(f.replay(14), None);
+    }
+
+    #[test]
+    fn a_replay_reaches_back_only_as_far_as_the_ring() {
+        let f = feed(20, 5, "");
+        let mut f = Feed::lock(&f);
+        f.resize("t", 30, 6, 0, 0);
+        let chunk = vec![b'x'; 1000];
+        for _ in 0..(REPLAY / 1000 + 10) {
+            f.push(&chunk);
+        }
+        let written = ((REPLAY / 1000 + 10) * 1000) as u64;
+        assert_eq!(f.replay(0), None);
+        assert_eq!(f.replay(written - REPLAY as u64 - 1), None);
+        let replayed = f.replay(written - REPLAY as u64).unwrap();
+        assert_eq!(replayed, vec![Replayed::Output(vec![b'x'; REPLAY], written)]);
     }
 
     fn reported(f: &Feed, group: i32) -> Option<&'static str> {

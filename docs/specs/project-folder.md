@@ -98,7 +98,7 @@ sequenceDiagram
     D->>D: end its other terminals (a planner's agent quits first)
     D->>F: clone the folder to its place (APFS clone, else a copy)
     D->>F: in the copy: repair worktrees inside, drop those outside
-    D->>F: copy Claude's folders, point codex, copilot and opencode sessions at the copy
+    D->>F: copy Claude's folders, point codex and opencode sessions at the copy
     D->>D: kanna.db and the pane table: PATH becomes the copy
     D->>D: start the tasks and terminals again in the copy
     D->>F: search for files that still name PATH
@@ -113,7 +113,7 @@ sequenceDiagram
 - **What follows the copy:**
   - in `kanna.db`: tasks' repo and worktree, messages, recent projects, planners, quiz rounds, and never (deleted); in the pane table (saved with the layout): terminals' folders and file panes' paths;
   - Claude's per-folder conversation and memory folders (`~/.claude/projects/<the folder, every non-alphanumeric a ->`) for the repo, its worktrees (also removed ones) and subfolders, **copied** to the copy's names, so the original's stay; into a folder that's there already, a file there already is kept, and the import says which it didn't copy;
-  - codex rollouts' `cwd`, copilot's `workspace.yaml` `cwd` and `git_root`, opencode's sessions' `directory`: what Kanna [finds a session by](tasks.md#which-agents-resume), **rewritten** to the copy. Duplicating them would give two sessions one ID (codex's rollouts, opencode's rows), and either could be resumed; the original is outside, so Kanna resumes nothing there. Antigravity resumes by the conversation it says as it quits.
+  - codex rollouts' `cwd` and opencode's sessions' `directory`: what Kanna [finds a session by](tasks.md#which-agents-resume), **rewritten** to the copy. Duplicating them would give two sessions one ID (codex's rollouts, opencode's rows), and either could be resumed; the original is outside, so Kanna resumes nothing there. Antigravity resumes by the conversation it says as it quits.
 - **What it doesn't change, it lists:** every line naming PATH (as written, `~/…` or `$HOME/…`) in `~/.claude` (but not its conversations), `~/.claude.json`, `~/.agents`, your shell's startup files, `~/.codex/config.toml` and `AGENTS.md`, and the copy's own files, as `FILE:LINE`, for you to change. Codex's trust and Claude's per-folder settings are among them: codex may ask to trust the folder again.
 - **Then it says where the copy is,** and that the original is as it was and can be deleted:
 
@@ -136,7 +136,7 @@ These still name ~/work/app; change them yourself:
 
 - **`projects.rs`:** `home_place` reads `origin` from the repo's `.git/config` and maps it (`place_of`); `outside` is the refusal. The Shelf (`tasks.rs`: `placed`, from `ready` and `mint`) and the `desk` command call it; `Tasks.repos` is set by `main.rs`, so tests run without it. Its `projects list` adds the outside projects with work in Kanna, marked `outside`.
 - **`project import`** is the daemon's `project` command (`import`, `path`, `by`), in `tasks.rs` (`import`), with the file work in `project_import.rs` (`plan`, `copy`, `Stores::carry`, `mentions`). While it runs, the Shelf refuses to make or start a task in the project (`importing`). The same command's `asked` and `never` (`path`) read and set never, for `planner.sh`.
-- **The agents' folders** are under `KANNA_AGENTS_HOME` when it's set, else `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `XDG_DATA_HOME` or their defaults in `~`. Rewritten files keep their modification time, which the session lookups go by.
+- **The agents' folders** are under `KANNA_AGENTS_HOME` when it's set, else `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_DATA_HOME` or their defaults in `~`. Rewritten files keep their modification time, which the session lookups go by.
 - **`planner.sh`** works out a place the same way (`place`, `misplaced`), so it can say where without the daemon, asks the daemon for never (`kanna raw`), and runs `kanna project import` when you say yes.
 
 ## 6. Rejected

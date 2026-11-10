@@ -1,3 +1,6 @@
+#[path = "src/tags.rs"]
+mod tags;
+
 use std::path::PathBuf;
 
 fn main() {
@@ -8,12 +11,12 @@ fn main() {
     if !["production", "staging", "dev"].contains(&channel.as_str()) {
         panic!("KANNA_CHANNEL is \"{channel}\": use production, staging or dev");
     }
-    let version = std::env::var("KANNA_VERSION").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap());
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let checkout = manifest.join("../..").canonicalize().unwrap_or_else(|_| manifest.join("../.."));
+    let version = std::env::var("KANNA_VERSION").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| tag_version(&checkout));
     if !valid_version(&version) {
         panic!("KANNA_VERSION is \"{version}\": use X.Y.Z or X.Y.Z-PRERELEASE");
     }
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let checkout = manifest.join("../..").canonicalize().unwrap_or_else(|_| manifest.join("../.."));
     let dot_git = checkout.join(".git");
     println!("cargo::rerun-if-changed={}", dot_git.display());
     let worktree = if dot_git.is_file() { checkout.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { String::new() };
@@ -26,11 +29,20 @@ fn main() {
     println!("cargo::rustc-env=KANNA_BUILD_COMMIT={commit}");
 }
 
+fn tag_version(checkout: &std::path::Path) -> String {
+    if let Some(common) = tags::git(checkout, &["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
+        let common = PathBuf::from(common);
+        for path in [common.join("refs/tags"), common.join("packed-refs")] {
+            if path.exists() {
+                println!("cargo::rerun-if-changed={}", path.display());
+            }
+        }
+    }
+    tags::dev_version(checkout).unwrap_or_else(|| panic!("no vX.Y.Z tag to read the version from in {}: run git fetch --tags, or set KANNA_VERSION", checkout.display()))
+}
+
 fn head(checkout: &std::path::Path) -> Option<String> {
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git").arg("-C").arg(checkout).args(args).output().ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-    };
+    let git = |args: &[&str]| tags::git(checkout, args);
     let dir = git(&["rev-parse", "--absolute-git-dir"])?;
     println!("cargo::rerun-if-changed={dir}/HEAD");
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {

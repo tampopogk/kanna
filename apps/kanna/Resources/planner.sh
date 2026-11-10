@@ -1,11 +1,12 @@
 #!/bin/sh
 
-kanna= zsh= repos="$HOME/.kanna-v4/repos"
+kanna= zsh= repos="$HOME/.kanna-v4/repos" mine="$HOME/.kanna-v4/config.json"
 while [ $# -gt 0 ]; do
   case $1 in
     --kanna) kanna=$2; shift 2 ;;
     --zsh) zsh=$2; shift 2 ;;
     --repos) repos=$2; shift 2 ;;
+    --config) mine=$2; shift 2 ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -34,9 +35,55 @@ tilde() {
   esac
 }
 
+edit='
+bindkey -e
+bindkey "^[[1;3D" backward-word
+bindkey "^[[1;3C" forward-word
+bindkey "^[^[[D" backward-word
+bindkey "^[^[[C" forward-word
+WORDCHARS=${WORDCHARS//\/}
+HISTSIZE=1000
+for line in ${(f)3}; do print -s -r -- $line; done
+if [[ $2 == folders ]]; then
+  folders() {
+    local word=$LBUFFER folder=$LBUFFER common f
+    [[ $word == "~" ]] && { LBUFFER="~/"; return; }
+    [[ $word == "~/"* ]] && folder=$HOME${word#"~"}
+    local found=( $folder*(N-/) )
+    (( $#found )) || { zle beep; return; }
+    [[ $folder == $word ]] || found=( "~"${^found#$HOME} )
+    if (( $#found == 1 )); then
+      LBUFFER=$found[1]/
+      return
+    fi
+    common=$found[1]
+    for f in $found; do
+      while [[ $f != $common* ]]; do common=${common%?}; done
+    done
+    LBUFFER=$common
+    zle -M "${(F)found:t}"
+  }
+  zle -N folders
+  bindkey "^I" folders
+else
+  bindkey "^I" beep
+fi
+line=
+vared -e -h -p ${1//\%/%%} line || exit 1
+print -rn -- $line >&3
+'
+asked=
+
 ask() {
-  printf '%s ' "$1" | tr -d '\000-\010\013-\037\177'
-  read -r answer || { echo; shell; }
+  prompt=$(printf '%s ' "$1" | tr -d '\000-\010\013-\037\177')
+  if [ -t 0 ] && [ -x /bin/zsh ]; then
+    { answer=$(/bin/zsh -f -c "$edit" zsh "$prompt" "$2" "$asked" 3>&1 1>&4) || { echo; shell; }; } 4>&1
+    [ -z "$answer" ] || asked="$asked$answer
+"
+  else
+    printf '%s' "$prompt"
+    read -r answer || { echo; shell; }
+  fi
 }
 
 moved() {
@@ -172,7 +219,7 @@ where() {
     question="Folder, repo, name or number [1]:"
   fi
   while :; do
-    ask "$question"
+    ask "$question" folders
     if [ "$recents" -gt 0 ]; then
       case $answer in
         '') answer=1 ;;
@@ -233,8 +280,6 @@ where() {
   moved
 }
 
-mine="${KANNA_AGENTS_HOME:-$HOME}/.kanna-v4/config.json"
-
 current() {
   [ -f "$1" ] || return 1
   case $(jq -r '.version // empty' "$1" 2>/dev/null) in
@@ -273,12 +318,14 @@ while [ $# -ge 4 ]; do
   shift 4
 done
 
-if [ -n "$kanna" ]; then
+if [ -n "$kanna" ] && [ -z "$KANNA_PLANNER_AGENT" ]; then
   "$kanna" agents setup --ask
   "$kanna" agents update --ask
 fi
 
-if [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
+if [ -n "$KANNA_PLANNER_AGENT" ]; then
+  :
+elif [ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
   where
 elif misplaced .; then
   if project asked | jq -e '.never == true' >/dev/null 2>&1; then
@@ -290,14 +337,14 @@ elif misplaced .; then
 fi
 
 if [ -z "$installed" ]; then
-  echo "No agent Kanna knows is installed (claude, codex, copilot, opencode or agy). Install one, then start it here."
+  echo "No agent Kanna knows is installed (claude, codex, opencode or agy). Install one, then start it here."
   shell
 fi
 
 count=$(printf '%s' "$installed" | grep -c .)
 chosen=
 top=$(git rev-parse --show-toplevel 2>/dev/null)
-wanted=$(setting planning.agent ${top:+"$top/.kanna/config.json"} "$mine")
+wanted=${KANNA_PLANNER_AGENT:-$(setting planning.agent ${top:+"$top/.kanna/config.json"} "$mine")}
 if [ -n "$wanted" ]; then
   chosen=$(printf '%s' "$installed" | awk -F '\t' -v n="$wanted" '$1 == n { print; exit }')
   [ -n "$chosen" ] || say "planning.agent is $wanted, which isn't installed."
@@ -332,6 +379,9 @@ if [ -z "$chosen" ]; then
 fi
 
 prompts=$(setting agents.prompts "$mine")
+if [ -n "$KANNA_PLANNER_AGENT" ] && [ "$prompts" != skip ]; then
+  prompts=ask
+fi
 case $prompts in
   ask|skip) ;;
   *)

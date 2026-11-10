@@ -155,7 +155,7 @@ stateDiagram-v2
 
 ## 8. The Client (for the Daemon)
 
-`kanna_keeper::client`, blocking:
+`kanna_keeper::client`, blocking except `send_spawn`:
 
 | Call | Does |
 |---|---|
@@ -163,10 +163,12 @@ stateDiagram-v2
 | `hello() -> (version, pid)`, `info() -> Hello { version, pid, build }` | the daemon compares `build` and `version` with its own keeper's, upgrading it if they differ ([upgrading](specs/keeper-upgrade.md)) |
 | `upgrade(binary) -> Hello` | asks the keeper to re-exec as `binary`; the new code's `hello` |
 | `spawn(&SpawnRequest) -> Pty` | `SpawnRequest::shell(id)` / `::command(id, cmd)`, then set `shell`, `cwd`, `env`, `cols`, `rows` |
+| `send_spawn(&SpawnRequest) -> tag` | sends a spawn without waiting; its reply comes from `poll` as `Heard::Spawned(tag, io::Result<Pty>)` (the daemon's way, [spawns without waiting](specs/async-spawns.md)) |
 | `adopt() -> Vec<Pty>` | every pty held; `Pty { id, pid, cmd, cwd, master: OwnedFd, exit }` |
 | `close(id)`, `ack(id)` | |
 | `poll_events()`, `wait_event(timeout)` -> `Exited { id, pid, status }` | `status` is `ExitStatus::Code(n)` or `Signal(s)`; `shell_status()` gives 128+s |
-| `as_raw_fd()` | for the daemon's poll loop: readable means events; then `poll_events()` |
+| `poll() -> Vec<Heard>` | spawn replies and exits that have arrived, in the order sent: `Heard::Spawned(tag, result)`, `Heard::Exited(Exited)`; a blocking request that reads a spawn reply on its way keeps it for `poll` |
+| `as_raw_fd()` | for the daemon's poll loop: readable means replies or events; then `poll()` |
 | `set_timeout(Some(t))` | a request with no reply within `t` fails with `TimedOut`, so a keeper that stops answering can't hang the daemon |
 
 Received masters are close-on-exec and blocking; the daemon sets what it needs.
@@ -192,7 +194,7 @@ Received masters are close-on-exec and blocking; the daemon sets what it needs.
 ## 10. Known Limitations
 
 - **A keeper restart loses the processes' parent**, not the processes: if the keeper dies while a daemon holds the masters, the shells keep running but nobody reaps them or knows their exit code. An upgrade doesn't restart it ([upgrading](specs/keeper-upgrade.md)).
-- **An upgrade pauses the keeper** for the probe (up to 5 s) and the flush (up to 2 s); spawns wait meanwhile, well inside the daemon's 10 s reply timeout.
+- **An upgrade pauses the keeper** for the probe (up to 5 s) and the flush (up to 2 s); spawns wait meanwhile, well inside core's 10 s start timeout (the daemon doesn't wait on them).
 - **A new keeper that crashes after accepting the state** loses the processes' parent, as any keeper crash would; the probe makes that unlikely, since it runs the same parsing first.
 - **A keeper built before upgrades existed can't be upgraded**: it keeps its code until it stops (once, the first time).
 - **On macOS a process can't finish exiting while its last output is unread** (closing the tty waits for output to drain). With no daemon connected, its exit is reported once a daemon adopts the pty and reads it.

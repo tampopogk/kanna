@@ -56,6 +56,39 @@ pub fn update<E>(file: &Path, change: impl FnOnce(&mut Value) -> Result<(), E>, 
     File::unlock(&lock).map_err(broken)
 }
 
+pub fn is_thread_id(id: &str) -> bool {
+    id.len() > 1 && id.len() < 12 && id.starts_with('c') && id[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+pub fn mark_path(file: &Path, id: &str) -> PathBuf {
+    let store = store_path(file);
+    let stem = store.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    store.with_file_name("marks").join(format!("{stem}-{id}.png"))
+}
+
+pub fn save_mark(file: &Path, id: &str, png: &[u8]) -> Result<String, String> {
+    if !is_thread_id(id) || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("a marked-up copy is a PNG of a thread".into());
+    }
+    let target = mark_path(file, id);
+    let broken = |e: std::io::Error| format!("can't write {}: {e}", target.display());
+    let marks = target.parent().unwrap_or(Path::new("/"));
+    let docs = marks.parent().unwrap_or(marks);
+    for dir in [docs.parent().unwrap_or(docs), docs, marks] {
+        real_folder(dir).map_err(broken)?;
+    }
+    let temporary = target.with_extension(format!("png.{}.tmp", std::process::id()));
+    let mut out = OpenOptions::new().write(true).create_new(true).mode(0o644).custom_flags(libc_no_follow()).open(&temporary).map_err(broken)?;
+    out.write_all(png).map_err(broken)?;
+    drop(out);
+    std::fs::rename(&temporary, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&temporary);
+        broken(e)
+    })?;
+    let root = repo_root(file);
+    Ok(target.strip_prefix(&root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| target.to_string_lossy().into_owned()))
+}
+
 fn real_folder(dir: &Path) -> std::io::Result<()> {
     match std::fs::create_dir(dir) {
         Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
@@ -82,20 +115,23 @@ pub fn block_at(source: &str, line: usize) -> Option<(usize, String)> {
     }
     let mut fenced = vec![false; lines.len()];
     let mut drawn = vec![false; lines.len()];
-    let mut inside: Option<bool> = None;
+    let mut tree = vec![false; lines.len()];
+    let mut inside: Option<&str> = None;
     for (i, text) in lines.iter().enumerate() {
         let trimmed = text.trim_start();
         let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
         if fence && inside.is_none() {
-            inside = Some(trimmed.trim_start_matches(['`', '~']).trim().starts_with("mermaid"));
+            let info = trimmed.trim_start_matches(['`', '~']).trim();
+            inside = Some(if info.starts_with("mermaid") { "mermaid" } else if info.starts_with(kanna_calltree::FENCE) { kanna_calltree::FENCE } else { "" });
         } else if fence {
             fenced[i] = true;
-            drawn[i] = inside == Some(true);
+            drawn[i] = inside == Some("mermaid");
             inside = None;
             continue;
         }
         fenced[i] = inside.is_some();
-        drawn[i] = inside == Some(true);
+        drawn[i] = inside == Some("mermaid");
+        tree[i] = inside == Some(kanna_calltree::FENCE) && kanna_calltree::quote(text).is_some();
     }
     let picture = |i: usize| drawn[i] || (lines[i].trim_start().starts_with("![") && lines[i].trim_end().ends_with(')'));
     let text = |i: usize| !lines[i].trim().is_empty() && !picture(i) && !(fenced[i] && lines[i].trim_start().starts_with(['`', '~']));
@@ -132,6 +168,9 @@ pub fn block_at(source: &str, line: usize) -> Option<(usize, String)> {
         }
         (start, end)
     };
+    if tree[at] {
+        return Some((at + 1, kanna_calltree::quote(lines[at]).unwrap_or_default()));
+    }
     let joined = lines[start..=end].iter().map(|l| strip(l)).collect::<Vec<_>>().join(" ");
     let plain = joined
         .split(|c: char| "*_`[]()<>|#~".contains(c))
@@ -195,6 +234,11 @@ mod comment_tests {
         assert_eq!(block_at(doc, 6), Some((6, "Panes only: a container holds panes.".into())));
         assert_eq!(block_at(doc, 11), Some((11, "kanna open --in docs".into())));
         assert_eq!(block_at(doc, 40), None);
+        let calls = "## Rename\n\n```calltree\nkanna CLI\nmain  crates/kanna/src/lib.rs:17  the entry\n  -> socket tasks\nkanna-daemon\n  name  crates/kanna-daemon/src/tasks.rs:1043\n```\n";
+        assert_eq!(block_at(calls, 5), Some((5, "lib.rs:17".into())));
+        assert_eq!(block_at(calls, 6), Some((6, "socket tasks".into())));
+        assert_eq!(block_at(calls, 7), Some((7, "kanna-daemon".into())));
+        assert_eq!(block_at(calls, 8), Some((8, "tasks.rs:1043".into())));
         let pictures = "## How it fits\n\nThe keeper hands terminals over.\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n![The stack](stack.png)\n";
         assert_eq!(block_at(pictures, 6), Some((3, "The keeper hands terminals over.".into())));
         assert_eq!(block_at(pictures, 10), Some((3, "The keeper hands terminals over.".into())));

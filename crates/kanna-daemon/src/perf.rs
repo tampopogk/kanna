@@ -47,6 +47,7 @@ pub fn since(name: &str, start: Instant) {
 
 pub fn reset() {
     BOOK.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    crate::runtime::reset_holds();
 }
 
 pub fn quantile(sorted: &[f64], q: f64) -> f64 {
@@ -75,7 +76,8 @@ pub fn stats() -> Value {
             })
         })
         .collect();
-    json!({ "intervals": intervals })
+    let (held, over) = crate::runtime::holds();
+    json!({ "intervals": intervals, "loop": { "holds": held, "over": over } })
 }
 
 pub fn install(core: &Core) {

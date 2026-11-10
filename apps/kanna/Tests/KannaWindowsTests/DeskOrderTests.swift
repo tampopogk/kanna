@@ -11,9 +11,8 @@ struct DeskOrderTests {
     struct Desk {
         var active: String
         var recent: [String]
-        var needs: Set<String> = []
 
-        var keyed: [String] { DeskOrder.byRecency(recent) { needs.contains($0) } }
+        var keyed: [String] { recent }
 
         mutating func press(_ key: Int) {
             guard let task = DeskOrder.task(keyed, key: key) else { return }
@@ -33,13 +32,37 @@ struct DeskOrderTests {
         #expect(DeskOrder.byAge(tasks, made: \.madeAt).map(\.id) == ["b", "a", "c"])
     }
 
-    @Test func commandOneIsTheTaskLeftLastAndCommandTwoTheOneLeftLongestAgoWithOnesThatNeedYouAhead() {
-        let desk = Desk(active: "a", recent: ["c", "b", "d"], needs: ["d"])
-        #expect(desk.keyed == ["d", "c", "b"])
-        #expect(DeskOrder.task(desk.keyed, key: 1) == "d")
+    @Test func tasksMadeAtTheSameMomentOnDifferentMachinesKeepOneOrderHoweverTheyArrive() {
+        let tasks = [Task(id: "c", madeAt: 5), Task(id: "a", madeAt: 5), Task(id: "b", madeAt: 5), Task(id: "z", madeAt: 1)]
+        let order = ["z", "a", "b", "c"]
+        #expect(DeskOrder.byAge(tasks, made: \.madeAt, tie: \.id).map(\.id) == order)
+        #expect(DeskOrder.byAge(tasks.reversed(), made: \.madeAt, tie: \.id).map(\.id) == order)
+    }
+
+    @Test func aTieInBothKeepsItsOrder() {
+        let tasks = [Task(id: "a", madeAt: 5, needsYou: true), Task(id: "a", madeAt: 5)]
+        #expect(DeskOrder.byAge(tasks, made: \.madeAt, tie: \.id) == tasks)
+    }
+
+    @Test func commandOneIsTheTaskLeftLastAndCommandTwoTheOneLeftLongestAgo() {
+        let desk = Desk(active: "a", recent: ["c", "b"])
+        #expect(DeskOrder.task(desk.keyed, key: 1) == "c")
         #expect(DeskOrder.task(desk.keyed, key: 2) == "b")
         #expect(DeskOrder.task(desk.keyed, key: 3) == nil)
-        #expect(DeskOrder.keys(desk.keyed) == ["d": "⌘1", "b": "⌘2"])
+        #expect(DeskOrder.keys(desk.keyed) == ["c": "⌘1", "b": "⌘2"])
+    }
+
+    @Test func theStripListsTheOtherTasksInKeyOrder() {
+        var desk = Desk(active: "a", recent: ["c", "b"])
+        #expect(DeskOrder.strip(desk.keyed) == ["c", "b"])
+        desk.press(1)
+        #expect(DeskOrder.strip(desk.keyed) == ["a", "b"])
+    }
+
+    @Test func withNoTaskActiveTheStripListsCommandOneThenCommandTwoThenTheUnkeyedTask() {
+        #expect(DeskOrder.strip(["a", "b", "c"]) == ["a", "c", "b"])
+        #expect(DeskOrder.strip(["b"]) == ["b"])
+        #expect(DeskOrder.strip([String]()) == [])
     }
 
     @Test func withNoTaskActiveCommandTwoIsTheTaskLeftLongestAgo() {

@@ -1,4 +1,6 @@
+use crate::desk_news::Merge;
 use crate::tasks::git;
+use crate::stamped::Stamped;
 use std::fs;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -50,27 +52,50 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
-    let root = worktree.ancestors().find(|dir| dir.join(".git").exists())?;
-    let marker = root.join(".git");
+thread_local! {
+    static DIRS: Stamped<Option<PathBuf>> = Stamped::default();
+    static HEADS: Stamped<Option<String>> = Stamped::default();
+    static SETUPS: Stamped<Option<Setup>> = Stamped::default();
+    static TEARDOWNS: Stamped<Option<i32>> = Stamped::default();
+}
+
+fn marked_dir(root: &Path, marker: &Path) -> Option<PathBuf> {
     if marker.is_dir() {
-        return Some(marker);
+        return Some(marker.to_path_buf());
     }
-    let text = fs::metadata(&marker).ok().filter(|m| m.len() <= 4096).and_then(|_| fs::read_to_string(&marker).ok())?;
-    let dir = root.join(text.lines().next()?.strip_prefix("gitdir:")?.trim());
+    let text = fs::metadata(marker).ok().filter(|m| m.len() <= 4096).and_then(|_| fs::read_to_string(marker).ok())?;
+    Some(root.join(text.lines().next()?.strip_prefix("gitdir:")?.trim()))
+}
+
+pub fn own_dir(worktree: &Path) -> Option<PathBuf> {
+    let marker = worktree.join(".git");
+    let dir = DIRS.with(|dirs| dirs.get(&marker, || marked_dir(worktree, &marker)))?;
     dir.is_dir().then_some(dir)
 }
 
+pub fn git_dir(worktree: &Path) -> Option<PathBuf> {
+    own_dir(worktree).or_else(|| own_dir(worktree.ancestors().skip(1).find(|dir| dir.join(".git").exists())?))
+}
+
+pub fn branch_in(dir: &Path) -> Option<String> {
+    let head = dir.join("HEAD");
+    HEADS.with(|heads| heads.get(&head, || fs::read_to_string(&head).ok()?.trim().strip_prefix("ref: refs/heads/").map(String::from)))
+}
+
 pub fn is_linked(worktree: &Path) -> bool {
-    let common = git(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok().and_then(|d| fs::canonicalize(d).ok());
-    let own = git_dir(worktree).and_then(|d| fs::canonicalize(d).ok());
-    common.is_some() && own.is_some() && common != own
+    git_dir(worktree).is_some_and(|own| own.join("commondir").is_file())
 }
 
 pub fn record_base(worktree: &Path) {
     let Some(dir) = git_dir(worktree) else { return };
     let base = git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]).unwrap_or_default();
     let _ = fs::write(dir.join(BASE), format!("{base}\n"));
+}
+
+pub fn set_base(worktree: &Path, base: &str) {
+    if let Some(dir) = git_dir(worktree) {
+        let _ = fs::write(dir.join(BASE), format!("{base}\n"));
+    }
 }
 
 pub fn base(worktree: &Path) -> Option<String> {
@@ -89,12 +114,19 @@ pub fn merged(repo: &Path, worktree: &Path) -> bool {
     moved && git(repo, &["merge-base", "--is-ancestor", &tip, "HEAD"]).is_ok()
 }
 
+pub fn ended_at(worktree: &Path) -> Option<(String, String)> {
+    let branch = git(worktree, &["branch", "--show-current"]).ok().filter(|b| !b.is_empty())?;
+    let tip = git(worktree, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok()?;
+    (base(worktree).as_deref() != Some(tip.as_str())).then_some((branch, tip))
+}
+
 pub fn setup_record(worktree: &Path) -> Option<PathBuf> {
     git_dir(worktree).map(|dir| dir.join(RECORD))
 }
 
 pub fn setup(worktree: &Path) -> Option<Setup> {
-    read_setup(&setup_record(worktree)?)
+    let record = setup_record(worktree)?;
+    SETUPS.with(|setups| setups.get(&record, || read_setup(&record)))
 }
 
 pub fn read_setup(record: &Path) -> Option<Setup> {
@@ -128,7 +160,8 @@ pub fn teardown_record(worktree: &Path) -> Option<PathBuf> {
 }
 
 pub fn torn_down(worktree: &Path) -> Option<i32> {
-    fs::read_to_string(teardown_record(worktree)?).ok()?.trim().parse().ok()
+    let record = teardown_record(worktree)?;
+    TEARDOWNS.with(|teardowns| teardowns.get(&record, || fs::read_to_string(&record).ok()?.trim().parse().ok()))
 }
 
 pub fn forget_teardown(worktree: &Path) {
@@ -182,6 +215,23 @@ impl Task {
     }
 }
 
+pub fn stage_command(vars: &[(&str, String)], command: &str, timeout: u64, log: &Path, exit: &Path) -> String {
+    let vars: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
+    let exit = exit.to_string_lossy();
+    format!(
+        "printf 'Running: %s\\n\\n' {shown}; {{ {vars} perl -e 'alarm shift; exec @ARGV' {timeout} \"${{SHELL:-/bin/zsh}}\" -lc {shown}; printf '%s\\n' \"$?\" > {part}; }} 2>&1 | tee {log}; mv {part} {exit}",
+        shown = quote(command),
+        vars = vars.join(" "),
+        part = quote(&format!("{exit}.part")),
+        exit = quote(&exit),
+        log = quote(&log.to_string_lossy()),
+    )
+}
+
+pub fn timed_out(code: i32) -> bool {
+    code == TIMED_OUT
+}
+
 pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration) -> Result<i32, String> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
     let mut cmd = Command::new(shell);
@@ -210,6 +260,14 @@ pub fn run(command: &str, cwd: &Path, vars: &[(&str, String)], timeout: Duration
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+pub fn merge(repo: &Path, worktree: &Path) -> Merge {
+    if !worktree.is_dir() || !is_linked(worktree) {
+        return Merge::Unknown;
+    }
+    let into = git(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "HEAD".into());
+    if merged(repo, worktree) { Merge::Into(into) } else { Merge::Not(into) }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -265,7 +323,7 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         let repo = fs::canonicalize(&repo).unwrap();
         sh(&repo, "git init -q -b main && printf 'target\\n' > .gitignore && git add .gitignore && git -c user.email=e@e -c user.name=e commit -q -m first");
-        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2").unwrap();
+        let (folder, _) = crate::tasks::make_worktree(&repo, "task-1dfb12c2", None).unwrap();
         (fs::canonicalize(dir).unwrap(), PathBuf::from(folder))
     }
 
@@ -297,6 +355,20 @@ mod tests {
         assert!(!worktree.exists(), "the worktree is removed");
         assert_eq!(fs::read_to_string(elsewhere.join("kanna")).unwrap(), "built", "what its target links to is the repo's teardown's to remove");
         assert!(git(&repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_err(), "the branch is deleted");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_task_s_merge_names_the_checked_out_branch() {
+        let (dir, worktree) = repo("merge");
+        let repo = dir.join("repo");
+        assert_eq!(merge(&repo, &worktree), Merge::Not("main".into()), "a branch with no commits of its own isn't merged");
+        sh(&worktree, "git -c user.email=e@e -c user.name=e commit -q --allow-empty -m work");
+        assert_eq!(merge(&repo, &worktree), Merge::Not("main".into()));
+        let branch = git(&worktree, &["branch", "--show-current"]).unwrap();
+        sh(&repo, &format!("git merge -q --ff-only {branch}"));
+        assert_eq!(merge(&repo, &worktree), Merge::Into("main".into()));
+        assert_eq!(merge(&repo, &repo), Merge::Unknown, "the main checkout is no task's");
         fs::remove_dir_all(&dir).unwrap();
     }
 

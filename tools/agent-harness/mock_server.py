@@ -70,16 +70,16 @@ def turn_for(body):
     for rule in SCENARIO["rules"]:
         if rule["match"] in prompt:
             if rule.get("tool") and tool_names(body) and not tool_answered(body, rule["match"]):
-                return {"kind": "tool", "command": rule["tool"]}
+                return {"kind": "tool", "command": rule["tool"], "args": rule.get("args", {}), "claude_args": rule.get("claude_args", {})}
             return {"kind": "text", "text": "\n".join(rule.get("after_tool" if rule.get("tool") else "text", rule.get("text", [])))}
     return {"kind": "text", "text": SCENARIO["fallback"]}
 
 
-def codex_call(body, command):
+def codex_call(body, command, extra=None):
     names = tool_names(body)
     escalate = {"sandbox_permissions": "require_escalated", "justification": "Create the probe file outside the sandbox"}
     if "exec_command" in names:
-        return "exec_command", json.dumps({"cmd": command, **escalate})
+        return "exec_command", json.dumps({"cmd": command, **escalate, **(extra or {})})
     if "shell_command" in names:
         return "shell_command", json.dumps({"command": command, **escalate})
     return "shell", json.dumps({"command": ["bash", "-lc", command], **escalate})
@@ -103,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def log(self, body, turn=None):
-        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body), "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn}
+        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body), "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn, "last": json.dumps(items_of(body)[-1:])}
         with LOCK, LOG_PATH.open("a") as f:
             f.write(json.dumps(entry) + "\n")
 
@@ -174,7 +174,7 @@ class Handler(BaseHTTPRequestHandler):
         mid = "msg_" + uuid.uuid4().hex[:12]
         model = body.get("model", "mock-model")
         if turn["kind"] == "tool":
-            block = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "Bash", "input": {"command": turn["command"], "description": "Create the probe file"}}
+            block = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "Bash", "input": {"command": turn["command"], "description": "Create the probe file", **turn.get("claude_args", {})}}
             content, stop = [block], "tool_use"
         else:
             content, stop = [{"type": "text", "text": turn["text"]}], "end_turn"
@@ -194,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
         model = body.get("model", "mock-model")
         usage = {"input_tokens": 10, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 20}
         if turn["kind"] == "tool":
-            name, args = codex_call(body, turn["command"])
+            name, args = codex_call(body, turn["command"], turn.get("args"))
             item = {"type": "function_call", "id": "fc_" + uuid.uuid4().hex[:12], "call_id": "call_" + uuid.uuid4().hex[:12], "name": name, "arguments": args, "status": "completed"}
         else:
             item = {"type": "message", "id": "msg_" + uuid.uuid4().hex[:12], "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": turn["text"], "annotations": []}]}
