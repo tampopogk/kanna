@@ -700,6 +700,7 @@ fn allowed(on: &[String], name: &str) -> bool {
 
 enum Candidate {
     Wake(Entry),
+    Resume(Entry),
     Here(Entry),
     There { task: String, birth: String, owner: String },
     Take { task: String, birth: String, owner: String },
@@ -934,6 +935,8 @@ const LOOK_EVERY: Duration = Duration::from_millis(100);
 
 const LOOK_WAIT: Duration = Duration::from_secs(1);
 
+const KEEPER_LOST: &str = "keeper lost";
+
 const FILL_EVERY: Duration = Duration::from_secs(2);
 
 const BACKGROUND_EVERY: Duration = Duration::from_millis(500);
@@ -1002,6 +1005,7 @@ pub struct Tasks {
     pub channel: RefCell<Option<Box<dyn Fn(&str) -> Option<Channel>>>>,
     pub on_warn: RefCell<Option<Box<dyn Fn(&str, &str, &str)>>>,
     pub on_close: RefCell<Option<Box<dyn Fn(&str)>>>,
+    pub run_of: RefCell<Option<Box<dyn Fn(&str) -> Option<String>>>>,
     pub on_stop: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_start: RefCell<Option<Box<dyn Fn(&str)>>>,
     pub on_delivered: RefCell<Option<Box<dyn Fn(&[Message])>>>,
@@ -1198,6 +1202,7 @@ impl Tasks {
             background: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
+            run_of: RefCell::default(),
             on_stop: RefCell::default(),
             on_start: RefCell::default(),
             on_delivered: RefCell::default(),
@@ -2031,6 +2036,10 @@ impl Tasks {
         running.into_iter().chain(self.entries.borrow().iter().cloned()).find(inside)
     }
 
+    fn run_stage(&self, task: &str) -> Option<String> {
+        self.run_of.borrow().as_ref().and_then(|run_of| run_of(task))
+    }
+
     pub fn agent_pane(&self, task: &str) -> Option<String> {
         let running = self.running.borrow().iter().find(|r| r.entry.id == task).map(|r| r.pane.clone());
         running.or_else(|| self.entries.borrow().iter().find(|e| e.id == task).and_then(|e| e.held.clone()))
@@ -2659,7 +2668,11 @@ impl Tasks {
             match candidate {
                 Candidate::Wake(entry) => {
                     log!("kanna-daemon: {} has a message, so it runs on the Shelf ({busy} of {total} here, {repo})", entry.id);
-                    self.wake(core, entry);
+                    self.wake(core, entry, "message");
+                }
+                Candidate::Resume(entry) => {
+                    log!("kanna-daemon: {}'s agent ended with the keeper, so it runs on the Shelf again ({busy} of {total} here, {repo})", entry.id);
+                    self.wake(core, entry, KEEPER_LOST);
                 }
                 Candidate::Here(entry) => {
                     let (this, id) = (Rc::downgrade(self), entry.id.clone());
@@ -2703,13 +2716,15 @@ impl Tasks {
 
     fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<(Hlc, Candidate)> {
         let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
-        let woken = mine.iter().filter(|e| e.queued.is_none() && mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
+        let lost = |e: &Entry| e.stopped.is_none() && e.held.as_deref().is_some_and(|pane| core.pane(pane).is_some_and(|p| p.lost()));
+        let resumed = mine.iter().filter(|e| lost(e) && e.queued.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Resume((*e).clone())));
+        let woken = mine.iter().filter(|e| !lost(e) && e.queued.is_none() && mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
         let new = mine
             .iter()
             .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
             .filter(|e| heard || e.birth.is_none() || e.on == [machines.me.name.clone()])
             .map(|e| (order(e), Candidate::Here((*e).clone())));
-        let mut waiting: Vec<(Hlc, Candidate)> = woken.chain(new).collect();
+        let mut waiting: Vec<(Hlc, Candidate)> = resumed.chain(woken).chain(new).collect();
         let others = || {
             let replica = self.replica.borrow();
             let any = replica.records().any(|r| r.text("state") == Some("waiting") && r.text("owner").is_some_and(|o| o != replica.me()));
@@ -2745,11 +2760,27 @@ impl Tasks {
         self.waiting.borrow().iter().any(|m| m.recipient == entry.id && (m.sender == USER || m.sender == PHONE))
     }
 
-    fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry) {
+    pub fn resume_lost(self: &Rc<Self>) {
+        let Some(core) = self.core.upgrade() else { return };
+        let lost: Vec<Running> = self.running.borrow().iter().filter(|r| core.pane(&r.pane).is_some_and(|p| p.lost())).cloned().collect();
+        for Running { pane, entry, .. } in lost {
+            log!("kanna-daemon: {}'s agent in {pane} ended with the keeper, so it resumes its conversation", entry.id);
+            self.resumed(entry, move |tasks, entry| {
+                let (this, id) = (Rc::downgrade(tasks), entry.id.clone());
+                tasks.revive(&pane, Some(tasks.again(&entry)), move |result| match (result, this.upgrade()) {
+                    (Ok(pane), Some(this)) => this.note(&pane, Change::new("started").by(Some("daemon")).with("why", json!(KEEPER_LOST))),
+                    (Err(error), _) => log!("kanna-daemon: {id} couldn't resume after the keeper was lost: {}", error.message),
+                    _ => {}
+                });
+            });
+        }
+    }
+
+    fn wake(self: &Rc<Self>, core: &CoreHandle, entry: Entry, why: &'static str) {
         let id = entry.id.clone();
         let this = Rc::downgrade(self);
         let failed = move |error: KmuxError| {
-            log!("kanna-daemon: {id} couldn't run for its message: {}", error.message);
+            log!("kanna-daemon: {id} couldn't run ({why}): {}", error.message);
             if let Some(this) = this.upgrade() {
                 this.failed.borrow_mut().insert(id);
             }
@@ -2765,7 +2796,7 @@ impl Tasks {
                     match result {
                         Ok(pane) => {
                             this.restarted(&pane);
-                            this.note(&pane, Change::new("started").by(Some("daemon")).with("why", json!("message")));
+                            this.note(&pane, Change::new("started").by(Some("daemon")).with("why", json!(why)));
                         }
                         Err(error) => failed(error),
                     }
@@ -3753,6 +3784,7 @@ impl Tasks {
                 value["running"] = json!(pane.as_ref().is_some_and(|(running, _)| *running));
                 value["status"] = opt(pane.as_ref().and_then(|(_, p)| p.status()));
                 value["replied"] = json!(replied.contains(&e.id));
+                value["run"] = opt(self.run_stage(&e.id).as_deref());
                 value
             })
             .collect();
@@ -3764,6 +3796,7 @@ impl Tasks {
             .map(|r| {
                 let mut value = json!({ "id": r.entry.id, "short": self.short(&r.entry.id), "pane": r.pane, "repo": r.entry.repo, "replied": replied.contains(&r.entry.id), "branch": opt(r.entry.folder.as_deref().and_then(branch_of).as_deref()) });
                 self.stack_fields(&r.entry, &mut value);
+                value["run"] = opt(self.run_stage(&r.entry.id).as_deref());
                 value
             })
             .collect();
@@ -6493,9 +6526,18 @@ mod tests {
         let core = kanna_mux::Core::default();
         let mut alive = Pane::new("term-7", None, kanna_mux::PaneType::Term);
         alive.state = PaneState::Running;
-        core.install_panes(vec![alive], 0, 7, 0);
+        let mut lost_pane = Pane::new("term-8", None, kanna_mux::PaneType::Term);
+        lost_pane.state = PaneState::Exited;
+        let mut hung_up = Pane::new("term-9", None, kanna_mux::PaneType::Term);
+        (hung_up.state, hung_up.exit_code, hung_up.hung_up) = (PaneState::Exited, Some(129), true);
+        let mut exited = Pane::new("term-10", None, kanna_mux::PaneType::Term);
+        (exited.state, exited.exit_code) = (PaneState::Exited, Some(0));
+        core.install_panes(vec![alive, lost_pane, hung_up, exited], 0, 10, 0);
         let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), crate::runtime::channel().0));
         let task = |id: &str, made_at: f64, folder: Option<&str>| Entry { id: id.into(), repo: "/r".into(), agent: "codex".into(), made_at, folder: folder.map(String::from), ..Default::default() };
+        let lost = Entry { held: Some("term-8".into()), ..task("task-lost", 1.5, Some("/r/8")) };
+        let stopped_by_you = Entry { held: Some("term-9".into()), ..task("task-stopped-by-you", 0.2, Some("/r/9")) };
+        let agent_exited = Entry { held: Some("term-10".into()), ..task("task-agent-exited", 0.3, Some("/r/10")) };
         let running = Entry { held: Some("term-7".into()), ..task("task-running", 0.0, Some("/r/0")) };
         let stopped_old = task("task-stopped-old", 1.0, Some("/r/1"));
         let quiet = task("task-quiet", 2.0, Some("/r/2"));
@@ -6503,7 +6545,7 @@ mod tests {
         let new_with_mail = task("task-new-with-mail", 4.0, None);
         let stopped_new = task("task-stopped-new", 5.0, Some("/r/5"));
         let new_new = task("task-new-new", 6.0, None);
-        let mine = [&new_new, &stopped_new, &running, &new_with_mail, &quiet, &stopped_old, &new_old];
+        let mine = [&new_new, &stopped_new, &running, &new_with_mail, &quiet, &stopped_old, &new_old, &lost, &stopped_by_you, &agent_exited];
         for (id, recipient) in [(1, "task-stopped-new"), (2, "task-running"), (3, "task-new-with-mail"), (4, "task-stopped-old")] {
             tasks.waiting.borrow_mut().push(Message { id, recipient: recipient.into(), repo: "/r".into(), sender: "user".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
         }
@@ -6512,6 +6554,7 @@ mod tests {
         waiting.sort_by(|a, b| a.0.cmp(&b.0));
         let queue: Vec<String> = waiting.into_iter().map(|(_, candidate)| match candidate {
             Candidate::Wake(entry) => format!("wake {}", entry.id),
+            Candidate::Resume(entry) => format!("resume {}", entry.id),
             Candidate::Here(entry) => format!("start {}", entry.id),
             Candidate::There { task, .. } | Candidate::Take { task, .. } => format!("other {task}"),
         }).collect();
@@ -6520,7 +6563,7 @@ mod tests {
         tasks.waiting.borrow_mut().push(Message { id: 5, recipient: "task-quiet".into(), repo: "/r".into(), sender: "task-other".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
         assert!(!tasks.told_by_you(&wake("task-quiet")), "a task's message takes its turn");
         assert!(!tasks.told_by_you(&Candidate::Here(task("task-new-old", 0.0, None))));
-        assert_eq!(queue, ["wake task-stopped-old", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, and a running or quiet stopped task isn't in it");
+        assert_eq!(queue, ["wake task-stopped-old", "resume task-lost", "start task-new-old", "start task-new-with-mail", "wake task-stopped-new", "start task-new-new"], "one queue by age, a task's mail doesn't move it up, a task whose agent ended with the keeper takes its turn, and a running, quiet stopped, stopped-by-you or exited task isn't in it");
         fs::remove_dir_all(&state).unwrap();
     }
 

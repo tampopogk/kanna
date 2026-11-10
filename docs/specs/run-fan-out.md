@@ -79,6 +79,7 @@ sequenceDiagram
 - **The task stopped:** every working agent of the step is parked and every command stops, to run again; started again, each parked agent carries on and the step fills its slots.
 - **Skip and retry:** take a run with one worker open; with several, they refuse, naming them. A retried instance or scorer runs again in its own worktree.
 - **Ask:** an `ask` stage is a step of one visit, with no terminal.
+- **The Run tab** ([run tab](run-tab.md)): lists every open worker with its `instance`. `kanna open run --watch` shows the first, `--worker` any of them. A worker's terminal is kept for the next one to take its tab only when it was the run's one open worker; one of several closes when it ends.
 
 ## 8. One row for the task
 

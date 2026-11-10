@@ -1,6 +1,6 @@
 # Software factory
 
-**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates and steering built ([§6.2](#62-gates-and-steering-as-built): `ask`, `kanna run answer`, `pause`, `resume`, `skip`, `retry`, the task stopped and started mid-stage); fan-out built ([run fan-out](run-fan-out.md): `each`, `merge`, `xN by`, `guard`, `on` this machine); revisions, the Run tab and metrics not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run`, `pipeline_gates` and `pipeline_fanout` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [Kojo](kojo.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
+**Status:** sequential runs built ([§6.1](#61-sequential-runs-as-built): agent and `run` stages, loops, `progress`, `reset`, the budget, hand-back; `kanna run start`, `list`, `show`, `log`, `stop`); gates and steering built ([§6.2](#62-gates-and-steering-as-built): `ask`, `kanna run answer`, `pause`, `resume`, `skip`, `retry`, the task stopped and started mid-stage), the [Run tab](run-tab.md) and fan-out ([run fan-out](run-fan-out.md): `each`, `merge`, `xN by`, `guard`, `on` this machine); revisions and metrics not yet ([build order](software-factory-build-order.md)) · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_run`, `pipeline_gates` and `pipeline_fanout` · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (Definition, A run on the Desk, waiting on you, a stage's terminal shown, Runs compared; `#light`) · **Language:** [Kojo](kojo.md) · **Why this design:** [research](../research/software-factory.md) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [task scripts](task-scripts.md), [agent messaging](agent-messaging.md), [database](database.md), the Stats tab (task "Stats tab on the Desk") and [code quality metrics](code-quality-metrics.md) (task "Code quality metrics")
 
 A **pipeline** says how an approved change gets built: its stages (plan, build, review, tests), who does each (an agent or code), and where a failure goes (a bounded loop back to a fix). Any task's agent can **run** one; the daemon drives it in the task's background terminals, a **Run** tab shows where it is, and the finished branch is handed back to the task, where you review and merge it. Every stage's numbers and your interventions go in `kanna.db`, to compare and tune pipelines.
 
@@ -113,7 +113,7 @@ sequenceDiagram
 |---|---|
 | ![The run waiting on you: a stage's agent needs an answer; the task's agent relays the question in its chat, and the Run tab shows it as a card to answer and resume](software-factory-gate.png) | ![The review stage's agent (codex) at work: its terminal shown in a tab of the task's workspace, beside the Run tab](software-factory-watch.png) |
 
-- **Run tab:** `kanna open run`, opened by the task's agent when it starts a run: the pipeline graph with each stage's state and visits, the run's numbers and revision, the visits with their verdicts, times, turns and tokens, and the running workers. A visit opens to its answer, output or diff. It offers to show the current stage's terminal, whose tab then follows the run to the next stage.
+- **Run tab** ([as built](run-tab.md)): `kanna open run`, opened by the task's agent when it starts a run: the pipeline graph with each stage's state and visits, the run's numbers and revision, the visits with their verdicts, times, turns and tokens, and the running workers. A visit opens to its answer, output or diff. **Watch** (`kanna open run --watch`) shows the current stage's terminal in a tab, which the next stage's terminal then takes over.
 - **Stage terminals:** `kanna move TERMINAL --tab` shows one in a tab, `--background` puts it back; the run carries on. What you type there is kept as an intervention.
 - **Ask:** the task's agent relays it in its chat and runs `kanna run answer`; the Run tab shows a card with **Yes**, **No** and a note (with the Run tab, not built yet). The task shows needs you. Either answer is recorded with who gave it ([6.2](#62-gates-and-steering-as-built)).
 - **Buttons:** the CLI's verbs ([7](#7-cli)). **Pause** finishes the current stage and starts no other; **Skip stage** ends the visit as `pass` by you; **Retry stage** runs it again; **Edit pipeline** opens the run's revision in a code pane; **Stop** ends the run. Each is recorded as an intervention.
@@ -138,7 +138,7 @@ Every visit writes a row; everything below is a query over them, shown on the Ru
 |---|---|
 | time to hand back; active time | started to handed back; the sum of visits |
 | sessions, turns, tokens, cost | sums |
-| rework loops | visits of any stage beyond its first, by stage |
+| rework loops | fail arrows taken, by stage |
 | review findings; test failures | sums; `run` visits that failed |
 | interventions | the sum, by kind |
 | outcome | handed back, stopped (why), stuck |
@@ -242,6 +242,7 @@ sequenceDiagram
 | `kanna run list [--all]` | The repo's runs: task, state, stage, how far, how long, outcome |
 | `kanna run show [RUN] [--json]` | The run: its revision, visits with their numbers, workers |
 | `kanna open run [RUN]` | The Run tab |
+| `kanna open run --watch [WORKER]` | Show the current worker's terminal in a tab that follows the run to the next stage |
 | `kanna move TERMINAL --tab` · `kanna move TERMINAL --background` | Show a stage's terminal in a tab of the task's workspace; put it back in the background |
 | `kanna run answer [RUN] yes\|no [NOTE]` | Answer the waiting `ask`; the note goes to the next stage, and who answered is kept |
 | `kanna run done [pass\|fail] [--answer FILE]` | From a stage's worker: the visit is done, with its verdict at a `verdict` stage and its answer (`$KANNA_ANSWER` by default) |
@@ -261,7 +262,7 @@ RUN defaults to the task the terminal is in: `show`, `log` and `open run` take i
 - **An agent as orchestrator** (a planner calling stages as subagents): the plan in one context window, no steering between stages, every step's cost inside one session.
 - **Headless agents** (`claude -p`, `codex exec`, as kojo runs them): nothing to show, no resume, no typing into a stage.
 - **Workers as terminals in no workspace** (the first build): linked to the task only by the run's records, so nothing could show one, and closing the task left them running.
-- **A watch tab** following the run from worker to worker: a shown stage terminal is an ordinary tab, and the Run tab offers to show the current one.
+- **A watch pane** viewing whichever terminal is current: a second view of a terminal; the shown tab is the worker's own terminal, and the next worker takes its place in the tab.
 - **Fan-out instances as Shelf tasks:** one change as many rows, eating `shelf.runners` and Desk places.
 - **A remote stage as a command over the link** (`kanna --host mini -- scripts/e2e-kanna.sh`): no terminal to watch, no worktree, nothing to resume, and no way to run an agent stage.
 - **A `merge main` stage gated by an `ask`:** the run would land on main from a branch you never had in your worktree.

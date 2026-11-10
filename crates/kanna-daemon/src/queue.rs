@@ -530,6 +530,7 @@ impl Queue {
             prompts,
             owner: Some(runs::QUEUE.into()),
             by: row.id.clone(),
+            agent: false,
         };
         let run = runs.start_owned(started).map_err(|e| e.message)?;
         row.state = "testing".into();
