@@ -63,6 +63,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var updates: Updates?
     var toastShowing: (pane: String, desk: String?)?
     var statsTimer: Timer?
+    var buildsTimer: Timer?
     var queueTimer: Timer?
 
     static var daemonSocketPath: String {
@@ -716,13 +717,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             self?.layoutCommand("focus", ["tab": .string(tab)])
         }
+        controller.buildsPage.onCancel = { [weak self] job in self?.cancelBuild(job) }
         controller.tabBar.onPage = { [weak self, weak controller] page in
             guard let self, let controller else { return }
             controller.page = page
             if page == WindowController.pages[1] { links?.refresh() }
-            if page == WindowController.pages[2] { loadStats(controller) }
-            if page == WindowController.pages[3] { loadSchedules(controller) }
-            if page == WindowController.pages[4] { loadQueue(controller) }
+            if page == WindowController.pages[2] { loadBuilds() }
+            if page == WindowController.pages[3] { loadStats(controller) }
+            if page == WindowController.pages[4] { loadSchedules(controller) }
+            if page == WindowController.pages[5] { loadQueue(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }

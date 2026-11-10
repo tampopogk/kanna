@@ -9,7 +9,7 @@ extension AppController {
             let entries = list.map(QueueEntry.init)
             let tester = controller.queuePage.wantedTerminal
             controller.queue = entries
-            guard controller.shownPage == WindowController.pages[4] else { return }
+            guard controller.shownPage == WindowController.pages[5] else { return }
             redraw(controller)
             if controller.queuePage.wantedTerminal != tester {
                 refresh()
@@ -31,18 +31,18 @@ extension AppController {
     }
 
     func showQueue(_ controller: WindowController, at entry: String) {
-        controller.page = WindowController.pages[4]
+        controller.page = WindowController.pages[5]
         controller.queuePage.pick(entry)
         loadQueue(controller)
         redraw(controller)
     }
 
     func queueChanged() {
-        controllers.values.filter { $0.shownPage == WindowController.pages[4] }.forEach(loadQueue)
+        controllers.values.filter { $0.shownPage == WindowController.pages[5] }.forEach(loadQueue)
     }
 
     private func refreshQueues() {
-        let showing = controllers.values.filter { $0.shownPage == WindowController.pages[4] }
+        let showing = controllers.values.filter { $0.shownPage == WindowController.pages[5] }
         guard !showing.isEmpty else {
             queueTimer?.invalidate()
             queueTimer = nil

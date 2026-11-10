@@ -6,7 +6,7 @@ The Desk view keeps its tab while a task shows. ⌘. from the Merge queue tab in
 
 ## 1. Rules
 
-- **Every way in:** ⌘., the agent header's Desk view button, `kanna task park`, Done and Move to Shelf show the tab the Desk view showed last: a fixed tab (Desk, Machines, Stats, Schedules, Merge queue) or one of the planner's own tabs.
+- **Every way in:** ⌘., the agent header's Desk view button, `kanna task park`, Done and Move to Shelf show the tab the Desk view showed last: a fixed tab (Desk, Machines, Builds, Stats, Schedules, Merge queue) or one of the planner's own tabs.
 - **Each Desk keeps its own.**
 - **The Desk tab is the default** when the Desk view has shown no tab yet, and when the planner's tab it kept was closed while the task showed.
 - **A tab the planner opens or chooses while a task shows** is the one the Desk view shows next, as it would be had the Desk view been showing ([Desk windows §2](desk-windows.md#2-rules)).

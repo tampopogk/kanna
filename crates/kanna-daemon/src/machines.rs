@@ -67,6 +67,10 @@ impl Host for DaemonHost {
         let state_dir = self.3.clone();
         let _ = std::thread::Builder::new().name("kanna.build.relay".into()).spawn(move || crate::builds::relay(&state_dir, &from, stream));
     }
+
+    fn bundle(&self, _from: String, path: String, stream: std::os::unix::net::UnixStream) {
+        let _ = std::thread::Builder::new().name("kanna.bundle.send".into()).spawn(move || crate::ios_apps::serve(&path, stream));
+    }
 }
 
 #[derive(Clone)]
@@ -118,6 +122,13 @@ impl Caller {
 impl Caller {
     pub fn job(&self, host: &str) -> Result<(std::os::unix::net::UnixStream, String), Failure> {
         let opened = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.job(host)).await });
+        opened.unwrap_or_else(|_| Err(Failure::new("unreachable", format!("{host} didn't answer in time"))))
+    }
+}
+
+impl Caller {
+    pub fn bundle(&self, host: &str, path: &str) -> Result<std::os::unix::net::UnixStream, Failure> {
+        let opened = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.bundle(host, path)).await });
         opened.unwrap_or_else(|_| Err(Failure::new("unreachable", format!("{host} didn't answer in time"))))
     }
 }

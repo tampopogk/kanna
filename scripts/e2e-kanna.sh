@@ -5173,12 +5173,14 @@ assert t["code", "lines-covered"]["note"].startswith("not set up"), t["code", "l
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
   local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "stats_tab line $LINENO: $opened"; return 1; }
   d="${BASH_REMATCH[1]}"
-  check wait_for 10 eval '[[ "$(desk pages "$d")" == '"'"'["Desk", "Machines", "Stats", "Schedules", "Merge queue"]'"'"' ]]' || { echo "stats_tab: the Desk view's fixed tabs"; desk pages "$d"; return 1; }
+  check wait_for 10 eval '[[ "$(desk pages "$d")" == '"'"'["Desk", "Machines", "Builds", "Stats", "Schedules", "Merge queue"]'"'"' ]]' || { echo "stats_tab: the Desk view's fixed tabs"; desk pages "$d"; return 1; }
   raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\",\"size\":[1300,900]}}" >/dev/null
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Machines\",\"window\":\"$d\"}}" >/dev/null
   check wait_for 5 eval '[[ "$(desk machinesPage "$d")" == True ]]' || { echo "stats_tab: the Machines tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk statsPage "$d")" == True && "$(desk machinesPage "$d")" == False ]]' || { echo "stats_tab: Next Tab from Machines didn't show Stats"; return 1; }
+  check wait_for 5 eval '[[ "$(desk buildsPage "$d")" == True && "$(desk machinesPage "$d")" == False ]]' || { echo "stats_tab: Next Tab from Machines didn't show Builds"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk statsPage "$d")" == True && "$(desk buildsPage "$d")" == False ]]' || { echo "stats_tab: Next Tab from Builds didn't show Stats"; return 1; }
   check wait_for 10 eval '[[ "$(desk stats "$d")" != "[]" ]]' || { echo "stats_tab: the Stats page drew no tiles"; desk statsSections "$d"; return 1; }
   check python3 -c 'import json, sys
 shown = {(x["section"], x["id"]): x for x in json.loads(sys.argv[1])}
@@ -5319,7 +5321,7 @@ r = rows.get("ping")
 sys.exit(0 if r is not None and ('"$1"') else 1)'; }
   click() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"schedule\":\"$1\",\"window\":\"$d\"}}" | grep -q '"ok":true'; }
   schedule add every 5m "$busy" "hello from the tab" --name ping >/dev/null || { echo "schedules_tab line $LINENO"; return 1; }
-  check wait_for 10 eval '[[ "$(desk pages "$d")" == '"'"'["Desk", "Machines", "Stats", "Schedules", "Merge queue"]'"'"' ]]' || { echo "schedules_tab: the Desk view's fixed tabs"; desk pages "$d"; return 1; }
+  check wait_for 10 eval '[[ "$(desk pages "$d")" == '"'"'["Desk", "Machines", "Builds", "Stats", "Schedules", "Merge queue"]'"'"' ]]' || { echo "schedules_tab: the Desk view's fixed tabs"; desk pages "$d"; return 1; }
   raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\",\"size\":[1300,900]}}" >/dev/null
   raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Schedules\",\"window\":\"$d\"}}" >/dev/null
   check wait_for 5 eval '[[ "$(desk schedulesPage "$d")" == True ]]' || { echo "schedules_tab: the Schedules tab"; return 1; }
@@ -6904,7 +6906,7 @@ UNIT
   click() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{$1,\"window\":\"$dw\"}}" | grep -q '"ok":true'; }
   entries() { desk queue | python3 -c 'import json, sys; print(" ".join(e["task"] + ":" + e["state"] for e in json.load(sys.stdin)))'; }
   raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$dw\",\"size\":[1300,900]}}" >/dev/null
-  check wait_for 10 eval '[[ "$(desk pages)" == '"'"'["Desk", "Machines", "Stats", "Schedules", "Merge queue"]'"'"' ]]' || { echo "merge_queue: the Desk view's fixed tabs"; desk pages; return 1; }
+  check wait_for 10 eval '[[ "$(desk pages)" == '"'"'["Desk", "Machines", "Builds", "Stats", "Schedules", "Merge queue"]'"'"' ]]' || { echo "merge_queue: the Desk view's fixed tabs"; desk pages; return 1; }
   commit "$a" sh -c 'echo a >a.txt && touch slow' || { echo "merge_queue line $LINENO"; return 1; }
   commit "$b" sh -c 'echo b >b.txt && touch needs-a.txt' || { echo "merge_queue line $LINENO"; return 1; }
   commit "$c" sh -c 'echo c >c.txt && touch broken' || { echo "merge_queue line $LINENO"; return 1; }
@@ -8018,6 +8020,67 @@ machine_two_apps() {
   check wait_for 5 eval '[[ "$(vmk read "$term")" == *"after-vm-app"$'"'"'\n'"'"'*"after-vm-app"* ]]' || { echo "machine_two_apps: this Mac's app stopped typing"; return 1; }
 }
 
+scenario builds_tab M4
+builds_tab() {
+  local repo; repo="$(e2e_repo builds)" || { echo "builds_tab line $LINENO"; return 1; }
+  mkdir -p "$KANNA_STATE_DIR/guests"
+  cat >"$KANNA_STATE_DIR/guests/queue.json" <<'JSON'
+{"jobs":[{"job":"b-queued-one","machine":"linux","repo":"app","task":"t1","label":"Login screen","command":"xcodebuild build","stage":"queued","submitted":1},
+{"job":"b-queued-two","machine":"linux","repo":"app","task":"t2","label":"Settings page","command":"swift test","stage":"queued","submitted":2}],
+"recent":[{"job":"b-done","machine":"linux","label":"Widgets","command":"xcodebuild test","status":{"phase":"exited","code":65},"finished":1}]}
+JSON
+  start_daemon && start_app || { echo "builds_tab line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  local opened d; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "builds_tab line $LINENO: $opened"; return 1; }
+  d="${BASH_REMATCH[1]}"
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"Builds\",\"window\":\"$d\"}}" >/dev/null
+  check wait_for 10 eval '[[ "$(desk buildsPage "$d")" == True && "$(desk builds.0.rows.1.state "$d")" == "Queued · 2nd" ]]' || { echo "builds_tab: the page"; desk builds "$d"; return 1; }
+  check test "$(desk builds.0.rows.0.label "$d") $(desk builds.0.recent.0.state "$d")" == "Login screen Failed · exit 65" || { desk builds "$d"; return 1; }
+  sleep 0.5; snap "$d" builds_tab >/dev/null
+  check test "$(kanna builds cancel b-queued-one)" == "taken out of the queue" || return 1
+  check wait_for 5 eval '[[ "$(desk builds.0.rows.0.label "$d") $(desk builds.0.rows.0.state "$d")" == "Settings page Queued · 1st" ]]' || { echo "builds_tab: cancelling didn't reach the page"; desk builds "$d"; return 1; }
+  check test "$(desk builds.0.recent.0.state "$d")" == "Cancelled" || { desk builds "$d"; return 1; }
+}
+
+scenario machine_ios_pane M4
+machine_ios_pane() {
+  local vm vm_pid
+  machine_vm machine_ios_pane || return 1
+  xcrun simctl list devices available 2>/dev/null | grep -q iPhone || { echo "machine_ios_pane: no iPhone simulator here; skipped"; kill "$vm_pid"; return 0; }
+  local fake="$vm/Fake.app"
+  mkdir -p "$fake/Sub" && echo binary >"$fake/Fake" && chmod +x "$fake/Fake" && ln -s Fake "$fake/Sub/Link"
+  cat >"$fake/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.kanna.e2e.fake</string><key>CFBundleExecutable</key><string>Fake</string><key>MinimumOSVersion</key><string>99.0</string><key>DTPlatformName</key><string>iphonesimulator</string></dict></plist>
+PLIST
+  fake="$(cd "$fake" && pwd -P)"
+  state() { KANNA_SOCKET="$vm/kanna.sock" pane "$1" "$2"; }
+  vmk open --window new ios --name no --app com.apple.Preferences --no-wait >/dev/null || { echo "machine_ios_pane line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(state no error)" == *"runs a .app"* ]]' || { echo "machine_ios_pane: a bundle ID from vm wasn't refused"; state no error; return 1; }
+  local opened id
+  opened="$(vmk open --window new ios --name yes --app "$fake" --no-wait --json)" || { echo "machine_ios_pane line $LINENO"; return 1; }
+  id="$(echo "$opened" | field pane.id)@vm"
+  ask() { raw "{\"id\":1,\"cmd\":\"debug.ios\",\"args\":{\"pane\":\"$id\",\"approve\":$1}}" | field answered; }
+  check wait_for 10 eval '[[ "$(ask false)" == True ]]' || { echo "machine_ios_pane: the pane didn't ask"; return 1; }
+  check wait_for 5 eval '[[ "$(state yes error)" == *"declined on this Mac"* ]]' || { echo "machine_ios_pane: declining"; state yes error; return 1; }
+  check test ! -e "$KANNA_STATE_DIR/ios-apps" || { echo "machine_ios_pane: a declined app was fetched"; return 1; }
+  vmk restart yes >/dev/null 2>&1 &
+  local restarting=$!
+  check wait_for 10 eval '[[ "$(ask true)" == True ]]' || { echo "machine_ios_pane: restarting didn't ask again"; return 1; }
+  check wait_for 20 eval '[[ "$(state yes error)" == *"needs iOS 99.0"* ]]' || { echo "machine_ios_pane: a too-new app wasn't refused"; state yes error; return 1; }
+  check test "$(readlink "$KANNA_STATE_DIR"/ios-apps/*/Fake.app/Sub/Link)" == Fake || { echo "machine_ios_pane: the link didn't arrive"; return 1; }
+  check test -x "$(echo "$KANNA_STATE_DIR"/ios-apps/*/Fake.app/Fake)" || { echo "machine_ios_pane: the executable bit didn't arrive"; return 1; }
+  wait "$restarting"
+  vmk open --window new ios --name again --app "$fake" --no-wait >/dev/null || { echo "machine_ios_pane line $LINENO"; return 1; }
+  check wait_for 20 eval '[[ "$(state again error)" == *"needs iOS 99.0"* ]]' || { echo "machine_ios_pane: approval didn't hold for vm until the app quit"; state again error; return 1; }
+  stop_app; start_app || { echo "machine_ios_pane line $LINENO"; return 1; }
+  vmk restart yes >/dev/null 2>&1 &
+  restarting=$!
+  check wait_for 20 eval '[[ "$(ask false)" == True ]]' || { echo "machine_ios_pane: a relaunched app didn't ask again"; return 1; }
+  wait "$restarting"
+  kill "$vm_pid"
+}
+
 scenario machine_remote_task M4
 machine_remote_task() {
   local vm vm_pid
@@ -8077,7 +8140,7 @@ machine_remote_task() {
 
   raw '{"id":1,"cmd":"debug.click","args":{"deskView":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk empty)" == True && "$(desk page)" == True ]]' || { echo "machine_remote_task: parking didn't show the Desk view"; desk empty; desk page; return 1; }
-  check test "$(desk pages)" == '["Desk", "Machines", "Stats", "Schedules", "Merge queue"]' || { echo "machine_remote_task: the empty Desk's fixed tabs"; desk pages; return 1; }
+  check test "$(desk pages)" == '["Desk", "Machines", "Builds", "Stats", "Schedules", "Merge queue"]' || { echo "machine_remote_task: the empty Desk's fixed tabs"; desk pages; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"page":"Machines","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: the Machines tab didn't show the Machines page"; return 1; }
   check python3 -c 'import json, sys
@@ -8090,7 +8153,9 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: Next Tab from the Shelf tab didn't show the Machines tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk machinesPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Machines tab didn't show the Stats tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk buildsPage)" == True && "$(desk machinesPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Machines tab didn't show the Builds tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk buildsPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Builds tab didn't show the Stats tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk schedulesPage)" == True && "$(desk statsPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Stats tab didn't show the Schedules tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
@@ -8104,7 +8169,9 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk schedulesPage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Schedules tab didn't show the Stats tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk statsPage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Stats tab didn't show the Machines tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk buildsPage)" == True && "$(desk statsPage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Stats tab didn't show the Builds tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk buildsPage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Builds tab didn't show the Machines tab"; return 1; }
   sleep 0.5; snap d1 machine_remote_machines >/dev/null
 
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Show Active Task"}}' >/dev/null

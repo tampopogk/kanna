@@ -48,6 +48,7 @@ final class Contents {
     var onRequest: ((String, [String: JSON]) -> Void)?
     var onNotice: ((String, [String: JSON]) -> Void)?
     var onCall: ((String, [String: JSON], @escaping (JSON) -> Void) -> Void)?
+    private var approvedApps = Set<String>()
     var onFocus: ((String) -> Void)?
     var portOpen: ((Int, String) -> Result<Int, KannaError>)?
     var contextMenu: (() -> NSMenu?)?
@@ -145,7 +146,11 @@ final class Contents {
 
     static func refusal(_ type: String, _ pane: JSON, from machine: String) -> String? {
         switch type {
-        case "ios": return "an iOS pane runs only for this Mac's own tasks"
+        case "ios":
+            guard let app = pane["app"]?.string, app.hasPrefix("/"), app.hasSuffix(".app") else {
+                return "an iOS pane from \(machine) runs a .app: give its full path on \(machine)"
+            }
+            return nil
         case "web":
             guard let url = pane["url"]?.string.flatMap(URL.init(string:)), ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
                 return "a page from \(machine) opens only over http or https, or from a file"
@@ -378,7 +383,11 @@ final class Contents {
             ios.onFocus = { [weak self] in self?.onFocus?(id) }
             ios.contextMenu = { [weak self] in self?.contextMenu?() }
             slot(id).content = ios
-            startSimulator(id, app: pane["app"]?.string ?? "", device: pane["device"]?.string, restoring: restoring, in: ios)
+            if let machine = MachineIDs.machine(of: id) {
+                startRemote(id, app: pane["app"]?.string ?? "", machine: machine, device: pane["device"]?.string, in: ios)
+            } else {
+                startSimulator(id, app: pane["app"]?.string ?? "", device: pane["device"]?.string, restoring: restoring, in: ios)
+            }
             return
         default:
             return
@@ -388,6 +397,32 @@ final class Contents {
         DispatchQueue.main.async { [weak self] in
             guard self?.slots[id]?.content === content else { return }
             self?.report(id, ["state": "running"])
+        }
+    }
+
+    private func startRemote(_ id: String, app: String, machine: String, device: String?, in view: IosPaneView) {
+        let name = (app as NSString).lastPathComponent
+        let appName = (name as NSString).deletingPathExtension
+        view.show(device: device ?? "iPhone", app: appName)
+        let fetch: @MainActor () -> Void = { [weak self] in
+            guard let self, self.slots[id]?.content === view else { return }
+            view.show(status: "Fetching \(name) from \(machine)…")
+            guard let onCall = self.onCall else { return self.report(id, ["state": "failed", "error": "Kanna.app isn't connected to its daemon"]) }
+            onCall("ios.fetch", ["peer": .string(machine), "path": .string(app)]) { [weak self] answer in
+                guard let self, self.slots[id]?.content === view else { return }
+                guard answer["ok"]?.bool == true, let local = answer["path"]?.string else {
+                    view.show(status: nil)
+                    return self.report(id, ["state": "failed", "error": .string(answer["error"]?["message"]?.string ?? "can't fetch \(name) from \(machine)")])
+                }
+                self.startSimulator(id, app: local, device: device, restoring: false, in: view)
+            }
+        }
+        if approvedApps.contains(machine) { return fetch() }
+        view.ask("Run \(name) from \(machine) on this Mac? A simulator app runs with your account's access to this Mac.") { [weak self] run in
+            guard let self, self.slots[id]?.content === view else { return }
+            guard run else { return self.report(id, ["state": "failed", "error": "not run: declined on this Mac"]) }
+            self.approvedApps.insert(machine)
+            fetch()
         }
     }
 
@@ -402,6 +437,7 @@ final class Contents {
                 guard current() else { return }
                 if device.name != wanted { self?.onUpdate?(id, ["device": .string(device.name)]) }
                 view.show(device: device.name, app: appName)
+                if !restoring, app.hasSuffix(".app") { try Simulator.checkFits(app, on: device) }
                 view.show(status: "Booting \(device.name)…")
                 try await Simulator.boot(device)
                 guard current() else { return }
