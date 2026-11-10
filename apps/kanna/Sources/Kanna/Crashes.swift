@@ -55,9 +55,8 @@ enum CrashHandlers {
     }
 
     static var build: JSON {
-        let info = Bundle.main.infoDictionary ?? [:]
-        return ["id": KannaBuild.daemonBuild.map { .string($0) } ?? .null, "channel": .string(KannaBuild.channel), "commit": .string(KannaBuild.commit),
-                "version": .string(info["CFBundleShortVersionString"] as? String ?? "")]
+        ["id": KannaBuild.daemonBuild.map { .string($0) } ?? .null, "channel": .string(KannaBuild.channel), "commit": .string(KannaBuild.commit),
+         "version": .string(KannaBuild.version)]
     }
 
     static func record(_ exception: NSException) {

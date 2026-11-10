@@ -14,7 +14,7 @@ pub const COMMAND: Command = Command {
         ("-o FILE", "Same as --out."),
         ("--force", "Replace FILE if it exists."),
     ],
-    notes: "PANE gives just that pane, cut from its window; it must be showing (not in a tab that is behind another). With neither PANE nor --window: the window of the terminal you run it in, else the key (front) window.\nWorks for every kind of pane (terminal, web, markdown, code, iOS), also when the window is behind other windows. The image is at the screen's resolution: a 2x display gives twice the window's size in points.\nWith --json, the reply also has the window, the pane and the image's width and height in pixels. Starts Kanna.app if it isn't running, and shoots the window it opens with.",
+    notes: "PANE gives just that pane, cut from its window; it must be showing (not in a tab that is behind another). With neither PANE nor --window: the window of the terminal you run it in, else the key (front) window.\nWorks for every kind of pane (terminal, web, markdown, code, iOS), also when the window is behind other windows. The image is at the screen's resolution: a 2x display gives twice the window's size in points.\nWith --json, the reply also has the window, the pane and the image's width and height in pixels. Starts Kanna.app if it isn't running, and shoots the window it opens with.\nPANE may be a task (task-ac2b, ac2b): its agent's pane, shot by the Kanna.app of whichever of your machines runs it and saved here.",
     examples: &[
         ("kanna screenshot", "Save this window and print where."),
         ("kanna screenshot diff -o diff.png", "Save the pane named diff to diff.png."),
@@ -22,7 +22,7 @@ pub const COMMAND: Command = Command {
     ],
     parse,
     show: |_, reply| reply["path"].as_str().unwrap_or_default().to_string(),
-    flow: Flow { unplaced: Some(unplaced), ..Flow::PLAIN },
+    flow: Flow { unplaced: Some(unplaced), panes: super::PANE, ..Flow::PLAIN },
 };
 
 fn unplaced(request: &Value) -> Option<&'static str> {

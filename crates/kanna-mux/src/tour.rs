@@ -148,8 +148,7 @@ impl CoreHandle {
         let thread = match stop.thread.clone() {
             Some(thread) => thread,
             None => {
-                let agent = self.state().panes.get(owner).and_then(|p| p.terminal.clone()).unwrap_or_else(|| owner.to_string());
-                let (thread, _) = kanna_threads::add_agent_thread(std::path::Path::new(&stop.path), stop.first as usize, &stop.text, Some(&agent)).map_err(bad_request)?;
+                let (thread, _) = kanna_threads::add_agent_thread(std::path::Path::new(&stop.path), stop.first as usize, &stop.text, Some(owner)).map_err(bad_request)?;
                 if let Some(pane) = self.state().panes.get_mut(owner) {
                     if let Some(tour) = pane.tour.as_mut() {
                         tour.stops[at].thread = Some(thread.clone());

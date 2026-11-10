@@ -3,6 +3,9 @@ KANNA_GHOSTTY_FORK="${KANNA_GHOSTTY_FORK:-https://github.com/jemdiggity/ghostty.
 KANNA_GHOSTTY_BRANCH="kanna4"
 KANNA_GHOSTTY_COMMIT="4e28443e32fe8b0f88934d6a1159c42561f1931a"
 
+KANNA_UPDATE_FEEDS="https://kanna.build/appcast"
+KANNA_UPDATE_PUBLIC_KEY="${KANNA_UPDATE_PUBLIC_KEY:-hjHTuszAUmqmKN6ANvmQQhTlzLs3Tm15WPEudwaMwgU=}"
+
 KANNA_ZIG_VERSION="0.17.0"
 KANNA_ZIG_SHA256_aarch64_macos="b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a"
 KANNA_ZIG_SHA256_x86_64_macos="4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6"
@@ -64,20 +67,25 @@ kanna_rust_dir() {
   echo "$(kanna_arch_dir "$1" "${2:-$(kanna_host_triple)}")/$profile"
 }
 
+kanna_version() {
+  kanna_version_shell="$(CARGO_TARGET_DIR="$1/target/kanna-version" cargo run -q --manifest-path "$1/Cargo.toml" -p kanna-build)" || return 1
+  printf '%s\n' "$kanna_version_shell" | sed -n 's/^version=//p'
+}
+
 kanna_cargo_stamp() {
   cargo_triple="${3:-$(kanna_host_triple)}"
   cargo_dir="$(kanna_rust_dir "$1" "$cargo_triple")" || return 1
-  stamp="$cargo_dir/macos-deployment-target"
-  [ "$(cat "$stamp" 2>/dev/null)" = "$2" ] && return
+  cargo_stamp="$cargo_dir/macos-deployment-target"
+  [ "$(cat "$cargo_stamp" 2>/dev/null)" = "$2" ] && return
   if [ -d "$cargo_dir" ]; then
-    echo "==> $cargo_dir was built for macOS $(cat "$stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
+    echo "==> $cargo_dir was built for macOS $(cat "$cargo_stamp" 2>/dev/null || echo "the default"), not $2: cleaning it" >&2
     if [ "$cargo_triple" = "$(kanna_host_triple)" ]; then
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" >&2 || return 1
     else
       cargo clean --manifest-path "$1/Cargo.toml" --profile "$(kanna_cargo_profile "$1")" --target "$cargo_triple" >&2 || return 1
     fi
   fi
-  mkdir -p "$cargo_dir" && echo "$2" > "$stamp"
+  mkdir -p "$cargo_dir" && echo "$2" > "$cargo_stamp"
 }
 
 kanna_zig_build() {
@@ -282,10 +290,11 @@ kanna_borrow_swiftpm() {
   [ -e "$here" ] && return
   main="$(kanna_main_checkout "$1")" || return 0
   from="$main/target/kanna-build"
-  [ -f "$from/workspace-state.json" ] && [ -d "$from/checkouts" ] && [ -d "$from/repositories" ] || return 0
+  [ -f "$from/workspace-state.json" ] && [ -d "$from/checkouts" ] && [ -d "$from/repositories" ] && [ -d "$from/artifacts" ] || return 0
   mkdir -p "$here.borrowing"
   if kanna_clone "$from/repositories" "$here.borrowing/repositories" && kanna_clone "$from/checkouts" "$here.borrowing/checkouts" &&
-     sed "s#$main/#$1/#g" "$from/workspace-state.json" > "$here.borrowing/workspace-state.json"; then
+     kanna_clone "$from/artifacts" "$here.borrowing/artifacts" &&
+     sed -e "s#$main/#$1/#g" -e "s#$1/target/kanna-build/#$here/#g" "$from/workspace-state.json" > "$here.borrowing/workspace-state.json"; then
     mv "$here.borrowing" "$here"
     echo "Borrowed $from's Swift packages"
   else
@@ -293,12 +302,54 @@ kanna_borrow_swiftpm() {
   fi
 }
 
-kanna_dev_identity() {
+kanna_selfsigned_identity() {
   security find-identity -p codesigning 2>/dev/null | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Kanna Dev Signing".*/\1/p' | head -1
 }
 
+kanna_team_identity() {
+  team_kind="$1" team_id="$2"
+  team_certs="$(security find-certificate -a -c "$team_kind: " -Z -p 2>/dev/null)"
+  for team_hash in $(security find-identity -v -p codesigning 2>/dev/null | sed -n "s/^ *[0-9]*) \\([0-9A-F]\\{40\\}\\) \"$team_kind: .*/\\1/p" | sort -u); do
+    team_ou="$(printf '%s\n' "$team_certs" | awk -v h="$team_hash" '/^SHA-1 hash:/ { on = ($3 == h) } on && /BEGIN CERT/, on && /END CERT/' | /usr/bin/openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null | sed -n 's/^subject= *\(.*,\)\{0,1\}OU=\([^,]*\).*/\2/p')"
+    if [ "$team_ou" = "$team_id" ]; then echo "$team_hash"; return 0; fi
+  done
+}
+
+kanna_signing_team() {
+  [ -f "$HOME/.kanna/developer/signing.json" ] && plutil -extract team raw -o - "$HOME/.kanna/developer/signing.json" 2>/dev/null
+}
+
+kanna_can_sign() {
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/kanna-sign.XXXXXX")" || return 1
+  cp /usr/bin/true "$probe_dir/probe"
+  probe_error="$(codesign --force --sign "$1" "$probe_dir/probe" 2>&1)"
+  probe_status=$?
+  rm -rf "$probe_dir"
+  [ "$probe_status" -eq 0 ] && return 0
+  echo "==> can't sign with $2 ($1): ${probe_error##*: }; over SSH the login keychain is locked until security unlock-keychain" >&2
+  return 1
+}
+
+kanna_dev_identity() {
+  if dev_team="$(kanna_signing_team)" && [ -n "$dev_team" ]; then
+    dev_hash="$(kanna_team_identity "Apple Development" "$dev_team")"
+    if [ -n "$dev_hash" ] && kanna_can_sign "$dev_hash" "Apple Development"; then echo "$dev_hash $dev_team"; return 0; fi
+  fi
+  dev_hash="$(kanna_selfsigned_identity)"
+  if [ -n "$dev_hash" ] && kanna_can_sign "$dev_hash" "Kanna Dev Signing"; then echo "$dev_hash"; fi
+}
+
+kanna_requirement() {
+  if [ -n "${KANNA_SIGN_TEAM:-}" ]; then
+    echo "designated => identifier \"$1\" and anchor apple generic and certificate leaf[subject.OU] = $KANNA_SIGN_TEAM"
+  else
+    echo "designated => identifier \"$1\" and certificate leaf = H\"$(printf '%s' "$2" | tr A-F a-f)\""
+  fi
+}
+
 kanna_signed() {
-  [ "$3" != - ] && sign_requirement="$(codesign -d -r- "$1" 2>&1)" && printf '%s\n' "$sign_requirement" | grep -qx "designated => identifier \"$2\" and certificate leaf = H\"$(printf '%s' "$3" | tr A-F a-f)\""
+  [ "$3" != - ] && sign_requirement="$(codesign -d -r- "$1" 2>&1)" && printf '%s\n' "$sign_requirement" | grep -qxF "$(kanna_requirement "$2" "$3")" &&
+    codesign --verify -R="certificate leaf = H\"$3\"" "$1" 2>/dev/null
 }
 
 kanna_sign_helper() {
@@ -306,6 +357,7 @@ kanna_sign_helper() {
   shift 3
   sign_identifier="$sign_bundle_id.$(basename "$sign_helper")"
   if [ $# -eq 0 ] && kanna_signed "$sign_helper" "$sign_identifier" "$sign_identity"; then return 0; fi
+  if [ -n "${KANNA_SIGN_TEAM:-}" ]; then set -- "$@" -r="$(kanna_requirement "$sign_identifier")"; fi
   codesign --force --sign "$sign_identity" --identifier "$sign_identifier" "$@" "$sign_helper"
 }
 
@@ -317,5 +369,17 @@ kanna_sign_app() {
     file -b "$sign_file" | grep -q Mach-O || continue
     kanna_sign_helper "$sign_bundle_id" "$sign_identity" "$sign_file" "$@" || return 1
   done
+  sign_sparkle="$sign_app/Contents/Frameworks/Sparkle.framework"
+  if [ -d "$sign_sparkle" ]; then
+    for sign_file in "$sign_sparkle/Versions/B/Autoupdate" "$sign_sparkle/Versions/B/Updater.app" "$sign_sparkle"; do
+      if [ -n "${KANNA_SIGN_TEAM:-}" ]; then
+        sign_identifier="$(codesign -dv "$sign_file" 2>&1 | sed -n 's/^Identifier=//p')"
+        codesign --force --sign "$sign_identity" "$@" -r="$(kanna_requirement "$sign_identifier")" "$sign_file" || return 1
+      else
+        codesign --force --sign "$sign_identity" "$@" "$sign_file" || return 1
+      fi
+    done
+  fi
+  if [ -n "${KANNA_SIGN_TEAM:-}" ]; then set -- "$@" -r="$(kanna_requirement "$sign_bundle_id")"; fi
   codesign --force --sign "$sign_identity" --identifier "$sign_bundle_id" "$@" --entitlements "$sign_root/apps/kanna/Resources/Kanna.entitlements" "$sign_app"
 }

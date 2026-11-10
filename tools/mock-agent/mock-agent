@@ -44,6 +44,24 @@ def report(state):
         out(f"\x1b]7501;state={state}\x1b\\")
 
 
+AHEAD = bytearray()
+
+
+def interrupted(wait):
+    fd = sys.stdin.fileno()
+    if threading.current_thread() is not threading.main_thread() or not os.isatty(fd):
+        time.sleep(wait)
+        return False
+    if not select.select([fd], [], [], wait)[0]:
+        return False
+    data = os.read(fd, 1024)
+    if data[:1] == b"\x1b" and data[1:2] not in (b"[", b"O"):
+        AHEAD.extend(data[1:])
+        return True
+    AHEAD.extend(data)
+    return False
+
+
 def work(seconds):
     report("working")
     out("\x1b]9;4;3\x07")
@@ -53,13 +71,18 @@ def work(seconds):
         elapsed = int(time.monotonic() - start)
         out(f"\x1b[?2026h\r\x1b[2K{SPINNER[frame % len(SPINNER)]} Working ({elapsed}s • esc to interrupt)\x1b[?2026l")
         frame += 1
-        time.sleep(0.1)
+        if interrupted(0.1):
+            out("\r\x1b[2K\x1b]9;4;0\x07INTERRUPTED\r\n")
+            report("idle")
+            return False
     out("\r\x1b[2K\x1b]9;4;0\x07")
     report("idle")
+    return True
 
 
 CHOICES = ["Yes", "No"]
 PROGRAM = os.path.basename(sys.argv[0])
+SESSION = None
 QUESTION = "Would you like to run the following command?" if PROGRAM == "codex" else "Do you want to proceed?"
 
 
@@ -147,6 +170,17 @@ def saved(id):
         open(path, "a").close()
 
 
+def said(blocks):
+    home = os.environ.get("KANNA_AGENTS_HOME")
+    if PROGRAM != "claude" or not home:
+        return
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", os.path.realpath(os.getcwd()))
+    path = os.path.join(home, ".claude", "projects", slug, f"{SESSION}.jsonl")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": blocks}}) + "\n")
+
+
 def first(args):
     told = [a for a in args if "Your task: " in a]
     return told[-1].split("Your task: ", 1)[1] if told else None
@@ -159,6 +193,7 @@ def stage_prompt(args):
 
 
 def stage(id, prompt):
+    saved(id)
     reported("working")
     said = []
     for line in prompt.splitlines():
@@ -181,9 +216,17 @@ def inbox():
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(path)
     server.listen()
-    with open(entry, "w") as f:
-        json.dump({"pid": os.getpid(), "peerProtocol": 1, "messagingSocketPath": path}, f)
     atexit.register(lambda: [os.remove(p) for p in (path, entry) if os.path.exists(p)])
+
+    def announce():
+        with open(entry, "w") as f:
+            json.dump({"pid": os.getpid(), "peerProtocol": 1, "messagingSocketPath": path}, f)
+
+    delay = float(os.environ.get("KANNA_MOCK_INBOX_DELAY") or 0)
+    if delay:
+        threading.Timer(delay, announce).start()
+    else:
+        announce()
 
     def serve():
         while True:
@@ -207,16 +250,41 @@ def inbound(text):
     peer(re.sub(r"<\\(?=/cross-session-message)", "<", envelope.group(2)) if envelope else text)
 
 
-def peer(text):
+BUSY = False
+HELD = []
+TAKEN = None
+
+
+def shown(text):
     out("\x1b[J\r\n" + "\r\n".join(f"peer: {l}" for l in text.splitlines()) + "\r\n")
-    work(1)
+    if TAKEN:
+        with open(TAKEN, "a") as f:
+            f.write("taken\n")
+
+
+def peer(text):
+    if BUSY:
+        HELD.append(text)
+        return
+    shown(text)
+    reported("working")
+    orders = re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M)
+    if orders:
+        for order in orders:
+            answering(order)
+    else:
+        work(1)
+    if not BUSY:
+        reported("idle")
     composer()
 
 
 def remote(args):
+    global TAKEN
     if "--remote" not in args:
         return
     turns = args[args.index("--remote") + 1].removeprefix("unix://") + ".turns"
+    TAKEN = turns + ".taken"
 
     def follow():
         seen = 0
@@ -235,7 +303,7 @@ def app_server(args):
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(path)
     server.listen()
-    atexit.register(lambda: [os.remove(p) for p in (path, path + ".turns") if os.path.exists(p)])
+    atexit.register(lambda: [os.remove(p) for p in (path, path + ".turns", path + ".turns.taken") if os.path.exists(p)])
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         conn, _ = server.accept()
@@ -268,11 +336,20 @@ def rpc(conn, turns):
             result = {"data": ["mock-title", "mock-session"]}
         elif method == "thread/read":
             id = call["params"]["threadId"]
-            result = {"thread": {"id": id, "ephemeral": id == "mock-title"}}
+            result = {"thread": {"id": id, "ephemeral": id == "mock-title", "status": {"type": "idle"}}}
         elif method == "turn/start":
             with open(turns, "a") as f:
                 f.write(json.dumps(call["params"]["input"][0]["text"]) + "\n")
             result = {"turn": {"id": "mock-turn"}}
+        elif method == "thread/queue/add":
+            with open(turns, "a") as f:
+                f.write(json.dumps(call["params"]["input"][0]["text"]) + "\n")
+            added = len(open(turns).read().splitlines())
+            result = {"queuedSubmission": {"id": f"mock-{added}"}}
+        elif method == "thread/queue/list":
+            taken = len(open(turns + ".taken").read().splitlines()) if os.path.exists(turns + ".taken") else 0
+            added = len(open(turns).read().splitlines()) if os.path.exists(turns) else 0
+            result = {"data": [{"id": f"mock-{n}"} for n in range(taken + 1, added + 1)]}
         else:
             result = {}
         data = json.dumps({"jsonrpc": "2.0", "id": call["id"], "result": result}).encode()
@@ -299,7 +376,9 @@ def main():
         saved = termios.tcgetattr(fd)
         tty.setraw(fd, termios.TCSANOW)
         atexit.register(lambda: termios.tcsetattr(fd, termios.TCSANOW, saved))
+    global SESSION
     id, resumed = session(sys.argv[1:])
+    SESSION = id
     if "-p" in sys.argv[1:] or sys.argv[1:2] == ["exec"]:
         if os.path.exists(os.path.join(os.environ.get("HOME", "/nonexistent"), ".mock-handoff-fails")):
             return 1
@@ -352,7 +431,8 @@ def typed():
         return
     line = ""
     while True:
-        data = os.read(fd, 1024)
+        data = bytes(AHEAD) or os.read(fd, 1024)
+        AHEAD.clear()
         if not data:
             return
         for c in data.decode("utf8", "replace"):
@@ -387,12 +467,20 @@ def reported(state):
 
 
 def answer(line):
-    if line.split()[:1] == ["report"]:
+    global BUSY
+    if line.split()[:1] in (["report"], ["later"]):
         return answering(line)
     reported("working")
+    BUSY = True
     try:
         return answering(line)
     finally:
+        while HELD:
+            text = HELD.pop(0)
+            shown(text)
+            for order in re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M):
+                answering(order)
+        BUSY = False
         reported("idle")
 
 
@@ -414,8 +502,8 @@ def answering(line):
     if words[:1] in (["exit"], ["/exit"]):
         return False
     if words[:1] == ["work"]:
-        work(float(words[1]) if len(words) > 1 else 2)
-        out("WORK_DONE\r\n")
+        if work(float(words[1]) if len(words) > 1 else 2):
+            out("WORK_DONE\r\n")
     elif words[:1] == ["run"] and len(words) > 1:
         out("\x1b]9;4;3\x07")
         command = line.strip().split(None, 1)[1]
@@ -426,8 +514,9 @@ def answering(line):
         work(1)
         out(f"RUN_DONE {ran.returncode}\r\n")
     elif words[:1] in (["turn"], ["ask"]):
-        if words[:1] == ["turn"]:
-            work(2)
+        if words[:1] == ["turn"] and not work(2):
+            composer()
+            return True
         choice = ask()
         reported("working")
         out("\x1b[2J\x1b[H")
@@ -436,11 +525,22 @@ def answering(line):
             out("TURN_DONE\r\n")
         else:
             out("Declined.\r\n")
+    elif words[:1] == ["later"] and len(words) > 2:
+        threading.Timer(float(words[1]), out, [f"\x1b]7501;{words[2]}\x1b\\"]).start()
+        out(f"later: {words[2]}\r\n")
     elif words[:1] == ["background"] and len(words) > 1:
         child = subprocess.Popen(["sleep", words[1]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True)
         wake = float(words[3]) if words[2:3] == ["wake"] and len(words) > 3 else None
         threading.Thread(target=woken, args=(child, wake), daemon=True).start()
         out(f"BACKGROUND_STARTED {child.pid}\r\n")
+    elif words[:1] == ["say"]:
+        said([{"type": "text", "text": line.strip().split(None, 1)[1]}])
+        out("SAID\r\n")
+    elif words[:1] == ["question"]:
+        said([{"type": "tool_use", "id": "q1", "name": "AskUserQuestion", "input": {"questions": [{"question": line.strip().split(None, 1)[1], "options": [{"label": "Keep", "description": "Leave it"}, {"label": "Drop"}]}]}}])
+        reported("needs-you")
+        out("ASKED\r\n")
+        time.sleep(1)
     elif words[:1] == ["report"]:
         out(f"\x1b]7501;{words[1] if len(words) > 1 else ''}\x1b\\")
         out(f"reported: {words[1] if len(words) > 1 else ''}\r\n")

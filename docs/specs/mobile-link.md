@@ -1,6 +1,6 @@
 # Phone: Link and Pairing
 
-**Status:** planned · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
+**Status:** built, on the LAN ([slice 1](mobile-app.md#9-build-order)), with more than one machine ([slice 3](mobile-machines.md#3-the-link-moves)) and away from the LAN ([slice A](mobile-app.md#9-build-order)) · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [identity and pairing](machine-identity.md), [one link per machine](machine-links.md), [remote terminals §3](remote-terminals.md#3-your-relay)
 
 How a phone becomes yours and reaches your machines. It pairs once, with any one machine, and from then on can reach any of them, though it holds one link at a time, to the current repo's planner machine: on the LAN directly, away through your relay, moving to a direct path when one opens. This holds no account and needs no server of Kanna's, as for [your machines](machines.md#1-rules).
 
@@ -41,7 +41,7 @@ sequenceDiagram
     participant M as Kanna.app and daemon (A)
     participant P as phone (B)
     M->>M: Machines tab, Pair a phone: makes a code (5 min, 3 tries, one use)
-    M-->>P: QR: code, the Mac's key, its addresses, its relay
+    M-->>P: QR: code, the Mac's key, its addresses
     P->>P: makes its device key
     P->>M: dials the key, pair stream {joining: true}
     M->>P: hello_a
@@ -54,31 +54,37 @@ sequenceDiagram
     M->>M: the log goes to every other machine
 ```
 
+- **The relay stays out of the QR.** A shared-token relay turns away a phone with no token, so its URL alone is no use, and a token in the QR could be read by any camera that sees the screen. It would cost size too: at level L a QR with four addresses is 53 modules today, 57 with the URL and 65 with the URL and token, on a code people scan from across a desk.
+- **So pairing needs a direct path to the machine:** the same LAN, or an address the phone can reach. The relay starts working once the handoff has given the phone its token.
+- **Local Network is asked for on the pairing screen,** before Scan can be tapped, by a short `NWBrowser`. Asked at Scan, its prompt came up with the camera's and was lost, and the first dial failed.
+- **Sealed** means the PAKE key's MAC over the payload, which travels inside iroh's encrypted stream.
 - **Who opens the stream** is now separate from who speaks first: with `joining`, the dialer is B. The code is 128 random bits, since nobody types it.
 - **`kanna phone pair`** shows the same QR in a terminal, for a Linux machine you're logged in to. Adding still takes a gesture in a Kanna.app, so a machine with no app refuses (`gesture_required`).
 - **The gesture stays on the Mac.** The phone waits on *Confirm on the Mac*.
+- **Pair with another machine,** at the foot of the repo sheet, forgets this machine, its chat and the key, and goes back to pairing. Revoking from the Mac does the same to a phone when it next dials.
 - **One log per install:** dev, staging and production Kannas are separate logs, so the phone app has a build per channel ([build channels](build-channels.md)).
 
 Mockup of the Mac's side: `#pair-mac` in [`mobile.html`](../../references/mockups/mobile.html).
 
 ## 3. The phone stream
 
-A new stream kind, `phone`, added to `KINDS`, opened by a key with the `phone` role. A phone's key may open no other kind, and a machine's or app's key may not open this one. That check is at the stream's header, like `sync`'s, and matters because a phone has no certificate, the mark that today tells an app from a daemon.
+A new stream kind, `phone`, opened by a key with the `phone` role. It stays out of `KINDS`, which `machine ping` opens on every machine. A phone's key may open no other kind, and a machine's or app's key may not open this one. That check is at the stream's header, like `sync`'s, and matters because a phone has no certificate, the mark that today tells an app from a daemon.
 
-- **Why its own kind:** the phone needs a dozen requests, not the app link's terminals, layouts and `send`. A second app link would also meet `app_attached` and would have to lift the one-app limit, which the phone no longer needs.
+- **Why its own kind:** the phone needs a dozen requests, not the app link's terminals, layouts and `send`.
 - **Its bytes** are JSON lines: `{id, cmd, args}` answered by `{id, ok, …}`, and notices with no `id` that the daemon pushes while the stream is open.
 - **Its own version:** the header carries `phone: N` in place of the [one protocol per build](machine-versions.md#2-protocols). A phone updates through the App Store, later than a Mac and out of step with it, so a Mac update mustn't make the phone Incompatible. The stream changes by adding fields, which both sides ignore when they don't know them. A breaking change raises N; a daemon serves its last two, and the phone says which side to update.
 
 | Request | Does | Spec |
 |---|---|---|
-| `hello` | The machine's name and capabilities, its projects, the log, the relay and token | |
+| `hello` | The machine's name, every project with its planner machine, your machines' keys and addresses, the log, the relay and its token. A machine with no relay leaves out both, and the phone keeps the ones it has | [Machines and Stats §3](mobile-machines.md#3-the-link-moves) |
 | `chat.read {repo, after}`, `chat.send`, `chat.choose` | The conversation | [chat §3](mobile-chat.md#3-the-conversation) |
-| `planner.move {repo, machine}` | Sets the planner machine | [chat §1](mobile-chat.md#1-the-planner-machine) |
-| `tasks.list {repo}`, `task.read`, `task.send`, `task.pick` | The Shelf | [Shelf](mobile-shelf.md) |
+| `machines {repo}` | The repo's machines | [Machines and Stats §6](mobile-machines.md#6-machines) |
+| `planner.move {repo, machine}` | Sets the planner machine | [Machines and Stats §4](mobile-machines.md#4-moving-the-planner) |
+| `tasks.list {repo}`, `task.read {task}`, `task.send {task, id, text}`, `task.pick {task, desk, room?}` | The Shelf | [Shelf](mobile-shelf.md) |
 | `stats {repo}` | The [same reply](stats.md#4-adding-a-metric) as `kanna stats --json` | |
 | `quiz.map`, `quiz.rounds`, `quiz.answer`, `quiz.ahead` | The Quiz tab | [quiz §2](mobile-quiz.md#2-the-stream) |
 
-Notices: `chat {repo, item}`, `planner {repo, status, since}`, `tasks {repo}`, `quiz {repo}`.
+Notices: `chat {repo, item}`, `planner {repo, status, since}`, `tasks {repo}`, `projects`, `quiz {repo}`.
 
 - **`repo` is a project's identity** (`url:host/path`, [links §4](machine-links.md#4-projects-desks-and-claims)); each daemon turns it into its own clone's path.
 
@@ -95,11 +101,16 @@ flowchart TD
     D & I & R -->|"network changes"| L
 ```
 
-- **One link, to the planner machine.** `hello` lists your projects and each one's planner machine, from the replica. Switching to a repo on another planner machine moves the link. If it can't be reached, the phone dials the other machines in the log only for the Machines tab, so you can *Run the planner here* ([chat §1](mobile-chat.md#1-the-planner-machine)).
-- **Foreground only.** Going to the background closes the links and the endpoint. Coming back opens them, reads from the last `seq`, and shows the cache until then. This is what iOS allows without push.
-- **LAN first, with no multicast.** Raw multicast takes an Apple entitlement, so the phone uses iroh's `AddressLookup` fed from the last good address, the log's `addrs` and `NWBrowser` on `_kanna._udp`, under `NSBonjourServices` and `NSLocalNetworkUsageDescription` ([a real iPhone](mobile-app.md#5-what-depends-on-a-real-iphone)).
+- **One link, to the planner machine.** `hello` lists your projects and each one's planner machine, from the [project records](mobile-machines.md#1-the-project-record). Switching to a repo on another planner machine moves the link. If it can't be reached, the phone dials the other machines in the log only for the Machines tab, so you can *Run the planner here* ([chat §1](mobile-chat.md#1-the-planner-machine)).
+- **The endpoint lives as long as the app.** Going to the background closes nothing: iOS freezes the process, and its relay connection and QUIC connection survive a short absence. Rebuilding them is what cost a return 12 s on cellular ([measured](../../references/prototypes/phone-probe/README.md#timed-and-fixed)): TCP, TLS, relay auth and QUIC through the relay, each several round trips of a link that takes seconds to wake.
+- **Coming back within 25 s** asks the kept link for `hello`, under the QUIC idle limit of 30 s. An answer within 3 s means it's alive; the chip keeps its path meanwhile. No answer drops the link and dials.
+- **Coming back later** drops the link without asking, since the Mac has timed it out, and dials on the same endpoint, keeping the relay connection if it survived. Either way the app reads from the last `seq` and shows the cache until then. Nothing runs in the background: this is what iOS allows without push.
+- **The direct path can come and go.** A carrier link that goes quiet loses it after iroh's 15 s path idle limit, and iroh tries again about every 60 s. The link stays up on the relay and the chip says so.
+- **Names resolve through the OS.** The phone's endpoint uses `getaddrinfo`, not iroh's own DNS client, whose queries to the carrier's nameservers timed out where the system answered from its cache in 2 ms.
+- **LAN first, with no multicast.** Raw multicast takes an Apple entitlement, so the phone dials the last good address, the log's `addrs` and what `NWBrowser` finds, under `NSBonjourServices` and `NSLocalNetworkUsageDescription`.
+- **A Bonjour service of our own.** Each daemon publishes `_kanna-phone._udp`, its port and, as the instance name, its key in lowercase base32. iroh's `_kanna._udp` records can be listed but [never resolve](../../references/prototypes/phone-probe/README.md#results), on an iPhone or a Mac. On macOS the daemon registers with the system's `DNSServiceRegister`: a responder of its own, as `mdns-sd` runs, isn't seen even by the same Mac. On Linux, where no responder can be counted on, it uses `mdns-sd`. Bonjour only finds the address; the link is iroh's.
 - **Relay second.** The endpoint uses the relay in the log, with an empty relay map otherwise, as every Kanna endpoint does. A phone reaches `https://relay.kanna.build:8444` like any machine ([remote terminals §3](remote-terminals.md#3-your-relay)); nothing on the relay changes. A chat message is small enough that a relay's 320 ms from Japan doesn't matter, so the phone never needs a relay of its own.
-- **Direct whenever it can.** iroh moves a connection to a direct path by itself; `NWPathMonitor` tells it the network changed.
+- **Direct whenever it can.** iroh moves a connection to a direct path by itself; `NWPathMonitor` tells it the network changed. A machine's last good address is only ever a direct one: the relay isn't an address to dial.
 - **The chip** reads `path(key)` for the planner machine ([links §5](machine-links.md#5-paths-the-machines-tab-and-offline)), and `NWPathMonitor` tells *no network* from *machine asleep*.
 
 ## 5. Offline

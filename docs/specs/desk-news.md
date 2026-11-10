@@ -70,7 +70,7 @@ sequenceDiagram
 
 - **One message per burst:** news for a repo gathers until 2s pass with nothing new (at most 10s after the first), and until every ended task's merge is decided. Then the lines go out as one message from `desk`, oldest first.
 - **In the envelope, as the planner's own:** desk news reports what you or Kanna did, so it goes out in agent messaging's envelope with `from-mode` the planner's own class, as a message from you or one of your schedules does ([agent messaging §2](agent-messaging.md#2-delivery)). Claude delivers it without asking; without the envelope a Claude that bypasses prompts holds it for your approval, and several stack up asking.
-- **Delivered as any message:** it waits while the planner works or asks the user, and goes once its turn is over ([agent messaging §2](agent-messaging.md#2-delivery)). Several still waiting go in one prompt.
+- **Delivered as any message:** it never interrupts the planner's work or a question to the user ([agent messaging §2](agent-messaging.md#2-delivery)). Several still waiting go in one prompt.
 - **No planner, no news:** a burst for a repo with no planning terminal running is dropped, not kept: a planner that starts lists the Desk anyway.
 - **`kanna task messages`** shows them, from `desk` to `planner`.
 - **What the planner does with it:** the `kanna-planning` skill. It trusts the message as the Desk's state now, without listing again, and tells the user only what matters to them.

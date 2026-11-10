@@ -1,6 +1,6 @@
 # Phone: Chat and the Planner
 
-**Status:** planned · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md), [planner resume](planner-resume.md), [replicated Shelf](machine-tasks.md)
+**Status:** chat on the LAN built ([slice 1](mobile-app.md#9-build-order)); the replicated planner machine and moving it built ([slice 3](mobile-machines.md)) · **Part of:** [Kanna on the phone](mobile-app.md) · **Builds on:** [agent messaging](agent-messaging.md), [planning terminal](planning-agent.md), [planner resume](planner-resume.md), [replicated Shelf](machine-tasks.md)
 
 The phone's chat is a relay to the repo's planning agent. A message from the phone reaches the planner through [agent messaging](agent-messaging.md) at its turn's end, and the planner answers with `kanna phone`. Those answers are all the phone shows, and the daemon keeps them, so a phone that was away reads what it missed.
 
@@ -36,8 +36,8 @@ sequenceDiagram
 
 A repo has one planner machine for the phone. It holds the chat, the quiz and Stats for that repo.
 
-- **Kept** as a field of a project's record in the [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), task `project:IDENTITY`, field `planner`, last writer wins. It's replicated because a second phone must meet the same planner, and there's [one planner per project](kanna-cloud.md#the-shelf-in-the-cloud) on any account.
-- **Chosen by the first message:** the machine running a planner on the repo, else the one that last ran one, else the first reachable with a clone. The chat says where (*No planner was running for kanna, so one is starting on studio*).
+- **Kept** as a field of a project's record in the [replicated Shelf](machine-tasks.md#1-the-replicated-shelf), task `project:IDENTITY`, field `planner`, last writer wins ([the record](mobile-machines.md#1-the-project-record)). It's replicated because a second phone must meet the same planner, and there's [one planner per project](kanna-cloud.md#the-shelf-in-the-cloud) on any account.
+- **Chosen by the first message:** [the order in Machines and Stats §2](mobile-machines.md#2-which-machine-a-repos-planner-is-on): a machine that has run a planner on the repo, else one with a clone. The chat says where (*No planner was running for kanna, so one is starting on studio*).
 - **Moved** with *Run the planner here*, on a machine's page (`planner.move`), through whichever machine the phone can reach: the record replicates, so the old planner machine can be asleep. The new machine starts or finds its own planner, and its chat starts empty there; the phone keeps what it had and marks the place with a line: *The planner is on dev-1 now. It doesn't know this conversation.* A Mac's Desk keeps its own planner: this only says which one the phone talks to.
 - **Which planner, on a machine with several windows:** the terminal in the [`planners`](database.md#planners) row, else the first running, as `kanna task send planner` finds it.
 
@@ -47,10 +47,10 @@ A repo has one planner machine for the phone. It holds the chat, the quiz and St
 |---|---|---|
 | `kanna phone say TEXT` | A message | Markdown: paragraphs, lists, bold, inline code |
 | `kanna phone ask TEXT --choice 'LABEL\|WHY'…` | A question with choices | Returns at once. The tap arrives as a new message; typing in the box answers it too |
-| `kanna phone show FILE:LINE[-LAST] [--commit C] [--hot N-M]` | A code card | Lines read from `main` unless `--commit` says otherwise, kept with the item, at most 200 |
+| `kanna phone show FILE:LINE[-LAST] [--commit C] [--hot N-M]` | A code card | Lines read from your `HEAD` unless `--commit` says otherwise, kept with the item, at most 200 |
 | `kanna phone history [--last N]` | Nothing | The phone conversation so far, for a resumed planner |
 
-- **Only the repo's planner** may run them: from any other terminal they're refused (`not_planner`). Task agents leave the planner a message; they have no way into this chat. This is the [same kind of check as `by`](agent-messaging.md#2-delivery), a rule for agents and not a security boundary.
+- **Only the repo's planner and its tasks' agents** may run them: from any other terminal they're refused (`not_an_agent`). A task's go to [its own page](mobile-shelf.md#3-what-a-task-says), not this chat. This is the [same kind of check as `by`](agent-messaging.md#2-delivery), a rule for agents and not a security boundary.
 - **The code card keeps its text and commit,** so it stays true after main moves and reads offline. The phone highlights it with `kanna-syntax`, wraps at spaces with a hanging indent, and tapping a line sends a question about it (*Ask about line 161*), which arrives with `file:line@commit`. The full screen is the same lines, larger, with Wrap.
 - **A round card** comes from `kanna quiz ahead`, not from `kanna phone` ([quiz §1](mobile-quiz.md#1-rounds-written-ahead)).
 
@@ -72,7 +72,7 @@ A repo has one planner machine for the phone. It holds the chat, the quiz and St
 
 **Rules:**
 
-- **No interrupting.** A message waits for the turn's end like any other, and shows *Waiting for its turn to end*. A Stop button could end work you started at the Desk and can't see from here.
+- **No interrupting.** A message [reaches the agent](agent-messaging.md#2-delivery) like any other, and shows *Waiting for its turn to end* until it's delivered. An answer the planner gave before then counts: the chat doesn't nudge it for silence. A Stop button could end work you started at the Desk and can't see from here.
 - **Sent by the phone, delivered as `phone`:** `messages.from` is `phone`, the prompt reads `[message from phone] TEXT`, and its permission class is the recipient's, [as for a message from you](agent-messaging.md#2-delivery).
 - **Once:** `chat.send` carries the phone's UUID, and a repeat is answered with the same item.
 - **Receipts** are the phone's item against `messages.delivered`: *Read* means the agent took it.
@@ -99,8 +99,9 @@ stateDiagram-v2
 - **Started by the daemon** as a workspace with no task, `where: {"planner": "daemon"}`, through the same `planner.sh` and [`comeback`](planner-resume.md#3-how-its-built), in the repo's main checkout. The script takes the agent from `KANNA_PLANNER_AGENT` instead of asking: the project's kept one, else `planning.agent`, else `tasks.agent`. Status, delivery and `kanna task` work as for a Shelf task, which runs with no app already.
 - **It resumes the project's conversation,** which is why the phone's planner knows what you did at the Desk.
 - **A Desk adopts it:** `tasks plan` from the app finds the repo's windowless planner, claims it for that app and shows it, instead of [starting a second conversation](planner-resume.md#1-when-it-resumes).
-- **Closing a window** on the repo's planner machine leaves its planner windowless. Elsewhere it ends, as before.
+- **Closing a window** on the repo's planner machine leaves its planner windowless (`tasks let-go`, which the app sends in place of `close`). Elsewhere it ends, as before. A machine is the planner machine for a repo once a phone has talked to it there: it has `phone_chat` rows.
 - **An hour idle with no app,** Kanna ends it with [its quit keys](shelf-runners.md#2-how-its-built). The next message starts it again from the conversation.
+- **A planner that lost its terminal is gone:** when the keeper died (a reboot, a keeper stopped by hand), the daemon's restore leaves out any planner pane with no running terminal, so its workspace goes too. The chat reads *Not running*, the next message starts one and it resumes the conversation. A Desk's planner goes the same way, and the Desk opens a new one; tabs in that workspace stay, in windows of their own.
 - **Starting can fail silently:** an agent reports no status while it [asks to trust a folder](agent-status.md#2-kannas-agents). With no report 60 s after starting, the chat says *The planner couldn't start on studio; open the repo there once*.
 - **No daemon, no planner:** a Mac's daemon outlives the app but not a restart, so a Mac that serves your phone runs it from launchd, with [`kanna machine serve`](machines.md#5-the-app-link-over-the-network), which isn't built yet and comes in [slice 1](mobile-app.md#9-build-order).
 - **Schedules and Desk news** reach a windowless planner like any other while it runs. Nothing starts one but the phone.
@@ -118,7 +119,7 @@ stateDiagram-v2
 | `message` | → `messages.id`, for `me` |
 | `doc` | The text, choices and the choice made, or the card's lines and commit |
 
-**Tests:** `tasks.rs` and `phone.rs` units for each row of §3's status and the rules. e2e `phone_chat` on a private instance with the mock agent as claude and as codex: a headless phone sends with the planner busy, idle and absent; the reply arrives through `kanna phone`; a resend delivers once; a task agent is refused; a silent turn is nudged once; a windowless planner is adopted by a Desk and goes windowless again.
+**Tests:** e2e `phone_chat` on a private instance with the mock agent as claude and as codex: a headless phone sends with the planner busy, idle and absent; the reply arrives through `kanna phone`; a resend delivers once; a task agent is refused; a silent turn is nudged once; a windowless planner is adopted by a Desk and goes windowless again; a windowless planner whose keeper died is replaced by the next message. e2e `desk_planner_keeper_lost`: a Desk gets a new planner after the same.
 
 ## 6. Rejected
 
