@@ -2868,6 +2868,11 @@ print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["hi
   check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)." ]]' || { desk note; return 1; }
   stop_app; start_app || { echo "desk_shelf line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk lead)" == "$planner" ]]' || { echo "desk_shelf: the planning terminal didn't survive the app's restart"; kanna workspace list --all; return 1; }
+  check test -z "$(desk note)" || { echo "desk_shelf: the note outlived the app's restart"; desk note; return 1; }
+  local toast; toast="$(kanna toast "A fourth waits" --task "$(tid 4)")"; toast="${toast#raised }"
+  check wait_for 5 eval 'raw "{\"id\":1,\"cmd\":\"debug.toasts\"}" | grep -qF "\"$toast\""' || { echo "desk_shelf: no toast for the Shelf task: $toast"; return 1; }
+  raw '{"id":1,"cmd":"debug.toasts","args":{"click":"'"$toast"'"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)." ]]' || { echo "desk_shelf: a Shelf task's toast on a full Desk doesn't note it in the app's words"; desk note; return 1; }
   local refused; refused="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"blank\",\"repo\":\"$repo\"}}")"
   [[ "$refused" == *'"ok":false'* && "$refused" == *"tasks needs an action"* ]] || { echo "desk_shelf: the Shelf still starts blank tasks: $refused"; return 1; }
   key cmd+shift+w
