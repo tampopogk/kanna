@@ -33,6 +33,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let contents = Contents()
     var panes: PaneViews!
     var controllers: [String: WindowController] = [:]
+    var arriving: (frame: NSRect, hidden: Bool)?
     private(set) var state: JSON = ["windows": []]
     private(set) var published: JSON = ["windows": []]
     private var plain: JSON = ["windows": []]
@@ -688,6 +689,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let saved = initial["frame"], let x = saved["x"]?.number, let y = saved["y"]?.number, let w = saved["w"]?.number, let h = saved["h"]?.number {
             let frame = NSRect(x: x, y: y, width: w, height: h)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { controller.window.setFrame(frame, display: false) }
+        } else if let arriving {
+            self.arriving = nil
+            controller.window.setFrame(arriving.frame, display: false)
+            if arriving.hidden { controller.window.alphaValue = 0 }
         }
         if let desk = physical.desk(id) {
             controller.page = desk.page
@@ -734,7 +739,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.tabBar.badge = { [weak self] pane in self?.contents.badge(pane) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
-        controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }
+        controller.tabBar.onDrag = { [weak self] tab, grab in self?.dragTab(tab, grab: grab) }
         controller.tabBar.onMoveToNewWindow = { [weak self] tab in self?.layoutCommand("move-tab", ["tab": .string(tab), "window": "new"]) }
         controller.tabBar.onEditEnded = { [weak self, weak controller] in
             guard let self, let controller else { return }

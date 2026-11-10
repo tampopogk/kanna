@@ -185,6 +185,8 @@ impl Event {
     }
 }
 
+const PANICKED: i32 = 101;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -200,9 +202,13 @@ fn main() {
         }
     }
     let unstamped = std::panic::take_hook();
+    let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
         eprint!("{} ", stamp());
-        unstamped(info)
+        unstamped(info);
+        if std::thread::current().id() == main_thread {
+            std::process::exit(PANICKED);
+        }
     }));
     match run() {
         Ok(()) => {}
@@ -718,7 +724,7 @@ fn run() -> Result<(), String> {
     let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
     crashes.install(&core);
     let posting = Rc::downgrade(&tasks);
-    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), "kanna", text).map_err(|error| error.message)));
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), messages::KANNA, text).map_err(|error| error.message)));
     let banner_link = Rc::downgrade(&app);
     *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
     crashes.scan();

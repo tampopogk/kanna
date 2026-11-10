@@ -358,17 +358,9 @@ final class WindowController: NSObject, NSWindowDelegate {
             view.autoresizingMask = []
             return
         }
-        guard case .array(let children)? = node["children"], !children.isEmpty else { return }
         let horizontal = node["split"]?.string == "row"
-        let total = (horizontal ? rect.width : rect.height) - Self.divider * CGFloat(children.count - 1)
-        var offset: CGFloat = 0
         var previous: (frame: NSRect, size: Double, last: String?)?
-        for (index, child) in children.enumerated() {
-            let size = child["size"]?.number ?? 1 / Double(children.count)
-            let length = (total * CGFloat(size)).rounded()
-            let frame = horizontal
-                ? NSRect(x: rect.minX + offset, y: rect.minY, width: length, height: rect.height)
-                : NSRect(x: rect.minX, y: rect.maxY - offset - length, width: rect.width, height: length)
+        for (index, (child, frame, size)) in Self.split(node, in: rect).enumerated() {
             place(child, path: path + [index], in: frame, panes)
             if let previous, let tab {
                 let line = horizontal
@@ -383,8 +375,33 @@ final class WindowController: NSObject, NSWindowDelegate {
                 dividers.append(handle)
             }
             previous = (frame, size, child["pane"]?.string)
-            offset += length + Self.divider
         }
+    }
+
+    static func split(_ node: JSON, in rect: NSRect) -> [(node: JSON, frame: NSRect, size: Double)] {
+        guard case .array(let children)? = node["children"], !children.isEmpty else { return [] }
+        let horizontal = node["split"]?.string == "row"
+        let total = (horizontal ? rect.width : rect.height) - divider * CGFloat(children.count - 1)
+        var offset: CGFloat = 0
+        return children.map { child in
+            let size = child["size"]?.number ?? 1 / Double(children.count)
+            let length = (total * CGFloat(size)).rounded()
+            let frame = horizontal
+                ? NSRect(x: rect.minX + offset, y: rect.minY, width: length, height: rect.height)
+                : NSRect(x: rect.minX, y: rect.maxY - offset - length, width: rect.width, height: length)
+            offset += length + divider
+            return (child, frame, size)
+        }
+    }
+
+    static func paneFrames(_ node: JSON, in rect: NSRect) -> [(pane: String, frame: NSRect)] {
+        if let id = node["pane"]?.string { return [(id, rect.integral)] }
+        return split(node, in: rect).flatMap { paneFrames($0.node, in: $0.frame) }
+    }
+
+    var stageFrame: NSRect? {
+        guard !stage.isHiddenOrHasHiddenAncestor, stage.bounds.width >= 1, stage.bounds.height >= 1 else { return nil }
+        return stage.convert(stage.bounds, to: nil)
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

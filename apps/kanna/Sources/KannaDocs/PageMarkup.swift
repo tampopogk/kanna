@@ -34,6 +34,7 @@ public final class PageMarkupView: NSView {
     public var agent: String? { didSet { agentChanged() } }
     public var agentStatus: String? { didSet { if agentStatus != oldValue { drawMarks() } } }
     public var onSend: DocSend?
+    public var onThreadEvent: DocThreadEvent?
     public var agentName: ((String) -> String)? { didSet { agentChanged() } }
 
     let bar = DocBar()
@@ -464,7 +465,21 @@ public final class PageMarkupView: NSView {
     }
 
     func setState(_ id: String, open: Bool) {
-        change(.edit(id, DocEdit(state: open ? "open" : "resolved")))
+        let changes = record.threads.contains { $0.id == id && $0.isOpen != open }
+        change(.edit(id, DocEdit(state: open ? "open" : "resolved"))) { [weak self] _ in
+            guard changes, let self, record.threads.contains(where: { $0.id == id && $0.isOpen == open }) else { return }
+            tell(id, open: open)
+        }
+    }
+
+    public func pressAct(_ id: String) {
+        guard let thread = record.threads.first(where: { $0.id == id }) else { return }
+        setState(id, open: !thread.isOpen)
+    }
+
+    private func tell(_ id: String, open: Bool) {
+        guard let thread = record.threads.first(where: { $0.id == id }), let agent else { return }
+        onThreadEvent?(agent, Doc.stateEvent(placed(thread), file: docName, open: open), path, id, open ? "open" : "resolved")
     }
 
     func reveal(_ id: String) {
@@ -479,9 +494,15 @@ public final class PageMarkupView: NSView {
         }
     }
 
-    private func deliver(_ id: String, _ text: String) {
-        guard var thread = record.threads.first(where: { $0.id == id }), Doc.isThreadID(id) else { return }
+    private func placed(_ thread: DocThread) -> DocThread {
+        var thread = thread
         if let page = thread.page, !page.text.isEmpty { thread.line = Doc.line(of: page.text, in: source ?? "", near: thread.line) }
+        return thread
+    }
+
+    private func deliver(_ id: String, _ text: String) {
+        guard let found = record.threads.first(where: { $0.id == id }), Doc.isThreadID(id) else { return }
+        let thread = placed(found)
         let message = Doc.clean(Doc.message(thread, file: docName, text: text, mark: thread.mark))
         let finish: (DocDelivery) -> Void = { [weak self] delivery in
             self?.change(.edit(id, DocEdit(delivered: delivery, line: thread.line)))

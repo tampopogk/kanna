@@ -25,13 +25,24 @@ else
 fi
 mkdir -p "$work/macos"
 (cd "$work" && "$zig" build --build-file "$source_dir/build.zig" --cache-dir "$work/.zig-cache" -p "$work/zig-out" \
-  -Demit-xcframework=true -Demit-macos-app=false -Doptimize="$optimize" -Dsentry=false)
+  -Demit-xcframework=true -Demit-macos-app=false -Demit-docs=false -Doptimize="$optimize" -Dsentry=false)
 
 xcframework="$out/GhosttyKit.xcframework"
 mkdir -p "$out"
 rm -rf "$xcframework"
 cp -R "$work/macos/GhosttyKit.xcframework" "$out/"
 kanna_ghostty_rev "$source_dir" > "$out/ghostty.rev"
+
+themes=("GitHub Light Default" "GitHub Dark Default" "Catppuccin Latte" "Catppuccin Mocha")
+share="$out/share"
+rm -rf "$share"
+mkdir -p "$share/ghostty/themes"
+cp -R "$work/zig-out/share/terminfo" "$share/"
+cp -R "$work/zig-out/share/ghostty/shell-integration" "$share/ghostty/"
+for theme in "${themes[@]}"; do cp "$work/zig-out/share/ghostty/themes/$theme" "$share/ghostty/themes/"; done
+[[ -f "$share/terminfo/78/xterm-ghostty" ]] || { echo "Ghostty's build made no terminfo/78/xterm-ghostty" >&2; exit 1; }
+version="$(sed -n 's/^ *\.version = "\(.*\)",$/\1/p' "$source_dir/build.zig.zon")"
+echo "$version+$(git -C "$source_dir" rev-parse --short=7 HEAD 2>/dev/null || echo 0000000)" > "$share/ghostty-version"
 
 add_lib_prefix_swiftpm_needs() {
   local plist="$xcframework/Info.plist"

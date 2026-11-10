@@ -24,6 +24,7 @@ extension AppController {
                 "bundle": .string(Bundle.main.bundleIdentifier ?? ""),
                 "panes": .array(keyWindow.map { WindowController.paneIDs($0["root"] ?? .null).map { .string($0) } } ?? []),
                 "windows": .array(controllers.keys.sorted().map { .string($0) }),
+                "frames": .object(controllers.mapValues { c in .array([c.window.frame.minX, c.window.frame.minY, c.window.frame.width, c.window.frame.height].map { .number(Double($0)) }) }),
             ]
             if let daemon {
                 reply["daemon"] = .string(daemon.socketPath)
@@ -108,6 +109,7 @@ extension AppController {
             return ["dropped": .bool(view.drop(pasteboard))]
         }
         commands["debug.pinch"] = { [weak self] args in try await self?.pinch(args) ?? [:] }
+        commands["debug.wheel"] = { [weak self] args in try await self?.wheel(args) ?? [:] }
         commands["debug.text"] = { [weak self] args in
             guard let self else { return [:] }
             let view = try terminal(args["pane"]?.string)
@@ -219,6 +221,7 @@ extension AppController {
                 let data = value.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed]) }
                 return ["value": .string(data.map { String(decoding: $0, as: UTF8.self) } ?? "null"), "magnification": .number(Double(web.webView.magnification))]
             }
+            if let thread = args["act"]?.string { web.markup?.pressAct(thread) }
             if let edit = args["edit"]?.string {
                 web.editURL()
                 let shown = web.editing ?? ""
@@ -286,6 +289,7 @@ extension AppController {
             if let y = args["scroll"]?.number { markdown.scroll(toY: CGFloat(y)) }
             if let step = args["change"]?.number { markdown.jump(by: Int(step)) }
             if let target = args["follow"]?.string { markdown.follow(target) }
+            if let thread = args["act"]?.string { markdown.pressAct(thread) }
             if case .array(let pick)? = args["select"], pick.count == 2, let at = pick[0].number, let length = pick[1].number {
                 markdown.select(NSRange(location: Int(at), length: Int(length)))
             }
@@ -676,6 +680,26 @@ extension AppController {
             }
         }
         return [:]
+    }
+
+    private func wheel(_ args: JSON) async throws -> [String: JSON] {
+        let id = try resolve(args["pane"]?.string ?? focusedPane ?? "")
+        guard let view = panes.keyView(id), let window = view.window else { throw KannaError("wrong_type", "pane is not on screen") }
+        let area = view.visibleRect.intersection(view.bounds)
+        let point = view.convert(NSPoint(x: area.midX, y: area.midY), to: nil)
+        let height = NSScreen.screens.first?.frame.height ?? 0
+        let delta = Int32(args["delta"]?.number ?? -40)
+        let count = Int(args["count"]?.number ?? 10)
+        let pause = Int(args["every_ms"]?.number ?? 16)
+        for index in 0..<count {
+            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { continue }
+            cg.location = CGPoint(x: point.x, y: height - point.y)
+            cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: index == 0 ? 1 : index == count - 1 ? 4 : 2)
+            guard let event = NSEvent(cgEvent: cg) else { continue }
+            window.sendEvent(event)
+            try await Task.sleep(for: .milliseconds(pause))
+        }
+        return ["scroll": .number(Double(contents.markdown(id)?.scrollTop ?? 0))]
     }
 
     private func pinch(_ args: JSON) async throws -> [String: JSON] {

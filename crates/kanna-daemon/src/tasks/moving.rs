@@ -199,7 +199,8 @@ impl Tasks {
         }
         if let Some(pane) = entry.held.as_deref().filter(|pane| alive(core, pane)) {
             let working = self.ready.borrow().get(pane).and_then(|r| r.status()) == Some(Status::Working);
-            if working || self.quitting.borrow().contains_key(pane) || self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
+            let unbegun = self.turns.borrow().get(pane).is_some_and(Turn::unbegun);
+            if working || unbegun || self.quitting.borrow().contains_key(pane) || self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
                 return Err(KmuxError::new("busy", format!("{} is in the middle of a turn: move it when its turn is over", entry.id)));
             }
         }
