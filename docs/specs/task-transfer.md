@@ -26,7 +26,7 @@ sequenceDiagram
     participant R as receiver (vm)
     S->>R: heads {project}
     R-->>S: the commits its clone has
-    S->>S: agent quits by its keys at its turn's end, session ID kept
+    S->>S: agent quits at its turn's end, session ID kept
     S->>S: its agent writes a handoff (a headless turn of the same session)
     S->>S: WIP commit on the branch, bundle of what vm lacks
     S->>S: one transaction: transfer saved, permission sent to vm, "moving to vm"
@@ -39,7 +39,7 @@ sequenceDiagram
 ```
 
 - **Only a Shelf task moves,** one that has started (it has a worktree). A Desk task is refused (`on_desk`: shelve it first); a task that never started runs wherever a runner takes it, so it's refused too (`not_started`; `--on` says where it may run).
-- **At a turn's end:** a stopped task moves as it is. A running agent that isn't in the middle of a turn is quit by its keys first (`Tasks::end_agent`), keeping its session ID, and its terminals hung up; one that's working is refused (`busy`). So is an agent started with a prompt, a first message or a handoff, until it's been seen working (`Turn::unbegun`): for its first moments it has no status, and an agent that's up but hasn't begun is about to work. Stopping the task moves it as it is, whatever its agent had reported.
+- **At a turn's end:** a stopped task moves as it is. A running agent that isn't in the middle of a turn is quit first (`Tasks::end_agent`), keeping its session ID, and its terminals hung up; one that's working is refused (`busy`). So is an agent started with a prompt, a first message or a handoff, until it's been seen working (`Turn::unbegun`): for its first moments it has no status, and an agent that's up but hasn't begun is about to work. Stopping the task moves it as it is, whatever its agent had reported.
 - **Claude and Codex only, for now:** the handoff is written in a headless turn of the agent's own session, which needs its session ID and a one-shot mode (`claude -p --resume`, `codex exec resume`). Another agent is refused (`agent`); one with such a mode is a line in `handoff_args`.
 - **Nothing changes before the receiver answers `heads`:** the receiver is asked first, so an unreachable or refusing machine (no clone of the project) leaves the task exactly as it was, its agent still running. A task whose session isn't known, or whose agent writes no handoff, stays here, stopped, with nothing committed.
 - **While it's moving it doesn't start here:** `kanna task start`, `pick` and a message for it are refused or wait (`moving`), until the receiver answers or refuses.

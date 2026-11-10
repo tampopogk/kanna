@@ -51,4 +51,4 @@ A name is in the build's channel. Names are kmux's: letters, digits, `-` and `_`
 - **`kanna instances stop`** quits an instance: its app, daemon, keeper and terminals ([stopping an instance](instance-stop.md)).
 - **`kanna instances prune`** deletes the folders whose `instance.json` names a worktree that's gone, unless the daemon answers or the keeper runs.
 - **Why not a `kanna` folder:** the kmux-branded Kanna.app that came before used `kanna/kanna.sock`, and Kanna v3 uses `Kanna` (the same folder on a case-insensitive disk), and either may still be running. The channels' folders and bundle IDs are in one place, `crates/kanna-build`, which the CLI and the daemon use and whose `kanna-build` binary writes the app's Info.plist.
-- **Checked by** `instances` of `scripts/e2e-kanna.sh` (an instance started by `--instance` and listed by `instances`) and the CLI's tests ([CLI](cli.md#6-checked-by)).
+- **Checked by** `instances` of `scripts/e2e-kanna.sh` (an instance started by `--instance` and listed by `instances`) and the CLI's tests ([CLI](cli.md#7-checked-by)).

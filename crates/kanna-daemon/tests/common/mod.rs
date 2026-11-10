@@ -114,8 +114,13 @@ impl Instance {
         list["panes"].as_array().unwrap().iter().find(|p| p["name"] == name).cloned().unwrap_or(Value::Null)
     }
 
-    pub fn screen(&self, pane: &str) -> String {
-        self.call("read", json!({"pane": pane}))["text"].as_str().unwrap_or("").to_string()
+    pub fn pane_of(&self, terminal: &str) -> String {
+        let list = self.call("list", json!({}));
+        list["panes"].as_array().unwrap().iter().find(|p| p["terminal"] == terminal).and_then(|p| p["id"].as_str()).unwrap_or(terminal).to_string()
+    }
+
+    pub fn screen(&self, terminal: &str) -> String {
+        self.call("read", json!({"pane": self.pane_of(terminal)}))["text"].as_str().unwrap_or("").to_string()
     }
 
     pub fn log(&self) -> String {

@@ -493,7 +493,7 @@ public final class CodePaneView: NSView {
 
     public var debugNumbers: [String: Double] {
         let clip = scrollView.contentView
-        return ["clip_top": Double(convert(clip.frame, from: scrollView).maxY), "height": Double(bounds.height), "sticky_top": Double(sticky.frame.maxY), "find_bar_height": Double(scrollView.findBarView?.frame.height ?? -1), "find_bar_y": Double(scrollView.findBarView.map { convert($0.frame, from: $0.superview).minY } ?? -1), "find_bar": scrollView.isFindBarVisible ? 1 : 0, "selection_line": Double(file.line(at: textView.selectedRange().location)), "selection_length": Double(textView.selectedRange().length), "zoom": Double(zoom), "font_size": Double(fontSize), "spans": Double(highlights.spans.count), "scopes": Double(highlights.scopes.count), "lines": Double(file.lineCount), "top": Double(topLine), "current": Double(currentLine), "gutter": Double(gutter.ruleThickness),
+        return ["clip_top": Double(convert(clip.frame, from: scrollView).maxY), "height": Double(bounds.height), "sticky_top": Double(sticky.frame.maxY), "find_bar_height": Double(scrollView.findBarView?.frame.height ?? -1), "find_bar_y": Double(scrollView.findBarView.map { convert($0.frame, from: $0.superview).minY } ?? -1), "find_bar": scrollView.isFindBarVisible ? 1 : 0, "find_matches": Double(textView.matches.count), "selection_line": Double(file.line(at: textView.selectedRange().location)), "selection_length": Double(textView.selectedRange().length), "zoom": Double(zoom), "font_size": Double(fontSize), "spans": Double(highlights.spans.count), "scopes": Double(highlights.scopes.count), "lines": Double(file.lineCount), "top": Double(topLine), "current": Double(currentLine), "gutter": Double(gutter.ruleThickness),
                 "clip_x": Double(clip.frame.minX), "clip_width": Double(clip.frame.width), "scroll_x": Double(clip.bounds.minX),
                 "scroll_y": Double(clip.bounds.minY), "changed": Double(textView.changed.min() ?? 0), "pinned": Double(pinned.count), "indent_unit": Double(textView.indentUnit), "text_x": Double(textView.frame.minX), "text_width": Double(textView.frame.width),
                 "comment_first": Double(textView.comment?.first ?? 0), "comment_last": Double(textView.comment?.last ?? 0), "comment_gap": Double(textView.gap),
@@ -571,27 +571,20 @@ final class CodeTextView: NSTextView {
     var comment: CodeComment? { didSet { needsDisplay = true; onMarks?() } }
     var changed: Set<Int> = [] { didSet { needsDisplay = true; onMarks?() } }
     var gap: CGFloat = 0
-    let finder = NSTextFinder()
-    private lazy var finderClient = TextFinderClient(textView: self)
-    private var matchObserver: NSKeyValueObservation?
+    let finder = PaneFinder()
     private var keyObservers: [NSObjectProtocol] = []
     private var flashing: Int? { didSet { needsDisplay = true; onMarks?() } }
     private var flashTask: DispatchWorkItem?
 
     func startFinder(in container: NSScrollView) {
-        finder.client = finderClient
-        finder.findBarContainer = container
-        finder.isIncrementalSearchingEnabled = true
-        finder.incrementalSearchingShouldDimContentView = false
-        matchObserver = finder.observe(\.incrementalMatchRanges) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                self?.needsDisplay = true
-                self?.onMarks?()
-            }
+        finder.attach(self, in: container)
+        finder.onMatches = { [weak self] in
+            self?.needsDisplay = true
+            self?.onMarks?()
         }
     }
 
-    var matches: [NSRange] { finder.incrementalMatchRanges.map(\.rangeValue) }
+    var matches: [NSRange] { finder.matches }
 
     var selectionColor: NSColor {
         guard let window, window.isKeyWindow, window.firstResponder === self else { return .unemphasizedSelectedTextBackgroundColor }
