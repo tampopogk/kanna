@@ -250,6 +250,53 @@ r, g, b = bytes.fromhex(sys.argv[1].lstrip("#"))
 print(int(0.2126 * r + 0.7152 * g + 0.0722 * b))' "$1"; }
 tabbar() { raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$1.png\"}}" | field tabBar.background; cp "$KANNA_STATE_DIR/$1.png" "$out/$1.png" 2>/dev/null; }
 
+scenario tab_drag M4
+tab_drag() {
+  start_daemon && start_app || return 1
+  kanna open --window new --name ta >/dev/null && kanna open --window win-1 --name tb --tab >/dev/null && kanna open --window win-1 --name tc --tab >/dev/null || return 1
+  kanna open --window new --name td >/dev/null || return 1
+  local a b c d dropped
+  a="$(win win-1 tabs.0.id)" b="$(win win-1 tabs.1.id)" c="$(win win-1 tabs.2.id)" d="$(win win-2 tabs.0.id)"
+  dropped() { python3 -c 'import json, sys; print(json.loads(sys.argv[1].split(" → ", 1)[1])["dropped"])' "$last_drag"; }
+  drag "{\"tab\":\"$a\",\"to\":{\"tab\":\"$c\"}}"
+  check test "$(tab_ids win-1)" == "$b $c $a" || { echo "$(tab_ids win-1) $last_drag"; return 1; }
+  drag "{\"tab\":\"$a\",\"to\":{\"tab\":\"$b\"}}"
+  check test "$(tab_ids win-1)" == "$a $b $c" || { echo "$last_drag"; return 1; }
+  drag "{\"tab\":\"$b\",\"to\":{\"tab\":\"$b\"}}"
+  check test "$(dropped)" == False || { echo "$last_drag"; return 1; }
+  check test "$(tab_ids win-1)" == "$a $b $c" || return 1
+  drag "{\"tab\":\"$a\",\"to\":{\"tab\":\"$c\"},\"cancel\":true}"
+  check test "$(dropped)" == False || { echo "$last_drag"; return 1; }
+  check test "$(tab_ids win-1)" == "$a $b $c" || return 1
+  drag "{\"tab\":\"$c\",\"to\":{\"tab\":\"$d\"}}"
+  check test "$(tab_ids win-2)" == "$c $d" || { echo "$last_drag"; return 1; }
+  check test "$(tab_ids win-1)" == "$a $b" || return 1
+  drag "{\"tab\":\"$b\",\"to\":{\"plus\":\"win-2\"}}"
+  check test "$(tab_ids win-2)" == "$c $d $b" || { echo "$last_drag"; return 1; }
+  check test "$(win win-2 tabs.2.active)" == True || return 1
+  drag "{\"tab\":\"$d\",\"to\":{\"outside\":true}}"
+  check test "$(state | field windows | count)" == 3 || { echo "$last_drag"; return 1; }
+  check test "$(tab_ids win-2)" == "$c $b" || return 1
+  check test "$(state | python3 -c 'import json, sys, re; print(" ".join(" ".join(t["id"] for t in w["tabs"]) for w in json.load(sys.stdin)["windows"] if w["id"] not in ("win-1", "win-2")))')" == "$d" || return 1
+  drag "{\"tab\":\"$a\",\"to\":{\"tab\":\"$d\"}}"
+  check test "$(state | field windows | count)" == 2 || { echo "$last_drag"; return 1; }
+  drag "{\"tab\":\"$c\",\"to\":{\"pane\":\"ta\",\"x\":0.5,\"y\":0.5}}"
+  check test "$(dropped)" == True || { echo "$last_drag"; return 1; }
+  check test "$(state | field windows | count)" == 3 || { echo "$last_drag"; return 1; }
+  check test "$(tab_ids win-2)" == "$b" || return 1
+  local frame holder torn
+  frame() { raw '{"id":1,"cmd":"debug.app"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["frames"].get(sys.argv[1]))' "$1"; }
+  holder() { state | python3 -c 'import json, sys; print([w["id"] for w in json.load(sys.stdin)["windows"] if sys.argv[1] in [t["id"] for t in w["tabs"]]][0])' "$1"; }
+  holder="$(holder "$d")"
+  drag "{\"tab\":\"$a\",\"to\":{\"pane\":\"tb\",\"x\":0.5,\"y\":0.5},\"fill\":true}"
+  check test "$(state | field windows | count)" == 4 || { echo "$last_drag"; return 1; }
+  torn="$(holder "$a")"
+  check test "$torn" != "$holder" || return 1
+  check test "$(frame "$torn")" != None || return 1
+  check test "$(frame "$torn")" == "$(frame "$holder")" || { echo "$(frame "$torn") vs $(frame "$holder")"; return 1; }
+}
+tab_ids() { win "$1" tabs | python3 -c 'import json, sys; print(" ".join(t["id"] for t in json.load(sys.stdin)))'; }
+
 scenario chrome_and_drops M4
 chrome_and_drops() {
   start_daemon && start_app || return 1
