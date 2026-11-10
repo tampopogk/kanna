@@ -167,14 +167,13 @@ impl Entry {
             None => format!("{command} {told}"),
         };
         let Some(agent) = agent else { return first(command) };
-        match (&self.session, &self.folder, session.zip(agent.named), agent.latest) {
-            (Some(resume), _, _, _) => match agent.named {
+        match (&self.session, session.zip(agent.named)) {
+            (Some(resume), _) => match agent.named {
                 Some(flag) => format!("{command} {} {} || {}", agent.resume, quote(resume), first(format!("{command} {flag} {}", quote(resume)))),
                 None => format!("{command} {} {}", agent.resume, quote(resume)),
             },
-            (None, Some(_), _, Some(latest)) => format!("{command} {latest}"),
-            (None, None, Some((new, flag)), _) => first(format!("{command} {flag} {new}")),
-            _ => first(command),
+            (None, Some((new, flag))) => first(format!("{command} {flag} {new}")),
+            (None, None) => first(command),
         }
     }
 
@@ -283,6 +282,10 @@ pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     }
     let read = |value: &Value| value.as_object().map(|map| map.get(agent).and_then(Value::as_str).map(str::trim).filter(|c| !c.is_empty()).map(String::from));
     configured(std::slice::from_ref(mine), "pipelines", "agents", read, "an object of agent names to commands").flatten().unwrap_or_else(|| agent.into())
+}
+
+pub fn pricing(files: &[PathBuf]) -> Value {
+    configured(files, "pipelines", "pricing", |value| value.is_object().then(|| value.clone()), "an object of models to their prices per million tokens").unwrap_or(Value::Null)
 }
 
 pub const WORKERS: usize = 3;
@@ -494,16 +497,15 @@ struct Agent {
     prompt: Option<&'static str>,
     named: Option<&'static str>,
     resume: &'static str,
-    latest: Option<&'static str>,
     find: Option<fn(&Path) -> Option<String>>,
     compact: Option<&'static str>,
 }
 
 const AGENTS: &[Agent] = &[
-    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", latest: Some("--continue"), find: None, compact: None },
-    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", latest: Some("resume --last"), find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
-    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", latest: None, find: Some(opencode_session), compact: None },
-    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", latest: Some("--continue"), find: None, compact: None },
+    Agent { names: &["claude"], unprompted: Some("--dangerously-skip-permissions"), prompt: None, named: Some("--session-id"), resume: "--resume", find: None, compact: None },
+    Agent { names: &["codex"], unprompted: Some("--yolo"), prompt: None, named: None, resume: "resume", find: Some(codex_session), compact: Some("-c model_auto_compact_token_limit=") },
+    Agent { names: &["opencode"], unprompted: None, prompt: Some("--prompt"), named: None, resume: "--session", find: Some(opencode_session), compact: None },
+    Agent { names: &["agy", "antigravity"], unprompted: Some("--dangerously-skip-permissions"), prompt: Some("-i"), named: None, resume: "--conversation", find: None, compact: None },
 ];
 
 fn agent(command: &str) -> Option<&'static Agent> {
@@ -515,7 +517,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
 
@@ -550,7 +552,7 @@ fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime
     None
 }
 
-fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
+pub fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
     match agent(program)?.names[0] {
         "codex" => {
             let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
@@ -645,7 +647,6 @@ pub fn stage_agent(command: &str, effort: Option<&str>, model: Option<&str>, pro
     let mut line = in_its_terminal(&line);
     match (resume, session, agent(command)) {
         (true, Some(session), Some(agent)) => line += &format!(" {} {}", agent.resume, quote(session)),
-        (true, None, Some(Agent { latest: Some(latest), .. })) => line += &format!(" {latest}"),
         (false, Some(session), Some(Agent { named: Some(flag), .. })) => line += &format!(" {flag} {}", quote(session)),
         _ => {}
     }
@@ -962,6 +963,14 @@ fn gone() -> KmuxError {
     KmuxError::new("app_gone", "the daemon is stopping")
 }
 
+struct ThreadEvent {
+    pane: String,
+    comment: Comment,
+    state: String,
+    text: String,
+    at: Instant,
+}
+
 fn hears_conflicts(entry: &Entry) -> bool {
     entry.bases.is_empty() && entry.hears.hears(TaskEvent::MainConflicts)
 }
@@ -999,6 +1008,7 @@ pub struct Tasks {
     keeping: RefCell<HashSet<String>>,
     fill_at: Cell<Option<Instant>>,
     waiting: RefCell<Vec<Message>>,
+    thread_events: RefCell<Vec<ThreadEvent>>,
     ready: RefCell<HashMap<String, Ready>>,
     pub planners: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
     pub windowless: RefCell<Option<Box<dyn Fn() -> Vec<String>>>>,
@@ -1193,6 +1203,7 @@ impl Tasks {
             keeping: RefCell::default(),
             fill_at: Cell::new(Some(Instant::now())),
             waiting: RefCell::new(waiting),
+            thread_events: RefCell::default(),
             ready: RefCell::default(),
             planners: RefCell::default(),
             windowless: RefCell::default(),
@@ -1395,6 +1406,11 @@ impl Tasks {
         }
         let open = self.open_tasks();
         entry.after.iter().filter(|id| open.iter().any(|e| e.id == **id && (e.claimed.is_none() || !e.stale.is_empty())) || (!self.is_open(id) && self.replica.borrow().open_task(id))).cloned().collect()
+    }
+
+    fn runs_elsewhere(&self, record: &replica::Record) -> bool {
+        let replica = self.replica.borrow();
+        record.text("state").is_some_and(|s| s != "done") && record.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&record.task)
     }
 
     fn ambiguous(&self, id: &str) -> bool {
@@ -2016,6 +2032,16 @@ impl Tasks {
         }
     }
 
+    pub fn stopped_on_shelf(&self) -> Vec<Value> {
+        let Some(core) = self.core.upgrade() else { return vec![] };
+        self.entries
+            .borrow()
+            .iter()
+            .filter(|e| e.held.as_deref().is_none_or(|pane| !alive(&core, pane)))
+            .filter_map(|e| e.workspace.as_ref().map(|ws| json!({ "workspace": ws, "task": e.id, "name": opt(e.name.as_deref()) })))
+            .collect()
+    }
+
     pub fn refs(&self) -> Vec<kanna_log::TaskRef> {
         let worktree = |e: &Entry| e.folder.clone().unwrap_or_else(|| Path::new(&e.repo).join(WORKTREES).join(&e.id).to_string_lossy().into_owned());
         let open = |e: &Entry, place: Place| kanna_log::TaskRef { id: e.id.clone(), name: e.name.clone(), place: place.as_str().into(), repo: e.repo.clone(), worktree: Some(worktree(e)), branch: None, tip: None };
@@ -2325,6 +2351,7 @@ impl Tasks {
             self.setting_up.borrow_mut().remove(&pane);
             self.set_up(&pane, &setting);
         }
+        let events = self.flush_thread_events(&core, now);
         let mail = self.deliver(&core, now);
         self.look_for_background(now);
         let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !(self.has_mail(pane) && self.ready.borrow().get(*pane).is_some_and(|r| r.at().is_some()))).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now).map(|why| (pane.clone(), why))).collect();
@@ -2350,7 +2377,7 @@ impl Tasks {
         let finishing = self.finishing.borrow().values().flat_map(|f| [Some(f.by), f.turn.due()]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         let news = self.tell_planners(now);
-        [turns, quits, finishing, setups, self.fill_at.get(), mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
+        [turns, quits, finishing, setups, self.fill_at.get(), events, mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
     }
 
     fn look_for_background(&self, now: Instant) {
@@ -2918,11 +2945,12 @@ impl Tasks {
                     Some("show") => responder.reply(this.show(&args)),
                     Some("send") => responder.reply(this.send(&args)),
                     Some("comment") => this.comment(&args, responder),
+                    Some("thread_event") => responder.reply(this.thread_event(&args)),
                     Some("messages") => responder.reply(this.messages(&args)),
                     Some("subscribe") => responder.reply(this.subscribe(&args, true)),
                     Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
                     Some("hearing") => responder.reply(this.hearing(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, messages, subscribe, unsubscribe or hearing"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, thread_event, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -3256,6 +3284,7 @@ impl Tasks {
             (Some(file), Some(thread)) if Path::new(file).is_absolute() => Comment { file: file.into(), thread: thread.into() },
             _ => return responder.reply(Err(bad("a comment needs its doc (an absolute path) and its thread"))),
         };
+        self.thread_events.borrow_mut().retain(|event| event.comment != comment);
         if let Some((recipient, repo)) = self.comment_recipient(&pane) {
             let reply = self.queue(&recipient, &repo, USER, text, None, Some(&comment)).map(|message| {
                 log!("kanna-daemon: {}'s comment {} waits for {}", comment.file, comment.thread, self.label_of(&recipient));
@@ -3269,6 +3298,59 @@ impl Tasks {
                 None => Ok(Map::from_iter([("state".to_string(), json!("sent"))])),
             })
         });
+    }
+
+    fn thread_event(&self, args: &Value) -> Result<Map, KmuxError> {
+        let core = self.core.upgrade().ok_or_else(gone)?;
+        let (Some(pane), Some(text), Some(state)) = (string(args, "pane").map(|pane| core.pane(pane).map_or_else(|| pane.to_string(), |p| p.id)), string(args, "text").filter(|t| !t.trim().is_empty()), string(args, "state")) else {
+            return Err(bad("a thread event needs the agent's pane, its text and the thread's state"));
+        };
+        let comment = match (string(args, "doc"), string(args, "thread")) {
+            (Some(file), Some(thread)) if Path::new(file).is_absolute() => Comment { file: file.into(), thread: thread.into() },
+            _ => return Err(bad("a thread event needs its doc (an absolute path) and its thread")),
+        };
+        let mut events = self.thread_events.borrow_mut();
+        let undone = events.iter().position(|event| event.comment == comment).map(|at| events.remove(at)).is_some_and(|event| event.state != state);
+        if !undone {
+            events.push(ThreadEvent { pane, comment, state: state.into(), text: text.into(), at: Instant::now() });
+        }
+        Ok(Map::new())
+    }
+
+    fn flush_thread_events(&self, core: &CoreHandle, now: Instant) -> Option<Instant> {
+        let mut quiet: HashMap<String, Instant> = HashMap::new();
+        for event in self.thread_events.borrow().iter() {
+            quiet.insert(event.pane.clone(), event.at + messages::THREAD_EVENT_QUIET);
+        }
+        let (due, held): (Vec<ThreadEvent>, Vec<ThreadEvent>) = self.thread_events.take().into_iter().partition(|event| quiet[&event.pane] <= now);
+        *self.thread_events.borrow_mut() = held;
+        let mut panes: Vec<&str> = vec![];
+        for event in &due {
+            if !panes.contains(&event.pane.as_str()) {
+                panes.push(&event.pane);
+            }
+        }
+        for pane in panes {
+            let list: Vec<&ThreadEvent> = due.iter().filter(|event| event.pane == pane).collect();
+            match self.comment_recipient(&pane) {
+                Some((recipient, repo)) => {
+                    for event in list {
+                        if let Err(error) = self.queue(&recipient, &repo, USER, &event.text, None, Some(&event.comment)) {
+                            log!("kanna-daemon: {}'s {} event is lost: {}", event.comment.file, event.comment.thread, error.message);
+                        }
+                    }
+                }
+                None => {
+                    let text = list.iter().map(|event| event.text.as_str()).collect::<Vec<_>>().join("\n\n");
+                    core.handle(json!({ "cmd": "send", "args": { "pane": pane, "text": text } }), |reply| {
+                        if let Some(error) = failed(&reply) {
+                            log!("kanna-daemon: a thread event wasn't typed: {}", error.message);
+                        }
+                    });
+                }
+            }
+        }
+        self.thread_events.borrow().iter().map(|event| quiet[&event.pane]).min()
     }
 
     fn comment_recipient(&self, pane: &str) -> Option<(String, String)> {
@@ -3816,7 +3898,7 @@ impl Tasks {
         let replica = self.replica.borrow();
         let mut records: Vec<&replica::Record> = replica
             .records()
-            .filter(|r| r.text("state").is_some_and(|s| s != "done") && r.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&r.task))
+            .filter(|r| self.runs_elsewhere(r))
             .filter(|r| repo.is_none() || (project.is_some() && r.text("project") == project.as_deref()))
             .collect();
         records.sort_by_key(|r| r.born());
@@ -3849,6 +3931,16 @@ impl Tasks {
                 vec![]
             });
             let open = self.open_tasks();
+            let finished_elsewhere = |id: &str| replica.births(id).into_iter().filter(|r| r.text("state") == Some("done")).filter_map(|r| r.written("state")).map(|at| at.ms as f64 / 1000.0).reduce(f64::max);
+            let mut done: Vec<(db::Row, f64)> = done
+                .into_iter()
+                .filter(|(row, _)| !replica.births(&row.id).into_iter().any(|r| self.runs_elsewhere(r)))
+                .map(|(row, at)| {
+                    let at = at.or_else(|| finished_elsewhere(&row.id)).unwrap_or(row.made_at);
+                    (row, at)
+                })
+                .collect();
+            done.sort_by(|(_, a), (_, b)| b.total_cmp(a));
             let ids: Vec<&str> = open.iter().map(|e| e.id.as_str()).chain(done.iter().map(|(row, _)| row.id.as_str())).collect();
             let done = done
                 .iter()
@@ -4938,7 +5030,7 @@ impl Tasks {
         let Starting { entry, app, by, responder } = starting;
         self.launching.borrow_mut().insert(entry.id.clone());
         let name = entry.name.clone().filter(|n| core.pane(n).is_none());
-        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some()) && entry.folder.is_none()).then(uuid).and_then(Result::ok);
+        let session = (agent(&entry.agent).is_some_and(|a| a.named.is_some()) && entry.session.is_none()).then(uuid).and_then(Result::ok);
         let first = entry.command(session.as_deref());
         let setup = self.setup_first(&entry, Path::new(&folder), &first);
         let mut args = json!({ "type": "term", "dock": "left", "frozen": true, "task": entry.id, "cwd": folder, "cmd": setup.as_ref().map_or(first, |(command, _)| command.clone()), "wait": false });
@@ -5500,7 +5592,8 @@ mod tests {
         assert!(id.len() == 36 && id.chars().nth(14) == Some('4'), "{id}");
         assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "/bin/claude --dangerously-skip-permissions --continue", "a task Kanna didn't start resumes the folder's latest session");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions {}", told_task(Some("go"))), "a task with no session of its own starts fresh");
+        assert_eq!(entry.command_with(Some(&id), Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --session-id {id} {}", told_task(Some("go"))), "and names the session it starts");
         entry.session = Some(id.clone());
         let told = told_task(entry.message.as_deref());
         assert_eq!(entry.command_with(None, Prompts::Skip), format!("/bin/claude --dangerously-skip-permissions --resume '{id}' || /bin/claude --dangerously-skip-permissions --session-id '{id}' {told}"), "claude refuses the second if the first found a conversation");
@@ -5511,13 +5604,31 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_task_resumes_its_own_session_and_the_latest_only_until_it_s_found() {
+    fn a_codex_task_resumes_only_its_own_session() {
         let mut entry = started("codex");
         assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "codex can't be given a session ID");
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume --last");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "until its session is known, it starts fresh");
         entry.session = Some("01a13ca7-c348-70f2-82e8-f27af07b17f5".into());
         assert_eq!(entry.command_with(None, Prompts::Skip), "codex --yolo --no-daemon resume '01a13ca7-c348-70f2-82e8-f27af07b17f5'");
+    }
+
+    #[test]
+    fn a_codex_task_whose_first_start_failed_starts_fresh_past_the_agent_s_newer_session_elsewhere() {
+        let dir = std::env::temp_dir().join(format!("kanna-codex-failed-{}", std::process::id()));
+        let (worktree, elsewhere, sessions) = (dir.join("r/.kanna-worktrees/task-0000c0de"), dir.join("Documents/Codex/other"), dir.join("sessions"));
+        fs::create_dir_all(&worktree).unwrap();
+        let made = fs::metadata(&worktree).and_then(|m| m.created()).ok();
+        let day = sessions.join("2099/01/01");
+        fs::create_dir_all(&day).unwrap();
+        let meta = json!({ "timestamp": "2099-01-01T00-00-00", "type": "session_meta", "payload": { "id": "users-own", "cwd": elsewhere } });
+        fs::write(day.join("rollout-2099-01-01T00-00-00-users-own.jsonl"), format!("{meta}\n")).unwrap();
+        let mut entry = started("codex");
+        entry.folder = Some(worktree.to_string_lossy().into_owned());
+        entry.session = latest_codex_session(&sessions, &worktree, made);
+        assert_eq!(entry.session, None, "the agent's newer session elsewhere isn't the task's");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("codex --yolo --no-daemon {}", told_task(Some("go"))), "so it starts fresh from its first message");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -5550,11 +5661,11 @@ mod tests {
     }
 
     #[test]
-    fn an_antigravity_task_continues_its_worktree_s_conversation() {
+    fn an_antigravity_task_resumes_only_the_conversation_it_said() {
         let mut entry = started("/usr/local/bin/agy");
         assert_eq!(entry.command_with(Some("u"), Prompts::Skip), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
         entry.folder = Some("/r/.kanna-worktrees/task-0000c0de".into());
-        assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --continue");
+        assert_eq!(entry.command_with(None, Prompts::Skip), format!("/usr/local/bin/agy --dangerously-skip-permissions -i {}", told_task(Some("go"))));
         entry.session = Some("c1".into());
         assert_eq!(entry.command_with(None, Prompts::Skip), "/usr/local/bin/agy --dangerously-skip-permissions --conversation 'c1'");
     }
@@ -6064,7 +6175,7 @@ mod tests {
         let keys: Vec<&String> = schema["properties"]["agents"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["prompts"]);
         let keys: Vec<&String> = schema["properties"]["pipelines"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["agents", "workers"]);
+        assert_eq!(keys, ["agents", "pricing", "workers"]);
         let workers = &schema["properties"]["pipelines"]["properties"]["workers"];
         assert_eq!((workers["default"].clone(), workers["minimum"].clone(), workers["maximum"].clone()), (json!(WORKERS), json!(1), json!(WORKERS_MAX)));
         let keys: Vec<&String> = schema["properties"]["merge"]["properties"].as_object().unwrap().keys().collect();
@@ -6080,7 +6191,18 @@ mod tests {
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), false, first), format!("claude --session-id 'u-1' {first}"));
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), true, first), format!("claude --resume 'u-1' {first}"));
         assert!(stage_agent("codex", None, None, Prompts::Ask, Some("r-2"), true, first).ends_with(&format!(" resume 'r-2' {first}")));
-        assert!(stage_agent("codex", None, None, Prompts::Ask, None, true, first).ends_with(&format!(" resume --last {first}")));
+        assert!(!stage_agent("codex", None, None, Prompts::Ask, None, true, first).contains("resume"));
+    }
+
+    #[test]
+    fn pricing_comes_from_the_repo_s_settings() {
+        let folder = std::env::temp_dir().join(format!("kanna-pricing-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let repo = folder.join("repo.json");
+        fs::write(&repo, r#"{"pipelines": {"pricing": {"gpt": {"in": 2, "out": 8}}}}"#).unwrap();
+        assert_eq!(pricing(&[repo, folder.join("missing.json")]), json!({ "gpt": { "in": 2, "out": 8 } }));
+        assert_eq!(pricing(&[folder.join("missing.json")]), Value::Null);
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]
@@ -6855,6 +6977,50 @@ mod tests {
         t.tasks.handed("term-7".into(), vec![message], Channel::Codex(Ok(t.socket.clone())), Err("codex's app-server refused thread/queue/add: unknown variant".into()));
         assert_eq!(*t.warned.borrow(), ["codex's app-server refused thread/queue/add: unknown variant"]);
         assert_eq!(t.delivered(), 0);
+    }
+
+    #[test]
+    fn thread_events_wait_for_quiet_cancel_out_and_give_way_to_a_comment() {
+        let state = std::env::temp_dir().join(format!("kanna-thread-events-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        fs::create_dir_all(state.join(".git")).unwrap();
+        fs::write(state.join(".kanna/config.json"), r#"{"shelf": {"runners": 0}}"#).unwrap();
+        let doc = state.join("a.md");
+        let core = kanna_mux::Core::default();
+        let mut pane = Pane::new("term-7", None, kanna_mux::PaneType::Term);
+        pane.state = PaneState::Running;
+        pane.status = Some("working".into());
+        core.install_panes(vec![pane], 0, 7, 0);
+        let (events, _inbox) = crate::runtime::channel();
+        let tasks = Rc::new(Tasks::open(Rc::new(Db::open(&state)), &state, core.weak(), events));
+        tasks.install(&core);
+        let socket = state.join("agent.sock");
+        *tasks.channel.borrow_mut() = Some(Box::new(move |_| Some(Channel::Claude(Ok(socket.clone())))));
+        tasks.entries.borrow_mut().push(Entry { id: "task-1dfb12c2".into(), repo: state.to_str().unwrap().into(), agent: "claude".into(), held: Some("term-7".into()), ..Default::default() });
+        let event = |thread: &str, state_: &str| {
+            let verb = if state_ == "open" { "reopened" } else { "resolved" };
+            core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "thread_event", "pane": "term-7", "text": format!("[kanna {verb} {thread} · a.md:3]"), "doc": doc, "thread": thread, "state": state_ } }))
+        };
+        let queued = || tasks.waiting.borrow().iter().map(|m| m.text.clone()).collect::<Vec<_>>();
+        let age = || tasks.thread_events.borrow_mut().iter_mut().for_each(|e| e.at -= messages::THREAD_EVENT_QUIET);
+
+        assert_eq!(event("c1", "resolved")["ok"], json!(true));
+        event("c2", "resolved");
+        event("c3", "resolved");
+        event("c3", "open");
+        tasks.tick();
+        assert!(queued().is_empty(), "held for more of them");
+        age();
+        tasks.tick();
+        assert_eq!(queued(), ["[kanna resolved c1 · a.md:3]", "[kanna resolved c2 · a.md:3]"], "together, and c3's undone resolve says nothing");
+        assert!(tasks.thread_events.borrow().is_empty());
+
+        event("c4", "resolved");
+        let reply = core.handle_blocking(json!({ "cmd": "tasks", "args": { "action": "comment", "pane": "term-7", "text": "[kanna comment c4 · a.md:3]\nNo, wait.", "doc": doc, "thread": "c4" } }));
+        assert_eq!(reply["state"], json!("waiting"), "{reply}");
+        assert!(tasks.thread_events.borrow().is_empty(), "the reply reopened it, so the agent never hears it was resolved");
+        fs::remove_dir_all(&state).unwrap();
     }
 
     #[test]

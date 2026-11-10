@@ -241,7 +241,7 @@ impl LayoutOwner {
             (None, None) => Value::Null,
         };
         let title = tab.map(|t| t.title.clone()).or_else(|| side.map(|d| self.panes.display(&d.pane)));
-        let listed: Vec<Value> = tabs.tabs.iter().map(|t| json!({ "id": t.id, "title": t.title, "panes": t.panes() })).collect();
+        let listed: Vec<Value> = tabs.tabs.iter().map(|t| json!({ "id": t.id, "title": t.title, "panes": t.panes(), "root": t.root.as_ref().map_or(Value::Null, |root| self.node(root)) })).collect();
         let mut out = Map::new();
         out.insert("tabs".into(), Value::Array(listed));
         out.insert("tab".into(), tab.map_or(Value::Null, |t| t.id.clone().into()));
@@ -637,13 +637,14 @@ mod tests {
         let reply = again.handle(&json!({ "call": "attach", "panes": table(&["p1", "p3", "p4"]) }));
         assert_eq!(reply["placed"], json!(["p4"]), "{reply}");
         let view = again.view();
+        let root = json!({ "split": "row", "children": [
+            { "pane": "p1", "type": "term", "size": 0.75 },
+            { "split": "column", "size": 0.25, "children": [{ "pane": "p3", "type": "term", "size": 0.5 }, { "pane": "p4", "type": "term", "size": 0.5 }] }
+        ] });
         assert_eq!(
             Value::Object(view),
-            json!({ "workspaces": [], "windows": [{ "id": "win-1", "lead": null, "tabs": [{ "id": "tab-1", "title": "Tab 1", "panes": ["p1", "p3", "p4"] }], "tab": "tab-1", "title": "Tab 1",
-                "focused": "p4", "zoomed": null, "workspace": null, "root": { "split": "row", "children": [
-                { "pane": "p1", "type": "term", "size": 0.75 },
-                { "split": "column", "size": 0.25, "children": [{ "pane": "p3", "type": "term", "size": 0.5 }, { "pane": "p4", "type": "term", "size": 0.5 }] }
-            ] } }] })
+            json!({ "workspaces": [], "windows": [{ "id": "win-1", "lead": null, "tabs": [{ "id": "tab-1", "title": "Tab 1", "panes": ["p1", "p3", "p4"], "root": root }], "tab": "tab-1", "title": "Tab 1",
+                "focused": "p4", "zoomed": null, "workspace": null, "root": root }] })
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

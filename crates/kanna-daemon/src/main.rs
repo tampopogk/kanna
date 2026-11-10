@@ -62,6 +62,8 @@ mod store;
 mod stacks;
 mod task_events;
 mod task_scripts;
+mod pipelines;
+mod usage;
 mod terminals;
 mod transfer;
 mod toasts;
@@ -661,7 +663,16 @@ fn run() -> Result<(), String> {
             app.status(pane, core.pane(pane).and_then(|p| p.status().map(String::from)).as_deref());
         }
     }));
-    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let (stats_link, stats_phone) = (Rc::downgrade(&app), Rc::downgrade(&phone));
+    *stats.on_change.borrow_mut() = Some(Box::new(move |repo| {
+        if let Some(app) = stats_link.upgrade() {
+            app.stats_changed(repo);
+        }
+        if let Some(phone) = stats_phone.upgrade() {
+            phone.stats_changed(repo);
+        }
+    }));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -707,7 +718,7 @@ fn run() -> Result<(), String> {
     let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
     crashes.install(&core);
     let posting = Rc::downgrade(&tasks);
-    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), "kanna", text).map_err(|error| error.message)));
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), messages::KANNA, text).map_err(|error| error.message)));
     let banner_link = Rc::downgrade(&app);
     *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
     crashes.scan();
@@ -756,11 +767,15 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shelved = Rc::downgrade(&tasks);
     let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
-        Rc::new(move |args, responder| {
+        Rc::new(move |mut args, responder| {
             if let Some(link) = screenshot.upgrade() {
+                if args.get("pane").is_some() {
+                    args["stopped"] = Value::Array(shelved.upgrade().map(|tasks| tasks.stopped_on_shelf()).unwrap_or_default());
+                }
                 screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
@@ -992,7 +1007,7 @@ fn run() -> Result<(), String> {
             }
             Event::Serial(event) => serial.event_in(event),
             Event::Sampled(sampled) => stats.sampled(sampled),
-            Event::Covered(covered) => stats.coverage().covered(covered),
+            Event::Covered(covered) => stats.covered(covered),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {

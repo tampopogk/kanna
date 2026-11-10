@@ -2,7 +2,7 @@
 
 **Status:** proposed · **Part of:** [software factory](software-factory.md), [Kojo](kojo.md)
 
-The tasks that build the factory, in order; each builds on the ones before and is testable alone. Tasks 1 to 3 and 5 are built; the rest are not.
+The tasks that build the factory, in order; each builds on the ones before and is testable alone. Tasks 1 to 7 are built; the rest are not.
 
 For the planner, in order; each builds on the ones before and is testable alone.
 
@@ -11,7 +11,7 @@ For the planner, in order; each builds on the ones before and is testable alone.
 3. **Built** ([software factory §6.2](software-factory.md#62-gates-and-steering-as-built)). **Gates and steering:** `ask` stages as a message to the task's agent and a waiting run, `kanna run answer` from you or the agent, `pause`, `resume`, `skip`, `retry`; a Shelf runner stopping the agent while the run goes on, the end-of-run message waking it; stop and start of the task mid-stage; daemon restart mid-stage; the `kanna-tasks` skill's section on building with the pipeline. e2e `pipeline_gates`.
 4. **The Run tab** (built, [run tab](run-tab.md)): `kanna open run`: graph, numbers, revision, visits, workers; its buttons and the `ask` card; its offer to show the current stage's terminal in a tab (`kanna move TERMINAL --tab`), the tab passing to the next stage's terminal, typing recorded as an intervention; `kanna task list` saying the run's stage.
 5. **Built** ([run fan-out](run-fan-out.md)). **Fan-out and join:** `each`, workers from a stage's named output, each a worktree and a background terminal of the task's, `pipelines.workers`, `merge STAGE`, conflicts as a fail, `xN by`, `guard`; `on` parsed, resolved to `here` only, and the visit's `machine` recorded; the Shelf, Desk view, strip and `kanna task list` checked to show one row for the run throughout.
-6. **Revisions:** `emits` blocks merged and validated, `kanna run edit` in a code pane, revisions on the Run tab with diffs.
-7. **Metrics:** tokens, turns, tool calls and cost from Claude's and Codex's session files per visit; lines and files; findings and failures parsed; `kanna stats pipelines`; the Pipelines section of the Stats tab with the dataviz rules (after "Stats tab on the Desk"); the quality columns joined by merge commit (after "Code quality metrics").
+6. **Built** ([pipeline revisions](pipeline-revisions.md)). **Revisions:** `emits` blocks merged and validated, `kanna run edit` showing the revision in a code pane and applying an edited file, revisions on the Run tab with diffs.
+7. **Built** ([pipeline metrics](pipeline-metrics.md)). **Metrics:** tokens, turns, tool calls and cost from Claude's and Codex's session files per visit; lines and files; findings and failures parsed; `kanna stats pipelines`; the Pipelines section of the Stats tab with the dataviz rules (after "Stats tab on the Desk"); the quality columns joined by merge commit (after "Code quality metrics").
 8. **Stages on other machines** (after the Machines tasks for the replicated Shelf and task transfer): `on` resolved against the peer log and roles, the worker on a peer through transfer (its branch over, a pane and worktree there, no Shelf row anywhere), its record and commits back, an offline placement waiting; e2e `pipeline_remote` between two daemons as `machine.rs`'s tests pair them.
 9. **Dogfood:** run `feature.kojo` on a real feature whose spec and mockup were approved in the task's chat, and `bugfix.kojo` on a real bug, with `scripts/check.sh` written for stage use; compare with the numbers; tune the prompts and arrows; write up what changed and why in the pipeline files' comments.

@@ -123,6 +123,57 @@ public struct RunNumbers: Equatable, Sendable {
     }
 }
 
+public struct RunDiffLine: Equatable, Sendable {
+    public var sign: String
+    public var text: String
+
+    public init(sign: String, text: String) {
+        self.sign = sign
+        self.text = text
+    }
+}
+
+public struct RunRevision: Equatable, Sendable {
+    public var n: Int?
+    public var by: String
+    public var at: Double
+    public var summary: String?
+    public var worst: Int?
+    public var budget: Int?
+    public var diff: [RunDiffLine]
+    public var errors: [String]
+
+    public init(n: Int?, by: String, at: Double, summary: String? = nil, worst: Int? = nil, budget: Int? = nil, diff: [RunDiffLine] = [], errors: [String] = []) {
+        self.n = n
+        self.by = by
+        self.at = at
+        self.summary = summary
+        self.worst = worst
+        self.budget = budget
+        self.diff = diff
+        self.errors = errors
+    }
+
+    public var who: String {
+        if by == "file" { return "from the pipeline file" }
+        if by.hasPrefix("stage:") { return "by stage \(by.dropFirst(6))" }
+        return by == "agent" ? "by the task's agent" : "by you"
+    }
+
+    public var title: String {
+        if let n { return "Revision \(n)" }
+        return by.hasPrefix("stage:") ? "Refused: a kojo block" : "Refused: an edit"
+    }
+
+    public var detail: String {
+        var parts = ["\(who) at \(RunFormat.time(at))" + (summary.map { ": \($0)" } ?? "")]
+        if let worst, n != nil { parts.append("worst case \(worst)" + (budget.map { " of \($0)" } ?? "") + " sessions") }
+        return parts.joined(separator: " · ")
+    }
+
+    public var changed: Bool { diff.contains { $0.sign != " " } }
+}
+
 public struct RunNotice: Equatable, Sendable {
     public var run = ""
     public var task = ""
@@ -137,6 +188,7 @@ public struct RunNotice: Equatable, Sendable {
     public var now: Double = 0
     public var startedBy = "you"
     public var revision: (n: Int, by: String, at: Double)?
+    public var revisions: [RunRevision] = []
     public var place: (stage: String, at: Int, of: Int) = ("", 0, 0)
     public var columns = 0
     public var rows = 0
@@ -154,7 +206,7 @@ public struct RunNotice: Equatable, Sendable {
 
     public static func == (a: RunNotice, b: RunNotice) -> Bool {
         a.run == b.run && a.task == b.task && a.name == b.name && a.pipeline == b.pipeline && a.branch == b.branch && a.state == b.state && a.outcome == b.outcome && a.why == b.why
-            && a.startedAt == b.startedAt && a.endedAt == b.endedAt && a.startedBy == b.startedBy && a.revision?.n == b.revision?.n && a.revision?.by == b.revision?.by
+            && a.startedAt == b.startedAt && a.endedAt == b.endedAt && a.startedBy == b.startedBy && a.revision?.n == b.revision?.n && a.revision?.by == b.revision?.by && a.revisions == b.revisions
             && a.place.stage == b.place.stage && a.place.at == b.place.at && a.place.of == b.place.of && a.columns == b.columns && a.rows == b.rows && a.nodes == b.nodes
             && a.edges == b.edges && a.visits == b.visits && a.numbers == b.numbers && a.workers == b.workers && a.card == b.card
     }
