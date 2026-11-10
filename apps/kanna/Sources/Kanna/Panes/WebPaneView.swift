@@ -1,5 +1,6 @@
 import AppKit
 import KannaDocs
+import KannaLinks
 import WebKit
 
 @MainActor
@@ -30,13 +31,18 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var markable: Bool { didSet { if markable != oldValue { markUp(webView.url ?? url) } } }
     private(set) var loads = 0
 
-    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default()) {
+    private let files: MachineFiles?
+
+    init(url: String, markup: Bool = false, store: WKWebsiteDataStore = .default(), files: MachineFiles? = nil) {
         markable = markup
+        self.files = files
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = store
+        if let files { configuration.setURLSchemeHandler(files, forURLScheme: MachineFileURL.scheme) }
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
+        if TerminalSurfaceView.ignoresOcclusion { webView.ignoreOcclusion() }
         webView.navigationDelegate = self
         titled = webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             MainActor.assumeIsolated { self?.onTitleChange?(view.title ?? "") }
@@ -239,6 +245,13 @@ final class FocusReportingWebView: WKWebView {
             extra.removeItem(item)
             menu.addItem(item)
         }
+    }
+
+    func ignoreOcclusion() {
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard let method = class_getInstanceMethod(WKWebView.self, selector) else { return }
+        unsafeBitCast(method_getImplementation(method), to: Setter.self)(self, selector, false)
     }
 
     func zoom(to target: CGFloat, around point: NSPoint) {

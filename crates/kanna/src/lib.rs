@@ -2,6 +2,7 @@ pub mod args;
 pub mod commands;
 pub mod complete;
 pub mod output;
+pub mod route;
 pub mod target;
 pub mod threads;
 
@@ -32,6 +33,15 @@ pub fn main() -> std::process::ExitCode {
         let code = commands::build::parse(&args[1..]).and_then(|options| commands::build::run(commands::build::socket(&process_env)?, options));
         return match code {
             Ok(code) => std::process::ExitCode::from(code.clamp(0, 255) as u8),
+            Err(failure) => {
+                eprintln!("kanna: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
+    if args.first().is_some_and(|a| a == "builds") {
+        return match commands::builds::run(&args[1..], &process_env) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
             Err(failure) => {
                 eprintln!("kanna: {}", failure.message);
                 std::process::ExitCode::from(failure.code)
@@ -126,13 +136,20 @@ pub fn run(args: Vec<String>, env: Env) -> Result<(), Failure> {
     if target.backend == Backend::Kanna && commands::caller().is_none() && matches!(command.wire(&request), "focus" | "open" | "move" | "move-tab" | "desk") {
         request["user"] = json!(true);
     }
+    let routed = route::panes(command.flow.panes, &mut request, &mut mux)?;
     let mut call = match command.flow.before {
         Some(before) => before(&mut request, &mut mux)?,
         None => Call::default(),
     };
+    if routed.is_some() {
+        call.remote = routed;
+    }
     let mut reply = match mux.call(command.wire(&request), request.clone()) {
         Ok(reply) => reply,
         Err(mut failure) => {
+            if let Some(remote) = &call.remote {
+                return Err(remote.explain(failure));
+            }
             if failure.message.contains("task-") {
                 let shorts = mux.call("tasks", json!({ "action": "list" })).map(|b| output::shorts(&b)).unwrap_or_default();
                 failure.message = output::short_text(&failure.message, &shorts);

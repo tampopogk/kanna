@@ -61,6 +61,7 @@ Green: Kanna's code. Grey: the OS. Orange: clients. Clients and apps send the sa
 - **Every logical command works with no app.** A task opens a tab, shows a diff, focuses its spec, all in the daemon; an app that opens later shows the workspace as the task left it.
 - **Logical windows, physical windows.** A task may ask for an extra window (`open --window new`); that's logical, so every app shows it, and the app realizes it at a default position that the user can then move. Independently, an app may spread a workspace's tabs across more windows of its own (a tab torn off): that's physical, and the task neither sees nor cares.
 - **Physical state never leaves the app.** Pane and window IDs, frames, sizes and focus are the app's; the daemon never stores them and the CLI never sees them. The one exception is which workspace each of the app's Desks shows, which the app tells the daemon (not saved) so the CLI can name a Desk's window ([Desk windows](desk-windows.md)).
+- **An agent's commands are the same whichever machine's app shows its workspace:** [remote workspaces](remote-workspaces.md).
 - **Each app has its own Desks** ([each app's Desks](app-desk.md)). Making a task active in one app doesn't change another. The Shelf is shared: a task an app moves to its Desk is that app's claim, kept in the daemon.
 
 ## 2. Who changes what
@@ -103,19 +104,20 @@ flowchart LR
 | `win-2` | a logical window: one of a workspace's, or free; each app gives it a frame | daemon | everyone |
 | `tab-9` | a tab in a workspace | daemon | everyone |
 | `term-41`, `diff-2`, `file-7`, `page-3`, `ios-1` | content | daemon; never reused | everyone |
+| `pty-52` | the program running behind a terminal pane, one per start ([durable panes](durable-panes.md)) | daemon; never reused | the keeper, the daemon, the app link |
 | `d1` | one of an app's Desks, and its window | each app | that app, and the CLI (as a window: [Desk windows](desk-windows.md)) |
 
-- **A restart makes a new terminal with a new ID.** `restart term-41` (or a task starting again) ends it and answers `term-48`; the workspace's tab now shows `term-48`, and an app sees a new content ID, so it makes a new view instead of reusing the exited one.
-- **A task keys on its agent's terminal ID and its workspace ID,** both in its record; neither is a pane. Starting a task again gives its agent a new terminal, and the task's record, its workspace's dock and the markup routed to it follow the new ID.
+- **A restart keeps the pane's ID.** `restart term-41` (or a task starting again) runs a new `pty-N` behind `term-41`, which the pane's record names, and an app sees that change and makes a new surface instead of reusing the exited one ([durable panes](durable-panes.md)).
+- **A task keys on its agent's pane ID and its workspace ID,** both in its record, and neither changes when the task starts again.
 - **Upgrading:** the first daemon with content IDs renames the old `pN` once, at start: a terminal's pane takes its terminal's ID (`term-N`), and other content takes the next ID of its kind (`file-1`, `page-1`, …), in `terminals.json`, the saved layout and the tasks' `terminal` column alike.
-- **`KANNA_TERMINAL`** replaces `KANNA_PANE` in a terminal's environment: the caller a command acts for. `kanna` finds the caller's task and workspace from it.
+- **`KANNA_TERMINAL`** replaces `KANNA_PANE` in a terminal's environment: the pane ID of the caller a command acts for. `kanna` finds the caller's task and workspace from it.
 - **Content commands take content IDs:** `send`, `read`, `send-key` and `restart` take a terminal ID (or its name); pane IDs are no longer accepted. **Layout commands** (`open`, `close`, `focus`, `rename-tab`, `move`, `move-tab`) act on logical presentation and take workspace, tab and content IDs.
 
 ## 4. Content
 
 | Kind | Identity | Shared | Ends |
 |---|---|---|---|
-| Terminal | one program run; `restart` makes a new one | by every tab and app that shows it | closed, or its task done |
+| Terminal | a pane's ID, with a `pty-N` behind it; `restart` starts a new pty | by every tab and app that shows it | closed, or its task done |
 | Diff | folder + git args: opening the same diff again gives the same ID | one watcher for all subscribers | when the last subscriber leaves (no grace period) |
 | File | path + kind (`md`, `code`) | as the diff | closed from its last tab |
 | Page | one browsing session: URL, title, history | by the tabs that show it | closed |
@@ -129,7 +131,7 @@ flowchart LR
 1. **The daemon runs headless** and publishes every change to work and logical presentation; apps subscribe and render.
 2. **Three layers** as in [1](#1-the-three-layers); an app changes work and logical presentation only through commands, like any client.
 3. **Each app has its own Desks;** the Shelf is shared, and a task on an app's Desk is claimed by that app ([each app's Desks](app-desk.md)).
-4. **Terminals:** a restart makes a new terminal with a new ID; `KANNA_TERMINAL` replaces `KANNA_PANE`.
+4. **Terminals:** a restart runs a new pty behind the same pane ID; `KANNA_TERMINAL` replaces `KANNA_PANE`.
 5. **Diffs:** one watcher per folder + git args, shared, stopped when the last subscriber leaves.
 6. **CLI:** content commands take content IDs, layout commands act on logical presentation with no app and take its IDs (`ws-3`, `win-2`, `tab-9`); the only app ID the CLI sees is a Desk's (`d1`), in replies about it and as a window it can name.
 7. **Stop and Start** hang up and rerun a task's tab terminals from its workspace; **Done** closes it.

@@ -94,6 +94,7 @@ struct Message: Identifiable {
     let text: String
     var you = false
     var receipt: Receipt = .none
+    var said: [ChatItem] = []
 }
 
 struct WorkItem: Identifiable {

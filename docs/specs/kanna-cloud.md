@@ -39,7 +39,7 @@ It is open source like the rest of Kanna. **A self-hosted Kanna Cloud is the sam
 - **Trust still comes from the customer's devices.** Cloud can withhold but never forge; adding a machine to theirs takes a signature from one of their own devices and a gesture in the app.
 - **Nothing Kanna runs joins the customer's machines.** A Cloud VM is never in their peer log; their Kanna reaches it through its link to Kanna Cloud, which vouches for it for one task only (§6).
 - **Tenants are isolated by VMs,** Linux and macOS alike, with the network enforced on the host. Host accounts are never the boundary.
-- **Cloud covers only what needs servers:** Cloud tasks, the directory and relays, build Macs, and later the phone away from the LAN, push and an always-on Shelf copy. Everything else is the customer's own machines', and free.
+- **Cloud covers only what needs servers:** Cloud tasks, the directory and relays, build Macs, and later push and an always-on Shelf copy. The phone away from the LAN works through your own relay ([phone link §4](mobile-link.md#4-the-path)). Everything else is the customer's own machines', and free.
 
 ## 2. What a customer gets
 
@@ -112,7 +112,7 @@ flowchart LR
 
 **Where VMs run is a backend, not the design.** The first backend is Incus on Dell R720s, bought because they are the cheapest yen per GB of RAM; later ones are likely AWS or GCP. `kanna-cloud` hides which: it makes, sets up and destroys a VM for a task, and each backend does that its own way (Incus on a host, or the provider's API). What the rest of Cloud relies on is the same for all of them: a fresh Linux VM per task, isolated as below, destroyed with its disks when the task is done. On a provider, the isolation is its VPC, security groups and per-VM disks instead of the host's bridge and ACL.
 
-**Kanna's public edge** (proposed) is the GCP e2-micro that already runs `relay.kanna.build`: the relay, and later the provisioning service's public endpoint. Nothing is forwarded inbound to the R720s. Each host, and each task's VM, dials out (to the relay, and the host to the service over an iroh link of its own), so the R720s stay behind the home router with no open port. Relayed traffic is terminal and diff streams, which are small, and GCP bills it as egress; a task's git and package traffic goes straight from the VM to the internet, never through the micro. If the relay gets busy, or a customer's Kanna can't punch through to a VM, a larger relay or one per region comes before any forwarding.
+**Kanna's public edge** (proposed) is the GCP e2-micro behind `relay.kanna.build`, which today runs your own relay ([remote terminals §3](remote-terminals.md#3-your-relay)): a relay, and later the provisioning service's public endpoint. Nothing is forwarded inbound to the R720s. Each host, and each task's VM, dials out (to the relay, and the host to the service over an iroh link of its own), so the R720s stay behind the home router with no open port. Relayed traffic is terminal and diff streams, which are small, and GCP bills it as egress; a task's git and package traffic goes straight from the VM to the internet, never through the micro. If the relay gets busy, or a customer's Kanna can't punch through to a VM, a larger relay or one per region comes before any forwarding.
 
 With the R720 backend:
 
@@ -176,7 +176,7 @@ sequenceDiagram
 
 - **The directory** holds each account's published peer log (signed by the customer's devices, so it can withhold but not forge), each peer's relay URL and last addresses, and relays the PAKE for machines not on one LAN.
 - **Relays** are `iroh-relay`, as for a relay a customer runs; Kanna's are run for all tenants.
-- **Later, on the directory:** push notifications; the phone away from the LAN. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
+- **Later, on the directory:** push notifications, and a Kanna relay for a phone whose owner runs none. About $5 a month, as decided before; VM and build-Mac time are priced with billing.
 - **A scheduler** can own every waiting task of a user's VMs and assign them centrally instead of runners asking ([tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **Placement by capability.** Each machine advertises its capabilities (OS, architecture, cores, RAM, Xcode versions, display) in its peer log entry ([identity §3](machine-identity.md#3-the-peer-log)). A task's `needs:` (`needs: xcode`, `needs: linux`) is matched against them, by a runner before it asks or by the scheduler, so a task goes only where it can run. It's Cloud's infrastructure: the app doesn't show capabilities ([links §5](machine-links.md#5-paths-the-machines-tab-and-offline)).
 

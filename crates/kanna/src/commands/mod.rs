@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod agents;
 pub mod arrange;
 pub mod build;
+pub mod builds;
 pub mod capabilities;
 pub mod close;
 pub mod comment;
@@ -22,6 +23,7 @@ pub mod open;
 pub mod pipeline;
 pub mod project;
 pub mod projects;
+pub mod phone;
 pub mod quiz;
 pub mod raw;
 pub mod read;
@@ -71,10 +73,13 @@ pub struct Flow {
     pub online: Option<fn(&Value, &mut Session, bool) -> Option<Result<(), Failure>>>,
     pub before: Option<fn(&mut Value, &mut Session) -> Result<Call, Failure>>,
     pub after: Option<fn(&Value, &mut Value, &mut Session, &mut Call) -> Result<(), Failure>>,
+    pub panes: &'static [&'static str],
 }
 
+pub const PANE: &[&str] = &["pane"];
+
 impl Flow {
-    pub const PLAIN: Flow = Flow { wire: None, unplaced: None, offline: None, online: None, before: None, after: None };
+    pub const PLAIN: Flow = Flow { wire: None, unplaced: None, offline: None, online: None, before: None, after: None, panes: &[] };
 }
 
 impl Command {
@@ -97,6 +102,7 @@ pub struct Call {
     pub listed: bool,
     pub waiting: Option<Value>,
     pub warnings: Vec<String>,
+    pub remote: Option<crate::route::Remote>,
 }
 
 pub const GROUPS: &[&str] = &["Panes", "Tabs and windows", "Information"];
@@ -131,6 +137,7 @@ pub static COMMANDS: &[Command] = &[
     toast::COMMAND,
     serial::COMMAND,
     crashes::COMMAND,
+    phone::COMMAND,
     quiz::COMMAND,
     stats::COMMAND,
     projects::COMMAND,

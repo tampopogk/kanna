@@ -579,3 +579,30 @@ fn a_record_without_an_app_takes_its_nearest_ancestor_s() {
     assert_eq!(apps, [("", "deploy"), ("eu", "eu-tool"), ("eu/db", "eu-tool"), ("us", "deploy")].map(|(i, a)| (i.to_string(), a.to_string())));
 }
 
+
+#[test]
+fn restored_records_come_back_in_order_and_count_no_turn_until_a_new_report_ends_one() {
+    let mut t = Terminal::new(20, 5, 0).unwrap();
+    t.write(b"\x1b]7501;state=done:id=b\x1b\\\x1b]7501;state=working:app=claude\x1b\\\x1b]7501;state=idle:id=a\x1b\\");
+    let saved = t.program_records();
+    assert_eq!(saved.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b", "", "a"], "oldest first");
+    let mut again = Terminal::new(20, 5, 0).unwrap();
+    again.restore_program_records(saved.clone());
+    assert_eq!(again.program_records(), saved);
+    assert_eq!(again.program_status().unwrap().state, ProgramState::Working);
+    assert_eq!(again.program_turns(), 0);
+    assert!(again.program_status_serial() > 0);
+    again.write(b"\x1b]7501;state=idle\x1b\\");
+    assert_eq!(again.program_turns(), 1, "a report after the restored working one ends its turn");
+}
+
+#[test]
+fn states_and_needs_parse_from_their_names() {
+    for state in [ProgramState::Idle, ProgramState::Working, ProgramState::Done, ProgramState::Blocked, ProgramState::Error] {
+        assert_eq!(ProgramState::parse(state.as_str()), Some(state));
+    }
+    for need in [Need::Permission, Need::Question, Need::Auth] {
+        assert_eq!(Need::parse(need.as_str()), Some(need));
+    }
+    assert_eq!(ProgramState::parse("sleeping"), None);
+}

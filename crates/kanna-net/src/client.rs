@@ -1,10 +1,13 @@
-use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER};
+use crate::node::{read_line, splice, write_line, DIAL, MAX_HEADER, MAX_LINE};
 use crate::{relay_mode, Failure, Relay, ALPN, DEFAULT_PORT};
+use iroh::dns::{BoxIter, DnsError, DnsResolver, Resolver, TxtRecordData};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -26,9 +29,64 @@ struct Port {
     _open: tokio::sync::watch::Sender<()>,
 }
 
+type Lookup<T> = Pin<Box<dyn Future<Output = Result<BoxIter<T>, DnsError>> + Send>>;
+
+#[derive(Debug)]
+struct SystemDns;
+
+async fn looked_up(host: String) -> Vec<IpAddr> {
+    tokio::net::lookup_host((host, 0)).await.map(|found| found.map(|socket| socket.ip()).collect()).unwrap_or_default()
+}
+
+impl Resolver for SystemDns {
+    fn lookup_ipv4(&self, host: String) -> Lookup<Ipv4Addr> {
+        Box::pin(async move {
+            let found: Vec<Ipv4Addr> = looked_up(host).await.into_iter().filter_map(|ip| if let IpAddr::V4(v4) = ip { Some(v4) } else { None }).collect();
+            Ok(Box::new(found.into_iter()) as BoxIter<Ipv4Addr>)
+        })
+    }
+
+    fn lookup_ipv6(&self, host: String) -> Lookup<Ipv6Addr> {
+        Box::pin(async move {
+            let found: Vec<Ipv6Addr> = looked_up(host).await.into_iter().filter_map(|ip| if let IpAddr::V6(v6) = ip { Some(v6) } else { None }).collect();
+            Ok(Box::new(found.into_iter()) as BoxIter<Ipv6Addr>)
+        })
+    }
+
+    fn lookup_txt(&self, _host: String) -> Lookup<TxtRecordData> {
+        Box::pin(async { Ok(Box::new(std::iter::empty()) as BoxIter<TxtRecordData>) })
+    }
+
+    fn clear_cache(&self) {}
+
+    fn reset(&self) -> Box<dyn Resolver> {
+        Box::new(SystemDns)
+    }
+}
+
+pub struct LineSend(SendStream);
+
+pub struct LineRecv(BufReader<RecvStream>);
+
+impl LineSend {
+    pub async fn write(&mut self, line: &Value) -> Result<(), Failure> {
+        write_line(&mut self.0, line).await.map_err(|e| Failure::new("unreachable", format!("lost it: {e}")))
+    }
+}
+
+impl LineRecv {
+    pub async fn read(&mut self) -> Result<Value, Failure> {
+        read_line(&mut self.0, MAX_LINE).await.map_err(|e| Failure::new("unreachable", format!("lost it: {e}")))
+    }
+}
+
 impl Client {
     pub async fn start(secret: SecretKey) -> Result<Client, String> {
         Client::with(Endpoint::builder(presets::Minimal).secret_key(secret)).await
+    }
+
+    pub async fn start_phone(secret: SecretKey) -> Result<Client, String> {
+        Client::with(Endpoint::builder(presets::Minimal).secret_key(secret).dns_resolver(DnsResolver::custom(SystemDns))).await
     }
 
     pub async fn start_relay_only(secret: SecretKey) -> Result<Client, String> {
@@ -70,7 +128,11 @@ impl Client {
             Ok(Err(e)) => return Err(Failure::new("unreachable", format!("can't reach it: {e}"))),
             Err(_) => return Err(Failure::new("unreachable", format!("can't reach it within {}s", DIAL.as_secs()))),
         };
-        self.conns().insert(key.to_string(), conn.clone());
+        let mut conns = self.conns();
+        if let Some(first) = conns.get(key).filter(|c| c.close_reason().is_none()) {
+            return Ok((first.clone(), false));
+        }
+        conns.insert(key.to_string(), conn.clone());
         Ok((conn, true))
     }
 
@@ -88,6 +150,11 @@ impl Client {
                 }
             }
         }
+    }
+
+    pub async fn lines(&self, key: &str, addrs: &[String], relay: Option<&Relay>, header: Value) -> Result<(LineSend, LineRecv, Value), Failure> {
+        let (send, recv, ack) = self.open(key, addrs, relay, header).await?;
+        Ok((LineSend(send), LineRecv(recv), ack))
     }
 
     pub async fn link(&self, key: &str, addrs: &[String], relay: Option<&Relay>, cert: &Value) -> Result<std::os::unix::net::UnixStream, Failure> {
@@ -182,6 +249,16 @@ impl Client {
         json!({ "path": if path.is_ip() { "direct" } else { "relay" }, "lan": path.is_ip() && lan, "rtt_ms": path.rtt().as_secs_f64() * 1000.0, "remote": remote })
     }
 
+    pub fn forget(&self, key: &str) {
+        if let Some(conn) = self.conns().remove(key) {
+            conn.close(0u32.into(), b"forgotten");
+        }
+    }
+
+    pub async fn network_changed(&self) {
+        self.endpoint.network_change().await;
+    }
+
     pub async fn close(&self) {
         self.endpoint.close().await;
     }
@@ -202,7 +279,7 @@ async fn open(conn: &Connection, header: &Value) -> Result<(SendStream, BufReade
 
 async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     let mut found = vec![];
-    for addr in addrs {
+    for addr in addrs.iter().filter(|addr| !addr.contains("://")) {
         if let Ok(socket) = addr.parse::<SocketAddr>() {
             found.push(socket);
             continue;
@@ -215,8 +292,8 @@ async fn resolve(addrs: &[String]) -> Vec<SocketAddr> {
     found
 }
 
-fn local(ip: IpAddr) -> bool {
-    match ip {
+pub(crate) fn local(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])),
         IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
     }
