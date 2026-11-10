@@ -12,7 +12,7 @@ extension AppController {
         request("stats", ["repo": .string(path)], on: .some(machine)) { [weak self, weak controller] reply in
             guard let self, let controller, controller.projectRoot == root, let report = StatsReport(reply) else { return }
             controller.stats = report
-            if controller.shownPage == WindowController.pages[2] { redraw(controller) }
+            if controller.shownPage == WindowController.pages[3] { redraw(controller) }
         }
         guard statsTimer == nil else { return }
         statsTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
@@ -37,7 +37,7 @@ extension AppController {
     }
 
     private func refreshStats() {
-        let showing = controllers.values.filter { $0.shownPage == WindowController.pages[2] }
+        let showing = controllers.values.filter { $0.shownPage == WindowController.pages[3] }
         guard !showing.isEmpty else {
             statsTimer?.invalidate()
             statsTimer = nil
