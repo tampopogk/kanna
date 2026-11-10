@@ -947,6 +947,20 @@ fn a_shelf_task_is_renamed_and_starts_with_its_new_name() {
 }
 
 #[test]
+fn a_panic_in_a_task_on_the_loop_ends_the_daemon_after_its_crash_record() {
+    let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1")]);
+    daemon.kanna(&["raw", r#"{"cmd":"debug.panic","args":{"task":true}}"#]).ok();
+    assert_eq!(daemon.exited().code(), Some(101));
+    let records = daemon.crash_records();
+    assert_eq!(records.len(), 1, "one record");
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+    assert!(record["reason"].as_str().unwrap().starts_with("debug.panic in a task on the daemon's main loop at crates/kanna-daemon/src/crashes.rs:"), "{}", record["reason"]);
+    let top = &kanna_crash::site(record["stack"].as_array().unwrap())[0];
+    assert!(top["at"].as_str().is_some_and(|at| at.starts_with("crates/kanna-daemon/src/crashes.rs:")), "{top}");
+    std::fs::remove_file(&records[0]).unwrap();
+}
+
+#[test]
 fn a_daemon_that_panics_leaves_a_crash_record_that_kanna_crashes_lists_and_the_planner_hears_of_once() {
     let reports = scratch("reports");
     let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1"), ("KANNA_DIAGNOSTIC_REPORTS", reports.to_str().unwrap())]);
