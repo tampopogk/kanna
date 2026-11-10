@@ -26,7 +26,7 @@ The app's own drawing (`debug.toasts png`), dark; [`toasts-light.png`](toasts-li
 |---|---|
 | a pane of a task on a Desk | makes that task active on the front Desk (as clicking it in the strip does) and focuses the pane |
 | a pane of a planning terminal | shows that planner's Desk and focuses the pane |
-| a task on the Shelf, running or stopped | moves it to the Desk (the internal `tasks pick`, starting it if it's stopped), makes it active and focuses its agent; if the Desk is full, the Desk's note says so: "The Desk is full: move a task to the Shelf first (drag it there, or ⇧⌘⌫ on its row)." ([Desk view keys](desk-keys.md)) |
+| a task on the Shelf, running or stopped | moves it to the Desk (the internal `tasks pick`, starting it if it's stopped), makes it active and focuses its agent; if the Desk is full, the Desk's note says so: "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row)." ([Desk view keys](desk-keys.md)) |
 | a pane in a plain window | focuses it |
 
 ## Raising one

@@ -629,7 +629,7 @@ print(next((i["shortcut"] for i in items if i["menu"] == "Task" and i["item"] ==
   key down
   check test "$(search selection),$(hint selected go)" == "$(tid 4),Desk full" || { echo "desk_keys: a full Desk's Shelf row"; desk search; return 1; }
   key return
-  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (drag it there, or ⇧⌘⌫ on its row)." ]]' || { echo "desk_keys: a full Desk didn't refuse"; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row)." ]]' || { echo "desk_keys: a full Desk didn't refuse"; desk note; return 1; }
   check test "$(desk running)" == 3 || { echo "desk_keys: a fourth task went to the Desk"; return 1; }
   [[ "$(desk shelf)" == *"$(tid 4)"* ]] || { echo "desk_keys: Delta left the Shelf"; return 1; }
   key down

@@ -285,7 +285,7 @@ function moveToDesk(id) {
   const t = task(id);
   if (!t || t.place !== "shelf") return;
   if (t.waits) { s.note = `“${t.title}” waits for “${t.waits}”: it can move once that's done.`; return render(); }
-  if (full()) { s.note = `The Desk is full: move a task to the Shelf first (drag it there, or ⇧⌘⌫ on its row).`; return render(); }
+  if (full()) { s.note = `The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row).`; return render(); }
   Object.assign(t, { place: "desk", agent: t.agent || "claude", status: t.status || "working", branch: t.branch || "task-" + t.id, leftAt: Date.now() });
   s.note = ""; s.query = ""; s.sel = t.id;
   render();

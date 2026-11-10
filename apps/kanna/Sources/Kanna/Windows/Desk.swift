@@ -337,7 +337,7 @@ extension AppController {
         return reply["error"]?["message"]?.string ?? otherwise
     }
 
-    static let deskFull = "The Desk is full: move a task to the Shelf first (drag it there, or ⇧⌘⌫ on its row)."
+    static let deskFull = "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row)."
 
     func shelveTask(_ task: String, from window: String) {
         controllers[window]?.note = ""

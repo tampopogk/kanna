@@ -32,7 +32,7 @@ Picking, shelving and starting tasks in the Desk view work from the keyboard alo
 - **The selection shows only while it has the keyboard,** drawn as a hovered row, its hints showing. Clicking the planning terminal or esc hides it; ⌘F brings it back on the row it was on, if that row still shows.
 - **It follows its task.** After ↩ on a Shelf row the selection is on the same task, now on the Desk; after ⇧⌘⌫, on the same task on the Shelf. If the task no longer shows (a search hides it), the row now in its place is selected.
 - **The Desk view stays.** Only ↩ on a Desk row leaves it, by showing that task; Move to Desk, Move to Shelf, Start and Stop leave the selection where it is.
-- **Notes say why, in the app's words.** "The Desk is full: move a task to the Shelf first (drag it there, or ⇧⌘⌫ on its row)." and "“NAME” waits for “OTHER”: it can move once that's done." (start: "it can start"). A click gets the same notes. The note stays in sight along the Desk view's bottom edge ([the Desk view's note](desk-note.md)).
+- **Notes say why, in the app's words.** "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row)." and "“NAME” waits for “OTHER”: it can move once that's done." (start: "it can start"). A click gets the same notes. The note stays in sight along the Desk view's bottom edge ([the Desk view's note](desk-note.md)).
 - **No Done key.** Done ends a task for good; it stays with the CLI and the task's agent (Rejected).
 
 ## 2. Hints and the menu

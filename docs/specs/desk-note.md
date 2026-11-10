@@ -4,7 +4,7 @@
 
 When the Desk view refuses something (the Desk is full, a task is blocked, the daemon said no), it says why in a note. The note is a strip along the bottom edge of the Desk view, outside the scrolled list, so it is in sight however long the Shelf is and wherever the list is scrolled.
 
-![A full Desk and a long Shelf scrolled most of the way down: the note "The Desk is full: move a task to the Shelf first (drag it there, or ⇧⌘⌫ on its row)." runs along the bottom edge of the Desk view with a × at its right](desk-note.png)
+![A full Desk and a long Shelf scrolled most of the way down: the note "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row)." runs along the bottom edge of the Desk view with a × at its right](desk-note.png)
 
 *(From the mockup: `#picture&sel=11`. "As it is today" in the mockup shows where the note was before: the last line of the list, under every Shelf row.)*
 
