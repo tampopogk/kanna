@@ -212,7 +212,7 @@ pub fn notice(input: &Inputs) -> Value {
             "lines": input.lines.map_or(Value::Null, |(added, removed, files)| json!({ "added": added, "removed": removed, "files": files })),
         },
         "visits": visits,
-        "workers": open.filter(|s| !s.doc.get("paused").is_some_and(Value::is_object) && s.terminal.is_some()).map_or(vec![], |s| vec![json!({ "stage": s.stage, "visit": s.visit, "terminal": opt(s.terminal.as_deref()), "worktree": opt(s.worktree.as_deref()), "who": who(pipeline, s), "startedAt": num(s.started_at) })]),
+        "workers": input.stages.iter().filter(|s| s.ended_at.is_none() && !s.doc.get("paused").is_some_and(Value::is_object) && s.terminal.is_some()).map(|s| json!({ "stage": s.stage, "visit": s.visit, "instance": opt(s.instance.as_deref()), "terminal": opt(s.terminal.as_deref()), "worktree": opt(s.worktree.as_deref()), "who": who(pipeline, s), "startedAt": num(s.started_at) })).collect::<Vec<_>>(),
         "card": card(input, open),
     })
 }

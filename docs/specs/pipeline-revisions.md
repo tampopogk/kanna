@@ -42,7 +42,8 @@ sequenceDiagram
 - **Prompts:** a new agent stage's prompt is one kept with revision 1, or a file in the run's worktree (`.kanna/prompts/NAME.md`), which the stage may have written. Each revision keeps the prompts it was checked with.
 - **Refused:** the pipeline stays as it was. The errors name the block's lines (`the kojo block:2: …`) or the merged pipeline's (`the merged pipeline:23: …`). The next stage gets them as feedback from the emitting stage, ahead of any feedback the stage's fail carries; a `run` stage reads them in `$KANNA_FEEDBACK`.
 - **A stage without `emits`:** its block is refused the same way.
-- **Parts runs can't do yet** (`each`, `guard`, …) are refused in a block as they are in the file.
+- **Parts runs can't do yet** (`resume`, another machine) are refused in a block as they are in the file.
+- **A fan-out stage:** `each` emits the first block among its instances' answers, `xN by` the winner's.
 
 ## 2. Your edit
 
