@@ -63,10 +63,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var updates: Updates?
     var toastShowing: (pane: String, desk: String?)?
     var statsTimer: Timer?
+    var queueTimer: Timer?
 
     static var daemonSocketPath: String {
-        if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return path }
+        if let path = ProcessInfo.processInfo.environment["KANNA_SOCKET"], !path.isEmpty { return ownSocket(path) }
         return instanceSocket(KannaBuild.defaultInstance)
+    }
+
+    static func ownSocket(_ socket: String) -> String {
+        let kind = (try? FileManager.default.attributesOfItem(atPath: socket))?[.type] as? FileAttributeType
+        return kind == .typeSymbolicLink ? ((socket as NSString).deletingLastPathComponent as NSString).appendingPathComponent("kanna.own.sock") : socket
     }
 
     static var physicalPath: String? {
@@ -96,7 +102,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     static func instanceSocket(_ name: String) -> String {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appendingPathComponent(KannaBuild.instanceFolder(name)).appendingPathComponent("kanna.sock").path
+        return ownSocket(support.appendingPathComponent(KannaBuild.instanceFolder(name)).appendingPathComponent("kanna.sock").path)
     }
 
     static var appSocketPath: String {
@@ -443,10 +449,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var placed: Set<String> {
         var ids = Set(runningOnShelf(in: nil).compactMap { $0["task"]?.string })
+        ids.formUnion(controllers.values.compactMap(\.queuePage.wantedTerminal))
         if case .array(let held)? = state["held"] { ids.formUnion(held.compactMap(\.string)) }
         for entry in deskEntries {
             guard case .array(let list)? = entry["panes"] else { continue }
             ids.formUnion(list.compactMap(\.string))
+        }
+        let planners = Set(windows.compactMap { $0["planner"]?.string })
+        for workspace in state["workspaces"]?.array ?? [] where workspace["id"]?.string.map(planners.contains) == true {
+            ids.formUnion(workspace["panes"]?.array?.compactMap(\.string) ?? [])
         }
         for window in windows {
             if let pane = window["dock"]?["pane"]?.string { ids.insert(pane) }
@@ -633,7 +644,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 : []
             held.formUnion(docks.compactMap { $0["task"]?.string })
             controller.deskDocks = docks
-            controller.shelf = shelfTasks(in: controller.projectRoot)
+            let shelved = shelfTasks(in: controller.projectRoot)
+            controller.shelf = shelved.filter { $0.queue == nil }
+            controller.merging = shelved.filter { $0.queue != nil }.sorted { ($0.queue?.position ?? 0) < ($1.queue?.position ?? 0) }
             controller.running = runningTasks(in: controller.projectRoot)
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
             controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
@@ -702,6 +715,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if page == WindowController.pages[1] { links?.refresh() }
             if page == WindowController.pages[2] { loadStats(controller) }
             if page == WindowController.pages[3] { loadSchedules(controller) }
+            if page == WindowController.pages[4] { loadQueue(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
@@ -728,6 +742,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
         controller.deskView.onShelve = { [weak self] task in self?.shelveTask(task, from: id) }
+        controller.deskView.onLog = { [weak self, weak controller] entry in
+            guard let self, let controller else { return }
+            showQueue(controller, at: entry)
+        }
+        controller.queuePage.onTakeOut = { [weak self] task in self?.takeOut(task, from: id) }
+        controller.queuePage.onResume = { [weak self] run in self?.resumeQueued(run, from: id) }
+        controller.queuePage.onPick = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            refresh()
+            redraw(controller)
+        }
+        controller.queuePage.onLog = { [weak self, weak controller] entry in
+            guard let self, let controller else { return }
+            loadQueueLog(controller, entry)
+        }
         controller.deskView.onLeaveSearch = { [weak self, weak controller] in
             guard let self, let controller, let lead = controller.leadShown, let view = panes.keyView(lead) else { return }
             controller.window.makeFirstResponder(view)

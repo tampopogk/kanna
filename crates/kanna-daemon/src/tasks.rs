@@ -20,12 +20,15 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod comment_targets;
+mod instance;
+mod merging;
 mod moving;
 mod phone;
 
+pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
 
-const WORKTREES: &str = ".kanna-worktrees";
+pub const WORKTREES: &str = ".kanna-worktrees";
 
 const SCRATCH: &str = ".kanna/tmp";
 
@@ -57,6 +60,8 @@ pub struct Entry {
     pub sent: Vec<Sent>,
     pub notes: Vec<Note>,
     pub claim: Option<String>,
+    pub queued: Option<String>,
+    pub merge_failed: Option<Value>,
 }
 
 impl Entry {
@@ -80,6 +85,8 @@ impl Entry {
             "bases": Value::Array(self.bases.iter().map(Base::to_value).collect()),
             "stale": self.stale,
             "conflict": self.conflict.as_ref().map_or(Value::Null, Conflict::to_value),
+            "queued": opt(self.queued.as_deref()),
+            "mergeFailed": self.merge_failed.clone().unwrap_or(Value::Null),
         })
     }
 
@@ -110,6 +117,8 @@ impl Entry {
                 "sent": Value::Array(self.sent.iter().map(Sent::to_value).collect()),
                 "notes": Note::values(&self.notes),
                 "claim": opt(self.claim.as_deref()),
+                "queued": opt(self.queued.as_deref()),
+                "mergeFailed": self.merge_failed.clone().unwrap_or(Value::Null),
             }),
         }
     }
@@ -140,6 +149,8 @@ impl Entry {
             sent: Sent::list(row.doc.get("sent")),
             notes: Note::list(row.doc.get("notes")),
             claim: text("claim"),
+            queued: text("queued"),
+            merge_failed: row.doc.get("mergeFailed").filter(|v| v.is_object()).cloned(),
         }
     }
 
@@ -1024,6 +1035,8 @@ pub struct Tasks {
     following: RefCell<HashSet<PathBuf>>,
     news: RefCell<News>,
     ending: RefCell<HashMap<String, Option<String>>>,
+    moving_instance: RefCell<Option<String>>,
+    pub move_hooks: RefCell<Option<instance::MoveHooks>>,
 }
 
 #[derive(Clone)]
@@ -1211,6 +1224,8 @@ impl Tasks {
             following: RefCell::default(),
             news: RefCell::default(),
             ending: RefCell::default(),
+            moving_instance: RefCell::default(),
+            move_hooks: RefCell::default(),
         }
     }
 
@@ -1422,6 +1437,9 @@ impl Tasks {
         self.stack_fields(entry, &mut value);
         value["branch"] = opt(entry.folder.as_deref().and_then(branch_of).as_deref());
         value["project"] = opt(identity(&entry.repo).as_deref());
+        if entry.queued.is_some() {
+            value["queue"] = self.queue_info(entry);
+        }
         value
     }
 
@@ -1462,6 +1480,9 @@ impl Tasks {
         self.placed(&entry.repo)?;
         if let Some(to) = self.moving_to(&entry.id) {
             return Err(KmuxError::new("moving", format!("{} is moving to {to}: it carries on there", self.short(&entry.id))));
+        }
+        if let Some(queued) = &entry.queued {
+            return Err(KmuxError::new("queued", format!("{} is in the merge queue ({queued}): `kanna task merge --cancel {}` takes it out", self.short(&entry.id), self.short(&entry.id))));
         }
         if entry.folder.is_some() || entry.held.is_some() {
             return Ok(());
@@ -2089,6 +2110,15 @@ impl Tasks {
         }
     }
 
+    pub fn close_ended_planners(&self) {
+        let Some(core) = self.core.upgrade() else { return };
+        let windowless = self.windowless.borrow().as_ref().map_or(vec![], |panes| panes());
+        for pane in self.planners().into_iter().filter(|pane| !windowless.contains(pane) && !alive(&core, pane)) {
+            log!("kanna-daemon: the planner in {pane} has no terminal running, so its Desk gets a new planner");
+            core.handle(json!({ "cmd": "close", "args": { "task": pane } }), |_| {});
+        }
+    }
+
     pub fn status(self: &Rc<Self>, pane: &str, status: Option<&str>, ended: bool) {
         let now = Instant::now();
         if let Some(status) = status.filter(|_| !self.ending(pane)) {
@@ -2578,6 +2608,9 @@ impl Tasks {
     }
 
     fn fill(self: &Rc<Self>, core: &CoreHandle) {
+        if self.moving_instance.borrow().is_some() {
+            return;
+        }
         self.adopt();
         let entries = self.entries.borrow().clone();
         let machines = self.machines();
@@ -2661,7 +2694,7 @@ impl Tasks {
 
     fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<(Hlc, Candidate)> {
         let mail: HashSet<String> = self.waiting.borrow().iter().map(|m| m.recipient.clone()).collect();
-        let woken = mine.iter().filter(|e| mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
+        let woken = mine.iter().filter(|e| e.queued.is_none() && mail.contains(&e.id) && messages::AGENTS.contains(&program(&e.agent)) && (e.folder.is_some() || e.held.is_some()) && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && !e.held.as_deref().is_some_and(|pane| alive(core, pane) || self.ending(pane)) && self.moving_to(&e.id).is_none()).map(|e| (order(e), Candidate::Wake((*e).clone())));
         let new = mine
             .iter()
             .filter(|e| e.folder.is_none() && e.held.is_none() && !starting.contains(&e.id) && !self.failed.borrow().contains(&e.id) && self.waits(e).is_empty() && allowed(&e.on, &machines.me.name) && !self.ambiguous(&e.id) && self.conflicted(e).is_none())
@@ -2798,6 +2831,7 @@ impl Tasks {
         core.add_command(
             "replica",
             Rc::new(move |args, responder| match this.upgrade() {
+                Some(this) if this.holds_for_move(&args) => responder.reply(Err(this.moving_refusal())),
                 Some(this) if string(&args, "action") == Some("transfer") => this.take_transfer(&args, responder),
                 Some(this) => responder.reply(this.replica_command(&args)),
                 None => responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))),
@@ -2815,6 +2849,9 @@ impl Tasks {
                         Ok(None) => {}
                         Err(error) => return responder.reply(Err(error)),
                     }
+                }
+                if this.blocked_by_move(&args) {
+                    return responder.reply(Err(this.moving_refusal()));
                 }
                 match args.get("action").and_then(Value::as_str) {
                     Some("new") => this.adding(args, responder),
@@ -3696,9 +3733,11 @@ impl Tasks {
         let core = self.core.upgrade();
         let entries = self.entries.borrow().clone();
         let replied: HashSet<String> = self.waiting.borrow().iter().filter(|m| m.recipient == PLANNER).map(|m| m.sender.clone()).collect();
+        let mut merging: Vec<Value> = entries.iter().filter(|e| e.queued.is_some() && repo.is_none_or(|r| e.repo == r)).map(|e| self.described(e)).collect();
+        merging.sort_by_key(|v| v["queue"]["position"].as_u64().unwrap_or(u64::MAX));
         let tasks = entries
             .iter()
-            .filter(|e| repo.is_none_or(|r| e.repo == r))
+            .filter(|e| repo.is_none_or(|r| e.repo == r) && e.queued.is_none())
             .map(|e| {
                 let mut value = self.described(e);
                 let pane = e.held.as_deref().zip(core.as_ref()).and_then(|(pane, core)| core.pane(pane).map(|p| (alive(core, pane), p)));
@@ -3761,7 +3800,7 @@ impl Tasks {
             .filter(|r| r.runs().len() > 1 && r.text("state") != Some("done"))
             .map(|r| (r.task.clone(), json!(r.runs().into_iter().map(|device| machines.name_of(device)).collect::<Vec<_>>())))
             .collect();
-        let mut reply = Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("agent".to_string(), json!(agent)), ("elsewhere".to_string(), Value::Array(elsewhere)), ("claimed".to_string(), Value::Array(claimed)), ("twice".to_string(), Value::Object(twice))]);
+        let mut reply = Map::from_iter([("shelf".to_string(), Value::Array(tasks)), ("desk".to_string(), Value::Array(out)), ("script".to_string(), Value::Object(scripts)), ("agent".to_string(), json!(agent)), ("elsewhere".to_string(), Value::Array(elsewhere)), ("claimed".to_string(), Value::Array(claimed)), ("twice".to_string(), Value::Object(twice)), ("merging".to_string(), Value::Array(merging))]);
         if args.get("done").and_then(Value::as_bool) == Some(true) {
             let done = self.db.done_tasks().unwrap_or_else(|error| {
                 eprintln!("kanna-daemon: can't read the done tasks in {}: {error}", db::FILE);
@@ -3904,7 +3943,7 @@ impl Tasks {
         if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()).with("branch", opt(entry.folder.as_deref().and_then(branch_of).as_deref())))) {
             return responder.reply(Err(error));
         }
-        self.tell_planner(&entry, What::Ended { on_desk: false }, by.as_deref());
+        self.tell_planner(&entry, if entry.queued.is_some() { What::Landed } else { What::Ended { on_desk: false } }, by.as_deref());
         let short = self.short(&entry.id);
         self.take(&entry.id);
         if let Some(pane) = &entry.held {
@@ -5984,6 +6023,8 @@ mod tests {
         assert_eq!(keys, ["prompts"]);
         let keys: Vec<&String> = schema["properties"]["pipelines"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["agents"]);
+        let keys: Vec<&String> = schema["properties"]["merge"]["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["test"]);
         let names: Vec<&str> = AGENTS.iter().map(|a| a.names[0]).collect();
         assert_eq!(schema["properties"]["pipelines"]["properties"]["agents"]["propertyNames"]["enum"], json!(names));
         assert_eq!((tasks["agent"]["default"].clone(), tasks["agent"]["examples"].clone()), (json!(DEFAULT_AGENT), json!(names)));
@@ -6172,7 +6213,7 @@ mod tests {
 
     #[test]
     fn entries_round_trip_through_the_db() {
-        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, claimed: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }] };
+        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, claimed: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }], queued: Some("queue-1".into()), merge_failed: Some(json!({ "why": "test failed" })) };
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).held, None, "a task on the Shelf isn't held");
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the Shelf");

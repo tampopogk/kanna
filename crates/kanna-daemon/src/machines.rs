@@ -332,6 +332,15 @@ impl Machines {
         }
     }
 
+    pub fn close_from_loop(&self) {
+        let Ok(node) = &self.node else { return };
+        let (handle, node) = (self.runtime.handle().clone(), node.clone());
+        let closing = std::thread::spawn(move || {
+            let _ = handle.block_on(async { tokio::time::timeout(Duration::from_secs(1), node.close()).await });
+        });
+        let _ = closing.join();
+    }
+
     pub fn stop(&self) {
         if let Ok(node) = &self.node {
             let _ = self.runtime.block_on(async { tokio::time::timeout(Duration::from_secs(1), node.close()).await });

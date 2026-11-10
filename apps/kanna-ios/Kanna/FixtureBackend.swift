@@ -459,6 +459,7 @@ final class FixtureBackend: Backend {
     }
 
     func close() {}
+    func unlink() {}
 
     func networkChanged() {}
     func askLocalNetwork() {}
