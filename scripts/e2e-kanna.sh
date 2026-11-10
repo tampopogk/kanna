@@ -7451,7 +7451,7 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   check wait_for 25 eval 'phone read repo | grep -q "The planner finished without answering"' || { echo "phone_chat: a second silent turn wasn't told"; phone read repo; return 1; }
   check test "$(cd "$phone_repo" && KANNA_TERMINAL="$planner" kanna phone history --last 1 | cut -c1-3)" == sys || { echo "phone_chat: history was wrong"; return 1; }
   check test "$(phone_place)" == daemon || { echo "phone_chat: the planner isn't windowless: $(phone_place)"; return 1; }
-  kanna send "$planner" ask >/dev/null && kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  kanna send "$planner" ask >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check wait_for 5 is "$planner" status needs-you || { echo "phone_chat: the mock didn't ask"; kanna read "$planner"; return 1; }
   check phone status repo blocked 10 >/dev/null || { echo "phone_chat: a planner that needs you reads as $(phone read repo 1000)"; return 1; }
   kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
@@ -7462,6 +7462,37 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"let-go\",\"task\":\"$planner\"}}" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check test "$(phone_place)" == daemon || { echo "phone_chat: closing the Desk ended the planner: $(phone_place)"; return 1; }
   check test "$(phone_planner)" == "$planner" || { echo "phone_chat: the planner changed when its window closed"; return 1; }
+  local keeper; keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
+  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "phone_chat: $keeper isn't this run's keeper"; return 1; }
+  stop_daemon
+  kill "$keeper"
+  check wait_for 5 eval '! kill -0 $keeper' || { echo "phone_chat: this run's keeper didn't stop"; return 1; }
+  KANNA_MACHINE_PORT="$(head -1 "$KANNA_STATE_DIR/offer" | field port)" KANNA_PLANNING_AGENTS="$phone_fake/$1" start_daemon || { echo "phone_chat line $LINENO"; return 1; }
+  check test "$(phone_place)" == "" || { echo "phone_chat: a planner with no terminal came back: $(kanna workspace list --all --json | cut -c1-500)"; return 1; }
+  check phone status repo not_running 10 >/dev/null || { echo "phone_chat: a planner lost with its keeper still shows: $(phone hello | cut -c1-500)"; return 1; }
+  local answered; answered="$(phone read repo | grep -c '"text":"back from the keeper')"
+  phone send repo m7 "mock: run $me phone say back from the keeper" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check wait_for 40 eval '[[ "$(phone read repo | grep -c "\"text\":\"back from the keeper")" -gt $answered ]]' || { echo "phone_chat: no answer after the keeper died: $(phone read repo | tail -3 | cut -c1-400); $(kanna workspace list --all | tail -5)"; return 1; }
+  check test "$(phone_place)" == daemon || { echo "phone_chat: the new planner isn't windowless: $(phone_place)"; return 1; }
+}
+
+scenario desk_planner_keeper_lost M4
+desk_planner_keeper_lost() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon && start_app || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  (cd "$repo" && kanna .) >/dev/null || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { kanna workspace list --all; return 1; }
+  local planner keeper; planner="$(desk lead)"; keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
+  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "desk_planner_keeper_lost: $keeper isn't this run's keeper"; return 1; }
+  stop_app; stop_daemon
+  kill "$keeper"
+  check wait_for 5 eval '! kill -0 $keeper' || { echo "desk_planner_keeper_lost: this run's keeper didn't stop"; return 1; }
+  start_daemon && start_app || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ "$(desk lead)" == term-* ]] && is "$(desk lead)" state running' || { echo "desk_planner_keeper_lost: the Desk got no running planner: $(desk lead)"; kanna workspace list --all; return 1; }
+  check test "$(desk lead)" != "$planner" || { echo "desk_planner_keeper_lost: the lost pane came back"; return 1; }
 }
 
 machine_vm() {
