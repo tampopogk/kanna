@@ -105,6 +105,7 @@ With `KANNA_DEBUG=1`; the daemon passes them to the app, turning a top-level `pa
 | `debug.about` | the text of the open About panel: `{lines}` |
 | `debug.view` | the view the app draws: the daemon's `layout` with the app's physical state laid over it ([2](#2-what-the-app-keeps)) |
 | `debug.pinch {pane, steps?, at?, drift?}` | a trackpad pinch over a markdown or web pane, at the middle or `at`, the fingers moving by `drift` each event; the zoom after each step, a markdown pane's top line and laid-out width, and a web pane's position |
+| `debug.wheel {pane, delta?, count?, every_ms?}` | `count` scroll-wheel events of `delta` pixels over a pane, `every_ms` apart, as a trackpad scroll sends them; a markdown pane's scroll after |
 | `debug.drop {pane, files \| image \| text}` | a drop on a terminal: file paths, a PNG or TIFF file's data, or text, as a drag would bring them |
 | `debug.stats` | the app's pid and memory footprint |
 | `debug.app {keyview: true}` | from then on, each new window that still has no first responder after the run-loop pass that made it gets its first key view, as AppKit does when an active app's window becomes key (`--bg` apps are never active) |

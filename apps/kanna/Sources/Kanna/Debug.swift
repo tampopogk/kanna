@@ -108,6 +108,7 @@ extension AppController {
             return ["dropped": .bool(view.drop(pasteboard))]
         }
         commands["debug.pinch"] = { [weak self] args in try await self?.pinch(args) ?? [:] }
+        commands["debug.wheel"] = { [weak self] args in try await self?.wheel(args) ?? [:] }
         commands["debug.text"] = { [weak self] args in
             guard let self else { return [:] }
             let view = try terminal(args["pane"]?.string)
@@ -676,6 +677,26 @@ extension AppController {
             }
         }
         return [:]
+    }
+
+    private func wheel(_ args: JSON) async throws -> [String: JSON] {
+        let id = try resolve(args["pane"]?.string ?? focusedPane ?? "")
+        guard let view = panes.keyView(id), let window = view.window else { throw KannaError("wrong_type", "pane is not on screen") }
+        let area = view.visibleRect.intersection(view.bounds)
+        let point = view.convert(NSPoint(x: area.midX, y: area.midY), to: nil)
+        let height = NSScreen.screens.first?.frame.height ?? 0
+        let delta = Int32(args["delta"]?.number ?? -40)
+        let count = Int(args["count"]?.number ?? 10)
+        let pause = Int(args["every_ms"]?.number ?? 16)
+        for index in 0..<count {
+            guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { continue }
+            cg.location = CGPoint(x: point.x, y: height - point.y)
+            cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: index == 0 ? 1 : index == count - 1 ? 4 : 2)
+            guard let event = NSEvent(cgEvent: cg) else { continue }
+            window.sendEvent(event)
+            try await Task.sleep(for: .milliseconds(pause))
+        }
+        return ["scroll": .number(Double(contents.markdown(id)?.scrollTop ?? 0))]
     }
 
     private func pinch(_ args: JSON) async throws -> [String: JSON] {

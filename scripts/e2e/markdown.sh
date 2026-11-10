@@ -400,3 +400,76 @@ diagram_check() {
   check test "$(raw '{"id":1,"cmd":"debug.md","args":{"pane":"doc"}}' | python3 -c 'import json, sys; print([d["type"] for d in json.load(sys.stdin)["diagrams"]])')" == "['flowchart-v2']" || return 1
   kanna diagrams check "$doc" >/dev/null 2>&1; check test $? -eq 1 || return 1
 }
+
+scenario markdown_tables M4
+markdown_tables() {
+  start_daemon && start_app || return 1
+  local dir="$KANNA_STATE_DIR/mdtables" y i bad=0 stops=()
+  mkdir -p "$dir"
+  if [[ -n "${KANNA_E2E_TABLES_DOC:-}" ]]; then cp "$KANNA_E2E_TABLES_DOC" "$dir/tables.md"; else md_tables_doc >"$dir/tables.md"; fi
+  kanna open --window new md "$dir/tables.md" --name tables >/dev/null || return 1
+  mdt() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"tables\"${2:-}}}" | field "$1"; }
+  tshot() { rm -f "$KANNA_STATE_DIR/$1.png"; raw "{\"id\":1,\"cmd\":\"debug.snapshot\",\"args\":{\"path\":\"$1.png\"}}" >/dev/null; }
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"win-1","size":[900,700]}}' >/dev/null
+  check wait_for 5 eval '(( $(mdt loads) >= 1 ))' || return 1
+  mdt overview.shown ',"overview_enabled":false' >/dev/null
+  mdt zoom ',"zoom":-1' >/dev/null
+  for i in $(seq 0 24); do
+    y="$(raw '{"id":1,"cmd":"debug.wheel","args":{"pane":"tables","delta":-30,"count":8,"every_ms":8}}' | field scroll)"
+    stops+=("$y"); tshot "tables-scrolled-$i"
+  done
+  mdt zoom ',"zoom":1' >/dev/null; sleep 0.3; mdt zoom ',"zoom":-1' >/dev/null; sleep 0.3
+  for i in "${!stops[@]}"; do
+    mdt scroll ",\"scroll\":${stops[$i]}" >/dev/null; sleep 0.15; tshot "tables-full-$i"
+    png_same "$KANNA_STATE_DIR/tables-scrolled-$i.png" "$KANNA_STATE_DIR/tables-full-$i.png" && continue
+    echo "markdown_tables: at scroll ${stops[$i]} the tables drawn while scrolling differ from a full layout (tables-scrolled-$i.png, tables-full-$i.png)"
+    cp "$KANNA_STATE_DIR/tables-scrolled-$i.png" "$KANNA_STATE_DIR/tables-full-$i.png" "$out/"
+    bad=$((bad + 1))
+  done
+  mdt overview.shown ',"overview_enabled":true' >/dev/null
+  mdt zoom ',"zoom":0' >/dev/null
+  raw '{"id":1,"cmd":"debug.app","args":{"appearance":"light"}}' >/dev/null
+  mdt scroll ',"scroll":0' >/dev/null; sleep 0.5
+  tshot markdown-tables && cp "$KANNA_STATE_DIR/markdown-tables.png" "$out/"
+  (( bad == 0 )) || { echo "markdown_tables: $bad of ${#stops[@]} scroll stops differ"; return 1; }
+}
+
+png_same() { python3 -c 'import struct, sys, zlib
+def pixels(path):
+    data = open(path, "rb").read()
+    at, idat, head = 8, b"", None
+    while at < len(data):
+        n, kind = struct.unpack(">I4s", data[at:at + 8]); body = data[at + 8:at + 8 + n]; at += 12 + n
+        if kind == b"IHDR": head = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT": idat += body
+    w, h, depth, color = head[:4]
+    bpp = {2: 3, 6: 4, 0: 1, 4: 2}[color] * depth // 8
+    raw, stride, rows, prev = zlib.decompress(idat), w * bpp, [], bytearray(w * bpp)
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for x in range(stride):
+            a = line[x - bpp] if x >= bpp else 0; b = prev[x]; c = prev[x - bpp] if x >= bpp else 0
+            if f == 1: line[x] = (line[x] + a) & 255
+            elif f == 2: line[x] = (line[x] + b) & 255
+            elif f == 3: line[x] = (line[x] + (a + b) // 2) & 255
+            elif f == 4:
+                p = a + b - c; pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(bytes(line)); prev = line
+    return (w, h), rows
+(sa, ra), (sb, rb) = pixels(sys.argv[1]), pixels(sys.argv[2])
+sys.exit(0 if sa == sb and all(abs(x - y) <= 60 for p, q in zip(ra, rb) if p != q for x, y in zip(p, q)) else 1)' "$1" "$2"; }
+
+md_tables_doc() {
+  printf '# Rows\n\nTables whose cells wrap to many lines, between paragraphs.\n\n'
+  local t r
+  for t in $(seq 14); do
+    printf '## Table %s\n\nA paragraph before table %s, long enough to wrap once in a narrow pane and say what the table compares.\n\n' "$t" "$t"
+    printf '| # | Claim | Verdict | Notes |\n|---|---|---|---|\n'
+    for r in $(seq $((4 + t % 5))); do
+      printf '| %s | The server keeps every terminal in a process of its own, row %s of table %s, and says so in a sentence that wraps | ✓, except the socket is owner-only and `runtime.json` sits under `servers/<hash>`%s | short |\n' "$r" "$r" "$t" "$( (( r % 3 == 0 )) && printf ', with a much longer note that goes on to wrap over several more lines than any other cell in this row, so the row is as tall as this cell' )"
+    done
+    printf '\n'
+  done
+}
+

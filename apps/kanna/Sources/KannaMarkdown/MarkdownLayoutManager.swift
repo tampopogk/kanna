@@ -9,6 +9,20 @@ struct DocMark {
 
 final class MarkdownLayoutManager: NSLayoutManager {
     var marks: [DocMark] = []
+    var tableRows: [TableRow]?
+
+    override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions, range newCharRange: NSRange, changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
+        tableRows = nil
+        super.processEditing(for: textStorage, edited: editMask, range: newCharRange, changeInLength: delta, invalidatedRange: invalidatedCharRange)
+    }
+
+    override func glyphRange(forBoundingRect bounds: NSRect, in container: NSTextContainer) -> NSRange {
+        widenToRows(super.glyphRange(forBoundingRect: bounds, in: container), crossing: bounds)
+    }
+
+    override func glyphRange(forBoundingRectWithoutAdditionalLayout bounds: NSRect, in container: NSTextContainer) -> NSRange {
+        widenToRows(super.glyphRange(forBoundingRectWithoutAdditionalLayout: bounds, in: container), crossing: bounds)
+    }
 
     func markRects(_ range: NSRange) -> [NSRect] {
         guard let storage = textStorage, NSMaxRange(range) <= storage.length, range.length > 0 else { return [] }
