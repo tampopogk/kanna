@@ -73,12 +73,8 @@ impl Job {
     }
 }
 
-pub fn command_timeout(within: Option<Duration>, owned: bool, usual: u64) -> u64 {
-    match within {
-        Some(within) => within.as_secs().max(1),
-        None if owned => 0,
-        None => usual,
-    }
+pub fn command_timeout(within: Option<Duration>) -> u64 {
+    within.map_or(0, |within| within.as_secs().max(1))
 }
 
 pub fn ends_owned(owned: bool, note: Option<&str>) -> bool {
@@ -1759,7 +1755,7 @@ impl Runs {
                 let previous = doc.feedback.as_ref().map(|f| fs::read_to_string(&f.full).unwrap_or_else(|_| f.text.clone())).unwrap_or_default();
                 let _ = fs::write(&feedback, previous);
                 vars.push(("KANNA_FEEDBACK", feedback.to_string_lossy().into_owned()));
-                let timeout = command_timeout(stage.within, doc.owner.is_some(), tasks::scripts(&files).timeout);
+                let timeout = command_timeout(stage.within);
                 stage_row.kind = "run".into();
                 row_doc["log"] = json!(log.to_string_lossy());
                 row_doc["exit"] = json!(exit.to_string_lossy());
@@ -2244,6 +2240,14 @@ mod tests {
         assert!(said.starts_with("Your turn ended, but judge isn't over: only `\"$KANNA_CLI\" run done pass` or `\"$KANNA_CLI\" run done fail` ends it"), "{said}");
         assert!(said.contains("run need \"WHAT YOU NEED\"") && said.contains("run command 'COMMAND'"), "{said}");
         assert!(unreported("build", false).contains("only `\"$KANNA_CLI\" run done` ends it"));
+    }
+
+    #[test]
+    fn a_run_stage_has_no_time_limit_unless_it_says_within() {
+        let p = pipeline("check = run make test\ne2e = run make e2e within 30m\ncheck -> e2e -> done\n");
+        assert_eq!(command_timeout(p.stage("check").unwrap().within), 0, "0 is no alarm: tasks.timeout is for setup and teardown");
+        assert_eq!(command_timeout(p.stage("e2e").unwrap().within), 1800);
+        assert_eq!(command_timeout(Some(Duration::from_millis(200))), 1);
     }
 
     #[test]

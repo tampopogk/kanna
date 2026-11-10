@@ -882,9 +882,8 @@ mod tests {
         let test = pipeline.stage(TEST).unwrap();
         assert!(matches!(&test.kind, kanna_pipe::Kind::Run { command } if command == "sh test.sh"), "{text}");
         assert_eq!(test.within, None, "the tests have no time limit");
-        assert_eq!(runs::command_timeout(test.within, true, 60), 0, "and tasks.timeout doesn't bound a queue's command");
-        assert_eq!(runs::command_timeout(test.within, false, 60), 60, "as it bounds a task's run");
-        assert_eq!(runs::command_timeout(Some(Duration::from_secs(900)), true, 60), 900, "a repo's own pipeline can still set within");
+        assert_eq!(runs::command_timeout(test.within), 0, "whatever tasks.timeout is");
+        assert_eq!(runs::command_timeout(Some(Duration::from_secs(900))), 900, "a repo's own pipeline can still set within");
         let judge = pipeline.stage(JUDGE).unwrap();
         assert!(judge.agent().is_some_and(|a| a.verdict && kanna_pipe::AGENTS.contains(&a.agent.as_str())), "{text}");
         assert_eq!((judge.prompt(), judge.within), (Some(PROMPT), None));

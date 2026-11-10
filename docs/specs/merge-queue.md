@@ -95,7 +95,7 @@ judge -[pass]-> done
 
 A repo's own pipeline can have any stages runs support, such as a check, a build and e2e, or a fix stage that commits to the queue branch. It lands the run's branch at `done`, and only if that branch descends from X and the last stage didn't fail.
 
-Two rules hold for every queue run, Kanna's pipeline or the repo's own. A `run` stage with no `within` has no time limit: `tasks.timeout`, which bounds a task's run, doesn't apply. A stage of a repo's own pipeline that has `within` and runs out of it ends the entry, whatever `fail` arrow leaves it.
+As in any run, a stage has no time limit unless it says `within` ([Kojo §3](kojo.md#3-attributes)). One rule is the queue's own: a stage of a repo's own pipeline that runs out of its `within` ends the entry, whatever `fail` arrow leaves it.
 
 To land, the queue checks that main is still M0 and runs `git merge --ff-only` in the main checkout, so main and the checkout's files move together. If main moved under the run, because you merged by hand or pulled, the entry runs again from the new main, up to 3 times, and then fails with `main kept moving`. If the main checkout has local changes to files the merge changes, the entry waits as `landing`, names the files, and tries again every 30 seconds and whenever the repo's refs change. The entries behind it wait too.
 
