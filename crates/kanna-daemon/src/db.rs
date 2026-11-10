@@ -592,11 +592,12 @@ impl Drop for Checkpoints {
 
 const CHECKPOINT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn checkpointing(path: PathBuf) -> Option<Checkpoints> {
+fn checkpointing(path: &Path) -> Option<Checkpoints> {
+    let conn = Connection::open(path).ok()?;
+    conn.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
+    conn.query_row("pragma schema_version", [], |_| Ok(())).ok()?;
     let (stop, stopping) = std::sync::mpsc::channel::<()>();
     let started = std::thread::Builder::new().name("kanna.checkpoint".into()).spawn(move || {
-        let Ok(conn) = Connection::open(&path) else { return };
-        let _ = conn.busy_timeout(std::time::Duration::from_secs(1));
         while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopping.recv_timeout(CHECKPOINT_EVERY) {
             let started = std::time::Instant::now();
             let _ = conn.query_row("pragma wal_checkpoint(passive)", [], |_| Ok(()));
@@ -718,8 +719,11 @@ impl Db {
         } else {
             let _ = fs::set_permissions(&backup, fs::Permissions::from_mode(0o600));
         }
-        if db.conn.path().is_some_and(|file| !file.is_empty()) && db.conn.pragma_update(None, "wal_autocheckpoint", 0).is_ok() {
-            db.checkpoints = checkpointing(path);
+        if db.conn.path().is_some_and(|file| !file.is_empty()) {
+            db.checkpoints = checkpointing(&path);
+            if db.checkpoints.is_some() {
+                let _ = db.conn.pragma_update(None, "wal_autocheckpoint", 0);
+            }
         }
         db
     }
@@ -1848,6 +1852,13 @@ mod tests {
         drop(db);
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn the_checkpoint_connection_is_open_before_the_database_is_handed_over() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-gone-{}", std::process::id()));
+        assert!(checkpointing(&dir.join(FILE)).is_none(), "a folder that's gone is known at once, not on the thread");
+    }
+
     use kanna_mux::json::json;
 
     fn folder(name: &str) -> PathBuf {

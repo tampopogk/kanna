@@ -36,6 +36,7 @@ impl Tasks {
             "since": num(q.doc.get("since").and_then(Value::as_f64).unwrap_or(q.queued_at)),
             "queuedAt": num(q.queued_at),
             "why": q.doc.get("why").cloned().unwrap_or(Value::Null),
+            "needs": q.doc.get("needs").cloned().unwrap_or(Value::Null),
             "after": opt(after.as_deref()),
             "afterName": opt(after.and_then(|a| self.known(&a)).and_then(|e| e.name).as_deref()),
             "by": q.doc.get("by").cloned().unwrap_or(Value::Null),
@@ -132,6 +133,16 @@ impl Tasks {
         self.tell_planner(&entry, What::MergeFailed, Some("queue"));
         self.changed();
         self.refill();
+    }
+
+    pub fn queue_needs(&self, id: &str, queue: &str, text: &str) {
+        let Some(entry) = self.known(id) else { return };
+        if self.planner_of(&entry.repo, &self.planners()).is_none() {
+            return log!("kanna-daemon: no planner runs for {}, so only the Merge queue tab says {queue} waits for you", entry.repo);
+        }
+        if let Err(error) = self.post(PLANNER, Some(&entry.repo), queue, text) {
+            log!("kanna-daemon: couldn't tell {}'s planner that {queue} waits for you: {}", entry.repo, error.message);
+        }
     }
 
     pub fn unqueue(&self, id: &str, by: Option<&str>) {

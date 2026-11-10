@@ -4,6 +4,6 @@
     "teardown": "\"$KANNA_REPO/scripts/teardown.sh\""
   },
   "merge": {
-    "test": "cargo test --workspace"
+    "test": "scripts/merge-test.sh"
   }
 }
