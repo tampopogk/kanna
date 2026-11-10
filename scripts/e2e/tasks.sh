@@ -136,7 +136,7 @@ print(" ".join(r["task"] + (":active" if r["active"] else "") + (":lit" if r["hi
   key cmd+.
   check wait_for 5 eval '[[ "$(desk page)" == True && "$(rows)" == "$first:active:lit $second $third" ]]' || { echo "desk_shelf: the active task moved in the Desk view"; rows; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$(tid 4)"'","window":"d1"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk note)" == *"3 tasks on the Desk"* ]]' || { desk note; return 1; }
+  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)." ]]' || { desk note; return 1; }
   stop_app; start_app || { echo "desk_shelf line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk lead)" == "$planner" ]]' || { echo "desk_shelf: the planning terminal didn't survive the app's restart"; kanna workspace list --all; return 1; }
   local refused; refused="$(raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"blank\",\"repo\":\"$repo\"}}")"
@@ -758,7 +758,7 @@ blocked_tasks() {
   check test "$(desk scroll.blocked.1.waits)" == '["Screenshot command", "Status fix"]' || { desk scroll.blocked; return 1; }
   sleep 0.5; snap "$w" blocked_tasks-blocked >/dev/null
   raw '{"id":1,"cmd":"debug.click","args":{"shelf":"'"$(tid 3)"'","window":"'"$w"'"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk note)" == *"waits for $(sid 1)"* ]]' || { echo "blocked_tasks: clicking a blocked row didn't say why"; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(desk note)" == "“Diff viewer” waits for “Screenshot command”: it can move once that'"'"'s done." ]]' || { echo "blocked_tasks: clicking a blocked row didn't say why"; desk note; return 1; }
   check test "$(desk running)" == 0 || { echo "blocked_tasks: clicking a blocked row started it"; return 1; }
   local started pane; started="$(kanna task pick $(tid 1))" && [[ "$started" =~ ^"moved $(sid 1) to the Desk: "(term-[0-9]+) ]] || { echo "blocked_tasks line $LINENO: $started"; return 1; }
   pane="${BASH_REMATCH[1]}"

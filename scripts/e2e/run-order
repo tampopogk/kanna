@@ -67,11 +67,13 @@ code_comment_box
 new_desk
 restored_panes_draw
 screenshot
+screenshot_hidden
 diagram_check
 bash_completion
 desk_scrolls
 desk_times
 shelf_search
+desk_keys
 task_start_stop
 task_quit_at_rest
 pick_at_once
@@ -98,6 +100,7 @@ desk_view_tab
 task_history
 quiz_results
 stats_tab
+stats_updating
 quiz_window
 scheduler
 schedules_tab
@@ -122,8 +125,10 @@ message_past_the_limit
 agent_messaging
 agent_too_old
 pipeline_run
+pipeline_stats
 pipeline_fanout
 pipeline_tab
+pipeline_revisions
 merge_queue
 pipeline_gates
 desk_news

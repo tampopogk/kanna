@@ -82,7 +82,16 @@ print(next((r.get(sys.argv[3]) for r in rows if r.get("name") == sys.argv[2]), "
   check test "$(phone machines notes | python3 -c 'import json, sys; r = json.load(sys.stdin); print(r["from"], [m for m in r["machines"] if m["name"] == "vm"][0]["version"] is not None)')" == "mbp True" || { echo "phone_machines: who answered: $(phone machines notes)"; return 1; }
 
   local stats; stats="$(phone stats notes)" || { echo "phone_machines: no stats: $stats"; return 1; }
-  check test "$(field project <<<"$stats")" == "$here" && check test "$(field sections.1.id <<<"$stats")" == main || { echo "phone_machines: the stats: $stats"; return 1; }
+  check test "$(field project <<<"$stats")" == "$here" || { echo "phone_machines: the stats: $stats"; return 1; }
+  check wait_for 10 eval '[[ "$(phone stats notes | field sections.1.id)" == main ]]' || { echo "phone_machines: the stats: $(phone stats notes)"; return 1; }
+  git -C "$here" -c user.email=e@e -c user.name=e commit -q --allow-empty -m moved || { echo "phone_machines line $LINENO"; return 1; }
+  phone listen 6 >"$KANNA_STATE_DIR/stats-notices" &
+  local listening=$!
+  sleep 1
+  phone stats notes >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
+  wait "$listening"
+  grep -q '"notice":"stats"' "$KANNA_STATE_DIR/stats-notices" || { echo "phone_machines: no stats notice for the new commit: $(cat "$KANNA_STATE_DIR/stats-notices")"; return 1; }
+  check test "$(phone stats notes | field status)" == None || { echo "phone_machines: the status stayed: $(phone stats notes)"; return 1; }
 
   phone send notes m1 "mock: run $me phone say first on mbp" >/dev/null || { echo "phone_machines line $LINENO"; return 1; }
   check wait_for 25 eval 'phone read notes | grep -q "first on mbp"' || { echo "phone_machines: no answer on mbp: $(phone read notes)"; return 1; }

@@ -51,6 +51,7 @@ flowchart LR
 | `tasks.setup` | none | A shell command run in a new task's worktree before its agent starts, once per worktree ([task scripts](task-scripts.md#2-setup)) |
 | `tasks.teardown` | none | A shell command run in a task's agent pane, in its worktree, when it's Done: the task is Done once it succeeds, and Kanna cleans it up ([task scripts](task-scripts.md#3-teardown-and-cleanup)) |
 | `tasks.timeout` | `600` | Seconds `tasks.setup` and `tasks.teardown` each get, from 1 to 86400, before Kanna stops them |
+| `pipelines.pricing` | none | Dollars per million tokens by model, for stages whose agent reports no cost ([pipeline metrics](pipeline-metrics.md#pricing)): `{"gpt-5": {"in": 2.5, "out": 10, "cached": 0.25}}`. In the repo's file or yours; read as a visit ends. |
 | `pipelines.agents` | none | The command each agent a [pipeline](software-factory.md)'s stages name runs as, when it isn't the agent's own name on your PATH: `{"claude": "~/bin/claude-wrapper"}`. Only `~/.kanna-v4/config.json` sets it: a repo's file that sets it is ignored and logged, so a cloned repo's pipeline can't make a run start a command. |
 | `pipelines.workers` | `3` | How many of a run's workers run at once (1 to 10): a fan-out's instances (`each`) and attempts (`xN by`) start as others end ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)). |
 

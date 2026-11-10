@@ -193,6 +193,8 @@ def stage_prompt(args):
 
 
 def stage(id, prompt):
+    if "--session-id" in sys.argv:
+        os.environ["KANNA_MOCK_SESSION"] = sys.argv[sys.argv.index("--session-id") + 1]
     saved(id)
     reported("working")
     said = []
