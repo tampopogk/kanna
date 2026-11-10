@@ -510,7 +510,8 @@ PY
   sleep 0.6
   red1="$(page_comments_red page_comments-red-zoomed)"; mark1="$(page_comments_web | field areas.c3)"
   [[ "$(page_comments_moved "$red0" "$red1" "$mark0" "$mark1")" == True* ]] || { echo "the mark should move with the page: red $red0 → $red1, mark $mark0 → $mark1: $(page_comments_moved "$red0" "$red1" "$mark0" "$mark1")"; return 1; }
-  raw '{"id":1,"cmd":"debug.pinch","args":{"pane":"page","at":[220,160],"steps":[0.15,0.1]}}' >/dev/null
+  local edge; edge="$(page_comments_web ',"js":"(() => { const r = document.getElementById(\"red\").getBoundingClientRect(), s = visualViewport.scale; return [Math.round((r.right - 8) * s), Math.round((r.top + r.height / 2) * s)]; })()"' | field value)"
+  raw "{\"id\":1,\"cmd\":\"debug.pinch\",\"args\":{\"pane\":\"page\",\"at\":$edge,\"steps\":[0.15,0.1]}}" >/dev/null
   sleep 0.6
   red1="$(page_comments_red page_comments-red-pinched)"; mark1="$(page_comments_web | field areas.c3)"
   [[ "$(page_comments_moved "$red0" "$red1" "$mark0" "$mark1")" == True* ]] || { echo "the mark should move with a pinch: red $red0 → $red1, mark $mark0 → $mark1"; return 1; }

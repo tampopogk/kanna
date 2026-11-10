@@ -29,7 +29,7 @@ Put a function `NAME()` in the area's file, with `scenario NAME MILESTONE` on th
 | `comments.sh` | comments and markup on docs, pages and code |
 | `panes.sh` | the other panes: web, iOS, code, file, diff, log, tours, serial |
 | `desk.sh` | the Desk, its window and docked pane, opening a project by path, recent projects |
-| `tasks.sh` | the Shelf and a task's life: start, stop, pick, restart, events, stacking, runners, scripts |
+| `tasks.sh` | the Shelf and a task's life: start, stop, pick, restart, events, stacking, runners, scripts, the merge queue |
 | `agents.sh` | agents and planners, real and mock: status, sending, messages, resuming |
 | `perf.sh` | speed bounds |
 | `stats.sh` | the Stats tab and the quiz |

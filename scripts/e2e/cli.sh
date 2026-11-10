@@ -145,28 +145,6 @@ png_size() { python3 -c 'import struct, sys
 d = open(sys.argv[1], "rb").read(24)
 assert d[:8] == b"\x89PNG\r\n\x1a\n"
 print("%dx%d" % struct.unpack(">II", d[16:24]))' "$1"; }
-png_ink() { python3 -c 'import struct, sys, zlib, collections
-d = open(sys.argv[1], "rb").read(); i = 8; idat = b""
-while i < len(d):
-    n, kind = struct.unpack(">I4s", d[i:i + 8]); body = d[i + 8:i + 8 + n]; i += 12 + n
-    if kind == b"IHDR": w, h, depth, color = struct.unpack(">IIBB", body[:10])
-    if kind == b"IDAT": idat += body
-assert depth == 8 and color in (2, 6)
-bpp = 3 if color == 2 else 4; raw = zlib.decompress(idat); stride = w * bpp; prev = bytearray(stride); rows = []
-for y in range(h):
-    f = raw[y * (stride + 1)]; line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
-    for x in range(stride):
-        a = line[x - bpp] if x >= bpp else 0; b = prev[x]; c = prev[x - bpp] if x >= bpp else 0
-        if f == 1: line[x] = (line[x] + a) & 255
-        elif f == 2: line[x] = (line[x] + b) & 255
-        elif f == 3: line[x] = (line[x] + (a + b) // 2) & 255
-        elif f == 4:
-            p = a + b - c; pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-            line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
-    rows.append(line); prev = line
-px = [tuple(r[x:x + 3]) for r in rows[::2] for x in range(0, stride, bpp * 2)]
-bg = collections.Counter(px).most_common(1)[0][0]
-print(round(sum(1 for p in px if sum(abs(p[k] - bg[k]) for k in range(3)) > 60) / len(px), 4))' "$1"; }
 
 scenario screenshot M4
 screenshot() {
@@ -219,6 +197,23 @@ bash_completion() {
   kanna send bash_completion 'echo "bash_completion:$(complete -p kanna):${PROMPT_COMMAND-none}:${KANNA_BASH_INIT-gone}"' || return 1
   check wait_for 5 shows bash_completion 'bash_completion:complete -o filenames -F _kanna kanna:'
   kanna read bash_completion | grep -E '^bash_completion:' | grep -qF ':gone' || { kanna read bash_completion | tail -4; return 1; }
+}
+
+scenario cli_per_instance M4
+cli_per_instance() {
+  local zdot="$KANNA_STATE_DIR/zdot" other="$KANNA_STATE_DIR/other/bin" line='[[ -n $KANNA_CLI ]] && path=(${KANNA_CLI:h} $path)'
+  mkdir -p "$zdot" "$other" && printf '#!/bin/sh\necho another kanna\n' >"$other/kanna" && chmod +x "$other/kanna" || { echo "cli_per_instance line $LINENO"; return 1; }
+  printf 'path=(%q $path)\n%s\n' "$other" "$line" >"$zdot/.zprofile"
+  printf 'path=(%q $path)\n%s\n' "$other" "$line" >"$zdot/.zshrc"
+  SHELL=/bin/zsh ZDOTDIR="$zdot" start_daemon || { echo "cli_per_instance line $LINENO"; return 1; }
+  kanna open --window new --name cli_per_instance >/dev/null || return 1
+  kanna send cli_per_instance 'echo "cli=$KANNA_CLI="; echo "which=$(which kanna)="; echo "first=$path[1]= second=$path[2]="' || return 1
+  check wait_for 5 unwrapped cli_per_instance "cli=$bin/kanna=" || { echo "cli_per_instance: KANNA_CLI isn't the instance's CLI"; kanna read cli_per_instance; return 1; }
+  check wait_for 5 unwrapped cli_per_instance "which=$bin/kanna=" || { echo "cli_per_instance: plain kanna isn't the instance's"; kanna read cli_per_instance; return 1; }
+  check unwrapped cli_per_instance "first=$bin= second=$other=" || { echo "cli_per_instance: another kanna wasn't earlier on PATH before the line"; kanna read cli_per_instance; return 1; }
+  kanna open --window win-1 --name cli_per_instance-cmd --cmd 'echo "cmd=$(which kanna)="; exec cat' >/dev/null || return 1
+  check wait_for 5 unwrapped cli_per_instance-cmd "cmd=$bin/kanna=" || { echo "cli_per_instance: a command pane's kanna isn't the instance's"; kanna read cli_per_instance-cmd; return 1; }
+  return 0
 }
 
 scenario cli_caller M4

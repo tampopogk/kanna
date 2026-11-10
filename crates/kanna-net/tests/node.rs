@@ -271,6 +271,26 @@ async fn an_app_certified_by_a_paired_machine_holds_a_link_until_its_machine_is_
 
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_phone_skips_a_relay_saved_as_an_address_and_dials_again_after_forgetting_a_link() {
+    let (mbp, _) = machine("mbp", json!({})).await;
+    let (vm, _) = machine("linux-vm", json!({})).await;
+    pair(&mbp, &vm).await.unwrap();
+    let client = Client::start_phone(SecretKey::generate()).await.unwrap();
+    let cert = mbp.certify(&client.key()).unwrap();
+    let addrs = ["relay:https://relay.example.com:8444/".to_string(), format!("127.0.0.1:{}", vm.port())];
+
+    let began = std::time::Instant::now();
+    let _first = client.link(&vm.key(), &addrs, None, &cert).await.unwrap();
+    assert!(began.elapsed() < std::time::Duration::from_secs(2), "a relay's URL was looked up as a host: {:?}", began.elapsed());
+    assert!(!client.path(&vm.key()).is_null());
+
+    client.forget(&vm.key());
+    assert!(client.path(&vm.key()).is_null());
+    let _second = client.link(&vm.key(), &addrs, None, &cert).await.unwrap();
+    assert!(!client.path(&vm.key()).is_null());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_port_on_a_paired_machines_loopback_opens_on_the_apps_loopback_until_its_machine_is_revoked() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (mbp, _) = machine("mbp", json!({})).await;

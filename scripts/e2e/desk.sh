@@ -456,6 +456,64 @@ new_desk() {
   check wait_for 5 eval '[[ "$(desk responder d2)" == TerminalSurfaceView ]]' || { echo "new_desk: New Desk's keyboard is on $(desk responder d2), not the planning terminal"; return 1; }
 }
 
+scenario restored_panes_draw M4
+restored_panes_draw() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" dir="$KANNA_STATE_DIR/restored" shots="$KANNA_STATE_DIR/restored-shots"
+  local planner task round kind blank
+  mkdir -p "$repo" "$dir" "$shots" && shots="$(cd "$shots" && pwd -P)"
+  git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || return 1
+  repo="$(cd "$repo" && pwd -P)"
+  drawn_app() { env -u KANNA_IGNORE_OCCLUSION -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 & app_pid=$!; wait_for 10 app_attached; }
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  drawn() {
+    kanna screenshot "$1" -o "$shots/$1-$2.png" --force >/dev/null 2>&1 || return 1
+    python3 -c 'import sys; assert float(sys.argv[1]) > 0.003' "$(png_ink "$shots/$1-$2.png")" 2>/dev/null || return 1
+    [[ "$1" != planned && "$1" != plain && "$1" != mermaid ]] || raw '{"id":1,"cmd":"debug.md","args":{"pane":"'"$1"'"}}' | field text | grep -q "restored_panes_draw $1"
+  }
+  start_daemon && drawn_app || return 1
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { kanna workspace list --all; return 1; }
+  planner="$(desk lead)"
+  printf '# restored_panes_draw planned\n\n```mermaid\nflowchart LR\n    a[planned one] --> b[planned two]\n```\n' >"$repo/planned.md"
+  printf '# restored_panes_draw plain\n\nSome text to draw.\n' >"$dir/plain.md"
+  printf '# restored_panes_draw mermaid\n\n```mermaid\nflowchart LR\n    a[restored one] --> b[restored two]\n```\n\nText after it.\n' >"$dir/mermaid.md"
+  printf '<title>restored_panes_draw</title><body style="background:#fff"><h1 style="font-size:80px">restored_panes_draw WEB</h1></body>\n' >"$dir/page.html"
+  for i in $(seq 60); do echo "fn f$i() -> u32 { $i }"; done >"$dir/a.rs"
+  git -C "$dir" init -q -b main && git -C "$dir" add a.rs && git -C "$dir" -c user.email=e@e -c user.name=e commit -qm first || return 1
+  sed -i '' 's/{ 5 }/{ 500 }/' "$dir/a.rs"
+  KANNA_TERMINAL="$planner" kanna open md "$repo/planned.md" --tab --name planned >/dev/null || return 1
+  kanna open --window new md "$dir/plain.md" --name plain >/dev/null || return 1
+  kanna open --window new md "$dir/mermaid.md" --name mermaid >/dev/null || return 1
+  kanna open --window new web "file://$dir/page.html" --name page >/dev/null || return 1
+  kanna open --window new code "$dir/a.rs" --name source >/dev/null || return 1
+  (cd "$dir" && kanna open --window new diff --name changes >/dev/null) || return 1
+  for kind in planned plain mermaid page source changes; do
+    check wait_for 10 drawn "$kind" before || { cp "$shots"/*.png "$out/" 2>/dev/null; echo "restored_panes_draw: $kind doesn't draw at first"; return 1; }
+  done
+  (cd "$repo" && KANNA_TERMINAL="$planner" kanna task new "Elsewhere" "hello") >/dev/null || return 1
+  task="$(tid 1)"
+  (cd "$repo" && kanna task pick "$task" && kanna task activate "$task") >/dev/null || return 1
+  check wait_for 10 eval '[[ "$(desk window.dock)" != None ]]' || return 1
+  for round in layout app both; do
+    case "$round" in
+      layout) kanna open --window new --name nudge >/dev/null && kanna close nudge >/dev/null || return 1 ;;
+      app) stop_app; drawn_app || return 1 ;;
+      both) stop_app; stop_daemon; start_daemon && drawn_app || return 1 ;;
+    esac
+    sleep 1
+    (cd "$repo" && kanna task park "$task") >/dev/null || return 1
+    check wait_for 10 eval '[[ "$(desk window.dock)" == None ]]' || return 1
+    raw '{"id":1,"cmd":"debug.click","args":{"tab":"'"$(desk window.tab)"'"}}' >/dev/null
+    blank=()
+    for kind in planned plain mermaid page source changes; do
+      wait_for 10 drawn "$kind" "$round" || blank+=("$kind")
+    done
+    cp "$shots"/*.png "$out/" 2>/dev/null
+    [[ ${#blank[@]} -eq 0 ]] || { echo "restored_panes_draw: after the $round round these don't draw: ${blank[*]}"; kanna screenshot --window d1 -o "$out/restored_panes_draw-d1.png" --force >/dev/null; return 1; }
+    (cd "$repo" && kanna task activate "$task") >/dev/null || return 1
+    check wait_for 10 eval '[[ "$(desk window.dock)" != None ]]' || return 1
+  done
+}
+
 scenario desk_scrolls M4
 desk_scrolls() {
   local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
@@ -791,4 +849,23 @@ restart_while_desk_opens() {
   check wait_for 15 eval '[[ "$(cat "$KANNA_STATE_DIR/daemon.pid")" != "$daemon" ]] && app_attached' || { echo "restart_while_desk_opens: the app didn't start the next daemon"; return 1; }
   check wait_for 20 shows "$planner" "No agent Kanna knows is installed" || { echo "restart_while_desk_opens: the planning terminal didn't get past agent setup"; kanna read "$planner"; return 1; }
   ! shows "$planner" "nothing answers" || { echo "restart_while_desk_opens: the planning terminal ran while nothing answered"; kanna read "$planner"; return 1; }
+}
+
+scenario desk_planner_keeper_lost M4
+desk_planner_keeper_lost() {
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon && start_app || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  (cd "$repo" && kanna .) >/dev/null || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { kanna workspace list --all; return 1; }
+  local planner keeper; planner="$(desk lead)"; keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
+  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "desk_planner_keeper_lost: $keeper isn't this run's keeper"; return 1; }
+  stop_app; stop_daemon
+  kill "$keeper"
+  check wait_for 5 eval '! kill -0 $keeper' || { echo "desk_planner_keeper_lost: this run's keeper didn't stop"; return 1; }
+  start_daemon && start_app || { echo "desk_planner_keeper_lost line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ "$(desk lead)" == term-* ]] && is "$(desk lead)" state running' || { echo "desk_planner_keeper_lost: the Desk got no running planner: $(desk lead)"; kanna workspace list --all; return 1; }
+  check test "$(desk lead)" != "$planner" || { echo "desk_planner_keeper_lost: the lost pane came back"; return 1; }
 }

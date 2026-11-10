@@ -428,6 +428,29 @@ near() { python3 -c 'import sys
 a, b = (bytes.fromhex(x.lstrip("#")) for x in sys.argv[1:3])
 sys.exit(0 if max(abs(x - y) for x, y in zip(a, b)) <= 16 else 1)' "$1" "$2"; }
 
+png_ink() { python3 -c 'import struct, sys, zlib, collections
+d = open(sys.argv[1], "rb").read(); i = 8; idat = b""
+while i < len(d):
+    n, kind = struct.unpack(">I4s", d[i:i + 8]); body = d[i + 8:i + 8 + n]; i += 12 + n
+    if kind == b"IHDR": w, h, depth, color = struct.unpack(">IIBB", body[:10])
+    if kind == b"IDAT": idat += body
+assert depth == 8 and color in (2, 6)
+bpp = 3 if color == 2 else 4; raw = zlib.decompress(idat); stride = w * bpp; prev = bytearray(stride); rows = []
+for y in range(h):
+    f = raw[y * (stride + 1)]; line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+    for x in range(stride):
+        a = line[x - bpp] if x >= bpp else 0; b = prev[x]; c = prev[x - bpp] if x >= bpp else 0
+        if f == 1: line[x] = (line[x] + a) & 255
+        elif f == 2: line[x] = (line[x] + b) & 255
+        elif f == 3: line[x] = (line[x] + (a + b) // 2) & 255
+        elif f == 4:
+            p = a + b - c; pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+    rows.append(line); prev = line
+px = [tuple(r[x:x + 3]) for r in rows[::2] for x in range(0, stride, bpp * 2)]
+bg = collections.Counter(px).most_common(1)[0][0]
+print(round(sum(1 for p in px if sum(abs(p[k] - bg[k]) for k in range(3)) > 60) / len(px), 4))' "$1"; }
+
 phone() { "$rust_dir/phone-client" "$phone_dir" "$@"; }
 
 machine_paired_vm() {

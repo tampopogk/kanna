@@ -401,4 +401,16 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   raw "{\"id\":1,\"cmd\":\"tasks\",\"args\":{\"action\":\"let-go\",\"task\":\"$planner\"}}" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check test "$(phone_place)" == daemon || { echo "phone_chat: closing the Desk ended the planner: $(phone_place)"; return 1; }
   check test "$(phone_planner)" == "$planner" || { echo "phone_chat: the planner changed when its window closed"; return 1; }
+  local keeper; keeper="$(cat "$KANNA_STATE_DIR/keeper.pid")"
+  [[ "$keeper" =~ ^[0-9]+$ ]] && [[ "$(ps -o command= -p "$keeper")" == *"$KANNA_STATE_DIR"* ]] || { echo "phone_chat: $keeper isn't this run's keeper"; return 1; }
+  stop_daemon
+  kill "$keeper"
+  check wait_for 5 eval '! kill -0 $keeper' || { echo "phone_chat: this run's keeper didn't stop"; return 1; }
+  KANNA_MACHINE_PORT="$(head -1 "$KANNA_STATE_DIR/offer" | field port)" KANNA_PLANNING_AGENTS="$phone_fake/$1" start_daemon || { echo "phone_chat line $LINENO"; return 1; }
+  check test "$(phone_place)" == "" || { echo "phone_chat: a planner with no terminal came back: $(kanna workspace list --all --json | cut -c1-500)"; return 1; }
+  check phone status repo not_running 10 >/dev/null || { echo "phone_chat: a planner lost with its keeper still shows: $(phone hello | cut -c1-500)"; return 1; }
+  local answered; answered="$(phone read repo | grep -c '"text":"back from the keeper')"
+  phone send repo m7 "mock: run $me phone say back from the keeper" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  check wait_for 40 eval '[[ "$(phone read repo | grep -c "\"text\":\"back from the keeper")" -gt $answered ]]' || { echo "phone_chat: no answer after the keeper died: $(phone read repo | tail -3 | cut -c1-400); $(kanna workspace list --all | tail -5)"; return 1; }
+  check test "$(phone_place)" == daemon || { echo "phone_chat: the new planner isn't windowless: $(phone_place)"; return 1; }
 }

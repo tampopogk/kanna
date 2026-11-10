@@ -65,6 +65,7 @@ code_tour
 code_tour_steps
 code_comment_box
 new_desk
+restored_panes_draw
 screenshot
 diagram_check
 bash_completion
@@ -102,6 +103,7 @@ schedules_tab
 task_events
 daemon_upgrade
 login_shell
+cli_per_instance
 planner_choice
 real_agent_planners
 planner_resumes
@@ -119,6 +121,8 @@ message_past_the_limit
 agent_messaging
 agent_too_old
 pipeline_run
+merge_queue
+pipeline_gates
 desk_news
 task_scripts
 pane_sizes
@@ -133,11 +137,13 @@ phone_shelf
 phone_relay
 phone_chat_codex
 phone_quiz
+desk_planner_keeper_lost
 machine_two_apps
 machine_remote_task
 machine_task_by_id
 project_import
 machine_shelf_order
+machine_granted_shelf
 machine_remote_files
 machine_remote_web
 remote_workspace

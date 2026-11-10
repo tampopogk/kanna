@@ -131,7 +131,7 @@ machine_remote_task() {
 
   raw '{"id":1,"cmd":"debug.click","args":{"deskView":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk empty)" == True && "$(desk page)" == True ]]' || { echo "machine_remote_task: parking didn't show the Desk view"; desk empty; desk page; return 1; }
-  check test "$(desk pages)" == '["Desk", "Machines", "Stats", "Schedules"]' || { echo "machine_remote_task: the empty Desk's fixed tabs"; desk pages; return 1; }
+  check test "$(desk pages)" == '["Desk", "Machines", "Stats", "Schedules", "Merge queue"]' || { echo "machine_remote_task: the empty Desk's fixed tabs"; desk pages; return 1; }
   raw '{"id":1,"cmd":"debug.click","args":{"page":"Machines","window":"d1"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk machinesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: the Machines tab didn't show the Machines page"; return 1; }
   check python3 -c 'import json, sys
@@ -148,9 +148,13 @@ assert "local network" in rows[1]["tip"], rows' "$(desk machines)" || return 1
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk schedulesPage)" == True && "$(desk statsPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Stats tab didn't show the Schedules tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk schedulesPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Schedules tab didn't wrap to the Shelf tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk queuePage)" == True && "$(desk schedulesPage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Schedules tab didn't show the Merge queue tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Next Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk queuePage)" == False ]]' || { echo "machine_remote_task: Next Tab from the Merge queue tab didn't wrap to the Shelf tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk schedulesPage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Shelf tab didn't show the Schedules tab"; return 1; }
+  check wait_for 5 eval '[[ "$(desk queuePage)" == True && "$(desk page)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Shelf tab didn't show the Merge queue tab"; return 1; }
+  raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
+  check wait_for 5 eval '[[ "$(desk schedulesPage)" == True && "$(desk queuePage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Merge queue tab didn't show the Schedules tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
   check wait_for 5 eval '[[ "$(desk statsPage)" == True && "$(desk schedulesPage)" == False ]]' || { echo "machine_remote_task: Previous Tab from the Schedules tab didn't show the Stats tab"; return 1; }
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Previous Tab"}}' >/dev/null
@@ -310,6 +314,39 @@ machine_shelf_order() {
   check wait_for 10 eval '(cd "$repo" && kanna task list) | grep -q "VM second.* on vm"' || { echo "machine_shelf_order: kanna task list doesn't keep vm's tasks in their own section"; (cd "$repo" && kanna task list); return 1; }
 }
 
+scenario machine_granted_shelf M4
+machine_granted_shelf() {
+  local vm vm_pid
+  machine_vm machine_granted_shelf || return 1
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/notes"
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first && git -C "$repo" remote add origin https://example.com/team/notes.git || { echo "machine_granted_shelf line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  local opened; opened="$(cd / && kanna "$repo")" && [[ "$opened" == "opened d1 on $repo" ]] || { echo "machine_granted_shelf: a Desk on the project: $opened"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  vmshelf() { vmk task list --all --json | python3 -c 'import json, sys; print(" ".join(t["id"] for t in json.load(sys.stdin)["shelf"]))'; }
+  (cd "$repo" && kanna task new "Granted first" --on vm) >/dev/null || { echo "machine_granted_shelf line $LINENO"; return 1; }
+  local first; first="$(tid 1)"
+  check wait_for 10 eval '[[ "$(desk shelf)" == "[\"$first\"]" ]]' || { echo "machine_granted_shelf: the Desk view's Shelf doesn't list this Mac's task"; desk shelf; return 1; }
+  machine_runners 2
+  check wait_for 30 eval '[[ "$(vmshelf)" == "$first" ]]' || { echo "machine_granted_shelf: vm wasn't granted the task"; vmshelf; tail -20 "$out/daemon-vm.log"; return 1; }
+  check wait_for 10 eval '[[ "$(desk shelf)" == "[\"$first@vm\"]" ]]' || { echo "machine_granted_shelf: a task granted to vm isn't on the Desk view's Shelf as vm's"; desk shelf; return 1; }
+
+  local port; port="$(vmk machine list --json | field port)"
+  kill "$vm_pid"; wait_for 10 eval '! kill -0 '"$vm_pid" || { echo "machine_granted_shelf: vm's daemon didn't stop"; return 1; }
+  check wait_for 10 eval '[[ "$(machines links.0.attached)" == False ]]' || { echo "machine_granted_shelf: the app didn't see vm go"; return 1; }
+  KANNA_SOCKET="$vm/kanna.sock" KANNA_STATE_DIR="$vm/state" KANNA_KEEPER="$bin/kanna-keeper" "$bin/kanna-daemon" >>"$out/daemon-vm.log" 2>&1 &
+  vm_pid=$!
+  check wait_for 5 test -S "$vm/kanna.sock" || { echo "machine_granted_shelf: vm's daemon didn't start again"; return 1; }
+  [[ "$(vmk machine list --json | field port)" != "$port" ]] || { echo "machine_granted_shelf: vm came back on its old port $port"; return 1; }
+  check wait_for 30 eval '[[ "$(machines links.0.attached)" == True ]]' || { echo "machine_granted_shelf: the app didn't link to vm again"; raw '{"id":1,"cmd":"debug.machines"}'; return 1; }
+
+  (cd "$repo" && kanna task new "Granted after the restart" --on vm) >/dev/null || { echo "machine_granted_shelf line $LINENO"; return 1; }
+  local second; second="$(tid 2)"
+  check wait_for 30 eval '[[ "$(vmshelf)" == "$first $second" ]]' || { echo "machine_granted_shelf: vm wasn't granted the second task"; vmshelf; tail -20 "$out/daemon-vm.log"; return 1; }
+  check wait_for 10 eval '[[ "$(desk shelf)" == "[\"$first@vm\", \"$second@vm\"]" ]]' || { echo "machine_granted_shelf: a task granted to vm after its daemon restarted isn't on the Desk view's Shelf"; desk shelf; return 1; }
+  sleep 0.5; snap d1 machine_granted_shelf >/dev/null
+}
+
 scenario machine_remote_files M4
 machine_remote_files() {
   local vm vm_pid
@@ -411,7 +448,8 @@ machine_remote_web() {
   local local_port; local_port="$(tunnel)"
   [[ "$local_port" != "$port" ]] || { echo "machine_remote_web: the tunnel listens on the dev server's own port"; return 1; }
   check wait_for 10 eval 'web text | grep -q "hello from vm"' || { echo "machine_remote_web: the web pane didn't load vm's dev server"; web url; web text; return 1; }
-  check test "$(web url)" == "http://127.0.0.1:$local_port/" || { echo "machine_remote_web: the web pane isn't on this Mac's loopback"; web url; return 1; }
+  check test "$(web loaded)" == "http://127.0.0.1:$local_port/" || { echo "machine_remote_web: the web pane isn't on this Mac's loopback"; web loaded; return 1; }
+  check test "$(web url)" == "http://localhost:$port/" || { echo "machine_remote_web: the web pane doesn't report the dev server's own URL"; web url; return 1; }
   check web text | grep -q "served for 127.0.0.1:$local_port" || { echo "machine_remote_web: the dev server didn't see a localhost Host"; web text; return 1; }
   check wait_for 10 eval 'web text | grep -qx connected' || { echo "machine_remote_web: the page's HMR socket didn't connect"; web text; return 1; }
   vmurl() { KANNA_SOCKET="$vm/kanna.sock" pane devpage url; }
