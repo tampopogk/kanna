@@ -2022,6 +2022,16 @@ impl Tasks {
         }
     }
 
+    pub fn stopped_on_shelf(&self) -> Vec<Value> {
+        let Some(core) = self.core.upgrade() else { return vec![] };
+        self.entries
+            .borrow()
+            .iter()
+            .filter(|e| e.held.as_deref().is_none_or(|pane| !alive(&core, pane)))
+            .filter_map(|e| e.workspace.as_ref().map(|ws| json!({ "workspace": ws, "task": e.id, "name": opt(e.name.as_deref()) })))
+            .collect()
+    }
+
     pub fn refs(&self) -> Vec<kanna_log::TaskRef> {
         let worktree = |e: &Entry| e.folder.clone().unwrap_or_else(|| Path::new(&e.repo).join(WORKTREES).join(&e.id).to_string_lossy().into_owned());
         let open = |e: &Entry, place: Place| kanna_log::TaskRef { id: e.id.clone(), name: e.name.clone(), place: place.as_str().into(), repo: e.repo.clone(), worktree: Some(worktree(e)), branch: None, tip: None };

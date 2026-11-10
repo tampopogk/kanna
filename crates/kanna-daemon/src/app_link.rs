@@ -712,6 +712,11 @@ impl AppLink {
                 self.serial.unsubscribe(&view);
                 return None;
             }
+            ("terminal.picture", _) => {
+                let reply = self.terminals.picture(string(&args, "terminal").unwrap_or_default());
+                self.answer_subscribe(conn, &message, reply);
+                return None;
+            }
             ("file.unsubscribe", Some(view)) => {
                 self.files.unsubscribe(&view);
                 return None;

@@ -767,11 +767,15 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shelved = Rc::downgrade(&tasks);
     let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
-        Rc::new(move |args, responder| {
+        Rc::new(move |mut args, responder| {
             if let Some(link) = screenshot.upgrade() {
+                if args.get("pane").is_some() {
+                    args["stopped"] = Value::Array(shelved.upgrade().map(|tasks| tasks.stopped_on_shelf()).unwrap_or_default());
+                }
                 screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
