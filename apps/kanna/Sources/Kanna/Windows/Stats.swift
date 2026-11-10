@@ -12,15 +12,26 @@ extension AppController {
             guard let self, let controller else { return }
             loadStats(controller)
         }
-        if controller.stats?.project != path { controller.stats = nil }
+        if controller.statsRoot != root {
+            controller.statsRoot = root
+            controller.stats = nil
+        }
         request("stats", ["repo": .string(path), "days": .number(Double(controller.statsPage.runDays))], on: .some(machine)) { [weak self, weak controller] reply in
             guard let self, let controller, controller.projectRoot == root, let report = StatsReport(reply) else { return }
-            controller.stats = report
+            controller.stats = report.keeping(controller.stats)
             if controller.shownPage == WindowController.pages[3] { redraw(controller) }
         }
         guard statsTimer == nil else { return }
         statsTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshStats() }
+        }
+    }
+
+    func statsChanged(_ repo: String, on machine: String?) {
+        for controller in controllers.values where controller.shownPage == WindowController.pages[3] {
+            guard let root = controller.projectRoot else { continue }
+            let (owner, path) = MachineIDs.split(location: root)
+            if owner == machine, (controller.stats?.project ?? path) == repo || path == repo { loadStats(controller) }
         }
     }
 

@@ -26,6 +26,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     var builds: [BuildMac] = []
     var queue: [QueueEntry]?
     var stats: StatsReport?
+    var statsRoot: String?
     var schedules: [ScheduleRow]?
     var schedulesRepo: String?
     var page: String?

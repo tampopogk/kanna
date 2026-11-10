@@ -123,11 +123,20 @@ struct StatsSection: Equatable {
 struct StatsReport: Equatable {
     let project: String
     let days: [String]
-    let sections: [StatsSection]
+    let status: String?
+    private(set) var sections: [StatsSection]
+
+    func keeping(_ shown: StatsReport?) -> StatsReport {
+        guard sections.isEmpty, let shown, !shown.sections.isEmpty else { return self }
+        var kept = self
+        kept.sections = shown.sections
+        return kept
+    }
 
     init?(_ json: JSON) {
         guard let sections = json["sections"]?.array else { return nil }
         project = json["project"]?.string ?? ""
+        status = json["status"]?.string
         days = (json["days"]?.array ?? []).compactMap(\.string)
         self.sections = sections.map { section in
             StatsSection(id: section["id"]?.string ?? "", title: section["title"]?.string ?? "", note: section["note"]?.string ?? "", empty: section["empty"]?.string,
@@ -191,6 +200,10 @@ final class StatsPage: NSView {
     private(set) var hiddenPipelines: Set<String> = []
     private(set) var tableView = false
     private var tables: [String: StatsTable] = [:]
+    private var statusLine: NSTextField?
+    private(set) var loadings = 0
+
+    var shownStatus: String? { statusLine.flatMap { $0.isHidden ? nil : $0.stringValue } }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -215,9 +228,15 @@ final class StatsPage: NSView {
 
     func show(_ report: StatsReport?, project: String) {
         guard report != self.report || project != location else { return }
+        let sameNumbers = project == location && report?.days == self.report?.days && report?.sections == self.report?.sections
         self.report = report
         location = project
-        lay()
+        if sameNumbers, let statusLine {
+            statusLine.stringValue = report?.status ?? ""
+            statusLine.isHidden = report?.status == nil
+        } else {
+            lay()
+        }
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
@@ -257,7 +276,12 @@ final class StatsPage: NSView {
         let sub = label("\(location) · main · last 30 days", size: 13, color: .secondaryLabelColor)
         sub.frame = NSRect(x: left, y: y, width: width, height: sub.frame.height)
         y += sub.frame.height
-        guard let report else {
+        let status = label(report?.status ?? "", color: .secondaryLabelColor)
+        status.frame = NSRect(x: left, y: y + 6, width: width, height: status.frame.height)
+        status.isHidden = report?.status == nil
+        statusLine = status
+        guard let report, !report.sections.isEmpty else {
+            loadings += 1
             y += 26
             label("Loading…", color: .secondaryLabelColor).frame.origin = NSPoint(x: left, y: y)
             finish(y + 40)
