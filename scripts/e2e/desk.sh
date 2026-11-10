@@ -636,6 +636,60 @@ desk_zoom() {
   stop_agents
 }
 
+scenario desk_view_tab M4
+desk_view_tab() {
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" planner task
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "desk_view_tab line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "desk_view_tab line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"d1\"}}" | field "$1"; }
+  page() { raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"page\":\"$1\",\"window\":\"d1\"}}" >/dev/null; check wait_for 5 eval '[[ "$(desk shownPage)" == "'"$1"'" ]]'; }
+  to_task() { kanna task activate "Tab task" >/dev/null && check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$task" ]]'; }
+  to_desk() { key "cmd+."; check wait_for 5 eval '[[ "$(dwin d1 dock)" == None ]]'; }
+  check wait_for 10 eval '[[ "$(desk lead)" == term-* ]]' || { echo "desk_view_tab: no planning terminal"; kanna workspace list --all; return 1; }
+  planner="$(desk lead)"
+  check test "$(desk shownPage)" == Desk || { echo "desk_view_tab: a fresh Desk shows $(desk shownPage)"; return 1; }
+  (cd "$repo" && kanna task new "Tab task" "hello" --agent "$agent") >/dev/null && kanna task pick $(tid 1) >/dev/null || { echo "desk_view_tab line $LINENO"; return 1; }
+  kanna task activate "Tab task" >/dev/null && check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == term-* ]]' || { echo "desk_view_tab line $LINENO"; return 1; }
+  task="$(dwin d1 dock.pane)"
+  to_desk || { echo "desk_view_tab line $LINENO"; return 1; }
+  check test "$(desk shownPage)" == Desk || { echo "desk_view_tab: ⌘. into a Desk view that chose no tab shows $(desk shownPage)"; return 1; }
+  page "Merge queue" || { echo "desk_view_tab: clicking the Merge queue tab shows $(desk shownPage)"; return 1; }
+  to_task && to_desk || { echo "desk_view_tab line $LINENO"; return 1; }
+  check test "$(desk shownPage):$(desk queuePage)" == "Merge queue:True" || { echo "desk_view_tab: ⌘. came back to $(desk shownPage), not the Merge queue tab"; return 1; }
+  to_task && KANNA_TERMINAL="$task" kanna task park >/dev/null && check wait_for 5 eval '[[ "$(dwin d1 dock)" == None ]]' || { echo "desk_view_tab line $LINENO"; return 1; }
+  check test "$(desk shownPage)" == "Merge queue" || { echo "desk_view_tab: kanna task park came back to $(desk shownPage)"; return 1; }
+  sleep 1; stop_app; start_app || { echo "desk_view_tab line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk shownPage)" == "Merge queue" ]]' || { echo "desk_view_tab: a relaunch in the Desk view shows $(desk shownPage)"; return 1; }
+  to_task || { echo "desk_view_tab line $LINENO"; return 1; }
+  sleep 1; stop_app; start_app || { echo "desk_view_tab line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(dwin d1 dock.pane)" == "$task" ]]' && to_desk || { echo "desk_view_tab line $LINENO"; return 1; }
+  check test "$(desk shownPage)" == "Merge queue" || { echo "desk_view_tab: ⌘. after a relaunch in the task shows $(desk shownPage)"; return 1; }
+  printf '# beside the planner\n' >"$KANNA_STATE_DIR/beside.md"
+  KANNA_TERMINAL="$planner" kanna open md "$KANNA_STATE_DIR/beside.md" --tab --name beside >/dev/null || { echo "desk_view_tab line $LINENO"; return 1; }
+  local doc; doc="$(pane beside id)"
+  planner_tab() { [[ "$(desk shownPage)" == None && "$(dwin d1 tabs.0.panes)" == "[\"$1\"]" && "$(dwin d1 tab)" == "$(dwin d1 tabs.0.id)" ]]; }
+  check wait_for 5 planner_tab "$doc" || { echo "desk_view_tab: the planner's tab doesn't show: $(desk shownPage)"; return 1; }
+  to_task && to_desk || { echo "desk_view_tab line $LINENO"; return 1; }
+  check planner_tab "$doc" || { echo "desk_view_tab: ⌘. came back to $(desk shownPage), not the planner's tab"; return 1; }
+  to_task || { echo "desk_view_tab line $LINENO"; return 1; }
+  sleep 1; stop_app; start_app || { echo "desk_view_tab line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(dwin d1 dock.pane)" == "$task" ]]' && to_desk || { echo "desk_view_tab line $LINENO"; return 1; }
+  check planner_tab "$doc" || { echo "desk_view_tab: ⌘. after a relaunch shows $(desk shownPage), not the planner's tab"; return 1; }
+  to_task && kanna close "$doc" >/dev/null && to_desk || { echo "desk_view_tab line $LINENO"; return 1; }
+  check test "$(desk shownPage):$(desk page)" == "Desk:True" || { echo "desk_view_tab: with its tab closed the Desk view shows $(desk shownPage)"; return 1; }
+  page Stats || { echo "desk_view_tab line $LINENO"; return 1; }
+  to_task && KANNA_TERMINAL="$planner" kanna open md "$KANNA_STATE_DIR/beside.md" --tab --name later >/dev/null && to_desk || { echo "desk_view_tab line $LINENO"; return 1; }
+  check planner_tab "$(pane later id)" || { echo "desk_view_tab: a tab the planner opened behind a task doesn't show: $(desk shownPage)"; return 1; }
+  page "Merge queue" || { echo "desk_view_tab line $LINENO"; return 1; }
+  to_task && kanna task shelve "Tab task" >/dev/null && check wait_for 5 eval '[[ "$(dwin d1 dock)" == None ]]' || { echo "desk_view_tab line $LINENO"; return 1; }
+  check test "$(desk shownPage)" == "Merge queue" || { echo "desk_view_tab: Move to Shelf came back to $(desk shownPage)"; return 1; }
+  stop_agents
+}
+
 scenario path_reuses_desk M4
 path_reuses_desk() {
   start_daemon && start_app || { echo "path_reuses_desk line $LINENO"; return 1; }

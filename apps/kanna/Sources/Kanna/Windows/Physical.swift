@@ -6,6 +6,8 @@ struct DeskRecord: Equatable {
     var shows: String?
     var planner: String?
     var active: String?
+    var page: String?
+    var tab: String?
 }
 
 @MainActor
@@ -39,7 +41,8 @@ final class Physical {
         if case .object(let list)? = saved["pageZooms"] { pageZooms = list.compactMapValues(\.number) }
         overview = saved["overview"]?.bool ?? true
         desks = (saved["desks"]?.array ?? []).compactMap { desk in
-            desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string, active: desk["active"]?.string ?? desk["shows"]?.string) }
+            desk["id"]?.string.map { DeskRecord(id: $0, project: desk["project"]?.string, shows: desk["shows"]?.string, planner: desk["planner"]?.string, active: desk["active"]?.string ?? desk["shows"]?.string,
+                                                page: desk["page"]?.string, tab: desk["tab"]?.string) }
         }
         order = (saved["order"]?.array ?? []).compactMap(\.string)
         deskTasks = (saved["deskTasks"]?.array ?? []).compactMap { entry in entry["workspace"]?.string.map { ($0, entry["leftAt"]?.number ?? 0) } }
@@ -63,6 +66,13 @@ final class Physical {
         changed()
     }
 
+    func setDeskTab(_ id: String, page: String?, tab: String?) {
+        guard var desk = desk(id), desk.page != page || desk.tab != tab else { return }
+        desk.page = page
+        desk.tab = tab
+        setDesk(desk)
+    }
+
     func closeDesk(_ id: String) {
         desks.removeAll { $0.id == id }
         changed()
@@ -83,8 +93,11 @@ final class Physical {
             kept.insert((entry.workspace, entry.leftAt ?? Date().timeIntervalSince1970.rounded(.down)), at: 0)
         }
         let desksKept = desks.map { desk in
-            DeskRecord(id: desk.id, project: desk.project, shows: desk.shows.flatMap { ids.contains($0) ? $0 : nil }, planner: desk.planner.flatMap { planners.contains($0) ? $0 : nil },
-                       active: desk.active.flatMap { ids.contains($0) ? $0 : nil })
+            var kept = desk
+            kept.shows = desk.shows.flatMap { ids.contains($0) ? $0 : nil }
+            kept.planner = desk.planner.flatMap { planners.contains($0) ? $0 : nil }
+            kept.active = desk.active.flatMap { ids.contains($0) ? $0 : nil }
+            return kept
         }
         guard kept.map(\.workspace) != deskTasks.map(\.workspace) || desksKept != desks else { return }
         deskTasks = kept
@@ -175,7 +188,8 @@ final class Physical {
             "pageZooms": .object(pageZooms.mapValues { .number($0) }),
             "overview": .bool(overview),
             "desks": .array(desks.map { desk in
-                ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null, "active": desk.active.map { .string($0) } ?? .null]
+                ["id": .string(desk.id), "project": desk.project.map { .string($0) } ?? .null, "shows": desk.shows.map { .string($0) } ?? .null, "planner": desk.planner.map { .string($0) } ?? .null, "active": desk.active.map { .string($0) } ?? .null,
+                 "page": desk.page.map { .string($0) } ?? .null, "tab": desk.tab.map { .string($0) } ?? .null]
             }),
             "order": .array(order.map { .string($0) }),
             "deskTasks": .array(deskTasks.map { ["workspace": .string($0.workspace), "leftAt": .number($0.leftAt)] }),

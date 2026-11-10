@@ -94,6 +94,7 @@ real_agent_program_status
 send_submits
 codex_task
 desk_zoom
+desk_view_tab
 task_history
 quiz_results
 stats_tab
