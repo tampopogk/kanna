@@ -93,6 +93,11 @@ impl Daemon {
         self.extra.retain(|(k, _)| k != key);
     }
 
+    pub fn launch(&mut self) {
+        self.stop();
+        self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
+    }
+
     pub fn restart(&mut self) {
         self.stop();
         self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
@@ -127,7 +132,11 @@ impl Daemon {
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.dir.join("kanna.sock")
+        let given = self.dir.join("kanna.sock");
+        match std::fs::symlink_metadata(&given) {
+            Ok(meta) if meta.file_type().is_symlink() => self.dir.join("kanna.own.sock"),
+            _ => given,
+        }
     }
 
     pub fn kanna(&self, args: &[&str]) -> Run {
@@ -283,6 +292,9 @@ impl App {
                     let new = !desks.contains(&project);
                     desks.push(project.clone());
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "desk": "d1", "project": project, "new": new}));
+                }
+                if message["cmd"] == "app.front" {
+                    let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "front": null}));
                 }
                 if message["cmd"] == "app.machine.confirm" {
                     heard.lock().unwrap().push(message.clone());

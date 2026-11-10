@@ -17,7 +17,7 @@ mod state_file;
 mod tabs;
 mod workspace;
 
-pub use crate::core::{normalize_url, project, resolve, responder, TASKS_PER_PROJECT, CommandHandler, Core, PrefixHandler, CoreHandle, PaneHost, Responder, TaskBook, WeakCore, CORE_COMMANDS, DEBUG_COMMANDS};
+pub use crate::core::{normalize_url, project, resolve, responder, TASKS_PER_PROJECT, CommandHandler, Core, OpenPrep, PrefixHandler, CoreHandle, PaneHost, Responder, TaskBook, WeakCore, CORE_COMMANDS, DEBUG_COMMANDS};
 pub use brand::Brand;
 pub use error::KmuxError;
 pub use exec::Timing;
@@ -27,7 +27,7 @@ pub use model::Model;
 pub use owner::{prune_state, LayoutOwner};
 pub use saved::LAYOUT_VERSION;
 pub use workspace::{Where, Workspace, MAC_APP};
-pub use pane::{content_prefix, read_baud, read_line_ending, terminal_number, Comment, History, Pane, PaneState, PaneType, Panes};
+pub use pane::{content_prefix, read_baud, pty_number, read_line_ending, terminal_number, Comment, History, Pane, PaneState, PaneType, Panes};
 pub use socket_server::{write_all, Handler, SocketServer, Takeover};
 pub use state::{pane_record, STATE_VERSION};
 pub use state_file::{Contents, StateFile};

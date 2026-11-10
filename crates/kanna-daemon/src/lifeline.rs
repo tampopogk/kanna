@@ -59,11 +59,15 @@ fn poll_for_exit(pid: i32) {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub fn age() -> Option<Duration> {
+    age_of(std::process::id() as i32)
+}
+
+#[cfg(target_os = "macos")]
+pub fn age_of(pid: i32) -> Option<Duration> {
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    let read = unsafe { libc::proc_pidinfo(libc::getpid(), libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+    let read = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
     if read != size {
         return None;
     }
@@ -72,8 +76,8 @@ pub fn age() -> Option<Duration> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn age() -> Option<Duration> {
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+pub fn age_of(pid: i32) -> Option<Duration> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let ticks: u64 = stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()?;
     let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok().filter(|hz| *hz > 0)?;
     let mut now: libc::timespec = unsafe { std::mem::zeroed() };
@@ -85,6 +89,6 @@ pub fn age() -> Option<Duration> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub fn age() -> Option<Duration> {
+pub fn age_of(_pid: i32) -> Option<Duration> {
     None
 }

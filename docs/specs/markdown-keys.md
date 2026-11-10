@@ -33,7 +33,7 @@ A markdown pane is a preview, so its keys are free for moving around. With the p
 - **less's keys first, Vim's too.** Plain letters are free in a preview, so `less`'s keys work as they are; Vim's ⌃ keys and `gg` do the same, for hands used to them.
 - **A count works** as in less and Vim: `5j`, `3}`.
 - **Scrolling moves the view, not a cursor:** a preview has none. "A line" is one line of body text at the pane's zoom.
-- **Find** searches the rendered text, not the markdown source; matches are highlighted and the view scrolls to keep the current one in the middle.
+- **Find** searches the rendered text, not the markdown source, case-insensitive unless the search has a capital ([find bar](find-bar.md)); matches are highlighted and the view scrolls to keep the current one in the middle.
 
 ```mermaid
 stateDiagram-v2

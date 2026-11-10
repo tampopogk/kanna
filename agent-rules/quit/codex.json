@@ -1,5 +1,7 @@
 {
   "agent": "codex",
+  "exit": {"text": "/exit", "box": "\\n\\n›[ \\x{a0}]/exit *\\n\\n"},
+  "rest": "esc",
   "keys": ["ctrl+c", "ctrl+c"],
   "session": "codex (?:--remote \\S+ )?resume ([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
 }

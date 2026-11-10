@@ -1,4 +1,5 @@
 import AppKit
+import KannaOverview
 
 @MainActor
 public final class SerialPaneView: NSView, NSTextFieldDelegate {
@@ -114,8 +115,7 @@ public final class SerialPaneView: NSView, NSTextFieldDelegate {
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = true
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        textView.usesFindBar = false
         textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -126,7 +126,7 @@ public final class SerialPaneView: NSView, NSTextFieldDelegate {
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = true
-        scroll.findBarPosition = .aboveContent
+        textView.startFinder(in: scroll)
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
 
@@ -434,10 +434,7 @@ public final class SerialPaneView: NSView, NSTextFieldDelegate {
     }
 
     @objc private func find() {
-        window?.makeFirstResponder(textView)
-        let item = NSMenuItem()
-        item.tag = NSTextFinder.Action.showFindInterface.rawValue
-        textView.performFindPanelAction(item)
+        textView.finder.show()
     }
 
     @objc private func reset() { onReset?() }
@@ -491,6 +488,37 @@ public final class SerialPaneView: NSView, NSTextFieldDelegate {
 final class SerialTextView: NSTextView {
     var onFocus: (() -> Void)?
     var contextMenu: (() -> NSMenu?)?
+    let finder = PaneFinder()
+    private var editObserver: NSObjectProtocol?
+
+    func startFinder(in container: NSScrollView) {
+        finder.attach(self, in: container)
+        finder.onMatches = { [weak self] in self?.markMatches() }
+        editObserver = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: textStorage, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finder.noteClientStringWillChange() }
+        }
+    }
+
+    private func markMatches() {
+        guard let manager = layoutManager else { return }
+        manager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: (string as NSString).length))
+        for match in finder.matches { manager.addTemporaryAttribute(.backgroundColor, value: NSColor.findHighlightColor, forCharacterRange: match) }
+    }
+
+    override func performTextFinderAction(_ sender: Any?) {
+        guard let tag = (sender as? NSValidatedUserInterfaceItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return }
+        finder.performAction(action)
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(performTextFinderAction(_:)) { return NSTextFinder.Action(rawValue: item.tag).map(finder.validateAction) ?? false }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(performTextFinderAction(_:)) { return validateUserInterfaceItem(item) }
+        return super.validateMenuItem(item)
+    }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()

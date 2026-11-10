@@ -161,7 +161,7 @@ flowchart TB
 - **One `Tabs`** (tabs, shown tab, focus, zoom) is what a free window, a workspace's Desk part and each of its windows hold. Tab and pane ops are written once on it.
 - **desk.rs** keeps the task actions: `list` (an app's claims), `find` (a task's agent and workspace), `hold` (to the Shelf) and `claim` (onto an app's Desk).
 - **owner.rs** `view` lists every window and every workspace, each with its `where`, dock, tabs, windows and `background`; each app composes its Desks from them ([each app's Desks](app-desk.md)).
-- **kanna CLI:** `output.rs` writes the replies in [3](#3-commands-target-and-reply); `crates/kanna/tests/cli.rs` checks them.
+- **kanna CLI:** `commands/workspace.rs` writes the replies in [3](#3-commands-target-and-reply); `crates/kanna/tests/cli.rs` checks them.
 - **kanna-mux tests:** owner tests check claims, holds, planners, a workspace's tabs, focus and zoom with no window, `window assign` and `free`, and version-1 and version-2 files. `protocol_cases` (kmux's) pass natively and behind `LayoutOwner`, but for kmux's dock cases, since a docked pane is a task's agent in its own workspace.
 
 ## 7. The branches waiting for review

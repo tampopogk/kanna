@@ -26,7 +26,7 @@ sequenceDiagram
     participant R as receiver (vm)
     S->>R: heads {project}
     R-->>S: the commits its clone has
-    S->>S: agent quits by its keys at its turn's end, session ID kept
+    S->>S: agent quits at its turn's end, session ID kept
     S->>S: its agent writes a handoff (a headless turn of the same session)
     S->>S: WIP commit on the branch, bundle of what vm lacks
     S->>S: one transaction: transfer saved, permission sent to vm, "moving to vm"
@@ -39,7 +39,7 @@ sequenceDiagram
 ```
 
 - **Only a Shelf task moves,** one that has started (it has a worktree). A Desk task is refused (`on_desk`: shelve it first); a task that never started runs wherever a runner takes it, so it's refused too (`not_started`; `--on` says where it may run).
-- **At a turn's end:** a stopped task moves as it is. A running agent that isn't in the middle of a turn is quit by its keys first (`Tasks::end_agent`), keeping its session ID, and its terminals hung up; one that's working is refused (`busy`).
+- **At a turn's end:** a stopped task moves as it is. A running agent that isn't in the middle of a turn is quit first (`Tasks::end_agent`), keeping its session ID, and its terminals hung up; one that's working is refused (`busy`).
 - **Claude and Codex only, for now:** the handoff is written in a headless turn of the agent's own session, which needs its session ID and a one-shot mode (`claude -p --resume`, `codex exec resume`). Another agent is refused (`agent`); one with such a mode is a line in `handoff_args`.
 - **Nothing changes before the receiver answers `heads`:** the receiver is asked first, so an unreachable or refusing machine (no clone of the project) leaves the task exactly as it was, its agent still running. A task whose session isn't known, or whose agent writes no handoff, stays here, stopped, with nothing committed.
 - **While it's moving it doesn't start here:** `kanna task start`, `pick` and a message for it are refused or wait (`moving`), until the receiver answers or refuses.
@@ -64,6 +64,7 @@ sequenceDiagram
 - **The dirty tree comes back staged:** `reset --soft` to the commit before the WIP one, and the index's tree is checked against the WIP commit's. The task's base is recorded for the worktree, as on the sender.
 - **The agent runs from this machine's path:** an agent named by an absolute path that isn't here runs by its program's name.
 - **It carries on:** the task goes onto this Shelf with its folder (`moved`, from the sender), its agent starts a new session with the handoff as its first message (§4), and then it answers. No tab opens beside it. If its agent can't be started, the task stays here, stopped with why, and the receiver still answers, so only one machine has it.
+- **On the sender it's away, not done:** its row there has the place `done`, but `kanna task list` shows it under Other machines, and under Done only once its record says it's done, with the time it finished. `kanna task done` on the sender ends it where it runs, like any command naming the task ([a task finds its machine](machines.md#5-the-app-link-over-the-network)).
 - **A move back** to a machine the task left works the same: the old copy there is Done, its worktree and branch were removed, and the permission comes at a newer epoch.
 
 **A branch or worktree the receiver has already** (from an earlier run of the task, or an earlier transfer) is checked before anything is written, and nothing of the receiver's is overwritten:

@@ -90,7 +90,7 @@ flowchart LR
 
 | Part | Where |
 |---|---|
-| `--diff`: a bare one resolves to main or master | `crates/kanna/src/commands.rs` |
+| `--diff`: a bare one resolves to main or master | `crates/kanna/src/commands/open.rs` |
 | `diff` in the pane's record, saved in `layout.json` | `crates/kanna-mux/src/pane.rs`, `state.rs`, `core.rs` |
 | The old text, block and word diff | `apps/kanna/Sources/KannaMarkdown/MarkdownDiff.swift` |
 | Rendering both versions into one doc, the marks | `MarkdownRenderer.swift`; the bars in `MarkdownLayoutManager.swift` |
@@ -99,7 +99,7 @@ flowchart LR
 - **Matching** is a longest common subsequence of the blocks (as `git diff` matches lines), then, between each pair of matches, the best pairing of same-kind blocks by shared words. Sentences are matched the same way (equal first, then light edits between), and words within a light edit. It runs on the rendered text of the two blocks (`MarkdownDiff.edits`), which also says how much of the paragraph was kept, for the renderer to choose whole paragraphs. Past 4 million cells either step gives up pairing: the blocks show removed and added.
 - **The diff runs in the app** on the texts the daemon sends: the file's, and with it the base's or a range's two versions, which the daemon reads with `git` in the file's folder and checks again every 2 s ([files and threads](files-and-threads.md#2-messages)).
 - **Rendering:** the renderer walks the new doc with the diff's entries; a removed block is rendered from the old doc where it was, a changed one from both, merged word by word. Every changed block carries a `kanna.change` attribute (added, removed, changed); the bars and the count read it.
-- **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, a typo fix word by word, a rewritten sentence whole, a removed last sentence, the rewritten "Driven by events" item old above new, list items, table rows, headings, a changed diagram, a new file, the word diff); `files.rs` (the base, a range's two versions, a bad REF); `markdown_diff` in `scripts/e2e-kanna.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF, a range: B's text, no reload, no comments, a doc new in B, one missing from B).
+- **Tests:** `MarkdownDiffTests` (added, removed and reworded paragraphs, a typo fix word by word, a rewritten sentence whole, a removed last sentence, the rewritten "Driven by events" item old above new, list items, table rows, headings, a changed diagram, a new file, the word diff); `files.rs` (the base, a range's two versions, a bad REF); `markdown_diff` in `scripts/e2e/markdown.sh` (a doc changed on a branch, the count before and after an edit, `]c` `[c`, `HEAD`, a new file, outside a repo, a bad REF, a range: B's text, no reload, no comments, a doc new in B, one missing from B).
 
 The pane's [overview](markdown-overview.md) marks the changes down its right edge, in the bars' colours.
 
