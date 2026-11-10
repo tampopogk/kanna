@@ -1,4 +1,4 @@
-use super::{pane, Command, Flow};
+use super::{pane, Command, Flow, PANE};
 use crate::output::{hidden, tagged, whose};
 use serde_json::{json, Value};
 
@@ -12,7 +12,7 @@ pub const COMMAND: Command = Command {
     examples: &[("kanna zoom logs", "Zoom the logs pane (run again to unzoom).")],
     parse: |args| Ok(json!({ "pane": pane(args, "zoom")? })),
     show,
-    flow: Flow::PLAIN,
+    flow: Flow { panes: PANE, ..Flow::PLAIN },
 };
 
 pub fn show(args: &Value, reply: &Value) -> String {

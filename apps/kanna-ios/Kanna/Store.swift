@@ -13,6 +13,8 @@ private func log(_ text: String) {
 @MainActor
 @Observable
 final class Store {
+    private static let linkOutlives: TimeInterval = 25
+    private static let reviveLimit = Duration.seconds(3)
     @ObservationIgnored let backend: Backend
     @ObservationIgnored private let keep: Keep
     @ObservationIgnored private var items: [String: [Item]] = [:]
@@ -21,6 +23,7 @@ final class Store {
     @ObservationIgnored private var monitor: NWPathMonitor?
     @ObservationIgnored private var active = false
     @ObservationIgnored private var waking = false
+    @ObservationIgnored private var leftAt: Date?
     @ObservationIgnored private var flushing = false
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var shelves: [String: ShelfPage] = [:]
@@ -46,6 +49,7 @@ final class Store {
     var wrapByDefault = true
     var fullLine: Int?
     var plannerPath = LinkPath.off
+    var checking = false
     var linked: Reach?
     var linkPath = LinkPath.off
     var machinePages: [String: MachinesPage] = [:]
@@ -141,16 +145,54 @@ final class Store {
         active = on
         if on {
             watchNetwork()
-            wake()
+            guard linked != nil else { return wake() }
+            let away = leftAt.map { Date().timeIntervalSince($0) } ?? 0
+            leftAt = nil
+            if away < Self.linkOutlives {
+                revive()
+            } else {
+                backend.networkChanged()
+                drop()
+            }
+        } else if linked != nil {
+            leftAt = Date()
         } else {
             generation += 1
             waking = false
-            backend.close()
             unlinked()
         }
     }
 
+    private func revive() {
+        checking = true
+        let mine = generation
+        let watchdog = Task {
+            try? await Task.sleep(for: Self.reviveLimit)
+            if !Task.isCancelled, mine == generation { drop() }
+        }
+        Task {
+            let hello = try? await backend.hello()
+            watchdog.cancel()
+            guard mine == generation else { return }
+            guard let hello else { return drop() }
+            checking = false
+            arrived(hello, on: hello.key)
+            await measure()
+            try? await catchUp(currentID)
+            flush()
+        }
+    }
+
+    private func drop() {
+        generation += 1
+        waking = false
+        backend.unlink()
+        unlinked()
+        wake()
+    }
+
     private func unlinked() {
+        checking = false
         plannerPath = .off
         linkPath = .off
         linked = nil
@@ -248,11 +290,7 @@ final class Store {
     }
 
     private func relink() {
-        generation += 1
-        backend.close()
-        unlinked()
-        waking = false
-        wake()
+        drop()
     }
 
     private func retry() {
@@ -303,8 +341,9 @@ final class Store {
     }
 
     private func lost() {
+        checking = false
         unlinked()
-        retry()
+        wake()
     }
 
     private func arrived(_ hello: Hello, on key: String) {
@@ -519,7 +558,7 @@ final class Store {
     private static func receipt(_ line: ThreadLine, _ status: Status) -> Receipt {
         if line.read != nil { return .read }
         switch status {
-        case .waiting, .blocked, .stopped, .ready, .stale: return .waitingStart
+        case .waiting, .blocked, .stopped, .ready, .conflicts, .stale: return .waitingStart
         case .working, .needs: return .waitingTurn
         default: return .sent
         }

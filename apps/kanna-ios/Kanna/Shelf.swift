@@ -4,8 +4,10 @@ extension WorkItem {
     func line(_ overrideNeed: Bool = true) -> AttributedString {
         var parts: [String] = []
         switch status {
-        case .ready: parts = ["ready", after.isEmpty ? "" : "merges after \(after)"]
+        case .ready: parts = ["ready"]
+        case .conflicts: parts = ["conflicts"]
         case .stale: parts = ["stale", "behind \(after)"]
+        case .idle where !after.isEmpty, .stopped where !after.isEmpty: parts = [status.words.lowercased(), "merges after \(after)", machine ?? ""]
         case .blocked: parts = ["blocked by \(after)"]
         case .waiting: parts = ["not started"]
         case .needs: parts = ["needs you", age, machine ?? ""]

@@ -7,6 +7,7 @@ extension Status {
         case .needs: "Needs you"
         case .idle: "Idle"
         case .ready: "Ready"
+        case .conflicts: "Conflicts"
         case .stale: "Stale"
         case .stopped: "Stopped"
         case .waiting: "Not started"
@@ -25,7 +26,7 @@ struct Dot: View {
             case .needs: Circle().fill(K.warn)
             case .idle: Circle().fill(K.ok)
             case .ready: Circle().fill(K.ok).padding(0).overlay(Circle().stroke(K.okTint, lineWidth: 2).padding(-2))
-            case .stale: Circle().fill(K.machine)
+            case .stale, .conflicts: Circle().fill(K.machine)
             case .stopped, .waiting: Circle().strokeBorder(K.muted, lineWidth: 1.5)
             case .blocked: Circle().strokeBorder(K.muted, style: StrokeStyle(lineWidth: 1.5, dash: [1.5, 1.5]))
             }
@@ -77,6 +78,7 @@ struct ChipButton: View {
         Button { store.showChipPop.toggle() } label: { Chip(path: store.plannerPath, on: store.showChipPop) }
             .buttonStyle(.plain)
             .accessibilityIdentifier("chip")
+            .accessibilityValue(store.checking ? "checking" : "live")
     }
 }
 

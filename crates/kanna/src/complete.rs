@@ -70,6 +70,7 @@ const TYPES: &[(&str, &str)] = &[
     ("diff", "What git diff shows, with untracked files."),
     ("log", "The history as a graph, task branches labelled."),
     ("serial", "A serial port, shared with kanna serial."),
+    ("run", "A run of a pipeline: its graph, numbers and visits."),
 ];
 
 pub fn wants(words: &[String]) -> Vec<Want> {
@@ -577,7 +578,7 @@ mod tests {
 
     #[test]
     fn open_completes_the_pane_type_then_its_file() {
-        assert_eq!(words(&at("open ")), ["term", "web", "md", "ios", "code", "diff", "log", "serial"]);
+        assert_eq!(words(&at("open ")), ["term", "web", "md", "ios", "code", "diff", "log", "serial", "run"]);
         assert_eq!(at("open code "), [Want::Files(&[])]);
         assert_eq!(at("open md "), [Want::Files(MARKDOWN)]);
         assert_eq!(at("open md --name x "), [Want::Files(MARKDOWN)]);

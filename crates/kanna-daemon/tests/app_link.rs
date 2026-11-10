@@ -11,15 +11,21 @@ use std::time::{Duration, Instant};
 #[test]
 fn a_stalled_app_gets_one_chunk_of_a_flood_and_the_rest_waits_for_its_ack() {
     let instance = Instance::start();
-    let pane = instance.open("flood", Some("yes"));
+    let flooded = instance.dir.join("flooded");
+    let pane = instance.open("flood", Some(&format!("yes | head -c 6000000; touch '{}'; exec yes", flooded.display())));
     let mut app = instance.app();
     app.acks = false;
     app.tell("attach", json!({"terminal": pane}));
     app.until("the view to start", |m| is(m, "snapshot", &pane));
     let first = app.until("a chunk", |m| is(m, "output", &pane));
     assert!(data(&first).len() <= 64 << 10, "a chunk of {} bytes", data(&first).len());
-    app.stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    app.stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
     let mut more = 0;
+    while let Some(message) = app.next() {
+        more += usize::from(is(&message, "output", &pane) || is(&message, "snapshot", &pane));
+    }
+    wait_for("the daemon to read more of the flood than the stalled app's outbox holds", || flooded.exists());
+    app.stream.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
     while let Some(message) = app.next() {
         more += usize::from(is(&message, "output", &pane) || is(&message, "snapshot", &pane));
     }
@@ -260,17 +266,21 @@ fn exited_comes_after_the_last_output() {
         let mut app = instance.app();
         app.tell("attach", json!({"terminal": pane}));
         let mut replica: Option<Terminal> = None;
+        let mut last = Vec::new();
         let exited = app.until("the exit", |m| {
             if is(m, "snapshot", &pane) {
                 replica = Some(Terminal::from_snapshot(&data(m)).unwrap());
             } else if is(m, "output", &pane) {
-                replica.as_mut().expect("output before the snapshot").write(&data(m));
+                let bytes = data(m);
+                replica.as_mut().expect("output before the snapshot").write(&bytes);
+                last.extend_from_slice(&bytes);
+                last.drain(..last.len().saturating_sub(300));
             }
             is(m, "exited", &pane)
         });
         assert_eq!(exited["args"]["code"], 7, "{exited}");
         let screen = replica.expect("no snapshot").text(Lines::Screen);
-        assert!(screen.ends_with("END"), "round {round}: exited came before the last output (the screen ends {:?})", &screen[screen.len().saturating_sub(20)..]);
+        assert!(screen.ends_with("END"), "round {round}: exited came before the last output (the last bytes were {:?}, the daemon's screen is {:?})", String::from_utf8_lossy(&last), instance.screen(&pane));
         drop(app);
         instance.call("close", json!({"pane": instance.pane_of(&pane)}));
     }

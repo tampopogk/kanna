@@ -20,11 +20,15 @@ final class WindowController: NSObject, NSWindowDelegate {
     let machinesPage = MachinesPage()
     let statsPage = StatsPage()
     let schedulesPage = SchedulesPage()
-    static let pages = ["Desk", "Machines", "Stats", "Schedules"]
+    let queuePage = MergeQueuePage()
+    static let pages = ["Desk", "Machines", "Stats", "Schedules", MergeQueuePage.title]
+    var queue: [QueueEntry]?
     var stats: StatsReport?
     var schedules: [ScheduleRow]?
     var schedulesRepo: String?
     var page: String?
+    var deskTab: String?
+    var onDeskTab: ((String?, String?) -> Void)?
     var machines: [MachineRow] = []
     var phones: [String] = []
     var stale: String?
@@ -32,13 +36,14 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var pageShown: String?
     var shownPage: String? { pageShown }
     private(set) var pages: [String] = []
-    private var dockedTask: String?
+    private var deskViewed = false
     var deskTasks: [DeskTask] = []
     var active: String?
     var others: [DeskTask] { deskTasks.filter { $0.id != active } }
     var keys: [String: String] { DeskOrder.keys(others.map(\.id)) }
     var deskDocks: [JSON] = []
     var shelf: [ShelfTask] = []
+    var merging: [ShelfTask] = []
     var running = 0
     var note = ""
     var project = ""
@@ -88,6 +93,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         content.addSubview(machinesPage)
         content.addSubview(statsPage)
         content.addSubview(schedulesPage)
+        content.addSubview(queuePage)
         content.addSubview(deskStage)
         deskStage.isHidden = true
         deskStrip.isHidden = true
@@ -95,6 +101,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         machinesPage.isHidden = true
         statsPage.isHidden = true
         schedulesPage.isHidden = true
+        queuePage.isHidden = true
         window.contentView = content
         if let previous {
             window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: previous.frame.minX, y: previous.frame.maxY)))
@@ -120,7 +127,6 @@ final class WindowController: NSObject, NSWindowDelegate {
     func render(_ state: JSON, _ panes: PaneViews) {
         let span = Perf.begin(.render, "WindowController.render")
         defer { Perf.end(span) }
-        let shownBefore = tab
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
@@ -128,10 +134,6 @@ final class WindowController: NSObject, NSWindowDelegate {
         window.title = named + (instance == "default" ? "" : " · \(instance)")
         let root = state["root"] ?? .null
         let task = Self.side(state["dock"])
-        if task?["pane"]?.string != dockedTask {
-            dockedTask = task?["pane"]?.string
-            if dockedTask != nil { page = nil }
-        }
         let lead = task == nil ? Self.side(state["lead"]) : nil
         let dock = task ?? lead
         let docked = dock?["pane"]?.string
@@ -140,15 +142,25 @@ final class WindowController: NSObject, NSWindowDelegate {
         shown = Self.shownPanes(state)
         emptyDesk = desk && task == nil && ids.isEmpty
         pages = desk && task == nil ? Self.pages : []
-        if !pages.isEmpty {
-            if deskTask || shownBefore == nil && page == nil {
-                page = Self.pages[0]
-            } else if let tab, tab != shownBefore {
+        if pages.isEmpty {
+            deskViewed = false
+        } else if deskTab == nil || state["planner"]?.string != nil {
+            let tabs = (state["tabs"]?.array ?? []).compactMap { $0["id"]?.string }
+            if deskViewed {
+                if let tab, tab != deskTab { page = nil }
+            } else if page.map({ !pages.contains($0) }) ?? (deskTab == nil) {
+                page = pages[0]
+            } else if let tab, tab != deskTab, deskTab.map(tabs.contains) ?? true {
                 page = nil
+            } else if page == nil, tab != deskTab {
+                page = pages[0]
             }
+            deskTab = tab
+            deskViewed = true
+            onDeskTab?(page, deskTab)
         }
         pageShown = pages.isEmpty ? nil : emptyDesk ? page ?? pages[0] : page
-        tabBar.show(state, pages: pages, page: pageShown)
+        tabBar.show(state, pages: pages, page: pageShown, counts: merging.isEmpty ? [:] : [MergeQueuePage.title: merging.count])
         if deskTask && emptyDesk { cheerAt = (cheerAt + 1) % DeskView.cheers.count }
         deskTask = desk && task != nil
         if deskTask, let activated = task?["pane"]?.string { Clicks.activated(activated) }
@@ -176,6 +188,9 @@ final class WindowController: NSObject, NSWindowDelegate {
             agentHeader.toolTip = headerTip
         }
         hold(deskDocks, panes)
+        let tester = queuePage.wantedTerminal
+        queuePage.host(tester.flatMap { panes.view($0, type: "term") })
+        if let tester { panes.started(tester) }
         window.invalidateCursorRects(for: content)
         let focusedID = state["focused"]?.string
         let visibleIDs = ids + (docked.map { [$0] } ?? [])
@@ -213,6 +228,7 @@ final class WindowController: NSObject, NSWindowDelegate {
         machinesPage.isHidden = pageShown != Self.pages[1]
         statsPage.isHidden = pageShown != Self.pages[2]
         schedulesPage.isHidden = pageShown != Self.pages[3]
+        queuePage.isHidden = pageShown != Self.pages[4]
         if deskStrip.isHidden == (desk && !taskless) { deskStrip.isHidden = !desk || taskless }
         if taskless {
         } else if desk {
@@ -257,6 +273,9 @@ final class WindowController: NSObject, NSWindowDelegate {
         } else if pageShown == Self.pages[3] {
             schedulesPage.frame = below
             schedulesPage.show(schedules, here: schedulesRepo)
+        } else if pageShown == Self.pages[4] {
+            queuePage.frame = below
+            queuePage.show(queue)
         }
         stage.isHidden = side.isEmpty || pageShown != nil
         stage.frame = below
