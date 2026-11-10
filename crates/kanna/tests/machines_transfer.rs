@@ -178,7 +178,7 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
 }
 
 #[test]
-fn a_moved_task_is_listed_where_it_runs_and_done_says_where_that_is() {
+fn a_moved_task_is_listed_where_it_runs_and_done_from_the_sender_ends_it_there() {
     let (mbp, vm) = (machine("mbp"), machine("vm"));
     pair(&mbp, &vm);
     let (here, _there) = (clone(&mbp), clone(&vm));
@@ -192,12 +192,9 @@ fn a_moved_task_is_listed_where_it_runs_and_done_says_where_that_is() {
     assert!(done_ids(&listed).is_empty(), "a task running on vm isn't done: {listed}");
     assert_eq!(listed["elsewhere"][0]["machine"], "vm", "{listed}");
 
-    let refused = mbp.kanna_in(&here, &["task", "done", &task]).fails(1, "runs on vm, so nothing changed");
-    assert!(refused.contains("kanna --host vm task done"), "{refused}");
-    assert!(!shelf_task(&vm, &task).is_null(), "it keeps running on vm");
-
     std::thread::sleep(Duration::from_secs(2));
-    vm.kanna(&["task", "done", &task]).ok();
+    mbp.kanna_in(&here, &["task", "done", &task]).ok();
+    within(30, "vm to end it", || shelf_task(&vm, &task).is_null());
     within(10, "mbp to see it finished on vm", || record(&mbp, &task)["state"] == "done");
     let listed = mbp.kanna_in(&here, &["task", "list", "--include-done", "--json"]).json();
     assert_eq!(done_ids(&listed), [task.clone()], "{listed}");

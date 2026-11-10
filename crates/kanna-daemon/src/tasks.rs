@@ -1402,15 +1402,6 @@ impl Tasks {
         record.text("state").is_some_and(|s| s != "done") && record.text("owner").is_some_and(|o| o != replica.me()) && !self.is_open(&record.task)
     }
 
-    fn not_here(&self, id: &str) -> KmuxError {
-        let replica = self.replica.borrow();
-        let owner = replica.births(id).into_iter().find(|r| self.runs_elsewhere(r)).and_then(|r| r.text("owner"));
-        match owner.map(|o| self.machines().name_of(o)) {
-            Some(machine) => KmuxError::new("elsewhere", format!("{} runs on {machine}, so nothing changed: end it there with `kanna --host {machine} task done {id}`", self.short(id))),
-            None => not_found(id),
-        }
-    }
-
     fn ambiguous(&self, id: &str) -> bool {
         self.replica.borrow().births(id).len() > 1
     }
@@ -3943,7 +3934,7 @@ impl Tasks {
         let (entry, pane) = match &waiting {
             Some(entry) => (Some(entry.clone()), entry.held.clone().filter(|pane| core.pane(pane).is_some())),
             None => {
-                let Some(pane) = core.pane(&self.pane_or(reference)).map(|p| p.id) else { return responder.reply(Err(self.not_here(reference))) };
+                let Some(pane) = core.pane(&self.pane_or(reference)).map(|p| p.id) else { return responder.reply(Err(not_found(reference))) };
                 (self.running.borrow().iter().find(|r| r.pane == pane).map(|r| r.entry.clone()), Some(pane))
             }
         };
