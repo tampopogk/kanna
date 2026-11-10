@@ -64,7 +64,7 @@ body.picture #desk { border-radius: 0; }
 <main>
   <div class="intro">
     <h1>Tab drag</h1>
-    <p>Drag any tab. It follows the cursor and the other tabs slide aside; it settles into its gap with a short spring. Pulled out of the bar it becomes a preview of its window; dropped on the desktop, the new window grows from it; over any tab bar it folds back into a tab. Escape, or dropping where it started, slides it home. Spec: <code>docs/specs/tab-drag.md</code>.</p>
+    <p>Drag any tab. It follows the cursor and the other tabs slide aside; it settles into its gap with a short spring. Pulled out of the bar it becomes a preview of its window; dropped anywhere off a tab bar, even over another window, the new window grows from it; over any tab bar it folds back into a tab. Escape, or dropping where it started, slides it home. Spec: <code>docs/specs/tab-drag.md</code>.</p>
   </div>
   <div class="controls">
     <button data-play="reorder">Play: reorder</button>
@@ -200,7 +200,7 @@ function start() {
   const g = ghost.querySelector('.ghost-tab');
   g.innerHTML = `<span>${drag.tab}</span><span class="x">×</span>`;
   g.classList.toggle('active', win.active === drag.tab);
-  ghost.querySelector('.mini .c').innerHTML = win.active === drag.tab ? (lines[drag.tab] || []).join('\n') : '';
+  ghost.querySelector('.mini .c').innerHTML = (lines[drag.tab] || []).join('\n');
   ghost.classList.remove('preview');
   ghost.style.display = 'block';
   ghost.style.width = drag.w + 'px';
@@ -306,7 +306,6 @@ function up() {
     });
     return;
   }
-  if (windowAt(drag.cx, drag.cy)) return home('dropped on a window, off its tab bar: slides home');
   tearOff();
 }
 

@@ -268,9 +268,6 @@ tab_drag() {
   drag "{\"tab\":\"$a\",\"to\":{\"tab\":\"$c\"},\"cancel\":true}"
   check test "$(dropped)" == False || { echo "$last_drag"; return 1; }
   check test "$(tab_ids win-1)" == "$a $b $c" || return 1
-  drag "{\"tab\":\"$a\",\"to\":{\"pane\":\"ta\",\"x\":0.5,\"y\":0.5}}"
-  check test "$(dropped)" == False || { echo "$last_drag"; return 1; }
-  check test "$(tab_ids win-1)" == "$a $b $c" || return 1
   drag "{\"tab\":\"$c\",\"to\":{\"tab\":\"$d\"}}"
   check test "$(tab_ids win-2)" == "$c $d" || { echo "$last_drag"; return 1; }
   check test "$(tab_ids win-1)" == "$a $b" || return 1
@@ -283,6 +280,10 @@ tab_drag() {
   check test "$(state | python3 -c 'import json, sys, re; print(" ".join(" ".join(t["id"] for t in w["tabs"]) for w in json.load(sys.stdin)["windows"] if w["id"] not in ("win-1", "win-2")))')" == "$d" || return 1
   drag "{\"tab\":\"$a\",\"to\":{\"tab\":\"$d\"}}"
   check test "$(state | field windows | count)" == 2 || { echo "$last_drag"; return 1; }
+  drag "{\"tab\":\"$c\",\"to\":{\"pane\":\"ta\",\"x\":0.5,\"y\":0.5}}"
+  check test "$(dropped)" == True || { echo "$last_drag"; return 1; }
+  check test "$(state | field windows | count)" == 3 || { echo "$last_drag"; return 1; }
+  check test "$(tab_ids win-2)" == "$b" || return 1
 }
 tab_ids() { win "$1" tabs | python3 -c 'import json, sys; print(" ".join(t["id"] for t in json.load(sys.stdin)))'; }
 

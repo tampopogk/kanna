@@ -141,6 +141,8 @@ final class TabGhost {
         }
     }
 
+    func setPreviewImage(_ image: NSImage) { previewView.image = image }
+
     func close() { panel.orderOut(nil) }
 }
 
@@ -186,6 +188,35 @@ final class TabDrag {
         cursor = NSPoint(x: start.minX + self.grab, y: start.midY)
         over = (source, index)
         bar.setGap(TabBar.Gap(owner: owner, hiding: tab, width: width, index: index), animated: false)
+        if !active, !quiet { drawPreview(of: source) }
+    }
+
+    private func drawPreview(of source: WindowController) {
+        let window = source.window
+        guard let stage = source.stageFrame,
+              let root = app.windowOf(tab: tab)?["tabs"]?.array?.first(where: { $0["id"]?.string == tab })?["root"], root != .null else { return }
+        let base = Snapshot.image(of: window)
+        let size = window.frame.size
+        let appearance = window.effectiveAppearance
+        let placed = WindowController.paneFrames(root, in: NSRect(origin: .zero, size: stage.size))
+        Task { [weak self, app] in
+            var drawn: [(CGImage, NSRect)] = []
+            for (pane, frame) in placed {
+                guard let image = await app.drawnOffstage(pane, size: frame.size, appearance: appearance) else { continue }
+                drawn.append((image, frame.offsetBy(dx: stage.minX, dy: stage.minY)))
+            }
+            guard let self, !drawn.isEmpty else { return }
+            let picture = NSImage(size: size, flipped: false) { rect in
+                if let base { NSGraphicsContext.current?.cgContext.draw(base, in: rect) }
+                appearance.performAsCurrentDrawingAppearance {
+                    NSColor.separatorColor.setFill()
+                    stage.fill()
+                }
+                for (image, frame) in drawn { NSGraphicsContext.current?.cgContext.draw(image, in: frame) }
+                return true
+            }
+            ghost.setPreviewImage(picture)
+        }
     }
 
     private static func preview(of window: NSWindow, tab: NSImage?, active: Bool) -> NSImage {
@@ -234,10 +265,6 @@ final class TabDrag {
             app.layoutCommand("move-tab", app.address(controller.id).merging(["tab": .string(tab), "index": .number(Double(index))]) { _, new in new })
             settle(in: controller, gap: gap)
             return true
-        }
-        if app.controller(at: end, skipping: ghost.windowNumber) != nil {
-            home()
-            return false
         }
         tearOff(at: end)
         return true
