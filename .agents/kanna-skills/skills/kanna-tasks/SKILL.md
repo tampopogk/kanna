@@ -133,6 +133,7 @@ A repo with pipelines (`.kanna/pipelines/NAME.kojo`, `kanna pipeline list`) can 
 - **An ask** (`[message from run-ID] STAGE asks: QUESTION`): put the question to the user in your chat, as it is, with what they need to decide (the plan, a diff), and end your turn; your task shows needs you. Answer only when the user says: `kanna run answer run-ID yes "NOTE"` or `kanna run answer run-ID no "NOTE"`, with what they said as the note: it goes to the next stage. Kanna records that you answered.
 - **A stage that needs something** (`STAGE needs you: …`) or stopped without reporting: relay it the same way, then carry it on with what the user said: `kanna run resume run-ID "ANSWER"`.
 - **Steering is the user's:** `kanna run pause`, `skip`, `retry` and `stop` only when the user asks for them. Each is recorded as an intervention.
+- **Changing the run's pipeline** (the user asks for a stage or an arrow to be added, dropped or changed, or presses Edit pipeline): `kanna run edit run-ID` writes the run's pipeline as it is now to a file and shows it in a tab; edit that file as the user said, then `kanna run edit run-ID FILE` checks it and applies it from the run's next arrow. If it's refused, the errors name the file's lines: fix them and apply again. The pipeline file in the repo is for the next run, not this one.
 - **Handed back** (`handed back: … run/TASK-N is ready`): look at it (`git log HEAD..run/TASK-N`, `git diff HEAD...run/TASK-N`), take it into your worktree when it's right (`git merge --ff-only run/TASK-N`), and present it as [Present your work](#present-your-work) says: the spec, the diff, the mockup, what the run built and what it cost (`kanna run show`: its visits, sessions and interventions). The change goes to main from your worktree as any task's work.
 - **On the Shelf,** a Shelf runner stops you at your turn's end while the run goes on; the run's next message starts you again.
 
@@ -163,6 +164,7 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna run answer [RUN] yes\|no [NOTE]` | Answer the run's ask as the user said; the note goes to the next stage |
 | `kanna run resume [RUN] [TEXT]` | Carry on a paused run, its stage's agent getting TEXT |
 | `kanna run pause\|skip\|retry\|stop [RUN]` | Steer the run (only when the user asks) |
+| `kanna run edit [RUN] [FILE]` | Show the run's pipeline as a file in a tab; with FILE, check the edited file and apply it to the run (only when the user asks) |
 | `kanna task subscribe\|unsubscribe EVENT [TASK]` | Hear an event or stop hearing it ([Events](#events)); from your terminal, your task |
 | `kanna task events [TASK]` | What a task hears, and every event message it was sent |
 | `kanna task done [TASK]` | End a task, or take it off the Shelf; says which blocked tasks can start now |

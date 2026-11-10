@@ -12,7 +12,7 @@ In the Desk view, dragging a Desk task's row onto the Shelf moves that task to t
 
 ## Why a drag, and only this way
 
-Kanna keeps the user's attention on at most three tasks. If tasks were easy to swap on and off the Desk, that limit would mean nothing. So moving a task off the Desk takes a deliberate gesture, a drag, rather than a button that shows up on hover. For the same reason there's no right-click menu, no drag from the Shelf to the Desk, and no swap when the Desk is full: shelve a task first, then Move to Desk.
+Kanna keeps the user's attention on at most three tasks. If tasks were easy to swap on and off the Desk, that limit would mean nothing. So moving a task off the Desk takes a deliberate gesture, a drag or [the Desk view's selection](desk-keys.md) (⌘F, a row, ⇧⌘⌫), rather than a button that shows up on hover. For the same reason there's no right-click menu, no drag from the Shelf to the Desk, and no swap when the Desk is full: shelve a task first, then Move to Desk.
 
 ## Behaviour
 
@@ -20,7 +20,7 @@ Kanna keeps the user's attention on at most three tasks. If tasks were easy to s
 - **Over the Shelf.** While the pointer is within the Shelf section, plus 6 points around it, the outline turns the accent colour and the section is tinted.
 - **Drop.** Letting go over the Shelf sends `tasks` `{action: "shelve", task: PANE}`, the same request as Task → Move to Shelf. The task moves as it is: its agent keeps running or stays stopped, and its tabs stay as they were. If the moved task was the active one, no task is active afterwards and the Desk view keeps showing. A refusal shows in the Desk view's note line.
 - **Cancel.** Letting go anywhere else, or pressing esc, puts the row back and moves nothing.
-- **A click still makes the task active.** It now activates when the button comes up, not when it goes down, so a press that turns into a drag doesn't activate the task. The row's hover hint ("⌘N · Make active →", "⌘. · Back to it") is unchanged.
+- **A click still makes the task active.** It now activates when the button comes up, not when it goes down, so a press that turns into a drag doesn't activate the task. The row's hover hint names the keys ([Desk view keys](desk-keys.md)); it isn't a button.
 - **Scrolling.** When the window is too short to show both, dragging near the edge scrolls the Desk view.
 
 ## Interfaces

@@ -143,6 +143,36 @@
             "minLength": 1
           }
         },
+        "pricing": {
+          "description": "What a model's tokens cost, in dollars per million, for stages whose agent doesn't report a cost (docs/specs/software-factory.md §5): {\"gpt-5\": {\"in\": 2.5, \"out\": 10, \"cached\": 0.25}}. cached and written default to in. Read as a visit ends.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "in": {
+                "type": "number",
+                "minimum": 0
+              },
+              "out": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cached": {
+                "type": "number",
+                "minimum": 0
+              },
+              "written": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "in",
+              "out"
+            ],
+            "additionalProperties": false
+          }
+        },
         "workers": {
           "description": "How many of a run's workers run at once: a fan-out's instances (each STAGE.KEY) and attempts (xN by STAGE) start as others end. Read from the repo's .kanna/config.json, then ~/.kanna-v4/config.json, as a fan-out starts its workers.",
           "type": "integer",

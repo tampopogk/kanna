@@ -1,10 +1,13 @@
 use crate::db::{Db, RunRow, StageRow};
+use crate::pipelines;
 use crate::run_notice;
 use crate::task_scripts;
 use crate::tasks::{self, git, Entry, Offer, Placed, Tasks};
+use crate::usage;
+use crate::runtime;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, PaneState, PaneType, Responder, WeakCore};
-use kanna_pipe::{Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
+use kanna_pipe::{Arrow, Context, Kind, Pipeline, Sizes, Stage, Verdict, DONE};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -28,6 +31,8 @@ const SETTLE: f64 = 10.0;
 const SCREEN_LINES: usize = 20;
 
 const CARRY_ON: &str = "Carry on.";
+
+const DRAFT: &str = "pipeline.kojo";
 
 const ITEM_NAME: usize = 24;
 
@@ -336,15 +341,123 @@ pub fn unbuilt(pipeline: &Pipeline) -> Vec<String> {
             if agent.guard.is_some() && (agent.each.is_some() || agent.attempts.is_some()) {
                 say("guard with each or xN");
             }
-            if agent.emits {
-                say("emits");
-            }
             if agent.resume.is_some() {
                 say("resume");
             }
         }
     }
     out
+}
+
+pub fn draft_path(worker: &str) -> PathBuf {
+    Path::new(worker).join(SCRATCH).join(DRAFT)
+}
+
+pub fn write_draft(worker: &str, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let draft = draft_path(worker);
+    let folder = Path::new(worker).join(SCRATCH);
+    let mut part = PathBuf::from(worker);
+    for name in Path::new(SCRATCH).components() {
+        part.push(name);
+        match fs::symlink_metadata(&part) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(std::io::Error::other(format!("{} isn't a folder of the run's worktree", part.display()))),
+            Err(_) => fs::create_dir(&part)?,
+        }
+    }
+    if !fs::canonicalize(&folder)?.starts_with(fs::canonicalize(worker)?) {
+        return Err(std::io::Error::other(format!("{} is outside the run's worktree", folder.display())));
+    }
+    let fresh = folder.join(format!(".{DRAFT}.new"));
+    let _ = fs::remove_file(&fresh);
+    fs::OpenOptions::new().write(true).create_new(true).open(&fresh)?.write_all(text.as_bytes())?;
+    fs::rename(&fresh, &draft)
+}
+
+fn is_plain_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+pub fn wrapped(text: &str, width: usize) -> String {
+    let mut lines: Vec<String> = vec![String::new()];
+    for word in text.split_whitespace() {
+        let last = lines.last_mut().expect("a line");
+        if !last.is_empty() && last.chars().count() + 1 + word.chars().count() > width {
+            lines.push(word.to_string());
+        } else {
+            if !last.is_empty() {
+                last.push(' ');
+            }
+            last.push_str(word);
+        }
+    }
+    lines.join("\n")
+}
+
+pub fn budget_value(pipeline: &Pipeline) -> Value {
+    pipeline.budget.as_ref().map_or(Value::Null, |b| json!({ "sessions": b.sessions, "seconds": b.time.map(|t| t.as_secs()) }))
+}
+
+pub fn changes(before: &Pipeline, after: &Pipeline) -> String {
+    let plain = |stage: &Stage| Stage { line: 0, ..stage.clone() };
+    let added: Vec<&str> = after.stages.iter().filter(|s| before.stage(&s.name).is_none()).map(|s| s.name.as_str()).collect();
+    let removed: Vec<&str> = before.stages.iter().filter(|s| after.stage(&s.name).is_none()).map(|s| s.name.as_str()).collect();
+    let changed: Vec<&str> = after.stages.iter().filter(|s| before.stage(&s.name).is_some_and(|old| plain(old) != plain(s))).map(|s| s.name.as_str()).collect();
+    let extra = |from: &Pipeline, than: &Pipeline| {
+        let mut left: Vec<String> = than.arrows.iter().map(Arrow::render).collect();
+        from.arrows.iter().map(Arrow::render).filter(|arrow| left.iter().position(|l| l == arrow).map(|i| left.swap_remove(i)).is_none()).count()
+    };
+    let count = |n: usize, what: &str| format!("{n} arrow{} {what}", if n == 1 { "" } else { "s" });
+    let mut parts = vec![];
+    for (what, names) in [("added", added), ("removed", removed), ("changed", changed)] {
+        if !names.is_empty() {
+            parts.push(format!("{what} {}", names.join(", ")));
+        }
+    }
+    for (what, n) in [("added", extra(after, before)), ("removed", extra(before, after))] {
+        if n > 0 {
+            parts.push(count(n, what));
+        }
+    }
+    if budget_value(before) != budget_value(after) {
+        parts.push("changed the budget".into());
+    }
+    if parts.is_empty() {
+        return "comments and spacing only".into();
+    }
+    parts.join(" · ")
+}
+
+pub fn edit_errors(current: &Pipeline, text: &str, context: &Context, at: Option<&str>) -> Result<kanna_pipe::Revision, Vec<(usize, String)>> {
+    let revision = kanna_pipe::edited(current, text, context).map_err(|errors| errors.into_iter().map(|e| (e.line, e.message)).collect::<Vec<_>>())?;
+    let mut errors: Vec<(usize, String)> = unbuilt(&revision.pipeline).iter().filter_map(|u| u.split_once(": ").and_then(|(line, message)| Some((line.parse().ok()?, message.to_string())))).collect();
+    if let Some(at) = at.filter(|at| revision.pipeline.stage(at).is_none()) {
+        errors.push((1, format!("the run is at {at}, so an edit can't remove it")));
+    }
+    if errors.is_empty() {
+        Ok(revision)
+    } else {
+        Err(errors)
+    }
+}
+
+pub fn emit_errors(current: &Pipeline, stage: &str, block: &str, context: &Context) -> Result<kanna_pipe::Revision, Vec<String>> {
+    let revision = kanna_pipe::emitted(current, stage, block, context).map_err(|refused| refused.lines())?;
+    let unbuilt = unbuilt(&revision.pipeline);
+    if unbuilt.is_empty() {
+        Ok(revision)
+    } else {
+        Err(unbuilt.iter().map(|u| format!("the merged pipeline:{u}")).collect())
+    }
+}
+
+pub fn refusal(stage: &str, errors: &[String], feedback: Option<Feedback>) -> Feedback {
+    let said = format!("Kanna refused the kojo block in {stage}'s answer, so the run's pipeline is as it was:\n{}", errors.join("\n"));
+    match feedback {
+        Some(feedback) => Feedback { text: format!("{said}\n\n{}", feedback.text), ..feedback },
+        None => Feedback { stage: stage.to_string(), text: said, full: String::new() },
+    }
 }
 
 pub fn prompt(stage: &Stage, file: &str, request: &str, part: Option<&str>, feedback: Option<&Feedback>, answers: &BTreeMap<String, String>, answer: &str) -> String {
@@ -490,6 +603,21 @@ pub fn failure_lines(output: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let tail = &lines[lines.len().saturating_sub(FEEDBACK_LINES)..];
     tail.iter().filter(|l| FAILURE_MARKS.iter().any(|m| l.contains(m))).map(|l| l.to_string()).collect()
+}
+
+pub fn failing_tests(lines: &[String]) -> usize {
+    let summary = regex::Regex::new(r"^\s*(test result:|failures:|error: test failed|\d+ (passed|failed)|=+ .* =+$)|\b\d+ (passed|failed)\b").expect("pattern");
+    lines.iter().filter(|l| !summary.is_match(l)).count()
+}
+
+pub fn findings(answer: &str) -> Option<BTreeMap<String, u64>> {
+    let (_, body) = outputs(answer).into_iter().find(|(key, _)| key == "findings")?;
+    let list: Value = serde_json::from_str(&body).ok()?;
+    let mut by = BTreeMap::new();
+    for finding in list.as_array()? {
+        *by.entry(string(finding, "severity").unwrap_or("unrated").to_string()).or_insert(0) += 1;
+    }
+    Some(by)
 }
 
 pub fn command_feedback(output: &str) -> String {
@@ -679,6 +807,68 @@ fn patch(doc: &mut Value, with: Value) {
     }
 }
 
+struct Measured {
+    row: i64,
+    session: Option<String>,
+    doc: Value,
+}
+
+struct Measuring {
+    row: i64,
+    agent: Option<String>,
+    session: Option<String>,
+    folder: Option<String>,
+    repo: String,
+    branch: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
+    since: f64,
+}
+
+impl Measuring {
+    fn of(row: &StageRow, repo: &str, session: Option<String>, end: Option<String>) -> Measuring {
+        let paused = row.doc.get("paused").and_then(|p| string(p, "session")).map(String::from);
+        Measuring {
+            row: row.id,
+            agent: row.agent.clone(),
+            session: row.session.clone().or(session).or(paused),
+            folder: row.worktree.clone(),
+            repo: repo.to_string(),
+            branch: row.branch.clone(),
+            start: string(&row.doc, "start").map(String::from),
+            end: end.or_else(|| string(&row.doc, "end").map(String::from)).filter(|e| !e.is_empty()),
+            since: row.started_at,
+        }
+    }
+
+    fn session(&self) -> Option<String> {
+        let started = UNIX_EPOCH + Duration::from_secs_f64(self.since.max(0.0));
+        self.session.clone().or_else(|| tasks::first_session_since(self.agent.as_deref()?, Path::new(self.folder.as_deref()?), started))
+    }
+
+    fn take(&self) -> Measured {
+        let repo = Path::new(&self.repo);
+        let session = self.session();
+        let usage = self.agent.as_deref().zip(session.as_deref()).and_then(|(agent, session)| usage::of(agent, session, self.since));
+        let mut doc = json!({ "measured": true, "usage": usage.map_or(Value::Null, |u| u.doc(&tasks::pricing(&tasks::config_files(repo)))) });
+        let end = self.end.clone().or_else(|| git(repo, &["rev-parse", "--verify", self.branch.as_deref()?]).ok());
+        if let Some((start, end)) = self.start.as_deref().filter(|s| !s.is_empty()).zip(end) {
+            let span = format!("{start}..{end}");
+            if let Ok(numstat) = git(repo, &["diff", "--numstat", "--no-renames", &span]) {
+                let rows: Vec<Vec<&str>> = numstat.lines().map(|l| l.splitn(3, '\t').collect()).collect();
+                let sum = |column: usize| rows.iter().filter_map(|r| r.get(column)?.parse::<u64>().ok()).sum::<u64>();
+                doc["files"] = json!(rows.len());
+                doc["added"] = json!(sum(0));
+                doc["deleted"] = json!(sum(1));
+            }
+            if let Some(commits) = git(repo, &["rev-list", "--count", &span]).ok().and_then(|n| n.trim().parse::<u64>().ok()) {
+                doc["commits"] = json!(commits);
+            }
+        }
+        Measured { row: self.row, session, doc }
+    }
+}
+
 fn carried(next: &Next, ended: &Ended, stage: &str, ask: bool) -> Option<Feedback> {
     let noted = ask && !ended.feedback.trim().is_empty();
     match (next, ended.verdict) {
@@ -828,7 +1018,24 @@ impl Runs {
             log!("kanna-daemon: {} carries on ({}, {at})", entry.row.id, entry.row.state);
             live.push(entry);
         }
-        Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), polled: Cell::new(0.0), on_show: RefCell::default(), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() }
+        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), polled: Cell::new(0.0), on_show: RefCell::default(), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() };
+        for (row, repo) in this.db.unmeasured().unwrap_or_default() {
+            this.measure(Measuring::of(&row, &repo, None, None));
+        }
+        this
+    }
+
+    fn measure(&self, measuring: Measuring) {
+        if measuring.row == 0 {
+            return;
+        }
+        let db = self.db.clone();
+        runtime::spawn("runs.measure", async move {
+            let Some(measured) = runtime::off_loop(move || measuring.take()).await else { return };
+            if let Err(error) = db.patch_stage(measured.row, measured.session.as_deref(), &measured.doc) {
+                log!("kanna-daemon: couldn't save visit {}'s numbers: {error}", measured.row);
+            }
+        });
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -853,8 +1060,10 @@ impl Runs {
             "run",
             Rc::new(move |args, responder: Responder| {
                 let Some(this) = this.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
-                if string(&args, "action") == Some("watch") {
-                    return this.watch(&args, responder);
+                match string(&args, "action") {
+                    Some("watch") => return this.watch(&args, responder),
+                    Some("edit") => return this.edit(&args, responder),
+                    _ => {}
                 }
                 let reply = this.handle(&args);
                 responder.reply(reply);
@@ -894,7 +1103,7 @@ impl Runs {
             Some("pause") => self.pause_run(args),
             Some("skip") => self.skip(args),
             Some("retry") => self.retry(args),
-            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, resume, watch, answer, pause, skip, retry, done, need or command)"))),
+            other => Err(bad(format!("unknown run action {other:?} (start, list, show, log, stop, resume, watch, answer, pause, skip, retry, edit, done, need or command)"))),
         }
     }
 
@@ -981,12 +1190,11 @@ impl Runs {
         let Started { task, repo, worker, branch, base, text, shown, name, request, prompts, owner, by, agent } = started;
         let id = self.db.new_run_id().map_err(failed)?;
         let doc = Doc { request, file: shown.clone(), worker: worker.clone(), base: base.clone(), revision: 1, taken: vec![0; pipeline.arrows.len()], next: Some(pipeline.start.clone()), owner, ..Doc::default() };
-        let budget = pipeline.budget.as_ref().map_or(Value::Null, |b| json!({ "sessions": b.sessions, "seconds": b.time.map(|t| t.as_secs()) }));
         let mut value = doc.to_value();
-        value["budget"] = budget;
+        value["budget"] = budget_value(&pipeline);
         let row = RunRow { id: id.clone(), task: task.clone(), repo, pipeline: name.clone(), revision_hash: hash(&text), branch: branch.clone(), state: "running".into(), started_at: now(), ended_at: None, outcome: None, doc: value };
         self.db.put_run(&row, Some(("started", Some(&by), &json!({ "pipeline": name, "branch": branch, "base": base, "agent": agent })))).map_err(failed)?;
-        self.db.add_revision(&id, "file", &row.revision_hash, &json!({ "text": text, "file": shown, "prompts": prompts })).map_err(failed)?;
+        self.db.add_revision(&id, "file", &row.revision_hash, &json!({ "text": text, "file": shown, "prompts": prompts, "worst": pipeline.max_sessions(&Sizes::new()) })).map_err(failed)?;
         log!("kanna-daemon: {} runs {name} for {task} on {branch} in {worker}", id);
         let worst = pipeline.max_sessions(&Sizes::new());
         self.live.borrow_mut().push(Live { row, doc, pipeline, visits: vec![], last: None });
@@ -1091,8 +1299,12 @@ impl Runs {
             .flat_map(|l| l.visits.iter())
             .map(|v| json!({ "stage": v.row.stage, "instance": opt(v.row.instance.as_deref()), "kind": v.row.kind, "machine": v.row.machine, "terminal": opt(v.row.terminal.as_deref()), "worktree": opt(v.row.worktree.as_deref()) }))
             .collect();
+        let events = self.db.run_events(&row.id).map_err(failed)?;
+        let stages = self.db.stages(&row.id).map_err(failed)?;
+        let visits = visits.into_iter().zip(&stages).map(|(mut visit, stage)| { visit["interventions"] = json!(pipelines::visit_interventions(stage, &stages, &events)); visit }).collect();
         Ok(Map::from_iter([
             ("run".to_string(), self.row_value(&row)),
+            ("metrics".to_string(), pipelines::numbers(&row, &stages, &events, 0, now()).value()),
             ("revision".to_string(), revision.map_or(Value::Null, |r| json!({ "n": r.n, "by": r.by, "hash": r.hash, "at": num(r.at), "text": r.doc.get("text").cloned().unwrap_or(Value::Null) }))),
             ("visits".to_string(), Value::Array(visits)),
             ("workers".to_string(), Value::Array(workers)),
@@ -1495,7 +1707,7 @@ impl Runs {
         let n = visit.n;
         if let Work::Ask { .. } = &visit.work {
             if late && self.mark_ending(id, n) {
-                self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None });
+                self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None }, None);
             }
             return;
         }
@@ -1509,7 +1721,7 @@ impl Runs {
                 Work::Agent { .. } => self.park(id, n),
                 _ if self.mark_ending(id, n) => {
                     let (id, ended) = (id.to_string(), visit.clone());
-                    self.end_visit(visit, move |this| this.rerun(&id, &ended, "interrupted"));
+                    self.end_visit(visit, move |this, _| this.rerun(&id, &ended, "interrupted"));
                 }
                 _ => {}
             }
@@ -1569,7 +1781,7 @@ impl Runs {
             if !verdicts {
                 return self.stop(id, "stopped", &format!("{stage} timed out before its agent reported it was done"), Some("daemon"), true);
             }
-            return self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None });
+            return self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None }, None);
         }
         let Some(remote) = tasks.worker(worker) else {
             if self.mark_ending(id, n) {
@@ -1635,7 +1847,7 @@ impl Runs {
             ended.note = string(&result, "note").map(String::from);
         }
         tasks.drop_worker(worker);
-        self.finished(id, n, ended);
+        self.finished(id, n, ended, None);
     }
 
     pub fn too_old(self: &Rc<Self>, pane: &str, why: &str) -> bool {
@@ -1749,7 +1961,7 @@ impl Runs {
                 None
             });
             if let Some(row) = parked {
-                log!("kanna-daemon: {id}'s {} is parked, its session {}", row.stage, row.doc["paused"]["session"].as_str().unwrap_or("the folder's latest"));
+                log!("kanna-daemon: {id}'s {} is parked, its session {}", row.stage, row.doc["paused"]["session"].as_str().unwrap_or("unknown, so it starts again from its prompt"));
                 let mut saved = row.clone();
                 saved.doc = json!({ "paused": row.doc["paused"].clone(), "needs": null });
                 let _ = this.db.put_stage(&saved);
@@ -1853,8 +2065,9 @@ impl Runs {
         let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
         let session = visit.row.doc["paused"]["session"].as_str().map(String::from);
         let command = tasks::pipeline_agent(&files, &agent.agent);
-        let first = format!("\"$(cat {})\"", quote(&reply));
-        let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), true, &first));
+        let stage_prompt = visit.row.doc["prompt"].as_str().filter(|_| session.is_none()).map(|p| format!("{} ", quote(p))).unwrap_or_default();
+        let first = format!("\"$(cat {stage_prompt}{})\"", quote(&reply));
+        let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), session.is_some(), &first));
         let paused_at = visit.row.doc["paused"]["at"].as_f64().unwrap_or_else(now);
         let label = visit.label();
         self.update(&run.id, |live| {
@@ -1919,7 +2132,7 @@ impl Runs {
             Some(("answered", Some(by.clone()), json!({ "stage": stage, "answer": said, "note": note })))
         });
         log!("kanna-daemon: {}'s {stage} is answered {said} by the {by}", row.id);
-        self.finished(&row.id, visit.n, Ended { verdict: Some(verdict), shown: verdict.name(), answer: note.clone(), feedback: note.clone(), full: String::new(), failures: None, note: None, by: Some(by.clone()) });
+        self.finished(&row.id, visit.n, Ended { verdict: Some(verdict), shown: verdict.name(), answer: note.clone(), feedback: note.clone(), full: String::new(), failures: None, note: None, by: Some(by.clone()) }, None);
         Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage)), ("answer".to_string(), json!(said)), ("by".to_string(), json!(by))]))
     }
 
@@ -1979,7 +2192,7 @@ impl Runs {
         });
         log!("kanna-daemon: {}'s {} is skipped by the {by}", row.id, visit.label());
         let (id, n) = (row.id.clone(), visit.n);
-        self.end_visit(&visit, move |this| this.finished(&id, n, ended));
+        self.end_visit(&visit, move |this, said| this.finished(&id, n, ended, said));
         Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage.name))]))
     }
 
@@ -1992,34 +2205,34 @@ impl Runs {
         });
         log!("kanna-daemon: {}'s {} runs again for the {by}", row.id, visit.label());
         let (id, ended) = (row.id.clone(), visit.clone());
-        self.end_visit(&visit, move |this| this.rerun(&id, &ended, "retried"));
+        self.end_visit(&visit, move |this, _| this.rerun(&id, &ended, "retried"));
         Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("stage".to_string(), json!(stage.name))]))
     }
 
-    fn end_visit(self: &Rc<Self>, visit: &Visit, then: impl FnOnce(&Rc<Self>) + 'static) {
+    fn end_visit(self: &Rc<Self>, visit: &Visit, then: impl FnOnce(&Rc<Self>, Option<String>) + 'static) {
         let this = Rc::downgrade(self);
         let pane = visit.row.terminal.clone().filter(|_| !visit.paused && !matches!(visit.work, Work::Remote { .. }));
         if let (Work::Remote { worker }, Some(tasks)) = (&visit.work, self.tasks.upgrade()) {
             tasks.drop_worker(worker);
         }
         let closing = pane.clone();
-        let finish = move || {
+        let finish = move |said: Option<String>| {
             let Some(this) = this.upgrade() else { return };
             if let Some(pane) = &closing {
                 this.close(pane);
             }
-            then(&this);
+            then(&this, said);
         };
         match (&visit.work, pane) {
             (Work::Agent { agent }, Some(pane)) => match self.tasks.upgrade() {
-                Some(tasks) => tasks.end_agent(&pane, agent, move |_| finish()),
-                None => finish(),
+                Some(tasks) => tasks.end_agent(&pane, agent, finish),
+                None => finish(None),
             },
             (Work::Command { .. }, Some(pane)) => match self.core.upgrade().filter(|core| alive(core, &pane)) {
-                Some(core) => core.end(&pane, move |_| finish()),
-                None => finish(),
+                Some(core) => core.end(&pane, move |_| finish(None)),
+                None => finish(None),
             },
-            _ => finish(),
+            _ => finish(None),
         }
     }
 
@@ -2153,10 +2366,10 @@ impl Runs {
 
     fn quit_then(self: &Rc<Self>, id: &str, n: u32, pane: &str, agent: &str, ended: Ended) {
         let (this, id, closing) = (Rc::downgrade(self), id.to_string(), pane.to_string());
-        let finish = move |_: Option<String>| {
+        let finish = move |said: Option<String>| {
             let Some(this) = this.upgrade() else { return };
             this.retire(&id, &closing);
-            this.finished(&id, n, ended);
+            this.finished(&id, n, ended, said);
         };
         match self.tasks.upgrade() {
             Some(tasks) => tasks.end_agent(pane, agent, finish),
@@ -2210,7 +2423,7 @@ impl Runs {
         let finish = move || {
             let Some(this) = this.upgrade() else { return };
             this.retire(&id, &closing);
-            this.finished(&id, n, ended);
+            this.finished(&id, n, ended, None);
         };
         match self.core.upgrade().filter(|core| alive(core, pane)) {
             Some(core) => core.end(pane, move |_| finish()),
@@ -2233,6 +2446,9 @@ impl Runs {
         row.verdict = Some(verdict.into());
         if row.id != 0 {
             let _ = self.db.put_stage(&row);
+        }
+        if let Some(repo) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.repo.clone()) {
+            self.measure(Measuring::of(&row, &repo, None, None));
         }
         let (stage, n) = (row.stage.clone(), visit.n);
         self.update(id, |live| {
@@ -2590,13 +2806,15 @@ impl Runs {
         self.tell(id, &format!("{name} asks: {question}\nAsk the user in your chat, and answer as they say: `kanna run answer {id} yes \"NOTE\"` or `kanna run answer {id} no \"NOTE\"` (the note goes to the next stage). The task shows needs you until one of you answers."));
     }
 
-    fn finished(self: &Rc<Self>, id: &str, n: u32, ended: Ended) {
+    fn finished(self: &Rc<Self>, id: &str, n: u32, ended: Ended, said: Option<String>) {
         let Some(visit) = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit(n).cloned()) else { return };
         self.drop_job(&visit);
         let worktree = visit.worktree();
         let end = git(Path::new(&worktree), &["rev-parse", "--verify", "HEAD"]).unwrap_or_default();
         let start = string(&visit.row.doc, "start").unwrap_or("").to_string();
         let commits = if start.is_empty() || end.is_empty() { 0 } else { git(Path::new(&worktree), &["rev-list", "--count", &format!("{start}..{end}")]).ok().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0) };
+        let Some(repo) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.repo.clone()) else { return };
+        let measuring = Measuring::of(&visit.row, &repo, said, Some(end.clone()));
         let mut row = visit.row.clone();
         row.ended_at = Some(now());
         row.verdict = Some(ended.shown.to_string());
@@ -2609,10 +2827,19 @@ impl Runs {
             answer.truncate(cut);
         }
         let score = matches!(visit.role, Role::Score(..)).then(|| score_of(&fs::read_to_string(&ended.full).unwrap_or_default(), ended.verdict));
-        row.doc = json!({ "answer": answer, "feedback": ended.feedback, "failures": ended.failures, "note": opt(ended.note.as_deref()), "end": end, "commits": commits, "score": score, "by": opt(ended.by.as_deref()) });
+        let failed_verdict = ended.verdict == Some(Verdict::Fail);
+        let failing = ended.failures.as_ref().filter(|_| failed_verdict).map(|lines| failing_tests(lines));
+        let mut kept = json!({ "answer": answer, "feedback": ended.feedback, "failures": ended.failures, "note": opt(ended.note.as_deref()), "end": end, "commits": commits, "score": score, "by": opt(ended.by.as_deref()), "feedbackSize": ended.feedback.len(), "failing": failing, "findings": findings(&ended.answer) });
+        for key in ["question", "replies", "waited", "log"] {
+            if let Some(value) = row.doc.get(key) {
+                kept[key] = value.clone();
+            }
+        }
+        row.doc = kept;
         if let Err(error) = self.db.put_stage(&row) {
             log!("kanna-daemon: couldn't save {id}'s {} visit: {error}", visit.label());
         }
+        self.measure(measuring);
         log!("kanna-daemon: {id}: {}'s visit ended {}{}", visit.label(), ended.shown, score.map_or(String::new(), |s| format!(", score {s}")));
         if ends_owned(self.owned(id), ended.note.as_deref()) {
             let stage = visit.label();
@@ -2778,7 +3005,7 @@ impl Runs {
     }
 
     fn advance(self: &Rc<Self>, id: &str, step: &Step, ended: Ended) {
-        let Some((pipeline, mut doc, branch)) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| (l.pipeline.clone(), l.doc.clone(), l.row.branch.clone())) else { return };
+        let Some((mut pipeline, mut doc, branch)) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| (l.pipeline.clone(), l.doc.clone(), l.row.branch.clone())) else { return };
         let stage = step.stage.clone();
         let agent = pipeline.stage(&stage).is_some_and(|s| s.agent().is_some());
         if agent {
@@ -2794,6 +3021,18 @@ impl Runs {
                 }
             }
         }
+        let block = Some(&ended.answer).filter(|_| agent).and_then(|answer| kanna_pipe::kojo_block(answer));
+        let emitted = block.map(|block| self.emit(id, &pipeline, &doc.worker, &stage, &block));
+        match &emitted {
+            Some(Ok((n, what))) => {
+                if let Some(live) = self.live.borrow().iter().find(|l| l.row.id == id) {
+                    (pipeline, doc.taken, doc.revision) = (live.pipeline.clone(), live.doc.taken.clone(), live.doc.revision);
+                }
+                self.patch_row(id, step.row, json!({ "revision": { "n": n, "summary": what } }));
+            }
+            Some(Err(errors)) => self.patch_row(id, step.row, json!({ "refused": errors })),
+            None => {}
+        }
         let worker = PathBuf::from(&doc.worker);
         let worker = worker.as_path();
         let end = git(worker, &["rev-parse", "--verify", "HEAD"]).unwrap_or_default();
@@ -2807,6 +3046,9 @@ impl Runs {
         log!("kanna-daemon: {id}: {stage} ended {} → {}", ended.shown, arrow.as_str().unwrap_or("no arrow"));
         let asked = pipeline.stage(&stage).is_some_and(|s| matches!(s.kind, Kind::Ask { .. }));
         doc.feedback = carried(&next, &ended, &stage, asked);
+        if let (Some(Err(errors)), Next::Stage { .. }) = (&emitted, &next) {
+            doc.feedback = Some(refusal(&stage, errors, doc.feedback.take()));
+        }
         let event = json!({ "stage": stage, "visit": step.visit, "verdict": ended.shown, "next": arrow, "commits": commits, "note": opt(ended.note.as_deref()) });
         if let Next::Stage { name, reset: true } = &next {
             if let Some(start) = doc.starts.get(name).cloned() {
@@ -2868,6 +3110,9 @@ impl Runs {
                 row.ended_at = Some(now());
                 row.verdict = Some("stopped".into());
                 let _ = self.db.put_stage(&row);
+                if let Some(repo) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.repo.clone()) {
+                    self.measure(Measuring::of(&row, &repo, None, None));
+                }
             }
             if let Work::Remote { worker } = &visit.work {
                 if let Some(tasks) = self.tasks.upgrade() {
@@ -3000,6 +3245,158 @@ impl Runs {
         self.tell(id, &format!("handed back: {summary}. {note}. `kanna run show {id}` has its visits."));
     }
 
+    fn context(&self, id: &str, worker: &str) -> Context {
+        let kept = self.db.revisions(id).ok().and_then(|r| r.last().and_then(|r| r.doc.get("prompts").cloned())).unwrap_or(Value::Null);
+        let mut prompts: BTreeMap<String, String> = kept.as_object().map_or_else(BTreeMap::new, |m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect());
+        for file in fs::read_dir(Path::new(worker).join(".kanna/prompts")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")) {
+            if let (Some(name), Ok(text)) = (file.file_stem().map(|s| s.to_string_lossy().into_owned()), fs::read_to_string(&file)) {
+                prompts.entry(name).or_insert(text);
+            }
+        }
+        let (machines, roles) = self.tasks.upgrade().map(|tasks| tasks.placements()).unwrap_or_default();
+        Context { prompts, machine: Some(self.host.clone()), machines, roles, ..Context::default() }
+    }
+
+    fn adopt(&self, id: &str, by: &str, revision: kanna_pipe::Revision, context: &Context, more: Value) -> Result<(i64, String), String> {
+        let Some((before, file, worker)) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| (l.pipeline.clone(), l.doc.file.clone(), l.doc.worker.clone())) else { return Err(format!("{id} has ended")) };
+        let after = revision.pipeline.clone();
+        let (hash, what) = (hash(&after.text), changes(&before, &after));
+        let lines = kanna_pipe::diff(&before.text, &after.text);
+        let count = |sign: char| lines.iter().filter(|c| c.sign == sign).count();
+        let diff: Vec<Value> = lines.iter().map(|c| json!([c.sign.to_string(), c.line])).collect();
+        let mut doc = json!({ "text": after.text, "file": file, "prompts": context.prompts, "diff": diff, "summary": what, "added": count('+'), "removed": count('-'), "worst": after.max_sessions(&Sizes::new()) });
+        patch(&mut doc, more);
+        let n = self.db.add_revision(id, by, &hash, &doc).map_err(|e| format!("can't save the revision: {e}"))?;
+        let yours = !by.starts_with("stage:");
+        let event = json!({ "n": n, "hash": hash, "summary": what });
+        self.update(id, |live| {
+            live.doc.taken = revision.taken(&live.doc.taken);
+            live.doc.revision = n;
+            live.row.revision_hash = hash.clone();
+            live.row.doc["budget"] = budget_value(&after);
+            live.pipeline = after.clone();
+            for visit in live.visits.iter_mut() {
+                visit.within = after.stage(&visit.row.stage).and_then(|s| s.within);
+            }
+            if yours {
+                intervene(live, "revision");
+            }
+            Some(("revision", Some(by.to_string()), event))
+        });
+        let draft = draft_path(&worker);
+        if is_plain_file(&draft) && fs::read_to_string(&draft).is_ok_and(|text| text == before.text) {
+            let _ = write_draft(&worker, &after.text);
+        }
+        log!("kanna-daemon: {id} takes revision {n} by {by}: {what}");
+        Ok((n, what))
+    }
+
+    fn refuse(&self, id: &str, by: &str, errors: &[String], more: Value) {
+        log!("kanna-daemon: {id} refuses a revision by {by}: {}", errors.join("; "));
+        let mut event = json!({ "errors": errors });
+        patch(&mut event, more);
+        self.update(id, |_| Some(("refused", Some(by.to_string()), event)));
+    }
+
+    fn emit(&self, id: &str, pipeline: &Pipeline, worker: &str, stage: &str, block: &str) -> Result<(i64, String), Vec<String>> {
+        let by = format!("stage:{stage}");
+        let context = self.context(id, worker);
+        let adopted = emit_errors(pipeline, stage, block, &context).and_then(|revision| self.adopt(id, &by, revision, &context, json!({ "block": block })).map_err(|error| vec![error]));
+        if let Err(errors) = &adopted {
+            self.refuse(id, &by, errors, json!({ "stage": stage, "block": block }));
+        }
+        adopted
+    }
+
+    fn draft_pane(&self, draft: &str) -> Option<String> {
+        let core = self.core.upgrade()?;
+        core.with_panes(|panes| panes.iter().find(|p| p.kind == PaneType::Code && p.path.as_deref() == Some(draft) && !matches!(p.state, PaneState::Exited | PaneState::Failed)).map(|p| p.id.clone()))
+    }
+
+    fn edit(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let row = match self.find_live(args).and_then(|row| self.live_of(&row).map(|_| row)) {
+            Ok(row) => row,
+            Err(error) => return responder.reply(Err(error)),
+        };
+        if string(args, "text").is_some() {
+            return responder.reply(self.apply_edit(&row, args));
+        }
+        let Some((text, worker, owned, n)) = self.live.borrow().iter().find(|l| l.row.id == row.id).map(|l| (l.pipeline.text.clone(), l.doc.worker.clone(), l.doc.owner.is_some(), l.doc.revision)) else { return responder.reply(Err(KmuxError::new("ended", format!("{} has ended", row.id)))) };
+        let draft = draft_path(&worker);
+        if !is_plain_file(&draft) {
+            if let Err(error) = write_draft(&worker, &text) {
+                return responder.reply(Err(failed(format!("can't write {}: {error}", draft.display()))));
+            }
+        }
+        let file = draft.to_string_lossy().into_owned();
+        let out = Map::from_iter([("run".to_string(), json!(row.id)), ("revision".to_string(), json!(n)), ("file".to_string(), json!(file))]);
+        let Some(core) = self.core.upgrade() else { return responder.reply(Ok(out)) };
+        let request = match (self.draft_pane(&file), owned) {
+            (Some(pane), _) => json!({ "cmd": "focus", "args": { "pane": pane } }),
+            (None, false) => json!({ "cmd": "open", "args": { "type": "code", "path": file, "workspace": row.task, "tab": true, "wait": false } }),
+            (None, true) => return responder.reply(Ok(out)),
+        };
+        let shown = self.draft_pane(&file);
+        core.handle(request, move |reply| {
+            let mut out = out;
+            let pane = shown.or_else(|| reply.get("pane").and_then(|p| string(p, "id")).map(String::from));
+            match (reply.get("ok") == Some(&Value::Bool(true)), pane) {
+                (true, Some(pane)) => out.insert("pane".to_string(), json!(pane)),
+                _ => out.insert("unshown".to_string(), json!(reply.get("error").and_then(|e| string(e, "message")).unwrap_or("no pane opened"))),
+            };
+            responder.reply(Ok(out));
+        });
+    }
+
+    fn apply_edit(self: &Rc<Self>, row: &RunRow, args: &Value) -> Result<Map, KmuxError> {
+        let text = string(args, "text").unwrap_or("");
+        let shown = string(args, "file").unwrap_or("the edit");
+        let by = self.who(args, &row.task);
+        let (state, doc, visit, _) = self.live_of(row)?;
+        let current = self.pipeline_of(row).ok_or_else(|| failed(format!("{}'s pipeline doesn't parse any more", row.id)))?;
+        if text == current.text {
+            return Err(KmuxError::new("unchanged", format!("{shown} is {}'s revision {} as it is: nothing to apply", row.id, doc.revision)));
+        }
+        let at = visit.first().map(|v| v.row.stage.clone()).or_else(|| doc.step.as_ref().map(|s| s.stage.clone())).or_else(|| doc.next.clone());
+        let context = self.context(&row.id, &doc.worker);
+        let draft = draft_path(&doc.worker).to_string_lossy().into_owned();
+        let pane = Some(shown).filter(|shown| *shown == draft).and_then(|_| self.draft_pane(&draft));
+        let checked = edit_errors(&current, text, &context, at.as_deref());
+        let adopted = checked.and_then(|revision| self.adopt(&row.id, &by, revision, &context, Value::Null).map_err(|error| vec![(1, error)]));
+        let (n, what) = match adopted {
+            Ok(adopted) => adopted,
+            Err(errors) => {
+                let lines: Vec<String> = errors.iter().map(|(line, message)| format!("{shown}:{line}: {message}")).collect();
+                let name = Path::new(shown).file_name().map_or_else(|| shown.to_string(), |n| n.to_string_lossy().into_owned());
+                let brief: Vec<String> = errors.iter().map(|(line, message)| format!("{name}:{line}: {message}")).collect();
+                self.refuse(&row.id, &by, &brief, json!({ "text": text, "file": shown }));
+                if let (Some(pane), Some(core)) = (pane, self.core.upgrade()) {
+                    let line = errors.iter().map(|(line, _)| *line).min().unwrap_or(1).max(1);
+                    let said = format!("Not applied: {} is still at revision {}.\n{}", row.id, doc.revision, errors.iter().map(|(line, message)| wrapped(&format!("line {line}: {message}"), 72)).collect::<Vec<_>>().join("\n"));
+                    core.handle(json!({ "cmd": "comment", "args": { "path": draft, "line": line, "last": line, "text": said, "pane": pane } }), |reply| {
+                        if let Some(error) = reply.get("error").and_then(|e| string(e, "message")) {
+                            log!("kanna-daemon: couldn't show the edit's errors in its pane: {error}");
+                        }
+                    });
+                }
+                return Err(KmuxError::new("invalid", lines.join("\n")));
+            }
+        };
+        if let (Some(pane), Some(core)) = (pane, self.core.upgrade()) {
+            core.handle(json!({ "cmd": "close", "args": { "pane": pane } }), |_| {});
+        }
+        if state == "waiting" && visit.is_empty() && doc.step.is_none() {
+            self.update(&row.id, |live| {
+                live.row.state = "running".into();
+                live.doc.why = None;
+                Some(("resumed", Some(by.clone()), json!({ "next": live.doc.next, "why": format!("revision {n}") })))
+            });
+            self.soon.set(true);
+        }
+        let worst = self.pipeline_of(row).map(|p| p.max_sessions(&Sizes::new()));
+        Ok(Map::from_iter([("run".to_string(), json!(row.id)), ("revision".to_string(), json!(n)), ("by".to_string(), json!(by)), ("summary".to_string(), json!(what)), ("worst".to_string(), json!(worst))]))
+    }
+
     fn pipeline_of(&self, row: &RunRow) -> Option<Pipeline> {
         if let Some(live) = self.live.borrow().iter().find(|l| l.row.id == row.id) {
             return Some(live.pipeline.clone());
@@ -3023,7 +3420,7 @@ impl Runs {
         let pipeline = self.pipeline_of(&row).ok_or_else(|| failed(format!("{id}'s pipeline doesn't parse any more")))?;
         let stages = self.db.stages(id).map_err(failed)?;
         let events = self.db.run_events(id).map_err(failed)?;
-        let revision = self.db.revisions(id).map_err(failed)?.pop();
+        let revisions = self.db.revisions(id).map_err(failed)?;
         let task = self.tasks.upgrade().and_then(|t| t.entry(&row.task));
         let lines = self.lines(&row);
         Ok(run_notice::notice(&run_notice::Inputs {
@@ -3031,7 +3428,7 @@ impl Runs {
             pipeline: &pipeline,
             stages: &stages,
             events: &events,
-            revision: revision.as_ref(),
+            revisions: &revisions,
             task_name: task.as_ref().and_then(|t| t.name.as_deref()),
             lines,
             now: now(),
@@ -3353,6 +3750,77 @@ mod tests {
         assert_eq!(Doc::from_value(&doc.to_value()), doc);
         assert_eq!(Role::from_value(&Role::Score(Some(1), false).to_value()), Role::Score(Some(1), false));
         assert_eq!(Role::from_value(&Role::Main(None).to_value()), Role::Main(None));
+    }
+
+    #[test]
+    fn findings_come_from_the_block_named_findings_by_severity() {
+        let answer = "All in all:\n```json name=findings\n[{\"severity\": \"bug\", \"file\": \"a.rs\", \"line\": 1, \"what\": \"x\"}, {\"severity\": \"nit\"}, {\"severity\": \"nit\"}, {\"what\": \"y\"}]\n```\nfail";
+        assert_eq!(findings(answer), Some(BTreeMap::from([("bug".to_string(), 1), ("nit".to_string(), 2), ("unrated".to_string(), 1)])));
+        assert_eq!(findings("```json name=findings\n[]\n```"), Some(BTreeMap::new()), "a review that found nothing still counts as a review");
+        assert_eq!(findings("no block"), None);
+        assert_eq!(findings("```json name=findings\nnot json\n```"), None);
+    }
+
+    #[test]
+    fn failing_tests_are_the_failure_lines_without_their_summaries() {
+        let output = "test a ... ok\ntest gutter_colors ... FAILED\ntest diff_theme ... FAILED\n\nfailures:\ntest result: FAILED. 3 passed; 2 failed; 0 ignored\nerror: test failed, to rerun pass `-p x`\n";
+        let lines = failure_lines(output);
+        assert_eq!(failing_tests(&lines), 2, "{lines:?}");
+    }
+
+    #[test]
+    fn a_stage_s_block_adds_to_the_pipeline_or_is_refused_with_why() {
+        let p = pipeline("budget = 4 sessions\nplan = claude emits\ncheck = run true\nplan -> check\ncheck -> done\n");
+        let context = Context { prompts: BTreeMap::from([("plan".to_string(), String::new())]), ..Context::default() };
+        let revision = emit_errors(&p, "plan", "lint = run true\nplan -> lint -> check", &context).unwrap();
+        assert_eq!(revision.pipeline.text, "budget = 4 sessions\nplan = claude emits\ncheck = run true\nlint = run true\nplan -> lint\nplan -> check\ncheck -> done\nlint -> check\n");
+        assert_eq!(changes(&p, &revision.pipeline), "added lint · 2 arrows added");
+        let mut doc = Doc { taken: vec![0, 0], ..Doc::default() };
+        doc.taken = revision.taken(&doc.taken);
+        assert_eq!(decide(&revision.pipeline, &mut doc, "plan", None, None), Next::Stage { name: "lint".into(), reset: false });
+        assert_eq!(emit_errors(&p, "plan", "check = run false", &context).unwrap_err(), ["the kojo block:1: stage 'check' exists already; a kojo block can only add stages"]);
+        assert_eq!(emit_errors(&p, "plan", "more = claude prompt plan resume plan\nplan -> more -> check", &context).unwrap_err(), ["the merged pipeline:4: more uses resume, which runs can't do yet"]);
+        assert_eq!(emit_errors(&p, "check", "lint = run true", &context).unwrap_err(), ["the kojo block:1: stage 'check' has no emits, so its answer can't change the pipeline"]);
+        let said = refusal("plan", &["the kojo block:1: no".to_string()], None);
+        assert_eq!((said.stage.as_str(), said.text.as_str()), ("plan", "Kanna refused the kojo block in plan's answer, so the run's pipeline is as it was:\nthe kojo block:1: no"));
+        let kept = refusal("plan", &["e".to_string()], Some(Feedback { stage: "plan".into(), text: "The plan.".into(), full: "/f".into() }));
+        assert!(kept.text.ends_with("\n\nThe plan.") && kept.full == "/f");
+    }
+
+    #[test]
+    fn an_edit_is_checked_whole_and_can_t_remove_the_stage_the_run_is_at() {
+        let p = pipeline("budget = 4 sessions\nbuild = claude\ncheck = run true\nbuild -> check\ncheck -[fail, max 2]-> build\ncheck -> done\n");
+        let context = Context { prompts: BTreeMap::from([("build".to_string(), String::new())]), ..Context::default() };
+        let text = p.text.replace("max 2", "max 1").replace("budget = 4", "budget = 3");
+        let revision = edit_errors(&p, &text, &context, Some("check")).unwrap();
+        assert_eq!(revision.taken(&[2, 1, 1]), [2, 0, 1]);
+        assert_eq!(changes(&p, &revision.pipeline), "1 arrow added · 1 arrow removed · changed the budget");
+        assert_eq!(changes(&p, &pipeline(&format!("# why\n{}", p.text))), "comments and spacing only");
+        assert_eq!(wrapped("line 8: this loop has no max", 16), "line 8: this\nloop has no max");
+        assert_eq!(edit_errors(&p, "build = claude\nbuild -> done\n", &context, Some("check")).unwrap_err(), [(1, "the run is at check, so an edit can't remove it".to_string())]);
+        assert_eq!(edit_errors(&p, &p.text.replace("max 2", "max 9"), &context, None).unwrap_err().len(), 1);
+        assert_eq!(edit_errors(&p, "build = claude\nbuild -> nowhere\n", &context, None).unwrap_err()[0].0, 2);
+        assert_eq!(edit_errors(&p, &p.text.replace("build = claude", "build = claude resume build"), &context, None).unwrap_err(), [(2, "build uses resume, which runs can't do yet".to_string())]);
+    }
+
+    #[test]
+    fn a_draft_is_never_written_through_a_link() {
+        let folder = std::env::temp_dir().join(format!("kanna-draft-{}-{}", std::process::id(), now()));
+        let (worker, elsewhere) = (folder.join("worker"), folder.join("elsewhere"));
+        fs::create_dir_all(worker.join(SCRATCH)).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("kept.txt"), "kept").unwrap();
+        let (worker, draft) = (worker.to_string_lossy().into_owned(), draft_path(&worker.to_string_lossy()));
+        std::os::unix::fs::symlink(elsewhere.join("kept.txt"), &draft).unwrap();
+        assert!(!is_plain_file(&draft));
+        write_draft(&worker, "a = run true\n").unwrap();
+        assert_eq!(fs::read_to_string(elsewhere.join("kept.txt")).unwrap(), "kept");
+        assert!(is_plain_file(&draft) && fs::read_to_string(&draft).unwrap() == "a = run true\n");
+        fs::remove_dir_all(Path::new(&worker).join(".kanna")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, Path::new(&worker).join(".kanna")).unwrap();
+        assert!(write_draft(&worker, "x").is_err());
+        assert!(!elsewhere.join("tmp").exists());
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]

@@ -326,6 +326,7 @@ final class Contents {
                 for (key, value) in args { call[key] = .string(value) }
                 self?.onCall?("run", call) { answer in
                     if answer["ok"]?.bool != true { view?.flash(answer["error"]?["message"]?.string ?? "couldn't \(action) the run") }
+                    else if action == "edit", let file = answer["file"]?.string { view?.say("\((file as NSString).lastPathComponent) is read-only here: edit the file, then kanna run edit FILE applies it") }
                 }
             }
             runContents[id] = runID
@@ -770,6 +771,12 @@ final class Contents {
         notice.startedBy = json["startedBy"]?.string ?? "you"
         if let revision = json["revision"], let n = revision["n"]?.number {
             notice.revision = (Int(n), revision["by"]?.string ?? "file", revision["at"]?.number ?? 0)
+        }
+        notice.revisions = (json["revisions"]?.array ?? []).map { r in
+            RunRevision(n: r["n"]?.number.map { Int($0) }, by: r["by"]?.string ?? "user", at: r["at"]?.number ?? 0, summary: r["summary"]?.string, worst: r["worst"]?.number.map { Int($0) },
+                        budget: r["budget"]?.number.map { Int($0) },
+                        diff: (r["diff"]?.array ?? []).compactMap { line in line.array.flatMap { $0.count == 2 ? RunDiffLine(sign: $0[0].string ?? " ", text: $0[1].string ?? "") : nil } },
+                        errors: (r["errors"]?.array ?? []).compactMap(\.string))
         }
         if let place = json["place"] {
             notice.place = (place["stage"]?.string ?? "", Int(place["at"]?.number ?? 0), Int(place["of"]?.number ?? 0))

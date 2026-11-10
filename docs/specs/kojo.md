@@ -1,6 +1,6 @@
 # Kojo
 
-**Status:** the language is built (`crates/kanna-pipe`: parse, check, `pick`, `worst`, revisions; `kanna pipeline check` and `list`); runs take every stage and attribute but `emits` and `resume` ([software factory §6](software-factory.md#6-how-its-built), [run fan-out](run-fan-out.md)) · **Part of:** [software factory](software-factory.md) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#define`) · **Examples:** [`.kanna/pipelines/`](../../.kanna/pipelines/) · **From:** kojo's factory language ([research](../research/software-factory.md#1-kojo))
+**Status:** the language is built (`crates/kanna-pipe`: parse, check, `pick`, `worst`, revisions; `kanna pipeline check` and `list`); runs take every stage and attribute but `resume` ([software factory §6](software-factory.md#6-how-its-built), [run fan-out](run-fan-out.md), [pipeline revisions](pipeline-revisions.md)) · **Part of:** [software factory](software-factory.md) · **Mockup:** [`references/mockups/pipeline.html`](../../references/mockups/pipeline.html) (`#define`) · **Examples:** [`.kanna/pipelines/`](../../.kanna/pipelines/) · **From:** kojo's factory language ([research](../research/software-factory.md#1-kojo))
 
 Kojo is the language software-factory pipelines are written in. A pipeline is a short text file, `.kanna/pipelines/NAME.kojo`, that names its **stages** and joins them with **arrows**. A stage is an agent session, a command, a question for you, or the join of a fan-out. A run never merges to main: it hands its branch back to the task's worktree, where you review it and merge it as any task's work ([software factory](software-factory.md#1-what-a-run-is)). Arrows carry conditions and bounds, so a pipeline always ends and its worst-case cost is known before it runs. The daemon reads, checks and runs it ([software factory](software-factory.md)).
 
@@ -145,7 +145,7 @@ sequenceDiagram
     else invalid
         D->>D: refused and recorded, the error is plan's feedback
     end
-    U->>D: kanna run edit RUN, saved from a code pane
+    U->>D: kanna run edit RUN FILE, the edited draft
     D->>D: validate, then revision 3, by you
 ```
 
@@ -164,7 +164,7 @@ lint -> build                         ← the rest of the block, appended
 ```
 
 - **Arrow counts carry over** to the new revision: an emitted revision keeps every arrow it didn't add, so each keeps its count; an edit keeps the count of every arrow it left exactly as it was (same ends and options), matched in file order, and an arrow you changed starts at 0.
-- **You** (or the task's agent, when you tell it to) edit the run's current revision in a code pane (`kanna run edit RUN`, or Edit pipeline on the Run tab); saving it makes a revision if it's valid, else the pane shows the errors. Editing the file in the repo changes the next run, not this one.
+- **You** (or the task's agent, when you tell it to) edit the run's current revision, shown in a code pane (`kanna run edit RUN`, or Edit pipeline on the Run tab); applying it makes a revision if it's valid, else the pane shows the errors. The pane can't save a file yet, so the edit is applied from the file ([pipeline revisions §2](pipeline-revisions.md#2-your-edit)). Editing the file in the repo changes the next run, not this one.
 - **Every revision is kept** with who made it and when ([software factory §6](software-factory.md#6-how-its-built)), shown on the Run tab with its diff, and counted as an intervention when it's yours.
 - **Why not child runs or a free-form rewrite:** a child run would be a second task with its own view and metrics for what is one change; a free-form rewrite could drop the gates. Adding stages and arrows under the same validation and budget keeps one graph the user can read, and nothing the file promised can be removed by a stage.
 

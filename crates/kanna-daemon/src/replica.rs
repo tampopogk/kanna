@@ -65,6 +65,10 @@ impl Record {
         self.fields.get(field).map_or(&Value::Null, |(_, value)| value)
     }
 
+    pub fn written(&self, field: &str) -> Option<&Hlc> {
+        self.fields.get(field).map(|(at, _)| at)
+    }
+
     pub fn text(&self, field: &str) -> Option<&str> {
         self.get(field).as_str().filter(|s| !s.is_empty())
     }

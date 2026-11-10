@@ -34,7 +34,6 @@ const PEER_WAIT: Duration = Duration::from_secs(3);
 
 const SCAN_EVERY: u64 = 60;
 
-const STATS_WAIT: Duration = Duration::from_secs(120);
 
 const ACT_WAIT: Duration = Duration::from_secs(20);
 
@@ -409,7 +408,7 @@ impl Phone {
             Ok(path) => path,
             Err(error) => return responder.reply(Err(error)),
         };
-        self.ask(None, "stats", json!({ "repo": path }), STATS_WAIT, move |reply| responder.reply(reply.map(fields)));
+        self.ask(None, "stats", json!({ "repo": path }), ACT_WAIT, move |reply| responder.reply(reply.map(fields)));
     }
 
     fn claim(&self, path: &str) -> Result<(), KmuxError> {
@@ -428,6 +427,12 @@ impl Phone {
     fn path_of(&self, args: &Value) -> Result<String, KmuxError> {
         let repo = string(args, "repo").ok_or_else(|| bad("say which repo"))?;
         self.repos.borrow().get(repo).cloned().ok_or_else(|| KmuxError::new("unknown_repo", format!("{repo} isn't a project on this machine")))
+    }
+
+    pub fn stats_changed(&self, path: &str) {
+        if let Some(repo) = self.identity_of(path) {
+            notify(&json!({ "notice": "stats", "repo": repo }));
+        }
     }
 
     fn identity_of(&self, path: &str) -> Option<String> {
