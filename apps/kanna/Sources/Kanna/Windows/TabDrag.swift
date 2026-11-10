@@ -186,53 +186,40 @@ final class TabDrag {
         let image = bar.image(of: tab)
         let active = source.tab == tab && source.shownPage == nil
         let start = window.convertToScreen(bar.convert(frame, to: nil))
-        ghost = TabGhost(tab: image, preview: Self.preview(of: window, tab: image, active: active), at: start, appearance: window.effectiveAppearance, shown: !quiet)
+        ghost = TabGhost(tab: image, preview: NSImage(size: window.frame.size), at: start, appearance: window.effectiveAppearance, shown: !quiet)
         cursor = NSPoint(x: start.minX + self.grab, y: start.midY)
         over = (source, index)
         bar.setGap(TabBar.Gap(owner: owner, hiding: tab, width: width, index: index), animated: false)
-        if !active, !quiet { drawPreview(of: source) }
+        if !quiet { drawPreview(of: source, active: active) }
     }
 
-    private func drawPreview(of source: WindowController) {
+    private func drawPreview(of source: WindowController, active: Bool) {
         let window = source.window
-        guard let stage = source.stageFrame,
-              let root = app.windowOf(tab: tab)?["tabs"]?.array?.first(where: { $0["id"]?.string == tab })?["root"], root != .null else { return }
-        let base = Snapshot.image(of: window)
-        let size = window.frame.size
+        let entry = app.windowOf(tab: tab)?["tabs"]?.array?.first { $0["id"]?.string == tab }
+        let chrome = TornWindow(window, tab: entry ?? .object(["id": .string(tab)]))
+        let placed = (entry?["root"]).flatMap { $0 == .null ? nil : WindowController.paneFrames($0, in: chrome.body) } ?? []
+        if active, let capture = Snapshot.image(of: window) {
+            ghost.setPreviewImage(chrome.picture(placed.map { pane, frame in
+                let cut = app.panes[pane].flatMap { Snapshot.crop(capture, to: $0, in: window) }
+                return (cut, frame, cut.flatMap(Self.corner))
+            }))
+            return
+        }
+        ghost.setPreviewImage(chrome.picture(placed.map { (nil, $0.frame, nil) }))
+        guard !placed.isEmpty else { return }
         let appearance = window.effectiveAppearance
-        let placed = WindowController.paneFrames(root, in: NSRect(origin: .zero, size: stage.size))
-        Task { [weak self, app] in
-            var drawn: [(CGImage, NSRect)] = []
+        Task { [ghost, app] in
+            var drawn: [(image: CGImage?, frame: NSRect, fill: CGColor?)] = []
             for (pane, frame) in placed {
-                guard let image = await app.drawnOffstage(pane, size: frame.size, appearance: appearance) else { continue }
-                drawn.append((image, frame.offsetBy(dx: stage.minX, dy: stage.minY)))
+                drawn.append((await app.drawnOffstage(pane, size: frame.size, appearance: appearance), frame, nil))
             }
-            guard let self, !drawn.isEmpty else { return }
-            let picture = NSImage(size: size, flipped: false) { rect in
-                if let base { NSGraphicsContext.current?.cgContext.draw(base, in: rect) }
-                appearance.performAsCurrentDrawingAppearance {
-                    NSColor.separatorColor.setFill()
-                    stage.fill()
-                }
-                for (image, frame) in drawn { NSGraphicsContext.current?.cgContext.draw(image, in: frame) }
-                return true
-            }
-            ghost.setPreviewImage(picture)
+            ghost.setPreviewImage(chrome.picture(drawn))
         }
     }
 
-    private static func preview(of window: NSWindow, tab: NSImage?, active: Bool) -> NSImage {
-        let size = window.frame.size
-        if active, let image = Snapshot.image(of: window) { return NSImage(cgImage: image, size: size) }
-        let content = window.contentRect(forFrameRect: window.frame).height
-        return NSImage(size: size, flipped: false) { rect in
-            NSColor.windowBackgroundColor.setFill()
-            rect.fill()
-            NSColor.textBackgroundColor.setFill()
-            NSRect(x: 0, y: 0, width: size.width, height: content - TabBar.height).fill()
-            tab?.draw(at: NSPoint(x: 8, y: content - TabBar.height), from: .zero, operation: .sourceOver, fraction: 1)
-            return true
-        }
+    private static func corner(_ image: CGImage) -> CGColor? {
+        guard image.width > 2, image.height > 2, let pixel = image.cropping(to: CGRect(x: image.width - 2, y: image.height - 2, width: 1, height: 1)) else { return nil }
+        return NSBitmapImageRep(cgImage: pixel).colorAt(x: 0, y: 0)?.cgColor
     }
 
     func move(_ point: NSPoint) {
@@ -398,6 +385,73 @@ final class TabDrag {
             guard t >= 1 else { return false }
             window.alphaValue = 1
             return finished()
+        }
+    }
+}
+
+@MainActor
+struct TornWindow {
+    static let lights = [NSColor(srgbRed: 1, green: 0.373, blue: 0.341, alpha: 1), NSColor(srgbRed: 0.996, green: 0.737, blue: 0.18, alpha: 1), NSColor(srgbRed: 0.157, green: 0.784, blue: 0.251, alpha: 1)]
+
+    let size: NSSize
+    let title: String
+    let titleHeight: CGFloat
+    let appearance: NSAppearance
+    let bar: NSImage?
+    let scale: CGFloat
+
+    init(_ window: NSWindow, tab: JSON) {
+        size = window.frame.size
+        title = tab["title"]?.string ?? tab["id"]?.string ?? ""
+        titleHeight = window.frame.height - window.contentRect(forFrameRect: window.frame).height
+        appearance = window.effectiveAppearance
+        scale = window.backingScaleFactor
+        let tabBar = TabBar(frame: NSRect(x: 0, y: 0, width: size.width, height: TabBar.height))
+        tabBar.appearance = appearance
+        tabBar.show(.object(["tabs": .array([tab]), "tab": tab["id"] ?? .null]))
+        tabBar.layoutSubtreeIfNeeded()
+        if let rep = tabBar.bitmapImageRepForCachingDisplay(in: tabBar.bounds) {
+            tabBar.cacheDisplay(in: tabBar.bounds, to: rep)
+            let image = NSImage(size: tabBar.bounds.size)
+            image.addRepresentation(rep)
+            bar = image
+        } else {
+            bar = nil
+        }
+    }
+
+    var body: NSRect { NSRect(x: 0, y: 0, width: size.width, height: max(0, size.height - titleHeight - TabBar.height)) }
+
+    func picture(_ panes: [(image: CGImage?, frame: NSRect, fill: CGColor?)]) -> NSImage {
+        let size = size, title = title, titleHeight = titleHeight, appearance = appearance, bar = bar, scale = scale, body = body
+        return NSImage(size: size, flipped: false) { rect in
+            appearance.performAsCurrentDrawingAppearance {
+                guard let context = NSGraphicsContext.current?.cgContext else { return }
+                NSColor.windowBackgroundColor.setFill()
+                rect.fill()
+                NSColor.separatorColor.setFill()
+                body.fill()
+                for (index, color) in Self.lights.enumerated() {
+                    color.setFill()
+                    NSBezierPath(ovalIn: NSRect(x: 9 + CGFloat(index) * 20, y: size.height - titleHeight / 2 - 6, width: 12, height: 12)).fill()
+                }
+                let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.titleBarFont(ofSize: 0), .foregroundColor: NSColor.labelColor]
+                let text = NSAttributedString(string: title, attributes: attributes)
+                let measured = text.size()
+                text.draw(at: NSPoint(x: (size.width - measured.width) / 2, y: size.height - titleHeight / 2 - measured.height / 2))
+                bar?.draw(in: NSRect(x: 0, y: body.maxY, width: size.width, height: TabBar.height))
+                for pane in panes {
+                    context.setFillColor(pane.fill ?? NSColor.textBackgroundColor.cgColor)
+                    context.fill(pane.frame)
+                    guard let image = pane.image else { continue }
+                    let width = CGFloat(image.width) / scale, height = CGFloat(image.height) / scale
+                    context.saveGState()
+                    context.clip(to: pane.frame)
+                    context.draw(image, in: CGRect(x: pane.frame.minX, y: pane.frame.maxY - height, width: width, height: height))
+                    context.restoreGState()
+                }
+            }
+            return true
         }
     }
 }

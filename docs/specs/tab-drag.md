@@ -35,7 +35,7 @@ stateDiagram-v2
 ```
 
 - **In a tab bar:** the tab rides along the bar's row under the cursor, held where it was grabbed and kept within the bar's tabs; the bar's other tabs and + slide aside to open its gap. Its own bar closes up behind it as soon as it leaves.
-- **Out of the bar:** the tab folds into a preview of its window, about a third of its size, hanging from the cursor where the new window would open. The preview shows the tab's own panes in its window, whether or not the tab was selected.
+- **Out of the bar:** the tab folds into a preview of its window, about a third of its size, hanging from the cursor where the new window would open. The preview is the window the tab will become: a title bar with the tab's name, a tab bar holding only that tab, and its panes laid out across the rest, with no docked pane, whether or not the tab was selected.
 
 ![Torn off: the preview of notes.md's window follows the cursor; win-1's bar has closed up](tab-drag-tearoff.png)
 
@@ -67,7 +67,7 @@ With **Reduce Motion** on (System Settings › Accessibility › Display), the d
 ## 4. How it's built
 
 - **`TabDrag`** (`apps/kanna/Sources/Kanna/Windows/TabDrag.swift`) is one drag: it holds the source window, the tab's index there, where it was grabbed, and the bar and gap it's over, and owns the ghost. `AppController.dragTab` makes one, tracks the mouse (`trackDrag`, which also returns on Escape) and drops it.
-- **The ghost** (`TabGhost`) is a borderless panel above the windows holding two pictures: the tab (from the tab bar's drawing) and the window preview. For the selected tab the preview is the window's capture, taken when the drag starts. For any other tab it starts as the tab on a blank window; then each of the tab's panes is drawn off-screen at its size in the window, as [`kanna screenshot`](screenshot.md) draws a hidden pane, laid out by the tab's `root` (which the daemon lists with every tab), and set into the capture's pane area. It crossfades between them as it changes shape.
+- **The ghost** (`TabGhost`) is a borderless panel above the windows holding two pictures: the tab (from the tab bar's drawing) and the window preview (`TornWindow`), drawn when the drag starts at the size of the window the tab came from: a title bar, a tab bar made off-screen with only this tab, and the tab's panes laid out by its `root` (which the daemon lists with every tab). A selected tab's panes are cut from the window's capture, kept at their size from the top left and the rest filled with their own background; any other tab's panes start blank and are drawn off-screen at their new size, as [`kanna screenshot`](screenshot.md) draws a hidden pane, and swapped in when they're done. It crossfades between them as it changes shape.
 - **Gaps** belong to the tab bar: `TabBar.setGap({owner, hiding, width, index})` hides the dragged tab and lays the others out around a gap at `index`, animated or not. The bar keeps its gap when the daemon's layout rebuilds it, so a moved tab arriving under the ghost doesn't jump, and only the drag that set a gap clears it.
 - **Settling** runs a spring on the ghost's frame from a timer on the main run loop's common modes (so it runs inside the mouse-tracking loop too), waits until the tab is in its new bar (up to a second), then clears the gaps and closes the ghost.
 - **A new window** is shown at its final frame but transparent while the ghost grows to that frame; then it shows and the ghost goes. The window's terminals are never laid out at the preview's size.
