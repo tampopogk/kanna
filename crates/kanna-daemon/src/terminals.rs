@@ -733,6 +733,7 @@ impl Terminals {
 
 impl PaneHost for Terminals {
     fn start(&self, pane: &Pane) {
+        self.set_status(&pane.id, None);
         if let Some(leaving) = self.leaving.borrow_mut().get_mut(&pane.id) {
             leaving.start = true;
             return;
@@ -742,7 +743,6 @@ impl PaneHost for Terminals {
         };
         let serial = self.next_serial();
         let spec = self.spec(pane, &id);
-        self.set_status(&pane.id, None);
         match self.spawner.spawn(&spec) {
             Ok(tag) => {
                 let start = Starting { id, pane: pane.id.clone(), serial, command: spec.command, size: (spec.cols, spec.rows), pixels: (0, 0), hung_up: false, stopped: false };
@@ -1118,10 +1118,12 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         };
+        core.with_pane_mut(&id, |pane| pane.status = Some("idle".into()));
         core.handle(json!({"cmd": "restart", "args": {"pane": id, "wait": false}}), |_| {});
         core.turn();
         assert!(spawned.recv_timeout(Duration::from_millis(200)).is_err(), "the old session is still there, so the new one waits");
-        assert_eq!(core.pane(&id).map(|p| p.state), Some(PaneState::Starting));
+        core.turn();
+        assert_eq!(core.pane(&id).map(|p| (p.state, p.status)), Some((PaneState::Starting, None)), "the old run's status goes as it waits, so nothing reads it as the new run's");
         then(&core, &id);
         core.turn();
         session.kill().unwrap();
