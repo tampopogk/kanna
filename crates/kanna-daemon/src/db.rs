@@ -1200,6 +1200,16 @@ impl Db {
         rows.collect()
     }
 
+    pub fn samples_of(&self, repo: &str, metrics: &[&str]) -> rusqlite::Result<Vec<Sample>> {
+        let mut rows = vec![];
+        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and metric = ?2 order by at, commit_id")?;
+        for metric in metrics {
+            let found = statement.query_map(params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))?;
+            rows.extend(found.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(rows)
+    }
+
     pub fn put_samples(&self, repo: &str, samples: &[Sample]) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for sample in samples {
@@ -1225,6 +1235,12 @@ impl Db {
         )?;
         let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
         rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
+    }
+
+    pub fn names(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare("select id, coalesce(json_extract(doc, '$.name'), id) from tasks where repo = ?1")?;
+        let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     pub fn agent_rows(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<AgentRow>> {
@@ -1630,6 +1646,22 @@ impl Db {
             params![stage.id, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string()],
         )?;
         Ok(stage.id)
+    }
+
+    pub fn patch_stage(&self, id: i64, session: Option<&str>, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update run_stages set session = coalesce(session, ?2), doc = json_patch(doc, ?3) where id = ?1", params![id, session, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn patch_run(&self, id: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update runs set doc = json_patch(doc, ?2) where id = ?1", params![id, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn unmeasured(&self) -> rusqlite::Result<Vec<(StageRow, String)>> {
+        let mut statement = self.conn.prepare(&format!("select {COLUMNS}, r.repo from run_stages s join runs r on r.id = s.run where s.ended_at is not null and json_extract(s.doc, '$.measured') is null order by s.id", COLUMNS = STAGE.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ")))?;
+        let rows = statement.query_map([], |r| Ok((stage_row(r)?, r.get(16)?)))?;
+        rows.collect()
     }
 
     pub fn stages(&self, run: &str) -> rusqlite::Result<Vec<StageRow>> {

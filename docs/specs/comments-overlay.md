@@ -24,4 +24,4 @@ The thread list in a markdown or web pane floats over the page. The page is laid
 | The overview's rule without the list | `MarkdownOverviewLayout.shown` |
 | The box kept clear of the list | `boxOrigin` in `MarkdownPaneComments.swift` and `PageMarkup.swift` |
 
-**Tests:** `swift test`: the overview's rule gives the same answer at every width with or without the list. E2e, in `scripts/e2e-kanna.sh` against a private instance: `markdown_overview` turns comments on and checks the layout width and line breaks don't change, and that a 1000 pt pane keeps both the overview and the list; `page_comments` checks the web view's width doesn't change (`debug.web` returns `page_width`).
+**Tests:** `swift test`: the overview's rule gives the same answer at every width with or without the list. E2e, by `scripts/e2e-kanna.sh` against a private instance: `markdown_overview` turns comments on and checks the layout width and line breaks don't change, and that a 1000 pt pane keeps both the overview and the list; `page_comments` checks the web view's width doesn't change (`debug.web` returns `page_width`).

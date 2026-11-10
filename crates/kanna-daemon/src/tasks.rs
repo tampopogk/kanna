@@ -284,6 +284,10 @@ pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     configured(std::slice::from_ref(mine), "pipelines", "agents", read, "an object of agent names to commands").flatten().unwrap_or_else(|| agent.into())
 }
 
+pub fn pricing(files: &[PathBuf]) -> Value {
+    configured(files, "pipelines", "pricing", |value| value.is_object().then(|| value.clone()), "an object of models to their prices per million tokens").unwrap_or(Value::Null)
+}
+
 pub const WORKERS: usize = 3;
 
 pub const WORKERS_MAX: usize = 10;
@@ -513,7 +517,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
 
@@ -548,7 +552,7 @@ fn latest_codex_session(sessions: &Path, folder: &Path, since: Option<SystemTime
     None
 }
 
-fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
+pub fn first_session_since(program: &str, folder: &Path, since: SystemTime) -> Option<String> {
     match agent(program)?.names[0] {
         "codex" => {
             let codex = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()).map_or_else(|| home().join(".codex"), PathBuf::from);
@@ -2016,6 +2020,16 @@ impl Tasks {
         if let Err(error) = self.db.log(&id, &change) {
             log!("kanna-daemon: couldn't save {id}'s {} in {}: {error}", change.what, db::FILE);
         }
+    }
+
+    pub fn stopped_on_shelf(&self) -> Vec<Value> {
+        let Some(core) = self.core.upgrade() else { return vec![] };
+        self.entries
+            .borrow()
+            .iter()
+            .filter(|e| e.held.as_deref().is_none_or(|pane| !alive(&core, pane)))
+            .filter_map(|e| e.workspace.as_ref().map(|ws| json!({ "workspace": ws, "task": e.id, "name": opt(e.name.as_deref()) })))
+            .collect()
     }
 
     pub fn refs(&self) -> Vec<kanna_log::TaskRef> {
@@ -6095,7 +6109,7 @@ mod tests {
         let keys: Vec<&String> = schema["properties"]["agents"]["properties"].as_object().unwrap().keys().collect();
         assert_eq!(keys, ["prompts"]);
         let keys: Vec<&String> = schema["properties"]["pipelines"]["properties"].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["agents", "workers"]);
+        assert_eq!(keys, ["agents", "pricing", "workers"]);
         let workers = &schema["properties"]["pipelines"]["properties"]["workers"];
         assert_eq!((workers["default"].clone(), workers["minimum"].clone(), workers["maximum"].clone()), (json!(WORKERS), json!(1), json!(WORKERS_MAX)));
         let keys: Vec<&String> = schema["properties"]["merge"]["properties"].as_object().unwrap().keys().collect();
@@ -6112,6 +6126,17 @@ mod tests {
         assert_eq!(stage_agent("claude", None, None, Prompts::Ask, Some("u-1"), true, first), format!("claude --resume 'u-1' {first}"));
         assert!(stage_agent("codex", None, None, Prompts::Ask, Some("r-2"), true, first).ends_with(&format!(" resume 'r-2' {first}")));
         assert!(!stage_agent("codex", None, None, Prompts::Ask, None, true, first).contains("resume"));
+    }
+
+    #[test]
+    fn pricing_comes_from_the_repo_s_settings() {
+        let folder = std::env::temp_dir().join(format!("kanna-pricing-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let repo = folder.join("repo.json");
+        fs::write(&repo, r#"{"pipelines": {"pricing": {"gpt": {"in": 2, "out": 8}}}}"#).unwrap();
+        assert_eq!(pricing(&[repo, folder.join("missing.json")]), json!({ "gpt": { "in": 2, "out": 8 } }));
+        assert_eq!(pricing(&[folder.join("missing.json")]), Value::Null);
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]
