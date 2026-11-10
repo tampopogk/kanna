@@ -167,6 +167,7 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
     carries_on_from_its_handoff(&vm, &task, &there_folder, &session);
     assert!(Path::new(&there_folder).join("draft.md").is_file());
 
+    within(30, "its turn on vm to end", || shelf_task(&vm, &task)["running"] == false);
     let session = shelf_task(&vm, &task)["session"].as_str().unwrap().to_string();
     let back = vm.kanna(&["task", "move", &task, "mbp", "--json"]).json();
     let home_again = back["folder"].as_str().unwrap_or_else(|| panic!("{back}")).to_string();

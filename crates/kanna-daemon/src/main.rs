@@ -40,6 +40,7 @@ mod stats;
 mod quality;
 mod coverage;
 mod reader;
+mod run_notice;
 mod runtime;
 mod runs;
 mod schedule;
@@ -119,6 +120,7 @@ enum Shutdown {
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Output { terminal: String, serial: u64 },
+    Typed { terminal: String },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
@@ -159,6 +161,7 @@ impl Event {
         match self {
             Event::Request(..) => "loop.request",
             Event::Output { .. } => "loop.output",
+            Event::Typed { .. } => "loop.typed",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
@@ -435,6 +438,10 @@ fn run() -> Result<(), String> {
             queue.task_closed(task);
         }
     }));
+    let staging = Rc::downgrade(&runs);
+    *tasks.run_of.borrow_mut() = Some(Box::new(move |task| staging.upgrade().and_then(|runs| runs.stage_of(task))));
+    let heeding = wire.clone();
+    *runs.heed.borrow_mut() = Some(Box::new(move |terminal| heeding.heed(terminal)));
     let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
     *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = stopping.upgrade() {
@@ -610,6 +617,7 @@ fn run() -> Result<(), String> {
     tasks.repair_comment_targets();
     tasks.settle_statuses();
     tasks.close_ended_planners();
+    tasks.resume_lost();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -705,6 +713,13 @@ fn run() -> Result<(), String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    app.connect_runs(&runs);
+    let run_link = Rc::downgrade(&app);
+    *runs.on_run.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = run_link.upgrade() {
+            app.run(views, payload);
         }
     }));
     let log_link = Rc::downgrade(&app);
@@ -922,6 +937,11 @@ fn run() -> Result<(), String> {
                 }
                 for conn in noticed.overflowed {
                     app.resync(conn, &terminal);
+                }
+            }
+            Event::Typed { terminal } => {
+                if let Some(pane) = terminals.pane_of(&terminal) {
+                    runs.typed(&pane);
                 }
             }
             Event::Drained { terminal, serial } => {

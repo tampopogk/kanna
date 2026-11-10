@@ -173,6 +173,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panes.onDrag = { [weak self] pane in self?.dragPane(pane) }
         panes.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
+        contents.onBadge = { [weak self] in self?.refresh() }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
         contents.pageZoom = { [weak self] pane in self?.physical.pageZoom(pane) }
@@ -269,6 +270,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
+        link.onRun = { [weak self] content, message in self?.contents.received(run: message, content: content) }
         link.onSchedules = { [weak self] in self?.schedulesChanged(on: machine) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
@@ -336,6 +338,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.subscribeLogs(on: machine)
         contents.subscribeFiles(on: machine)
         contents.subscribeSerials(on: machine)
+        contents.subscribeRuns(on: machine)
         schedulesChanged(on: machine)
         loadRecent()
         layoutChanged()
@@ -683,6 +686,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let frame = NSRect(x: x, y: y, width: w, height: h)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { controller.window.setFrame(frame, display: false) }
         }
+        if let desk = physical.desk(id) {
+            controller.page = desk.page
+            controller.deskTab = desk.tab
+        }
+        controller.onDeskTab = { [weak self] page, tab in self?.physical.setDeskTab(id, page: page, tab: tab) }
         controller.machinesPage.pair = { [weak self, weak controller] in self?.pairPhone(over: controller?.window) }
         controller.machinesPage.revoke = { [weak self, weak controller] name in self?.revokePhone(name, over: controller?.window) }
         controller.onFrameChange = { [weak self] in
@@ -702,7 +710,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refresh()
         }
         controller.tabBar.onSelect = { [weak self, weak controller] tab in
-            if controller?.page != nil {
+            if controller?.shownPage != nil {
                 controller?.page = nil
                 self?.refresh()
             }
@@ -718,6 +726,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
+        controller.tabBar.badge = { [weak self] pane in self?.contents.badge(pane) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
         controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }

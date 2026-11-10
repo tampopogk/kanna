@@ -172,6 +172,14 @@ pub fn numbers(row: &RunRow, stages: &[StageRow], events: &[RunEvent], revision:
     out
 }
 
+pub fn measured(doc: &Value, key: &str) -> Option<f64> {
+    let usage = doc.get("usage").filter(|u| u.is_object())?;
+    match key {
+        "tokens" => Some(["in", "written", "out"].iter().map(|k| usage.get(*k).and_then(Value::as_f64).unwrap_or(0.0)).sum()),
+        _ => usage.get(key).and_then(Value::as_f64),
+    }
+}
+
 impl Numbers {
     pub fn tokens(&self) -> u64 {
         self.input + self.written + self.output

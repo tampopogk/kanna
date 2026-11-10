@@ -425,7 +425,7 @@ pub fn name_out(reply: &mut Value, out: &Value) {
     for task in tasks {
         if let Some(known) = out.as_array().into_iter().flatten().find(|o| o["pane"] == task["id"]) {
             task["task"] = known["id"].clone();
-            for key in ["repo", "merged", "replied", "ready", "claim", "merge", "mainConflicts", "stale", "bases", "branch"] {
+            for key in ["repo", "merged", "replied", "ready", "claim", "merge", "mainConflicts", "stale", "bases", "branch", "run"] {
                 if let Some(value) = known.get(key) {
                     task[key] = value.clone();
                 }
@@ -499,6 +499,10 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 (Some(false), _) => "stopped".to_string(),
                 (_, Some(status)) if status != "exited" => status.to_string(),
                 _ => "running".to_string(),
+            };
+            let state = |t: &Value| match t["run"].as_str() {
+                Some(run) => format!("{} · run: {run}", state(t)),
+                None => state(t),
             };
             let program = |command: &str| command.split_whitespace().next().map(|a| a.rsplit('/').next().unwrap_or(a).to_string()).unwrap_or_default();
             let default = Some(program(reply["agent"].as_str().unwrap_or("claude")));

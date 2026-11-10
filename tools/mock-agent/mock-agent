@@ -480,8 +480,11 @@ def answer(line):
         while HELD:
             text = HELD.pop(0)
             shown(text)
-            for order in re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M):
+            orders = re.findall(r"^\[message from \w+\] mock: (.+)$", text, re.M)
+            for order in orders:
                 answering(order)
+            if not orders:
+                composer()
         BUSY = False
         reported("idle")
 
