@@ -73,6 +73,7 @@ markdown_overview() {
  {"id": "c2", "quote": "Paragraph 40 about the session", "prefix": "", "suffix": "", "line": 200, "state": "resolved", "status": "replied", "messages": [{"who": "you", "text": "Fine.", "at": "2026-10-10T12:00:00"}], "error": null}]}
 JSON
   printf '# Release\n\nA short note that fits.\n' >"$dir/release.md"
+  { printf '# Notes\n\n'; for i in $(seq 12); do printf '## Note %s\n\nA line about the session and the redirect.\n\n' "$i"; done; } >"$dir/notes.md"
   raw '{"id":1,"cmd":"debug.app","args":{"appearance":"dark"}}' >/dev/null
   kanna open --window new md "$dir/login.md" --name longdoc >/dev/null || return 1
   mdo() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"${3:-longdoc}\"${2:-}}}" | field "$1"; }
@@ -96,6 +97,25 @@ JSON
   mdo zoom ',"zoom":1' >/dev/null
   check wait_for 5 eval '(( $(mdo pictures) > pictures ))' || { echo "a text size step didn't draw the picture again: $pictures, then $(mdo pictures)"; return 1; }
   mdo zoom ',"zoom":0' >/dev/null; sleep 0.3
+  local step size
+  for step in 1 1 1 1 1 1 1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1; do
+    mdo zoom ",\"zoom\":$step" >/dev/null; sleep 0.2
+    check test "$(mdo overview.shown)" == True || { echo "at text size $(mdo text_size): the overview hid"; return 1; }
+  done
+  check test "$(mdo text_size)" == 0.5 || { echo "text size $(mdo text_size), expected 0.5"; return 1; }
+  mdo zoom ',"zoom":0' >/dev/null
+  for size in 4 0.5 1; do
+    mdo zoom ",\"page_zoom\":$size" >/dev/null; sleep 0.2
+    check test "$(mdo overview.shown)" == True || { echo "at page zoom $size: the overview hid"; return 1; }
+  done
+  kanna open --window win-1 term --name mdside --split right >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == False ]]' || { echo "half of 1200 pt still shows the overview: width $(mdo width)"; return 1; }
+  mdo zoom ',"zoom":1' >/dev/null; mdo zoom ',"zoom":1' >/dev/null; mdo zoom ',"zoom":1' >/dev/null
+  kanna zoom longdoc >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || { echo "the pane zoomed to the window at text size $(mdo text_size): no overview, width $(mdo width)"; return 1; }
+  kanna zoom longdoc >/dev/null; kanna close mdside >/dev/null
+  mdo zoom ',"zoom":0' >/dev/null
+  check wait_for 5 eval '[[ "$(mdo overview.shown)" == True && "$(mdo width)" == 1200* ]]' || { echo "not back to the whole window: width $(mdo width)"; return 1; }
   pictures="$(mdo pictures)"
   mdo scroll ',"overview_click":3' >/dev/null
   check wait_for 5 eval 'mdattop' || { echo "a click at the top of the thumbnail left the scroll at $(mdo scroll)"; return 1; }
@@ -131,6 +151,12 @@ JSON
   check test "$(mdo overview.wanted '' shortdoc)" == False || { echo "a doc that fits wants the overview"; return 1; }
   check test "$(mdo overview.shown '' shortdoc)" == False || return 1
   kanna close shortdoc >/dev/null
+  kanna open --window win-1 md "$dir/notes.md" --name middoc --tab >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(mdo overview.shown "" middoc)" == True ]]' || { echo "a doc a little taller than the pane: no overview"; return 1; }
+  mdo zoom ',"zoom":-1' middoc >/dev/null; mdo zoom ',"zoom":-1' middoc >/dev/null; mdo zoom ',"zoom":-1' middoc >/dev/null; mdo zoom ',"zoom":-1' middoc >/dev/null; mdo zoom ',"zoom":-1' middoc >/dev/null
+  sleep 0.3
+  check test "$(mdo text_size "" middoc):$(mdo overview.shown "" middoc)" == 0.5:True || { echo "at text size $(mdo text_size "" middoc), where it fits on screen: shown $(mdo overview.shown "" middoc)"; return 1; }
+  kanna close middoc >/dev/null
   mdwin 1500
   check wait_for 5 eval '[[ "$(mdo overview.shown)" == True ]]' || return 1
   local page_width page_lines; page_width="$(mdo layout_width)"; page_lines="$(mdo lines ',"lines":true')"

@@ -122,6 +122,8 @@ message_past_the_limit
 agent_messaging
 agent_too_old
 pipeline_run
+pipeline_fanout
+pipeline_tab
 merge_queue
 pipeline_gates
 desk_news
@@ -140,6 +142,8 @@ phone_chat_codex
 phone_quiz
 keeper_lost
 machine_two_apps
+builds_tab
+machine_ios_pane
 machine_remote_task
 machine_task_by_id
 project_import

@@ -1,9 +1,11 @@
 mod check;
+mod graph;
 mod parse;
 mod revise;
 mod walk;
 
 pub use check::Context;
+pub use graph::{layout, who, Edge, Graph, Node, Route};
 pub use parse::parse;
 pub use revise::{edited, emitted, Revision};
 

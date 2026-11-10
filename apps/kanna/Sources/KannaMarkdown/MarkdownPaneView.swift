@@ -38,6 +38,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
     public let overview = OverviewView()
     public internal(set) var overviewShown = false
     public internal(set) var overviewWanted = false
+    var fullSize: MarkdownFullSizeLayout?
     public internal(set) var pictures = 0
     var revision = 0
     var drawnKey: MarkdownPictureKey?
@@ -223,7 +224,7 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         panel.isHidden = side == 0
         if bar.threads.on != (side > 0) { bar.threads.on = side > 0 }
         panel.frame = NSRect(x: max(0, bounds.width - rule - side), y: 0, width: side, height: height)
-        updateInset()
+        if updateInset(), sides(height: height).overview != shown.overview { needsLayout = true }
         if let y = startScrollY, bounds.height > 0 {
             startScrollY = nil
             scroll(toY: y)
@@ -255,14 +256,17 @@ public final class MarkdownPaneView: NSView, NSTextViewDelegate {
         }
     }
 
-    private func updateInset() {
+    @discardableResult
+    private func updateInset() -> Bool {
         let width = (scrollView.contentSize.width / textSize).rounded(.down)
         let inset = MarkdownOverviewLayout.inset(width)
         let size = NSSize(width: inset, height: 22)
         if textView.textContainerInset != size { textView.textContainerInset = size }
         textView.layoutWidth = width
         textView.tail = (scrollView.contentSize.height / textSize * 0.4).rounded()
-        if textView.frame.width != width { textView.frame.size.width = width }
+        guard textView.frame.width != width else { return false }
+        textView.frame.size.width = width
+        return true
     }
 
     public func show(text: String, compared: MarkdownComparison? = nil) {
