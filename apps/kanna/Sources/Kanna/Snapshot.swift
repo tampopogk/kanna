@@ -66,6 +66,11 @@ enum Snapshot {
             let (rect, background, fields) = measure(view)
             var result = fields
             result["id"] = .string(id)
+            if view is TerminalSurfaceView {
+                let strip = TerminalSurfaceView.margin * scale
+                result["margins"] = [.string(reader.dominant(in: CGRect(x: rect.minX, y: rect.minY, width: strip, height: rect.height)).description),
+                                     .string(reader.dominant(in: CGRect(x: rect.maxX - strip, y: rect.minY, width: strip, height: rect.height)).description)]
+            }
             if let marker, let terminal = view as? TerminalSurfaceView, let surface = terminal.surface {
                 result["marker"] = markerCheck(marker, terminal, surface, rect: rect, scale: scale, reader: reader, background: background)
             }
@@ -117,7 +122,7 @@ private func markerCheck(_ marker: String, _ terminal: TerminalSurfaceView, _ su
     var glyphs = 0, inked = 0
     for (offset, character) in marker.enumerated() where !character.isWhitespace {
         glyphs += 1
-        let cellRect = CGRect(x: rect.minX + pad + CGFloat(column + offset) * cell.width, y: rect.minY + pad + CGFloat(row) * cell.height,
+        let cellRect = CGRect(x: rect.minX + TerminalSurfaceView.margin * scale + pad + CGFloat(column + offset) * cell.width, y: rect.minY + pad + CGFloat(row) * cell.height,
                               width: cell.width, height: cell.height).insetBy(dx: 1, dy: 1)
         var count = 0
         reader.forEach(in: cellRect) { if $0.distance(to: background) > 60 { count += 1 } }

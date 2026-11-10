@@ -3,7 +3,14 @@ import GhosttyKit
 import QuartzCore
 
 @MainActor
+final class TerminalCanvas: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+@MainActor
 final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
+    static let margin: CGFloat = 2
+    let canvas = TerminalCanvas(frame: .zero)
     var surface: ghostty_surface_t? { didSet { if surface != nil { syncSurfaceGeometry(); updateVisibility(); syncFocus() } } }
     var isHandlingInputEvent = false
     private var dropped: String?
@@ -24,6 +31,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     private var accumulating: [String]?
     private var suppressedKeyUps = Set<UInt16>()
     private var typedAt: UInt64?
+    private(set) var marginColor: String?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -31,6 +39,9 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         Self.lastSurfaceID += 1
         surfaceID = Self.lastSurfaceID
         super.init(frame: frameRect)
+        wantsLayer = true
+        addSubview(canvas)
+        layoutCanvas()
         registerForDraggedTypes(Self.dropTypes)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -54,7 +65,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         if let window {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            layer?.contentsScale = window.backingScaleFactor
+            canvas.layer?.contentsScale = window.backingScaleFactor
             CATransaction.commit()
         }
         syncSurfaceGeometry()
@@ -79,7 +90,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
     var hiddenFromGhostty: Bool { surface != nil && !visible }
 
-    var presented: ObjectIdentifier? { (layer?.contents as AnyObject?).map(ObjectIdentifier.init) }
+    var presented: ObjectIdentifier? { (canvas.layer?.contents as AnyObject?).map(ObjectIdentifier.init) }
 
     func showToGhostty() {
         guard let surface else { return }
@@ -87,20 +98,27 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     }
 
     var pixels: (width: UInt32, height: UInt32)? {
-        guard bounds.width > 0, bounds.height > 0 else { return nil }
-        let backing = convertToBacking(bounds)
+        let area = canvas.bounds
+        guard area.width > 0, area.height > 0 else { return nil }
+        let backing = canvas.convertToBacking(area)
         return (UInt32(max(1, backing.width)), UInt32(max(1, backing.height)))
     }
 
     private func syncSurfaceGeometry() {
         guard let surface, let pixels else { return }
-        let backing = convertToBacking(bounds)
-        ghostty_surface_set_content_scale(surface, backing.width / bounds.width, backing.height / bounds.height)
+        let area = canvas.bounds
+        let backing = canvas.convertToBacking(area)
+        ghostty_surface_set_content_scale(surface, backing.width / area.width, backing.height / area.height)
         ghostty_surface_set_size(surface, pixels.width, pixels.height)
+    }
+
+    private func layoutCanvas() {
+        canvas.frame = NSRect(x: Self.margin, y: 0, width: max(0, bounds.width - 2 * Self.margin), height: bounds.height)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        layoutCanvas()
         syncSurfaceGeometry()
     }
 
@@ -113,6 +131,15 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     private func setFocus(_ value: Bool) {
         guard let surface else { return }
         ghostty_surface_set_focus(surface, value)
+    }
+
+    func updateMargin(opacity: Double) {
+        guard let surface else { return }
+        var colors = ghostty_surface_colors_s()
+        guard ghostty_surface_colors(surface, false, &colors), colors.has_background else { return }
+        let color = colors.background
+        marginColor = TerminalSettings.hex(color)
+        layer?.backgroundColor = CGColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: CGFloat(opacity))
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -332,8 +359,8 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
     private func mousePosition(_ event: NSEvent) {
         guard let surface else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, Self.mods(event.modifierFlags))
+        let point = canvas.convert(event.locationInWindow, from: nil)
+        ghostty_surface_mouse_pos(surface, point.x, canvas.bounds.height - point.y, Self.mods(event.modifierFlags))
     }
 
     private static func mouseButton(for number: Int) -> ghostty_input_mouse_button_e {
@@ -416,7 +443,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return .zero }
         var x = 0.0, y = 0.0, width = 0.0, height = 0.0
         ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-        let rect = convert(NSRect(x: x, y: bounds.height - y, width: width, height: height), to: nil)
+        let rect = canvas.convert(NSRect(x: x, y: canvas.bounds.height - y, width: width, height: height), to: nil)
         return window?.convertToScreen(rect) ?? rect
     }
 
