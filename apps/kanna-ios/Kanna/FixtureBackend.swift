@@ -21,6 +21,8 @@ final class FixtureBackend: Backend {
     private var missed = false
     private var written = 0
     private var paths: [LinkPath]
+    private let statsSteps = UserDefaults.standard.bool(forKey: "statsSteps")
+    private var statsAsked = 0
 
     private static let machine = Paired(name: "iphone-fix1", machine: "studio", key: "fixture", addrs: [])
 
@@ -120,6 +122,24 @@ final class FixtureBackend: Backend {
     }
 
     func stats(repo: String) async throws -> StatsPage {
+        var page = statsReply()
+        guard statsSteps else { return page }
+        statsAsked += 1
+        switch statsAsked {
+        case 1: page.status = "Updating: measuring code, 3 of 14 commits"
+        case 2:
+            page.sections = []
+            page.status = "Updating: running coverage"
+        default: return page
+        }
+        Task {
+            await wait(4)
+            onNotice?(.stats(repo: repo))
+        }
+        return page
+    }
+
+    private func statsReply() -> StatsPage {
         StatsPage(days: Self.days(), sections: [
             StatsSection(id: "quiz", title: "Quiz", note: "what you know of the code", tiles: [
                 StatsTile(id: "right", label: "Answers right, last 30 days", value: 72.4, unit: "%", note: "of 85 answers", span: 3, chart: StatsChart(kind: "line", values: Self.wave(70, 5), max: 100, what: "of the answers in the 30 days before")),
@@ -236,7 +256,7 @@ final class FixtureBackend: Backend {
         task("Fix the page_comments pinch", "idle", desk: "mbp", machine: "mbp", ago: 180, message: "A pinch over a comment shouldn't zoom the page's comments away."),
         task("Shelf trailing edge", "working", desk: "mbp", machine: "mbp", ago: 1, message: "The Shelf's last row is cut off at some widths."),
         task("Polish project search", "working", machine: "studio", ago: 4, branch: "project-search", message: "Rank a project's exact name above a fuzzy match."),
-        task("Agent prompts setting", "ready", machine: "dev-1", after: "Task events", message: "Let a project set the prompts its agents start with."),
+        task("Agent prompts setting", "idle", machine: "dev-1", after: "Task events", message: "Let a project set the prompts its agents start with."),
         task("Pane titles in tooltips", "stale", machine: "dev-1", after: "Restore task tabs", message: "Show a pane's whole title in its tab's tooltip."),
         task("Document reconnect behavior", "stopped", machine: "dev-1", ago: 1500, message: "Write down what the app does while the daemon restarts."),
         task("Native diff viewer", "waiting", message: "Show a task's branch diff in a tab, side by side, with comments like doc markup."),
@@ -439,6 +459,7 @@ final class FixtureBackend: Backend {
     }
 
     func close() {}
+    func unlink() {}
 
     func networkChanged() {}
     func askLocalNetwork() {}

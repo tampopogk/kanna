@@ -63,6 +63,16 @@ fn upgrade(client: &mut Client, bin: &Path) -> io::Result<Hello> {
     }
 }
 
+pub const RESTART_IT: &str = "restart it first: end its terminals (a keeper with none stops by itself a minute after its daemon), then start this Kanna again";
+
+pub fn movable(hello: &Hello) -> Result<(), String> {
+    match (&hello.build, hello.can("move")) {
+        (_, true) => Ok(()),
+        (None, false) => Err(format!("this Kanna's keeper (pid {}) predates keeper upgrades, so it can't move with its terminals: {RESTART_IT}", hello.pid)),
+        (Some(build), false) => Err(format!("this Kanna's keeper (pid {}, build {}) predates instance moves, so it can't move with its terminals: {RESTART_IT}", hello.pid, short(build))),
+    }
+}
+
 impl Keeper {
     pub fn connect(state_dir: &Path, bin: &Path, events: crate::runtime::Events) -> io::Result<Keeper> {
         let mut client = Client::connect_or_start(state_dir, bin)?;
@@ -110,6 +120,15 @@ impl Keeper {
             }
         })?;
         Ok(())
+    }
+
+    pub fn can_move(&self) -> Result<(), String> {
+        let hello = self.request(|client| client.info()).map_err(|e| format!("this Kanna's keeper (pid {}) didn't answer: {e}", self.pid))?;
+        movable(&hello)
+    }
+
+    pub fn move_to(&self, dir: &Path) -> io::Result<()> {
+        self.request(|client| client.move_to(dir)).map(|_| ())
     }
 
     pub fn stop(&self) -> io::Result<()> {
@@ -246,6 +265,16 @@ mod tests {
         assert!(message.contains("4242"), "{message}");
         fake.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_keeper_that_takes_move_can_move() {
+        let hello = |build: Option<&str>, ops: &[&str]| Hello { version: 1, pid: 5071, build: build.map(String::from), ops: ops.iter().map(|o| o.to_string()).collect() };
+        assert_eq!(movable(&hello(Some("b"), &["hello", "move"])), Ok(()));
+        let unbuilt = movable(&hello(None, &[])).unwrap_err();
+        assert!(unbuilt.contains("5071") && unbuilt.contains("predates keeper upgrades") && unbuilt.contains("restart it first"), "{unbuilt}");
+        let unmovable = movable(&hello(Some("0123456789"), &["hello", "upgrade"])).unwrap_err();
+        assert!(unmovable.contains("build 01234567") && unmovable.contains("predates instance moves") && unmovable.contains("end its terminals"), "{unmovable}");
     }
 
     #[test]

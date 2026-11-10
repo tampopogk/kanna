@@ -12,6 +12,7 @@ char *kanna_phone_path(const char *key);
 void kanna_phone_network_changed(void);
 char *kanna_phone_highlight(const char *file, const char *text);
 char *kanna_phone_drawing(const char *source);
+void kanna_phone_forget(const char *key);
 void kanna_phone_stop(void);
 void kanna_phone_free(char *text);
 
