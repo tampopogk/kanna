@@ -1,6 +1,6 @@
 # Stacked tasks
 
-**Status:** built · **Tested:** e2e `stacked_tasks`, daemon `tasks.rs` and `stacks.rs` tests · **Mockup:** [`references/mockups/ready-to-merge.html`](../../references/mockups/ready-to-merge.html) · **Builds on:** [blocked tasks](task-dependencies.md), [messages](agent-messaging.md)
+**Status:** built · **Tested:** e2e `stacked_tasks` and `merge_claims_ready`, daemon `tasks.rs` and `stacks.rs` tests · **Mockup:** [`references/mockups/ready-to-merge.html`](../../references/mockups/ready-to-merge.html) · **Builds on:** [blocked tasks](task-dependencies.md), [messages](agent-messaging.md)
 
 A task is **ready** when the only thing left is to merge it: its agent says its work is finished at this commit, and Kanna sees it merges into main cleanly right now. A blocked task can start building on its blockers' claimed work without waiting for it to merge: its branch starts from theirs, it's **stacked** on them, and it **merges after** them. When a base moves on to a commit this branch doesn't have, the task is **stale** until it merges it.
 
@@ -32,12 +32,14 @@ Ready is for picking tasks for the Desk that need nothing but a quick merge. A r
 - **The claim records the task's head:** the commit its worktree is on. Refused with uncommitted changes to tracked files (they wouldn't reach the tasks stacked on it), for a task that hasn't started, and while a base's head isn't in the branch.
 - **The claim drops by itself when its branch moves:** a new commit, a merge of main, a rebase. Kanna follows every claimed task's head through file events on the repo's refs. There's nothing to clear by hand.
 - **After a conflict is fixed** the branch has moved, so the claim is gone; the agent claims again.
+- **`kanna task merge` claims it too,** at the head it queued: the user saying merge says more than the agent's own claim. A claim the agent made at that head stays as it is; otherwise the merge makes one, recorded as the merge's (`queue` in the claim, and a `ready` event with the queue entry's ID). Most agents go from done to merged without claiming, and without this the tasks waiting for one stayed blocked until it landed, 5 to 8 minutes an entry, an hour when one hangs. While the entry is in the queue, the task's row shows its queue state (`queued`, `testing`, `judging`, `needs you`, `landing`), never `ready` ([merge queue](merge-queue.md#5-seeing-the-queue)).
+- **The merge's claim ends with the entry.** It lands: the task is Done, which satisfies its dependents anyway. It fails (`merge-failed`, back on the Shelf) or is cancelled (`kanna task merge --cancel`): the claim the merge made drops, since the queue has just said the branch isn't ready to land, or the user took the merge back. A claim the agent made before the merge stays through both.
 - **Rows don't say how far behind main a task is:** being behind doesn't stop a quick merge.
 - **Shown** in `kanna task list` (STATE `ready`, `conflicts` or `stale`; last part `merges after "A"` or `behind "A"`), in `--json` (`merge`: `ready`, `conflicts`, `after`, `stale` or null; `ready`: true only for `ready`; `claim`: the claim's head, branch and when; `mainConflicts`: the files), on the task's row in the Desk view, and on the phone's Shelf.
 
 ## Starting stacked
 
-A blocked task can start once each blocker is claimed and not stale, or Done; Shelf runners pick it up as usual. A blocker showing `conflicts` still counts: its claim stands, and the conflict is with main, not with the work stacked on it. Its worktree starts from:
+A blocked task can start once each blocker is claimed and not stale, or Done; Shelf runners pick it up as usual. A blocker in the merge queue is claimed ([Ready](#ready)), so the tasks waiting for it start on its branch while it's tested, not after it lands. A blocker showing `conflicts` still counts: its claim stands, and the conflict is with main, not with the work stacked on it. Its worktree starts from:
 
 | Blockers whose work isn't in main yet | Its branch starts from |
 |---|---|
@@ -60,7 +62,7 @@ gitGraph
 ```
 
 - **Its bases** are the blockers it was built on whose work isn't in main yet. A blocker Done but not merged (a branch waiting on review) is a base too, if it was claimed when it was Done.
-- **A blocker whose claim drops** (its branch moved) or that goes stale blocks again every task on it that hasn't started: Shelf runners skip it until the blocker is claimed again and not stale. A task that has started isn't stopped; it goes stale once the blocker's head isn't in its branch.
+- **A blocker whose claim drops** (its branch moved, or its merge failed or was cancelled) or that goes stale blocks again every task on it that hasn't started: Shelf runners skip it until the blocker is claimed again and not stale. A task that has started isn't stopped; it goes stale once the blocker's head isn't in its branch.
 - **If the merges conflict,** nothing is left behind (worktree and branch are removed) and the task stays blocked, saying so: `blocked  its blockers' branches conflict`. It tries again when one of them is claimed at a new head.
 
 ## Stale
@@ -101,6 +103,7 @@ A stacked task shouldn't merge into main before its bases have. `kanna task merg
 
 - **`kanna task list`** says `merges after "A"` on a stacked task whose bases aren't in main, `--json` gives them as `"bases"` and `"merge": "after"`, and the Desk view's row and the phone show it. It's never `ready`, claimed or not.
 - **The `kanna-tasks` skill** tells an agent not to merge its branch while `kanna task list` says it merges after another task.
+- **A task started on a blocker in the merge queue** merges after it like any stacked task: `kanna task merge` refuses it until the blocker lands. If the blocker's entry fails, the task keeps going on the branch it has, and goes stale once the blocker's fix moves its branch.
 - **Once a base merges into main,** Kanna drops it from the task's bases and tells the task ([`base-merged`](task-events.md)) that nothing it builds on is outside main any more, so it can merge once it's done. With no bases left it's an ordinary task: its row shows `ready` once it's claimed and merges cleanly.
 
 ## CLI
@@ -124,9 +127,9 @@ flowchart LR
     D -->|"message from kanna"| AG["stale task's agent"]
 ```
 
-- **Kept in the task's row** in `kanna.db`, in its JSON doc, as `after` is: the claim under the key `ready` (head, branch, when), `bases` (each base's task ID, branch and the head this task has merged), `stale` (the bases whose head isn't in the branch). Events: `ready` (claimed), `unready` (`why`: `moved`), `stale` (with `behind`), `fresh`, `base merged`, `conflict`.
-- **The label is worked out, not stored:** `stale` if any base's head is missing, else `after` if it has bases, else, if the claim's head is the tip the last check saw, `ready` or `conflicts`. The daemon puts it in the `tasks` message as `merge`, so the CLI, the Desk view and the phone read one answer.
-- **A blocker is satisfied** when it's Done, or open, claimed and not stale. `waits` in the `tasks` message lists those that aren't.
+- **Kept in the task's row** in `kanna.db`, in its JSON doc, as `after` is: the claim under the key `ready` (head, branch, when, and `queue`, the merge queue entry, when the merge made it), `bases` (each base's task ID, branch and the head this task has merged), `stale` (the bases whose head isn't in the branch). Events: `ready` (claimed), `unready` (`why`: `moved`), `stale` (with `behind`), `fresh`, `base merged`, `conflict`.
+- **The label is worked out, not stored:** `stale` if any base's head is missing, else `after` if it has bases, else nothing while it's in the merge queue, else, if the claim's head is the tip the last check saw, `ready` or `conflicts`. The daemon puts it in the `tasks` message as `merge`, so the CLI, the Desk view and the phone read one answer.
+- **A blocker is satisfied** when it's Done, or open, claimed and not stale; a queued task is claimed. The claim and the queue entry are both stored, so a daemon restart keeps both. `waits` in the `tasks` message lists those that aren't.
 - **Kanna follows the heads, it doesn't poll them.** For each repo with a started task ([task events](task-events.md) need it for main), a thread watches the repo's git folder for file events (FSEvents) and wakes the daemon only when a head can have moved: a branch under `refs/heads`, `packed-refs`, a worktree's `HEAD` or the main checkout's `HEAD`. Objects, logs, indexes and locks are ignored, and events within 200ms are taken together. Then, off the main thread, it reads each claimed, stacked or stale task's head once (its worktree's `HEAD`, or its branch once Done), so a task and the tasks stacked on it see the same head, and reads whether each base's head is in main and in the task's branch, and the daemon's loop applies it: a claimed task whose head moved loses its claim; the bases whose head isn't in the branch are its stale set (empty: fresh); a base in main is dropped. It also looks once when it starts following a repo (so at the daemon's start), and whenever FSEvents dropped events and asks for a rescan.
 - **Merges for several bases** run in the new worktree, one `git merge` per base; on a conflict the merge is aborted and the worktree and branch removed.
 - **Main** is the repo's main checkout's `HEAD`, as for `merged`. Squash and rebase merges hide a base's head from main: such a base stays, and the task says `merges after`, until the base is taken off with `kanna task edit`.

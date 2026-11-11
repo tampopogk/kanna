@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** e2e `blocked_tasks` · **Mockup:** [`references/mockups/blocked-tasks.html`](../../references/mockups/blocked-tasks.html) (Screenshot command is done; or `#freed`) · **Builds on:** [tasks](tasks.md), [planning agent](planning-agent.md)
 
-A task can wait for other tasks: it's **blocked**, and can't start until each is Done or ready ([stacked tasks](stacked-tasks.md)).
+A task can wait for other tasks: it's **blocked**, and can't start until each is Done, ready, or in the merge queue ([stacked tasks](stacked-tasks.md)).
 
 ![The planning agent makes two blocked tasks: Diff viewer waits for Screenshot command, Release notes for it and the `agent_status` fix](task-blocked.png)
 
@@ -12,7 +12,7 @@ A task can wait for other tasks: it's **blocked**, and can't start until each is
 stateDiagram-v2
     direction LR
     [*] --> blocked: kanna task new --after 1dfb
-    blocked --> startable: its last blocker is Done or ready
+    blocked --> startable: its last blocker is Done, ready or merging
     startable --> blocked: kanna task edit --after task-1dfb
     blocked --> startable: kanna task edit --after none
     startable --> started: start or Move to Desk
@@ -21,7 +21,7 @@ stateDiagram-v2
 - **A blocked Shelf row** has a dashed ring, an orange line naming what it waits for, and **Blocked** where Move to Desk usually is. Clicking the row, ↩ in search, `kanna task start` or `kanna task pick` is refused, and the note says what it waits for.
 - **A blocked task can't start,** from the app or the CLI. To start it before its blockers are Done, take them off: `kanna task edit TASK --after none` (or name fewer), which the planning agent runs when you ask it to.
 - **Done means Done in Kanna** (`kanna task done`, Done in the app, or its agent's pane closed), not merged. Kanna doesn't watch git for this.
-- **When the last blocker is Done (or ready: [stacked tasks](stacked-tasks.md)), the task becomes startable,** and nothing starts by itself. The row loses its badge, and `kanna task done` says which tasks it freed (`task-1dfb "Diff viewer" can start now`), so the planning agent can offer to start them.
+- **When the last blocker is Done (or claimed ready, which `kanna task merge` does too: [stacked tasks](stacked-tasks.md#ready)), the task becomes startable,** and nothing starts by itself. The row loses its badge, and `kanna task done` says which tasks it freed (`task-1dfb "Diff viewer" can start now`), so the planning agent can offer to start them.
 - **A task can't wait for itself,** directly or through others: making that loop is refused.
 - **A started task starts from the repo's checkout,** or from its ready blockers' branches when their work isn't in main yet ([stacked tasks](stacked-tasks.md)).
 
