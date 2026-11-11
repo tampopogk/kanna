@@ -324,15 +324,20 @@ extension AppController {
         guard reply["ok"]?.bool != true, let controller = controllers[window] else { return }
         let shelved = controller.shelf.first { $0.id == task }
         switch reply["error"]?["code"]?.string {
-        case "task_limit":
-            controller.note = "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)."
         case "blocked" where shelved?.blocked == true:
             controller.note = "“\(shelved!.name)” waits for " + shelved!.waits.map { "“\($0)”" }.joined(separator: ", ") + ": it can \(verb) once that's done."
         default:
-            controller.note = reply["error"]?["message"]?.string ?? otherwise ?? "it didn't \(verb)"
+            controller.note = refusal(reply, otherwise: otherwise ?? "it didn't \(verb)")
         }
         refresh()
     }
+
+    func refusal(_ reply: JSON, otherwise: String) -> String {
+        if reply["error"]?["code"]?.string == "task_limit" { return Self.deskFull }
+        return reply["error"]?["message"]?.string ?? otherwise
+    }
+
+    static let deskFull = "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row)."
 
     func shelveTask(_ task: String, from window: String) {
         controllers[window]?.note = ""

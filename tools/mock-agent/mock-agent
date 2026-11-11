@@ -463,8 +463,13 @@ def typed():
                 out(c)
 
 
+def silent():
+    socket_path = os.environ.get("KANNA_SOCKET")
+    return os.environ.get("KANNA_MOCK_REPORTS") == "0" or (socket_path and os.path.exists(os.path.join(os.path.dirname(socket_path), "mock-silent")))
+
+
 def reported(state):
-    if os.environ.get("KANNA_MOCK_REPORTS") != "0":
+    if not silent():
         out(f"\x1b]7501;state={state}\x1b\\")
 
 

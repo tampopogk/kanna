@@ -2,7 +2,7 @@
 
 **Status:** built · **Part of:** [software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines), [Kojo §3](kojo.md#3-attributes) · **Code:** `crates/kanna-daemon/src/runs.rs` · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `pipeline_fanout`
 
-How a run's stage becomes several workers at once and comes back as one result: `each STAGE.KEY` (one worker per item of a list), `merge STAGE` (their branches joined into the run's), `xN by STAGE` (N attempts, the best-scored kept) and `guard STAGE` (a worse result rolled back). On top of [sequential runs](software-factory.md#61-sequential-runs-as-built), with `on PLACEMENT` resolved to this machine only.
+How a run's stage becomes several workers at once and comes back as one result: `each STAGE.KEY` (one worker per item of a list), `merge STAGE` (their branches joined into the run's), `xN by STAGE` (N attempts, the best-scored kept) and `guard STAGE` (a worse result rolled back). On top of [sequential runs](software-factory.md#61-sequential-runs-as-built); `on PLACEMENT` is [remote stages](remote-stages.md).
 
 ## 1. A stage is a step of visits
 
@@ -71,7 +71,8 @@ sequenceDiagram
 
 ## 6. `on PLACEMENT`
 
-- **This machine only** until [machines](software-factory.md#3-workers-fan-out-join-and-other-machines) run stages: `on here` and `on` this machine's name (its host name to the first dot) run here; anything else refuses the run at start, `FILE:LINE: far is on mini: no such machine: stages run on this machine (here, or mbp) until machines are built`. Every visit's `machine` is this machine's name.
+- **Here:** `on here` and `on` this machine's name (its host name to the first dot, or its name among your machines) run here, and the visit's `machine` is this machine's name.
+- **Elsewhere:** another machine's name, a role or `any` is a [remote stage](remote-stages.md); an instance of `each` or an attempt of `xN` placed elsewhere travels with its own worktree and comes back to it. A placement none of your machines answers to refuses the run at start, `FILE:LINE: far is on mini: no such machine: …`.
 
 ## 7. Gates and steering during a step
 

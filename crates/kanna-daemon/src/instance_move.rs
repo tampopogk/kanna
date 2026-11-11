@@ -458,7 +458,7 @@ mod tests {
     }
 
     fn records(dir: &Path) -> crate::db::Db {
-        let db = crate::db::Db::open(dir);
+        let db = crate::db::Db::open(dir).unwrap();
         let conn = Connection::open(dir.join(DB)).unwrap();
         conn.execute_batch(
             "insert into tasks (id, repo, place, terminal, made_at, doc) values
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn a_receiver_keeps_a_copy_of_its_own_records_and_terminals() {
         let (source, receiver) = (scratch("src2"), scratch("dst2"));
-        drop(crate::db::Db::open(&receiver));
+        drop(crate::db::Db::open(&receiver).unwrap());
         fs::create_dir_all(receiver.join(TERMINALS)).unwrap();
         fs::write(receiver.join(KEY), "own").unwrap();
         assert!(live_tasks(&receiver).unwrap().is_empty());
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(fs::read_link(source.join("kanna.sock")).unwrap(), receiver.join("kanna.sock"), "the old socket leads to the receiver");
         let old = settle(&source, &source.join("kanna.sock")).unwrap().expect("the source retires");
         assert!(!source.join(KEY).exists() && !source.join(DB).exists() && !source.join(TERMINALS).exists() && !source.join(LEAVING).exists());
-        let fresh = crate::db::Db::open(&source);
+        let fresh = crate::db::Db::open(&source).unwrap();
         fresh.keep_from_moved(&old).unwrap();
         assert!(fresh.tasks().unwrap().is_empty(), "it starts again empty");
         let conn = Connection::open(source.join(DB)).unwrap();

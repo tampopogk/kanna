@@ -7,7 +7,7 @@ shows   = run scripts/check.sh --expect-fail    # the new test fails and the res
 fix     = claude prompt fix guard check
 check   = run scripts/check.sh
 review  = codex prompt review verdict
-e2e     = run scripts/e2e-kanna.sh           # here: `on mini` comes back with stages on other machines (build order 8)
+e2e     = run scripts/e2e-kanna.sh           # here; `on` a machine or role of yours runs it off your dev Mac
 
 repro -> shows
 shows -[fail, max 2]-> repro

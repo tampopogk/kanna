@@ -138,7 +138,13 @@ struct MarkdownRenderer {
         asOld { $0.block(was, context, into: before) }
         block(node, context, into: after)
         let tree = (node as? CodeBlock)?.language?.lowercased() == CallTree.fence
-        if !tree, let words = Self.compose(before, after) {
+        let edits = tree ? nil : Self.edits(before, after)
+        if let edits, node is Paragraph, edits.kept < MarkdownDiff.keptParagraph {
+            Self.mark(.removed, NSRange(location: 0, length: before.length), in: before)
+            Self.mark(.added, NSRange(location: 0, length: after.length), in: after)
+            out.append(before)
+            out.append(after)
+        } else if let edits, let words = Self.compose(before, after, edits.ops) {
             out.append(words)
         } else {
             note("Before", color: MarkdownTheme.removedText, context, into: out)
@@ -182,10 +188,17 @@ struct MarkdownRenderer {
         }
     }
 
-    static func compose(_ old: NSAttributedString, _ new: NSAttributedString) -> NSMutableAttributedString? {
+    static func edits(_ old: NSAttributedString, _ new: NSAttributedString) -> TextDiff {
         let source = { (text: NSAttributedString) in { (index: Int) in text.attribute(.kannaSource, at: index, effectiveRange: nil) as? String } }
-        let ops = MarkdownDiff.words(MarkdownDiff.tokens(in: old.string as NSString, key: source(old)),
-                                     MarkdownDiff.tokens(in: new.string as NSString, key: source(new)))
+        return MarkdownDiff.edits(MarkdownDiff.tokens(in: old.string as NSString, key: source(old)),
+                                  MarkdownDiff.tokens(in: new.string as NSString, key: source(new)))
+    }
+
+    static func compose(_ old: NSAttributedString, _ new: NSAttributedString) -> NSMutableAttributedString? {
+        compose(old, new, edits(old, new).ops)
+    }
+
+    static func compose(_ old: NSAttributedString, _ new: NSAttributedString, _ ops: [WordOp]) -> NSMutableAttributedString? {
         let touches = { (text: NSAttributedString, range: NSRange) in (text.string as NSString).range(of: "\u{FFFC}", range: range).location != NSNotFound }
         for op in ops {
             switch op {
@@ -206,6 +219,10 @@ struct MarkdownRenderer {
                 out.append(new.attributedSubstring(from: range))
                 mark(.added, NSRange(location: start, length: range.length), in: out)
                 at = NSMaxRange(range)
+            case .space:
+                var attributes = new.length == 0 ? [:] : new.attributes(at: min(at, new.length - 1), effectiveRange: nil)
+                for key in [NSAttributedString.Key.attachment, .link, .backgroundColor, .kannaHeading] { attributes[key] = nil }
+                out.append(NSAttributedString(string: " ", attributes: attributes))
             case .removed(let range):
                 let piece = NSMutableAttributedString(attributedString: old.attributedSubstring(from: range))
                 let whole = NSRange(location: 0, length: piece.length)
@@ -419,9 +436,10 @@ struct MarkdownRenderer {
     }
 
     private mutating func table(_ table: Markdown.Table, rows: [DiffEntry], _ context: Context, into out: NSMutableAttributedString) {
-        let grid = NSTextTable()
+        let grid = MarkdownTable()
         grid.numberOfColumns = max(1, rows.map { $0.node.childCount }.max() ?? 1)
-        grid.layoutAlgorithm = .automaticLayoutAlgorithm
+        grid.layoutAlgorithm = .fixedLayoutAlgorithm
+        var natural = [CGFloat](repeating: 0, count: grid.numberOfColumns)
         grid.collapsesBorders = true
         grid.hidesEmptyCells = false
         let alignments = table.columnAlignments
@@ -456,12 +474,13 @@ struct MarkdownRenderer {
                     return text
                 }
                 let now = column < cells.count ? cells[column] : nil
+                var text = cell(now)
                 if case .changed = row {
                     let was = column < before.count ? before[column] : nil
-                    out.append(Self.compose(cell(was), cell(now)) ?? cell(now))
-                } else {
-                    out.append(cell(now))
+                    text = Self.compose(cell(was), text) ?? text
                 }
+                if column < natural.count { natural[column] = max(natural[column], Self.naturalWidth(text)) }
+                out.append(text)
             }
             let range = NSRange(location: rowStart, length: out.length - rowStart)
             switch row {
@@ -471,7 +490,15 @@ struct MarkdownRenderer {
             case .same: break
             }
         }
+        grid.natural = natural
         out.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 4), .paragraphStyle: paragraph(context, after: 6)]))
+    }
+
+    static func naturalWidth(_ cell: NSAttributedString) -> CGFloat {
+        let text = NSMutableAttributedString(attributedString: cell)
+        text.removeAttribute(.paragraphStyle, range: NSRange(location: 0, length: text.length))
+        let size = text.boundingRect(with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude), options: [.usesLineFragmentOrigin])
+        return ceil(size.width) + MarkdownTable.inset * 2 + 4
     }
 
     private mutating func inline(_ children: some Sequence<any Markup>, _ base: [NSAttributedString.Key: Any]) -> NSMutableAttributedString {

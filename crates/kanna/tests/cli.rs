@@ -355,7 +355,7 @@ commands: accounts, agents, arrange, build, build.cancel, build.jobs, build.pool
     let raw = daemon.kanna(&["raw", r#"{"cmd":"debug.anything","args":{"pane":"a"}}"#]).json();
     assert_eq!(raw, json!({ "cmd": "debug.anything", "args": { "pane": "term-1" } }));
     let shot = daemon.kanna(&["screenshot", "a", "-o", "shot.png", "--force", "--json"]).json();
-    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-1" }, "window": "win-1", "path": daemon.dir.join("shot.png").to_string_lossy() }));
+    assert_eq!(shot, json!({ "cmd": "screenshot", "args": { "pane": "term-1", "stopped": [] }, "window": "win-1", "path": daemon.dir.join("shot.png").to_string_lossy() }));
     assert_eq!(std::fs::read(daemon.dir.join("shot.png")).unwrap(), b"\x89PNG\r\n\x1a\n");
     let window = daemon.kanna(&["screenshot", "--window", "win-1", "--json"]).json();
     assert_eq!(window["args"], json!({ "window": "win-1" }));
@@ -363,6 +363,9 @@ commands: accounts, agents, arrange, build, build.cancel, build.jobs, build.pool
     assert!(written.starts_with(&format!("{}/kanna-win-1-", std::env::temp_dir().to_string_lossy().trim_end_matches('/'))), "{written}");
     let _ = std::fs::remove_file(written);
     daemon.kanna(&["screenshot", "a", "--window", "win-1"]).fails(2, "give PANE or --window WINDOW, not both");
+    assert_eq!(daemon.kanna(&["screenshot", "a", "--size", "800x500", "--json"]).json()["args"]["size"], json!({ "width": 800, "height": 500 }));
+    daemon.kanna(&["screenshot", "a", "--size", "800"]).fails(2, "--size is WxH in points, e.g. 800x500");
+    daemon.kanna(&["screenshot", "--window", "win-1", "--size", "800x500"]).fails(2, "--size is for a PANE");
     daemon.kanna(&["screenshot"]).fails(2, "screenshot: outside a Kanna terminal there's no window of yours: say PANE or --window WINDOW");
     assert_eq!(daemon.kanna_as("term-1", &["screenshot", "--json"]).json()["args"]["from"], json!("term-1"));
     assert_eq!(daemon.kanna(&["raw", r#"{"cmd":"list"}"#]).json()["panes"].as_array().unwrap().len(), 6);
@@ -944,6 +947,20 @@ fn a_shelf_task_is_renamed_and_starts_with_its_new_name() {
     assert_eq!(daemon.kanna(&["task", "name", &id, "Newer name"]).ok(), format!("named task-{short} \"Newer name\""));
     assert!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str() && p["name"] == "Newer name"));
     assert_eq!(daemon.kanna(&["--json", "task", "list"]).json()["shelf"][0]["name"], json!("Newer name"));
+}
+
+#[test]
+fn a_panic_in_a_task_on_the_loop_ends_the_daemon_after_its_crash_record() {
+    let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1")]);
+    daemon.kanna(&["raw", r#"{"cmd":"debug.panic","args":{"task":true}}"#]).ok();
+    assert_eq!(daemon.exited().code(), Some(101));
+    let records = daemon.crash_records();
+    assert_eq!(records.len(), 1, "one record");
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+    assert!(record["reason"].as_str().unwrap().starts_with("debug.panic in a task on the daemon's main loop at crates/kanna-daemon/src/crashes.rs:"), "{}", record["reason"]);
+    let top = &kanna_crash::site(record["stack"].as_array().unwrap())[0];
+    assert!(top["at"].as_str().is_some_and(|at| at.starts_with("crates/kanna-daemon/src/crashes.rs:")), "{top}");
+    std::fs::remove_file(&records[0]).unwrap();
 }
 
 #[test]

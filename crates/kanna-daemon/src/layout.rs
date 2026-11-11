@@ -195,7 +195,7 @@ mod tests {
         std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let state = json!({ "kmux": "state", "version": 3, "key": null, "windows": [], "workspaces": [], "panes": [], "counters": {} });
         StateFile::new(&dir.join("layout.json").to_string_lossy()).write(&state).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(saved(&db, &dir), Some(state.clone()));
         assert!(!dir.join("layout.json").exists() && dir.join("layout.json.imported").exists());
         assert_eq!(db.layout().unwrap(), Some(state.clone()));

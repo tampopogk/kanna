@@ -14,13 +14,22 @@ enum Background {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Turn {
     worked: bool,
+    told: bool,
     quiet: Option<(Instant, Status)>,
     background: Background,
 }
 
 impl Turn {
     pub fn underway() -> Turn {
-        Turn { worked: true, quiet: None, background: Background::None }
+        Turn { worked: true, ..Turn::default() }
+    }
+
+    pub fn told() -> Turn {
+        Turn { told: true, ..Turn::default() }
+    }
+
+    pub fn unbegun(&self) -> bool {
+        self.told
     }
 
     pub fn see(&mut self, status: Option<Status>, at: Instant) {
@@ -92,6 +101,21 @@ mod tests {
         let mut known = Turn::underway();
         known.see(Some(Status::Idle), at(0));
         assert_eq!(known.ended(at(0)), Some(Status::Idle), "an agent running when Kanna started has worked");
+    }
+
+    #[test]
+    fn an_agent_told_what_to_do_is_unbegun_until_it_is_seen_working() {
+        let t0 = Instant::now();
+        let mut turn = Turn::told();
+        assert!(turn.unbegun());
+        turn.see(None, t0);
+        assert!(turn.unbegun(), "no report yet");
+        turn.see(Some(Status::Idle), t0);
+        assert!(turn.unbegun(), "idle before any work is the agent starting");
+        turn.see(Some(Status::Working), t0);
+        assert!(!turn.unbegun());
+        assert!(!Turn::default().unbegun(), "an agent told nothing owes no turn");
+        assert!(!Turn::underway().unbegun());
     }
 
     #[test]

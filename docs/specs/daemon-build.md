@@ -30,7 +30,7 @@ sequenceDiagram
     A->>D1: app.hello {pid, build: B2, panes}
     Note over D1: no app attached, its build is B1
     D1->>A: ok: false, other_build
-    Note over D1: stops as on SIGTERM:<br/>saves terminals.json and the screens
+    Note over D1: stops as on SIGTERM:<br/>saves the records and the screens
     D1--xA: link closes (with the listener, which the app keeps)
     Note over A: starts Helpers/kanna-daemon at once,<br/>on the socket it keeps
     A->>D2: spawn (waits for daemon.lock)

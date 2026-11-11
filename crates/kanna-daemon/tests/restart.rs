@@ -11,11 +11,6 @@ fn shows(instance: &Instance, pane: &str, text: &str) -> bool {
     instance.screen(pane).contains(text)
 }
 
-fn saved(instance: &Instance) -> Value {
-    let text = std::fs::read_to_string(instance.dir.join("state/terminals/terminals.json")).unwrap_or_default();
-    serde_json::from_str(&text).unwrap_or(Value::Null)
-}
-
 #[test]
 fn a_restart_keeps_a_running_shell_its_screen_and_what_it_wrote_meanwhile() {
     let mut instance = Instance::start();
@@ -115,7 +110,7 @@ fn terminal_ids_never_repeat_across_restarts() {
     let first = instance.open("one", Some("exec sleep 600"));
     let second = instance.open("two", Some("exec sleep 600"));
     instance.call("close", json!({"pane": "two"}));
-    assert_eq!((saved(&instance)["counters"]["terminal"].clone(), saved(&instance)["counters"]["pty"].clone()), (json!(2), json!(2)));
+    assert_eq!((instance.saved()["counters"]["terminal"].clone(), instance.saved()["counters"]["pty"].clone()), (json!(2), json!(2)));
 
     instance.restart(libc::SIGKILL);
     let third = instance.open("three", Some("exec sleep 600"));
@@ -155,11 +150,11 @@ fn a_pane_keeps_its_id_and_its_new_run_across_a_daemon_restart() {
     let pid = instance.pane("durable")["pid"].as_i64().unwrap();
 
     for signal in [libc::SIGTERM, libc::SIGKILL] {
-        wait_for("the record of the new run", || saved(&instance)["terminals"][0]["id"] == json!(run));
+        wait_for("the record of the new run", || instance.saved()["terminals"][0]["id"] == json!(run));
         instance.restart(signal);
         let durable = instance.pane("durable");
         assert_eq!((durable["id"].as_str(), durable["terminal"].as_str(), durable["pid"].as_i64(), durable["state"].as_str()), (Some(pane.as_str()), Some(run.as_str()), Some(pid), Some("running")), "{durable}");
-        assert_eq!(saved(&instance)["terminals"][0]["pane"], json!(pane));
+        assert_eq!(instance.saved()["terminals"][0]["pane"], json!(pane));
         instance.call("send", json!({"pane": pane, "text": "still-$((6*7))"}));
         wait_for("the keeper's run to take text under the pane's ID", || shows(&instance, &run, "still-$((6*7))"));
     }
@@ -176,7 +171,7 @@ fn what_the_keeper_has_and_the_disk_does_not_is_taken_back_and_the_reverse_dropp
     instance.stop(libc::SIGKILL);
     keeper(&instance, json!({"op": "close", "id": lost}));
     wait_for("the keeper to end lost", || !alive(lost_pid));
-    std::fs::remove_file(instance.dir.join("state/terminals/terminals.json")).unwrap();
+    instance.records(rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).execute_batch("delete from terminals; delete from meta where key = 'terminal_counters';").unwrap();
     instance.start_again();
 
     let panes = instance.call("list", json!({}))["panes"].clone();
@@ -189,9 +184,63 @@ fn what_the_keeper_has_and_the_disk_does_not_is_taken_back_and_the_reverse_dropp
     assert_ne!(new, kept);
 
     instance.restart(libc::SIGTERM);
-    let restored = saved(&instance);
+    let restored = instance.saved();
     let ids: Vec<&str> = restored["terminals"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
     assert_eq!(ids, [kept.as_str(), new.as_str()]);
+}
+
+#[test]
+fn a_terminals_json_is_imported_with_its_ptys_running_in_the_keeper() {
+    let mut instance = Instance::start();
+    let kept = instance.open("kept", Some("echo kept-$((6*7)) $KANNA_TERMINAL; exec cat"));
+    let pane = instance.pane("kept")["id"].as_str().unwrap().to_string();
+    wait_for("the first run", || shows(&instance, &kept, &format!("kept-42 {pane}")));
+    instance.call("restart", json!({"pane": "kept"}));
+    let run = instance.pane("kept")["terminal"].as_str().unwrap().to_string();
+    wait_for("the new run", || shows(&instance, &run, &format!("kept-42 {pane}")));
+    let side = instance.open("side", Some("exec sleep 600"));
+    let side_pane = instance.pane("side")["id"].as_str().unwrap().to_string();
+    let exited = instance.open("exited", Some("exit 3"));
+    let exited_pane = instance.pane("exited")["id"].as_str().unwrap().to_string();
+    wait_for("the exit", || instance.pane("exited")["state"] == "exited");
+    let pids = (instance.pane("kept")["pid"].as_i64(), instance.pane("side")["pid"].as_i64());
+    wait_for("the records", || instance.saved()["terminals"].as_array().is_some_and(|t| t.iter().any(|r| r["id"] == json!(exited) && r["state"] == "exited")));
+    instance.stop(libc::SIGTERM);
+
+    let mut records = instance.saved()["terminals"].clone();
+    for record in records.as_array_mut().unwrap() {
+        record["type"] = json!("term");
+    }
+    let (ptys, terminals) = (61, 52);
+    let file = instance.dir.join("state/terminals/terminals.json");
+    std::fs::write(&file, json!({ "kanna": "terminals", "version": 3, "counters": { "pane": 0, "terminal": terminals, "pty": ptys }, "terminals": records }).to_string()).unwrap();
+    instance
+        .records(rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .execute_batch("delete from terminals; delete from meta where key in ('terminal_counters', 'terminals_imported');")
+        .unwrap();
+    instance.start_again();
+
+    assert!(!file.exists(), "the file is renamed");
+    assert!(instance.dir.join("state/terminals/terminals.json.imported").exists());
+    let found = |instance: &Instance, name: &str| {
+        let pane = instance.pane(name);
+        (pane["id"].as_str().unwrap().to_string(), pane["terminal"].as_str().unwrap().to_string(), pane["state"].as_str().unwrap().to_string())
+    };
+    assert_eq!(found(&instance, "kept"), (pane.clone(), run.clone(), "running".to_string()));
+    assert_eq!(found(&instance, "side"), (side_pane, side, "running".to_string()));
+    assert_eq!(found(&instance, "exited"), (exited_pane, exited, "exited".to_string()));
+    assert_eq!((instance.pane("kept")["pid"].as_i64(), instance.pane("side")["pid"].as_i64()), pids);
+    assert_eq!(instance.pane("exited")["exitCode"], 3);
+    assert!(shows(&instance, &run, &format!("kept-42 {pane}")), "{}", instance.screen(&run));
+
+    let next = instance.open("next", None);
+    assert_eq!((next.as_str(), instance.pane("next")["id"].as_str()), (format!("pty-{}", ptys + 1).as_str(), Some(format!("term-{}", terminals + 1).as_str())));
+    wait_for("the new record", || instance.saved()["counters"] == json!({ "pane": 0, "terminal": terminals + 1, "pty": ptys + 1 }));
+
+    std::fs::write(&file, "{}").unwrap();
+    instance.restart(libc::SIGTERM);
+    assert_eq!(found(&instance, "kept"), (pane, run, "running".to_string()), "a file found later isn't read");
+    assert!(!file.exists());
 }
 
 #[test]
@@ -295,7 +344,7 @@ fn a_terminal_started_again_after_a_restart_keeps_its_size_even_without_its_scre
     wait_for("the exit", || instance.pane("sized")["state"] == "exited");
 
     instance.stop(libc::SIGTERM);
-    assert_eq!(saved(&instance)["terminals"][0]["cols"], 101, "{}", saved(&instance));
+    assert_eq!(instance.saved()["terminals"][0]["cols"], 101, "{}", instance.saved());
     let _ = std::fs::remove_file(instance.dir.join(format!("state/terminals/{pane}.snap")));
     instance.start_again();
 
