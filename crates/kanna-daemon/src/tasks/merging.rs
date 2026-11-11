@@ -55,7 +55,7 @@ impl Tasks {
         self.label(id)
     }
 
-    pub fn enqueue(self: &Rc<Self>, candidate: Candidate, queue: &str, by: Option<String>, settled: impl FnOnce() + 'static) {
+    pub fn enqueue(self: &Rc<Self>, candidate: Candidate, queue: &str, head: &str, by: Option<String>, settled: impl FnOnce() + 'static) {
         let id = candidate.entry.id.clone();
         let queued = queue.to_string();
         let change = Change::new("queued").by(by.as_deref()).with("queue", json!(queue));
@@ -64,8 +64,13 @@ impl Tasks {
             e.merge_failed = None;
         });
         let Some(entry) = entry else { return settled() };
+        let entry = match entry.claimed.as_ref().is_some_and(|m| m.head == head) {
+            true => entry,
+            false => self.claim_for_merge(&entry, queue, head, by.as_deref()).unwrap_or(entry),
+        };
         self.tell_planner(&entry, What::Queued, by.as_deref());
         self.changed();
+        self.refill();
         let Some(pane) = candidate.pane.filter(|pane| self.core.upgrade().is_some_and(|core| core.pane(pane).is_some())) else { return settled() };
         if candidate.on_desk {
             let this = Rc::downgrade(self);
@@ -80,6 +85,15 @@ impl Tasks {
             });
         }
         self.quit_for_queue(&pane, by, settled);
+    }
+
+    fn claim_for_merge(&self, entry: &Entry, queue: &str, head: &str, by: Option<&str>) -> Option<Entry> {
+        let branch = entry.folder.as_deref().and_then(branch_of).unwrap_or_default();
+        let mark = Mark { head: head.to_string(), branch: branch.clone(), at: now(), queue: Some(queue.to_string()) };
+        let change = Change::new("ready").by(by).with("head", json!(head)).with("branch", json!(branch)).with("queue", json!(queue));
+        let claimed = self.alter(&entry.id, change, |e| e.claimed = Some(mark.clone()))?;
+        log!("kanna-daemon: {} is ready at {head}: {queue} claims it", entry.id);
+        Some(claimed)
     }
 
     fn quit_for_queue(self: &Rc<Self>, pane: &str, by: Option<String>, settled: impl FnOnce() + 'static) {
@@ -123,6 +137,7 @@ impl Tasks {
     pub fn merge_failed(self: &Rc<Self>, id: &str, queue: &str, failure: Value, text: &str) {
         let change = Change::new("merge failed").by(Some("queue")).with("queue", json!(queue)).with("why", failure.get("why").cloned().unwrap_or(Value::Null));
         let entry = self.alter(id, change, |e| {
+            drop_merge_claim(e);
             e.queued = None;
             e.merge_failed = Some(failure.clone());
         });
@@ -146,8 +161,18 @@ impl Tasks {
     }
 
     pub fn unqueue(&self, id: &str, by: Option<&str>) {
-        if self.alter(id, Change::new("unqueued").by(by), |e| e.queued = None).is_some() {
+        let change = Change::new("unqueued").by(by);
+        if self.alter(id, change, |e| {
+            drop_merge_claim(e);
+            e.queued = None;
+        }).is_some() {
             self.changed();
         }
+    }
+}
+
+fn drop_merge_claim(entry: &mut Entry) {
+    if entry.queued.is_some() && entry.claimed.as_ref().is_some_and(|m| m.queue == entry.queued) {
+        entry.claimed = None;
     }
 }
