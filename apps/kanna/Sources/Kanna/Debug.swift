@@ -184,7 +184,7 @@ extension AppController {
                     "minimized": .bool(controller.window.isMiniaturized),
                     "header": controller.agentHeader.isHidden ? .null : .string(controller.agentHeader.text),
                     "shelf": .array(controller.shelf.map { .string($0.id) }), "agents": .array(controller.shelf.map { $0.agent.map { .string($0) } ?? .null }), "running": .number(Double(controller.running)),
-                    "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "cheer": .string(controller.cheer),
+                    "waiting": .string(controller.deskStrip.waitingText), "stripLayout": controller.deskStrip.geometry, "note": .string(controller.note), "noteShown": .bool(controller.deskView.noteShown), "cheer": .string(controller.cheer),
                     "lead": controller.leadShown.map { .string($0) } ?? .null, "pages": .array(controller.tabBar.pageItems.map { .string($0.title) }),
                     "buildsPage": .bool(!controller.buildsPage.isHidden), "builds": .array(controller.buildsPage.macs.map { mac in ["name": .string(mac.name), "summary": .string(mac.summary), "rows": .array(mac.rows.map { ["job": .string($0.job), "mark": .string($0.mark), "label": .string($0.label), "state": .string($0.state), "note": .string($0.note)] }), "recent": .array(mac.recent.map { ["job": .string($0.job), "label": .string($0.label), "state": .string($0.state)] })] }),
                     "shownPage": controller.shownPage.map { .string($0) } ?? .null,
@@ -610,6 +610,10 @@ extension AppController {
             guard let controller = controllers[id], let spot = controller.tabBar.pageItems.first(where: { $0.title == page }) else { throw KannaError("not_found", "no \(page) tab on \(id)") }
             window = controller.window
             point = spot.center
+        } else if let id = args["deskNote"]?.string {
+            guard let controller = controllers[id], let spot = controller.deskView.noteClose else { throw KannaError("not_found", "\(id)'s Desk view shows no note") }
+            window = controller.window
+            point = spot
         } else if let id = args["deskView"]?.string {
             guard let controller = controllers[id], !controller.agentHeader.isHidden else { throw KannaError("not_found", "\(id) shows no agent header") }
             window = controller.window

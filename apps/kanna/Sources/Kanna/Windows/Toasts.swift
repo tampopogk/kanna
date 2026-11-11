@@ -518,7 +518,7 @@ extension AppController {
                 guard let self else { return }
                 guard reply["ok"]?.bool == true, let pane = toast.pane ?? reply["pane"]?.string else {
                     if let desk, let controller = controllers[desk] {
-                        controller.note = reply["error"]?["message"]?.string ?? "it didn't start"
+                        controller.note = refusal(reply, otherwise: "it didn't start")
                         refresh()
                     }
                     return

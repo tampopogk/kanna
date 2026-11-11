@@ -762,6 +762,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.deskView.onShelve = { [weak self] task in self?.shelveTask(task, from: id) }
         controller.deskView.onRun = { [weak self] task in self?.runTask(task, from: id) }
         controller.deskView.onKeyed = { [weak self] _ in self?.deskKeysChanged() }
+        controller.deskView.onDismissNote = { [weak self, weak controller] in
+            controller?.note = ""
+            self?.refresh()
+        }
         controller.deskView.onLog = { [weak self, weak controller] entry in
             guard let self, let controller else { return }
             showQueue(controller, at: entry)
