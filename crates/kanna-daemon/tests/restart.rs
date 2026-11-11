@@ -11,11 +11,6 @@ fn shows(instance: &Instance, pane: &str, text: &str) -> bool {
     instance.screen(pane).contains(text)
 }
 
-fn saved(instance: &Instance) -> Value {
-    let text = std::fs::read_to_string(instance.dir.join("state/terminals/terminals.json")).unwrap_or_default();
-    serde_json::from_str(&text).unwrap_or(Value::Null)
-}
-
 #[test]
 fn a_restart_keeps_a_running_shell_its_screen_and_what_it_wrote_meanwhile() {
     let mut instance = Instance::start();
@@ -114,26 +109,55 @@ fn terminal_ids_never_repeat_across_restarts() {
     let mut instance = Instance::start();
     let first = instance.open("one", Some("exec sleep 600"));
     let second = instance.open("two", Some("exec sleep 600"));
-    instance.call("close", json!({"pane": second}));
-    assert_eq!(saved(&instance)["counters"]["terminal"], 2);
+    instance.call("close", json!({"pane": "two"}));
+    assert_eq!((instance.saved()["counters"]["terminal"].clone(), instance.saved()["counters"]["pty"].clone()), (json!(2), json!(2)));
 
     instance.restart(libc::SIGKILL);
     let third = instance.open("three", Some("exec sleep 600"));
-    assert_eq!((first.as_str(), second.as_str(), third.as_str()), ("term-1", "term-2", "term-3"));
+    assert_eq!((first.as_str(), second.as_str(), third.as_str()), ("pty-1", "pty-2", "pty-3"));
     assert_eq!(instance.pane("three")["id"], "term-3");
 
-    instance.call("close", json!({"pane": first}));
-    instance.call("close", json!({"pane": third}));
+    instance.call("close", json!({"pane": "one"}));
+    instance.call("close", json!({"pane": "three"}));
     instance.restart(libc::SIGTERM);
     assert!(instance.call("list", json!({}))["panes"].as_array().unwrap().is_empty());
-    assert_eq!(instance.open("four", None), "term-4");
+    assert_eq!(instance.open("four", None), "pty-4");
     assert_eq!(instance.pane("four")["id"], "term-4");
     let restarted = instance.call("restart", json!({"pane": "four"}));
-    assert_eq!(restarted["pane"]["id"], "term-5", "a restart is a new terminal: {restarted}");
-    assert_eq!((instance.pane("four")["id"].clone(), instance.pane("four")["terminal"].clone()), (json!("term-5"), json!("term-5")));
+    assert_eq!(restarted["pane"]["id"], "term-4", "a restart keeps the pane: {restarted}");
+    assert_eq!((instance.pane("four")["id"].clone(), instance.pane("four")["terminal"].clone()), (json!("term-4"), json!("pty-5")), "and runs a new pty behind it");
     let list = instance.call("list", json!({}));
-    assert_eq!(list["windows"][0]["tabs"][0]["layout"], json!({"pane": "four"}), "the layout shows the new terminal: {list}");
+    assert_eq!(list["windows"][0]["tabs"][0]["layout"], json!({"pane": "four"}), "the layout still shows the pane: {list}");
     assert_eq!(list["panes"].as_array().map(Vec::len), Some(1), "{list}");
+    assert_eq!((instance.open("five", None), instance.pane("five")["id"].clone()), ("pty-6".to_string(), json!("term-5")), "panes and ptys count on their own");
+    assert_eq!(instance.call("read", json!({"pane": "pty-6"}))["error"]["code"], "not_found", "a pty is no way to name a pane");
+}
+
+#[test]
+fn a_pane_keeps_its_id_and_its_new_run_across_a_daemon_restart() {
+    let mut instance = Instance::start();
+    let first = instance.open("durable", Some("echo first-$((6*7)) $KANNA_TERMINAL; exec cat"));
+    let pane = instance.pane("durable")["id"].as_str().unwrap().to_string();
+    assert_ne!(first, pane, "a pty has an ID of its own");
+    wait_for("the first run", || shows(&instance, &pane, &format!("first-42 {pane}")));
+    instance.call("restart", json!({"pane": "durable"}));
+    let run = instance.pane("durable")["terminal"].as_str().unwrap().to_string();
+    assert_ne!(run, first, "a new run");
+    wait_for("the new run", || instance.pane("durable")["state"] == "running");
+    assert_eq!(instance.pane("durable")["id"], json!(pane));
+    wait_for("the second run's screen", || shows(&instance, &run, &format!("first-42 {pane}")));
+    assert_eq!(instance.screen(&run).matches("first-42").count(), 1, "the old run's screen isn't kept");
+    let pid = instance.pane("durable")["pid"].as_i64().unwrap();
+
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        wait_for("the record of the new run", || instance.saved()["terminals"][0]["id"] == json!(run));
+        instance.restart(signal);
+        let durable = instance.pane("durable");
+        assert_eq!((durable["id"].as_str(), durable["terminal"].as_str(), durable["pid"].as_i64(), durable["state"].as_str()), (Some(pane.as_str()), Some(run.as_str()), Some(pid), Some("running")), "{durable}");
+        assert_eq!(instance.saved()["terminals"][0]["pane"], json!(pane));
+        instance.call("send", json!({"pane": pane, "text": "still-$((6*7))"}));
+        wait_for("the keeper's run to take text under the pane's ID", || shows(&instance, &run, "still-$((6*7))"));
+    }
 }
 
 #[test]
@@ -147,22 +171,76 @@ fn what_the_keeper_has_and_the_disk_does_not_is_taken_back_and_the_reverse_dropp
     instance.stop(libc::SIGKILL);
     keeper(&instance, json!({"op": "close", "id": lost}));
     wait_for("the keeper to end lost", || !alive(lost_pid));
-    std::fs::remove_file(instance.dir.join("state/terminals/terminals.json")).unwrap();
+    instance.records(rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).execute_batch("delete from terminals; delete from meta where key = 'terminal_counters';").unwrap();
     instance.start_again();
 
     let panes = instance.call("list", json!({}))["panes"].clone();
     let panes = panes.as_array().unwrap();
     assert_eq!(panes.len(), 1, "{panes:?}");
-    assert_eq!(panes[0]["id"].as_str(), Some(kept.as_str()), "{panes:?}");
+    assert_eq!(panes[0]["id"].as_str(), Some("term-1"), "{panes:?}");
     assert_eq!((panes[0]["terminal"].as_str(), panes[0]["pid"].as_i64(), panes[0]["cmd"].as_str()), (Some(kept.as_str()), Some(kept_pid), Some("echo kept; exec sleep 600")));
     assert!(panes[0]["name"].is_null());
     let new = instance.open("new", None);
     assert_ne!(new, kept);
 
     instance.restart(libc::SIGTERM);
-    let restored = saved(&instance);
+    let restored = instance.saved();
     let ids: Vec<&str> = restored["terminals"].as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
     assert_eq!(ids, [kept.as_str(), new.as_str()]);
+}
+
+#[test]
+fn a_terminals_json_is_imported_with_its_ptys_running_in_the_keeper() {
+    let mut instance = Instance::start();
+    let kept = instance.open("kept", Some("echo kept-$((6*7)) $KANNA_TERMINAL; exec cat"));
+    let pane = instance.pane("kept")["id"].as_str().unwrap().to_string();
+    wait_for("the first run", || shows(&instance, &kept, &format!("kept-42 {pane}")));
+    instance.call("restart", json!({"pane": "kept"}));
+    let run = instance.pane("kept")["terminal"].as_str().unwrap().to_string();
+    wait_for("the new run", || shows(&instance, &run, &format!("kept-42 {pane}")));
+    let side = instance.open("side", Some("exec sleep 600"));
+    let side_pane = instance.pane("side")["id"].as_str().unwrap().to_string();
+    let exited = instance.open("exited", Some("exit 3"));
+    let exited_pane = instance.pane("exited")["id"].as_str().unwrap().to_string();
+    wait_for("the exit", || instance.pane("exited")["state"] == "exited");
+    let pids = (instance.pane("kept")["pid"].as_i64(), instance.pane("side")["pid"].as_i64());
+    wait_for("the records", || instance.saved()["terminals"].as_array().is_some_and(|t| t.iter().any(|r| r["id"] == json!(exited) && r["state"] == "exited")));
+    instance.stop(libc::SIGTERM);
+
+    let mut records = instance.saved()["terminals"].clone();
+    for record in records.as_array_mut().unwrap() {
+        record["type"] = json!("term");
+    }
+    let (ptys, terminals) = (61, 52);
+    let file = instance.dir.join("state/terminals/terminals.json");
+    std::fs::write(&file, json!({ "kanna": "terminals", "version": 3, "counters": { "pane": 0, "terminal": terminals, "pty": ptys }, "terminals": records }).to_string()).unwrap();
+    instance
+        .records(rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .execute_batch("delete from terminals; delete from meta where key in ('terminal_counters', 'terminals_imported');")
+        .unwrap();
+    instance.start_again();
+
+    assert!(!file.exists(), "the file is renamed");
+    assert!(instance.dir.join("state/terminals/terminals.json.imported").exists());
+    let found = |instance: &Instance, name: &str| {
+        let pane = instance.pane(name);
+        (pane["id"].as_str().unwrap().to_string(), pane["terminal"].as_str().unwrap().to_string(), pane["state"].as_str().unwrap().to_string())
+    };
+    assert_eq!(found(&instance, "kept"), (pane.clone(), run.clone(), "running".to_string()));
+    assert_eq!(found(&instance, "side"), (side_pane, side, "running".to_string()));
+    assert_eq!(found(&instance, "exited"), (exited_pane, exited, "exited".to_string()));
+    assert_eq!((instance.pane("kept")["pid"].as_i64(), instance.pane("side")["pid"].as_i64()), pids);
+    assert_eq!(instance.pane("exited")["exitCode"], 3);
+    assert!(shows(&instance, &run, &format!("kept-42 {pane}")), "{}", instance.screen(&run));
+
+    let next = instance.open("next", None);
+    assert_eq!((next.as_str(), instance.pane("next")["id"].as_str()), (format!("pty-{}", ptys + 1).as_str(), Some(format!("term-{}", terminals + 1).as_str())));
+    wait_for("the new record", || instance.saved()["counters"] == json!({ "pane": 0, "terminal": terminals + 1, "pty": ptys + 1 }));
+
+    std::fs::write(&file, "{}").unwrap();
+    instance.restart(libc::SIGTERM);
+    assert_eq!(found(&instance, "kept"), (pane, run, "running".to_string()), "a file found later isn't read");
+    assert!(!file.exists());
 }
 
 #[test]
@@ -208,6 +286,15 @@ fn a_task_keeps_the_folder_it_opened_in_across_a_restart() {
     let beside = beside["pane"]["id"].as_str().unwrap_or_else(|| panic!("{beside}")).to_string();
     wait_for("the task's folder", || instance.screen(&beside).lines().any(|line| line == folder.to_string_lossy()));
     std::fs::remove_dir_all(&folder).unwrap();
+}
+
+#[test]
+fn an_app_of_another_build_and_another_protocol_replaces_this_macs_daemon() {
+    let instance = Instance::start();
+    let mut app = App::raw(&instance.socket());
+    app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 2, "build": "0000", "protocol": kanna_build::PROTOCOL + 1, "panes": []}}));
+    let reply = app.next().unwrap();
+    assert_eq!(reply["error"]["code"], "other_build", "{reply}");
 }
 
 #[test]
@@ -257,7 +344,7 @@ fn a_terminal_started_again_after_a_restart_keeps_its_size_even_without_its_scre
     wait_for("the exit", || instance.pane("sized")["state"] == "exited");
 
     instance.stop(libc::SIGTERM);
-    assert_eq!(saved(&instance)["terminals"][0]["cols"], 101, "{}", saved(&instance));
+    assert_eq!(instance.saved()["terminals"][0]["cols"], 101, "{}", instance.saved());
     let _ = std::fs::remove_file(instance.dir.join(format!("state/terminals/{pane}.snap")));
     instance.start_again();
 
@@ -304,7 +391,7 @@ fn an_app_that_keeps_the_socket_gets_it_and_a_call_made_while_no_daemon_runs_is_
     let mut answer = String::new();
     BufReader::new(waiting).read_line(&mut answer).unwrap();
     let answer: Value = serde_json::from_str(&answer).unwrap_or_else(|_| panic!("no answer: {}", instance.log()));
-    assert!(answer["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str()), "{answer}");
+    assert!(answer["panes"].as_array().unwrap().iter().any(|p| p["terminal"] == pane.as_str()), "{answer}");
     assert!(!instance.log().contains("KANNA_LISTEN_FD"), "{}", instance.log());
 }
 
@@ -335,4 +422,28 @@ fn an_app_that_does_not_keep_the_socket_gets_none_and_the_daemon_unlinks_it() {
     assert_eq!((hello["ok"].as_bool(), hello["listener"].as_bool()), (Some(true), Some(false)), "{hello}");
     instance.stop(libc::SIGTERM);
     assert!(!instance.socket().exists(), "the daemon left its socket with no app keeping it");
+}
+
+#[test]
+fn a_terminal_that_ended_unseen_comes_back_exited_and_a_planner_without_one_is_closed_for_a_new_one() {
+    let mut instance = Instance::start();
+    let unseen = instance.open("unseen", Some("echo unseen-out; exec sleep 600"));
+    wait_for("unseen's output", || shows(&instance, &unseen, "unseen-out"));
+    let unseen_pid = instance.pane("unseen")["pid"].as_i64().unwrap();
+    let opened = instance.call("open", json!({"type": "term", "planner": true, "cwd": instance.dir.to_string_lossy(), "cmd": "exec sleep 600", "wait": false}));
+    let planner = opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("{opened}")).to_string();
+    let planner_terminal = opened["pane"]["terminal"].as_str().unwrap().to_string();
+    let listed = |instance: &Instance| instance.call("list", json!({}))["panes"].as_array().unwrap().iter().filter_map(|p| p["id"].as_str().map(String::from)).collect::<Vec<_>>();
+    assert!(listed(&instance).contains(&planner));
+
+    instance.stop(libc::SIGTERM);
+    keeper(&instance, json!({"op": "close", "id": unseen}));
+    keeper(&instance, json!({"op": "close", "id": planner_terminal}));
+    wait_for("the keeper to end unseen", || !alive(unseen_pid));
+    instance.start_again();
+
+    let pane = instance.pane("unseen");
+    assert_eq!(pane["state"].as_str(), Some("exited"), "a terminal that ended while no daemon ran is shown ended, not starting: {pane}");
+    assert!(shows(&instance, &unseen, "unseen-out"), "with its last screen: {}", instance.screen(&unseen));
+    wait_for("the planner with no terminal to be closed", || !listed(&instance).contains(&planner));
 }

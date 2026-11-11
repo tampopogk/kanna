@@ -19,7 +19,8 @@ Kanna's menus and shortcuts are kmux's ([its spec](../../references/kmux/docs/km
 | File | New Desk ⌘N ([tasks](tasks.md#2-how-tasks-are-made)), Open Recent ▸ (recent projects, latest first, then Clear Menu: [recent projects](recent-projects.md)) |
 | Edit | Undo ⌘Z, Redo ⇧⌘Z, Cut ⌘X, Copy ⌘C, Paste ⌘V, Select All ⌘A (sent to whatever has focus) |
 | Pane | New Pane ▸ (New Web / iOS Pane Right and Below, New Markdown Pane Right… and Below…); Split Right ⌘D, Split Down ⇧⌘D, Next Pane ⌘], Previous Pane ⌘[, Zoom ⇧⌘↩, Move Pane to New Window, Close Pane ⌘W; Open URL… ⌘L, Back, Forward, Reload ⌘R, Comments, Home ⇧⌘H ([§4](#4-the-pane-menu)) |
-| View | New Tab ⌘T, Next Tab ⇧⌘], Previous Tab ⇧⌘[ (from a Desk's docked pane they switch the shown tab and focus stays in the docked pane; from a tab's pane focus moves into the new tab), Zoom In ⌘+, Zoom Out ⌘−, Actual Size ⌘0 (a markdown or web pane's magnification, which scales the page without re-laying it out, or a terminal's font size; a pinch magnifies markdown and web panes too) |
+| View | New Tab ⌘T, Next Tab ⇧⌘], Previous Tab ⇧⌘[ (from a Desk's docked pane they switch the shown tab and focus stays in the docked pane; from a tab's pane focus moves into the new tab), Zoom In ⌘+, Zoom Out ⌘−, Actual Size ⌘0 (a markdown pane's text size, which lays the page out again ([markdown zoom](markdown-zoom.md)), a web pane's magnification, or a terminal's font size; a pinch magnifies markdown and web pages without laying them out again) |
+| Task | Show Desk / Show Active Task ⌘., Move to Shelf, the Desk view selection's items with ↩ and ⌘↩, Desk Task 1 ⌘1, 2 ⌘2 ([Desk view](desk-view.md), [Desk view keys](desk-keys.md)) |
 | Window | New Window (no shortcut: ⌘N is New Desk), Close Window ⇧⌘W, Move Tab to New Window, Next Window ⌘\`, Previous Window ⇧⌘\` (its key equivalent `~` with ⌘, which AppKit matches: [Desk windows](desk-windows.md#4--and-)), and the list of windows |
 
 ## 2. Rules
@@ -78,4 +79,4 @@ Pane
 - **New Pane ▸** holds the six non-terminal panes, which have no shortcut; a terminal split stays at the top level with its ⌘D and ⇧⌘D.
 - **Every pane's commands** come next: they apply whatever the focused pane is.
 - **The focused pane's type's commands** come last, together: web (Open URL…, Back, Forward, Reload, Comments), markdown and code (Back, Forward; markdown's Comments), diff (Reload), iOS (Home). The ones the focused pane's type doesn't have are greyed out ([§2](#2-rules)).
-- **Shortcuts** are unchanged by the grouping; `debug.menu` lists the submenu's items under the menu `New Pane`, and e2e `terminal_colours` checks the Pane menu's order.
+- **Shortcuts** are unchanged by the grouping; `debug.menu` lists the submenu's items under the menu `New Pane`, and e2e `windows_tabs_ui` checks the Pane menu's order.

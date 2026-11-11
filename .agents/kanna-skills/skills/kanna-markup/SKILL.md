@@ -1,6 +1,6 @@
 ---
 name: kanna-markup
-description: Use when a message starting with "[kanna comment cN · FILE:LINE]" arrives, or when the user asks to review a markdown doc or an HTML mockup together in Kanna.
+description: Use when a message starting with "[kanna comment cN · FILE:LINE]", "[kanna resolved cN · FILE:LINE]" or "[kanna reopened cN · FILE:LINE]" arrives, or when the user asks to review a markdown doc or an HTML mockup together in Kanna.
 ---
 
 # Kanna markup
@@ -75,11 +75,26 @@ Kanna types the next comment in only when your turn ends, so a turn spent workin
 
 Reply in the thread, not only in the chat: the user reads replies beside the doc.
 
+## Resolved and reopened threads
+
+When the user resolves or reopens a thread you get its header alone, several in one message when they do several at once:
+
+```
+[kanna resolved c3 · docs/specs/tab-container.md:18]
+
+[kanna reopened c2 · docs/specs/tab-container.md:7]
+```
+
+- **Resolved:** the user has closed that thread. Drop any work still pending for it, stop a subagent or background command doing only that, and don't reply in the thread: a reply opens it again. Work that already landed stays.
+- **Reopened:** treat it like a new comment. `kanna markup show c2` shows the thread; answer as above.
+
+Your own `kanna markup resolve` and `reopen` aren't sent back to you.
+
 ## Commands
 
 | Command | Does |
 |---|---|
-| `kanna markup FILE.md`, `kanna markup FILE.html` | Show a markdown file or a local page (a mockup) in a new Kanna pane with comments; comments on it come to you (`--to PANE`: to another terminal). If it's already open (`kanna workspace list`), use `kanna markup PANE` instead |
+| `kanna markup FILE.md`, `kanna markup FILE.html` | Show a markdown file or a local page (a mockup) in a new Kanna pane with comments; comments on it come to you (`--to PANE`: to another terminal). If a pane in your workspace already shows it, comments come on there instead |
 | `kanna markup PANE`, `kanna markup PANE --off` | Turn comments on (coming to you) or off in a pane already open; `kanna open md` and `kanna open web` show docs without them |
 | `kanna markup comments [--all]` | The open comments on your docs (`--all`: resolved too) |
 | `kanna markup show cN` | One thread: what it points at, its line, every message |

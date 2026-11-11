@@ -5,8 +5,7 @@ use crate::Event;
 use kanna_mux::json::{json, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
 use kanna_net::{Config, Failure, Host, Node};
-use std::path::Path;
-use std::sync::mpsc::Sender;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -16,21 +15,28 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 
 const CONFIRM: &str = "app.machine.confirm";
 
+pub type Withdraw = std::sync::Arc<dyn Fn(&str) -> Option<bool> + Send + Sync>;
+
 const EXCHANGE_WAIT: Duration = Duration::from_secs(20);
 
 pub struct Machines {
     runtime: tokio::runtime::Runtime,
     node: Result<Node, String>,
+    withdraw: std::sync::OnceLock<Withdraw>,
 }
 
-struct DaemonHost(Mutex<Sender<Event>>, std::sync::Arc<crate::wire::Wire>);
+struct DaemonHost(Mutex<crate::runtime::Events>, std::sync::Arc<crate::wire::Wire>, PathBuf, PathBuf);
 
 impl Host for DaemonHost {
-    fn request(&self, _from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
+    fn request(&self, from: String, request: Value, reply: Box<dyn FnOnce(Value) + Send>) {
         if let Some(refused) = refuse_remote(&request) {
             return reply(refused);
         }
-        let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(Event::Request(request, reply));
+        let event = match request.get("cmd").and_then(Value::as_str) == Some(crate::accounts::COMMAND) {
+            true => Event::PeerRequest { from, request, reply },
+            false => Event::Request(request, reply),
+        };
+        let _ = self.0.lock().unwrap_or_else(|p| p.into_inner()).send(event);
     }
 
     fn confirm(&self, question: Value, answer: Box<dyn FnOnce(Result<bool, String>) + Send>) {
@@ -47,11 +53,94 @@ impl Host for DaemonHost {
         let Ok(reader) = stream.try_clone() else { return };
         let _ = std::thread::Builder::new().name("kanna.app.read".into()).spawn(move || crate::app_link::serve(events, wire, hello, std::io::BufReader::new(reader), stream, Some(from)));
     }
+
+    fn inbox(&self) -> Option<PathBuf> {
+        Some(self.2.clone())
+    }
+
+    fn phone(&self, from: String, _key: String, stream: std::os::unix::net::UnixStream) {
+        let events = self.0.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let _ = std::thread::Builder::new().name("kanna.phone.read".into()).spawn(move || crate::phone::serve(events, stream, from));
+    }
+
+    fn job(&self, from: String, stream: std::os::unix::net::UnixStream) {
+        let state_dir = self.3.clone();
+        let _ = std::thread::Builder::new().name("kanna.build.relay".into()).spawn(move || crate::builds::relay(&state_dir, &from, stream));
+    }
+
+    fn bundle(&self, _from: String, path: String, stream: std::os::unix::net::UnixStream) {
+        let _ = std::thread::Builder::new().name("kanna.bundle.send".into()).spawn(move || crate::ios_apps::serve(&path, stream));
+    }
+}
+
+#[derive(Clone)]
+pub struct Caller {
+    handle: tokio::runtime::Handle,
+    node: Node,
+}
+
+const CALL_WAIT: Duration = Duration::from_secs(60);
+
+impl Caller {
+    pub fn key(&self) -> String {
+        self.node.key()
+    }
+
+    pub fn status(&self) -> Value {
+        self.node.status()
+    }
+
+    pub fn log(&self) -> Option<Value> {
+        self.node.log()
+    }
+
+    pub fn relay_token(&self) -> Option<String> {
+        self.node.relay_token()
+    }
+
+    pub fn phone_offer(&self) -> Result<Value, KmuxError> {
+        self.node.offer_phone().map_err(error)
+    }
+
+    pub fn phone_wait(&self, responder: Responder) {
+        let node = self.node.clone();
+        self.handle.spawn(async move { responder.reply(node.wait_phone().await.map_err(error).and_then(object)) });
+    }
+
+    pub fn call(&self, host: &str, cmd: &str, args: Value) -> Result<Value, KmuxError> {
+        let request = json!({ "id": 1, "cmd": cmd, "args": args });
+        let reply = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.call(host, request)).await });
+        match reply {
+            Ok(Ok(reply)) if reply["ok"] == true => Ok(reply),
+            Ok(Ok(reply)) => Err(KmuxError::new(reply["error"]["code"].as_str().unwrap_or("failed"), reply["error"]["message"].as_str().unwrap_or("failed"))),
+            Ok(Err(failure)) => Err(error(failure)),
+            Err(_) => Err(KmuxError::new("unreachable", format!("{host} didn't answer in time"))),
+        }
+    }
+}
+
+impl Caller {
+    pub fn job(&self, host: &str) -> Result<(std::os::unix::net::UnixStream, String), Failure> {
+        let opened = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.job(host)).await });
+        opened.unwrap_or_else(|_| Err(Failure::new("unreachable", format!("{host} didn't answer in time"))))
+    }
+}
+
+impl Caller {
+    pub fn bundle(&self, host: &str, path: &str) -> Result<std::os::unix::net::UnixStream, Failure> {
+        let opened = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.bundle(host, path)).await });
+        opened.unwrap_or_else(|_| Err(Failure::new("unreachable", format!("{host} didn't answer in time"))))
+    }
 }
 
 pub fn refuse_remote(request: &Value) -> Option<Value> {
     let certify = request.get("cmd").and_then(Value::as_str) == Some("machine") && request.pointer("/args/action").and_then(Value::as_str) == Some("certify");
     certify.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "only this machine's own Kanna.app can have its endpoint certified" } }))
+}
+
+pub fn refuse_link(request: &Value) -> Option<Value> {
+    let accounts = request.get("cmd").and_then(Value::as_str) == Some(crate::accounts::COMMAND);
+    refuse_remote(request).or_else(|| accounts.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "agent accounts aren't open to an app on another machine" } })))
 }
 
 fn hostname() -> String {
@@ -78,15 +167,23 @@ fn port() -> Option<u16> {
 }
 
 impl Machines {
-    pub fn start(state_dir: &Path, db: &Db, events: Sender<Event>, wire: std::sync::Arc<crate::wire::Wire>) -> Result<Machines, String> {
+    pub fn start(state_dir: &Path, db: &Db, events: crate::runtime::Events, wire: std::sync::Arc<crate::wire::Wire>) -> Result<Machines, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("kanna.machines").enable_all().build().map_err(|e| format!("can't start the machines' runtime: {e}"))?;
         let node = kanna_net::read_key(&state_dir.join(KEY)).and_then(|secret| {
             let saved = db.machines().unwrap_or_else(|_| json!({}));
             let mdns = std::env::var("KANNA_MACHINE_MDNS").map_or(true, |v| v != "0");
             let config = Config { secret, saved, name: hostname(), capabilities: capabilities(), port: port(), mdns, release: release() };
-            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire))))
+            runtime.block_on(Node::start(config, Box::new(DaemonHost(Mutex::new(events), wire, crate::transfer::inbox(state_dir), state_dir.to_path_buf()))))
         });
-        Ok(Machines { runtime, node })
+        Ok(Machines { runtime, node, withdraw: std::sync::OnceLock::new() })
+    }
+
+    pub fn before_revoke(&self, withdraw: Withdraw) {
+        let _ = self.withdraw.set(withdraw);
+    }
+
+    pub fn caller(&self) -> Option<Caller> {
+        self.node.as_ref().ok().map(|node| Caller { handle: self.runtime.handle().clone(), node: node.clone() })
     }
 
     pub fn describe(&self) -> String {
@@ -138,10 +235,29 @@ impl Machines {
                 let peer = string(&args, "peer").map(String::from);
                 self.spawn(responder, async move { node.pair(&code, peer.as_deref()).await })
             }
-            "revoke" | "ping" | "sync" => match needs_host(host) {
+            "revoke" => match needs_host(host) {
+                Ok(host) => {
+                    let withdraw = self.withdraw.get().cloned();
+                    self.spawn(responder, async move {
+                        let withdrawn = match withdraw {
+                            Some(withdraw) => {
+                                let host = host.clone();
+                                tokio::task::spawn_blocking(move || withdraw(&host)).await.ok().flatten()
+                            }
+                            None => None,
+                        };
+                        let mut revoked = node.revoke(&host).await?;
+                        if let Some(withdrawn) = withdrawn {
+                            revoked["accounts"] = json!(withdrawn);
+                        }
+                        Ok(revoked)
+                    })
+                }
+                Err(e) => responder.reply(Err(e)),
+            },
+            "ping" | "sync" => match needs_host(host) {
                 Ok(host) => self.spawn(responder, async move {
                     match action.as_str() {
-                        "revoke" => node.revoke(&host).await,
                         "ping" => node.ping(&host).await,
                         _ => node.sync(&host).await,
                     }
@@ -217,11 +333,28 @@ impl Machines {
         });
     }
 
+    pub fn transfer(&self, key: String, id: String, args: Value, path: PathBuf, done: Box<dyn FnOnce(Result<Value, String>) + Send>) {
+        let Ok(node) = &self.node else { return done(Err("this daemon has no endpoint [unavailable]".into())) };
+        let node = node.clone();
+        self.runtime.spawn(async move {
+            done(node.transfer(&key, &id, args, &path).await.map_err(|failure| format!("{} [{}]", failure.message, failure.code)))
+        });
+    }
+
     pub fn machine(&self) -> Value {
         match &self.node {
             Ok(node) => json!({ "name": node.status()["name"], "capabilities": capabilities(), "relay_token": node.relay_token() }),
             Err(_) => json!({ "name": hostname(), "capabilities": capabilities() }),
         }
+    }
+
+    pub fn close_from_loop(&self) {
+        let Ok(node) = &self.node else { return };
+        let (handle, node) = (self.runtime.handle().clone(), node.clone());
+        let closing = std::thread::spawn(move || {
+            let _ = handle.block_on(async { tokio::time::timeout(Duration::from_secs(1), node.close()).await });
+        });
+        let _ = closing.join();
     }
 
     pub fn stop(&self) {

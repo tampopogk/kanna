@@ -1,15 +1,26 @@
-use crate::db::{self, Answer, Db, Round};
+use crate::db::{self, Answer, Db, Ready, Round};
+use crate::quiz_map::{self, Inputs, WINDOW_DAYS};
+use crate::quiz_round::{self, Source};
+use crate::quiz_writer::{Writers, Written};
+use crate::tasks::git;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use crate::tasks::{config_files, prompts, started_as, task_agent, QUIZ_ROLE};
 use kanna_mux::{project, CoreHandle, KmuxError, PaneState, Responder, WeakCore};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const KINDS: &[&str] = &["architecture", "drawing", "behaviour", "where", "why", "bug"];
 
 pub struct Quiz {
     db: Rc<Db>,
     core: Option<WeakCore>,
+    writers: Option<Rc<Writers>>,
+}
+
+fn now() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
 fn bad(message: impl Into<String>) -> KmuxError {
@@ -67,8 +78,12 @@ fn answer_value(answer: &Answer) -> Value {
 }
 
 impl Quiz {
-    pub fn new(db: Rc<Db>, core: Option<WeakCore>) -> Quiz {
-        Quiz { db, core }
+    pub fn new(db: Rc<Db>, core: Option<WeakCore>, writers: Option<Rc<Writers>>) -> Quiz {
+        Quiz { db, core, writers }
+    }
+
+    pub fn writers(&self) -> Option<&Rc<Writers>> {
+        self.writers.as_ref()
     }
 
     pub fn install(self: &Rc<Self>, core: &CoreHandle) {
@@ -79,6 +94,11 @@ impl Quiz {
                 let Some(this) = this.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
                 match args.get("action").and_then(Value::as_str) {
                     Some("open") => this.open(&args, responder),
+                    Some("ready") => this.ready(&args, responder),
+                    Some("map") if args.get("doc").is_none_or(Value::is_null) => match repo(&args).map(String::from) {
+                        Ok(repo) => this.map(&repo, responder),
+                        Err(error) => responder.reply(Err(error)),
+                    },
                     _ => responder.reply(this.handle(&args)),
                 }
             }),
@@ -90,7 +110,10 @@ impl Quiz {
             Some("start") => self.start(args),
             Some("answer") => self.answer(args),
             Some("history") => self.history(args),
-            _ => Err(bad("quiz needs an action: open, start, answer or history")),
+            Some("map") => self.set_map(args),
+            Some("notes") => self.notes(args),
+            Some("ahead") => self.ahead(args),
+            _ => Err(bad("quiz needs an action: open, start, answer, history, ready, map, notes or ahead")),
         }
     }
 
@@ -158,6 +181,181 @@ impl Quiz {
         Ok(Map::from_iter([("round".to_string(), json!(format!("r{round}"))), ("answer".to_string(), json!(format!("a{id}")))]))
     }
 
+    fn ready(self: &Rc<Self>, args: &Value, responder: Responder) {
+        let repo = match repo(args) {
+            Ok(repo) => repo.to_string(),
+            Err(error) => return responder.reply(Err(error)),
+        };
+        let doc = match args.get("doc") {
+            Some(doc @ Value::Object(_)) => doc.clone(),
+            _ => return responder.reply(Err(bad("a round is a JSON object: {\"head\", \"questions\": [...]}"))),
+        };
+        let Some(head) = string(&doc, "head").filter(|h| !h.is_empty()).map(String::from) else { return responder.reply(Err(bad("say which commit of main the round asks about: \"head\""))) };
+        let about = self.writers.as_ref().and_then(|w| w.subject(&repo)).or_else(|| string(&doc, "about").filter(|a| !a.trim().is_empty()).map(String::from));
+        if about.is_none() && self.db.round_waits(&repo).unwrap_or(false) {
+            return responder.reply(Err(KmuxError::new("already_ready", "a round is ready and not played yet, so this one isn't needed")));
+        }
+        let misses: Vec<String> = self.db.answers(&repo, true).unwrap_or_default().iter().map(|a| format!("a{}", a.id)).collect();
+        let (this, by) = (Rc::downgrade(self), string(args, "by").map(String::from));
+        crate::runtime::spawn("a quiz round's check", async move {
+            let folder = PathBuf::from(&repo);
+            let checked = crate::runtime::off_loop({
+                let (folder, head) = (folder.clone(), head.clone());
+                move || {
+                    if git(&folder, &["cat-file", "-e", &format!("{head}^{{commit}}")]).is_err() {
+                        return Err(vec![format!("{head} isn't a commit here")]);
+                    }
+                    let show = |file: &str| git(&folder, &["show", &format!("{head}:{file}")]).ok();
+                    let again = |id: &str| misses.iter().any(|m| m == id);
+                    quiz_round::check(doc, &Source { head: &head, show: &show, again: &again })
+                }
+            })
+            .await;
+            let Some(this) = this.upgrade() else { return };
+            responder.reply(match checked {
+                None => Err(KmuxError::new("failed", "couldn't check the round")),
+                Some(Err(problems)) => Err(bad(format!("round refused: fix these and run kanna quiz ready again:\n{}", problems.join("\n")))),
+                Some(Ok(doc)) => this.keep_round(&repo, &head, about, by, doc),
+            });
+        });
+    }
+
+    fn keep_round(&self, repo: &str, head: &str, about: Option<String>, by: Option<String>, doc: Value) -> Result<Map, KmuxError> {
+        let title = string(&doc, "title").filter(|t| !t.trim().is_empty()).map(String::from).or_else(|| about.clone()).unwrap_or_else(|| "Next round".into());
+        let mut kept = json!({ "title": title, "about": about, "says": doc.get("says"), "questions": doc.get("questions") });
+        if kept["says"].is_null() {
+            kept["says"] = json!(about.as_ref().map_or("about what's new on main".to_string(), |a| format!("about {a}")));
+        }
+        let mut round_doc = json!({ "commits": doc.get("commits"), "agent": doc.get("agent") });
+        if let Some(by) = by {
+            round_doc["by"] = json!(by);
+        }
+        let round = self.db.put_ready(repo, head, &round_doc, &kept).map_err(|e| failed("keep the round", e))?;
+        if let Some(writers) = &self.writers {
+            writers.written(repo, Written { round, title, about });
+        }
+        Ok(Map::from_iter([("round".to_string(), json!(format!("r{round}")))]))
+    }
+
+    fn set_map(&self, args: &Value) -> Result<Map, KmuxError> {
+        let repo = repo(args)?;
+        let doc = doc(args)?;
+        let map = quiz_map::read_map(&doc).map_err(bad)?;
+        self.db.set_quiz_map(repo, &doc).map_err(|e| failed("keep the map", e))?;
+        Ok(Map::from_iter([("subsystems".to_string(), json!(map.len()))]))
+    }
+
+    fn notes(&self, args: &Value) -> Result<Map, KmuxError> {
+        let repo = repo(args)?;
+        if let Some(notes) = args.get("doc").filter(|d| !d.is_null()) {
+            let notes = notes.get("notes").and_then(Value::as_object).ok_or_else(|| bad("notes are {\"notes\": {\"SUBSYSTEM\": \"a few plain lines\"}}"))?;
+            for (subsystem, text) in notes {
+                let text = text.as_str().ok_or_else(|| bad(format!("the notes on {subsystem} are text")))?;
+                self.db.set_quiz_note(repo, subsystem, text).map_err(|e| failed("keep the notes", e))?;
+            }
+        }
+        let notes = self.db.quiz_notes(repo).map_err(|e| failed("read the notes", e))?;
+        Ok(Map::from_iter([("notes".to_string(), Value::Object(notes.into_iter().map(|(subsystem, text)| (subsystem, json!(text))).collect()))]))
+    }
+
+    pub fn ahead(&self, args: &Value) -> Result<Map, KmuxError> {
+        let repo = repo(args)?;
+        let about = string(args, "about").map(str::trim).filter(|a| !a.is_empty()).map(String::from);
+        let writers = self.writers.as_ref().ok_or_else(|| KmuxError::new("unavailable", "this daemon can't start a writer"))?;
+        writers.ahead(repo, about, args.get("again").and_then(Value::as_bool).unwrap_or(false));
+        Ok(self.writing(repo))
+    }
+
+    fn writing(&self, repo: &str) -> Map {
+        match self.writers.as_ref().map(|w| w.writing(repo)) {
+            Some(Value::Object(map)) => map,
+            _ => Map::new(),
+        }
+    }
+
+    pub fn map(self: &Rc<Self>, repo: &str, responder: Responder) {
+        let Some(kept) = self.db.quiz_map(repo).ok().flatten() else { return responder.reply(Ok(Map::from_iter([("subsystems".to_string(), json!([]))]))) };
+        let map = match quiz_map::read_map(&kept) {
+            Ok(map) => map,
+            Err(error) => return responder.reply(Err(bad(error))),
+        };
+        let read = || -> rusqlite::Result<_> { Ok((self.db.answers(repo, false)?, self.db.answers(repo, true)?, self.db.rounds(repo)?, self.db.quiz_notes(repo)?)) };
+        let (answers, misses, rounds, notes) = match read() {
+            Ok(read) => read,
+            Err(error) => return responder.reply(Err(failed("read the quiz", error))),
+        };
+        let folder = PathBuf::from(repo);
+        crate::runtime::spawn("a quiz map", async move {
+            let worked = crate::runtime::off_loop(move || {
+                let time = now();
+                let since = time - WINDOW_DAYS * 86400.0;
+                let head = quiz_map::head_of(&folder)?;
+                let facts = quiz_map::read_facts(&folder, &head, since, |path| quiz_map::wanted(&map, path))?;
+                let known: HashMap<String, _> = quiz_map::last_rights(&map, &answers, &rounds).into_iter().map(|last| (last.clone(), quiz_map::before(&folder, &last, since))).collect();
+                let tiles = quiz_map::numbers(&Inputs { map: &map, facts: &facts, answers: &answers, misses: &misses, rounds: &rounds, notes: &notes, known: &known, now: time });
+                Ok::<_, String>(json!({ "head": head, "subsystems": tiles }))
+            })
+            .await;
+            responder.reply(match worked {
+                Some(Ok(Value::Object(map))) => Ok(map),
+                Some(Err(error)) => Err(KmuxError::new("failed", error)),
+                _ => Err(KmuxError::new("failed", "couldn't work out the map")),
+            });
+        });
+    }
+
+    fn ready_value(&self, ready: &Ready, map: &[quiz_map::Subsystem]) -> Value {
+        let mut doc = ready.doc.clone();
+        if let Some(questions) = doc.get_mut("questions").and_then(Value::as_array_mut) {
+            for question in questions {
+                let subsystem = quiz_map::subsystem_of(map, question["file"].as_str().unwrap_or_default());
+                question["subsystem"] = json!(subsystem);
+            }
+        }
+        let answers: Vec<Value> = self.db.picks(ready.round).unwrap_or_default().into_iter().map(|(n, pick)| json!({ "n": n, "pick": pick })).collect();
+        doc["round"] = json!(format!("r{}", ready.round));
+        doc["written"] = num(ready.written);
+        doc["taken"] = ready.taken.map_or(Value::Null, num);
+        doc["head"] = json!(ready.head);
+        doc["answers"] = Value::Array(answers);
+        doc
+    }
+
+    pub fn rounds(&self, repo: &str) -> Result<Map, KmuxError> {
+        let map = self.db.quiz_map(repo).ok().flatten().and_then(|doc| quiz_map::read_map(&doc).ok()).unwrap_or_default();
+        let rounds = self.db.open_rounds(repo).map_err(|e| failed("read the rounds", e))?;
+        let mut out = self.writing(repo);
+        out.insert("rounds".to_string(), Value::Array(rounds.iter().map(|ready| self.ready_value(ready, &map)).collect()));
+        Ok(out)
+    }
+
+    pub fn phone_answer(&self, args: &Value) -> Result<Map, KmuxError> {
+        let round = id_of('r', args.get("round")).ok_or_else(|| bad("say which round"))?;
+        let n = args.get("n").and_then(Value::as_i64).filter(|n| *n >= 0).ok_or_else(|| bad("say which question: n"))?;
+        let pick = args.get("pick").and_then(Value::as_i64).filter(|p| *p >= 0).ok_or_else(|| bad("say which was picked"))?;
+        let ready = self.db.ready(round).map_err(|e| failed("read the round", e))?.ok_or_else(|| KmuxError::new("not_found", format!("no round r{round}")))?;
+        let question = ready.doc.get("questions").and_then(|q| q.get(n as usize)).ok_or_else(|| bad(format!("r{round} has no question {n}")))?;
+        let right_one = question.get("answer").and_then(Value::as_i64).unwrap_or(-1);
+        let right = pick == right_one;
+        let kind = string(question, "kind").unwrap_or("why");
+        let file = string(question, "file").unwrap_or_default();
+        let given = args.get("again").filter(|a| !a.is_null()).or(question.get("again")).filter(|a| !a.is_null());
+        let again = id_of('a', given).filter(|id| self.db.find_answer(*id).ok().flatten().is_some_and(|(_, repo)| repo == ready.repo));
+        let mut doc = json!({ "question": question.get("text"), "pick": pick, "answer": right_one, "explanation": question.get("why"), "topic": question.get("topic"), "line": question.get("line"), "from": "phone" });
+        for key in ["choices", "lines", "last"] {
+            if let Some(value) = question.get(key).filter(|v| !v.is_null()) {
+                doc[key] = value.clone();
+            }
+        }
+        let (id, added) = self.db.answer_question(round, n, kind, file, right, again, &doc).map_err(|e| failed("save the answer", e))?;
+        if self.db.take_ready(round).map_err(|e| failed("start the round", e))? {
+            if let Some(writers) = &self.writers {
+                writers.played(&ready.repo);
+            }
+        }
+        Ok(Map::from_iter([("answer".to_string(), json!(format!("a{id}"))), ("right".to_string(), json!(right)), ("new".to_string(), json!(added))]))
+    }
+
     fn history(&self, args: &Value) -> Result<Map, KmuxError> {
         let repo = repo(args)?;
         let misses = args.get("misses").and_then(Value::as_bool).unwrap_or(false);
@@ -183,7 +381,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kanna-quiz-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        (Quiz::new(Rc::new(Db::open(&dir)), None), dir)
+        (Quiz::new(Rc::new(Db::open(&dir).unwrap()), None, None), dir)
     }
 
     fn ok(quiz: &Quiz, args: Value) -> Value {
@@ -218,6 +416,60 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn written(quiz: &Quiz) -> i64 {
+        let question = json!({ "kind": "why", "file": "src/a.rs", "line": 4, "last": 5, "text": "Why?", "why": "Because", "topic": "T", "choices": [{ "label": "a" }, { "label": "b" }, { "label": "c" }, { "label": "d" }], "answer": 2 });
+        quiz.keep_round("/r", "abc", None, None, json!({ "questions": vec![question; 5], "commits": ["abc"] })).unwrap()["round"].as_str().unwrap()[1..].parse().unwrap()
+    }
+
+    #[test]
+    fn a_phone_answer_counts_once_and_lands_in_the_mac_s_table() {
+        let (quiz, dir) = quiz("phone");
+        let round = written(&quiz);
+        assert_eq!(quiz.rounds("/r").unwrap()["rounds"][0]["taken"], Value::Null);
+        let answer = |n: i64, pick: i64| Value::Object(quiz.phone_answer(&json!({ "round": format!("r{round}"), "n": n, "pick": pick })).unwrap());
+        let first = answer(0, 1);
+        assert_eq!((first["right"].as_bool(), first["new"].as_bool()), (Some(false), Some(true)));
+        let again = answer(0, 2);
+        assert_eq!((again["answer"].clone(), again["new"].as_bool()), (first["answer"].clone(), Some(false)), "a sync after a train ride can't count twice");
+        let saved = ok(&quiz, json!({ "action": "history", "repo": "/r" }));
+        let answers = saved["rounds"][0]["answers"].as_array().unwrap();
+        assert_eq!(answers.len(), 1);
+        assert_eq!((answers[0]["kind"].as_str(), answers[0]["file"].as_str(), answers[0]["right"].as_bool()), (Some("why"), Some("src/a.rs"), Some(false)));
+        assert_eq!((answers[0]["doc"]["line"].as_u64(), answers[0]["doc"]["question"].as_str()), (Some(4), Some("Why?")));
+        let open = quiz.rounds("/r").unwrap();
+        assert!(open["rounds"][0]["taken"].is_number());
+        assert_eq!(open["rounds"][0]["answers"], json!([{ "n": 0, "pick": 1 }]), "a round closed halfway keeps its place");
+        for n in 1..5 {
+            answer(n, 2);
+        }
+        assert_eq!(quiz.rounds("/r").unwrap()["rounds"], json!([]), "a finished round isn't open");
+        assert!(quiz.phone_answer(&json!({ "round": format!("r{round}"), "n": 5, "pick": 1 })).unwrap_err().message.contains("no question 5"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn one_round_waits_at_a_time_and_a_subject_s_round_is_apart() {
+        let (quiz, dir) = quiz("waits");
+        assert!(!quiz.db.round_waits("/r").unwrap());
+        written(&quiz);
+        assert!(quiz.db.round_waits("/r").unwrap());
+        assert!(!quiz.db.round_waits("/other").unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn notes_and_a_map_are_kept_by_repo() {
+        let (quiz, dir) = quiz("map");
+        let map = json!({ "subsystems": [{ "name": "A", "paths": ["a/**"] }, { "name": "B", "paths": ["b"] }, { "name": "C", "paths": ["c"] }, { "name": "D", "paths": ["d"] }, { "name": "E", "paths": ["e"] }, { "name": "F", "paths": ["f"] }] });
+        assert_eq!(ok(&quiz, json!({ "action": "map", "repo": "/r", "doc": map }))["subsystems"], 6);
+        assert!(fails(&quiz, json!({ "action": "map", "repo": "/r", "doc": { "subsystems": [] } })).contains("6 to 12"));
+        assert_eq!(quiz.db.quiz_map("/other").unwrap(), None);
+        ok(&quiz, json!({ "action": "notes", "repo": "/r", "doc": { "notes": { "A": "Strong." } } }));
+        ok(&quiz, json!({ "action": "notes", "repo": "/r", "doc": { "notes": { "A": "Weak.", "B": "New." } } }));
+        assert_eq!(ok(&quiz, json!({ "action": "notes", "repo": "/r" }))["notes"], json!({ "A": "Weak.", "B": "New." }));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_bad_answer_is_refused_and_nothing_is_saved() {
         let (quiz, dir) = quiz("refused");
@@ -240,7 +492,7 @@ mod tests {
         assert!(answer(json!({ "again": "a9" })).contains("no answer a9"));
         assert!(fails(&quiz, json!({ "action": "start", "repo": "here", "head": "abc" })).contains("absolute"));
         assert!(fails(&quiz, json!({ "action": "start", "repo": "/r" })).contains("commit"));
-        assert!(fails(&quiz, json!({ "action": "score" })).contains("open, start, answer or history"));
+        assert!(fails(&quiz, json!({ "action": "score" })).contains("open, start, answer, history"));
         assert_eq!(ok(&quiz, json!({ "action": "history", "repo": "/r" }))["rounds"][0]["answers"], json!([]));
         fs::remove_dir_all(&dir).unwrap();
     }

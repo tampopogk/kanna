@@ -89,6 +89,15 @@ impl Daemon {
         let _ = std::fs::remove_file(self.socket());
     }
 
+    pub fn unset(&mut self, key: &str) {
+        self.extra.retain(|(k, _)| k != key);
+    }
+
+    pub fn launch(&mut self) {
+        self.stop();
+        self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
+    }
+
     pub fn restart(&mut self) {
         self.stop();
         self.child = Daemon::spawn(&self.dir, &self.daemon, &self.keeper, self.port, &self.extra);
@@ -113,6 +122,7 @@ impl Daemon {
             .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
             .env("KANNA_MACHINE_MDNS", "0")
             .env("KANNA_MACHINE_PORT", port.to_string())
+            .env("KANNA_KEYCHAIN", "0")
             .envs(extra.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -122,7 +132,11 @@ impl Daemon {
     }
 
     pub fn socket(&self) -> PathBuf {
-        self.dir.join("kanna.sock")
+        let given = self.dir.join("kanna.sock");
+        match std::fs::symlink_metadata(&given) {
+            Ok(meta) if meta.file_type().is_symlink() => self.dir.join("kanna.own.sock"),
+            _ => given,
+        }
     }
 
     pub fn kanna(&self, args: &[&str]) -> Run {
@@ -252,7 +266,7 @@ impl App {
                     }
                     continue;
                 }
-                if message["cmd"] == "diff" || message["cmd"] == "file" || message["cmd"] == "markup" {
+                if message["cmd"] == "diff" || message["cmd"] == "log" || message["cmd"] == "file" || message["cmd"] == "markup" {
                     heard.lock().unwrap().push(message["args"].clone());
                 } else if message.get("content").is_some() || (message.get("ok").is_some() && message["id"] != 0) {
                     heard.lock().unwrap().push(message.clone());
@@ -278,6 +292,9 @@ impl App {
                     let new = !desks.contains(&project);
                     desks.push(project.clone());
                     let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "desk": "d1", "project": project, "new": new}));
+                }
+                if message["cmd"] == "app.front" {
+                    let _ = writeln!(writer, "{}", json!({"id": message["id"], "ok": true, "front": null}));
                 }
                 if message["cmd"] == "app.machine.confirm" {
                     heard.lock().unwrap().push(message.clone());

@@ -29,8 +29,8 @@ flowchart LR
 ## 2. Rules
 
 - **`--window d1`** in `open`, `move-tab` and `focus` means the workspace `d1` shows: the active task's, or its planner's in the Desk view. `focus --window d1` brings the Desk forward as `kanna focus` does any window ([physical layout](physical-layout.md)).
-- **A planner has tabs.** `kanna open` from a planning terminal opens a tab of its planner's workspace (with `--split`, a split of its shown tab), as from a task's agent; `--window new` still makes a free window. The Desk view shows them in the tab bar beside its Desk and Machines pages.
-- **A tab opened or chosen in the Desk view shows;** ⌘. into the Desk view shows the Desk page, and clicking Desk or Machines shows that page until another tab is opened or chosen.
+- **A planner has tabs.** `kanna open` from a planning terminal opens a tab of its planner's workspace (with `--split`, a split of its shown tab), as from a task's agent; `--window new` still makes a free window. The Desk view shows them in the tab bar beside its fixed tabs.
+- **A tab opened or chosen in the Desk view shows;** clicking a fixed tab (Desk, Machines, Builds, Stats, Schedules, Merge queue) shows its page until another tab is opened or chosen. ⌘. into the Desk view shows the tab it showed last ([the Desk view's tab](desk-view-tab.md)).
 - **`workspace list --all`** lists each Desk under Windows (` d1  Desk on ~/work/app, shows ws-7 (task-1dfb, Fix login)`, or `, the Desk view: ws-5`), names a planner `d1's planner` and a task's workspace `shown in d1`. `--json` adds `desks: [{id, desk, workspace, planner, deskView, project}]`; `windows` stays the daemon's windows.
 - **Replies** name the Desk: `opened file-1 in ws-5 (d1's planner), tab-3: running`, `brought d1 forward`.
 - **With no app attached there are no Desks:** `--window d1` is `no window "d1"`.

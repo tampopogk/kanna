@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schedules Tab Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { color: var(--muted); opacity: .55; cursor: default; }
+button.danger { color: var(--bad); }
+
+.window { border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 820px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { font-size: 12px; font-weight: 600; }
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 30%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 14px; display: flex; align-items: center; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; }
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; height: 26px; padding: 0 10px; color: var(--muted); white-space: nowrap; font-weight: 500; border-radius: 6px; }
+.dtab.on { color: var(--text); background: var(--panel); }
+
+.page { flex: 1; overflow: auto; padding: 28px 32px 40px; }
+.page h2 { font-size: 22px; margin: 0; }
+.page .sub { color: var(--muted); margin: 4px 0 0; }
+.repo { margin-top: 28px; max-width: 900px; }
+.repo > .sh { display: flex; align-items: baseline; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.repo > .sh b { font-size: 13px; }
+.repo > .sh span { color: var(--muted); font-size: 12px; }
+
+.row { padding: 12px 0 10px; border-bottom: 1px solid var(--line); }
+.row .top { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.row .name { font-weight: 600; white-space: nowrap; }
+.row .what { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.row .what b { color: var(--text); font-weight: 500; }
+.badge { flex: none; font-size: 11px; font-weight: 500; padding: 0 6px; border-radius: 4px; border: 1px solid; line-height: 17px; }
+.badge.waiting { color: var(--warn); }
+.badge.paused { color: var(--muted); }
+.actions { margin-left: auto; flex: none; display: flex; gap: 6px; }
+.prompt { margin-top: 3px; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prompt::before { content: "▸ "; font-size: 10px; }
+.row.open .prompt { white-space: normal; color: var(--text); }
+.row.open .prompt::before { content: "▾ "; }
+.row.paused .name, .row.paused .what { opacity: .65; }
+
+.firings { margin: 6px 0 0 12px; font-size: 12px; }
+.firing { display: grid; grid-template-columns: 124px 118px 1fr; gap: 10px; min-height: 19px; }
+.firing .at { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.firing .state { white-space: nowrap; }
+.firing .state.delivered { color: var(--ok); }
+.firing .state.waiting { color: var(--warn); }
+.firing .state.failed, .firing .state.undelivered { color: var(--bad); }
+.firing .state.skipped { color: var(--muted); }
+.firing .reply { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.open .firing .reply { white-space: normal; }
+.firing .reply.note { color: var(--muted); }
+.none { color: var(--muted); font-size: 12px; margin: 6px 0 0 12px; }
+.empty { color: var(--muted); margin-top: 28px; max-width: 520px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Schedules: every repo's schedules, on a fourth fixed tab</h1>
+    <p>After Desk, Machines and Stats in the Desk view. Grouped by repo, the Desk's repo first. Each row: name, rule, target, next time, whether its message waits, the prompt's start (click it for the whole prompt), then its last firings. Pause, Resume, Run now and Remove act on the row. Making a schedule stays with <code>kanna schedule add</code> and agents.</p>
+    <div class="controls">
+      <button id="theme">Light / dark</button>
+      <button id="fire">The time comes for evening</button>
+      <button id="deliver">Its agent takes the message</button>
+      <button id="reply">The agent replies</button>
+      <button id="empty">No schedules</button>
+    </div>
+  </div>
+  <div class="window">
+    <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="where">kanna · Desk</div></div>
+    <div class="content">
+      <div class="agent"><div class="head">Planning agent</div><div class="term" id="term"></div></div>
+      <div class="docs">
+        <div class="dtabs"><div class="dtab">Desk</div><div class="dtab">Machines</div><div class="dtab">Stats</div><div class="dtab on">Schedules</div></div>
+        <div class="page" id="page"></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+const firing = (at, state, note, reply) => ({ at, state, note, reply });
+let data = [
+  { repo: "kanna", path: "~/work/kanna", here: true, schedules: [
+    { id: "s4", name: "evening", rule: "weekdays 17:30", target: "planner", next: "Wed 5 Nov 17:30", waiting: false, paused: false,
+      prompt: "Summarise what landed on main today, and say which of the Shelf's tasks should go next given what merged and what's blocked. Keep it to five lines.",
+      firings: [
+        firing("Tue 4 Nov 17:30", "delivered", "17:34", "Six branches landed; the Shelf's next is Fix login redirect."),
+        firing("Mon 3 Nov 17:30", "delivered", "17:30", null),
+        firing("Fri 31 Oct 17:30", "delivered", "18:02", "Quiet day: two doc fixes."),
+      ] },
+    { id: "s1", name: "quiz", rule: "daily 09:00", target: "planner", next: "Thu 6 Nov 09:00", waiting: true, paused: false,
+      prompt: "Morning quiz check (the kanna-quiz skill's Offering): if anything landed on main since the last quiz round (kanna quiz history), offer me a round; if nothing has, say nothing.",
+      firings: [
+        firing("Wed 5 Nov 09:00", "waiting", null, null),
+        firing("Tue 4 Nov 09:00", "delivered", "09:00", null),
+      ] },
+    { id: "s7", name: "tests", rule: "every 2h", target: "Fix login redirect", next: "Tue 4 Nov 20:00", waiting: false, paused: true,
+      prompt: "Pull main and run the tests.",
+      firings: [
+        firing("Tue 4 Nov 12:00", "failed", null, "Fix login redirect is done, so it takes no messages"),
+        firing("Tue 4 Nov 10:00", "skipped", null, "its last message still waited"),
+        firing("Tue 4 Nov 08:00", "delivered", "08:01", "All green."),
+      ] },
+  ] },
+  { repo: "website", path: "~/work/website", schedules: [
+    { id: "s9", name: "quiz", rule: "daily 09:00", target: "planner", next: "Thu 6 Nov 09:00", waiting: false, paused: false,
+      prompt: "Morning quiz check (the kanna-quiz skill's Offering): if anything landed on main since the last quiz round (kanna quiz history), offer me a round; if nothing has, say nothing.",
+      firings: [] },
+  ] },
+];
+const open = new Set(["kanna/s4"]);
+let confirming = null;
+
+function esc(text) { return String(text).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+function drawFiring(f) {
+  const label = { delivered: `delivered ${f.note}`, waiting: "waiting", skipped: "no message", failed: "not left", undelivered: "not delivered" }[f.state];
+  const said = f.state === "failed" || f.state === "skipped" || f.state === "waiting" ? `<div class="reply note">${esc(f.reply || "")}</div>` : f.reply ? `<div class="reply">${esc(f.reply)}</div>` : `<div class="reply"></div>`;
+  return `<div class="firing"><div class="at">${esc(f.at)}</div><div class="state ${f.state}">${esc(label)}</div>${said}</div>`;
+}
+
+function drawRow(group, s) {
+  const key = `${group.repo}/${s.id}`;
+  const badges = (s.waiting ? `<span class="badge waiting">waiting</span>` : "") + (s.paused ? `<span class="badge paused">paused</span>` : "");
+  const removing = confirming === key;
+  return `<div class="row ${open.has(key) ? "open" : ""} ${s.paused ? "paused" : ""}">
+    <div class="top">
+      <span class="name">${esc(s.name)}</span>
+      <span class="what"><b>${esc(s.rule)}</b> → ${esc(s.target)} · next ${esc(s.next)}</span>
+      ${badges}
+      <span class="actions">
+        <button data-do="pause" data-key="${key}">${s.paused ? "Resume" : "Pause"}</button>
+        <button data-do="run" data-key="${key}" ${s.waiting ? "disabled title='Its last message is still waiting'" : ""}>Run now</button>
+        <button data-do="remove" data-key="${key}" class="${removing ? "danger" : ""}">${removing ? "Remove?" : "Remove"}</button>
+      </span>
+    </div>
+    <div class="prompt" data-do="open" data-key="${key}">${esc(s.prompt)}</div>
+    ${s.firings.length ? `<div class="firings">${s.firings.map(drawFiring).join("")}</div>` : `<div class="none">Hasn't fired yet</div>`}
+  </div>`;
+}
+
+function draw() {
+  const page = document.getElementById("page");
+  const groups = data.filter(g => g.schedules.length);
+  page.innerHTML = `<h2>Schedules</h2><p class="sub">Every repo on this machine</p>` + (groups.length
+    ? groups.map(g => `<div class="repo"><div class="sh"><b>${esc(g.repo)}</b><span>${esc(g.path)}${g.here ? " · this Desk" : ""}</span></div>${g.schedules.map(s => drawRow(g, s)).join("")}</div>`).join("")
+    : `<p class="empty">No schedules yet. Ask an agent, or run <code>kanna schedule add 'daily 09:00' planner "…"</code>.</p>`);
+  document.getElementById("term").textContent = "› every weekday at 5:30, summarise\n  what landed\n\n● kanna schedule add 'weekdays 17:30'\n  planner \"Summarise…\" --name evening\n  s4 evening: weekdays 17:30 → planner,\n  next Wed 5 Nov 17:30";
+}
+
+function find(key) {
+  const [repo, id] = key.split("/");
+  const group = data.find(g => g.repo === repo);
+  return { group, schedule: group.schedules.find(s => s.id === id) };
+}
+
+document.addEventListener("click", event => {
+  const on = event.target.closest("[data-do]");
+  if (!on) return;
+  const key = on.dataset.key, { group, schedule } = find(key);
+  if (on.dataset.do === "open") open.has(key) ? open.delete(key) : open.add(key);
+  if (on.dataset.do === "pause") schedule.paused = !schedule.paused;
+  if (on.dataset.do === "run") { schedule.waiting = true; schedule.firings = [firing("Wed 5 Nov 16:12", "waiting", null, "run by hand"), ...schedule.firings].slice(0, 3); }
+  if (on.dataset.do === "remove") {
+    if (confirming === key) { group.schedules = group.schedules.filter(s => s !== schedule); confirming = null; }
+    else { confirming = key; setTimeout(() => { if (confirming === key) { confirming = null; draw(); } }, 3000); }
+  } else confirming = null;
+  draw();
+});
+const evening = () => find("kanna/s4").schedule;
+document.getElementById("fire").onclick = () => {
+  const s = evening();
+  if (s.paused) return;
+  const left = !s.waiting;
+  s.firings = [left ? firing("Wed 5 Nov 17:30", "waiting", null, null) : firing("Wed 5 Nov 17:30", "skipped", null, "its last message still waited"), ...s.firings].slice(0, 3);
+  s.waiting = true; s.next = "Thu 6 Nov 17:30"; draw();
+};
+document.getElementById("deliver").onclick = () => { const s = evening(), f = s.firings.find(x => x.state === "waiting"); if (f) { f.state = "delivered"; f.note = "17:31"; s.waiting = false; draw(); } };
+document.getElementById("reply").onclick = () => { const f = evening().firings.find(x => x.state === "delivered"); if (f) { f.reply = "Three branches landed; nothing blocked."; draw(); } };
+document.getElementById("empty").onclick = () => { data = []; draw(); };
+document.getElementById("theme").onclick = () => {
+  const root = document.documentElement;
+  root.dataset.theme = root.dataset.theme === "light" ? "" : "light";
+};
+const hash = location.hash.slice(1).split(",");
+if (hash.includes("picture")) document.body.classList.add("picture");
+if (hash.includes("light")) document.documentElement.dataset.theme = "light";
+draw();
+</script>
+</body>
+</html>

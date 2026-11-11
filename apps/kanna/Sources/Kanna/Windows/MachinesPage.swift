@@ -21,6 +21,9 @@ final class MachinesPage: NSView {
     private let scroller = NSScrollView()
     private let document = MachinesDocument()
     private var shown: [MachineRow]?
+    private var phones: [String] = []
+    var pair: (() -> Void)?
+    var revoke: ((String) -> Void)?
     private(set) var badges: [String: NSRect] = [:]
 
     override init(frame frameRect: NSRect) {
@@ -46,10 +49,18 @@ final class MachinesPage: NSView {
 
     var machines: [MachineRow] { shown ?? [] }
 
-    func show(_ machines: [MachineRow]) {
-        guard machines != shown else { return }
+    func show(_ machines: [MachineRow], phones: [String] = []) {
+        guard machines != shown || phones != self.phones else { return }
         shown = machines
+        self.phones = phones
         lay()
+    }
+
+    @objc private func pairPressed() { pair?() }
+
+    @objc private func revokePressed(_ sender: NSButton) {
+        guard phones.indices.contains(sender.tag) else { return }
+        revoke?(phones[sender.tag])
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
@@ -78,6 +89,10 @@ final class MachinesPage: NSView {
         y += title.frame.height + 4
         let sub = label("Your machines · all projects", size: 13, color: .secondaryLabelColor)
         sub.frame.origin = NSPoint(x: left, y: y)
+        let pairButton = NSButton(title: "Pair a Phone", target: self, action: #selector(pairPressed))
+        pairButton.sizeToFit()
+        pairButton.frame.origin = NSPoint(x: left + width - pairButton.frame.width, y: y - 2)
+        document.addSubview(pairButton)
         y += sub.frame.height + 26
         for (text, x) in [("MACHINE", left), ("PATH FROM THIS MAC", column)] {
             let head = label(text, size: 11, weight: .medium, color: .secondaryLabelColor)
@@ -100,6 +115,25 @@ final class MachinesPage: NSView {
             y += 56
         }
         document.addSubview(MachinesRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
+        if !phones.isEmpty {
+            y += 24
+            let head = label("PHONES", size: 11, weight: .medium, color: .secondaryLabelColor)
+            head.frame.origin = NSPoint(x: left, y: y)
+            y += 22
+            for (index, phone) in phones.enumerated() {
+                document.addSubview(MachinesRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
+                y += 12
+                let name = label(phone, size: 13, weight: .semibold)
+                name.frame.origin = NSPoint(x: left, y: y + 2)
+                let button = NSButton(title: "Revoke", target: self, action: #selector(revokePressed(_:)))
+                button.tag = index
+                button.sizeToFit()
+                button.frame.origin = NSPoint(x: left + width - button.frame.width, y: y)
+                document.addSubview(button)
+                y += 36
+            }
+            document.addSubview(MachinesRule(frame: NSRect(x: left, y: y, width: width, height: 1)))
+        }
         y += 24
         let footer = label("Connections change automatically. Tasks stay where they run when you bring them to a Desk.", color: .secondaryLabelColor)
         footer.frame = NSRect(x: left, y: y, width: width, height: footer.frame.height)

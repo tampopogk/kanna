@@ -368,27 +368,6 @@ impl Model {
         self.windows.iter().filter(|w| w.workspace.as_deref() == Some(id)).collect()
     }
 
-    pub fn rename_pane(&mut self, from: &str, to: &str) {
-        for window in &mut self.windows {
-            window.tabs.rename(from, to);
-            if let Some(lead) = window.lead.as_mut().filter(|lead| lead.pane == from) {
-                lead.pane = to.into();
-            }
-        }
-        for ws in &mut self.workspaces {
-            ws.tabs.rename(from, to);
-            if ws.dock.pane == from {
-                ws.dock.pane = to.into();
-            }
-            for member in ws.background.iter_mut().filter(|p| *p == from) {
-                *member = to.into();
-            }
-        }
-        for tabs in &mut self.orphans {
-            tabs.rename(from, to);
-        }
-    }
-
     fn wide(&self, h: Holder, t: usize, pane: &str) -> bool {
         fn find(node: &Node, pane: &str, w: f64, h: f64) -> Option<(f64, f64)> {
             match node {
@@ -1103,10 +1082,6 @@ impl LayoutHost for Model {
         &["windows", "tabs", "fractionalSizing", "zoom", "dock"]
     }
 
-    fn rename(&mut self, from: &str, to: &str) {
-        self.rename_pane(from, to);
-    }
-
     fn place(&mut self, pane: &str, at: &Placement, _panes: &Panes) -> Result<Option<String>, KmuxError> {
         if at.lead {
             return self.lead(pane, at.window.as_deref()).map(Some);
@@ -1120,6 +1095,10 @@ impl LayoutHost for Model {
         if at.planner {
             let s = self.dock_workspace(pane, Edge::Left, Where::Planner(at.app.clone().unwrap_or_else(|| MAC_APP.into())), false);
             self.workspaces[s].left_at = None;
+            return Ok(None);
+        }
+        if at.quiz {
+            self.dock_workspace(pane, Edge::Left, Where::Quiz(at.app.clone().unwrap_or_else(|| MAC_APP.into())), false);
             return Ok(None);
         }
         if let Some(edge) = at.dock {
@@ -1226,6 +1205,23 @@ impl LayoutHost for Model {
 
     fn remove(&mut self, pane: &str) {
         self.detach(pane);
+    }
+
+    fn remember(&mut self) {
+        for tabs in self.windows.iter_mut().map(|w| &mut w.tabs).chain(self.workspaces.iter_mut().map(|s| &mut s.tabs)) {
+            tabs.remember();
+        }
+    }
+
+    fn dock_of(&self, pane: &str) -> Option<String> {
+        let s = self.ws_of(self.holder_of(pane)?)?;
+        Some(self.workspaces[s].dock.pane.clone()).filter(|dock| dock != pane)
+    }
+
+    fn showing(&self, from: &str, among: &[String]) -> Option<String> {
+        let h = self.holder_of(from)?;
+        let mine: Vec<String> = among.iter().filter(|id| self.locate(id).is_some_and(|l| l.holder == h)).cloned().collect();
+        self.tabs(h).latest(&mine).cloned()
     }
 
     fn close_task(&mut self, task: &str) {
