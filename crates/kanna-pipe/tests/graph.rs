@@ -2,7 +2,7 @@ use kanna_pipe::{layout, parse, Route};
 use std::path::PathBuf;
 
 fn feature() -> kanna_pipe::Pipeline {
-    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.kanna/pipelines/feature.kojo");
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/examples/feature.kojo");
     parse(&std::fs::read_to_string(file).unwrap()).unwrap()
 }
 

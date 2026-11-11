@@ -245,6 +245,7 @@ pub struct Accounts {
     secrets: Arc<dyn Secrets>,
     path: PathBuf,
     book: Mutex<Value>,
+    offered: Mutex<BTreeMap<String, u64>>,
     refresher: Box<dyn Refresher>,
     refreshing: Mutex<()>,
     broken: Mutex<BTreeMap<String, (String, Instant)>>,
@@ -352,7 +353,7 @@ impl Accounts {
     pub fn open(state: &Path, secrets: Arc<dyn Secrets>, refresher: Box<dyn Refresher>) -> Accounts {
         let path = state.join(BOOK);
         let book = book_at(&path);
-        Accounts { secrets, path, book: Mutex::new(book), refresher, refreshing: Mutex::new(()), broken: Mutex::default(), on_broken: Mutex::default() }
+        Accounts { secrets, path, book: Mutex::new(book), offered: Mutex::default(), refresher, refreshing: Mutex::new(()), broken: Mutex::default(), on_broken: Mutex::default() }
     }
 
     pub fn on_broken(&self, report: Box<dyn Fn(Value) + Send>) {
@@ -429,11 +430,12 @@ impl Accounts {
             let _ = self.secrets.delete(&id);
             return Err(e);
         }
-        let account = json!({ "id": id, "agent": kind.agent(), "kind": kind.name(), "label": label.unwrap_or(kind.name()), "added_at": now(), "holder": kind.held().then_some(me), "program": program });
+        let version = book["version"].as_u64().unwrap_or(0) + 1;
+        let account = json!({ "id": id, "agent": kind.agent(), "kind": kind.name(), "label": label.unwrap_or(kind.name()), "added_at": now(), "holder": kind.held().then_some(me), "program": program, "since": version });
         let mut own = kept;
         own.push(account.clone());
         book["own"] = json!(own);
-        book["version"] = json!(book["version"].as_u64().unwrap_or(0) + 1);
+        book["version"] = json!(version);
         self.save(&book)?;
         drop(book);
         Ok(json!({ "account": account, "replaced": replaced }))
@@ -504,6 +506,16 @@ impl Accounts {
         peers.iter().filter(|peer| book["delivered"][peer.as_str()].as_u64() != Some(version)).cloned().collect()
     }
 
+    pub fn offered(&self, peer: &str, version: u64) {
+        self.offered.lock().unwrap_or_else(|p| p.into_inner()).insert(peer.to_string(), version);
+    }
+
+    fn sent(&self, peer: &str, since: u64) -> bool {
+        let delivered = self.book()["delivered"][peer].as_u64();
+        let offered = self.offered.lock().unwrap_or_else(|p| p.into_inner()).get(peer).copied();
+        delivered.max(offered).is_some_and(|version| version >= since)
+    }
+
     pub fn delivered(&self, peer: &str, version: u64) {
         let mut book = self.book();
         book["delivered"][peer] = json!(version);
@@ -555,6 +567,7 @@ impl Accounts {
                 gone
             }
         };
+        self.offered.lock().unwrap_or_else(|p| p.into_inner()).retain(|peer, _| trusted.contains(peer));
         let mut book = self.book();
         let delivered = book["delivered"].as_object().cloned().unwrap_or_default();
         let kept: Map = delivered.iter().filter(|(peer, _)| trusted.contains(peer.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -606,6 +619,15 @@ impl Accounts {
         own.or_else(|| self.listed().ok()?.values().flat_map(|set| set["accounts"].as_array().cloned().unwrap_or_default()).find(|a| a["id"] == account).and_then(|a| string(&a, "holder").map(String::from)))
     }
 
+    pub fn token_for(&self, peer: &str, account: &str, previous: Option<&str>) -> Result<Value, KmuxError> {
+        if let Some(held) = self.own().into_iter().find(|a| a["id"] == account) {
+            if !self.sent(peer, held["since"].as_u64().unwrap_or(0)) {
+                return Err(KmuxError::new("refused", format!("the account {account} wasn't given to that machine")));
+            }
+        }
+        self.token(account, previous)
+    }
+
     pub fn token(&self, account: &str, previous: Option<&str>) -> Result<Value, KmuxError> {
         let Some(held) = self.own().into_iter().find(|a| a["id"] == account && a["kind"] == Kind::CodexChatgpt.name()) else {
             return Err(KmuxError::new("not_found", format!("no Codex account {account} is held here: it was removed")));
@@ -647,7 +669,7 @@ impl Accounts {
     }
 }
 
-pub const COMMAND: &str = "accounts";
+pub const COMMAND: &str = kanna_net::ACCOUNTS;
 
 const SUPPLY_EVERY: Duration = Duration::from_secs(60);
 
@@ -822,20 +844,7 @@ impl Service {
         let _ = std::thread::Builder::new().name("kanna.accounts.peer".into()).spawn(move || {
             let id = request.get("id").cloned().unwrap_or(Value::Null);
             let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-            let result = match string(&args, "action") {
-                Some("supply") => {
-                    let peers = service.peers();
-                    match peers.names.iter().find(|(key, name)| **name == from && peers.trusted.contains(*key)) {
-                        Some((source, _)) => service.accounts.supply(source, &args, &peers.trusted),
-                        None => Err(KmuxError::new("unpaired", format!("{from} isn't one of your machines"))),
-                    }
-                }
-                Some("token") => match string(&args, "account") {
-                    Some(account) => service.accounts.token(account, string(&args, "previous")).map(|tokens| json!({ "tokens": tokens })),
-                    None => Err(bad("accounts token needs an account")),
-                },
-                _ => Err(KmuxError::new("refused", "your other machines may only supply accounts or ask for a Codex token")),
-            };
+            let result = answer(&service.accounts, &service.peers(), &from, &args);
             reply(match result {
                 Ok(fields) => {
                     let mut answer = json!({ "id": id, "ok": true });
@@ -847,6 +856,26 @@ impl Service {
                 Err(error) => json!({ "id": id, "ok": false, "error": { "code": error.code, "message": error.message } }),
             });
         });
+    }
+}
+
+fn answer(accounts: &Accounts, peers: &Peers, from: &str, args: &Value) -> Result<Value, KmuxError> {
+    let action = string(args, "action");
+    if !matches!(action, Some("supply" | "token")) {
+        return Err(KmuxError::new("refused", "your other machines may only supply accounts or ask for a Codex token"));
+    }
+    if peers.me_revoked {
+        return Err(KmuxError::new("revoked", "this machine is revoked from your machines"));
+    }
+    let Some((source, _)) = peers.names.iter().find(|(key, name)| **name == from && peers.trusted.contains(*key)) else {
+        return Err(KmuxError::new("unpaired", format!("{from} isn't one of your machines")));
+    };
+    match action {
+        Some("supply") => accounts.supply(source, args, &peers.trusted),
+        _ => {
+            let account = string(args, "account").ok_or_else(|| bad("accounts token needs an account"))?;
+            accounts.token_for(source, account, string(args, "previous")).map(|tokens| json!({ "tokens": tokens }))
+        }
     }
 }
 
@@ -887,6 +916,7 @@ fn supply(service: std::sync::Weak<Service>, woken: Receiver<()>) {
             };
             let version = payload["version"].as_u64().unwrap_or(0);
             payload["action"] = json!("supply");
+            service.accounts.offered(&peer, version);
             match caller.call(&peer, COMMAND, payload) {
                 Ok(_) => {
                     service.accounts.delivered(&peer, version);
@@ -1336,6 +1366,82 @@ pub(crate) mod tests {
         holder.prune(&BTreeSet::from(["vm-key".to_string()]), false).unwrap();
         assert_eq!(holder.outbox(&BTreeSet::from(["vm-key".to_string()])), ["vm-key"]);
         assert!(holder.book()["delivered"].get("old-key").is_none());
+        let _ = std::fs::remove_dir_all(&mac);
+    }
+
+    fn roster() -> Value {
+        json!({ "peers": [
+            { "key": "mac-key", "name": "mac", "me": true, "trusted": true, "revoked": false },
+            { "key": "vm-key", "name": "vm", "me": false, "trusted": true, "revoked": false },
+            { "key": "new-key", "name": "new", "me": false, "trusted": true, "revoked": false },
+            { "key": "gone-key", "name": "gone", "me": false, "trusted": false, "revoked": true },
+            { "key": "twin-1", "name": "twin", "me": false, "trusted": false, "revoked": false },
+            { "key": "twin-2", "name": "twin", "me": false, "trusted": false, "revoked": false },
+        ] })
+    }
+
+    fn code(reply: Result<Value, KmuxError>) -> String {
+        reply.map(|fields| panic!("it was served: {fields}")).unwrap_err().code.to_string()
+    }
+
+    #[test]
+    fn a_token_goes_only_to_a_trusted_machine_that_was_given_the_account() {
+        let mac = folder("token-gate");
+        let (holder, calls, id) = holder(&mac, false, Duration::ZERO, now() + 3600);
+        let machines = peers(&roster());
+        let token = json!({ "action": "token", "account": id });
+        holder.delivered("vm-key", holder.version());
+        holder.delivered("gone-key", holder.version());
+        holder.delivered("twin-1", holder.version());
+
+        let served = answer(&holder, &machines, "vm", &token).unwrap();
+        assert!(access(&served["tokens"]).starts_with("ey"));
+        assert_eq!(code(answer(&holder, &machines, "stranger", &token)), "unpaired");
+        assert_eq!(code(answer(&holder, &machines, "gone", &token)), "unpaired", "a delivery record doesn't outlast a revocation");
+        assert_eq!(code(answer(&holder, &machines, "twin", &token)), "unpaired", "two keys under a name are neither trusted");
+        assert_eq!(code(answer(&holder, &machines, "new", &token)), "refused", "trusted, but it was never given the account");
+
+        holder.offered("new-key", holder.version());
+        assert!(answer(&holder, &machines, "new", &token).is_ok(), "the supply is on its way: the peer may already hold it");
+        assert_eq!(code(answer(&holder, &machines, "stranger", &json!({ "action": "supply", "version": 9, "accounts": [] }))), "unpaired");
+        assert_eq!(code(answer(&holder, &machines, "vm", &json!({ "action": "add" }))), "refused");
+        assert_eq!(code(answer(&holder, &machines, "vm", &json!({ "action": "token" }))), "bad_request");
+
+        let mut revoked = roster();
+        revoked["peers"][0]["revoked"] = json!(true);
+        assert_eq!(code(answer(&holder, &peers(&revoked), "vm", &token)), "revoked", "a revoked holder hands out nothing");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(&mac);
+    }
+
+    #[test]
+    fn a_machine_behind_on_the_book_keeps_what_it_was_given_and_only_that() {
+        let mac = folder("token-behind");
+        let (holder, _, id) = holder(&mac, false, Duration::ZERO, now() + 3600);
+        let machines = peers(&roster());
+        holder.delivered("vm-key", holder.version());
+        holder.add(Kind::ClaudeApiKey, "sk-ant-api03-x", None, None, "mac-key").unwrap();
+        assert!(answer(&holder, &machines, "vm", &json!({ "action": "token", "account": id })).is_ok(), "a newer account for another agent takes nothing away");
+
+        let replaced = holder.add(Kind::CodexChatgpt, &login(now() + 3600), None, None, "mac-key").unwrap();
+        let newer = replaced["account"]["id"].as_str().unwrap();
+        assert_eq!(code(answer(&holder, &machines, "vm", &json!({ "action": "token", "account": newer }))), "refused");
+        assert_eq!(code(answer(&holder, &machines, "vm", &json!({ "action": "token", "account": id }))), "not_found", "the replaced one is gone for everyone");
+        holder.delivered("vm-key", holder.version());
+        assert!(answer(&holder, &machines, "vm", &json!({ "action": "token", "account": newer })).is_ok());
+        let _ = std::fs::remove_dir_all(&mac);
+    }
+
+    #[test]
+    fn an_account_from_before_the_since_mark_counts_any_delivery() {
+        let mac = folder("token-old-book");
+        let (holder, _, id) = holder(&mac, false, Duration::ZERO, now() + 3600);
+        holder.book()["own"][0].as_object_mut().unwrap().remove("since");
+        let machines = peers(&roster());
+        let token = json!({ "action": "token", "account": id });
+        assert_eq!(code(answer(&holder, &machines, "vm", &token)), "refused");
+        holder.delivered("vm-key", 1);
+        assert!(answer(&holder, &machines, "vm", &token).is_ok());
         let _ = std::fs::remove_dir_all(&mac);
     }
 

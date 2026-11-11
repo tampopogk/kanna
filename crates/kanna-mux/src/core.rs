@@ -514,6 +514,25 @@ impl CoreHandle {
         self.launch("end".to_string(), async move { done(core.ended(&id).await) });
     }
 
+    pub fn show_guest(&self, pane: &str, at: Value, done: impl FnOnce(Result<Map, KmuxError>) + 'static) {
+        let core = self.clone();
+        let pane = pane.to_string();
+        self.launch("show guest".to_string(), async move {
+            let placed = core.layout(json!({ "op": "place", "pane": { "id": pane, "type": "term" }, "at": at })).await;
+            core.changed();
+            done(placed)
+        });
+    }
+
+    pub fn drop_guest(&self, pane: &str) {
+        let core = self.clone();
+        let pane = pane.to_string();
+        self.launch("drop guest".to_string(), async move {
+            let _ = core.layout(json!({ "op": "remove", "ids": [pane], "tidy": true })).await;
+            core.changed();
+        });
+    }
+
     pub fn hang_up(&self, task: &str, done: impl FnOnce(Result<Vec<String>, KmuxError>) + 'static) {
         let core = self.clone();
         let task = task.to_string();

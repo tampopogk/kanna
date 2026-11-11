@@ -163,6 +163,8 @@ public enum DocDelivery: Equatable, Sendable {
 
 public typealias DocSend = (_ agent: String, _ text: String, _ doc: String, _ thread: String, _ done: @escaping (DocDelivery) -> Void) -> Void
 
+public typealias DocThreadEvent = (_ agent: String, _ text: String, _ doc: String, _ thread: String, _ state: String) -> Void
+
 public struct DocEdit: Equatable {
     public var state: String?
     public var status: String?
@@ -257,6 +259,10 @@ public enum Doc {
         guard quoted else { return "\(header)\n\(text)" }
         let lines = clean(thread.quote).components(separatedBy: "\n").map { "> " + oneLine($0) }
         return "\(header)\n\(lines.joined(separator: "\n"))\n\(text)"
+    }
+
+    public static func stateEvent(_ thread: DocThread, file: String, open: Bool) -> String {
+        "[kanna \(open ? "reopened" : "resolved") \(oneLine(thread.id)) · \(oneLine(file)):\(thread.line)]"
     }
 
     public static func describe(_ page: PageSpot) -> String {

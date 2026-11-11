@@ -16,7 +16,7 @@ fn context() -> Context {
 }
 
 fn example(name: &str) -> String {
-    std::fs::read_to_string(repo().join(format!(".kanna/pipelines/{name}.kojo"))).unwrap()
+    std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/examples/{name}.kojo"))).unwrap()
 }
 
 #[test]
@@ -56,4 +56,15 @@ fn an_unpaired_machine_is_a_placement_error() {
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].rule, Rule::Placement);
     assert_eq!(errors[0].at("feature.kojo"), "feature.kojo:12: no such machine 'mini': use here, any, or one of your machines or roles");
+}
+
+#[test]
+fn the_repo_s_own_pipelines_run_on_a_machine_with_no_peers() {
+    let alone = Context { machines: vec![], ..context() };
+    for entry in std::fs::read_dir(repo().join(".kanna/pipelines")).unwrap() {
+        let path = entry.unwrap().path();
+        let errors = load(&std::fs::read_to_string(&path).unwrap(), &alone).err().unwrap_or_default();
+        let said: Vec<String> = errors.iter().map(|e| e.at(&path.file_name().unwrap().to_string_lossy())).collect();
+        assert_eq!(said, Vec::<String>::new());
+    }
 }

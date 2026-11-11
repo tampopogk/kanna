@@ -1,6 +1,6 @@
 # Codex's app-server
 
-**Status:** built · **Tested:** `cargo test -p kanna-daemon` (codex_remote, messages), e2e `agent_messaging`, `planner_choice`, `shelf_runners` (the mock agent as `codex`) · **Builds on:** [tasks](tasks.md), [agent messaging](agent-messaging.md) · **Why:** [research](../research/agent-messaging.md), checked against Codex 0.163.0
+**Status:** built · **Tested:** `cargo test -p kanna-daemon` (codex_remote, messages), e2e `agent_messaging`, `planner_choice`, `shelf_runners` (the mock agent as `codex`), `real_agent_tasks` (the real Codex) · **Builds on:** [tasks](tasks.md), [agent messaging](agent-messaging.md) · **Why:** [research](../research/agent-messaging.md), checked against Codex 0.163.0
 
 Kanna starts every Codex, a task's, the planner's or a quiz's, with an **app-server of its own**, and the Codex TUI attached to it. The server is Codex's door for [agent messaging](agent-messaging.md): Kanna starts a turn on it instead of typing into the prompt.
 
@@ -32,10 +32,20 @@ sequenceDiagram
 - **The server gets the terminal's environment,** so the commands Codex runs see the task's `KANNA_TERMINAL` and `KANNA_SOCKET`. That's why Kanna used to start Codex with `--no-daemon`: Codex's shared background server runs every session's commands with its own environment. A server per Codex is the task's own.
 - **Permissions go on the server and on a new session's TUI:** `--yolo` becomes `approval_policy="never"` and `sandbox_mode="danger-full-access"` (`-c`) for both. The TUI starts the session's thread with its own config, so without them a [trusted](https://developers.openai.com/codex/config-reference) folder's `on-request` and `workspace-write` win over the server's, and a task's `git commit` (its refs are in the main repo's `.git`, outside the sandbox) asks to escalate.
 - **Resume keeps the session's own:** `codex resume ID --remote unix://SOCKET` brings the session back on a new server, with the permissions it was started with; the TUI gets no permission flags or `-c`, since Codex refuses them when resuming against a server ("Permission overrides are not supported when resuming a remote task").
+- **One writer at a time:** a thread can be open on one app-server only: while the old server lives, a new one's `thread/resume` fails with `thread ID already has an active writer`, and the TUI shows the conversation read-only ("This conversation is open in another app"). So a restarted terminal starts only once the old terminal's session is empty ([below](#restarting)).
 - **The socket** is `codex-PID.sock` in Kanna's state folder's `codex/`, or in `/tmp/kanna-UID` when that path is too long for a Unix socket; a leftover from a helper that's gone is removed at the next start.
 - **Only you can reach it:** the server takes any connection without auth, and a turn on it runs with the agent's permissions, so the folder must be yours alone: the helper makes it 0700 (tightening one of yours that others could open) and checks it's a real folder, owned by you, that no one else can open (a `/tmp` name someone else made first, or a symlink, fails), else Codex runs on its own.
 - **Quitting:** `/exit` and its quit keys work as before ([Shelf runners](shelf-runners.md#2-how-its-built)); attached, Codex says its session as `codex --remote unix://SOCKET resume ID`, which Kanna reads like `codex resume ID`.
 - **If the server won't start,** the helper says so in the terminal and runs Codex on its own (`--no-daemon`): it works, but takes no messages.
+
+### Restarting
+
+`kanna restart` closes the old terminal and starts the new one, and the keeper only signals on a close: SIGHUP to the session, SIGKILL to what's left after a second. Starting at once would race the old server for the thread's writer lock, and lose.
+
+- **The new terminal waits for the old session:** `Terminals` watches the session off the loop, every 20 ms, and starts the pane once no process is left in it. The pane stays `starting` until then.
+- **At most 6 s:** past the helper's 5 s. A session that outlives that doesn't hold the pane back.
+- **It's every terminal's rule, not Codex's:** a terminal the keeper closes is gone in a second, so a shell's restart waits only as long as its shell takes to go.
+- **Stopping or closing the pane while it waits** drops the start, as for one the keeper hasn't answered yet.
 
 ## 2. Delivering a message
 

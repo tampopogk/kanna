@@ -722,6 +722,46 @@ code_pinned_line() {
   check test "$(code src scroll_y)" == "$scrolled" || { echo "closing find scrolled the view from $scrolled to $(code src scroll_y)"; return 1; }
 }
 
+scenario code_find_scroll M4
+code_find_scroll() {
+  start_daemon && start_app || return 1
+  local file="$KANNA_STATE_DIR/code_find_scroll.rs"
+  for i in $(seq 400); do case $i in 30|300|350) echo "fn shutdown_$i() { Shutdown }" ;; *) echo "let x$i = $i;" ;; esac; done >"$file"
+  code() { raw "{\"id\":1,\"cmd\":\"debug.code\",\"args\":{\"pane\":\"find\"${2:-}}}" | field "$1"; }
+  key() { raw "{\"id\":1,\"cmd\":\"debug.key\",\"args\":{\"key\":\"$1\"}}" >/dev/null; }
+  shown() { python3 -c 'import sys; line, top, height, size = map(float, sys.argv[1:]); assert top <= line < top + height / size, (line, top, height, size)' "$(code selection_line)" "$(code top)" "$(code height)" "$(code font_size)"; }
+  kanna open --window new code --name find "$file:227" >/dev/null || return 1
+  check wait_for 5 eval '(( $(code top | cut -d. -f1) > 100 ))' || { echo "opened at line $(code top), not near 227"; return 1; }
+  local y tall
+  y="$(code scroll_y)"; tall="$(code text_height)"
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"find","at":[300,300]}}' >/dev/null; sleep 0.3
+  y="$(code scroll_y)"
+  key cmd+f
+  check wait_for 5 eval '[[ "$(code find_bar)" == 1 ]]' || return 1
+  check test "$(code scroll_y)" == "$y" || { echo "opening find scrolled from $y to $(code scroll_y)"; return 1; }
+  check test "$(code text_height)" == "$tall" || { echo "opening find made the text $(code text_height) tall, not $tall"; return 1; }
+  raw '{"id":1,"cmd":"debug.type","args":{"focused":true,"text":"Shutdown"}}' >/dev/null
+  key return
+  check wait_for 5 eval '[[ "$(code selection_length)" == 8 ]]' || { echo "Return selected no match"; return 1; }
+  check wait_for 5 shown || { echo "Return left match $(code selection_line) out of view, top $(code top)"; return 1; }
+  raw '{"id":1,"cmd":"debug.click","args":{"pane":"find","at":[300,100]}}' >/dev/null; sleep 0.3
+  check wait_for 5 eval '[[ "$(code selection_length)" == 0 && "$(code find_bar)" == 1 ]]' || { echo "a click in the text kept the match selected or closed find"; return 1; }
+  key n
+  check wait_for 5 eval '[[ "$(code selection_length)" == 8 ]]' || { echo "n selected no match"; return 1; }
+  check wait_for 5 shown || { echo "n left match $(code selection_line) out of view, top $(code top)"; return 1; }
+  y="$(code scroll_y)"
+  key escape
+  check wait_for 5 eval '[[ "$(code find_bar)" == 0 ]]' || return 1
+  check test "$(code scroll_y)" == "$y" || { echo "closing find scrolled from $y to $(code scroll_y)"; return 1; }
+  check test "$(code text_height)" == "$tall" || { echo "closing find made the text $(code text_height) tall, not $tall"; return 1; }
+  local was; was="$(code top | cut -d. -f1)"
+  code top ',"overview_click":5' >/dev/null
+  check wait_for 5 eval '(( $(code top | cut -d. -f1) < was - 50 ))' || { echo "an overview click near the top moved line $was at the top to $(code top)"; return 1; }
+  was="$(code top | cut -d. -f1)"
+  code top ',"overview_click":10000' >/dev/null
+  check wait_for 5 eval '(( $(code top | cut -d. -f1) > was + 50 ))' || { echo "an overview click at the end moved line $was at the top to $(code top)"; return 1; }
+}
+
 scenario serial_pane M4
 serial_pane() {
   local devices="$KANNA_STATE_DIR/serial-devices"

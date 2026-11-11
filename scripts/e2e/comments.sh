@@ -197,13 +197,68 @@ print(len(v) if isinstance(v, list) else v)' "$1" "$2"; }
   check test "$(cd "$comment_repo" && kanna task messages | grep -c "kanna comment c2")" == 0
 }
 
+scenario markup_events M4
+markup_events() {
+  start_daemon && start_app || return 1
+  comment_agents || return 1
+  printf '{"version": 1, "shelf": {"runners": 0}}\n' >"$comment_repo/.kanna/config.json"
+  printf '# Notes\n\nOne.\n\nTwo.\n\nThree.\n\nFour.\n' >"$comment_repo/notes.md"
+  python3 - "$comment_repo" <<'PY' || return 1
+import json, os, sys
+repo = sys.argv[1]
+threads = [{"id": f"c{i + 1}", "quote": q, "prefix": "", "suffix": "", "line": 3 + 2 * i, "state": "open", "status": "replied", "error": None,
+            "messages": [{"who": "you", "text": "Hm.", "at": "2026-11-04T10:00:00"}, {"who": "agent", "text": "Done.", "at": "2026-11-04T10:00:01"}]}
+           for i, q in enumerate(["One.", "Two.", "Three.", "Four."])]
+os.makedirs(f"{repo}/.kanna/docs", exist_ok=True)
+json.dump({"file": f"{repo}/notes.md", "agent": None, "next": 5, "threads": threads}, open(f"{repo}/.kanna/docs/notes.md.json", "w"))
+PY
+  comment_task="$(cd "$comment_repo" && kanna --json task new "Hears resolves" "work 9" --agent "$comment_fake/claude" | field task.id)" || return 1
+  (cd "$comment_repo" && kanna task start "$comment_task" >/dev/null) || return 1
+  check wait_for 15 eval '[[ "$(comment_held "$comment_task")" == term-* ]]' || { comment_held "$comment_task"; return 1; }
+  comment_term="$(comment_held "$comment_task")"
+  check wait_for 10 is "$comment_term" status working || { kanna status explain "$comment_term"; return 1; }
+  kanna markup "$comment_repo/notes.md" --to "$comment_term" --name notes --window new >/dev/null || return 1
+  markup_events_md() { raw "{\"id\":1,\"cmd\":\"debug.md\",\"args\":{\"pane\":\"notes\"${1:-}}}"; }
+  markup_events_state() { markup_events_md | field threads | python3 -c 'import json, sys
+print([t["state"] for t in json.load(sys.stdin) if t["id"] == sys.argv[1]][0])' "$1"; }
+  markup_events_act() { local thread="$1" want="$2"; markup_events_md ",\"act\":\"$thread\"" >/dev/null; check wait_for 5 eval '[[ "$(markup_events_state "$thread")" == "$want" ]]' || return 1; }
+  markup_events_one() { kanna read "$comment_term" | python3 -c 'import sys
+want = ["peer: " + w for w in sys.argv[1:]]
+lines = [l.rstrip() for l in sys.stdin.read().splitlines()]
+lines = [l for l in lines if l != "peer:"]
+sys.exit(0 if any(lines[i:i + len(want)] == want for i in range(len(lines))) else 1)' "$@"; }
+  check wait_for 5 eval '[[ "$(markup_events_md | field agent)" == "$comment_term" ]]' || { markup_events_md; return 1; }
+  markup_events_act c1 resolved || return 1
+  markup_events_act c2 resolved || return 1
+  markup_events_act c3 resolved || return 1
+  markup_events_act c3 open || return 1
+  (cd "$comment_repo" && KANNA_TERMINAL="$comment_term" kanna markup resolve c4 >/dev/null) || return 1
+  check wait_for 15 shows "$comment_term" "peer: \[kanna resolved c1 · notes.md:3\]" || { kanna read "$comment_term"; tail -5 "$out/daemon.log"; return 1; }
+  markup_events_one "[kanna resolved c1 · notes.md:3]" "[kanna resolved c2 · notes.md:5]" || { echo "two resolves should be one message"; kanna read "$comment_term"; return 1; }
+  check wait_for 10 is "$comment_term" status idle || return 1
+  markup_events_act c1 open || return 1
+  markup_events_act c2 open || return 1
+  check wait_for 10 shows "$comment_term" "peer: \[kanna reopened c2 · notes.md:5\]" || { kanna read "$comment_term"; return 1; }
+  markup_events_one "[kanna reopened c1 · notes.md:3]" "[kanna reopened c2 · notes.md:5]" || { echo "two reopens at the agent's prompt should be one message"; kanna read "$comment_term"; return 1; }
+  sleep 3
+  ! shows "$comment_term" "c3 ·" || { echo "a resolve undone at once should say nothing"; kanna read "$comment_term"; return 1; }
+  ! shows "$comment_term" "c4 ·" || { echo "the agent's own resolve came back to it"; kanna read "$comment_term"; return 1; }
+  check test "$(cd "$comment_repo" && kanna task messages "$comment_task" | grep -c "kanna resolved\|kanna reopened")" == 4 || { (cd "$comment_repo" && kanna task messages "$comment_task"); return 1; }
+  kanna open --window new --name copilot --cmd "$comment_fake/copilot" >/dev/null || return 1
+  check wait_for 10 shows copilot "mock-agent:" || return 1
+  kanna markup notes --to copilot >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(markup_events_md | field agent)" == "$(pane copilot id)" ]]' || { markup_events_md; return 1; }
+  markup_events_act c1 resolved || return 1
+  check wait_for 8 shows copilot "\[kanna resolved c1 · notes.md:3\]" || { kanna read copilot; return 1; }
+}
+
 scenario markup_reuse M4
 markup_reuse() {
   start_daemon && start_app || { echo "markup_reuse line $LINENO"; return 1; }
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/reuse" mine other said kept count
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_reuse line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent" && kanna task new "Other" "say hi" --agent "$agent") >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Mine" "hello there" --agent "$agent" && kanna task new "Other" "hello there" --agent "$agent") >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null && kanna task pick "$(tid 2)" >/dev/null || { echo "markup_reuse line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(pane Mine id)" == term-* && "$(pane Other id)" == term-* ]]' || { kanna workspace list --all; return 1; }
   mine="$(pane Mine id)" other="$(pane Other id)"
@@ -256,7 +311,7 @@ markup_button() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent" dir="$KANNA_STATE_DIR/button" mine planner opened w
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "markup_button line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "Mine" "say hi" --agent "$agent") >/dev/null || { echo "markup_button line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Mine" "hello there" --agent "$agent") >/dev/null || { echo "markup_button line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null || { echo "markup_button line $LINENO"; return 1; }
   check wait_for 5 eval '[[ "$(pane Mine id)" == term-* ]]' || { kanna workspace list --all; return 1; }
   mine="$(pane Mine id)"
@@ -567,6 +622,9 @@ PY
   page_comments_post "#red" "Typed for you" || return 1
   check wait_for 5 eval '[[ "$(page_comments_thread c2 status)" == sent ]]' || { page_comments_web; return 1; }
   check wait_for 5 shows copilot "echo: \[kanna comment c2 · page.html:" || { kanna read copilot; return 1; }
+  page_comments_web ",\"act\":\"c2\"" >/dev/null
+  check wait_for 5 eval '[[ "$(page_comments_thread c2 state)" == resolved ]]' || { page_comments_web; return 1; }
+  check wait_for 8 shows copilot "\[kanna resolved c2 · page.html:" || { kanna read copilot; return 1; }
 }
 
 scenario code_comment_box M4

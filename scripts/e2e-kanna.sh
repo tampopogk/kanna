@@ -67,7 +67,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE
+unset KANNA_PANE KANNA_TERMINAL KANNA_INSTANCE KANNA_CLI KANNA_TASK KANNA_TASK_NAME KANNA_REPO KANNA_WORKTREE KANNA_BRANCH KANNA_BASE KANNA_RUN KANNA_STAGE KANNA_FEEDBACK KANNA_ANSWER KANNA_RUN_WAIT
 ps -o pid= -p $$ >/dev/null 2>&1 && kill -0 $$ 2>/dev/null || { echo "e2e-kanna: can't list or signal processes here (a sandbox?); run it unsandboxed" >&2; exit 2; }
 export KANNA_E2E_OWNER=$$
 mock_agent="$repo_root/tools/mock-agent/mock-agent"

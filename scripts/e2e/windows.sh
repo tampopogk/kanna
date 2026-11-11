@@ -429,7 +429,7 @@ toasts() {
   repo="$(cd "$repo" && pwd -P)"
   start_daemon || { echo "toasts line $LINENO"; return 1; }
   check test "$(kanna toast "Early" "raised before the app")" == "raised toast-1; no app is attached, so it shows when one attaches within a minute" || return 1
-  (cd "$repo" && kanna task new "Lint fixes" "say 1" --agent "$agent" && kanna task new "Docs pass" "say 2" --agent "$agent") >/dev/null || { echo "toasts line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Lint fixes" "hello 1" --agent "$agent" && kanna task new "Docs pass" "hello 2" --agent "$agent") >/dev/null || { echo "toasts line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null || { echo "toasts line $LINENO"; return 1; }
   env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
   app_pid=$!

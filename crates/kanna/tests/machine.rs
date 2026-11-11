@@ -199,6 +199,13 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     assert_eq!(certified["ok"], true, "{certified}");
     let cert = certified["cert"].clone();
 
+    let unhelloed = runtime.block_on(client.link(&vm_key, &[format!("127.0.0.1:{port}")], None, &cert)).unwrap();
+    unhelloed.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+    let mut unhelloed = Link { lines: BufReader::new(unhelloed.try_clone().unwrap()).lines(), stream: unhelloed };
+    unhelloed.send(json!({ "id": 3, "cmd": "accounts", "args": { "action": "token", "account": "anything" } }));
+    assert_eq!(unhelloed.next(|m| m["id"] == 3)["error"]["code"], "not_a_daemon", "an app can't ask for a token as its machine");
+    drop(unhelloed);
+
     let (_, refused) = link(&runtime, &client, &vm_key, port, &cert, json!({ "pid": 1, "client": "mbp", "protocol": 9, "build": "another" }));
     assert_eq!((refused["ok"].clone(), refused["error"]["code"].clone(), refused["protocol"].clone()), (json!(false), json!("other_protocol"), json!(kanna_build::PROTOCOL)), "{refused}");
     assert_eq!(vm.kanna(&["machine", "--json"]).json()["name"], "vm", "the daemon keeps running");
@@ -216,6 +223,8 @@ fn an_app_on_another_machine_attaches_over_the_network_and_another_protocol_leav
     assert_eq!(far.next(|m| m["id"] == 5)["error"]["code"], "local_only", "a remote app can't have an endpoint certified");
     far.send(json!({ "id": 6, "cmd": "replica", "args": { "action": "grant", "task": "task-00000001", "birth": "1.0.x", "epoch": 9, "peer": client.key() } }));
     assert!(far.next(|m| m["id"] == 6).to_string().contains("replica is for another machine's daemon"), "an app can't speak for a machine");
+    far.send(json!({ "id": 7, "cmd": "accounts", "args": { "action": "token", "account": "anything" } }));
+    assert_eq!(far.next(|m| m["id"] == 7)["error"]["code"], "local_only", "an app link can't reach this machine's accounts");
     let called = ask(&mbp, "machine", json!({ "action": "call", "host": "vm", "cmd": "machine", "args": { "action": "certify", "key": client.key() } }));
     assert!(called.to_string().contains("local_only"), "another machine can't have an endpoint certified: {called}");
     let here = UnixStream::connect(vm.socket()).unwrap();

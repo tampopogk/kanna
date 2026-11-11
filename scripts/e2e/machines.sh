@@ -308,9 +308,9 @@ project_import() {
   refused="$(cd / && kanna "$outside" 2>&1)" && { echo "project_import: a Desk opened outside repos"; return 1; }
   [[ "$refused" == *"kanna project import $outside"* ]] || { echo "project_import: kanna PATH outside repos: $refused"; return 1; }
 
-  (cd "$repo" && kanna task new "Importing" "say importing" --agent "$agent") >/dev/null || { echo "project_import line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "Importing" "hello importing" --agent "$agent") >/dev/null || { echo "project_import line $LINENO"; return 1; }
   [[ "$(kanna task start "$(tid 1)")" == "started $(sid 1) on the Shelf: term-"* ]] || { echo "project_import: the task didn't start"; return 1; }
-  check wait_for 5 shows "Importing" "say importing" || { echo "project_import: the agent didn't get its first message"; kanna read "Importing"; return 1; }
+  check wait_for 5 shows "Importing" "hello importing" || { echo "project_import: the agent didn't get its first message"; kanna read "Importing"; return 1; }
   local task worktree session; task="$(pane "Importing" id)"; worktree="$repo/.kanna-worktrees/$(tid 1)"
   session="$(kanna read "Importing" | tr -d '\r\n' | sed -n 's/.*--session-id \([0-9a-f-]\{36\}\).*/\1/p')"
   [[ "$session" =~ ^[0-9a-f-]{36}$ ]] || { echo "project_import: the task started without a session"; kanna read "Importing"; return 1; }
@@ -671,6 +671,6 @@ WANT
   [[ "$again" == *"$vm/again.png"* ]] || { echo "remote_workspace: with vm's own app gone, the screenshot went nowhere: $again"; return 1; }
   rk task stop >/dev/null 2>&1; rk task park >/dev/null 2>&1
   raw '{"id":1,"cmd":"debug.click","args":{"deskView":"d1"}}' >/dev/null
-  local hidden; hidden="$(cd "$rwork" && rk screenshot spec-remote 2>&1)" && { echo "remote_workspace: shot a pane that isn't showing"; return 1; }
-  [[ "$hidden" == *"isn't showing"* || "$hidden" == *"isn't in a window"* ]] || { echo "remote_workspace: a hidden pane: $hidden"; return 1; }
+  local hidden; hidden="$(cd "$rwork" && rk screenshot spec-remote -o "$vm/hidden.png" --json 2>&1)"
+  [[ "$(field hidden <<<"$hidden")" == True && "$(head -c 4 "$vm/hidden.png" | tail -c 3)" == PNG ]] || { echo "remote_workspace: a parked pane wasn't drawn off screen: $hidden"; return 1; }
 }

@@ -1,7 +1,7 @@
 mod common;
 
 use common::{alive, request, App, Instance};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -20,11 +20,6 @@ fn cpu_seconds(pid: i32) -> f64 {
     let out = Command::new("ps").args(["-o", "time=", "-p", &pid.to_string()]).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     text.trim().split(':').rev().zip([1.0, 60.0, 3600.0]).map(|(f, scale)| f.parse::<f64>().unwrap_or(0.0) * scale).sum()
-}
-
-fn saved(instance: &Instance) -> Value {
-    let text = std::fs::read_to_string(instance.dir.join("state/terminals/terminals.json")).unwrap_or_default();
-    serde_json::from_str(&text).unwrap_or(Value::Null)
 }
 
 #[test]
@@ -50,7 +45,7 @@ fn shutdown_quits_the_app_hangs_up_every_terminal_stops_the_keeper_and_removes_t
     assert!(instance.daemon.try_wait().unwrap().unwrap().success(), "{}", instance.log());
     assert!(!instance.socket().exists() && !instance.dir.join("state/daemon.pid").exists());
     assert!(!alive(pid) && !alive(keeper as i64), "{}", instance.log());
-    let record = &saved(&instance)["terminals"][0];
+    let record = &instance.saved()["terminals"][0];
     assert_eq!((record["id"].as_str(), record["state"].as_str(), record["hungUp"].as_bool()), (Some(terminal.as_str()), Some("exited"), Some(true)), "{record}");
 
     instance.start_again();

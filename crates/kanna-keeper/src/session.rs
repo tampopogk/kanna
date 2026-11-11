@@ -11,6 +11,10 @@ pub fn groups(session: i32) -> Vec<i32> {
     groups.into_iter().collect()
 }
 
+pub fn alive(session: i32) -> bool {
+    pids().into_iter().any(|pid| unsafe { libc::getsid(pid) } == session)
+}
+
 #[cfg(target_os = "macos")]
 fn pids() -> Vec<i32> {
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -42,5 +46,11 @@ mod tests {
         let found = groups(mine);
         assert!(found.contains(&mine) && found.contains(&unsafe { libc::getpgid(0) }), "{found:?}");
         assert_eq!(groups(i32::MAX - 1), [i32::MAX - 1]);
+    }
+
+    #[test]
+    fn a_session_is_alive_while_a_process_is_in_it() {
+        assert!(alive(unsafe { libc::getsid(0) }));
+        assert!(!alive(i32::MAX - 1));
     }
 }

@@ -529,7 +529,7 @@ extension AppController {
         guard let window = keyWindow?["id"]?.string, let pane = keyWindow?["dock"]?["pane"]?.string else { return }
         request("tasks", ["action": "shelve", "task": .string(pane)]) { [weak self] reply in
             guard let self, reply["ok"]?.bool != true, let controller = controllers[window] else { return }
-            controller.note = reply["error"]?["message"]?.string ?? "it didn't move"
+            controller.note = refusal(reply, otherwise: "it didn't move")
             refresh()
         }
     }

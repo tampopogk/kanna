@@ -615,6 +615,13 @@ impl Node {
                 if kind == "control" && request["cmd"] == APP_HELLO {
                     return self.bridge(remote, cert, from, request, send, recv).await;
                 }
+                if cert.is_some() && request["cmd"] == crate::ACCOUNTS {
+                    let id = request.get("id").cloned().unwrap_or(Value::Null);
+                    if write_line(&mut send, &json!({ "id": id, "ok": false, "error": { "code": "not_a_daemon", "message": "only a machine's daemon speaks for its accounts" } })).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 let replica = request["cmd"] == REPLICA;
                 if kind == "sync" && !replica {
                     let id = request.get("id").cloned().unwrap_or(Value::Null);

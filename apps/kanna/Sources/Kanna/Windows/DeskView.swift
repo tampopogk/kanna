@@ -485,6 +485,8 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     private var lifted: (row: DeskRow, copy: NSView, grip: NSPoint, over: Bool)?
     private let zone = DropZone()
     private let dropNote = NSTextField(labelWithString: "· Drop to move to the Shelf")
+    private let noteBar = NoteBar()
+    var onDismissNote: (() -> Void)?
 
     override var isFlipped: Bool { true }
 
@@ -503,6 +505,9 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         scroller.horizontalScrollElasticity = .none
         scroller.documentView = document
         addSubview(scroller)
+        noteBar.isHidden = true
+        noteBar.onClose = { [weak self] in self?.onDismissNote?() }
+        addSubview(noteBar)
         search.placeholderString = "Search the Shelf"
         search.font = .systemFont(ofSize: 12)
         search.controlSize = .small
@@ -744,7 +749,17 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         onStart?(task)
     }
 
-    var note: String { document.subviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "note" }?.stringValue ?? "" }
+    var note: String { noteBar.isHidden ? "" : noteBar.text }
+
+    var noteShown: Bool { !isHidden && !noteBar.isHidden && bounds.contains(noteBar.frame) && !scroller.frame.intersects(noteBar.frame) }
+
+    var noteClose: NSPoint? { noteBar.isHidden ? nil : noteBar.convert(noteBar.closeCenter, to: nil) }
+
+    private func placeNote() {
+        let height = noteBar.isHidden ? 0 : NoteBar.height
+        scroller.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - height)
+        noteBar.frame = NSRect(x: 0, y: bounds.height - NoteBar.height, width: bounds.width, height: NoteBar.height)
+    }
 
     private func label(_ text: String, size: CGFloat = 12, weight: NSFont.Weight = .regular, color: NSColor = .labelColor) -> NSTextField {
         let field = NSTextField(labelWithString: text)
@@ -871,11 +886,14 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         shelfArea = NSRect(x: left - 16, y: shelfTop - 8, width: width + 32, height: y - shelfTop + 14)
         for (id, row) in deskBefore where deskKept[id] !== row { row.removeFromSuperview() }
         for (id, row) in shelfBefore where shelfKept[id] !== row { row.removeFromSuperview() }
-        let note = label(page.note, color: .systemOrange)
-        note.identifier = NSUserInterfaceItemIdentifier("note")
-        note.frame.origin = NSPoint(x: left, y: y + 8)
-        document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 8 + note.frame.height + 40)
+        let appeared = noteBar.isHidden && !page.note.isEmpty
+        noteBar.text = page.note
+        noteBar.inset = left
+        noteBar.isHidden = page.note.isEmpty
+        placeNote()
+        document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 48)
         scroll(toY: top)
+        if appeared { reveal() }
         decorate()
         Perf.end(span, "\(page.tasks.count + hits.count) rows, \(made) new")
         Clicks.laid(desk: page.tasks.map(\.id), shelf: page.shelf.map(\.id))
@@ -1016,8 +1034,85 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         let top = scrollTop
         super.resizeSubviews(withOldSize: oldSize)
+        placeNote()
         guard let shown else { return }
         if oldSize.width != bounds.width { lay(shown, top: top) } else { scroll(toY: top) }
+    }
+}
+
+private final class NoteBar: NSView {
+    static let height: CGFloat = 36
+    var onClose: (() -> Void)?
+    var inset: CGFloat = 48 { didSet { needsLayout = true } }
+    private let label = NSTextField(labelWithString: "")
+    private let close = NSTextField(labelWithString: "×")
+    private let edge = NSView()
+
+    override var isFlipped: Bool { true }
+
+    var text: String {
+        get { label.stringValue }
+        set {
+            label.stringValue = newValue
+            label.toolTip = newValue
+            setAccessibilityLabel(newValue)
+            needsLayout = true
+        }
+    }
+
+    var closeCenter: NSPoint { NSPoint(x: close.frame.midX, y: close.frame.midY) }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        edge.wantsLayer = true
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .systemOrange
+        label.lineBreakMode = .byTruncatingTail
+        label.identifier = NSUserInterfaceItemIdentifier("note")
+        close.font = .systemFont(ofSize: 15)
+        close.textColor = .secondaryLabelColor
+        close.alignment = .center
+        close.toolTip = "Dismiss"
+        close.setAccessibilityRole(.button)
+        close.setAccessibilityLabel("Dismiss")
+        addSubview(edge)
+        addSubview(label)
+        addSubview(close)
+        paint()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        paint()
+    }
+
+    private func paint() {
+        layer?.backgroundColor = resolved(.windowBackgroundColor)
+        edge.layer?.backgroundColor = resolved(.separatorColor)
+    }
+
+    override func layout() {
+        super.layout()
+        edge.frame = NSRect(x: 0, y: 0, width: bounds.width, height: 1)
+        close.frame = NSRect(x: bounds.width - 44, y: (bounds.height - 20) / 2, width: 24, height: 20)
+        let height = label.intrinsicContentSize.height
+        label.frame = NSRect(x: inset, y: (bounds.height - height) / 2, width: max(0, close.frame.minX - 12 - inset), height: height)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
+
+    private func onClose(_ event: NSEvent) -> Bool { close.frame.insetBy(dx: -8, dy: -8).contains(convert(event.locationInWindow, from: nil)) }
+
+    override func mouseDown(with event: NSEvent) {
+        guard onClose(event) else { return }
+        while let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            guard next.type == .leftMouseUp else { continue }
+            if onClose(next) { onClose?() }
+            return
+        }
     }
 }
 

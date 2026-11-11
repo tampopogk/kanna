@@ -8,6 +8,10 @@ pub const MAX_OPS: usize = 2000;
 
 pub const RUN: &str = "run.";
 
+pub const WORKER: &str = "work-";
+
+pub const MACHINE: &str = "machine";
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Hlc {
     pub ms: i64,
@@ -231,6 +235,14 @@ impl Replica {
     }
 
     pub fn records(&self) -> impl Iterator<Item = &Record> {
+        self.records.values().filter(|r| r.task != MACHINE && !r.task.starts_with(WORKER))
+    }
+
+    pub fn workers(&self) -> impl Iterator<Item = &Record> {
+        self.records.values().filter(|r| r.task.starts_with(WORKER))
+    }
+
+    pub fn all(&self) -> impl Iterator<Item = &Record> {
         self.records.values()
     }
 
@@ -370,6 +382,18 @@ impl Replica {
         Ok(())
     }
 
+    pub fn retake(&mut self, db: &Db, task: &str, birth: &str) -> rusqlite::Result<()> {
+        let me = self.me.clone();
+        let ops = self.stage(task, birth, &[("owner", json!(me))]);
+        db.atomically(|conn| {
+            let epoch = authority(conn, task, birth)?.map_or(0, |a| a.epoch);
+            set_authority(conn, task, birth, &Authority { epoch, permit: Permit::Ready, to: None })?;
+            self.commit(conn, &ops)
+        })?;
+        self.applied(&ops);
+        Ok(())
+    }
+
     pub fn take(&mut self, db: &Db, task: &str, birth: &str, from: &str) -> rusqlite::Result<()> {
         let me = self.me.clone();
         let ops = self.stage(task, birth, &[("owner", json!(me)), (&format!("{RUN}{me}"), json!({ "from": from, "at": wall() }))]);
@@ -489,7 +513,7 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("kanna-replica-{name}-{}-{}", std::process::id(), COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            let db = Db::open(&dir);
+            let db = Db::open(&dir).unwrap();
             let mut replica = Replica::open(&db).unwrap();
             replica.set_device(name);
             Machine { dir, db, replica }
@@ -497,7 +521,7 @@ mod tests {
 
         fn restart(mut self) -> Machine {
             let me = self.replica.me().to_string();
-            self.db = Db::open(&self.dir);
+            self.db = Db::open(&self.dir).unwrap();
             self.replica = Replica::open(&self.db).unwrap();
             self.replica.set_device(&me);
             self
