@@ -390,7 +390,7 @@ def main():
     if refusal:
         print(refusal)
         return 1
-    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], ask, report STATUS or exit\r\n")
+    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], ask, report STATUS, focus LOG or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
     out(f"{'resumed' if resumed else 'session'} {id}\r\n")
@@ -426,6 +426,24 @@ def talk(id, task):
             return
 
 
+FOCUS = {"log": None}
+
+
+def focus_reports(data):
+    kept, i = b"", 0
+    while i < len(data):
+        report = data[i:i + 3]
+        if report in (b"\x1b[I", b"\x1b[O"):
+            if FOCUS["log"]:
+                with open(FOCUS["log"], "a") as log:
+                    log.write(("in" if report == b"\x1b[I" else "out") + "\n")
+            i += 3
+        else:
+            kept += data[i:i + 1]
+            i += 1
+    return kept
+
+
 def typed():
     fd = sys.stdin.fileno()
     if not os.isatty(fd):
@@ -437,6 +455,7 @@ def typed():
         AHEAD.clear()
         if not data:
             return
+        data = focus_reports(data)
         for c in data.decode("utf8", "replace"):
             if c == "\x03":
                 raise KeyboardInterrupt
@@ -535,6 +554,11 @@ def answering(line):
             out("TURN_DONE\r\n")
         else:
             out("Declined.\r\n")
+    elif words[:1] == ["focus"] and len(words) > 1:
+        FOCUS["log"] = words[1]
+        open(words[1], "a").close()
+        out("\x1b[?1004h")
+        out(f"focus reports to {words[1]}\r\n")
     elif words[:1] == ["later"] and len(words) > 2:
         threading.Timer(float(words[1]), out, [f"\x1b]7501;{words[2]}\x1b\\"]).start()
         out(f"later: {words[2]}\r\n")
