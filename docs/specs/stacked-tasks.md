@@ -15,7 +15,7 @@ A task is **ready** when the only thing left is to merge it: its agent says its 
 
 Ready is for picking tasks for the Desk that need nothing but a quick merge. A row shows `ready` only while all three hold:
 
-1. **Its agent claimed it at this exact commit:** `kanna task ready`, run when the tests pass and nothing else is left to do. Needing the user to check it on a real device, or an open question, means it isn't ready.
+1. **Its agent claimed it at this exact commit:** `kanna task ready`, which the agent runs itself as soon as the work is finished, committed and its tests pass, before presenting it. The user's review, or their choosing when to merge, doesn't hold it up; waiting on the user for an answer to the agent's question, or for a check only they can make (a real device), does.
 2. **It merges into main cleanly now,** checked by Kanna, again whenever main or the branch moves. A task behind main with no conflict is still ready: its agent runs the tests when it merges.
 3. **It doesn't wait for another task to merge first:** it isn't stacked on unmerged work.
 
