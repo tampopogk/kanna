@@ -971,7 +971,6 @@ pub struct Runs {
     flagged: RefCell<HashSet<String>>,
     asks_changed: Cell<bool>,
     polled: Cell<f64>,
-    pub on_show: RefCell<Option<Box<dyn Fn(&str)>>>,
     carrying: RefCell<Vec<String>>,
     pub on_status: RefCell<Option<Box<dyn Fn(&str)>>>,
 }
@@ -1018,7 +1017,7 @@ impl Runs {
             log!("kanna-daemon: {} carries on ({}, {at})", entry.row.id, entry.row.state);
             live.push(entry);
         }
-        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), polled: Cell::new(0.0), on_show: RefCell::default(), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() };
+        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), polled: Cell::new(0.0), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() };
         for (row, repo) in this.db.unmeasured().unwrap_or_default() {
             this.measure(Measuring::of(&row, &repo, None, None));
         }
@@ -1815,9 +1814,16 @@ impl Runs {
             }
             if started {
                 log!("kanna-daemon: {id}'s {stage} runs on {machine} in {}", terminal.as_deref().unwrap_or(""));
+                self.take_tab(id, terminal.as_deref().unwrap_or_default());
             }
         }
         let Some(result) = remote.result else { return };
+        let leave = |this: &Rc<Self>| {
+            let shown = this.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit(n)).and_then(|v| v.row.terminal.clone());
+            if let Some(shown) = shown {
+                this.close(&shown);
+            }
+        };
         if let Some(why) = string(&result, "stopped") {
             if self.mark_ending(id, n) {
                 tasks.drop_worker(worker);
@@ -1829,12 +1835,17 @@ impl Runs {
             if self.mark_ending(id, n) {
                 log!("kanna-daemon: {id}'s {stage} lost its terminal on {machine}, so it's recorded interrupted and runs again");
                 tasks.drop_worker(worker);
+                leave(self);
                 self.rerun(id, visit, "interrupted");
             }
             return;
         }
         if !remote.landed || !self.mark_ending(id, n) {
             return;
+        }
+        let shown = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit(n)).and_then(|v| v.row.terminal.clone());
+        if let Some(shown) = shown {
+            self.retire(id, &shown);
         }
         let mut ended = reported(&result);
         if visit.row.kind != "agent" {
@@ -1848,6 +1859,27 @@ impl Runs {
         }
         tasks.drop_worker(worker);
         self.finished(id, n, ended, None);
+    }
+
+    fn take_tab(self: &Rc<Self>, id: &str, guest: &str) {
+        let Some(core) = self.core.upgrade() else { return };
+        let Some(old) = self.live.borrow_mut().iter_mut().find(|l| l.row.id == id).and_then(|l| l.last.take()) else { return };
+        let (this, placing, id, guest) = (Rc::downgrade(self), core.weak(), id.to_string(), guest.to_string());
+        core.handle(json!({ "cmd": "list" }), move |reply| {
+            let (Some(this), Some(core)) = (this.upgrade(), placing.upgrade()) else { return };
+            if !shown(&reply, &old) {
+                return this.close(&old);
+            }
+            let again = Rc::downgrade(&this);
+            core.show_guest(&guest.clone(), json!({ "from": old }), move |placed| {
+                let Some(this) = again.upgrade() else { return };
+                this.close(&old);
+                if placed.is_ok() {
+                    log!("kanna-daemon: {id}'s next worker {guest} takes the tab {old} was shown in");
+                    this.name_tab(&id, &guest);
+                }
+            });
+        });
     }
 
     pub fn too_old(self: &Rc<Self>, pane: &str, why: &str) -> bool {
@@ -2214,6 +2246,9 @@ impl Runs {
         let pane = visit.row.terminal.clone().filter(|_| !visit.paused && !matches!(visit.work, Work::Remote { .. }));
         if let (Work::Remote { worker }, Some(tasks)) = (&visit.work, self.tasks.upgrade()) {
             tasks.drop_worker(worker);
+            if let Some(terminal) = &visit.row.terminal {
+                self.close(terminal);
+            }
         }
         let closing = pane.clone();
         let finish = move |said: Option<String>| {
@@ -2251,8 +2286,10 @@ impl Runs {
     fn open_beside(self: &Rc<Self>, id: &str, n: u32, cwd: &str, command: &str, last: Option<(String, bool)>, opened: impl FnOnce(&Rc<Self>, &str, &str) + 'static) {
         let Some(core) = self.core.upgrade() else { return };
         let task = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.task.clone()).unwrap_or_default();
-        let args = match &last {
-            Some((old, true)) => json!({ "type": "term", "from": old, "cwd": cwd, "cmd": command, "wait": false }),
+        let workspace = self.tasks.upgrade().and_then(|tasks| tasks.entry(&task)).and_then(|entry| entry.workspace);
+        let args = match (&last, workspace) {
+            (Some((old, true)), Some(workspace)) if old.contains('@') => json!({ "type": "term", "workspace": workspace, "tab": true, "cwd": cwd, "cmd": command, "wait": false }),
+            (Some((old, true)), _) => json!({ "type": "term", "from": old, "cwd": cwd, "cmd": command, "wait": false }),
             _ => json!({ "type": "term", "background": true, "workspace": task, "cwd": cwd, "cmd": command, "wait": false }),
         };
         let (this, id) = (Rc::downgrade(self), id.to_string());
@@ -2357,6 +2394,9 @@ impl Runs {
 
     fn close(&self, pane: &str) {
         if pane.contains('@') {
+            if let Some(core) = self.core.upgrade() {
+                core.drop_guest(pane);
+            }
             return;
         }
         if let Some(core) = self.core.upgrade() {
@@ -3118,6 +3158,9 @@ impl Runs {
                 if let Some(tasks) = self.tasks.upgrade() {
                     tasks.drop_worker(worker);
                 }
+                if let Some(terminal) = &row.terminal {
+                    self.close(terminal);
+                }
                 continue;
             }
             if let (Some(pane), false) = (row.terminal.clone(), visit.ending || visit.paused) {
@@ -3502,13 +3545,31 @@ impl Runs {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let (run, terminal) = terminal;
         let by = string(args, "by").unwrap_or("user").to_string();
-        if let Some((pane, machine)) = terminal.split_once('@') {
-            let _ = self.db.run_event(&run, "watched", Some(&by), &json!({ "terminal": terminal, "machine": machine }));
-            log!("kanna-daemon: {run} is watched in {pane} on {machine}");
-            if let Some(show) = self.on_show.borrow().as_ref() {
-                show(&terminal);
-            }
-            return responder.reply(Ok(Map::from_iter([("run".to_string(), json!(run)), ("terminal".to_string(), json!(terminal)), ("machine".to_string(), json!(machine))])));
+        if let Some((pane, machine)) = terminal.split_once('@').map(|(pane, machine)| (pane.to_string(), machine.to_string())) {
+            let task = self.live.borrow().iter().find(|l| l.row.id == run).map(|l| l.row.task.clone()).unwrap_or_default();
+            let Some(workspace) = self.tasks.upgrade().and_then(|tasks| tasks.entry(&task)).and_then(|entry| entry.workspace) else {
+                return responder.reply(Err(failed(format!("can't show {terminal} in a tab: {task} has no workspace"))));
+            };
+            let this = Rc::downgrade(self);
+            let shown = terminal.clone();
+            return core.show_guest(&shown, json!({ "workspace": workspace, "tab": true }), move |placed| {
+                let placed = match placed {
+                    Ok(placed) => placed,
+                    Err(error) => return responder.reply(Err(failed(format!("can't show {terminal} in a tab: {}", error.message)))),
+                };
+                if let Some(this) = this.upgrade() {
+                    let _ = this.db.run_event(&run, "watched", Some(&by), &json!({ "terminal": terminal, "machine": machine }));
+                    log!("kanna-daemon: {run} is watched in {pane} on {machine}");
+                    this.name_tab(&run, &terminal);
+                }
+                let mut out = Map::from_iter([("run".to_string(), json!(run)), ("terminal".to_string(), json!(terminal)), ("machine".to_string(), json!(machine))]);
+                for key in ["tab", "workspace", "window"] {
+                    if let Some(value) = placed.get(key) {
+                        out.insert(key.to_string(), value.clone());
+                    }
+                }
+                responder.reply(Ok(out));
+            });
         }
         let (this, focusing) = (Rc::downgrade(self), core.weak());
         core.handle(json!({ "cmd": "move", "args": { "pane": terminal, "tab": "new" } }), move |moved| {
@@ -3533,7 +3594,8 @@ impl Runs {
     }
 
     fn name_tab(&self, id: &str, pane: &str) {
-        let title = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visits.iter().find(|v| v.row.terminal.as_deref() == Some(pane)).or(l.visits.first()).map(|v| format!("{} · {}", v.label(), run_notice::who(&l.pipeline, &v.row))));
+        let afar = pane.split_once('@').map_or(String::new(), |(_, machine)| format!(" · on {machine}"));
+        let title = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visits.iter().find(|v| v.row.terminal.as_deref() == Some(pane)).or(l.visits.first()).map(|v| format!("{} · {}{afar}", v.label(), run_notice::who(&l.pipeline, &v.row))));
         let (Some(title), Some(core)) = (title, self.core.upgrade()) else { return };
         let (renaming, pane) = (core.weak(), pane.to_string());
         core.handle(json!({ "cmd": "list" }), move |list| {

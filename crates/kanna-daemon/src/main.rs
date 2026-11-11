@@ -670,13 +670,6 @@ fn run() -> Result<(), String> {
         }),
         app_attached: Box::new(move || attached.upgrade().is_some_and(|app| app.attached_here())),
     });
-    let showing = Rc::downgrade(&app);
-    *runs.on_show.borrow_mut() = Some(Box::new(move |pane| {
-        if let Some(app) = showing.upgrade() {
-            let (responder, _reply) = kanna_mux::responder();
-            app.forward("focus", json!({ "pane": pane }), responder);
-        }
-    }));
     let (shown, statuses) = (core.weak(), Rc::downgrade(&app));
     *runs.on_status.borrow_mut() = Some(Box::new(move |pane| {
         if let (Some(core), Some(app)) = (shown.upgrade(), statuses.upgrade()) {

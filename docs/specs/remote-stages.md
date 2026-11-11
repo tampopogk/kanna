@@ -1,6 +1,6 @@
 # Remote stages
 
-**Status:** built in the daemon; the app's tab over the link isn't exercised by a test yet ([§6](#6-seeing-it)) · **Part of:** [software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines), [Kojo §3](kojo.md#3-attributes) · **Builds on:** [run fan-out](run-fan-out.md), [tasks across machines](machine-tasks.md), [task transfer](task-transfer.md) · **Code:** `crates/kanna-daemon/src/tasks/workers.rs`, `runs.rs` · **Tested:** `cargo test -p kanna --test pipeline_remote` (two paired daemons, mock agent), `-p kanna-daemon workers::`
+**Status:** built · **Part of:** [software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines), [Kojo §3](kojo.md#3-attributes) · **Builds on:** [run fan-out](run-fan-out.md), [tasks across machines](machine-tasks.md), [task transfer](task-transfer.md) · **Code:** `crates/kanna-daemon/src/tasks/workers.rs`, `runs.rs` · **Tested:** `cargo test -p kanna --test pipeline_remote` (two paired daemons, mock agent), `-p kanna-daemon workers::`, e2e `pipeline_remote` (the app linked to a second daemon: the watched tab through a stage there, one here and one there again)
 
 A stage with `on PLACEMENT` runs on another of your machines as a **worker** of the run. The run stays on its own machine: the worker's branch goes over as a git bundle, the stage runs there in a worker terminal, and its verdict, answer and commits come back.
 
@@ -85,7 +85,11 @@ sequenceDiagram
 ## 6. Seeing it
 
 - **`kanna run show`** lists the worker with its `machine` and `terminal`; the Run tab's notice carries the same on each worker.
-- **Watch** (`kanna open run --watch`): for a worker elsewhere the daemon replies with the terminal and its machine and asks the app to focus `term-N@machine`, which the app routes over that machine's link ([one link per machine](machine-links.md)). The daemon's part is tested; the tab the app draws for it isn't yet.
+- **Watch** (`kanna open run --watch`): the worker's own terminal on the other machine shows in a tab of the task's workspace here, titled `far · slow.sh · on vm`. The workspace holds the peer's terminal by its qualified ID (`term-4@vm`), a **guest** of this machine's layout, and the app draws and types into it over that machine's link, as it does any terminal of that machine ([one link per machine](machine-links.md)).
+- **The tab follows the run** across machines: when the watched worker ends, the next stage's worker takes its tab, whether it runs here or elsewhere, and the tab goes when the run ends.
+- **A guest is only a place in the layout:** this daemon has no pane for it, so it is closed by the run, not by `kanna close`, and a daemon restart drops it; watch again to show it.
+
+![The task's agent on the left; on the right a tab showing the worker's terminal on vm](remote-stages-watch.png)
 
 ## 7. Interfaces
 
