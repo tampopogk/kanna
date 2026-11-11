@@ -13,21 +13,30 @@ targets() { printf '{"targets": "%s"}\n' "$1" >"$main/build.local.json"; }
 root="$dir/volume/kanna-targets"
 targets "$root"
 worktree() { git -C "$main" worktree add -q "$main/.kanna-worktrees/$1" -b "$1" >/dev/null 2>&1 && echo "$main/.kanna-worktrees/$1"; }
-link() { (. "$scripts/env.sh" && kanna_targets "$1") 2>/dev/null; echo built >"$1/target/out"; }
+link() { (. "$scripts/env.sh" && kanna_targets "$1") 2>/dev/null; echo built >"$1/target/debug/out"; }
 teardown() { (cd "$1" && "$scripts/teardown.sh") >"$dir/said" 2>&1; }
 
 mkdir -p "$root/repo/_main/release" "$root/repo/task-other"
 
 wt="$(worktree task-a)" && link "$wt"
-[[ "$(readlink "$wt/target")" == "$root/repo/task-a" ]] || fail "kanna_targets didn't link task-a into ROOT/REPO: $(readlink "$wt/target")"
+[[ -d "$wt/target" && ! -L "$wt/target" ]] || fail "kanna_targets didn't make task-a's target/ a folder: $(ls -ld "$wt/target")"
+[[ "$(readlink "$wt/target/debug")" == "$root/repo/task-a/debug" ]] || fail "kanna_targets didn't link task-a's debug/ into ROOT/REPO: $(ls -l "$wt/target")"
+mkdir -p "$wt/target/Kanna.app/Contents/MacOS"
+teardown "$wt" || fail "worktree: exit $?: $(cat "$dir/said")"
+[[ ! -e "$root/repo/task-a" ]] || fail "worktree: its build folder is left"
+[[ ! -e "$wt/target" ]] || fail "worktree: target/ and its app are left: $(ls -lR "$wt/target")"
+[[ -d "$root/repo/_main/release" && -d "$root/repo/task-other" ]] || fail "worktree: removed another folder"
+
+wt="$(worktree task-old)" && mkdir -p "$root/repo/task-old" && echo built >"$root/repo/task-old/out" && ln -s "$root/repo/task-old" "$wt/target"
 teardown "$wt" || fail "linked worktree: exit $?: $(cat "$dir/said")"
-[[ ! -e "$root/repo/task-a" ]] || fail "linked worktree: its build folder is left"
+[[ ! -e "$root/repo/task-old" ]] || fail "linked worktree: its build folder is left"
 [[ ! -L "$wt/target" ]] || fail "linked worktree: target/ link is left"
-[[ -d "$root/repo/_main/release" && -d "$root/repo/task-other" ]] || fail "linked worktree: removed another folder"
 
 wt="$(worktree task-real)" && mkdir -p "$wt/target" && echo built >"$wt/target/out"
-teardown "$wt" || fail "real target/: exit $?"
-[[ -f "$wt/target/out" ]] || fail "real target/: removed it"
+targets ""
+teardown "$wt" || fail "real target/, targets unset: exit $?"
+[[ -f "$wt/target/out" ]] || fail "real target/, targets unset: removed it"
+targets "$root"
 
 wt="$(worktree task-none)"
 teardown "$wt" || fail "no target/: exit $?"
@@ -50,12 +59,16 @@ teardown "$wt" || fail "ROOT/REPO/WORKTREE a link: exit $?"
 
 wt="$(worktree task-gone)" && link "$wt" && rm -rf "$root/repo/task-gone"
 teardown "$wt" || fail "folder already gone: exit $?"
-[[ ! -L "$wt/target" ]] || fail "folder already gone: target/ link is left"
+[[ ! -e "$wt/target" ]] || fail "folder already gone: target/ is left"
+
+wt="$(worktree task-gonelink)" && ln -s "$root/repo/task-gonelink" "$wt/target"
+teardown "$wt" || fail "folder already gone, old link: exit $?"
+[[ ! -L "$wt/target" ]] || fail "folder already gone, old link: target/ link is left"
 
 wt="$(worktree task-unset)" && link "$wt"
 targets ""
 teardown "$wt" || fail "targets unset: exit $?"
-[[ -f "$root/repo/task-unset/out" ]] || fail "targets unset: removed the folder"
+[[ -d "$root/repo/task-unset/debug" && -L "$wt/target/debug" ]] || fail "targets unset: removed the folder"
 
 missing="/Volumes/kanna-teardown-missing-$$/kanna-targets"
 targets "$missing"
@@ -63,6 +76,9 @@ wt="$(worktree task-unmounted)" && ln -s "$missing/repo/task-unmounted" "$wt/tar
 teardown "$wt" || fail "unmounted volume: exit $?"
 grep -q "isn't mounted" "$dir/said" || fail "unmounted volume: didn't say so: $(cat "$dir/said")"
 [[ -L "$wt/target" ]] || fail "unmounted volume: removed the link"
+wt="$(worktree task-unmounted-app)" && mkdir -p "$wt/target/Kanna.app" && ln -s "$missing/repo/task-unmounted-app/debug" "$wt/target/debug"
+teardown "$wt" || fail "unmounted volume, target/ a folder: exit $?"
+[[ -d "$wt/target/Kanna.app" && -L "$wt/target/debug" ]] || fail "unmounted volume, target/ a folder: removed it"
 
 targets "$root"
 mkdir -p "$root/repo/repo" && ln -s "$root/repo/repo" "$main/target"

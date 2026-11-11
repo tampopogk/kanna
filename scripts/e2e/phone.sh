@@ -182,9 +182,9 @@ print([w["where"] for w in json.load(sys.stdin)["workspaces"] if w.get("task") a
   check test "$(raw '{"id":1,"cmd":"replica","args":{"action":"list"}}' | python3 -c 'import json, sys
 print([r.get("claim") for r in json.load(sys.stdin)["records"] if r["task"].startswith(sys.argv[1])][0])' "$one")" == "$me" || { echo "phone_shelf: no claim in the replica"; return 1; }
   check test "$(phone task "$one" | field thread.0.read)" != None || { echo "phone_shelf: a note read as waiting once it started"; return 1; }
-  kanna send "$agent" "say All done, nothing left" >/dev/null && kanna send-key "$agent" enter >/dev/null || return 1
+  kanna send "$agent" "say All done, nothing left" >/dev/null || return 1
   check wait_for 8 eval '[[ "$(phone task "$one" | field said.0.text)" == "All done, nothing left" ]]' || { echo "phone_shelf: no last words: $(phone task "$one" | cut -c1-500)"; return 1; }
-  kanna send "$agent" "question Which way?" >/dev/null && kanna send-key "$agent" enter >/dev/null || return 1
+  kanna send "$agent" "question Which way?" >/dev/null || return 1
   check wait_for 8 eval '[[ "$(phone task "$one" | field said.1.asking)" == True ]]' || { echo "phone_shelf: the question isn't its last words: $(phone task "$one" | cut -c1-500)"; return 1; }
   check test "$(phone task "$one" | field said.1.text | head -1)" == "Which way?" && check test "$(phone task "$one" | field said.0.text)" == "All done, nothing left" || { echo "phone_shelf: asked $(phone task "$one")"; return 1; }
   check wait_for 8 eval '[[ "$(shelf "$one" status)" == idle ]]' || { echo "phone_shelf: status $(shelf "$one" status)"; return 1; }
@@ -386,7 +386,7 @@ print(json.load(sys.stdin)["workspaces"][0]["where"]["planner"])')" == daemon ||
   check phone status repo asks 10 >/dev/null || { echo "phone_chat: an open question isn't Asks you"; return 1; }
   phone choose repo m4 "$asked" Yes >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check wait_for 15 shows "$planner" "peer: \[message from phone\] I chose: Yes" || { echo "phone_chat: the tap didn't reach the planner"; kanna read "$planner"; return 1; }
-  kanna send "$planner" "work 6" >/dev/null && kanna send-key "$planner" enter >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
+  kanna send "$planner" "work 6" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check wait_for 10 is "$planner" status working || { echo "phone_chat: the planner didn't get busy"; return 1; }
   phone send repo m5 "mock: run $me phone say after the busy turn" >/dev/null || { echo "phone_chat line $LINENO"; return 1; }
   check phone status repo elsewhere 5 >/dev/null || { echo "phone_chat: a busy planner isn't Working on something else"; phone read repo 1000; return 1; }
