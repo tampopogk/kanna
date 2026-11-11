@@ -97,8 +97,20 @@ final class MergeQueuePage: NSView {
     var onResume: ((String) -> Void)?
     var onPick: (() -> Void)?
     var onLog: ((String) -> Void)?
+    let motion = RowAnimator("queue")
+    private var fixtures: [(key: String, view: NSView)] = []
 
     override var isFlipped: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        motion.appeared()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        motion.appeared(catchingUp: true)
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -213,11 +225,14 @@ final class MergeQueuePage: NSView {
         more.frame.origin = NSPoint(x: name.frame.maxX + 4, y: y)
         let tally = label(count, color: .secondaryLabelColor)
         tally.frame.origin = NSPoint(x: left + width - tally.frame.width, y: y)
+        fixtures += [("head:" + title, name), ("detail:" + title, more), ("tally:" + title, tally)]
         return y + name.frame.height + 8
     }
 
     private func lay() {
-        document.subviews.forEach { $0.removeFromSuperview() }
+        let old = document.subviews
+        var rows: [(key: String, view: NSView)] = []
+        fixtures = []
         let left: CGFloat = 32, width = max(320, bounds.width - left * 2)
         let live = entries.filter(\.live), past = entries.filter { !$0.live }
         let chosen = selected?.id
@@ -228,6 +243,7 @@ final class MergeQueuePage: NSView {
         if live.isEmpty {
             let none = label(shown == nil ? "Loading…" : "Nothing is merging.", color: .secondaryLabelColor)
             none.frame.origin = NSPoint(x: left, y: y + 4)
+            fixtures.append(("none", none))
             y += none.frame.height + 12
         }
         for entry in live + past {
@@ -240,6 +256,7 @@ final class MergeQueuePage: NSView {
             row.onResume = { [weak self] in entry.run.map { self?.onResume?($0) } }
             row.frame.origin = NSPoint(x: left - 10, y: y)
             document.addSubview(row)
+            rows.append((entry.id, row))
             y += row.frame.height
         }
         y += 12
@@ -247,6 +264,8 @@ final class MergeQueuePage: NSView {
         scroller.frame = NSRect(x: 0, y: 0, width: bounds.width, height: list)
         document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: max(y, list))
         rule.frame = NSRect(x: 0, y: list, width: bounds.width, height: 1)
+        if shown != nil { motion.update(document, rows: rows, fixtures: fixtures) }
+        old.forEach { $0.removeFromSuperview() }
         layDetail()
     }
 

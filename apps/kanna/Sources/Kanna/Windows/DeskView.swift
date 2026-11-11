@@ -212,6 +212,7 @@ final class DeskStrip: NSView {
     private let count = NSTextField(labelWithString: "")
     private let hint = DeskHint()
     private var ticker: Timer?
+    let motion = RowAnimator("strip")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -233,10 +234,16 @@ final class DeskStrip: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        motion.appeared()
         ticker?.invalidate()
         ticker = window == nil ? nil : Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        motion.appeared()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -246,7 +253,7 @@ final class DeskStrip: NSView {
 
     private func paint() { layer?.backgroundColor = resolved(.windowBackgroundColor) }
 
-    private var stripItems: [DeskStripItem] { subviews.compactMap { $0 as? DeskStripItem } }
+    private var stripItems: [DeskStripItem] { subviews.compactMap { ($0 as? DeskStripItem).flatMap { $0.retired ? nil : $0 } } }
 
     var items: [(task: String, center: NSPoint)] {
         stripItems.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
@@ -264,7 +271,9 @@ final class DeskStrip: NSView {
         shown = tasks
         self.keys = keys
         self.waiting = waiting
-        subviews.forEach { $0.removeFromSuperview() }
+        let old = stripItems
+        old.forEach { $0.retired = true }
+        subviews.filter { !($0 is DeskStripItem) }.forEach { $0.removeFromSuperview() }
         count.stringValue = "\(waiting) on the Shelf"
         count.sizeToFit()
         addSubview(count)
@@ -276,6 +285,8 @@ final class DeskStrip: NSView {
             addSubview(item)
         }
         relayout()
+        motion.update(self, rows: stripItems.map { ($0.task.id, $0 as NSView) })
+        old.forEach { $0.removeFromSuperview() }
     }
 
     func tick() {
@@ -369,6 +380,7 @@ private final class DeskHint: NSView {
 @MainActor
 private final class DeskStripItem: NSView {
     let task: DeskTask
+    var retired = false
     var onPress: (() -> Void)?
     var onHover: (() -> Void)?
     private let title: NSTextField
@@ -487,6 +499,9 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     private let dropNote = NSTextField(labelWithString: "· Drop to move to the Shelf")
     private let noteBar = NoteBar()
     var onDismissNote: (() -> Void)?
+    let motion = RowAnimator("deskView")
+    private var laidQuery = ""
+    private var fixtures: [(key: String, view: NSView)] = []
 
     override var isFlipped: Bool { true }
 
@@ -772,6 +787,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        motion.appeared()
         responderWatch = window?.observe(\.firstResponder, options: [.new]) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.updateKeyed() }
         }
@@ -806,6 +822,11 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         didSet { updateKeyed() }
     }
 
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        motion.appeared()
+    }
+
     func show(_ page: DeskPage) {
         if page == shown { return }
         shown = page
@@ -823,6 +844,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         var made = 0
         let left: CGFloat = 48, width = min(760, scroller.contentSize.width - left * 2)
         var y: CGFloat = 40
+        fixtures = []
         let line = label(page.cheer, size: 13, color: .secondaryLabelColor)
         line.frame.origin = NSPoint(x: left, y: y)
         y += line.frame.height + 22
@@ -832,6 +854,7 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         if page.tasks.isEmpty {
             let none = label("Nothing on the Desk.", color: .secondaryLabelColor)
             none.frame.origin = NSPoint(x: left, y: y + 4)
+            fixtures.append(("none:Desk", none))
             y += none.frame.height + 12
         }
         for task in page.tasks {
@@ -863,10 +886,12 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         if page.shelf.isEmpty {
             let none = label("Empty. Ask the planning agent for tasks.", color: .secondaryLabelColor)
             none.frame.origin = NSPoint(x: left, y: y + 4)
+            fixtures.append(("none:Shelf", none))
             y += none.frame.height + 12
         } else if hits.isEmpty {
             let none = label("No Shelf task matches “\(query)”.", color: .secondaryLabelColor)
             none.frame.origin = NSPoint(x: left, y: y + 4)
+            fixtures.append(("nohit:Shelf", none))
             y += none.frame.height + 12
         }
         for task in hits {
@@ -884,6 +909,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             y += row.frame.height
         }
         shelfArea = NSRect(x: left - 16, y: shelfTop - 8, width: width + 32, height: y - shelfTop + 14)
+        let rows = page.tasks.compactMap { task in deskKept[task.id].map { ("desk/" + task.id, $0 as NSView) } } + hits.compactMap { task in shelfKept[task.id].map { ("shelf/" + task.id, $0 as NSView) } }
+        let searched = search.superview === document ? [("search", search as NSView), ("searchKey", searchKey as NSView)] : []
+        motion.update(document, rows: rows, fixtures: fixtures + searched, quiet: query != laidQuery || lifted != nil)
+        laidQuery = query
         for (id, row) in deskBefore where deskKept[id] !== row { row.removeFromSuperview() }
         for (id, row) in shelfBefore where shelfKept[id] !== row { row.removeFromSuperview() }
         let appeared = noteBar.isHidden && !page.note.isEmpty
@@ -920,12 +949,15 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         groupTitles.append(title)
         let head = label(title, weight: .semibold)
         head.frame.origin = NSPoint(x: left, y: y)
+        fixtures.append(("head:" + title, head))
         if let detail {
             let more = label("· " + detail, color: .secondaryLabelColor)
             more.frame.origin = NSPoint(x: head.frame.maxX + 4, y: y)
+            fixtures.append(("detail:" + title, more))
         }
         let tally = label(count, color: .secondaryLabelColor)
         tally.frame.origin = NSPoint(x: left + width - tally.frame.width, y: y)
+        fixtures.append(("tally:" + title, tally))
         return (y + head.frame.height + 8, head, tally)
     }
 

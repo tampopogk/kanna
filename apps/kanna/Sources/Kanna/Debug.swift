@@ -166,6 +166,7 @@ extension AppController {
             if let minimize = args["minimize"]?.bool {
                 if minimize { controller.window.miniaturize(nil) } else { controller.window.deminiaturize(nil) }
             }
+            if let still = args["still"] { RowAnimator.stillForTests = still.bool }
             if let later = args["later"]?.number {
                 DeskTask.skew = later
                 controller.deskView.tick()
@@ -203,7 +204,8 @@ extension AppController {
                     "headerTip": controller.agentHeader.toolTip.map { .string($0) } ?? .null, "places": .array(controller.deskTasks.map { $0.place.map { .string($0) } ?? .null }), "window": window(id) ?? .null, "scroll": scrolled, "search": search, "times": page.times, "rows": page.deskRows,
                     "responder": .string(controller.window.firstResponder.map { String(describing: type(of: $0)) } ?? ""),
                     "keyboard": Self.paneHolding(controller.window.firstResponder).map { .string($0) } ?? .null,
-                    "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow)]
+                    "highlighted": .array(controller.highlighted.map { .string($0) }), "key": .bool(controller.window.isKeyWindow),
+                    "motion": ["deskView": controller.deskView.motion.debug, "strip": controller.deskStrip.motion.debug, "queue": controller.queuePage.motion.debug, "still": .bool(RowAnimator.still)]]
         }
         commands["debug.pairPhone"] = { [weak self] args in
             guard let self else { return [:] }

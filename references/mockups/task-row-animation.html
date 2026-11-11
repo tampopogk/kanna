@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Row Animation</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1180px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; align-items: center; }
+.controls .label { color: var(--muted); font-size: 12px; margin-right: 4px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { border-color: var(--accent); color: var(--accent); }
+.said { color: var(--muted); font: 12px var(--mono); min-height: 18px; margin: 4px 0 14px; }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); display: grid; grid-template-columns: 1fr 1fr; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; min-height: 100vh; }
+.pane { padding: 26px 40px 22px; min-width: 0; }
+.pane + .pane { border-left: 1px solid var(--line); }
+.cap { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 14px; }
+.group { margin-bottom: 22px; }
+.gh { padding: 0 0 6px; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; }
+.gh b { color: var(--text); }
+.gh.gap { margin-top: 22px; }
+.list { position: relative; }
+.row { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 10px; margin: 0 -10px; border-radius: 8px; cursor: pointer; }
+.row:hover { background: var(--panel); }
+.row .t { flex: 1; min-width: 0; }
+.row .n { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .s { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.waiting .n { font-weight: 500; }
+.row.active { background: color-mix(in srgb, var(--panel) 55%, transparent); }
+.row.flash { outline: 1.5px solid var(--accent); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.working { background: var(--accent); } .dot.idle { background: var(--ok); } .dot.needs { background: var(--warn); }
+.dot.ring { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
+.dot.qring { background: transparent; border: 1.5px solid var(--accent); width: 9px; height: 9px; }
+.dot.bad { background: var(--bad); } .dot.ok { background: var(--ok); }
+.ghost { position: absolute; margin: 0 !important; pointer-events: none; }
+.qrow { height: 52px; }
+.out { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+.stripwrap { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+.strip { position: relative; height: 30px; display: flex; align-items: center; padding: 0 8px; font-size: 12px; color: var(--muted); }
+.strip .items { position: relative; display: flex; gap: 4px; align-items: center; height: 30px; }
+.strip .item { display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.strip .item:hover { color: var(--text); background: var(--panel); }
+.strip .item.needs { color: var(--warn); }
+
+.strip .rest { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+.strip .sep { width: 1px; height: 14px; background: var(--line); }
+.agentline { grid-column: 1 / -1; height: 70px; padding: 14px 16px; color: var(--muted); font: 12px/1.6 var(--mono); border-top: 1px solid var(--line); }
+.agentline b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Task rows: arrive, leave, change place</h1>
+    <p>When a task's row enters, leaves or changes place in one of the four lists (the Desk view's Desk rows, its Shelf rows, the strip under the active task, and the Merge queue tab's list), it moves for <b>0.2 s, ease-out <code>cubic-bezier(0.2, 0, 0, 1)</code></b>: an arriving row fades in while the rows below slide down; a leaving row fades out while the rows below slide up; a row that changes place slides there. No bounce, no scale. Every row is already in its final place the moment the list updates: what you see moving is a picture over it, so a click lands where the row now is.</p>
+    <p>More than 3 rows arriving, leaving or changing place in one update, the first showing of a list, a search, and Reduce Motion all update the list at once. Each update below says what the app's debug output would say.</p>
+    <div class="controls">
+      <span class="label">Desk view</span>
+      <button data-do="arrive">A task arrives on the Shelf</button>
+      <button data-do="leave">A Desk task is Done</button>
+      <button data-do="shelve">Shelve a Desk task</button>
+      <button data-do="move">The Shelf's order changes</button>
+      <button data-do="burst">20 tasks move in</button>
+    </div>
+    <div class="controls">
+      <span class="label">Queue · strip</span>
+      <button data-do="qin">A task enters the queue</button>
+      <button data-do="qland">The first one lands</button>
+      <button data-do="switch">Switch task (⌘1): the strip reorders</button>
+    </div>
+    <div class="controls">
+      <button id="still">Reduce Motion: off</button>
+      <button id="slow">Slow ×10: off</button>
+      <button id="theme">Light / dark</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="said" id="said"></div>
+  </div>
+  <div class="window" id="window">
+    <div class="pane" id="deskpane">
+      <div class="cap">Desk view</div>
+      <div class="list" id="deskview"></div>
+    </div>
+    <div class="pane" id="queuepane">
+      <div class="cap">Merge queue tab</div>
+      <div class="list" id="queue"></div>
+    </div>
+    <div class="agentline"><b>The active task: </b><span id="activename"></span><br>its agent, its tabs …</div>
+    <div class="stripwrap" id="stripwrap"><div class="strip"><div class="items" id="strip"></div><div class="rest"><span class="sep"></span><span>⌘. Desk</span><span id="waiting"></span></div></div></div>
+  </div>
+</main>
+<script>
+const DURATION = 200;
+const EASE = "cubic-bezier(0.2, 0, 0, 1)";
+const BURST = 3;
+let still = false, slow = 1;
+
+const initial = () => ({
+  active: "d1",
+  left: ["d2", "d3"],
+  desk: [
+    { id: "d1", n: "Doc markup reference model", s: "working · 2m ago", dot: "working" },
+    { id: "d2", n: "Tidy the e2e helpers", s: "idle · 30m ago", dot: "idle" },
+    { id: "d3", n: "Tab bar follows light mode", s: "idle · 12m ago", dot: "idle" },
+  ],
+  shelf: [
+    { id: "s1", n: "agent_status e2e is flaky", s: "made 40m ago" },
+    { id: "s2", n: "kanna open infers the pane type", s: "made 25m ago" },
+    { id: "s3", n: "Rename a task from the strip", s: "made 5m ago" },
+  ],
+  queue: [
+    { id: "q1", n: "Fix phone_chat flake", s: "testing on main 3c177bd4 + fix-phone-chat · 1m12s", dot: "working" },
+    { id: "q2", n: "Planning skill hard rules", s: "waiting · tested on top of “Fix phone_chat flake”", dot: "qring" },
+  ],
+});
+let s = initial();
+let made = 0;
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const lists = {};
+
+function rowHTML(kind, t) {
+  if (kind === "strip") return `<span class="dot ${t.dot}"></span><span>${esc(t.n)}</span><span>· ${esc(t.ago)}</span>`;
+  const dot = kind === "shelf" ? "ring" : t.dot;
+  return `<span class="dot ${dot}"></span><div class="t"><div class="n">${esc(t.n)}</div><div class="s">${esc(t.s)}</div></div>` + (kind === "queue" ? `<span class="out">Take out</span>` : "");
+}
+
+function plan(before, after, quiet) {
+  const old = new Map(before.map((k, i) => [k, i]));
+  const now = new Set(after);
+  const arrived = after.filter(k => !old.has(k));
+  const left = before.filter(k => !now.has(k));
+  const kept = after.filter(k => old.has(k)).map(k => old.get(k));
+  const tails = [];
+  for (const x of kept) { let lo = 0, hi = tails.length; while (lo < hi) { const m = (lo + hi) >> 1; if (tails[m] < x) lo = m + 1; else hi = m; } tails[lo] = x; }
+  const moved = kept.length - tails.length;
+  const changed = arrived.length + left.length + moved;
+  let why = "animated";
+  if (quiet) why = quiet;
+  else if (!before.length) why = "first";
+  else if (!changed) why = "unchanged";
+  else if (still) why = "reduce-motion";
+  else if (changed > BURST) why = "burst";
+  return { animated: why === "animated", why, arrived: arrived.length, left: left.length, moved, changed };
+}
+
+function make(kind, t) {
+  const node = document.createElement("div");
+  node.className = (kind === "strip" ? "item" : "row") + (kind === "shelf" ? " waiting" : "") + (kind === "queue" ? " qrow" : "") + (t.active ? " active" : "") + (t.dot === "needs" && kind === "strip" ? " needs" : "");
+  node.innerHTML = rowHTML(kind, t);
+  node.onclick = () => clicked(kind, t, node);
+  return node;
+}
+
+function head(title, detail, count) {
+  const node = document.createElement("div");
+  node.className = "gh";
+  node.innerHTML = `<span><b>${esc(title)}</b>${detail ? " · " + esc(detail) : ""}</span><span>${esc(count)}</span>`;
+  return node;
+}
+
+function update(name, el, entries, quiet) {
+  const prev = lists[name] || { order: [], rects: new Map(), nodes: new Map(), box: null };
+  const rows = entries.filter(e => !e.fixture).map(e => e.key);
+  const p = plan(prev.order, rows, quiet);
+  const box = el.getBoundingClientRect();
+  const ghosts = [];
+  if (p.animated) {
+    for (const k of prev.order) if (!rows.includes(k)) {
+      const r = prev.rects.get(k);
+      const ghost = prev.nodes.get(k).cloneNode(true);
+      ghost.classList.add("ghost");
+      ghost.style.top = (r.top - prev.box.top) + "px";
+      ghost.style.left = (r.left - prev.box.left) + "px";
+      ghost.style.width = r.width + "px";
+      ghost.style.right = "auto";
+      ghosts.push(ghost);
+    }
+  }
+  el.replaceChildren(...entries.map(e => e.node), ...ghosts);
+  const rects = new Map(), nodes = new Map();
+  for (const e of entries) { rects.set(e.key, e.node.getBoundingClientRect()); nodes.set(e.key, e.node); }
+  if (p.animated) {
+    const ease = { duration: DURATION * slow, easing: EASE };
+    for (const e of entries) {
+      const was = prev.rects.get(e.key);
+      if (!was) { if (!e.fixture) e.node.animate([{ opacity: 0 }, { opacity: 1 }], ease); continue; }
+      const now = rects.get(e.key);
+      const dx = (was.left - prev.box.left) - (now.left - box.left), dy = (was.top - prev.box.top) - (now.top - box.top);
+      if (dx || dy) e.node.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }], ease);
+    }
+    for (const g of ghosts) g.animate([{ opacity: 1 }, { opacity: 0 }], { ...ease, fill: "forwards" }).onfinish = () => g.remove();
+  }
+  lists[name] = { order: rows, rects, nodes, box: el.getBoundingClientRect() };
+  return { list: name, ...p };
+}
+
+function stripOrder() { return s.left.map(id => s.desk.find(t => t.id === id)).filter(Boolean); }
+const agos = { d1: "2m ago", d2: "30m ago", d3: "12m ago", d4: "now" };
+
+function render(quiet = {}) {
+  const said = [];
+  const view = [{ key: "head:desk", fixture: true, node: head("Desk", "~/work/kanna-v4", `${s.desk.length} of 3 tasks`) }]
+    .concat(s.desk.map(t => ({ key: "desk/" + t.id, node: make("desk", { ...t, active: t.id === s.active }) })))
+    .concat([{ key: "head:shelf", fixture: true, node: head("Shelf", "", `${s.shelf.length} waiting`) }])
+    .concat(s.shelf.map(t => ({ key: "shelf/" + t.id, node: make("shelf", t) })));
+  view[s.desk.length + 1].node.classList.add("gap");
+  said.push(update("deskView", document.getElementById("deskview"), view, quiet.deskView));
+  const queue = [{ key: "head:queue", fixture: true, node: head("Merging", "into main", s.queue.length ? `${s.queue.length} in line` : "") }]
+    .concat(s.queue.map(t => ({ key: t.id, node: make("queue", t) })));
+  said.push(update("queue", document.getElementById("queue"), queue, quiet.queue));
+  said.push(update("strip", document.getElementById("strip"), stripOrder().map(t => ({ key: t.id, node: make("strip", { ...t, ago: agos[t.id] || "now" }) })), quiet.strip));
+  document.getElementById("waiting").textContent = `${s.shelf.length} on the Shelf`;
+  document.getElementById("activename").textContent = (s.desk.find(t => t.id === s.active) || {}).n || "none";
+  document.getElementById("said").textContent = said.filter(p => p.why !== "unchanged").map(p => `${p.list}: ${p.why} (+${p.arrived} −${p.left} ↕${p.moved})`).join("   ") || " ";
+}
+
+function clicked(list, t, el) {
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 300);
+  if (list === "strip" || list === "desk") { switchTo(t.id); }
+}
+
+function switchTo(id) {
+  if (id === s.active || !s.desk.some(t => t.id === id)) return;
+  s.left = [s.active, ...s.left.filter(x => x !== id)];
+  s.active = id;
+  render();
+}
+
+const names = ["Shelf search keeps its query", "Builds tab counts", "Quiz explains the line", "Phone list scrolls", "Crash report names the thread"];
+const act = {
+  arrive() { s.shelf.splice(1, 0, { id: "n" + (++made), n: names[made % names.length], s: "from mac-studio · made just now" }); render(); },
+  leave() { const t = s.desk.find(t => t.id !== s.active); if (!t) return; s.desk = s.desk.filter(x => x !== t); s.left = s.left.filter(x => x !== t.id); render(); },
+  shelve() { const t = s.desk.find(t => t.id !== s.active); if (!t) return; s.desk = s.desk.filter(x => x !== t); s.left = s.left.filter(x => x !== t.id); s.shelf.push({ id: t.id, n: t.n, s: "made 1h ago" }); render(); },
+  move() { if (s.shelf.length > 1) { s.shelf.push(s.shelf.shift()); render(); } },
+  burst() { for (let i = 0; i < 20; i++) s.shelf.push({ id: "b" + (++made), n: `Moved in from mac-studio #${i + 1}`, s: "from mac-studio · made 2d ago" }); render(); },
+  qin() { s.queue.push({ id: "q" + (++made), n: names[made % names.length], s: "waiting · tested on top of “" + s.queue[s.queue.length - 1]?.n + "”", dot: "qring" }); render(); },
+  qland() { if (!s.queue.length) return; s.queue.shift(); if (s.queue[0]) s.queue[0] = { ...s.queue[0], s: "testing on main + its branch · just started", dot: "working" }; render(); },
+  switch() { if (s.left.length) switchTo(s.left[0]); },
+};
+document.querySelectorAll("[data-do]").forEach(b => b.onclick = () => act[b.dataset.do]());
+document.getElementById("reset").onclick = () => { s = initial(); for (const k in lists) delete lists[k]; render(); };
+document.getElementById("still").onclick = e => { still = !still; e.target.textContent = `Reduce Motion: ${still ? "on" : "off"}`; e.target.classList.toggle("on", still); };
+document.getElementById("slow").onclick = e => { slow = slow === 1 ? 10 : 1; e.target.textContent = `Slow ×10: ${slow > 1 ? "on" : "off"}`; e.target.classList.toggle("on", slow > 1); };
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "dark" : "light"; };
+
+function picture(hash = location.hash) {
+  const args = new URLSearchParams(hash.slice(1).replace(/^picture&?/, ""));
+  if (!hash.startsWith("#picture")) return;
+  document.body.classList.add("picture");
+  if (args.get("theme")) document.documentElement.dataset.theme = args.get("theme");
+  const run = args.get("case");
+  const at = Number(args.get("t") ?? 1);
+  if (!run) return;
+  slow = 1;
+  act[run]();
+  document.getAnimations().forEach(a => { a.pause(); a.currentTime = at * DURATION; });
+}
+render({ deskView: "first", queue: "first", strip: "first" });
+picture();
+window.addEventListener("hashchange", () => location.reload());
+</script>
+</body>
+</html>
