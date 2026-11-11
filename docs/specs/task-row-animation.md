@@ -4,15 +4,25 @@
 
 Tasks move by themselves now: the merge queue lands one, a Shelf runner starts one, one moves in from another machine. So when a task's row enters, leaves or changes place, it moves briefly instead of jumping, and you can see what just changed. One rule covers four lists on the Mac: the Desk view's Desk rows and Shelf rows, the strip under the active task, and the Merge queue tab's list. The phone's lists are unchanged.
 
-| Arrive: a task comes onto the Shelf | Leave: a Desk task is Done |
-|---|---|
-| ![Four frames, 0, 20, 50 and 200 ms: the rows below the new Shelf row slide down while it fades in](task-row-animation-arrive.png) | ![Four frames: the Done row fades out where it was while the rows below it, and the Shelf, slide up](task-row-animation-leave.png) |
+**Arrive:** a task comes onto the Shelf.
 
-| Change place: the Shelf's first row goes last | The queue: the first entry lands |
-|---|---|
-| ![Four frames: one Shelf row slides down to the end while the others slide up](task-row-animation-move.png) | ![Four frames: the landed entry fades out and the next one slides up into first place](task-row-animation-queue.png) |
+![Four frames, 0, 20, 50 and 200 ms: the rows below the new Shelf row slide down while it fades in](task-row-animation-arrive.png)
 
-![The strip as ⌘1 switches tasks, in four frames: the task made active fades out, the one left fades in at the front, and the other slides along](task-row-animation-strip.png)
+**Leave:** a Desk task is Done.
+
+![Four frames: the Done row fades out where it was while the rows below it, and the Shelf, slide up](task-row-animation-leave.png)
+
+**Change place:** the Shelf's first row goes last.
+
+![Four frames: one Shelf row slides down to the end while the others slide up](task-row-animation-move.png)
+
+**The queue:** the first entry lands.
+
+![Four frames: the landed entry fades out and the next one slides up into first place](task-row-animation-queue.png)
+
+**The strip:** ⌘1 switches tasks.
+
+![The strip in four frames: the task made active fades out, the one left fades in at the front, and the other slides along](task-row-animation-strip.png)
 
 *(From the mockup, each frame at `#picture&case=arrive|leave|move|qland|switch&t=0|0.1|0.25|1`; the mockup plays them at real speed, or ten times slower.)*
 
