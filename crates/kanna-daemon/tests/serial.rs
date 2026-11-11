@@ -6,6 +6,7 @@ use std::ffi::CStr;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 struct Device {
@@ -82,7 +83,9 @@ fn state(instance: &Instance, pane: &str) -> String {
 }
 
 fn scratch() -> PathBuf {
-    let folder = std::env::temp_dir().join(format!("kserial-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    let folder = std::env::temp_dir().join(format!("kserial-{}-{}", std::process::id(), COUNT.fetch_add(1, Ordering::SeqCst)));
+    let _ = std::fs::remove_dir_all(&folder);
     std::fs::create_dir_all(&folder).unwrap();
     folder.canonicalize().unwrap()
 }

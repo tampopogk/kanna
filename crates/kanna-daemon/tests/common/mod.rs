@@ -54,6 +54,30 @@ impl Instance {
         let _ = self.daemon.wait();
     }
 
+    pub fn records(&self, flags: rusqlite::OpenFlags) -> rusqlite::Connection {
+        rusqlite::Connection::open_with_flags(self.dir.join("state/kanna.db"), flags).unwrap()
+    }
+
+    pub fn saved(&self) -> Value {
+        let db = self.records(rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY);
+        let mut rows = db.prepare("select id, pane, keeper, state, doc from terminals").unwrap();
+        let mut terminals: Vec<Value> = rows
+            .query_map([], |r| {
+                let doc: String = r.get(4)?;
+                let mut record: Value = serde_json::from_str(&doc).unwrap();
+                for (n, key) in ["id", "pane", "keeper", "state"].into_iter().enumerate() {
+                    record[key] = Value::String(r.get(n)?);
+                }
+                Ok(record)
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        terminals.sort_by_key(|t| t["pane"].as_str().and_then(|p| p.strip_prefix("term-")).and_then(|n| n.parse::<u64>().ok()));
+        let counters = db.query_row("select value from meta where key = 'terminal_counters'", [], |r| r.get::<_, String>(0)).map_or(Value::Null, |text| serde_json::from_str(&text).unwrap());
+        json!({ "counters": counters, "terminals": terminals })
+    }
+
     pub fn start_again(&mut self) {
         self.daemon = spawn_daemon(&self.dir, &self.env);
         wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());

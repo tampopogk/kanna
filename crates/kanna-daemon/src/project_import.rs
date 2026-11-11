@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn kanna_db_follows_the_copy() {
         let dir = folder("db");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let row = |id: &str, repo: &str, folder: &str| crate::db::Row { id: id.into(), repo: repo.into(), place: crate::db::Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": id, "folder": folder }) };
         db.put(&row("task-00000001", "/w/app", "/w/app/.kanna-worktrees/task-00000001"), None).unwrap();
         db.put(&row("task-00000002", "/w/app-old", "/w/app-old/.kanna-worktrees/task-00000002"), None).unwrap();

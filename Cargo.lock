@@ -2047,6 +2047,7 @@ dependencies = [
  "kanna-vt",
  "libc",
  "notify",
+ "plist",
  "regex",
  "rusqlite",
  "security-framework",

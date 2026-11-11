@@ -680,7 +680,7 @@ fn pipeline_check_prints_the_worst_case_or_each_error_at_its_line() {
     for name in ["plan", "build", "fix", "review"] {
         std::fs::copy(repo.join(format!(".kanna/prompts/{name}.md")), dir.join(format!(".kanna/prompts/{name}.md"))).unwrap();
     }
-    std::fs::copy(repo.join(".kanna/pipelines/feature.kojo"), dir.join(".kanna/pipelines/feature.kojo")).unwrap();
+    std::fs::copy(repo.join("crates/kanna-pipe/tests/examples/feature.kojo"), dir.join(".kanna/pipelines/feature.kojo")).unwrap();
     std::fs::write(dir.join(".kanna/pipelines/broken.kojo"), "budget = 2 sessions\nb = claude prompt build\nb -> c\n").unwrap();
     assert!(std::process::Command::new("git").arg("init").arg("-q").current_dir(&dir).status().unwrap().success());
     let checked = kanna_at(&dir, Some(&nowhere), &["pipeline", "check", "feature"]).ok();
@@ -947,6 +947,20 @@ fn a_shelf_task_is_renamed_and_starts_with_its_new_name() {
     assert_eq!(daemon.kanna(&["task", "name", &id, "Newer name"]).ok(), format!("named task-{short} \"Newer name\""));
     assert!(daemon.kanna(&["workspace", "list", "--all", "--json"]).json()["panes"].as_array().unwrap().iter().any(|p| p["id"] == pane.as_str() && p["name"] == "Newer name"));
     assert_eq!(daemon.kanna(&["--json", "task", "list"]).json()["shelf"][0]["name"], json!("Newer name"));
+}
+
+#[test]
+fn a_panic_in_a_task_on_the_loop_ends_the_daemon_after_its_crash_record() {
+    let mut daemon = Daemon::start_with(&[("KANNA_DEBUG", "1")]);
+    daemon.kanna(&["raw", r#"{"cmd":"debug.panic","args":{"task":true}}"#]).ok();
+    assert_eq!(daemon.exited().code(), Some(101));
+    let records = daemon.crash_records();
+    assert_eq!(records.len(), 1, "one record");
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+    assert!(record["reason"].as_str().unwrap().starts_with("debug.panic in a task on the daemon's main loop at crates/kanna-daemon/src/crashes.rs:"), "{}", record["reason"]);
+    let top = &kanna_crash::site(record["stack"].as_array().unwrap())[0];
+    assert!(top["at"].as_str().is_some_and(|at| at.starts_with("crates/kanna-daemon/src/crashes.rs:")), "{top}");
+    std::fs::remove_file(&records[0]).unwrap();
 }
 
 #[test]

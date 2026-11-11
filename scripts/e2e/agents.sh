@@ -184,6 +184,10 @@ print(sum(1 for l in lines if l.get("turn") and sys.argv[2] in l["prompt"] and (
     check wait_for 60 eval 'shows "$agent task" "$first" && shows "$agent task" "Agent status probe"' || { echo "real_agent_tasks: $agent didn't restart into its conversation"; kanna read "$agent task"; return 1; }
     sleep 3
     [[ "$(asked "$first")" == 1 ]] || { echo "real_agent_tasks: $agent restarted with its first message instead of resuming"; return 1; }
+    ! shows "$agent task" "read-only" || { echo "real_agent_tasks: $agent came back read-only after its restart"; kanna read "$agent task"; return 1; }
+    kanna send "$agent task" "RESTART_PROBE $agent" || { echo "real_agent_tasks line $LINENO"; return 1; }
+    check wait_for 60 eval '[[ "$(asked "RESTART_PROBE $agent" "$first")" -ge 1 ]]' || { echo "real_agent_tasks: $agent didn't take a prompt after its restart"; kanna read "$agent task"; return 1; }
+    check wait_for 30 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"$agent task\"}}" | field status)" == idle ]]' || { echo "real_agent_tasks: $agent didn't go idle after the prompt"; kanna read "$agent task"; return 1; }
     kanna task pick "$id" >/dev/null || { echo "real_agent_tasks: $agent's task didn't move to the Shelf"; return 1; }
     task="$(pane "$agent task" id)"
     [[ "$(kanna task shelve "$task")" == *"to the Shelf as $id"* ]] || { echo "real_agent_tasks: $agent's task didn't move back to the Shelf as $id"; return 1; }

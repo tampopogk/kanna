@@ -72,6 +72,12 @@ extension AppController {
         return reply
     }
 
+    func drawnOffstage(_ pane: String, size: NSSize, appearance: NSAppearance) async -> CGImage? {
+        if let terminal = panes.terminalOf?(pane) { return try? await shootTerminal(pane, terminal, size: size, appearance: appearance) }
+        guard contents.shows(pane) else { return nil }
+        return try? await shootContent(pane, size: size, appearance: appearance)
+    }
+
     private func lastSize(_ pane: String) -> NSSize? {
         guard let size = panes[pane]?.frame.size, size.width >= 1, size.height >= 1 else { return nil }
         return size

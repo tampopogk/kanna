@@ -25,7 +25,7 @@ Put a function `NAME()` in the area's file, with `scenario NAME MILESTONE` on th
 | `cli.sh` | CLI commands, the caller, shell completion, `screenshot` |
 | `windows.sh` | windows, tabs, splits, arranging and dragging panes, chrome, toasts, the About panel |
 | `terminal.sh` | what a terminal does: colours, title, clipboard, mouse, fonts, links, `send key` |
-| `markdown.sh` | the markdown pane: diff, overview, zoom, images, diagrams |
+| `markdown.sh` | the markdown pane: diff, overview, zoom, tables, images, diagrams |
 | `comments.sh` | comments and markup on docs, pages and code |
 | `panes.sh` | the other panes: web, iOS, code, file, diff, log, tours, serial |
 | `desk.sh` | the Desk, its window and docked pane, opening a project by path, recent projects |

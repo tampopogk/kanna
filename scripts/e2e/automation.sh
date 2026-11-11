@@ -792,3 +792,76 @@ assert r["interventions"] == {"answered": 2, "skipped": 1, "retried": 1, "paused
   events="$(kanna run log "$second" --json | python3 -c 'import json, sys; print(" ".join(e["what"] + ":" + (e["by"] or "-") for e in json.load(sys.stdin)["events"] if e["what"] in ("paused", "resumed")))')"
   [[ "$events" == "paused:task resumed:task paused:daemon resumed:user" ]] || { echo "pipeline_gates: the slowpoke run's events were: $events"; return 1; }
 }
+
+scenario pipeline_remote M4
+pipeline_remote() {
+  local vm vm_pid
+  local fake="$KANNA_STATE_DIR/agents" vmhome="$KANNA_STATE_DIR/vm-home" go="$KANNA_STATE_DIR/go"
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/team/far" theirs="$vmhome/.kanna-v4/repos/team/far"
+  mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  python3 -c 'import json, sys; p = sys.argv[1]; c = json.load(open(p)); c["pipelines"] = {"agents": {"claude": sys.argv[2]}}; json.dump(c, open(p, "w"))' "$KANNA_AGENTS_HOME/.kanna-v4/config.json" "$fake/claude" || { echo "pipeline_remote line $LINENO"; return 1; }
+  mkdir -p "$vmhome/.kanna-v4" && printf '{"version": 1, "shelf": {"runners": 1}, "machine": {"roles": ["e2e"]}}\n' >"$vmhome/.kanna-v4/config.json"
+  local r
+  for r in "$repo" "$theirs"; do
+    mkdir -p "$r/.kanna/pipelines" && git -C "$r" init -q -b main && git -C "$r" config user.email e@e && git -C "$r" config user.name e && git -C "$r" remote add origin https://example.com/team/far.git || { echo "pipeline_remote line $LINENO"; return 1; }
+  done
+  repo="$(cd "$repo" && pwd -P)"; theirs="$(cd "$theirs" && pwd -P)"
+  git -C "$theirs" commit -q --allow-empty -m first
+  printf 'far = run sh slow.sh on e2e\nnear = run sh slow.sh\nlast = run sh slow.sh on vm\nfar -> near -> last -> done\n' >"$repo/.kanna/pipelines/far.kojo"
+  cat >"$repo/slow.sh" <<SLOW
+echo "working in \$KANNA_REPO"
+until [ -e "$go-\$KANNA_STAGE" ]; do sleep 0.2; done
+echo x > "\$KANNA_STAGE.txt" && git add -A && git commit -qm "\$KANNA_STAGE"
+echo "e2e ok"
+SLOW
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "pipeline_remote line $LINENO"; return 1; }
+  machine_paired_vm pipeline_remote "$vmhome" || return 1
+  start_app || { echo "pipeline_remote line $LINENO"; return 1; }
+  check wait_for 20 eval '[[ "$(raw "{\"id\":1,\"cmd\":\"debug.machines\"}" | field links.0.attached)" == True ]]' || { echo "pipeline_remote: the app didn't link to vm"; return 1; }
+  machine_runners 1
+  (cd "$repo" && kanna task new "Far" "run $bin/kanna run start far" --agent "$fake/claude") >/dev/null || { echo "pipeline_remote line $LINENO"; return 1; }
+  local task; task="$(tid 1)"
+  local folder="$repo/.kanna-worktrees/$task"
+  check wait_for 30 eval '[[ "$(kanna run list --all --json | field runs.0.run 2>/dev/null)" == run-* ]]' || { echo "pipeline_remote: the task's agent didn't start a run"; tail -20 "$out/daemon.log"; return 1; }
+  local run; run="$(kanna run list --all --json | field runs.0.run)"
+  agent_of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+l = json.load(sys.stdin)
+print(next((t.get("held") or t.get("pane") for t in (l["shelf"] + (l.get("desk") or [])) if t["id"] == sys.argv[1] and (t.get("held") or t.get("pane"))), "-"))' "$task"; }
+  here() { (cd "$folder" && KANNA_TERMINAL="$(agent_of)" kanna "$@"); }
+  worker() { kanna run show "$run" --json | python3 -c 'import json, sys
+w = [w for w in json.load(sys.stdin)["workers"] if (w.get("terminal") or "").endswith("@vm")]
+print(w[0]["terminal"] if w else "-")'; }
+  check wait_for 60 eval '[[ "$(worker)" == term-*@vm ]]' || { echo "pipeline_remote: the stage didn't start in a worker terminal on vm"; kanna run show "$run"; tail -20 "$out/daemon.log" "$out/daemon-vm.log"; return 1; }
+  local far; far="$(worker)"
+  check test "$(vmk task list --all --json | python3 -c 'import json, sys; r = json.load(sys.stdin); print(len(r["tasks"]), len(r.get("shelf") or []))')" == "0 0" || { echo "pipeline_remote: the worker is a task on vm"; vmk task list --all --json; return 1; }
+  [[ "$(cd "$repo" && kanna task list)" == *"Far  "* ]] && check test "$(cd "$repo" && kanna task list --json | python3 -c 'import json, sys; r = json.load(sys.stdin); print(len(r["tasks"]) + len(r.get("shelf") or []))')" == 1 || { echo "pipeline_remote: not one row for the task"; (cd "$repo" && kanna task list); return 1; }
+  (cd "$repo" && kanna task pick "$task") >/dev/null || { echo "pipeline_remote line $LINENO"; return 1; }
+  local w opened; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "pipeline_remote line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[1]}"
+  (cd "$repo" && kanna task activate "$task") >/dev/null || { echo "pipeline_remote line $LINENO"; return 1; }
+  local watched; watched="$(here open run --watch 2>&1)" || { echo "pipeline_remote: kanna open run --watch failed: $watched"; return 1; }
+  [[ "$watched" == "$far shows $run's worker in "*"; the tab follows the run to the next stage" ]] || { echo "pipeline_remote: --watch said: $watched"; return 1; }
+  in_tab() { kanna workspace list --all --json | python3 -c 'import json, sys
+print(next((t["id"] for w in json.load(sys.stdin)["workspaces"] for t in w["tabs"] if sys.argv[1] in t["panes"]), "-"))' "$1"; }
+  check test "$(in_tab "$far")" != - || { echo "pipeline_remote: vm's worker isn't in a tab of the task's workspace"; kanna workspace list --all --json; return 1; }
+  check wait_for 15 eval 'raw "{\"id\":1,\"cmd\":\"debug.text\",\"args\":{\"pane\":\"$far\"}}" | field text | grep -q "working in .*/vm-home/.kanna-v4/repos/team/far"' || { echo "pipeline_remote: the app doesn't show vm's worker terminal"; raw "{\"id\":1,\"cmd\":\"debug.text\",\"args\":{\"pane\":\"$far\"}}" | cut -c1-600; raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | cut -c1-1500; return 1; }
+  sleep 0.5; snap "$w" pipeline_remote >/dev/null
+  touch "$go-far"
+  near() { kanna run show "$run" --json | python3 -c 'import json, sys
+w = [w for w in json.load(sys.stdin)["workers"] if w["stage"] == "near" and w.get("terminal")]
+print(w[0]["terminal"] if w else "-")'; }
+  check wait_for 60 eval '[[ "$(near)" == term-* ]]' || { echo "pipeline_remote: the next stage didn't start here"; kanna run show "$run"; tail -20 "$out/daemon.log" "$out/daemon-vm.log"; return 1; }
+  local here_term; here_term="$(near)"
+  check wait_for 10 eval '[[ "$(in_tab "$here_term")" != - && "$(in_tab "$far")" == - ]]' || { echo "pipeline_remote: the next stage's worker here didn't take the watched tab from vm's"; kanna workspace list --all --json; return 1; }
+  touch "$go-near"
+  check wait_for 60 eval '[[ "$(worker)" == term-*@vm && "$(worker)" != "$far" ]]' || { echo "pipeline_remote: the last stage didn't start on vm"; kanna run show "$run"; tail -20 "$out/daemon.log" "$out/daemon-vm.log"; return 1; }
+  local last; last="$(worker)"
+  check wait_for 10 eval '[[ "$(in_tab "$last")" != - && "$(in_tab "$here_term")" == - ]]' || { echo "pipeline_remote: vm's next worker didn't take the watched tab"; kanna workspace list --all --json; tail -20 "$out/daemon.log"; return 1; }
+  check wait_for 15 eval 'raw "{\"id\":1,\"cmd\":\"debug.text\",\"args\":{\"pane\":\"$last\"}}" | field text | grep -q "working in .*/vm-home/.kanna-v4/repos/team/far"' || { echo "pipeline_remote: the app doesn't show vm's next worker"; return 1; }
+  touch "$go-last"
+  check wait_for 60 eval '[[ "$(kanna run show "$run" --json | field run.outcome)" == "handed back" ]]' || { echo "pipeline_remote: the run didn't hand back"; kanna run show "$run"; tail -20 "$out/daemon.log" "$out/daemon-vm.log"; return 1; }
+  check test "$(kanna run show "$run" --json | python3 -c 'import json, sys; print(" ".join("%s:%s:%s" % (v["machine"], v["verdict"], v["doc"]["commits"]) for v in json.load(sys.stdin)["visits"]))')" == "vm:pass:1 $(hostname -s):pass:1 vm:pass:1" || { echo "pipeline_remote: the visits"; kanna run show "$run" --json; return 1; }
+  check test "$(git -C "$repo" log -3 --format=%s "run/$task-1" | tr '\n' ' ')" == "last near far " || { echo "pipeline_remote: the stages' commits aren't on the run's branch in order"; git -C "$repo" log --oneline "run/$task-1"; return 1; }
+  check wait_for 10 eval '[[ "$(in_tab "$last")" == - ]]' || { echo "pipeline_remote: the ended worker's tab stayed"; kanna workspace list --all --json; return 1; }
+}

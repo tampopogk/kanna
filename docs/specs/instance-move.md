@@ -80,9 +80,9 @@ sequenceDiagram
 
 | Part | In the receiving instance |
 |---|---|
-| `kanna.db`: tasks, Shelf and Desk, task_events, messages, schedules and firings, notes, `said`, `phone_chat`, quiz, samples, runs, projects, planners, layout, record_ops, authority, `machines` | all of it, as it was, copied with SQLite's backup API into `kanna.db.moving` |
+| `kanna.db`: tasks, Shelf and Desk, task_events, messages, schedules and firings, notes, `said`, `phone_chat`, quiz, samples, runs, projects, planners, layout, record_ops, authority, `machines`, each terminal's record ([terminal records](terminal-records.md)) | all of it, as it was, copied with SQLite's backup API into `kanna.db.moving` once the old daemon has stopped reading its terminals and saved their records |
 | `device.key` | the same: the same machine |
-| `terminals/`: each terminal's record and its screen | copied after the old daemon has saved the screens and stopped reading |
+| `terminals/`: each terminal's screen | copied after the old daemon has saved the screens and stopped reading |
 | `app-state.json`, `app.key`: the app's Desk windows and its client key | copied when there |
 | The keeper: its process, every pty, their pids and exit codes | handed over: it re-execs into the new folder ([§2](#2-moving)) |
 

@@ -629,7 +629,7 @@ print(next((i["shortcut"] for i in items if i["menu"] == "Task" and i["item"] ==
   key down
   check test "$(search selection),$(hint selected go)" == "$(tid 4),Desk full" || { echo "desk_keys: a full Desk's Shelf row"; desk search; return 1; }
   key return
-  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (⇧⌘⌫ on its row)." ]]' || { echo "desk_keys: a full Desk didn't refuse"; desk note; return 1; }
+  check wait_for 5 eval '[[ "$(desk note)" == "The Desk is full: move a task to the Shelf first (drag it, or ⇧⌘⌫ on its row)." ]]' || { echo "desk_keys: a full Desk didn't refuse"; desk note; return 1; }
   check test "$(desk running)" == 3 || { echo "desk_keys: a fourth task went to the Desk"; return 1; }
   [[ "$(desk shelf)" == *"$(tid 4)"* ]] || { echo "desk_keys: Delta left the Shelf"; return 1; }
   key down
@@ -993,7 +993,7 @@ done_leaves_no_window() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" agent="$repo_root/tools/mock-agent/mock-agent"
   mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "done_leaves_no_window line $LINENO"; return 1; }
   repo="$(cd "$repo" && pwd -P)"
-  (cd "$repo" && kanna task new "With diff" "say 1" --agent "$agent") >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
+  (cd "$repo" && kanna task new "With diff" "hello 1" --agent "$agent") >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
   kanna task pick "$(tid 1)" >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }
   local task; task="$(pane "With diff" id)"
   (cd "$repo" && KANNA_TERMINAL="$task" kanna open diff --merge-base main --name changes --tab) >/dev/null || { echo "done_leaves_no_window line $LINENO"; return 1; }

@@ -14,7 +14,7 @@ fn context() -> Context {
 }
 
 fn feature() -> kanna_pipe::Pipeline {
-    parse(&std::fs::read_to_string(repo().join(".kanna/pipelines/feature.kojo")).unwrap()).unwrap()
+    parse(&std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/examples/feature.kojo")).unwrap()).unwrap()
 }
 
 fn to(pipeline: &kanna_pipe::Pipeline, stage: &str, verdict: Option<Verdict>, taken: &[u32], stalled: bool) -> Option<String> {
