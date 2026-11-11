@@ -231,7 +231,7 @@ Pink is Rex's code, green Kanna's, grey the OS, orange the clients.
 | **Layout model** | sessions → windows → a split tree plus floating layers of blocks; detached blocks; many clients (§1.3) | windows → tabs → a split tree of panes, with zoom; panes view the daemon's content; background terminals in no tab; one app per daemon ([workspaces §1](../specs/workspaces.md#1-the-model), [physical layout](../specs/physical-layout.md)) | Rex: floating layers, several viewers; otherwise the same tree |
 | **CLI targets** | flags, env, else the focused block | the caller, else refused ([CLI caller](../specs/cli-caller.md)) | Kanna: stricter |
 | **Waiting, events** | `wait`, `run --wait`, `--keep-open`, `events --json` | results pushed as messages; no event stream ([agent messaging](../specs/agent-messaging.md)) | Rex for events; Kanna for results (3.1 #2) |
-| **API description** | schemas and notes per method; older revisions bridged | `commands --json`; a `[min, max]` range ([machine links §2](../specs/machine-links.md#2-the-hello)) | Rex; Shelf task `task-c383` |
+| **API description** | schemas and notes per method; older revisions bridged | `commands --json`; a `[min, max]` range ([machine links §2](../specs/machine-links.md#2-the-hello)) | Rex, but Kanna doesn't need it: see 3.3 |
 | **Scripting** | Lua config, scripts and events | agents and the CLI; `kanna up` planned | Rex has more; see 3.3 |
 | **Agent status** | OSC 7501 only | OSC 7501, then screen rules ([agent status](../specs/agent-status.md)) | Kanna |
 | **Agent skills** | guide read from the binary; a session-start hook | skills copied and merged; no hooks ([agent setup](../specs/agent-setup.md)) | each has a point; see 3.1 #9 |
@@ -297,7 +297,7 @@ Rex has the same shape (a token, an exact count, a grace period, `1013` to force
 | `rex block ls\|inspect\|close\|rename` | `workspace list`, `close`, `rename-pane` | `kanna pane ls\|inspect\|close\|rename`, and the same for `tab`, `window` and `workspace` |
 | `rex capture [--format text\|html\|vt] [--trim] [--unwrap]` | `read [--lines N]` | `capture` with those options (#6) |
 | `rex ls --json`, `-q` | `--json` on the whole CLI | `--json` on every listing, and `-q` for IDs only |
-| `rex events`, `rex api describe` | none; `commands --json`, `raw` | `events` (#3); `api describe` from the command table |
+| `rex events`, `rex api describe` | none; `commands --json`, `raw` | `events` (#3); `help COMMAND` and `commands --json` already describe the CLI |
 
 Keep Kanna's targets: a pane named, else the caller ([CLI caller](../specs/cli-caller.md)), never Rex's fallback to the focused block (3.2). The conflict is with [CLI §1](../specs/cli.md#1-a-port-of-kmuxs-cli): Kanna's CLI is a port of kmux's, and a conformance test keeps every command, usage and example the same as kmux's. **[call]** The better design is for Kanna to own the shape, check its conformance at the protocol (the requests `--mux kmux` sends, which is what has to match), and leave kmux as it is. Keep kmux's verbs as aliases until the skills and scripts move over. *Cost:* the command table and its help, the conformance test, the skills' command lines and the e2e scripts. *Evidence:* `rex --help`, `rex run --help`, `rex block --help`.
 
@@ -335,6 +335,7 @@ Take the same split. Keep one control connection for requests, replies, layout, 
 | **A Lua layer** **[call]** | a second API surface to document and sandbox ([a](#notes-to-33)) | §1.6 |
 | **General client actions from the CLI** | it puts the app's physical state back in every script's reach ([b](#notes-to-33)) | §1.6, [physical layout](../specs/physical-layout.md) |
 | **Embedding a VPN** | tsnet outweighs Rex's own code; iroh is decided and smaller ([c](#notes-to-33)) | §1.8, [machines](../specs/machines.md) |
+| **A described raw API** (`api list\|describe\|call`) | agents use the CLI, already described by `help` and `commands --json`; the raw protocol's only clients are Kanna's own app, daemons and tests. Decided with the user, November 2026, after a spec for it | §1.6 |
 | **Trust by connection** | fine on one machine, not across them; Rex calls it a short-term limit | §1.8 |
 
 #### Notes to 3.3
