@@ -12,7 +12,8 @@ image as targets, this checkout's target/Kanna.app is put where
 build-kanna-app.sh puts it, and an instance (daemon, keeper, app --bg) runs from
 there on a private socket. The image is force-detached and attached again, and
 the instance must open and show a terminal each time. The same app copied onto
-the image (the old layout) runs beside it as a control and is reported.
+the image (the old layout) runs beside it as a control, which must break:
+otherwise the drop wasn't one the test could see.
 Run it unsandboxed after scripts/build.sh: it needs hdiutil, ps and signals.
 USAGE
 }
@@ -103,7 +104,7 @@ said="$(works volume before)" || fail "before the drop: the control on the image
 hdiutil detach -force -quiet "$vhs" || { fail "couldn't force-detach the image"; exit 1; }
 sleep 3
 said="$(works internal unplugged)" || fail "volume gone: the instance from target/Kanna.app: $said"
-if control="$(works volume unplugged)"; then control="kept running"; fi
+works volume unplugged >/dev/null && fail "volume gone: the control on the image kept working, so this drop shows nothing"
 
 attach || { fail "couldn't attach the image again"; exit 1; }
 sleep 2
@@ -111,6 +112,5 @@ said="$(works internal replugged)" || fail "volume back: the instance from targe
 (. "$scripts/env.sh" && kanna_targets "$wt") 2>/dev/null || fail "kanna_targets after the drop: exit $?"
 [[ -d "$wt/target/debug/" ]] || fail "after the drop: target/debug doesn't reach the image again"
 
-echo "control, the app run from the image: $control"
 [[ $failed == 0 ]] && echo "volume drop: ok"
 exit "$failed"
