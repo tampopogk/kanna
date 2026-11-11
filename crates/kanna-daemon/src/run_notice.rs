@@ -223,7 +223,7 @@ mod tests {
     use super::*;
 
     fn feature() -> Pipeline {
-        kanna_pipe::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.kanna/pipelines/feature.kojo")).unwrap()).unwrap()
+        kanna_pipe::parse(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../kanna-pipe/tests/examples/feature.kojo")).unwrap()).unwrap()
     }
 
     fn visit(stage: &str, n: i64, verdict: Option<&str>, kind: &str) -> StageRow {
