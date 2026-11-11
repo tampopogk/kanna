@@ -17,16 +17,21 @@ pub struct Mark {
     pub head: String,
     pub branch: String,
     pub at: f64,
+    pub queue: Option<String>,
 }
 
 impl Mark {
     pub fn to_value(&self) -> Value {
-        json!({ "head": self.head, "branch": self.branch, "at": num(self.at) })
+        let mut value = json!({ "head": self.head, "branch": self.branch, "at": num(self.at) });
+        if let Some(queue) = &self.queue {
+            value["queue"] = json!(queue);
+        }
+        value
     }
 
     pub fn from_value(value: Option<&Value>) -> Option<Mark> {
         let value = value?;
-        Some(Mark { head: string(value, "head")?.to_string(), branch: string(value, "branch").unwrap_or_default().to_string(), at: value.get("at").and_then(Value::as_f64).unwrap_or(0.0) })
+        Some(Mark { head: string(value, "head")?.to_string(), branch: string(value, "branch").unwrap_or_default().to_string(), at: value.get("at").and_then(Value::as_f64).unwrap_or(0.0), queue: string(value, "queue").map(String::from) })
     }
 }
 

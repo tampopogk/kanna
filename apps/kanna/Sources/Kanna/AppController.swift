@@ -132,6 +132,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             fatal("kanna: \(error.localizedDescription)")
         }
+        TerminalSurfaceView.isKey = { [weak self] window in
+            guard let self, let id = keyWindow?["id"]?.string else { return false }
+            return controllers[id]?.window === window
+        }
         if echo {
             terminals = ExternalIOBackend(runtime: runtime, link: EchoLink())
             let server = SocketServer(path: Self.echoSocketPath) { [weak self] request in await self?.commands.handle(request) ?? nil }
@@ -174,7 +178,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panes.terminalOf = { [weak self] pane in self?.terminalIDs[pane] }
         panes.onFocus = { [weak self] pane in self?.userFocused(pane) }
         panes.onDrag = { [weak self] pane in self?.dragPane(pane) }
-        panes.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
+        panes.contextMenu = { [weak self] in
+            guard let menu = self?.paneMenu?.copy() as? NSMenu else { return nil }
+            menu.insertItem(.separator(), at: 0)
+            menu.insertItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "", at: 0)
+            menu.insertItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "", at: 0)
+            return menu
+        }
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
         contents.onBadge = { [weak self] in self?.refresh() }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
@@ -623,6 +633,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusSeen()
             notePanes()
             placeToasts()
+            GhosttyRuntime.shared?.syncFocus()
         }
         let ids = Set(windows.compactMap { $0["id"]?.string })
         for (id, controller) in controllers where !ids.contains(id) {
@@ -791,6 +802,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             deskKeysChanged()
             if let window = window(id) { controller.render(window, panes) }
             placeToasts()
+            GhosttyRuntime.shared?.syncFocus()
         }
         controllers[id] = controller
         recordFrame(id)

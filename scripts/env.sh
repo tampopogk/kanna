@@ -1,7 +1,7 @@
 #!/bin/sh
 KANNA_GHOSTTY_FORK="${KANNA_GHOSTTY_FORK:-https://github.com/jemdiggity/ghostty.git}"
 KANNA_GHOSTTY_BRANCH="kanna4"
-KANNA_GHOSTTY_COMMIT="4e28443e32fe8b0f88934d6a1159c42561f1931a"
+KANNA_GHOSTTY_COMMIT="c2f3e3aa01a41ceae683ea007738c0ab2a61d1fb"
 
 KANNA_UPDATE_FEEDS="https://kanna.build/appcast"
 KANNA_UPDATE_PUBLIC_KEY="${KANNA_UPDATE_PUBLIC_KEY:-hjHTuszAUmqmKN6ANvmQQhTlzLs3Tm15WPEudwaMwgU=}"
@@ -231,20 +231,50 @@ kanna_targets() {
     root=""
   fi
   repo="$root/$(basename "$main")"
-  if [ -n "$worktree" ]; then
-    kanna_target_link "$1/target" "$repo/$(basename "$1")" "$root" || return 1
-    if [ -n "$root" ]; then touch "$repo/$(basename "$1")/.used"; fi
-    if command -v kanna_targets_ready >/dev/null 2>&1; then kanna_targets_ready "$1"; fi
+  if [ -n "$worktree" ]; then targets_away="$repo/$(basename "$1")"; else targets_away="$repo/_main"; fi
+  if [ -n "$worktree" ]; then kanna_target_unlink "$1/target" "$targets_away" "$root" || return 1; fi
+  [ -n "$root" ] && mkdir -p "$1/target" "$targets_away"
+  if [ -d "$1/target" ] && [ ! -L "$1/target" ]; then
+    {
+      ls -A "$1/target"
+      [ -n "$root" ] && ls -A "$targets_away"
+      kanna_rust_profile "$1"; echo kanna-build; echo signed
+    } | sort -u | while IFS= read -r name; do
+      kanna_target_local "$name" && continue
+      case "$name" in *.moving|*.old) continue ;; esac
+      entry="$1/target/$name"
+      if [ -z "$root" ]; then
+        [ -L "$entry" ] && { kanna_target_link "$entry" "" "" || return 1; }
+        continue
+      fi
+      [ -e "$targets_away/$name" ] && [ ! -d "$targets_away/$name" ] && continue
+      [ -f "$entry" ] && [ ! -L "$entry" ] && continue
+      kanna_target_link "$entry" "$targets_away/$name" "$root" </dev/null || return 1
+    done || return 1
+  fi
+  if [ -n "$worktree" ] && [ -n "$root" ]; then touch "$targets_away/.used"; fi
+  if command -v kanna_targets_ready >/dev/null 2>&1; then kanna_targets_ready "$1"; fi
+  return 0
+}
+
+kanna_target_local() {
+  case "$1" in *.app|e2e-kanna|ghosttykit|ghostty-vt|_shared|.used) return 0 ;; esac
+  return 1
+}
+
+kanna_target_unlink() {
+  [ -L "$1" ] || return 0
+  if [ -z "$3" ]; then
+    [ -e "$1" ] || rm "$1"
     return 0
   fi
-  [ -n "$root" ] && mkdir -p "$1/target"
-  for entry in "$1"/target/* "$1"/target/.[!.]*; do
-    case "$(basename "$entry")" in *.app|ghosttykit|ghostty-vt|_shared) continue ;; esac
-    if [ -L "$entry" ] || [ -d "$entry" ]; then
-      kanna_target_link "$entry" "$repo/_main/$(basename "$entry")" "$root" || return 1
-    fi
+  if [ "$(readlink "$1")" != "$2" ] && [ -e "$1" ]; then
+    kanna_target_link "$1" "$2" "$3" || return 1
+  fi
+  rm "$1" && mkdir -p "$2" || return 1
+  for unlink_name in $(ls -A "$2"); do
+    kanna_target_local "$unlink_name" && kanna_remove "$2/$unlink_name"
   done
-  if command -v kanna_targets_ready >/dev/null 2>&1; then kanna_targets_ready "$1"; fi
   return 0
 }
 
