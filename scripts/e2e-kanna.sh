@@ -1050,6 +1050,10 @@ windows_tabs_ui() {
     [[ "$menus" == *"\"item\":\"$item\""* ]] || { echo "no menu item \"$item\""; return 1; }
   done
   [[ "$menus" == *'"item":"Split Right","menu":"Pane","shortcut":"⌘d"'* ]] || { echo "Split Right isn't ⌘D: $menus"; return 1; }
+  [[ "$menus" == *'"item":"New Web Pane Right","menu":"New Pane"'* ]] || { echo "New Web Pane Right isn't under New Pane: $menus"; return 1; }
+  [[ "$(field items <<<"$menus" | python3 -c 'import json, sys; print(",".join(i["item"] for i in json.load(sys.stdin) if i["menu"] == "Pane"))')" == \
+     "New Pane,Split Right,Split Down,Next Pane,Previous Pane,Zoom,Move Pane to New Window,Close Pane,Open URL…,Back,Forward,Reload,Comments,Home" ]] \
+    || { echo "the Pane menu's order: $menus"; return 1; }
   [[ "$menus" == *'"item":"New Desk","menu":"File","shortcut":"⌘n"'* ]] || { echo "New Desk isn't File ⌘N: $menus"; return 1; }
   [[ "$menus" == *'"item":"New Window","menu":"Window","shortcut":""'* ]] || { echo "New Window has a shortcut: $menus"; return 1; }
   [[ "$menus" != *'"New Instance"'* && "$menus" != *'"Start a Task"'* ]] || { echo "a removed menu item is back: $menus"; return 1; }
@@ -1244,7 +1248,7 @@ drag_panes_tabs() {
   menu="$(raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"tab\":\"$(win win-1 tabs.0.id)\",\"button\":1}}")"
   check test "$(field menu <<<"$menu")" == '["Move Tab to New Window", "Close Tab"]' || return 1
   menu="$(raw '{"id":1,"cmd":"debug.click","args":{"pane":"db","button":1}}')"
-  for item in "Split Right" "Close Pane" "Move Pane to New Window" "Reload"; do
+  for item in "Copy" "Paste" "New Pane" "Split Right" "Close Pane" "Move Pane to New Window" "Reload"; do
     [[ "$menu" == *"\"$item\""* ]] || { echo "the pane menu has no \"$item\": $menu"; return 1; }
   done
   sleep 1

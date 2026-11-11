@@ -8,9 +8,7 @@ extension AppController {
     func installMenu() {
         let runtime = runtime!
         let main = NSMenu()
-        func menu(_ title: String, _ items: [(String, Selector, String?, Shortcut?)?]) -> NSMenu {
-            let item = NSMenuItem()
-            let submenu = NSMenu(title: title)
+        func fill(_ submenu: NSMenu, _ items: [(String, Selector, String?, Shortcut?)?]) {
             for entry in items {
                 guard let (label, action, ghostty, fallback) = entry else {
                     submenu.addItem(.separator())
@@ -21,6 +19,11 @@ extension AppController {
                 menuItem.keyEquivalentModifierMask = shortcut?.modifiers ?? []
                 menuItem.target = self
             }
+        }
+        func menu(_ title: String, _ items: [(String, Selector, String?, Shortcut?)?]) -> NSMenu {
+            let item = NSMenuItem()
+            let submenu = NSMenu(title: title)
+            fill(submenu, items)
             item.submenu = submenu
             main.addItem(item)
             return submenu
@@ -57,29 +60,34 @@ extension AppController {
         let editItem = NSMenuItem()
         editItem.submenu = edit
         main.addItem(editItem)
-        paneMenu = menu("Pane", [
-            ("Split Right", #selector(splitRight), "new_split:right", .cmd("d")),
-            ("Split Down", #selector(splitDown), "new_split:down", .shiftCmd("d")),
+        let newPane = NSMenu(title: "New Pane")
+        fill(newPane, [
             ("New Web Pane Right", #selector(webRight), nil, nil),
             ("New Web Pane Below", #selector(webDown), nil, nil),
             ("New iOS Pane Right", #selector(iosRight), nil, nil),
             ("New iOS Pane Below", #selector(iosDown), nil, nil),
             ("New Markdown Pane Right…", #selector(markdownRight), nil, nil),
             ("New Markdown Pane Below…", #selector(markdownDown), nil, nil),
-            ("Open URL…", #selector(openURL), nil, .cmd("l")),
-            ("Back", #selector(goBack), nil, nil),
-            ("Forward", #selector(goForward), nil, nil),
-            ("Home", #selector(pressHome), nil, .shiftCmd("h")),
-            ("Comments", #selector(toggleComments), nil, nil),
+        ])
+        let pane = menu("Pane", [
             nil,
+            ("Split Right", #selector(splitRight), "new_split:right", .cmd("d")),
+            ("Split Down", #selector(splitDown), "new_split:down", .shiftCmd("d")),
             ("Next Pane", #selector(nextPane), "goto_split:next", .cmd("]")),
             ("Previous Pane", #selector(previousPane), "goto_split:previous", .cmd("[")),
             ("Zoom", #selector(toggleZoom), "toggle_split_zoom", .shiftCmd("\r")),
             ("Move Pane to New Window", #selector(movePaneToNewWindow), nil, nil),
-            nil,
-            ("Reload", #selector(reloadPane), nil, .cmd("r")),
             ("Close Pane", #selector(closeFocusedPane), "close_surface", .cmd("w")),
+            nil,
+            ("Open URL…", #selector(openURL), nil, .cmd("l")),
+            ("Back", #selector(goBack), nil, nil),
+            ("Forward", #selector(goForward), nil, nil),
+            ("Reload", #selector(reloadPane), nil, .cmd("r")),
+            ("Comments", #selector(toggleComments), nil, nil),
+            ("Home", #selector(pressHome), nil, .shiftCmd("h")),
         ])
+        pane.insertItem(withTitle: "New Pane", action: nil, keyEquivalent: "", at: 0).submenu = newPane
+        paneMenu = pane
         _ = menu("View", [
             ("New Tab", #selector(newTabInKeyWindow), "new_tab", .cmd("t")),
             ("Next Tab", #selector(nextTab), "next_tab", .shiftCmd("]")),

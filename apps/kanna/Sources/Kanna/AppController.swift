@@ -162,7 +162,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panes.terminalOf = { [weak self] pane in self?.terminalIDs[pane] }
         panes.onFocus = { [weak self] pane in self?.userFocused(pane) }
         panes.onDrag = { [weak self] pane in self?.dragPane(pane) }
-        panes.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
+        panes.contextMenu = { [weak self] in
+            guard let menu = self?.paneMenu?.copy() as? NSMenu else { return nil }
+            menu.insertItem(.separator(), at: 0)
+            menu.insertItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "", at: 0)
+            menu.insertItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "", at: 0)
+            return menu
+        }
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
