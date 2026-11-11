@@ -60,12 +60,13 @@ pub struct Placement {
     pub shelf: bool,
     pub lead: bool,
     pub planner: bool,
+    pub quiz: bool,
     pub background: bool,
 }
 
 impl Default for Placement {
     fn default() -> Placement {
-        Placement { window: None, workspace: None, split: SplitSide::Auto, size: 0.5, new_tab: false, dock: None, frozen: false, from: None, opener: None, app: None, shelf: false, lead: false, planner: false, background: false }
+        Placement { window: None, workspace: None, split: SplitSide::Auto, size: 0.5, new_tab: false, dock: None, frozen: false, from: None, opener: None, app: None, shelf: false, lead: false, planner: false, quiz: false, background: false }
     }
 }
 
@@ -118,10 +119,6 @@ pub trait LayoutHost {
     fn dock_of(&self, pane: &str) -> Option<String> {
         let _ = pane;
         None
-    }
-
-    fn rename(&mut self, from: &str, to: &str) {
-        let _ = (from, to);
     }
 
     fn close_task(&mut self, task: &str);
@@ -201,6 +198,9 @@ pub fn place_request(pane: &Pane, at: &Placement) -> Value {
     }
     if at.planner {
         out.insert("planner".into(), Value::Bool(true));
+    }
+    if at.quiz {
+        out.insert("quiz".into(), Value::Bool(true));
     }
     if at.background {
         out.insert("background".into(), Value::Bool(true));
@@ -297,7 +297,7 @@ pub fn placement(at: &Value) -> Result<Placement, KmuxError> {
         Some(size) => size.as_f64().filter(|s| *s > 0.0 && *s < 1.0).ok_or_else(|| bad("size must be a fraction between 0 and 1"))?,
     };
     let dock = Edge::read(at.get("dock")).map_err(|_| bad("dock must be left or right"))?;
-    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), shelf: at.get("shelf") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)), background: at.get("background") == Some(&Value::Bool(true)) })
+    Ok(Placement { window: string(at, "window").map(String::from), workspace: string(at, "workspace").map(String::from), split, size, new_tab: at.get("tab") == Some(&Value::Bool(true)), dock, frozen: at.get("frozen") == Some(&Value::Bool(true)), from: string(at, "from").map(String::from), opener: string(at, "opener").map(String::from), app: string(at, "app").map(String::from), shelf: at.get("shelf") == Some(&Value::Bool(true)), lead: at.get("lead") == Some(&Value::Bool(true)), planner: at.get("planner") == Some(&Value::Bool(true)), quiz: at.get("quiz") == Some(&Value::Bool(true)), background: at.get("background") == Some(&Value::Bool(true)) })
 }
 
 fn spot(reply: &mut Map, spot: Option<Spot>, window: Option<String>) {
@@ -365,10 +365,6 @@ fn step(host: &mut dyn LayoutHost, request: &Value, panes: &Panes) -> Result<Map
             if request.get("tidy") == Some(&Value::Bool(true)) {
                 host.tidy();
             }
-        }
-        "rename" => {
-            let (Some(from), Some(to)) = (string(request, "from"), string(request, "to")) else { return Err(bad("rename needs from and to")) };
-            host.rename(from, to);
         }
         "command" => {
             let cmd = string(request, "cmd").unwrap_or("");

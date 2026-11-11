@@ -22,6 +22,7 @@ flowchart LR
     DB --> F[("kanna.db<br/>WAL")]
     DB -. "first run" .-> J[("backlog.json")]
     DB -. "first run" .-> L[("layout.json")]
+    DB -. "first run" .-> T[("terminals.json")]
     classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff
     classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
     classDef ext fill:#6b4f2f,stroke:#e0a960,color:#ffffff
@@ -48,12 +49,12 @@ flowchart LR
 | `id` | integer, key | |
 | `task` | text → `tasks.id` | |
 | `at` | real | when |
-| `what` | text | `made`, `started`, `stopped`, `exited`, `picked`, `shelved`, `activated`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
+| `what` | text | `made`, `started`, `waiting` (a Shelf turn's end held by [background work](shelf-runners.md#background-work)), `stopped`, `exited`, `picked`, `shelved`, `activated`, `renamed`, `messaged`, `done`, `imported` (older rows may say `parked` or `pulled`) |
 | `from_place`, `to_place` | text | where it was and went, for a move |
 | `by` | text | a pane, `user`, or `daemon` |
 | `doc` | JSON | window, exit code, old name, … |
 
-**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)).
+**messages**: one row per message between the user, the planner and tasks ([agent messaging](agent-messaging.md)); a doc's comment names its doc and thread in `comment` (migration 21).
 
 | Column | Type | Holds |
 |---|---|---|
@@ -67,6 +68,8 @@ flowchart LR
 
 **layout**: one row (`id` 1), `doc`: the layout in kmux's state file format, Kanna's version 4 ([workspaces](workspaces.md#5-saved-state)). The daemon writes it half a second after a change and when it stops, and with a task's row when the task is done, in the same transaction, so a done task's workspace doesn't come back. On first run it imports `layout.json` and renames it `layout.json.imported`.
 
+**terminals**: one row per terminal, with its pty, pane and keeper IDs ([terminal records](terminal-records.md)); `meta` keeps their counters. On first run it imports `terminals/terminals.json` and renames it `terminals.json.imported`.
+
 **meta**: `key`, `value`. (It held `next_task`, the counter for the old `t` IDs, until migration 3.)
 
 - **SQLite through `rusqlite` with its bundled SQLite** (`features = ["bundled"]`): one C file compiled by `cc` like the tree-sitter grammars, built for the app's macOS ([deployment target](deployment-target.md)), no server and no system library. WAL mode, `synchronous = NORMAL`, a busy timeout, foreign keys on; file mode 0600 as the rest of the state folder.
@@ -75,18 +78,20 @@ flowchart LR
 - **Migration 3 renumbers the tasks** from `t134` to `task-XXXXXXXX`, with their events and blockers ([task IDs](task-ids.md#the-migration)); a migration step is SQL or, like this one, a Rust function.
 - **Migration 13 names places as users see them:** `shelf` becomes `desk` and `backlog` becomes `shelf`, in `tasks.place` and the events' `from_place` and `to_place`, and the events `shelved`, `deferred`, `pulled` and `parked` become `picked`, `shelved`, `activated` and `left` ([internal names](internal-names.md)).
 - **Migrations by a number:** `PRAGMA user_version` is the schema's version; on open the daemon runs each step above it in one transaction. A db from a newer Kanna (a higher version) isn't touched: the daemon moves it aside as `kanna.db.newer` and says so in its log, as settings files from a newer Kanna are skipped.
-- **One row per task, for its whole life.** A task keeps its ID ([task IDs](task-ids.md)) from made to done, on the Shelf or a Desk: `place` and `terminal` say where it is and which terminal is its agent (`term-152`); a start gives the agent a new terminal, and the row follows it. `kanna task done` sets `place = done` instead of deleting the row, so its events keep their task. A new ID is random and checked against every row, done ones too, so an ID is never handed out twice.
+- **One row per task, for its whole life.** A task keeps its ID ([task IDs](task-ids.md)) from made to done, on the Shelf or a Desk: `place` and `terminal` say where it is and which pane is its agent (`term-152`), which every start keeps ([durable panes](durable-panes.md)). `kanna task done` sets `place = done` instead of deleting the row, so its events keep their task. A new ID is random and checked against every row, done ones too, so an ID is never handed out twice.
 - **Every change of place or state writes an event,** in the same transaction as the change. The daemon writes the ones it makes: made, started, stopped, picked, shelved and done from `tasks` commands; exited when an agent's terminal ends without a stop; renamed and done when it sees a task's pane renamed or closed (`kanna task name`, `kanna task done` on the Desk, ⌘W). `by` is the terminal the CLI ran in (`$KANNA_TERMINAL`), else `user`; `daemon` for what it noticed itself. A Desk task's done keeps the caller of the `kanna task done` that closed its pane. Which task is active is each app's ([each app's Desks](app-desk.md)), but the app reports each change, recorded as `activated` ([Desk news](desk-news.md)); showing the Desk view isn't recorded. A picked event names the app that claimed the task (`app`).
 - **A task the daemon didn't make** (an agent docked by hand) gets an ID the first time it's moved, as it does when it's moved to the Shelf.
 - **Reading it:** `tasks events TASK` (an ID, a unique start of one, or the agent's terminal) answers the task's events, oldest first; the Desk's and the Shelf's history builds on it.
 - **On first run** the daemon imports `backlog.json` (tasks, the running list, the counter) in one transaction, with a `made` event for each task at its `madeAt`, then renames the file `backlog.json.imported` and never reads it again.
-- **Recovery.** On open the daemon runs `PRAGMA quick_check`. A file it can't open or that fails the check is moved aside as `kanna.db.bad-TIME`, with its `-wal`; the daemon then restores the last good copy (`kanna.db.bak`, written with SQLite's backup API at each start once the db checks out) and logs what it did and that changes since that start are lost. With no good copy it imports `backlog.json.imported` if there is one, else starts empty, and says which in its log. A missing `kanna.db` with a `kanna.db.bak` or `backlog.json.imported` beside it is restored the same way. A `backlog.json` found beside a working db (written by an older Kanna run since) adds the tasks the db lacks. A write that fails is logged and the command fails; one after the change has happened (an agent already started) still fails the command, and memory keeps what happened. A db file that can't be made at all is logged and the tasks are kept in memory until the daemon restarts.
+- **Recovery.** On open the daemon runs `PRAGMA quick_check`. A file it can't open or that fails the check is moved aside as `kanna.db.bad-TIME`, with its `-wal`; the daemon then restores the last good copy (`kanna.db.bak`, written with SQLite's backup API at each start once the db checks out) and logs what it did and that changes since that start are lost; that includes the links of ptys started since ([terminal records](terminal-records.md#5-recovery)). With no good copy it imports `backlog.json.imported` if there is one, else starts empty, and says which in its log. A missing `kanna.db` with a `kanna.db.bak` or `backlog.json.imported` beside it is restored the same way. A `backlog.json` found beside a working db (written by an older Kanna run since) adds the tasks the db lacks. A write that fails is logged and the command fails; one after the change has happened (an agent already started) still fails the command, and memory keeps what happened. A db file that can't be made at all stops the daemon: it [refuses to start](terminal-records.md#4-starting-without-a-db).
 
-**What stays where it is.** Each app's physical state (window frames, text sizes) stays in its own `app-state.json` ([windows](windows.md#2-what-the-app-keeps)). Doc threads stay beside their docs ([doc markup](doc-markup.md)), where an agent reads them. Settings stay JSON files people edit.
+**What stays where it is.** Each app's physical state (window frames, text sizes) stays in its own `app-state.json` ([windows](windows.md#2-what-the-app-keeps)). Terminals' screens stay as `<pty>.snap` files, written by a thread beside the main loop at up to one a second each ([restarting the daemon](daemon-restart.md#1-files-on-disk)). Doc threads stay beside their docs ([doc markup](doc-markup.md)), where an agent reads them. Settings stay JSON files people edit.
 
 **runs, run_revisions, run_stages, run_events**: the software factory's runs, one row per run, revision, stage visit and event ([software factory §6](software-factory.md#6-how-its-built)).
 
 ## Quiz results
+
+`phone_chat` is the phone's conversation, by repo for the planner and by task ID for [a task's page](mobile-shelf.md#3-what-a-task-says) ([chat §5](mobile-chat.md#5-store-and-tests)). `said` is every task's replies, for the phone ([Shelf §3](mobile-shelf.md#3-last-words)). `quiz_ready`, `quiz_map` and `quiz_notes` are the phone's quiz: [rounds written ahead](mobile-quiz.md#1-rounds-written-ahead) with `taken` set by their first answer, the subsystems, and the notes on what you know, one row per subsystem. A phone's answers are ordinary `quiz_answers` rows, keyed by (`round`, `n`).
 
 **Built.** Every [quiz](quiz.md) round and answer is kept, so misses can come back in a later round and a round can cover what's new since the last one.
 
@@ -128,6 +133,7 @@ sequenceDiagram
 | `file` | text | the file the question is about, relative to the repo |
 | `right` | integer | 1 or 0 |
 | `again` | integer → `quiz_answers.id` | the earlier miss this question asked again |
+| `n` | integer | the question's place in a round written ahead, unique with `round`, so a resent answer counts once; empty for the Mac's |
 | `doc` | JSON | `line`, `last`, question, choices, the pick, the right choice, explanation, … |
 
 - **The quiz agent writes them** with `kanna quiz start`, `answer` and `history`, through the daemon's `quiz` command (`quiz.rs`) like every other write. This replaces the quiz spec's "nothing is kept" rule and its rejected `kanna quiz` command.
@@ -158,7 +164,7 @@ sequenceDiagram
 
 ## Schedules
 
-**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, and a JSON `doc` (who made it). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
+**Built.** The [scheduler](scheduler.md)'s schedules are rows of a `schedules` table (migration 15): `id` (shown as `s3`), `repo`, `name` (unique per repo), `target` (a task ID or `planner`), `rule`, `prompt`, `next` (the time the scheduler queries), `message` (→ `messages.id`, the last message it left, so a firing leaves no second while it waits), `made_at`, `paused` (migration 22), and a JSON `doc` (who made it). `schedule_firings` (migration 22) logs each firing ([Schedules tab](schedules-tab.md#7-how-its-built)). `meta` keeps a `quiz_schedule:REPO` key once a repo has had its quiz schedule added, so removing it sticks.
 
 ## Planners
 
@@ -186,6 +192,21 @@ sequenceDiagram
 
 - **The daemon writes them** (`project` `never`, from `planner.sh`) and reads them (`project` `asked`); importing the project deletes its row.
 
+## Status reports
+
+**Built.** Each terminal's latest [agent status](agent-status.md#5-across-a-daemon-restart) records, so an idle agent isn't grey after the daemon restarts.
+
+**status_reports**: one row per terminal with records.
+
+| Column | Type | Holds |
+|---|---|---|
+| `terminal` | text, key | the terminal (`term-41`) |
+| `at` | real | when it was last written |
+| `doc` | JSON | `owner` (the process group that sent them) and `records`, oldest first: `id`, `state`, `need`, `progress`, `app`, `title`, `message` |
+
+- **The daemon writes them** on each change of a terminal's records and when it stops; a terminal with none has no row. It deletes the row when the terminal ends and, at start, every row whose terminal didn't come back.
+- **Read once,** at start, to restore each terminal taken back from the keeper. Not a history: recording status changes over time is a separate decision (below).
+
 ## Crashes
 
 **Built.** Each crash record the daemon has seen in `crashes/` ([crashes](crashes.md)).
@@ -200,9 +221,9 @@ sequenceDiagram
 | `dismissed` | real | when its banner was dismissed (it and every older one), or null |
 | `reported` | real | when the planner was told of its signature, or null: a signature is told once |
 
-**Later candidates,** not built: agent session IDs per task over time; agent status history (how long a task waited on you); build timings.
+**Later candidates,** not built: agent session IDs per task over time; build timings. Agent status history is `status` rows in `task_events` ([task agent stats](agent-stats.md#2-recording)).
 
-**Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again; a project's planner kept across a restart), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves: the internal moves behind ⌘. and making a task active), e2e `task_history` (import, every event of a task's life with who did it, the app's park (⌘.), a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).
+**Checked by** `db.rs`'s tests (a real `backlog.json` imported with every task and the counter; a held task; a change and its event together; unknown doc keys kept; a corrupt, missing or newer db; a `backlog.json` beside the db; a version 1 db taking the quiz tables with its tasks kept; a miss kept until it's asked again; a project's planner kept across a restart), `reports.rs`'s tests (status reports kept, replaced, cleared and pruned), `quiz.rs`'s tests (a round and its answers read back; a bad answer refused), the CLI's tests (`kanna quiz` requests, the history's text), the layout owner's tests (park and pull, a swap, report their moves: the internal moves behind ⌘. and making a task active), e2e `task_history` (import, every event of a task's life with who did it, the app's park (⌘.), a corrupt db at restart) and e2e `quiz_results` (a round recorded, read back after a restart, a miss asked again).
 
 **Why not JSON files and an `events.jsonl`.** Both would work for the first table and one log. The db wins once anything reads history back: the Desk's and the Shelf's history is a query by repo and time, "how long did it wait on me" a join of status changes, and a JSON log means reading the whole file and writing its indexes by hand. A change to a task and its event are one transaction, so they can't disagree after a crash; with two files they can. `backlog.json` is rewritten whole on every change (71 KB today, growing with every first message); a row update is a page or two. Migrations have a number and run in a transaction rather than being guessed from what keys a file has. The cost is one C dependency, compiled in, and a file people can't open in an editor, which the CLI covers. Moving away from JSON is cheap now and dearer with every table.
 

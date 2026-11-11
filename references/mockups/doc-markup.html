@@ -77,8 +77,9 @@ mark.flash { animation: flash .9s; }
 .card .msg { margin: 4px 0; font-size: 12.5px; color: var(--soft); }
 .card .msg b { color: var(--text); font-weight: 600; }
 .card .msg b.agent { color: #d18ae6; }
-.card .reply { display: flex; gap: 6px; margin-top: 6px; }
-.card .reply input { flex: 1; min-width: 0; background: #1b1c21; border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 3px 6px; font: 12px var(--sans); }
+.card .reply { margin-top: 6px; }
+.card .reply textarea { display: block; box-sizing: border-box; width: 100%; min-height: 26px; max-height: calc(8 * 16px + 10px); resize: none; overflow-y: auto; background: #1b1c21; border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 4px 6px; font: 12px/16px var(--sans); outline: none; }
+.card .reply .row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
 .card .reply button { padding: 2px 7px; }
 .typing { display: inline-flex; gap: 3px; align-items: center; margin: 2px 0 6px; padding: 0; }
 .typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--dim); display: block; animation: blink 1.4s infinite ease-in-out; }
@@ -151,7 +152,7 @@ const initial = () => ({
   threads: [
     { id: "c1", line: 12, quote: "Panes only", state: "open", status: "replied", messages: [
       { who: "you", text: "Should splits be allowed later?" },
-      { who: "agent", text: "Added it to the open questions." }] },
+      { who: "agent", text: "Added it to the open questions." }], draft: "Good. While you're there:\n- say splits stay out of the first release\n- link the open question from the Rules list\n- and drop the old note about tab groups, it's covered by the strip now" },
     { id: "c2", line: 18, quote: "the strip scrolls, keeping the active tab in view", state: "open", status: "sent", messages: [
       { who: "you", text: "Also say what ⌃Tab does when the strip has scrolled." }] },
   ],
@@ -251,14 +252,22 @@ function renderThreads() {
     card.innerHTML = `<div class="quote">${t.quote}</div>
       ${t.messages.map(m => `<div class="msg"><b class="${m.who}">${m.who}</b> ${m.text}</div>`).join("")}
       ${chip(t)}
-      <div class="reply"><input placeholder="Reply"><button>⌘↵</button><button class="res" title="Resolve">✓</button></div>`;
+      <div class="reply"><textarea rows="1" placeholder="Reply"></textarea><div class="row"><button class="send">⌘↵</button><button class="res" title="Resolve">✓</button></div></div>`;
     card.querySelector(".quote").onclick = () => {
       s.active = t.id; render();
       const mk = document.querySelector(`mark[data-t="${t.id}"]`);
       if (mk) { mk.scrollIntoView({ block: "center" }); mk.classList.add("flash"); }
     };
     card.querySelector(".res").onclick = () => { t.state = "resolved"; render(); };
+    const ta = card.querySelector(".reply textarea");
+    ta.value = t.draft || "";
+    const send = () => { const text = ta.value.trim(); if (!text) return; t.messages.push({ who: "you", text }); t.status = "sent"; t.draft = ""; render(); };
+    const fit = () => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + 2 + "px"; };
+    ta.oninput = () => { t.draft = ta.value; fit(); ta.scrollIntoView({ block: "nearest" }); };
+    ta.onkeydown = e => { if (e.key === "Enter" && e.metaKey) { e.preventDefault(); send(); } };
+    card.querySelector(".send").onclick = send;
     panel.appendChild(card);
+    fit();
   });
 }
 

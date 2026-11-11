@@ -155,6 +155,16 @@ public struct DocRecord: Codable, Equatable {
     }
 }
 
+public enum DocDelivery: Equatable, Sendable {
+    case sent
+    case waiting
+    case failed(String)
+}
+
+public typealias DocSend = (_ agent: String, _ text: String, _ doc: String, _ thread: String, _ done: @escaping (DocDelivery) -> Void) -> Void
+
+public typealias DocThreadEvent = (_ agent: String, _ text: String, _ doc: String, _ thread: String, _ state: String) -> Void
+
 public struct DocEdit: Equatable {
     public var state: String?
     public var status: String?
@@ -168,6 +178,14 @@ public struct DocEdit: Equatable {
         self.error = error
         self.line = line
         self.message = message
+    }
+
+    public init(delivered: DocDelivery, line: Int) {
+        switch delivered {
+        case .sent: self.init(status: "sent", error: .some(nil), line: line)
+        case .waiting: self.init(error: .some(nil), line: line)
+        case .failed(let why): self.init(status: "unsent", error: .some(why), line: line)
+        }
     }
 }
 
@@ -241,6 +259,10 @@ public enum Doc {
         guard quoted else { return "\(header)\n\(text)" }
         let lines = clean(thread.quote).components(separatedBy: "\n").map { "> " + oneLine($0) }
         return "\(header)\n\(lines.joined(separator: "\n"))\n\(text)"
+    }
+
+    public static func stateEvent(_ thread: DocThread, file: String, open: Bool) -> String {
+        "[kanna \(open ? "reopened" : "resolved") \(oneLine(thread.id)) · \(oneLine(file)):\(thread.line)]"
     }
 
     public static func describe(_ page: PageSpot) -> String {

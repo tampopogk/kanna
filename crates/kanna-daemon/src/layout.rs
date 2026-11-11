@@ -60,7 +60,11 @@ impl DaemonLayout {
     }
 
     pub fn saved_panes(&self) -> Vec<kanna_mux::Pane> {
-        let mut panes = self.owner.borrow().records();
+        let owner = self.owner.borrow();
+        let core = self.core.borrow().as_ref().and_then(WeakCore::upgrade);
+        let planners = owner.saved_planners();
+        let mut panes = owner.records();
+        panes.retain(|p| !planners.contains(&p.id) || core.as_ref().is_some_and(|core| core.pane(&p.id).is_some()));
         for pane in panes.iter_mut().filter(|p| p.kind != PaneType::Term && p.state == PaneState::Starting) {
             pane.state = PaneState::Running;
         }
@@ -117,11 +121,13 @@ impl DaemonLayout {
     pub fn save_now(&self) {
         self.save_at.set(None);
         let Some(db) = &self.db else { return };
+        let started = Instant::now();
         let Some(state) = self.owner.borrow_mut().changed_state() else { return };
         if let Err(error) = db.put_layout(&state) {
             log!("kanna-daemon: couldn't save the layout: {error}");
             self.owner.borrow_mut().forget_saved();
         }
+        crate::perf::since("layout.save", started);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
@@ -189,7 +195,7 @@ mod tests {
         std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let state = json!({ "kmux": "state", "version": 3, "key": null, "windows": [], "workspaces": [], "panes": [], "counters": {} });
         StateFile::new(&dir.join("layout.json").to_string_lossy()).write(&state).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(saved(&db, &dir), Some(state.clone()));
         assert!(!dir.join("layout.json").exists() && dir.join("layout.json.imported").exists());
         assert_eq!(db.layout().unwrap(), Some(state.clone()));

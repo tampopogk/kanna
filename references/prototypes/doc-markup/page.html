@@ -79,8 +79,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .waiting { margin: 2px 0 6px; font-size: 11.5px; color: var(--dim); }
 .waiting.needs { color: var(--warn); }
 .note { margin: 2px 0 6px; color: var(--warn); font-size: 11.5px; }
-.reply { display: flex; gap: 6px; margin-top: 6px; align-items: flex-end; }
-.reply textarea { flex: 1; width: auto; min-width: 0; min-height: 24px; max-height: 168px; height: 24px; resize: none; overflow-y: auto; background: var(--field); border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 3px 6px; font: 12px var(--sans); outline: none; }
+.reply { margin-top: 6px; }
+.reply .row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.reply textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; min-height: 24px; max-height: 168px; height: 24px; line-height: 16px; resize: none; overflow-y: auto; background: var(--field); border: 1px solid var(--line); border-radius: 5px; color: var(--text); padding: 3px 6px; font: 12px var(--sans); outline: none; }
 .reply button { padding: 2px 7px; background: var(--button); }
 .reply .act { color: var(--dim); }
 .reply .act:hover { color: var(--ok); border-color: var(--ok); }
@@ -554,7 +555,7 @@ function waitHtml(t) {
 
 function replyRow(t) {
   const open = t.state === "open";
-  return `<div class="reply"><textarea rows="1" data-id="${esc(t.id)}" placeholder="Reply"></textarea><button class="send">⌘↵</button><button class="act" title="${open ? "Resolve" : "Reopen"}">${open ? "✓" : "↺"}</button></div>`;
+  return `<div class="reply"><textarea rows="1" data-id="${esc(t.id)}" placeholder="Reply"></textarea><div class="row"><button class="send">⌘↵</button><button class="act" title="${open ? "Resolve" : "Reopen"}">${open ? "✓" : "↺"}</button></div></div>`;
 }
 
 function closePop() {
@@ -591,7 +592,7 @@ function openPop(id) {
   box.querySelector(".send").onclick = send;
   ta.onkeydown = e => {
     if (e.key === "Escape") { closePop(); return; }
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && e.metaKey) { e.preventDefault(); send(); }
   };
   box.querySelector(".act").onclick = async () => { closePop(); await api(open ? "/api/resolve" : "/api/reopen", { id }); poll(); };
 }
@@ -608,6 +609,7 @@ function grows(ta, box) {
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight + ta.offsetHeight - ta.clientHeight, 160) + "px";
     if (box) box.scrollIntoView({ block: "nearest" });
+    else if (document.activeElement === ta) ta.scrollIntoView({ block: "nearest" });
   };
   ta.addEventListener("input", fit);
   fit();
@@ -642,7 +644,7 @@ function renderThreads() {
       await poll();
     };
     card.querySelector(".send").onclick = send;
-    ta.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
+    ta.onkeydown = e => { if (e.key === "Enter" && e.metaKey) { e.preventDefault(); send(); } };
     panel.appendChild(card);
     grows(ta);
     if (focusId === t.id) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }

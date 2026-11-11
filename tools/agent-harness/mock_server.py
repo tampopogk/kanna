@@ -70,7 +70,7 @@ def turn_for(body):
     for rule in SCENARIO["rules"]:
         if rule["match"] in prompt:
             if rule.get("tool") and tool_names(body) and not tool_answered(body, rule["match"]):
-                return {"kind": "tool", "command": rule["tool"], "args": rule.get("args", {})}
+                return {"kind": "tool", "command": rule["tool"], "args": rule.get("args", {}), "claude_args": rule.get("claude_args", {})}
             return {"kind": "text", "text": "\n".join(rule.get("after_tool" if rule.get("tool") else "text", rule.get("text", [])))}
     return {"kind": "text", "text": SCENARIO["fallback"]}
 
@@ -103,7 +103,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def log(self, body, turn=None):
-        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body), "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn}
+        entry = {"time": time.time(), "path": self.path, "model": body.get("model"), "stream": body.get("stream"), "prompt": last_user_text(body), "history": user_texts(body), "tools": tool_names(body)[:40], "turn": turn, "last": json.dumps(items_of(body)[-1:])}
         with LOCK, LOG_PATH.open("a") as f:
             f.write(json.dumps(entry) + "\n")
 
@@ -174,13 +174,13 @@ class Handler(BaseHTTPRequestHandler):
         mid = "msg_" + uuid.uuid4().hex[:12]
         model = body.get("model", "mock-model")
         if turn["kind"] == "tool":
-            block = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "Bash", "input": {"command": turn["command"], "description": "Create the probe file"}}
+            block = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex[:12], "name": "Bash", "input": {"command": turn["command"], "description": "Create the probe file", **turn.get("claude_args", {})}}
             content, stop = [block], "tool_use"
         else:
             content, stop = [{"type": "text", "text": turn["text"]}], "end_turn"
         if not body.get("stream"):
-            return self.send_json({"id": mid, "type": "message", "role": "assistant", "model": model, "content": content, "stop_reason": stop, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 10}})
-        events = [("message_start", {"type": "message_start", "message": {"id": mid, "type": "message", "role": "assistant", "model": model, "content": [], "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 1}}})]
+            return self.send_json({"id": mid, "type": "message", "role": "assistant", "model": model, "content": content, "stop_reason": stop, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 10, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 20}})
+        events = [("message_start", {"type": "message_start", "message": {"id": mid, "type": "message", "role": "assistant", "model": model, "content": [], "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 20}}})]
         if turn["kind"] == "tool":
             events += [SCENARIO["think_seconds"], ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {**block, "input": {}}}), ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}})]
         else:
@@ -192,7 +192,7 @@ class Handler(BaseHTTPRequestHandler):
     def responses_api(self, body, turn):
         rid = "resp_" + uuid.uuid4().hex[:12]
         model = body.get("model", "mock-model")
-        usage = {"input_tokens": 10, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 20}
+        usage = {"input_tokens": 10, "input_tokens_details": {"cached_tokens": 4}, "output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 20}
         if turn["kind"] == "tool":
             name, args = codex_call(body, turn["command"], turn.get("args"))
             item = {"type": "function_call", "id": "fc_" + uuid.uuid4().hex[:12], "call_id": "call_" + uuid.uuid4().hex[:12], "name": name, "arguments": args, "status": "completed"}

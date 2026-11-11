@@ -79,7 +79,7 @@ fn valid_task(id: &str) -> bool {
     id.len() == 13 && id.starts_with("task-") && id[5..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn valid_branch(repo: &Path, branch: &str) -> bool {
+pub(super) fn valid_branch(repo: &Path, branch: &str) -> bool {
     !branch.starts_with('-') && git(repo, &["check-ref-format", "--branch", branch]).is_ok()
 }
 
@@ -172,9 +172,16 @@ impl Tasks {
         if let Err(error) = self.movable(&entry, &core) {
             return responder.reply(Err(error));
         }
-        let project = identity(&entry.repo);
-        let key = peer.key.clone();
-        self.send_to(&key, json!({ "action": "heads", "project": project }), Asked::Heads(Box::new(Asking { id: entry.id, peer, responder })));
+        let tasks = self.clone();
+        crate::runtime::spawn("a task's project", async move {
+            let main = project(Some(&entry.repo));
+            let project = match &main {
+                Some(main) => crate::projects::identity_now(main).await,
+                None => None,
+            };
+            let key = peer.key.clone();
+            tasks.send_to(&key, json!({ "action": "heads", "project": project }), Asked::Heads(Box::new(Asking { id: entry.id, peer, responder })));
+        });
     }
 
     fn movable(&self, entry: &Entry, core: &CoreHandle) -> Result<(), KmuxError> {
@@ -192,7 +199,8 @@ impl Tasks {
         }
         if let Some(pane) = entry.held.as_deref().filter(|pane| alive(core, pane)) {
             let working = self.ready.borrow().get(pane).and_then(|r| r.status()) == Some(Status::Working);
-            if working || self.quitting.borrow().contains_key(pane) || self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
+            let unbegun = self.turns.borrow().get(pane).is_some_and(Turn::unbegun);
+            if working || unbegun || self.quitting.borrow().contains_key(pane) || self.pending.borrow().values().any(|p| p.entry.id == entry.id) || self.launching.borrow().contains(&entry.id) {
                 return Err(KmuxError::new("busy", format!("{} is in the middle of a turn: move it when its turn is over", entry.id)));
             }
         }
@@ -234,14 +242,20 @@ impl Tasks {
         let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else { return responder.reply(Err(not_found(&id))) };
         let agent = agent_name(&entry.agent).unwrap_or_default();
         let folder = PathBuf::from(entry.folder.clone().unwrap_or_default());
-        let Some(session) = entry.session.clone().or_else(|| entry.clone().resumable().session) else {
-            return responder.reply(Err(KmuxError::new("no_session", format!("{id}'s {agent} session isn't known, so its agent can't write a handoff"))));
-        };
         let this = Rc::downgrade(self);
-        core.handle(json!({ "cmd": "list" }), move |listed| {
-            let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
-            let workspace = workspace_of(&listed, entry.workspace.as_deref(), entry.held.as_deref(), &folder.to_string_lossy(), &this.machines().me.name);
-            this.pack_to_move(Moving { entry, peer, session, workspace, responder }, theirs);
+        crate::runtime::spawn("a moving task's session", async move {
+            let session = match entry.session.clone() {
+                Some(session) => Some(session),
+                None => entry.found_session().await,
+            };
+            let Some(session) = session else {
+                return responder.reply(Err(KmuxError::new("no_session", format!("{id}'s {agent} session isn't known, so its agent can't write a handoff"))));
+            };
+            core.handle(json!({ "cmd": "list" }), move |listed| {
+                let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
+                let workspace = workspace_of(&listed, entry.workspace.as_deref(), entry.held.as_deref(), &folder.to_string_lossy(), &this.machines().me.name);
+                this.pack_to_move(Moving { entry, peer, session, workspace, responder }, theirs);
+            });
         });
     }
 
@@ -289,6 +303,7 @@ impl Tasks {
             "agent": entry.agent,
             "after": entry.after,
             "on": entry.on,
+            "hears": entry.hears.to_value(),
             "project": opt(identity(&entry.repo).as_deref()),
             "folder": opt(entry.folder.as_deref()),
             "to": peer.name,
@@ -582,6 +597,7 @@ impl Tasks {
             folder: text("folder"),
             after: strings(&doc, "after"),
             on: strings(&doc, "on"),
+            hears: Hears::from_value(doc.get("hears")),
             birth: Some(birth),
             ..Default::default()
         };

@@ -1,11 +1,14 @@
+mod bonjour;
 mod client;
 pub mod log;
 mod node;
 pub mod pair;
+pub mod phone;
 pub mod protocol;
 
 pub use iroh::SecretKey;
-pub use client::Client;
+pub use bonjour::SERVICE as BONJOUR_SERVICE;
+pub use client::{Client, LineRecv, LineSend};
 pub use node::{Config, Failure, Host, Node, DEFAULT_PORT, PEER};
 
 use serde_json::{Map, Value};
@@ -49,6 +52,8 @@ pub fn relay_url(text: &str) -> Result<iroh::RelayUrl, Failure> {
         _ => Err(Failure::new("bad_request", format!("\"{text}\" isn't a relay's URL: it starts with https://"))),
     }
 }
+
+pub const ACCOUNTS: &str = "accounts";
 
 pub const KINDS: &[&str] = &["control", "file", "port", "sync", "job", "transfer"];
 

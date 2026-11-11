@@ -194,6 +194,26 @@ kanna_cargo_seed "$second" "" 15.0 2>/dev/null
 [[ "$(cat "$second/target/debug/deps/libdep_x.rlib")" == mine ]] || fail "seed: replaced a worktree's own build"
 kanna_cargo_seed "$main" "" 15.0 2>/dev/null
 [[ ! -e "$main/target/debug" && ! -e "$main/target/release" ]] || fail "seed: seeded the main checkout"
+caller="$(worktree task-caller)" && (kanna_targets "$caller") 2>/dev/null
+triple=caller key=caller stamp=caller
+kanna_cargo_seed "$caller" "" 15.0 2>/dev/null
+kanna_cargo_stamp "$caller" 15.0 2>/dev/null
+[[ "$triple $key $stamp" == "caller caller caller" ]] || fail "seed: changed the build scripts' variables: $triple $key $stamp"
+
+packages="$main/target/kanna-build"
+mkdir -p "$packages/repositories/r" "$packages/checkouts/c"
+printf '{"path": "%s", "scratch": "%s"}\n' "$main/apps/kanna" "$packages/artifacts/sparkle/Sparkle.xcframework" >"$packages/workspace-state.json"
+unbuilt="$(worktree task-unbuilt)"
+(kanna_borrow_swiftpm "$unbuilt" >/dev/null)
+[[ ! -e "$unbuilt/target/kanna-build" ]] || fail "borrow: borrowed packages without their artifacts"
+mkdir -p "$packages/artifacts/sparkle/Sparkle.xcframework"
+borrower="$(worktree task-borrower)"
+(kanna_borrow_swiftpm "$borrower" >/dev/null)
+[[ -d "$borrower/target/kanna-build/repositories/r" && -d "$borrower/target/kanna-build/checkouts/c" ]] || fail "borrow: no packages"
+[[ -d "$borrower/target/kanna-build/artifacts/sparkle/Sparkle.xcframework" ]] || fail "borrow: no artifacts"
+[[ "$(cat "$borrower/target/kanna-build/workspace-state.json")" == "{\"path\": \"$borrower/apps/kanna\", \"scratch\": \"$borrower/target/kanna-build/artifacts/sparkle/Sparkle.xcframework\"}" ]] || fail "borrow: state says $(cat "$borrower/target/kanna-build/workspace-state.json")"
+(kanna_borrow_swiftpm "$borrower" other-triple >/dev/null)
+[[ "$(cat "$borrower/target/other-triple/kanna-build/workspace-state.json")" == *"\"$borrower/target/other-triple/kanna-build/artifacts/sparkle/Sparkle.xcframework\""* ]] || fail "borrow: another architecture's state says $(cat "$borrower/target/other-triple/kanna-build/workspace-state.json")"
 
 [[ $failed == 0 ]] && echo "store: ok"
 exit "$failed"

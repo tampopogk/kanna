@@ -2,11 +2,25 @@ import Testing
 @testable import KannaWindows
 
 struct StatsFormatTests {
+    @Test func aRunSitsAcrossItsWindow() {
+        #expect(StatsFormat.across(50, from: 0, to: 100) == 0.5)
+        #expect(StatsFormat.across(-5, from: 0, to: 100) == 0)
+        #expect(StatsFormat.across(500, from: 0, to: 100) == 1)
+        #expect(StatsFormat.across(5, from: 5, to: 5) == 1)
+        #expect(StatsFormat.windowStart(from: 0, to: 30 * 86400) == "30 days ago")
+        #expect(StatsFormat.windowStart(from: 0, to: 3600) == "today")
+    }
+
     @Test func numbersReadAsTheTileSaysTheyAre() {
         #expect(StatsFormat.figure(79.3, unit: "%") == "79%")
         #expect(StatsFormat.figure(12780, unit: "s") == "3h 33m")
         #expect(StatsFormat.figure(28, unit: nil) == "28")
         #expect(StatsFormat.figure(nil, unit: "%") == "—")
+        #expect(StatsFormat.figure(212.4, unit: "h") == "212h")
+        #expect(StatsFormat.figure(3.44, unit: "h") == "3.4h")
+        #expect(StatsFormat.figure(3, unit: "h") == "3h")
+        #expect(StatsFormat.figure(0.5, unit: "h") == "30m")
+        #expect(StatsFormat.figure(4.25, unit: "x") == "4.2")
         #expect(StatsFormat.duration(59 * 60) == "59m")
         #expect(StatsFormat.duration(3 * 3600) == "3h")
         #expect(StatsFormat.duration(50 * 3600) == "2d")

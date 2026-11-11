@@ -1,5 +1,17 @@
 import AppKit
 
+struct ToastAction {
+    let title: String
+    var primary = false
+    let run: @MainActor () -> Void
+
+    init(title: String, primary: Bool = false, run: @escaping @MainActor () -> Void) {
+        self.title = title
+        self.primary = primary
+        self.run = run
+    }
+}
+
 struct Toast {
     let id: String
     let title: String
@@ -9,6 +21,29 @@ struct Toast {
     let about: String?
     let sticky: Bool
     let recordPath: String?
+    var symbol: String?
+    var tint: NSColor?
+    var warning: String?
+    var link: ToastAction?
+    var progress: Double?
+    var actions: [ToastAction] = []
+
+    init(id: String, title: String, detail: String?, symbol: String, tint: NSColor, sticky: Bool = false, warning: String? = nil, link: ToastAction? = nil, progress: Double? = nil, actions: [ToastAction] = []) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        pane = nil
+        task = nil
+        about = nil
+        self.sticky = sticky
+        recordPath = nil
+        self.symbol = symbol
+        self.tint = tint
+        self.warning = warning
+        self.link = link
+        self.progress = progress
+        self.actions = actions
+    }
 
     init?(_ record: JSON) {
         guard let id = record["id"]?.string, let title = record["title"]?.string else { return nil }
@@ -27,7 +62,7 @@ struct Toast {
     var record: JSON {
         let text = { (value: String?) in value.map { JSON.string($0) } ?? .null }
         return ["id": .string(id), "title": .string(title), "detail": text(detail), "pane": text(pane), "task": text(task), "about": text(about),
-                "sticky": .bool(sticky), "record": text(recordPath)]
+                "sticky": .bool(sticky), "record": text(recordPath), "warning": text(warning), "link": text(link?.title), "actions": .array(actions.map { .string($0.title) })]
     }
 }
 
@@ -61,6 +96,7 @@ final class ToastStack: NSView {
     }
 
     func show(_ toast: Toast) {
+        if let old = self.toast(toast.id) { remove(old) }
         let view = ToastView(toast)
         view.onClose = { [weak self, weak view] in
             guard let self, let view else { return }
@@ -160,6 +196,11 @@ final class ToastView: NSView {
     private let detail = NSTextField(wrappingLabelWithString: "")
     private let about = NSTextField(labelWithString: "")
     private let close = NSButton()
+    private let warning = NSTextField(wrappingLabelWithString: "")
+    private let link = NSButton()
+    private let meter = NSView()
+    private let filled = NSView()
+    private var buttons: [NSButton] = []
     private var timer: Timer?
     private var dueAt: Date?
     private var left: TimeInterval = 0
@@ -174,8 +215,8 @@ final class ToastView: NSView {
         layer?.shadowOpacity = 0.35
         layer?.shadowRadius = 12
         layer?.shadowOffset = CGSize(width: 0, height: -4)
-        icon.image = NSImage(systemSymbolName: toast.recordPath == nil ? "exclamationmark.triangle.fill" : "xmark.octagon.fill", accessibilityDescription: "Warning")
-        icon.contentTintColor = toast.recordPath == nil ? .systemOrange : .systemRed
+        icon.image = NSImage(systemSymbolName: toast.symbol ?? (toast.recordPath == nil ? "exclamationmark.triangle.fill" : "xmark.octagon.fill"), accessibilityDescription: "Warning")
+        icon.contentTintColor = toast.tint ?? (toast.recordPath == nil ? .systemOrange : .systemRed)
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
         title.stringValue = toast.title
         title.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -201,7 +242,37 @@ final class ToastView: NSView {
         close.action = #selector(closePressed)
         close.isHidden = true
         close.toolTip = "Close"
-        for view in [icon, title, detail, about, close] { addSubview(view) }
+        warning.stringValue = toast.warning ?? ""
+        warning.font = .systemFont(ofSize: 12)
+        warning.textColor = .systemOrange
+        warning.maximumNumberOfLines = 2
+        warning.isHidden = toast.warning == nil
+        link.isBordered = false
+        link.attributedTitle = NSAttributedString(string: toast.link?.title ?? "", attributes: [.foregroundColor: NSColor.controlAccentColor, .font: NSFont.systemFont(ofSize: 11)])
+        link.target = self
+        link.action = #selector(linkPressed)
+        link.refusesFirstResponder = true
+        link.isHidden = toast.link == nil
+        meter.wantsLayer = true
+        meter.layer?.cornerRadius = 2
+        meter.layer?.masksToBounds = true
+        filled.wantsLayer = true
+        meter.addSubview(filled)
+        meter.isHidden = toast.progress == nil
+        progress = toast.progress ?? 0
+        for action in toast.actions {
+            let button = NSButton(title: action.title, target: self, action: #selector(actionPressed))
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 12)
+            button.refusesFirstResponder = true
+            if action.primary {
+                button.bezelColor = .controlAccentColor
+                button.contentTintColor = .white
+            }
+            buttons.append(button)
+        }
+        for view in [icon, title, detail, about, close, warning, link, meter] + buttons { addSubview(view) }
         toolTip = toast.recordPath ?? (toast.opens ? "Click to show \(toast.about ?? "it")" : nil)
         paint()
         measure()
@@ -225,6 +296,8 @@ final class ToastView: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = (NSColor.windowBackgroundColor.blended(withFraction: 0.06, of: .labelColor) ?? .windowBackgroundColor).cgColor
             layer?.borderColor = (hovered && toast.opens ? NSColor.controlAccentColor : .separatorColor).cgColor
+            meter.layer?.backgroundColor = NSColor.separatorColor.cgColor
+            filled.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
         }
     }
 
@@ -243,9 +316,56 @@ final class ToastView: NSView {
             about.frame = NSRect(x: 40, y: y + 2, width: text, height: 15)
             y += 18
         }
+        if !meter.isHidden {
+            meter.frame = NSRect(x: 40, y: y + 4, width: text, height: 4)
+            filled.frame = NSRect(x: 0, y: 0, width: text * CGFloat(progress), height: 4)
+            y += 10
+        }
+        if !warning.isHidden {
+            warning.preferredMaxLayoutWidth = text
+            let size = warning.sizeThatFits(NSSize(width: text, height: 40))
+            warning.frame = NSRect(x: 40, y: y + 2, width: text, height: min(ceil(size.height), 32))
+            y += warning.frame.height + 3
+        }
+        if !link.isHidden {
+            link.sizeToFit()
+            link.frame = NSRect(x: 40, y: y + 2, width: link.frame.width, height: 15)
+            y += 18
+        }
+        if !buttons.isEmpty {
+            var x = ToastStack.width - 12
+            for button in buttons.reversed() {
+                button.sizeToFit()
+                x -= button.frame.width
+                button.frame = NSRect(x: x, y: y + 6, width: button.frame.width, height: button.frame.height)
+                x -= 6
+            }
+            y += 6 + (buttons.first?.frame.height ?? 0)
+        }
         height = y + 10
         icon.frame = NSRect(x: 12, y: 10, width: 18, height: 18)
         close.frame = NSRect(x: ToastStack.width - 28, y: 8, width: 18, height: 18)
+    }
+
+    private var progress: Double = 0
+
+    func update(detail text: String, progress: Double) {
+        detail.stringValue = text
+        self.progress = progress
+        filled.frame.size.width = meter.bounds.width * CGFloat(progress)
+    }
+
+    @objc private func linkPressed() { toast.link?.run() }
+
+    @objc private func actionPressed(_ sender: NSButton) {
+        guard let index = buttons.firstIndex(of: sender) else { return }
+        toast.actions[index].run()
+    }
+
+    func press(action title: String) -> Bool {
+        guard let action = toast.actions.first(where: { $0.title == title }) else { return false }
+        action.run()
+        return true
     }
 
     var detailText: String { detail.stringValue }
@@ -273,7 +393,7 @@ final class ToastView: NSView {
     func hover(_ on: Bool) {
         guard on != hovered, !fading else { return }
         hovered = on
-        close.isHidden = !on
+        close.isHidden = !on || !toast.actions.isEmpty
         paint()
         if on {
             left = max(0, dueAt?.timeIntervalSinceNow ?? left)
@@ -301,6 +421,7 @@ final class ToastView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        guard toast.actions.isEmpty else { return }
         if toast.opens { onOpen?() } else { onClose?() }
     }
 
@@ -312,6 +433,19 @@ final class ToastView: NSView {
 }
 
 extension AppController {
+    func showLocal(_ toast: Toast) {
+        toasts.show(toast)
+        placeToasts()
+    }
+
+    func closeLocal(_ id: String) {
+        if let view = toasts.toast(id) { toasts.remove(view) }
+    }
+
+    func updateLocal(_ id: String, detail: String, progress: Double) {
+        toasts.toast(id)?.update(detail: detail, progress: progress)
+    }
+
     func toastArrived(_ record: JSON) {
         guard let toast = Toast(record) else { return }
         toasts.show(toast)
@@ -330,7 +464,11 @@ extension AppController {
             }
             if let id = args["click"]?.string {
                 guard let view = toasts.toast(id) else { throw KannaError("not_found", "no toast \"\(id)\"") }
-                view.press(close: args["close"]?.bool == true)
+                if let action = args["action"]?.string {
+                    guard view.press(action: action) else { throw KannaError("not_found", "no action \"\(action)\"") }
+                } else {
+                    view.press(close: args["close"]?.bool == true)
+                }
             }
             let window = controllers.first { $0.value.window.contentView === toasts.superview }?.key
             if let name = args["png"]?.string {
@@ -380,7 +518,7 @@ extension AppController {
                 guard let self else { return }
                 guard reply["ok"]?.bool == true, let pane = toast.pane ?? reply["pane"]?.string else {
                     if let desk, let controller = controllers[desk] {
-                        controller.note = reply["error"]?["message"]?.string ?? "it didn't start"
+                        controller.note = refusal(reply, otherwise: "it didn't start")
                         refresh()
                     }
                     return
