@@ -2,8 +2,8 @@
 . "$(cd "$(dirname "$0")" && pwd -P)/env.sh"
 
 worktree="$(cd "${1:-.}" && pwd -P)" || exit 1
-link="$worktree/target"
-[ -L "$link" ] || exit 0
+target="$worktree/target"
+[ -L "$target" ] || [ -d "$target" ] || exit 0
 main="$(kanna_main_checkout "$worktree")" || exit 0
 root="$(kanna_targets_root "$worktree")"
 case "$root" in
@@ -11,15 +11,15 @@ case "$root" in
   "") exit 0 ;;
   *) echo "==> targets in $(kanna_targets_config "$worktree") isn't an absolute folder: leaving target/ as it is"; exit 0 ;;
 esac
-if volume="$(kanna_targets_unmounted "$root")"; then
-  echo "==> The volume $volume isn't mounted: no build folder to remove"
-  exit 0
-fi
 name="$(basename "$worktree")"
 case "$name" in _main) exit 0 ;; esac
 folder="$root/$(basename "$main")/$name"
-if [ "$(readlink "$link")" != "$folder" ]; then
-  echo "==> target/ links to $(readlink "$link"), not $folder: leaving it"
+if [ -L "$target" ] && [ "$(readlink "$target")" != "$folder" ]; then
+  echo "==> target/ links to $(readlink "$target"), not $folder: leaving it"
+  exit 0
+fi
+if volume="$(kanna_targets_unmounted "$root")"; then
+  echo "==> The volume $volume isn't mounted: leaving target/ and its build folder"
   exit 0
 fi
 if [ -L "$folder" ]; then
@@ -30,4 +30,9 @@ if [ -d "$folder" ]; then
   echo "==> Removing $folder"
   rm -rf "$folder" || exit 1
 fi
-rm "$link"
+if [ -L "$target" ]; then
+  rm "$target"
+  exit 0
+fi
+echo "==> Removing $target"
+kanna_remove "$target"

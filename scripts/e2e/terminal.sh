@@ -245,3 +245,68 @@ send_key() {
   ! shows agent "not in application cursor mode" || { echo "an arrow was sent in normal cursor mode"; kanna read agent; return 1; }
   [[ "$(kanna send-key agent cmd+c 2>&1)" == *"cmd+c only means something to Kanna.app"* ]] || { echo "cmd+c wasn't refused"; return 1; }
 }
+
+scenario agent_focus M4
+agent_focus() {
+  local agent="$repo_root/tools/mock-agent/mock-agent" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" log="$KANNA_STATE_DIR/focus.log" task other
+  mkdir -p "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "agent_focus line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  start_daemon || { echo "agent_focus line $LINENO"; return 1; }
+  env -u KANNA_NO_INITIAL_WINDOW KANNA_START_DIR="$repo" "$app" --bg >>"$out/app.log" 2>&1 &
+  app_pid=$!
+  wait_for 10 app_attached || { echo "the app did not attach"; return 1; }
+  check wait_for 10 eval '[[ "$(dwin d1 lead.pane)" == term-* ]]' || { echo "agent_focus: no Desk"; return 1; }
+  focus_now() { [[ "$(tail -1 "$log" 2>/dev/null)" == "$1" ]]; }
+  focus_was() { check wait_for 5 focus_now "$1" || { echo "agent_focus: $2: the agent was last told focus $(tail -1 "$log" 2>/dev/null || echo nothing), not $1 ($(tr '\n' ' ' <"$log" 2>/dev/null))"; kanna workspace list --all; return 1; }; }
+  (cd "$repo" && kanna task new "Focus task" "focus $log" --agent "$agent") >/dev/null && kanna task pick $(tid 1) >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  kanna task activate "Focus task" >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  task="$(dwin d1 dock.pane)"
+  check wait_for 10 test -f "$log" || { echo "agent_focus: the agent didn't turn on focus reports"; kanna read "$task"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 key):$(dwin d1 focused)" == "True:$task" ]]' || { echo "agent_focus: the task's agent isn't focused in the key window"; kanna workspace list --all; return 1; }
+  focus_was in "made active" || return 1
+  KANNA_TERMINAL="$task" kanna open --name focus_tab --cmd "exec sleep 600" >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was out "a tab of its task focused" || return 1
+  kanna zoom "$task" >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 zoomed)" == "$task" ]]' || { echo "agent_focus: kanna zoom didn't zoom the agent"; kanna workspace list --all; return 1; }
+  focus_was in "zoomed on its agent" || return 1
+  key "cmd+."
+  check wait_for 5 eval '[[ "$(dwin d1 dock)" == None ]]' || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was out "parked" || return 1
+  key "cmd+."
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane):$(dwin d1 zoomed)" == "$task:$task" ]]' || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was in "shown again" || return 1
+  key cmd+shift+return
+  check wait_for 5 eval '[[ "$(dwin d1 zoomed)" == None ]]' || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was in "unzoomed" || return 1
+  kanna focus focus_tab >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was out "its tab focused" || return 1
+  kanna focus "$task" >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was in "focused again" || return 1
+  key cmd+shift+return
+  check wait_for 5 eval '[[ "$(dwin d1 zoomed)" == "$task" ]]' || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was in "zoomed again" || return 1
+  (cd "$repo" && kanna task new "Other task" "hello" --agent "$agent") >/dev/null && kanna task pick $(tid 2) >/dev/null && kanna task activate "Other task" >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  other="$(dwin d1 dock.pane)"
+  check test "$other" != "$task" || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was out "another task made active" || return 1
+  kanna task activate "Focus task" >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$task" ]]' || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was in "made active again" || return 1
+  kanna open --window new --name focus_window >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 key)" == False ]]' || { echo "agent_focus line $LINENO"; return 1; }
+  focus_was out "another window key" || return 1
+  kanna close focus_window >/dev/null || { echo "agent_focus line $LINENO"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 key)" == True ]]' || { echo "agent_focus: the Desk didn't become key again"; return 1; }
+  focus_was in "its window key again" || return 1
+  check test "$(dwin d1 zoomed)" == "$task" || { echo "agent_focus line $LINENO"; return 1; }
+  stop_app
+  printf 'restart\n' >>"$log"
+  start_app || { echo "agent_focus line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(dwin d1 zoomed)" == "$task" ]]' || { echo "agent_focus: the task isn't zoomed after a relaunch"; kanna workspace list --all; return 1; }
+  focus_was in "after a relaunch with the task zoomed" || return 1
+  key "cmd+."
+  focus_was out "parked after a relaunch" || return 1
+  key "cmd+."
+  focus_was in "shown again after a relaunch" || return 1
+  stop_agents
+}

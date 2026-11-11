@@ -1,8 +1,8 @@
 # Build Store
 
-**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`; the main checkout's links, a read-only folder replaced by a link, the internal store with the volume unplugged, and `kanna_clone` from another volume, a disk image, and with `cp -c` failing), `scripts/test-teardown.sh` · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on the build volume grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%
+**Status:** built · **Tested:** `scripts/test-store.sh` (locking, publish, pruning, eviction against a fake `ROOT`; the main checkout's links, a read-only folder replaced by a link, the internal store with the volume unplugged, and `kanna_clone` from another volume, a disk image, and with `cp -c` failing; a worktree's `target/` layout), `scripts/test-teardown.sh`, `scripts/test-volume-drop.sh` (an instance outlives its volume) · **Builds on:** [build targets](build-targets.md), [build speed](build-speed.md) · **Why:** each task's build folder on the build volume grew to ~17 GB, and one merge-main round rebuilt ~40 of them, filling the external SSD to 98%; and the SSD drops out now and then, which killed every task instance run from it
 
-A task worktree's build folder holds only what that task builds itself: one Rust profile and its Swift build. Everything pinned (Zig, Ghostty's source, GhosttyKit, libghostty-vt, and a build of main's Rust dependencies) is built once per pin into a shared, read-only **store** that worktrees link to or clone; Rust dependencies that differ from main's come from a shared compile cache; and build folders are caches that are evicted, least recently used first, when the volume runs low.
+A task worktree's build folder holds only what that task builds itself: one Rust profile and its Swift build. Everything pinned (Zig, Ghostty's source, GhosttyKit, libghostty-vt, and a build of main's Rust dependencies) is built once per pin into a shared, read-only **store** that worktrees link to or clone; Rust dependencies that differ from main's come from a shared compile cache; build folders are caches that are evicted, least recently used first, when the volume runs low; and what a task runs (its `Kanna.app`) stays on the internal disk, so the volume can drop out under it.
 
 ## Contents
 
@@ -11,23 +11,27 @@ A task worktree's build folder holds only what that task builds itself: one Rust
 3. [One Rust profile per worktree](#3-one-rust-profile-per-worktree)
 4. [The compile cache](#4-the-compile-cache)
 5. [Eviction](#5-eviction)
-6. [Measured](#6-measured)
-7. [Rejected](#7-rejected)
-8. [Glossary](#8-glossary)
+6. [Running off the volume](#6-running-off-the-volume)
+7. [Measured](#7-measured)
+8. [Rejected](#8-rejected)
+9. [Glossary](#9-glossary)
 
 ## 1. What goes where
 
 ```mermaid
 flowchart LR
-    subgraph W["task worktree"]
-        T["target (link)"]
+    subgraph W["task worktree (internal disk)"]
+        subgraph T["target/"]
+            APP["Kanna.app, e2e-kanna/"]
+            TL["debug, kanna-build, signed, … (links)"]
+            GK["ghosttykit (link)"]
+            GV["ghostty-vt/HOST (link)"]
+        end
     end
     subgraph V["targets (ROOT)"]
         subgraph F["kanna/task-1dfb12c2"]
             D["debug/ (the one Rust profile)"]
-            K["kanna-build/ (SwiftPM), Kanna.app"]
-            GK["ghosttykit (link)"]
-            GV["ghostty-vt/HOST (link)"]
+            K["kanna-build/ (SwiftPM), signed/"]
         end
         subgraph S["_shared (read-only)"]
             SK["ghosttykit/KEY"]
@@ -38,7 +42,7 @@ flowchart LR
         end
         M["kanna/_main/ (release, …)"]
     end
-    T --> F
+    TL --> F
     GK --> SK
     GV --> SV
     SD -->|"APFS clone"| D
@@ -124,7 +128,7 @@ flowchart TD
 ```
 
 - **Why sccache:** it is the one maintained cache that shares Rust compiles between different target folders (by hashing a crate's inputs, not its path), it's already on this Mac (Homebrew), and it covers what the seed can't: dependencies a task changed, other triples, and the seed's own build after a lock change. Cargo itself can't share a build across workspaces (`build-dir` only moves a workspace's own intermediates).
-- **Why not sccache alone:** it doesn't cache proc-macros or build scripts (dylibs and binaries), and on macOS each worktree's proc-macro dylib differs in its linker UUID and signature, so every crate that uses a proc-macro misses too. Measured, a second worktree hit 76% of what it sent and still spent 82s in cargo ([§6](#6-measured)); the seed is a clone.
+- **Why not sccache alone:** it doesn't cache proc-macros or build scripts (dylibs and binaries), and on macOS each worktree's proc-macro dylib differs in its linker UUID and signature, so every crate that uses a proc-macro misses too. Measured, a second worktree hit 76% of what it sent and still spent 82s in cargo ([§7](#7-measured)); the seed is a clone.
 - **What it doesn't cache:** our own crates (incremental), binaries, proc-macros and build-script runs.
 - **Its own server and folder:** port 4227 (not the default 4226), `SCCACHE_DIR` the store's `sccache/`, `SCCACHE_CACHE_SIZE` 30G unless set. The server starts with the first compile and stops after 10 idle minutes.
 - **Degrades to plain `rustc`:** with sccache missing, `KANNA_SCCACHE=0`, or sccache unable to run (a sandbox that forbids its server's socket exits 2 before compiling). The marker (`$TMPDIR/kanna-sccache-off.PID`, per cargo process) keeps a failing sccache from being tried once per crate. Builds are as fast as before, never broken.
@@ -153,7 +157,39 @@ flowchart TD
 - **An evicted worktree rebuilds** on its next build: its `target/` link is left dangling, and `kanna_targets` makes the folder again.
 - **`free`** sets the threshold in GB: 100 in the committed `build.json`, overridden by the main checkout's `build.local.json` ([build targets](build-targets.md#1-where-target-lives)). Without either, nothing is evicted. It's this repo's, not one of Kanna's settings.
 
-## 6. Measured
+## 6. Running off the volume
+
+The build volume is an external drive, and it drops out now and then (2026-11-01 20:58:26: `disk10: media is not present`, mounted again 3s later). A process whose executable is on it loses its code pages: it dies, or spins until its fault handlers have run once. So a task worktree's `target/` is a real folder on the internal disk, like the main checkout's ([build targets](build-targets.md#2-rules)), and only its build folders link to the volume:
+
+```mermaid
+flowchart LR
+    subgraph I["internal disk: WORKTREE/target/"]
+        A["Kanna.app<br/>(app, daemon, keeper, kanna run here)"]
+        E["e2e-kanna/ (the instance's logs)"]
+        G["ghosttykit, ghostty-vt/HOST (links)"]
+        L["debug, kanna-build, signed, tmp, … (links)"]
+    end
+    subgraph V["ROOT/REPO/WORKTREE (the volume)"]
+        D["debug/, kanna-build/, signed/, tmp/, …"]
+        U[".used"]
+    end
+    S["ROOT/_shared"]
+    L -->|symlink each| D
+    G -->|symlink| S
+    D -->|"build-kanna-app.sh copies the binaries"| A
+```
+
+- **Kept on the internal disk:** `target/` itself, every `*.app`, `e2e-kanna/` (the e2e instance's daemon and app write their output there, and a write to a volume that dropped out fails; a Rust `eprintln!` that fails panics), and the store links `ghosttykit` and `ghostty-vt/`. Files cargo writes at the top (`CACHEDIR.TAG`, `.rustc_info.json`) stay where they are: they're tiny.
+- **Every other folder links** to `ROOT/REPO/WORKTREE/NAME`. `kanna_targets` makes the links for the profile folder, `kanna-build` and `signed` before the build, so cargo and SwiftPM never start gigabytes on the internal disk; any other folder a build makes (`tmp/` from `cargo test`, `TRIPLE/` for another architecture) moves to the volume on the next build, as in the main checkout. The main checkout and worktrees share this code; they differ only in the folder the links go to (`_main` or `WORKTREE`).
+- **The app is a copy:** `build-kanna-app.sh` already assembles `target/Kanna.app` by copying the Swift binary and the signed helpers, so it now lands on the internal disk without a change. It's about 180 MB (a debug Swift binary, and Sparkle in `Frameworks/`); its binaries link nothing outside the bundle and the system.
+- **Whatever runs from `target/Kanna.app` survives a drop:** `e2e-kanna.sh`, `run-kanna.sh`, and an instance started by hand from it. What runs from the profile folder doesn't: `cargo test`'s binaries, `cargo run`, `target/debug/kanna-daemon`. Those are builds and tests that fail and run again, not instances. An app built for another architecture (`target/TRIPLE/Kanna.app`) is still on the volume.
+- **The old layout moves on the next build:** a worktree whose `target/` is one link to `ROOT/REPO/WORKTREE` gets a real `target/` with its folders linked, keeping what they built; its `Kanna.app`, `e2e-kanna`, `ghosttykit` and `ghostty-vt` on the volume are deleted, and the build makes them again on the internal disk. An instance still running the old app is on the volume until it's restarted.
+- **Volume unplugged:** the links dangle; the build removes them and builds in real folders on the internal disk, from scratch, and the next build with the volume moves them over ([build targets](build-targets.md#2-rules)). The app is untouched by either.
+- **Teardown** (on Done, [build targets](build-targets.md#3-removing-a-task)) removes `ROOT/REPO/WORKTREE`, then the worktree's `target/`, app included: Done can keep the worktree, and the app is a cache like the rest. With the volume unmounted it removes neither, so nothing is left on the volume without the link that leads to it.
+- **Eviction** ([§5](#5-eviction)) removes only the folder on the volume; the app stays with its worktree until teardown or the next build. A task running its app counts as running, since the app's command line names the worktree.
+- **Tested** by `scripts/test-volume-drop.sh`: a disk image stands in for the volume; an instance (daemon, keeper, app `--bg`) runs from a worktree's `target/Kanna.app` while the same app, copied onto the image, runs beside it as the control. The image is force-detached (`hdiutil detach -force`) and attached again, and the instance must open a terminal, show its output and keep its app attached each time, while the control must break (its `kanna open` fails), or the drop showed nothing. It takes about 30s. `scripts/test-store.sh` tests the layout, the old layout's move, and unplugging and plugging back.
+
+## 7. Measured
 
 Fresh worktrees of main on the external SSD (arm64), each running `scripts/build.sh` then `cargo test --workspace --no-run`, with other tasks building at the same time. Sizes are `du` (which counts APFS clones in full) and the drop in the volume's free space (which doesn't).
 
@@ -170,14 +206,16 @@ Fresh worktrees of main on the external SSD (arm64), each running `scripts/build
 - **Tests got faster** because `cargo test` now reuses the profile `build.sh` just built, and dependencies come optimised but without debug info.
 - **What's left per task** is our own crates (`debug/deps`, `incremental/`, ~1.8 GB at `opt-level = 1` with line tables) and SwiftPM's debug build (850 MB).
 
-## 7. Rejected
+## 8. Rejected
 
 - **A shared `CARGO_TARGET_DIR`:** one cargo lock for every worktree serialises their builds, and their different sources keep invalidating each other's fingerprints.
 - **Keeping both profiles, only sharing Ghostty:** `release/` and `debug/` are each 4 GB; tests can't run in `release` because `cargo test` uses `dev` unless every agent remembers `--release`, and the keeper's test hooks need debug assertions.
 - **Eviction in the daemon:** it would have to know this repo's build layout, and Kanna's settings are for building any project.
+- **The app somewhere else on the internal disk** (`~/Library/Caches/…/WORKTREE/Kanna.app`), with `target/` still one link: every path that says `target/Kanna.app` (`e2e-kanna.sh`, `run-kanna.sh`, specs, instances started by hand) would change or go through the volume, and the app would need a cleanup of its own. A real `target/` is the layout the main checkout already has.
+- **Copying the whole build to the internal disk to run it:** gigabytes per task, for what's needed by 180 MB.
 - **Hard links instead of symlinks into the store:** a folder can't be hard-linked, and a link shows where an entry came from.
 
-## 8. Glossary
+## 9. Glossary
 
 | Term | Meaning |
 |---|---|
