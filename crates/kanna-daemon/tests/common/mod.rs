@@ -54,6 +54,30 @@ impl Instance {
         let _ = self.daemon.wait();
     }
 
+    pub fn records(&self, flags: rusqlite::OpenFlags) -> rusqlite::Connection {
+        rusqlite::Connection::open_with_flags(self.dir.join("state/kanna.db"), flags).unwrap()
+    }
+
+    pub fn saved(&self) -> Value {
+        let db = self.records(rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY);
+        let mut rows = db.prepare("select id, pane, keeper, state, doc from terminals").unwrap();
+        let mut terminals: Vec<Value> = rows
+            .query_map([], |r| {
+                let doc: String = r.get(4)?;
+                let mut record: Value = serde_json::from_str(&doc).unwrap();
+                for (n, key) in ["id", "pane", "keeper", "state"].into_iter().enumerate() {
+                    record[key] = Value::String(r.get(n)?);
+                }
+                Ok(record)
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        terminals.sort_by_key(|t| t["pane"].as_str().and_then(|p| p.strip_prefix("term-")).and_then(|n| n.parse::<u64>().ok()));
+        let counters = db.query_row("select value from meta where key = 'terminal_counters'", [], |r| r.get::<_, String>(0)).map_or(Value::Null, |text| serde_json::from_str(&text).unwrap());
+        json!({ "counters": counters, "terminals": terminals })
+    }
+
     pub fn start_again(&mut self) {
         self.daemon = spawn_daemon(&self.dir, &self.env);
         wait_for("the daemon's socket", || UnixStream::connect(self.socket()).is_ok());
@@ -114,8 +138,13 @@ impl Instance {
         list["panes"].as_array().unwrap().iter().find(|p| p["name"] == name).cloned().unwrap_or(Value::Null)
     }
 
-    pub fn screen(&self, pane: &str) -> String {
-        self.call("read", json!({"pane": pane}))["text"].as_str().unwrap_or("").to_string()
+    pub fn pane_of(&self, terminal: &str) -> String {
+        let list = self.call("list", json!({}));
+        list["panes"].as_array().unwrap().iter().find(|p| p["terminal"] == terminal).and_then(|p| p["id"].as_str()).unwrap_or(terminal).to_string()
+    }
+
+    pub fn screen(&self, terminal: &str) -> String {
+        self.call("read", json!({"pane": self.pane_of(terminal)}))["text"].as_str().unwrap_or("").to_string()
     }
 
     pub fn log(&self) -> String {
@@ -136,9 +165,6 @@ impl Instance {
         App::connect(&self.socket())
     }
 
-    pub fn app_speaking(&self, protocols: [u32; 2]) -> App {
-        App::connect_speaking(&self.socket(), json!([]), protocols)
-    }
 }
 
 impl Drop for Instance {
@@ -182,7 +208,6 @@ fn daemon_command(dir: &Path, env: &[(String, String)]) -> Command {
         .env("SHELL", "/bin/sh")
         .env("KANNA_SOCKET", dir.join("kanna.sock"))
         .env("KANNA_STATE_DIR", dir.join("state"))
-        .env("KANNA_AGENT_RULES_URL", "none")
         .env("KANNA_KEEPER", keeper_binary())
         .env("KANNA_KEEPER_CLOSE_GRACE_MS", "300")
         .env("KANNA_MACHINE_MDNS", "0")
@@ -201,6 +226,7 @@ pub struct App {
     pub view: Value,
     pub shows: bool,
     pub acks: bool,
+    pub hello: Value,
 }
 
 impl App {
@@ -209,16 +235,13 @@ impl App {
     }
 
     pub fn connect_with(socket: &Path, panes: Value) -> App {
-        App::connect_speaking(socket, panes, kanna_build::PROTOCOLS)
-    }
-
-    pub fn connect_speaking(socket: &Path, panes: Value, protocols: [u32; 2]) -> App {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let mut app = App::raw(socket);
-            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocols": protocols, "panes": panes}}));
+            app.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": std::process::id(), "protocol": kanna_build::PROTOCOL, "panes": panes}}));
             let hello = app.next().expect("no answer to app.hello");
             if hello["ok"] == true {
+                app.hello = hello;
                 return app;
             }
             assert!(hello["error"]["code"] == "app_attached" && Instant::now() < deadline, "{hello}");
@@ -230,7 +253,7 @@ impl App {
         let stream = UnixStream::connect(socket).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
-        App { stream, reader, view: Value::Null, shows: true, acks: true }
+        App { stream, reader, view: Value::Null, shows: true, acks: true, hello: Value::Null }
     }
 
     pub fn answering(self) -> std::thread::JoinHandle<()> {
@@ -269,6 +292,10 @@ impl App {
             if message["cmd"] == "start" && self.shows {
                 let pane = message["args"]["pane"]["id"].clone();
                 self.tell("update", json!({"pane": pane, "state": "running"}));
+            }
+            if message["cmd"] == "app.front" {
+                self.send(json!({"id": message["id"], "ok": true, "front": null}));
+                continue;
             }
             if message["cmd"] == "app.snap" {
                 let line = message["args"]["line"].as_u64().unwrap_or(1);

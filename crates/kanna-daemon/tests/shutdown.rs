@@ -1,7 +1,7 @@
 mod common;
 
 use common::{alive, request, App, Instance};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -22,11 +22,6 @@ fn cpu_seconds(pid: i32) -> f64 {
     text.trim().split(':').rev().zip([1.0, 60.0, 3600.0]).map(|(f, scale)| f.parse::<f64>().unwrap_or(0.0) * scale).sum()
 }
 
-fn saved(instance: &Instance) -> Value {
-    let text = std::fs::read_to_string(instance.dir.join("state/terminals/terminals.json")).unwrap_or_default();
-    serde_json::from_str(&text).unwrap_or(Value::Null)
-}
-
 #[test]
 fn shutdown_quits_the_app_hangs_up_every_terminal_stops_the_keeper_and_removes_the_socket_last() {
     let mut instance = Instance::start();
@@ -41,7 +36,7 @@ fn shutdown_quits_the_app_hangs_up_every_terminal_stops_the_keeper_and_removes_t
     let refused = request(&instance.socket(), json!({"id": 1, "cmd": "list"}));
     assert_eq!(refused["error"]["code"], "stopping", "{refused}");
     let mut late = App::raw(&instance.socket());
-    late.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocols": kanna_build::PROTOCOLS}}));
+    late.send(json!({"id": 0, "cmd": "app.hello", "args": {"pid": 1, "protocol": kanna_build::PROTOCOL}}));
     assert_eq!(late.next().unwrap()["error"]["code"], "stopping");
     assert!(instance.socket().exists() && alive(pid), "nothing stops before the app has gone");
     drop(app);
@@ -50,7 +45,7 @@ fn shutdown_quits_the_app_hangs_up_every_terminal_stops_the_keeper_and_removes_t
     assert!(instance.daemon.try_wait().unwrap().unwrap().success(), "{}", instance.log());
     assert!(!instance.socket().exists() && !instance.dir.join("state/daemon.pid").exists());
     assert!(!alive(pid) && !alive(keeper as i64), "{}", instance.log());
-    let record = &saved(&instance)["terminals"][0];
+    let record = &instance.saved()["terminals"][0];
     assert_eq!((record["id"].as_str(), record["state"].as_str(), record["hungUp"].as_bool()), (Some(terminal.as_str()), Some("exited"), Some(true)), "{record}");
 
     instance.start_again();
@@ -80,7 +75,6 @@ fn the_daemon_shuts_down_when_its_owner_exits_even_with_an_app_that_doesnt_quit(
         .env("KANNA_E2E_OWNER", &owner_pid)
         .env("KANNA_SOCKET", dir.join("kanna.sock"))
         .env("KANNA_STATE_DIR", &dir)
-        .env("KANNA_AGENT_RULES_URL", "none")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -121,7 +115,6 @@ fn a_daemon_waiting_for_the_folder_while_it_shuts_down_doesnt_start() {
         .env("HOME", instance.dir.join("home"))
         .env("KANNA_SOCKET", instance.socket())
         .env("KANNA_STATE_DIR", instance.dir.join("state"))
-        .env("KANNA_AGENT_RULES_URL", "none")
         .stdin(Stdio::null())
         .stderr(std::fs::File::create(instance.dir.join("waiting.log")).unwrap())
         .spawn()
@@ -149,7 +142,6 @@ fn a_daemon_started_during_the_shutdown_doesnt_start_however_late_it_gets_to_the
         .env("HOME", instance.dir.join("home"))
         .env("KANNA_SOCKET", instance.socket())
         .env("KANNA_STATE_DIR", instance.dir.join("state"))
-        .env("KANNA_AGENT_RULES_URL", "none")
         .stdin(Stdio::null())
         .stderr(std::fs::File::create(instance.dir.join("late.log")).unwrap())
         .spawn()

@@ -13,6 +13,9 @@ struct DeskTask: Equatable {
     var offline = false
     var made = 0
     var stack: String?
+    var task: String?
+
+    var identity: String { task ?? id }
 
     @MainActor var meta: String { offline ? "offline" : status == "needs-you" ? "needs you" : Self.since(leftAt) }
 
@@ -51,6 +54,7 @@ struct DeskTask: Equatable {
         case "working": return .controlAccentColor
         case "needs-you": return .systemOrange
         case "idle": return .systemGreen
+        case "failed": return .systemRed
         default: return .tertiaryLabelColor
         }
     }
@@ -67,6 +71,11 @@ struct ShelfTask: Equatable {
     var pane: String? = nil
     var branch: String? = nil
     var stack: String? = nil
+    var status: String? = nil
+    var queue: QueueSpot? = nil
+    var failed: String? = nil
+    var running = false
+    var failedEntry: String? = nil
 
     static func stack(_ entry: JSON) -> String? {
         func names(_ key: String) -> String {
@@ -74,12 +83,13 @@ struct ShelfTask: Equatable {
             return list.compactMap { $0["name"]?.string.map { "\u{201C}\($0)\u{201D}" } ?? $0["id"]?.string }.joined(separator: ", ")
         }
         if entry["conflict"]?.string != nil { return "its blockers' branches conflict" }
-        let stale = names("stale"), bases = names("bases")
-        if !stale.isEmpty { return "stale · behind " + stale }
-        let ready: String? = entry["ready"]?["head"]?.string != nil ? "ready" : nil
-        let after: String? = bases.isEmpty ? nil : "merges after " + bases
-        let said = [ready, after].compactMap { $0 }
-        return said.isEmpty ? nil : said.joined(separator: " · ")
+        switch entry["merge"]?.string {
+        case "stale": return "stale · behind " + names("stale")
+        case "after": return "merges after " + names("bases")
+        case "conflicts": return "conflicts"
+        case "ready": return "ready"
+        default: return nil
+        }
     }
 
     static func program(_ command: String?) -> String? {
@@ -87,7 +97,19 @@ struct ShelfTask: Equatable {
         return first.split(separator: "/").last.map(String.init)
     }
 
+    static func last(stopped: String?) -> String? {
+        switch stopped {
+        case "needs-you": return "needs-you"
+        case "finished": return "idle"
+        default: return nil
+        }
+    }
+
     var blocked: Bool { !waits.isEmpty }
+
+    var dashed: Bool { blocked || stack?.hasPrefix("its blockers") == true }
+
+    var dot: String? { failed != nil && status != "working" ? "failed" : !dashed && ["working", "needs-you", "idle"].contains(status) ? status : nil }
 
     @MainActor var after: String {
         let made = "made " + DeskTask.ago(madeAt).replacingOccurrences(of: "now", with: "just now")
@@ -124,6 +146,42 @@ struct ShelfTask: Equatable {
             }
         }
         return out
+    }
+}
+
+struct QueueSpot: Equatable {
+    let position: Int
+    let state: String
+    var stage: String? = nil
+    var since: Double? = nil
+    var after: String? = nil
+    var main: String? = nil
+    var merge: String? = nil
+    var why: String? = nil
+    var by: String? = nil
+
+    init?(_ entry: JSON?) {
+        guard let entry, let state = entry["state"]?.string else { return nil }
+        position = Int(entry["position"]?.number ?? 0)
+        self.state = state
+        stage = entry["stage"]?.string
+        since = entry["since"]?.number
+        after = entry["afterName"]?.string ?? entry["after"]?.string
+        main = entry["main"]?.string
+        merge = entry["merge"]?.string
+        why = entry["why"]?.string
+        by = entry["by"]?.string
+    }
+
+    @MainActor var said: String {
+        let main = self.main ?? "main"
+        switch state {
+        case "testing":
+            let stage = self.stage.flatMap { $0 == "test" ? nil : $0 } ?? "testing"
+            return "\(stage) on \(main) + its branch · \(DeskTask.ago(since).replacingOccurrences(of: "now", with: "just started"))"
+        case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
+        default: return after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"
+        }
     }
 }
 
@@ -196,7 +254,8 @@ final class DeskStrip: NSView {
 
     var geometry: JSON {
         ["width": .number(Double(bounds.width)),
-         "hint": .string(hint.text), "hintRight": .number(Double(hint.frame.maxX)),
+         "hint": .string(hint.text), "hintLeft": .number(Double(hint.frame.minX)), "hintRight": .number(Double(hint.frame.maxX)),
+         "countLeft": count.isHidden ? .null : .number(Double(count.frame.minX)),
          "items": .array(stripItems.map { ["task": .string($0.task.id), "meta": .string($0.metaText), "right": .number(Double($0.frame.maxX)), "key": $0.keyText.map { .string($0) } ?? .null] })]
     }
 
@@ -230,25 +289,26 @@ final class DeskStrip: NSView {
         let chrome = items.reduce(0) { $0 + $1.chrome }
         let metas = items.map(\.metaWidth)
         let titles = items.map(\.titleWidth)
-        hint.frame.origin = NSPoint(x: 8, y: (Self.height - hint.frame.height) / 2)
-        let start = hint.frame.maxX + (items.isEmpty ? 0 : 9)
-        var room = bounds.width - start - gaps - chrome - metas.reduce(0, +)
+        let hintLeft = bounds.width - hint.frame.width - 8
+        var room = hintLeft - 10 - 8 - gaps - chrome - metas.reduce(0, +)
         let titleFloors = titles.map { min($0, Self.titleFloor) }.reduce(0, +)
         count.isHidden = waiting == 0
-        if !count.isHidden, room - count.frame.width - 20 < titleFloors {
+        if !count.isHidden, room - count.frame.width - 8 < titleFloors {
             count.isHidden = true
         }
-        if !count.isHidden { room -= count.frame.width + 20 }
+        if !count.isHidden { room -= count.frame.width + 8 }
         let fitted = Self.shrink(titles, to: room, floor: Self.titleFloor)
         let leftover = room - fitted.reduce(0, +)
         let fittedMetas = leftover < 0 ? Self.shrink(metas, to: metas.reduce(0, +) + leftover, floor: 0) : metas
-        var x: CGFloat = start
+        var x: CGFloat = 8
         for (index, item) in items.enumerated() {
             item.fit(title: fitted[index], meta: fittedMetas[index])
             item.frame.origin = NSPoint(x: x, y: (Self.height - item.frame.height) / 2)
             x += item.frame.width + 4
         }
         count.frame.origin = NSPoint(x: bounds.width - count.frame.width - 12, y: (Self.height - count.frame.height) / 2)
+        hint.frame.origin = NSPoint(x: hintLeft - (count.isHidden ? 0 : count.frame.width + 8), y: (Self.height - hint.frame.height) / 2)
+        needsDisplay = true
     }
 
     static func shrink(_ widths: [CGFloat], to total: CGFloat, floor: CGFloat) -> [CGFloat] {
@@ -263,7 +323,7 @@ final class DeskStrip: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.separatorColor.setFill()
         NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
-        if !stripItems.isEmpty { NSRect(x: hint.frame.maxX + 4, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
+        if !stripItems.isEmpty { NSRect(x: hint.frame.minX - 5, y: (Self.height - 14) / 2, width: 1, height: 14).fill() }
     }
 }
 
@@ -399,18 +459,34 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     ]
     var onActivate: ((String) -> Void)?
     var onStart: ((String) -> Void)?
+    var onShelve: ((String) -> Void)?
+    var onLog: ((String) -> Void)?
     var onLeaveSearch: (() -> Void)?
+    var onRun: ((String) -> Void)?
+    var onKeyed: ((Bool) -> Void)?
     private var shown: DeskPage?
     private let scroller = NSScrollView()
     private let document = FlippedView()
     private let search = NSSearchField()
     private let searchKey = NSTextField(labelWithString: "⌘F")
     private(set) var query = ""
-    private(set) var selected = 0
+    private var chosen: String?
+    private var chosenAt = 0
+    private(set) var keyed = false
     private var started: String?
+    private var responderWatch: NSKeyValueObservation?
     private var ticker: Timer?
     private var deskKept: [String: DeskRow] = [:]
     private var shelfKept: [String: ShelfRow] = [:]
+    private var shelfArea = NSRect.zero
+    private var deskHead = NSRect.zero
+    private var shelfHead: NSTextField?
+    private var shelfTally: NSTextField?
+    private var lifted: (row: DeskRow, copy: NSView, grip: NSPoint, over: Bool)?
+    private let zone = DropZone()
+    private let dropNote = NSTextField(labelWithString: "· Drop to move to the Shelf")
+    private let noteBar = NoteBar()
+    var onDismissNote: (() -> Void)?
 
     override var isFlipped: Bool { true }
 
@@ -429,6 +505,9 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         scroller.horizontalScrollElasticity = .none
         scroller.documentView = document
         addSubview(scroller)
+        noteBar.isHidden = true
+        noteBar.onClose = { [weak self] in self?.onDismissNote?() }
+        addSubview(noteBar)
         search.placeholderString = "Search the Shelf"
         search.font = .systemFont(ofSize: 12)
         search.controlSize = .small
@@ -439,6 +518,8 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         searchKey.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         searchKey.textColor = .tertiaryLabelColor
         searchKey.sizeToFit()
+        dropNote.font = .systemFont(ofSize: 12)
+        dropNote.sizeToFit()
         paint()
     }
 
@@ -459,8 +540,18 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         rowViews.compactMap { $0 as? ShelfRow }.map { ($0.task.id, $0.convert(NSPoint(x: 20, y: $0.bounds.midY), to: nil)) }
     }
 
+    private(set) var groupTitles: [String] = []
+
+    var shelfLogs: [(task: String, center: NSPoint)] {
+        rowViews.compactMap { $0 as? ShelfRow }.compactMap { row in row.logCenter.map { (row.task.id, $0) } }
+    }
+
     var blockedShelf: [JSON] {
         rowViews.compactMap { $0 as? ShelfRow }.filter(\.task.blocked).map { ["task": .string($0.task.id), "waits": .array($0.task.waits.map { .string($0) }), "go": .string($0.label)] }
+    }
+
+    var shelfDots: [JSON] {
+        rowViews.compactMap { $0 as? ShelfRow }.map { ["task": .string($0.task.id), "dot": $0.task.dot.map { .string($0) } ?? .string($0.task.dashed ? "dashed" : "circle")] }
     }
 
     var stackedShelf: [JSON] {
@@ -483,6 +574,37 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     var found: [String] { shown.map { page in page.shelf.filter { $0.matches(query) }.map(\.id) } ?? [] }
 
+    var order: [String] { (shown?.tasks.map(\.identity) ?? []) + found }
+
+    var selected: Int { selection.flatMap { found.firstIndex(of: $0) } ?? 0 }
+
+    var selection: String? {
+        guard let chosen else { return nil }
+        let rows = order
+        if rows.contains(chosen) { return chosen }
+        return rows.isEmpty ? nil : rows[min(chosenAt, rows.count - 1)]
+    }
+
+    private func choose(_ task: String?) {
+        chosen = task
+        chosenAt = task.flatMap { order.firstIndex(of: $0) } ?? 0
+    }
+
+    var selectedTask: (id: String, onDesk: Bool, blocked: Bool, running: Bool, active: Bool)? {
+        guard keyed, let selection, let page = shown else { return nil }
+        if let task = page.tasks.first(where: { $0.identity == selection }) { return (task.id, true, false, false, task.id == page.active) }
+        guard let task = page.shelf.first(where: { $0.id == selection }), task.matches(query) else { return nil }
+        return (selection, false, task.blocked, task.running, false)
+    }
+
+    var hints: JSON {
+        .array(rowViews.compactMap { view -> JSON? in
+            if let row = view as? DeskRow { return ["task": .string(row.task.identity), "alt": .string(row.altText), "go": .string(row.goText), "selected": .bool(row.selected)] }
+            if let row = view as? ShelfRow { return ["task": .string(row.task.id), "alt": .string(row.altText), "go": .string(row.label), "selected": .bool(row.selected)] }
+            return nil
+        })
+    }
+
     var searching: Bool { search.currentEditor() != nil && window?.firstResponder === search.currentEditor() }
 
     var searchShown: Bool { search.superview != nil && !search.isHidden }
@@ -490,11 +612,27 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     var searchFrame: NSRect { search.frame }
 
     func focusSearch() {
-        guard searchShown else { return }
-        window?.makeFirstResponder(search)
-        search.currentEditor()?.selectAll(nil)
-        document.scrollToVisible(search.frame.insetBy(dx: 0, dy: -24))
+        if searchShown {
+            window?.makeFirstResponder(search)
+            search.currentEditor()?.selectAll(nil)
+            document.scrollToVisible(search.frame.insetBy(dx: 0, dy: -24))
+        } else if shown?.tasks.isEmpty == false {
+            window?.makeFirstResponder(self)
+        }
+        if selection == nil { choose(firstRow) }
+        updateKeyed()
+        relay()
+        reveal()
     }
+
+    var canSelect: Bool { !isHidden && window != nil && !order.isEmpty }
+
+    func select(_ by: Int) {
+        guard canSelect else { return }
+        if keyed { step(by) } else { focusSearch() }
+    }
+
+    private var firstRow: String? { found.first ?? (query.isEmpty ? shown?.tasks.first?.identity : nil) }
 
     func clearSearch() {
         started = nil
@@ -506,9 +644,96 @@ final class DeskView: NSView, NSSearchFieldDelegate {
     @objc private func searched() {
         guard search.stringValue != query else { return }
         query = search.stringValue
-        selected = 0
+        choose(firstRow)
         searchKey.isHidden = true
+        relay()
+    }
+
+    private func relay() {
         if let shown { lay(shown, top: scrollTop) }
+    }
+
+    private func reveal() {
+        guard let row = rowViews.first(where: { ($0 as? DeskRow)?.selected ?? ($0 as? ShelfRow)?.selected ?? false }) else { return }
+        document.scrollToVisible(row.frame)
+    }
+
+    private func updateKeyed() {
+        let now = !isHidden && window != nil && (searching || window?.firstResponder === self)
+        guard now != keyed else { return }
+        keyed = now
+        relay()
+        onKeyed?(now)
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        guard window?.firstResponder === self else { return super.keyDown(with: event) }
+        interpretKeyEvents([event])
+    }
+
+    override func doCommand(by selector: Selector) {
+        if !perform(selector) { super.doCommand(by: selector) }
+    }
+
+    override func insertText(_ insertString: Any) {}
+
+    private func step(_ by: Int) {
+        let rows = order
+        guard !rows.isEmpty else { return }
+        let at = selection.flatMap { rows.firstIndex(of: $0) }
+        let next: Int
+        switch by {
+        case Int.min: next = 0
+        case Int.max: next = rows.count - 1
+        default: next = at.map { max(0, min(rows.count - 1, $0 + by)) } ?? (by > 0 ? 0 : rows.count - 1)
+        }
+        choose(rows[next])
+        relay()
+        reveal()
+    }
+
+    func enter() {
+        guard let task = selectedTask else { return }
+        if task.onDesk { onActivate?(task.id) } else { start(task.id) }
+    }
+
+    func run() {
+        guard let task = selectedTask, !task.onDesk else { return }
+        onRun?(task.id)
+    }
+
+    func shelveSelected() -> Bool {
+        guard let task = selectedTask, task.onDesk else { return false }
+        onShelve?(task.id)
+        return true
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        if flags == [.command, .shift], let letter = event.charactersIgnoringModifiers?.lowercased(), letter == "n" || letter == "p", canSelect {
+            select(letter == "n" ? 1 : -1)
+            return true
+        }
+        guard keyed else { return super.performKeyEquivalent(with: event) }
+        guard flags == .command, event.keyCode == 36 || event.keyCode == 76 else { return super.performKeyEquivalent(with: event) }
+        run()
+        return true
+    }
+
+    func perform(_ selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.moveDown(_:)): step(1)
+        case #selector(NSResponder.moveUp(_:)): step(-1)
+        case #selector(NSResponder.moveToBeginningOfDocument(_:)), #selector(NSResponder.scrollToBeginningOfDocument(_:)): step(Int.min)
+        case #selector(NSResponder.moveToEndOfDocument(_:)), #selector(NSResponder.scrollToEndOfDocument(_:)): step(Int.max)
+        case #selector(NSResponder.insertNewline(_:)): enter()
+        case #selector(NSResponder.cancelOperation(_:)):
+            if query.isEmpty { onLeaveSearch?() } else { clearSearch() }
+        default: return false
+        }
+        return true
     }
 
     func controlTextDidChange(_ obj: Notification) { searched() }
@@ -517,33 +742,24 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     func controlTextDidEndEditing(_ obj: Notification) { searchKey.isHidden = !query.isEmpty }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        let hits = found
-        switch selector {
-        case #selector(NSResponder.moveDown(_:)), #selector(NSResponder.moveUp(_:)):
-            guard !hits.isEmpty else { return true }
-            selected = max(0, min(hits.count - 1, selected + (selector == #selector(NSResponder.moveDown(_:)) ? 1 : -1)))
-            if let shown { lay(shown, top: scrollTop) }
-            if let row = document.subviews.compactMap({ $0 as? ShelfRow }).first(where: { $0.selected }) { document.scrollToVisible(row.frame) }
-            return true
-        case #selector(NSResponder.insertNewline(_:)):
-            guard !query.isEmpty, !hits.isEmpty else { return true }
-            start(hits[min(selected, hits.count - 1)])
-            return true
-        case #selector(NSResponder.cancelOperation(_:)):
-            if query.isEmpty { onLeaveSearch?() } else { clearSearch() }
-            return true
-        default:
-            return false
-        }
-    }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool { perform(selector) }
 
     private func start(_ task: String) {
         if !query.isEmpty { started = task }
         onStart?(task)
     }
 
-    var note: String { document.subviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "note" }?.stringValue ?? "" }
+    var note: String { noteBar.isHidden ? "" : noteBar.text }
+
+    var noteShown: Bool { !isHidden && !noteBar.isHidden && bounds.contains(noteBar.frame) && !scroller.frame.intersects(noteBar.frame) }
+
+    var noteClose: NSPoint? { noteBar.isHidden ? nil : noteBar.convert(noteBar.closeCenter, to: nil) }
+
+    private func placeNote() {
+        let height = noteBar.isHidden ? 0 : NoteBar.height
+        scroller.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - height)
+        noteBar.frame = NSRect(x: 0, y: bounds.height - NoteBar.height, width: bounds.width, height: NoteBar.height)
+    }
 
     private func label(_ text: String, size: CGFloat = 12, weight: NSFont.Weight = .regular, color: NSColor = .labelColor) -> NSTextField {
         let field = NSTextField(labelWithString: text)
@@ -556,6 +772,10 @@ final class DeskView: NSView, NSSearchFieldDelegate {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        responderWatch = window?.observe(\.firstResponder, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.updateKeyed() }
+        }
+        updateKeyed()
         ticker?.invalidate()
         ticker = window == nil ? nil : Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -582,16 +802,22 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         })
     }
 
+    override var isHidden: Bool {
+        didSet { updateKeyed() }
+    }
+
     func show(_ page: DeskPage) {
         if page == shown { return }
         shown = page
         if let started, !page.shelf.contains(where: { $0.id == started }) { clearSearch() }
+        if let chosen, let at = order.firstIndex(of: chosen) { chosenAt = at }
         lay(page, top: scrollTop)
     }
 
     private func lay(_ page: DeskPage, top: CGFloat) {
         let span = Perf.begin(.desk, "DeskView.lay")
-        document.subviews.filter { $0 !== search && $0 !== searchKey && !($0 is DeskRow) && !($0 is ShelfRow) }.forEach { $0.removeFromSuperview() }
+        document.subviews.filter { $0 !== search && $0 !== searchKey && $0 !== zone && $0 !== dropNote && !($0 is DeskRow) && !($0 is ShelfRow) }.forEach { $0.removeFromSuperview() }
+        groupTitles = []
         let (deskBefore, shelfBefore) = (deskKept, shelfKept)
         (deskKept, shelfKept) = ([:], [:])
         var made = 0
@@ -600,17 +826,24 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         let line = label(page.cheer, size: 13, color: .secondaryLabelColor)
         line.frame.origin = NSPoint(x: left, y: y)
         y += line.frame.height + 22
+        let deskTop = y
         y = header("Desk", detail: page.project, count: "\(page.running) of \(DeskPage.limit) tasks", y: y, left: left, width: width).bottom
+        deskHead = NSRect(x: left, y: deskTop, width: width, height: y - deskTop)
         if page.tasks.isEmpty {
             let none = label("Nothing on the Desk.", color: .secondaryLabelColor)
             none.frame.origin = NSPoint(x: left, y: y + 4)
             y += none.frame.height + 12
         }
         for task in page.tasks {
-            let row = deskBefore[task.id].flatMap { $0.shows(task, key: page.keys[task.id], width: width + 20, active: task.id == page.active) ? $0 : nil } ?? {
+            let chosen = keyed && task.identity == selection
+            let row = deskBefore[task.id].flatMap { $0.shows(task, key: page.keys[task.id], width: width + 20, active: task.id == page.active, selected: chosen) ? $0 : nil } ?? {
                 made += 1
-                let row = DeskRow(task: task, key: page.keys[task.id], width: width + 20, active: task.id == page.active)
+                let row = DeskRow(task: task, key: page.keys[task.id], width: width + 20, active: task.id == page.active, selected: chosen)
                 row.onPress = { [weak self] in self?.onActivate?(task.id) }
+                row.onDown = { [weak self, weak row] event in
+                    guard let self, let row else { return }
+                    self.track(row, from: event)
+                }
                 return row
             }()
             deskKept[task.id] = row
@@ -619,11 +852,13 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             y += row.frame.height
         }
         y += 28
+        let shelfTop = y
         let hits = page.shelf.filter { $0.matches(query) }
-        selected = min(selected, max(0, hits.count - 1))
+        let selection = self.selection
         let head = header("Shelf", detail: nil, count: query.isEmpty ? "\(page.shelf.count) waiting" : "\(hits.count) of \(page.shelf.count)", y: y, left: left, width: width)
         let widest = ["\(page.shelf.count) waiting", "\(page.shelf.count) of \(page.shelf.count)"].map { ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width }.max() ?? 0
-        placeSearch(shown: !page.shelf.isEmpty, right: head.tally.maxX - ceil(widest), middle: head.tally.midY, left: left)
+        (shelfHead, shelfTally) = (head.title, head.tally)
+        placeSearch(shown: !page.shelf.isEmpty, right: head.tally.frame.maxX - ceil(widest), middle: head.tally.frame.midY, left: left)
         y = head.bottom
         if page.shelf.isEmpty {
             let none = label("Empty. Ask the planning agent for tasks.", color: .secondaryLabelColor)
@@ -634,12 +869,13 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             none.frame.origin = NSPoint(x: left, y: y + 4)
             y += none.frame.height + 12
         }
-        for (index, task) in hits.enumerated() {
-            let chosen = !query.isEmpty && index == selected
+        for task in hits {
+            let chosen = keyed && task.id == selection
             let row = shelfBefore[task.id].flatMap { $0.shows(task, full: page.full, width: width + 20, query: query, selected: chosen) ? $0 : nil } ?? {
                 made += 1
                 let row = ShelfRow(task: task, full: page.full, width: width + 20, query: query, selected: chosen)
                 row.onPress = { [weak self] in self?.start(task.id) }
+                row.onLog = { [weak self] in task.failedEntry.map { self?.onLog?($0) } }
                 return row
             }()
             shelfKept[task.id] = row
@@ -647,13 +883,18 @@ final class DeskView: NSView, NSSearchFieldDelegate {
             if row.superview !== document { document.addSubview(row) }
             y += row.frame.height
         }
+        shelfArea = NSRect(x: left - 16, y: shelfTop - 8, width: width + 32, height: y - shelfTop + 14)
         for (id, row) in deskBefore where deskKept[id] !== row { row.removeFromSuperview() }
         for (id, row) in shelfBefore where shelfKept[id] !== row { row.removeFromSuperview() }
-        let note = label(page.note, color: .systemOrange)
-        note.identifier = NSUserInterfaceItemIdentifier("note")
-        note.frame.origin = NSPoint(x: left, y: y + 8)
-        document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 8 + note.frame.height + 40)
+        let appeared = noteBar.isHidden && !page.note.isEmpty
+        noteBar.text = page.note
+        noteBar.inset = left
+        noteBar.isHidden = page.note.isEmpty
+        placeNote()
+        document.frame = NSRect(x: 0, y: 0, width: scroller.contentSize.width, height: y + 48)
         scroll(toY: top)
+        if appeared { reveal() }
+        decorate()
         Perf.end(span, "\(page.tasks.count + hits.count) rows, \(made) new")
         Clicks.laid(desk: page.tasks.map(\.id), shelf: page.shelf.map(\.id))
     }
@@ -675,7 +916,8 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         searchKey.isHidden = !query.isEmpty || search.currentEditor() != nil
     }
 
-    private func header(_ title: String, detail: String?, count: String, y: CGFloat, left: CGFloat, width: CGFloat) -> (bottom: CGFloat, tally: NSRect) {
+    private func header(_ title: String, detail: String?, count: String, y: CGFloat, left: CGFloat, width: CGFloat) -> (bottom: CGFloat, title: NSTextField, tally: NSTextField) {
+        groupTitles.append(title)
         let head = label(title, weight: .semibold)
         head.frame.origin = NSPoint(x: left, y: y)
         if let detail {
@@ -684,14 +926,193 @@ final class DeskView: NSView, NSSearchFieldDelegate {
         }
         let tally = label(count, color: .secondaryLabelColor)
         tally.frame.origin = NSPoint(x: left + width - tally.frame.width, y: y)
-        return (y + head.frame.height + 8, tally.frame)
+        return (y + head.frame.height + 8, head, tally)
+    }
+
+    var shelfDrop: NSPoint { document.convert(NSPoint(x: shelfArea.midX, y: shelfArea.minY + 24), to: nil) }
+
+    var deskDrop: NSPoint { document.convert(NSPoint(x: deskHead.midX, y: deskHead.midY), to: nil) }
+
+    var dragging: Bool { lifted != nil }
+
+    private func track(_ row: DeskRow, from down: NSEvent) {
+        guard let window else { return }
+        let start = down.locationInWindow
+        var moved = false
+        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
+            switch event.type {
+            case .leftMouseDragged:
+                if !moved, hypot(event.locationInWindow.x - start.x, event.locationInWindow.y - start.y) > 4 {
+                    moved = true
+                    lift(row, at: start)
+                }
+                guard moved else { continue }
+                document.autoscroll(with: event)
+                follow(event.locationInWindow)
+            case .leftMouseUp:
+                guard moved else { row.onPress?(); return }
+                follow(event.locationInWindow)
+                let over = lifted?.over == true
+                land()
+                if over { onShelve?(row.task.id) }
+                return
+            case .keyDown where event.keyCode == 53:
+                if moved { land() }
+                return
+            default:
+                continue
+            }
+        }
+    }
+
+    private func lift(_ row: DeskRow, at point: NSPoint) {
+        let copy = NSView(frame: row.bounds)
+        copy.wantsLayer = true
+        copy.layer?.cornerRadius = 8
+        copy.layer?.borderWidth = 1
+        copy.layer?.borderColor = resolved(.separatorColor)
+        copy.layer?.backgroundColor = resolved(.windowBackgroundColor)
+        copy.shadow = NSShadow()
+        copy.layer?.shadowOpacity = 0.35
+        copy.layer?.shadowRadius = 14
+        copy.layer?.shadowOffset = CGSize(width: 0, height: -8)
+        if let rep = row.bitmapImageRepForCachingDisplay(in: row.bounds) {
+            row.cacheDisplay(in: row.bounds, to: rep)
+            let image = NSImage(size: row.bounds.size)
+            image.addRepresentation(rep)
+            let picture = NSImageView(frame: copy.bounds)
+            picture.image = image
+            copy.addSubview(picture)
+        }
+        addSubview(copy)
+        copy.frameCenterRotation = 1
+        row.alphaValue = 0.35
+        lifted = (row, copy, row.convert(point, from: nil), false)
+        follow(point)
+    }
+
+    private func follow(_ point: NSPoint) {
+        guard var drag = lifted else { return }
+        let here = convert(point, from: nil)
+        drag.copy.frameCenterRotation = 0
+        drag.copy.frame.origin = NSPoint(x: here.x - drag.grip.x, y: here.y - drag.grip.y)
+        drag.copy.frameCenterRotation = 1
+        drag.over = shelfArea.contains(document.convert(point, from: nil))
+        let changed = drag.over != lifted?.over
+        lifted = drag
+        if changed { decorate() }
+    }
+
+    private func land() {
+        guard let drag = lifted else { return }
+        drag.copy.removeFromSuperview()
+        drag.row.alphaValue = 1
+        lifted = nil
+        decorate()
+    }
+
+    private func decorate() {
+        guard let drag = lifted else {
+            zone.removeFromSuperview()
+            dropNote.removeFromSuperview()
+            shelfTally?.isHidden = false
+            search.isHidden = false
+            searchKey.isHidden = !query.isEmpty || search.currentEditor() != nil
+            return
+        }
+        if zone.superview !== document { document.addSubview(zone, positioned: .below, relativeTo: nil) }
+        zone.frame = shelfArea
+        zone.over = drag.over
+        if dropNote.superview !== document { document.addSubview(dropNote) }
+        if let head = shelfHead { dropNote.frame.origin = NSPoint(x: head.frame.maxX + 4, y: head.frame.minY) }
+        dropNote.textColor = drag.over ? .controlAccentColor : .secondaryLabelColor
+        shelfTally?.isHidden = true
+        search.isHidden = true
+        searchKey.isHidden = true
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         let top = scrollTop
         super.resizeSubviews(withOldSize: oldSize)
+        placeNote()
         guard let shown else { return }
         if oldSize.width != bounds.width { lay(shown, top: top) } else { scroll(toY: top) }
+    }
+}
+
+private final class NoteBar: NSView {
+    static let height: CGFloat = 36
+    var onClose: (() -> Void)?
+    var inset: CGFloat = 48 { didSet { needsLayout = true } }
+    private let label = NSTextField(labelWithString: "")
+    private let close = NSTextField(labelWithString: "×")
+    private let edge = NSView()
+
+    override var isFlipped: Bool { true }
+
+    var text: String {
+        get { label.stringValue }
+        set {
+            label.stringValue = newValue
+            label.toolTip = newValue
+            setAccessibilityLabel(newValue)
+            needsLayout = true
+        }
+    }
+
+    var closeCenter: NSPoint { NSPoint(x: close.frame.midX, y: close.frame.midY) }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        edge.wantsLayer = true
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .systemOrange
+        label.lineBreakMode = .byTruncatingTail
+        label.identifier = NSUserInterfaceItemIdentifier("note")
+        close.font = .systemFont(ofSize: 15)
+        close.textColor = .secondaryLabelColor
+        close.alignment = .center
+        close.toolTip = "Dismiss"
+        close.setAccessibilityRole(.button)
+        close.setAccessibilityLabel("Dismiss")
+        addSubview(edge)
+        addSubview(label)
+        addSubview(close)
+        paint()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        paint()
+    }
+
+    private func paint() {
+        layer?.backgroundColor = resolved(.windowBackgroundColor)
+        edge.layer?.backgroundColor = resolved(.separatorColor)
+    }
+
+    override func layout() {
+        super.layout()
+        edge.frame = NSRect(x: 0, y: 0, width: bounds.width, height: 1)
+        close.frame = NSRect(x: bounds.width - 44, y: (bounds.height - 20) / 2, width: 24, height: 20)
+        let height = label.intrinsicContentSize.height
+        label.frame = NSRect(x: inset, y: (bounds.height - height) / 2, width: max(0, close.frame.minX - 12 - inset), height: height)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
+
+    private func onClose(_ event: NSEvent) -> Bool { close.frame.insetBy(dx: -8, dy: -8).contains(convert(event.locationInWindow, from: nil)) }
+
+    override func mouseDown(with event: NSEvent) {
+        guard onClose(event) else { return }
+        while let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            guard next.type == .leftMouseUp else { continue }
+            if onClose(next) { onClose?() }
+            return
+        }
     }
 }
 
@@ -699,13 +1120,42 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+
+@MainActor
+private final class RowHints {
+    let alt = NSTextField(labelWithString: "")
+    let go = NSTextField(labelWithString: "")
+
+    init(in row: NSView) {
+        for field in [alt, go] {
+            field.font = .systemFont(ofSize: 12)
+            field.lineBreakMode = .byTruncatingTail
+            row.addSubview(field)
+        }
+    }
+
+    func place(alt altText: String, go goText: String, width: CGFloat, height: CGFloat) -> CGFloat {
+        alt.stringValue = altText
+        go.stringValue = goText
+        go.sizeToFit()
+        go.frame.size.width = min(go.frame.width, 300)
+        go.frame.origin = NSPoint(x: width - go.frame.width - 10, y: (height - go.frame.height) / 2)
+        alt.sizeToFit()
+        alt.frame.origin = NSPoint(x: go.frame.minX - alt.frame.width - 14, y: (height - alt.frame.height) / 2)
+        return altText.isEmpty ? go.frame.minX : alt.frame.minX
+    }
+}
+
 @MainActor
 private final class ShelfRow: NSView {
     let task: ShelfTask
     let selected: Bool
     var onPress: (() -> Void)?
-    private let go: NSTextField
+    var onLog: (() -> Void)?
+    private let name: NSTextField
+    private let log = NSTextField(labelWithString: "Log")
     private let sub = NSTextField(labelWithString: "")
+    private var hints: RowHints!
     private let full: Bool
     private let query: String
 
@@ -720,32 +1170,42 @@ private final class ShelfRow: NSView {
         self.full = full
         self.selected = selected
         self.query = query
-        go = NSTextField(labelWithString: task.blocked ? "Blocked" : full ? "Desk full" : selected ? "↩ Move to Desk" : "Move to Desk →")
+        name = NSTextField(labelWithAttributedString: ShelfTask.marked(task.name, query, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor))
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 52))
         wantsLayer = true
         layer?.cornerRadius = 8
-        let name = NSTextField(labelWithAttributedString: ShelfTask.marked(task.name, query, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor))
         name.lineBreakMode = .byTruncatingTail
-        name.frame = NSRect(x: 30, y: 8, width: width - 160, height: 18)
         refresh()
         sub.lineBreakMode = .byTruncatingTail
-        sub.frame = NSRect(x: 30, y: 27, width: width - 160, height: 17)
-        go.font = .systemFont(ofSize: 12)
-        go.sizeToFit()
-        go.frame.origin = NSPoint(x: width - go.frame.width - 10, y: (52 - go.frame.height) / 2)
-        [name, sub, go].forEach(addSubview)
+        [name, sub].forEach(addSubview)
+        if task.failedEntry != nil {
+            log.font = .systemFont(ofSize: 12)
+            log.textColor = .controlAccentColor
+            log.sizeToFit()
+            addSubview(log)
+        }
+        hints = RowHints(in: self)
+        paint()
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    var label: String { go.stringValue }
+    var label: String { hints.go.stringValue }
+
+    var altText: String { hints.alt.stringValue }
+
+    var logCenter: NSPoint? { log.superview === self ? convert(NSPoint(x: log.frame.midX, y: log.frame.midY), to: nil) : nil }
 
     var subText: String { sub.stringValue }
 
     func refresh() {
         let small = NSFont.systemFont(ofSize: 12)
         let detail = NSMutableAttributedString(string: task.waits.isEmpty ? "" : "waits for " + task.waits.joined(separator: ", ") + " · ", attributes: [.font: small, .foregroundColor: NSColor.systemOrange])
+        if let failed = task.failed {
+            detail.append(NSAttributedString(string: "merge failed", attributes: [.font: small, .foregroundColor: NSColor.systemRed]))
+            detail.append(NSAttributedString(string: " · \(failed) · its agent has the reasons · ", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
         if let stack = task.stack {
             let color: NSColor = stack.hasPrefix("ready") ? .systemGreen : stack.hasPrefix("merges") ? .secondaryLabelColor : .systemOrange
             detail.append(NSAttributedString(string: stack + " · ", attributes: [.font: small, .foregroundColor: color]))
@@ -756,18 +1216,43 @@ private final class ShelfRow: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        let rect = NSRect(x: 10.5, y: bounds.midY - 4, width: 8, height: 8)
+        if let dot = task.dot {
+            DeskTask.color(dot).setFill()
+            return NSBezierPath(ovalIn: NSRect(x: 10, y: bounds.midY - 4, width: 8, height: 8)).fill()
+        }
         NSColor.tertiaryLabelColor.setStroke()
-        let ring = NSBezierPath(ovalIn: NSRect(x: 10.5, y: bounds.midY - 4, width: 8, height: 8))
+        let ring = NSBezierPath(ovalIn: rect)
         ring.lineWidth = 1.4
-        if task.blocked || task.stack?.hasPrefix("its blockers") == true { ring.setLineDash([2, 2], count: 2, phase: 0) }
+        if task.dashed { ring.setLineDash([2, 2], count: 2, phase: 0) }
         ring.stroke()
     }
 
     private var hover = false
 
     private func paint() {
-        layer?.backgroundColor = hover || selected ? resolved(.quaternaryLabelColor) : nil
-        go.textColor = (hover || selected) && !full && !task.blocked ? .controlAccentColor : .tertiaryLabelColor
+        let lit = hover || selected
+        let alt: String, go: String
+        if task.blocked {
+            alt = ""
+            go = lit ? "Blocked: waits for " + task.waits.joined(separator: ", ") : "Blocked"
+        } else {
+            alt = "⌘↩ " + (task.running ? "Stop" : "Start")
+            go = full ? "Desk full" : selected ? "↩ Move to Desk" : "Move to Desk →"
+        }
+        var edge = hints.place(alt: alt, go: go, width: bounds.width, height: bounds.height)
+        hints.alt.isHidden = !lit
+        hints.alt.textColor = .secondaryLabelColor
+        hints.go.textColor = lit && !full && !task.blocked ? .controlAccentColor : .tertiaryLabelColor
+        if log.superview === self {
+            let right = lit && !alt.isEmpty ? edge : hints.go.frame.minX
+            log.frame.origin = NSPoint(x: right - log.frame.width - 14, y: (bounds.height - log.frame.height) / 2)
+            edge = log.frame.minX
+        }
+        let room = max(40, edge - 30 - 16)
+        name.frame = NSRect(x: 30, y: 8, width: room, height: 18)
+        sub.frame = NSRect(x: 30, y: 27, width: room, height: 17)
+        layer?.backgroundColor = lit ? resolved(.quaternaryLabelColor) : nil
     }
 
     override func viewDidMoveToWindow() { paint() }
@@ -787,60 +1272,103 @@ private final class ShelfRow: NSView {
         paint()
     }
 
-    override func mouseDown(with event: NSEvent) { onPress?() }
+    override func mouseDown(with event: NSEvent) {
+        if log.superview === self, log.frame.insetBy(dx: -8, dy: -10).contains(convert(event.locationInWindow, from: nil)) { return onLog?() ?? () }
+        onPress?()
+    }
+}
+
+@MainActor
+private final class DropZone: NSView {
+    private let edge = CAShapeLayer()
+    var over = false { didSet { paint() } }
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        edge.fillColor = nil
+        edge.lineWidth = 1.5
+        layer?.addSublayer(edge)
+        paint()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func layout() {
+        super.layout()
+        edge.frame = bounds
+        edge.path = CGPath(roundedRect: bounds.insetBy(dx: 0.75, dy: 0.75), cornerWidth: 10, cornerHeight: 10, transform: nil)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsLayout = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        paint()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func paint() {
+        edge.strokeColor = resolved(over ? .controlAccentColor : .separatorColor)
+        edge.lineDashPattern = over ? nil : [4, 3]
+        layer?.backgroundColor = over ? resolved(.controlAccentColor.withAlphaComponent(0.12)) : nil
+    }
 }
 
 @MainActor
 private final class DeskRow: NSView {
     let task: DeskTask
+    let selected: Bool
     var onPress: (() -> Void)?
-    private let go: NSTextField
+    var onDown: ((NSEvent) -> Void)?
+    private let name = NSTextField(labelWithString: "")
     private let sub = NSTextField(labelWithString: "")
+    private var hints: RowHints!
 
     override var isFlipped: Bool { true }
 
     let active: Bool
     private let key: String?
 
-    func shows(_ task: DeskTask, key: String?, width: CGFloat, active: Bool) -> Bool {
-        task == self.task && key == self.key && width == frame.width && active == self.active
+    func shows(_ task: DeskTask, key: String?, width: CGFloat, active: Bool, selected: Bool) -> Bool {
+        task == self.task && key == self.key && width == frame.width && active == self.active && selected == self.selected
     }
 
-    init(task: DeskTask, key: String?, width: CGFloat, active: Bool) {
+    init(task: DeskTask, key: String?, width: CGFloat, active: Bool, selected: Bool) {
         self.task = task
         self.active = active
         self.key = key
-        go = NSTextField(labelWithString: active ? "⌘. · Back to it" : (key.map { "\($0) · " } ?? "") + "Make active →")
+        self.selected = selected
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 52))
         wantsLayer = true
         layer?.cornerRadius = 8
-        let name = NSTextField(labelWithString: task.title)
+        name.stringValue = task.title
         name.font = .systemFont(ofSize: 13, weight: .semibold)
         name.lineBreakMode = .byTruncatingTail
-        name.sizeToFit()
-        name.frame = NSRect(x: 30, y: 8, width: min(name.frame.width, width - 140), height: 18)
         refresh()
         sub.font = .systemFont(ofSize: 12)
         sub.textColor = .secondaryLabelColor
         sub.lineBreakMode = .byTruncatingTail
-        sub.frame = NSRect(x: 30, y: 27, width: width - 140, height: 17)
-        go.font = .systemFont(ofSize: 12)
-        go.textColor = .controlAccentColor
-        go.sizeToFit()
-        go.frame.origin = NSPoint(x: width - go.frame.width - 10, y: (52 - go.frame.height) / 2)
-        go.isHidden = true
-        if active { go.textColor = .secondaryLabelColor }
-        paint()
         toolTip = task.place
-        [name, sub, go].forEach(addSubview)
+        [name, sub].forEach(addSubview)
+        hints = RowHints(in: self)
+        paint()
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     var subText: String { sub.stringValue }
-    var goText: String { go.stringValue }
-    var goShown: Bool { !go.isHidden }
+    var goText: String { hints.go.stringValue }
+    var altText: String { hints.alt.stringValue }
+    var goShown: Bool { !hints.go.isHidden }
     var highlit: Bool { layer?.backgroundColor != nil }
 
     func refresh() { sub.stringValue = task.sub }
@@ -848,7 +1376,22 @@ private final class DeskRow: NSView {
     private var hover = false
 
     private func paint() {
-        layer?.backgroundColor = hover ? resolved(.quaternaryLabelColor) : active ? resolved(.quaternaryLabelColor.withAlphaComponent(0.5)) : nil
+        let lit = hover || selected
+        let go = active ? (selected ? "↩ Back to it" : "⌘. · Back to it") : selected ? "↩ Make active" : (key.map { "\($0) · " } ?? "") + "Make active →"
+        let edge = hints.place(alt: "⇧⌘⌫ Move to Shelf", go: go, width: bounds.width, height: bounds.height)
+        hints.alt.isHidden = !lit
+        hints.go.isHidden = !lit
+        hints.alt.textColor = .secondaryLabelColor
+        hints.go.textColor = active ? .secondaryLabelColor : .controlAccentColor
+        name.sizeToFit()
+        name.frame = NSRect(x: 30, y: 8, width: min(name.frame.width, bounds.width - 140), height: 18)
+        sub.frame = NSRect(x: 30, y: 27, width: bounds.width - 140, height: 17)
+        if lit {
+            let room = max(40, edge - 30 - 16)
+            name.frame.size.width = min(name.frame.width, room)
+            sub.frame.size.width = room
+        }
+        layer?.backgroundColor = lit ? resolved(.quaternaryLabelColor) : active ? resolved(.quaternaryLabelColor.withAlphaComponent(0.5)) : nil
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -861,16 +1404,16 @@ private final class DeskRow: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        go.isHidden = false
         hover = true
         paint()
     }
 
     override func mouseExited(with event: NSEvent) {
-        go.isHidden = true
         hover = false
         paint()
     }
 
-    override func mouseDown(with event: NSEvent) { onPress?() }
+    override func mouseDown(with event: NSEvent) {
+        if let onDown { onDown(event) } else { onPress?() }
+    }
 }

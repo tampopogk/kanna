@@ -1,18 +1,20 @@
 mod check;
+mod graph;
 mod parse;
 mod revise;
 mod walk;
 
 pub use check::Context;
+pub use graph::{layout, who, Edge, Graph, Node, Route};
 pub use parse::parse;
-pub use revise::{edited, emitted, Revision};
+pub use revise::{diff, edited, emitted, Change, Refused, Revision};
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
 pub const DONE: &str = "done";
-pub const AGENTS: &[&str] = &["claude", "codex", "copilot", "opencode", "agy"];
+pub const AGENTS: &[&str] = &["claude", "codex", "opencode", "agy"];
 pub const ASSUMED_PARTS: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -38,13 +40,7 @@ pub enum Kind {
     Agent(Box<Agent>),
     Run { command: String },
     Ask { question: String },
-    Merge(Merge),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Merge {
-    Main,
-    Stage(String),
+    Merge(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -264,23 +260,12 @@ pub fn load(text: &str, context: &Context) -> Result<Pipeline, Vec<Error>> {
     Ok(pipeline)
 }
 
-pub fn verdict_of(answer: &str) -> Verdict {
-    let last = answer.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("");
-    let word = last.trim_matches(|c: char| !c.is_alphanumeric());
-    let Some((head, value)) = word.split_once(':') else { return Verdict::Fail };
-    if head.trim().eq_ignore_ascii_case("verdict") && value.trim().eq_ignore_ascii_case("pass") {
-        Verdict::Pass
-    } else {
-        Verdict::Fail
-    }
-}
-
-pub fn pipe_block(answer: &str) -> Option<String> {
+pub fn kojo_block(answer: &str) -> Option<String> {
     let mut lines = answer.lines();
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
         let fence: String = trimmed.chars().take_while(|&c| c == '`' || c == '~').collect();
-        if fence.len() < 3 || trimmed[fence.len()..].split_whitespace().next() != Some("pipe") {
+        if fence.len() < 3 || trimmed[fence.len()..].split_whitespace().next() != Some("kojo") {
             continue;
         }
         let mut block = Vec::new();

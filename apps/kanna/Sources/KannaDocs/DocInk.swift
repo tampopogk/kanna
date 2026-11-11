@@ -82,7 +82,7 @@ extension DocInk {
     }
 
     static func flat(_ text: String, _ cap: Int) -> String {
-        let one = DocStore.oneLine(text.split(whereSeparator: \.isWhitespace).joined(separator: " "))
+        let one = Doc.oneLine(text.split(whereSeparator: \.isWhitespace).joined(separator: " "))
         return one.count <= cap ? one : String(one.prefix(cap - 1)) + "…"
     }
 

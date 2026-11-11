@@ -26,10 +26,23 @@ extension AppController {
             return submenu
         }
         let app = menu("Kanna", [])
+        app.addItem(withTitle: "About \(KannaBuild.name)", action: #selector(showAbout), keyEquivalent: "").target = self
+        app.addItem(.separator())
         if Self.instanceName != "default" {
             app.addItem(withTitle: "Instance: \(Self.instanceName)", action: nil, keyEquivalent: "")
             app.addItem(.separator())
         }
+        if let updates {
+            app.addItem(updates.menuItem)
+            app.addItem(.separator())
+        }
+        let accounts = app.addItem(withTitle: "Agent Accounts", action: nil, keyEquivalent: "")
+        accounts.submenu = NSMenu(title: accounts.title)
+        for (label, action) in [("Show Accounts", #selector(showAccounts)), ("Add Claude Subscription…", #selector(addClaudeSubscription)), ("Add Anthropic API Key…", #selector(addAnthropicKey)), ("Add Codex (ChatGPT) Account…", #selector(addCodexAccount)), ("Add OpenAI API Key…", #selector(addOpenAIKey)), ("Remove Claude Account", #selector(removeClaudeAccount)), ("Remove Codex Account", #selector(removeCodexAccount))] {
+            if label.hasPrefix("Add Claude") || label.hasPrefix("Remove Claude") { accounts.submenu?.addItem(.separator()) }
+            accounts.submenu?.addItem(withTitle: label, action: action, keyEquivalent: "").target = self
+        }
+        app.addItem(.separator())
         app.addItem(withTitle: "Quit \(KannaBuild.name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let file = menu("File", [("New Desk", #selector(newDeskWindow), nil, .cmd("n"))])
         file.addItem(recentMenuItem())
@@ -95,7 +108,11 @@ extension AppController {
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
             ("Move to Shelf", #selector(deferTask), nil, nil),
             nil,
-            ("Task Waiting Longest", #selector(activateWaitingTask), nil, .shiftCmd("A")),
+            ("Select Previous Task", #selector(deskPrevious), nil, .shiftCmd("p")),
+            ("Select Next Task", #selector(deskNext), nil, .shiftCmd("n")),
+            nil,
+            ("Move to Desk", #selector(deskEnter), nil, nil),
+            ("Start", #selector(deskRun), nil, nil),
             nil,
             ("Desk Task 1", #selector(activateDeskTask1), "goto_tab:1", .cmd("1")),
             ("Desk Task 2", #selector(activateDeskTask2), "goto_tab:2", .cmd("2")),
@@ -177,6 +194,7 @@ extension AppController {
     private var allMenus: [NSMenu] {
         func within(_ menu: NSMenu) -> [NSMenu] {
             menu.delegate?.menuNeedsUpdate?(menu)
+            menu.update()
             return [menu] + menu.items.compactMap(\.submenu).flatMap(within)
         }
         return (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(within)
@@ -254,6 +272,8 @@ extension AppController {
             code.zoom(by: step)
         } else if let diff = contents.diff(pane) {
             diff.zoom(by: step)
+        } else if let log = contents.log(pane) {
+            log.zoom(by: step)
         } else if let web = contents.web(pane) {
             web.zoom(by: step)
         } else if let surface = panes.terminal(pane)?.surface {
@@ -270,7 +290,7 @@ extension AppController {
             item.state = OverviewSetting.enabled ? .on : .off
             return true
         case #selector(openURL): return contents.web(pane) != nil
-        case #selector(reloadPane): return contents.web(pane) != nil || contents.diff(pane) != nil
+        case #selector(reloadPane): return contents.web(pane) != nil || contents.diff(pane) != nil || contents.log(pane) != nil
         case #selector(toggleComments):
             item.state = commentsOn(pane) ? .on : .off
             return contents.web(pane) != nil || contents.markdown(pane) != nil
@@ -287,8 +307,16 @@ extension AppController {
         case #selector(toggleDeskView):
             item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
             return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
-        case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
-        case #selector(activateWaitingTask): return waitingTask != nil
+        case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil || deskSelection?.onDesk == true
+        case #selector(deskPrevious), #selector(deskNext): return deskView?.canSelect == true
+        case #selector(deskEnter):
+            let task = deskSelection
+            item.title = task.map { $0.onDesk ? ($0.active ? "Show Active Task" : "Make Active") : "Move to Desk" } ?? "Move to Desk"
+            return task != nil
+        case #selector(deskRun):
+            let task = deskSelection
+            item.title = task?.running == true ? "Stop" : "Start"
+            return task.map { !$0.onDesk } ?? false
         case #selector(activateDeskTask1): return keyedDeskTask(1) != nil
         case #selector(activateDeskTask2): return keyedDeskTask(2) != nil
         default: return true
@@ -329,8 +357,14 @@ extension AppController {
     }
 
     @objc func toggleComments() {
-        guard let pane = focusedPane, contents.web(pane) != nil || contents.markdown(pane) != nil else { return }
-        request("markup", commentsOn(pane) ? ["pane": .string(pane), "off": true] : ["pane": .string(pane)])
+        guard let pane = focusedPane else { return }
+        switchComments(pane)
+    }
+
+    func switchComments(_ pane: String) {
+        guard contents.web(pane) != nil || contents.markdown(pane) != nil else { return }
+        if commentsOn(pane) { return request("markup", ["pane": .string(pane), "off": true]) }
+        turnOnComments(pane, under: nil)
     }
 
     private func commentsOn(_ pane: String) -> Bool {
@@ -351,6 +385,7 @@ extension AppController {
         guard let pane = focusedPane else { return }
         contents.web(pane)?.webView.reload()
         contents.diff(pane)?.refresh()
+        contents.log(pane)?.refresh()
     }
 
     @objc func closeFocusedPane() {
@@ -399,11 +434,27 @@ extension AppController {
             controller?.tabBar.onPage?(String(next.dropFirst(5)))
             return
         }
-        if controller?.page != nil {
+        if controller?.shownPage != nil {
             controller?.page = nil
             refresh()
         }
         layoutCommand("focus", ["tab": .string(next), "keep": "dock"])
+    }
+
+    @objc func showAbout() {
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationVersion: KannaBuild.version, .version: KannaBuild.buildLabel])
+    }
+
+    @objc func showAccounts() { accountsTerminal("kanna accounts; exec \"${SHELL:-/bin/sh}\" -l") }
+    @objc func addClaudeSubscription() { accountsTerminal("kanna accounts add claude") }
+    @objc func addAnthropicKey() { accountsTerminal("kanna accounts add claude --api-key") }
+    @objc func addCodexAccount() { accountsTerminal("kanna accounts add codex") }
+    @objc func addOpenAIKey() { accountsTerminal("kanna accounts add codex --api-key") }
+    @objc func removeClaudeAccount() { accountsTerminal("kanna accounts remove claude") }
+    @objc func removeCodexAccount() { accountsTerminal("kanna accounts remove codex") }
+
+    private func accountsTerminal(_ command: String) {
+        request("open", ["type": "term", "window": "new", "cmd": .string(command)], on: .some(nil))
     }
 
     @objc func newWindow() {
@@ -441,28 +492,50 @@ extension AppController {
         return keyedDeskTask(1)
     }
 
+    private var deskView: DeskView? {
+        keyWindow?["id"]?.string.flatMap { controllers[$0] }.map(\.deskView)
+    }
+
+    private var deskSelection: (id: String, onDesk: Bool, blocked: Bool, running: Bool, active: Bool)? { deskView?.selectedTask }
+
+    @objc func deskPrevious() { deskView?.select(-1) }
+
+    @objc func deskNext() { deskView?.select(1) }
+
+    @objc func deskEnter() { deskView?.enter() }
+
+    @objc func deskRun() { deskView?.run() }
+
+    func deskKeysChanged() {
+        let keyed = deskView?.keyed == true
+        for item in NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? [] {
+            switch item.action {
+            case #selector(deferTask)?:
+                item.keyEquivalent = keyed ? "\u{7f}" : ""
+                item.keyEquivalentModifierMask = keyed ? [.command, .shift] : []
+            case #selector(deskEnter)?:
+                item.keyEquivalent = keyed ? "\r" : ""
+                item.keyEquivalentModifierMask = []
+            case #selector(deskRun)?:
+                item.keyEquivalent = keyed ? "\r" : ""
+                item.keyEquivalentModifierMask = keyed ? .command : []
+            default: break
+            }
+        }
+    }
+
     @objc func deferTask() {
+        if deskView?.shelveSelected() == true { return }
         guard let window = keyWindow?["id"]?.string, let pane = keyWindow?["dock"]?["pane"]?.string else { return }
         request("tasks", ["action": "shelve", "task": .string(pane)]) { [weak self] reply in
             guard let self, reply["ok"]?.bool != true, let controller = controllers[window] else { return }
-            controller.note = reply["error"]?["message"]?.string ?? "it didn't move"
+            controller.note = refusal(reply, otherwise: "it didn't move")
             refresh()
         }
     }
 
     @objc func activateDeskTask1() { activateDeskTask(1) }
     @objc func activateDeskTask2() { activateDeskTask(2) }
-
-    private var waitingTask: (task: String, window: String)? {
-        guard let window = keyWindow, window["desk"]?.bool == true, let window = window["id"]?.string, let tasks = controllers[window]?.deskTasks,
-              let task = agentStatuses.waitingLongest(among: tasks.map(\.id)) else { return nil }
-        return (task, window)
-    }
-
-    @objc func activateWaitingTask() {
-        guard let (task, window) = waitingTask else { return }
-        activateTask(task, into: window)
-    }
 
     private func keyedDeskTask(_ place: Int) -> (task: String, window: String)? {
         guard let window = keyWindow, window["desk"]?.bool == true, let id = window["id"]?.string, let tasks = controllers[id]?.others else { return nil }

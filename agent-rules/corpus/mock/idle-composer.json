@@ -1,9 +1,0 @@
-{
-  "rows": [
-    "› "
-  ],
-  "title": "mock",
-  "cliVersion": null,
-  "expected": "idle",
-  "source": "mock-agent sample"
-}

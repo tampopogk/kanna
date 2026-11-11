@@ -42,7 +42,7 @@ sequenceDiagram
     D->>A: quit (notice)
     A->>A: stops reconnecting and starting daemons, saves app-state.json, exits
     A--xD: the link closes (or 5 s pass)
-    D->>D: marks every running terminal exited (129) and hung up, saves terminals.json
+    D->>D: marks every running terminal exited (129) and hung up, saves the records
     D->>K: stop
     K->>K: unlinks keeper.sock, refuses spawns
     K->>P: SIGHUP to every process group, SIGKILL after the grace (1 s)
@@ -54,7 +54,7 @@ sequenceDiagram
 - **While it stops**, every other request gets `stopping`, and an `app.hello` is refused with `stopping`. The Shelf stops ticking, so no task starts.
 - **Terminals are hung up, not dropped.** Each running terminal is recorded `exited` (code 129, SIGHUP's) and `hungUp`, as `kanna task stop` leaves a task's terminals. The next daemon restores them as exited panes with their screens, and a task's hung-up terminals start again when the task does ([tasks](tasks.md)). The daemon keeps reading every pty until the keeper is gone, because on macOS a process can't finish exiting while output it wrote is still unread.
 - **The keeper's `stop`** is a new op in [its protocol](../keeper.md#3-protocol). It needs no version bump: an older keeper answers `unknown op`, and the daemon then stops without it.
-- **Limits:** the app gets 5 s to quit, then the daemon closes its link and carries on. The keeper exits after 5 s even if a process is still dying, and the daemon waits up to 8 s for it. Nothing in the shutdown waits on the network: the agent-rules updater thread is abandoned, not joined.
+- **Limits:** the app gets 5 s to quit, then the daemon closes its link and carries on. The keeper exits after 5 s even if a process is still dying, and the daemon waits up to 8 s for it.
 - **The next start** restores the app's windows from `app-state.json` and the layout from `kanna.db`, as after any quit.
 
 ## 3. A deliberate stop or a crash

@@ -4,7 +4,7 @@ mod ghostty_env;
 pub mod paths;
 mod pty;
 pub mod server;
-mod session;
+pub mod session;
 mod sig;
 pub mod upgrade;
 

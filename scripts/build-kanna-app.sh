@@ -66,12 +66,15 @@ product_dir="$("${build[@]}" --show-bin-path)"
 [[ "$rust_dir/libkanna_ffi.a" -nt "$product_dir/Kanna" ]] && rm -f "$product_dir/Kanna"
 "${build[@]}"
 
-identity="$(kanna_dev_identity)"
-if [[ -n "$identity" ]]; then signing="signed as Kanna Dev Signing"; else identity=-; signing="ad-hoc signed: macOS asks for privacy permissions again after each build; scripts/dev-signing-identity.sh makes an identity that keeps them"; fi
+read -r identity KANNA_SIGN_TEAM <<<"$(kanna_dev_identity)" || true
+export KANNA_SIGN_TEAM
+if [[ -n "$KANNA_SIGN_TEAM" ]]; then signing="signed with Apple Development ($identity, team $KANNA_SIGN_TEAM)"
+elif [[ -n "$identity" ]]; then signing="signed as Kanna Dev Signing"
+else identity=-; signing="ad-hoc signed: macOS and the Keychain ask for permissions again after each build; team in ~/.kanna/developer/signing.json with an Apple Development certificate of that team, or scripts/dev-signing-identity.sh, makes an identity that keeps them"; fi
 signed="$arch_dir/signed"
 mkdir -p "$signed"
 for helper in kanna-daemon kanna-keeper kanna; do
-  stamp="$(shasum -a 256 "$rust_dir/$helper" | cut -d' ' -f1) $bundle_id.$helper $identity"
+  stamp="$(shasum -a 256 "$rust_dir/$helper" | cut -d' ' -f1) $bundle_id.$helper $identity $KANNA_SIGN_TEAM"
   if [[ ! -f "$signed/$helper" || "$(cat "$signed/$helper.stamp" 2>/dev/null)" != "$stamp" ]]; then
     cp "$rust_dir/$helper" "$signed/$helper"
     kanna_sign_helper "$bundle_id" "$identity" "$signed/$helper"
@@ -81,14 +84,39 @@ done
 
 app="$arch_dir/Kanna.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Helpers" "$app/Contents/Resources" "$app/Contents/Frameworks"
 cp "$product_dir/Kanna" "$app/Contents/MacOS/Kanna"
 cp "$signed/kanna-daemon" "$signed/kanna-keeper" "$signed/kanna" "$app/Contents/Helpers/"
+ditto "$product_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$app/Contents/Frameworks/Sparkle.framework/XPCServices" "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
 cp "$repo_root/assets/Kanna.icns" "$app/Contents/Resources/Kanna.icns"
 cp "$repo_root/LICENSE" "$app/Contents/Resources/"
+ghostty_share="$repo_root/target/ghosttykit/share"
+[[ -f "$ghostty_share/terminfo/78/xterm-ghostty" ]] || { echo "build-kanna-app: GhosttyKit has no Ghostty resources ($ghostty_share)" >&2; exit 1; }
+cp -R "$ghostty_share/ghostty" "$ghostty_share/terminfo" "$ghostty_share/ghostty-version" "$app/Contents/Resources/"
+chmod -R u+w "$app/Contents/Resources"
 install -m 755 "$repo_root/apps/kanna/Resources/planner.sh" "$app/Contents/Resources/"
 mkdir -p "$app/Contents/Resources/kanna-skills"
 for skill in kanna-tasks kanna-planning kanna-new-project kanna-markup kanna-explain kanna-quiz; do cp -RL "$repo_root/.agents/kanna-skills/skills/$skill" "$app/Contents/Resources/kanna-skills/"; done
+
+case "$channel" in
+  production|staging) update_feed="$KANNA_UPDATE_FEEDS/$channel-$(kanna_triple_arch "$triple").xml" ;;
+  *) update_feed="" ;;
+esac
+update_feed="${KANNA_UPDATE_FEED:-$update_feed}"
+update_plist=""
+if [[ -n "$update_feed" ]]; then
+  update_plist="<key>SUFeedURL</key><string>$update_feed</string>
+<key>SUPublicEDKey</key><string>$KANNA_UPDATE_PUBLIC_KEY</string>
+<key>SUEnableAutomaticChecks</key><true/>
+<key>SUScheduledCheckInterval</key><integer>21600</integer>
+<key>SUAutomaticallyUpdate</key><false/>
+<key>SUAllowsAutomaticUpdates</key><false/>
+<key>SUVerifyUpdateBeforeExtraction</key><true/>
+<key>SURequireSignedFeed</key><true/>"
+  [[ "$update_feed" == http://127.0.0.1* ]] && update_plist+="
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>"
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -102,6 +130,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>KannaChannel</key><string>$channel</string>
 <key>KannaInstance</key><string>$instance</string>
 <key>KannaCommit</key><string>$commit</string>
+<key>KannaVersion</key><string>$version</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>${version%%-*}</string>
 <key>CFBundleVersion</key><string>$build_number</string>
@@ -111,6 +140,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <key>NSBonjourServices</key><array><string>_kanna._udp</string></array>
 <key>LSMinimumSystemVersion</key><string>$macos_target</string>
 <key>NSHighResolutionCapable</key><true/>
+$update_plist
 </dict></plist>
 PLIST
 kanna_sign_app "$repo_root" "$app" "$identity"

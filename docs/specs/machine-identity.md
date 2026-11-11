@@ -1,6 +1,6 @@
 # Machines: Identity and Pairing
 
-**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Cloud:** [enrollment by token](kanna-cloud.md#4-enrollment-by-token), [hosted peers](kanna-cloud.md#8-threat-model) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
+**Status:** built in slice 2 (`crates/kanna-net`, the daemon's `machine` command and `kanna machine`), except the app's own endpoint key (slice 3) · **Part of:** [your machines](machines.md) · **Model:** [fleet-pairing](../../references/prototypes/fleet-pairing/README.md)
 
 How one of your machines knows another is yours, with no account and no server. The rule, here and in [Kanna Cloud](kanna-cloud.md): **trust comes from your devices, never from a server.**
 
@@ -18,6 +18,7 @@ How one of your machines knows another is yours, with no account and no server. 
 |---|---|---|
 | `device.key` (Ed25519 in hex, `0600`, in the instance's state folder, [instances](instances.md); made on first start) | the daemon | the device's signing key and the daemon's iroh endpoint ID |
 | the app's endpoint key | Kanna.app, made at first launch | its own iroh endpoint, with a **certificate** from `device.key`: `{key, device, sig}` |
+| a phone's device key (planned) | the phone's Keychain | its iroh endpoint, in the log with `role: "phone"`: it adds nobody and runs nothing ([phone link §1](mobile-link.md#1-a-phone-in-the-peer-log)) |
 
 - **Why two:** an iroh endpoint *is* its key, so the daemon and the app can't share one. The relay would register only the latest, and the daemon would drop off while the app is open.
 - **A remote daemon accepts** an endpoint whose certificate chains to a device in its peer log. The certificate is in the header of the app's `control` stream ([links §1](machine-links.md#1-making-a-link)).
@@ -25,7 +26,7 @@ How one of your machines knows another is yours, with no account and no server. 
 
 ## 2. Pairing
 
-A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. (Kanna Cloud reuses it with a token instead of a typed code: [enrollment](kanna-cloud.md#4-enrollment-by-token).)
+A **PAKE** over a one-time code authenticates both keys directly between the two devices. You are the only party: no server takes part. A phone pairs by the same exchange with the Mac showing the code in a QR ([phone link §2](mobile-link.md#2-pairing)).
 
 ```mermaid
 sequenceDiagram
@@ -77,12 +78,12 @@ The peers are a **signed log**, not a record that replicates by last writer wins
 
 ## 4. Risks
 
-- **An agent can read `device.key`:** every machine runs its agents as the daemon's user. A prompt-injected agent could sign a peer into your machines. Every machine you run is yours alone, so that's the same trust the user already gives the agent, but two defences are cheap: signing needs a gesture in the app (§2), and agent setup denies reading the keys ([agent setup](agent-setup.md)):
-  - **Claude:** `~/.claude/settings.json` gets `//SUPPORT/kanna*/device.key` in `sandbox.filesystem.denyRead` and `Read(//SUPPORT/kanna*/device.key)` in `permissions.deny`, SUPPORT being the application support folder, so every instance's key is covered, and a daemon with a state folder elsewhere adds its own. The Read rule stops Claude's file tools, even under `--dangerously-skip-permissions`; the sandbox entry stops `cat` and any other command, but only while the user has Claude's sandbox on, and an agent can still ask to run a command outside it unless `sandbox.allowUnsandboxedCommands` is false, which setup leaves to the user.
-  - **Codex:** nothing. Codex denies reads only in a permission profile (`[permissions.NAME.filesystem]`, `"PATH" = "deny"`), which can't be used beside `sandbox_mode`, and Kanna starts Codex with `--yolo` (`sandbox_mode="danger-full-access"`), so a Codex agent can read the key.
+- **Any agent Kanna runs can read `device.key`:** every machine runs its agents as the daemon's user, and Kanna starts each agent without its permission prompts (`claude` and `agy` with `--dangerously-skip-permissions`, `codex` with `--yolo`), so a prompt-injected agent can read the key and sign a peer into your machines. Every machine you run is yours alone, so that's the same trust the user already gives the agent. The defence that holds is that signing an add needs a gesture in the app (§2). Agent setup's deny rules ([agent setup](agent-setup.md)) only narrow the ways to the key:
+  - **Claude:** `~/.claude/settings.json` gets `Read(//SUPPORT/kanna*/device.key)` in `permissions.deny` and `//SUPPORT/kanna*/device.key` in `sandbox.filesystem.denyRead`, SUPPORT being the application support folder, so every instance's key is covered, and a daemon with a state folder elsewhere adds its own. The Read rule stops Claude's file tools (Read, Edit, Grep and the like), and holds under `--dangerously-skip-permissions`; that is all the deny rules reliably buy. They don't stop a shell command: the sandbox entry stops `cat` only while Claude's sandbox is on, which it isn't by default, and even then a bypassing agent can run a command outside the sandbox without asking unless `sandbox.allowUnsandboxedCommands` is false, which setup leaves to the user.
+  - **Codex and the rest:** nothing. Codex denies reads only in a permission profile (`[permissions.NAME.filesystem]`, `"PATH" = "deny"`), which can't be used beside `sandbox_mode`, and `--yolo` is `sandbox_mode="danger-full-access"`. `agy` and `opencode` get no settings from setup.
 - **A machine that runs your agent sees your code.** End-to-end encryption protects what passes through a relay, not what runs on a host.
 - **A stolen key can still revoke on a stale branch:** those revocations stand (they must, for mutual revocation), so a thief can shut honest machines out until they re-pair. It can't let anything in.
-- **On machines someone else runs,** the operator can sign with `device.key` too: that's Kanna Cloud's threat model ([Cloud §8](kanna-cloud.md#8-threat-model)).
+- **Kanna Cloud's VMs are never peers:** a customer's Kanna reaches them through its link to Kanna Cloud, for one task each ([Cloud §6](kanna-cloud.md#6-the-link-to-kanna-cloud)), so no key someone else holds is ever in your peer log.
 
 ## 5. Interfaces
 
@@ -97,7 +98,7 @@ The peers are a **signed log**, not a record that replicates by last writer wins
 | `kanna machine revoke MACHINE` | revokes a machine for good and tells the others |
 | `kanna --host MACHINE COMMAND …` (or `KANNA_HOST`) | runs COMMAND on that machine: its name, or its key |
 
-A MACHINE is a name in the log or a 64-digit key. `kanna machine update` is in [updates](machine-update.md). The daemon's `machine` command takes the same actions (`status`, `name`, `offer`, `wait`, `pair`, `ping`, `sync`, `addr`, `revoke`, `update`, `call`); `call {host, cmd, args}` is what `--host` sends, and its reply is the remote daemon's reply. Error codes: `unpaired`, `revoked`, `identity_mismatch`, `unreachable`, `not_found`, `gesture_required`, `pake_confirmation_failed`, `code_expired`, `rate_limited`, `already_paired`, `broken`.
+A MACHINE is a name in the log or a 64-digit key. The daemon's `machine` command takes the same actions (`status`, `name`, `offer`, `wait`, `pair`, `ping`, `sync`, `addr`, `revoke`, `call`); `call {host, cmd, args}` is what `--host` sends, and its reply is the remote daemon's reply. Error codes: `unpaired`, `revoked`, `identity_mismatch`, `unreachable`, `not_found`, `gesture_required`, `pake_confirmation_failed`, `code_expired`, `rate_limited`, `already_paired`, `broken`.
 
 **Port:** the endpoint binds the UDP port it used last (kept in the `machines` document), else 7470, else any free port. `KANNA_MACHINE_PORT` overrides it, and `KANNA_MACHINE_MDNS=0` turns LAN discovery off; tests set both, so test daemons never advertise on the LAN.
 

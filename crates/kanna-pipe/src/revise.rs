@@ -13,6 +13,53 @@ impl Revision {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Refused {
+    pub errors: Vec<Error>,
+    pub merged: Option<String>,
+}
+
+impl Refused {
+    fn block(errors: Vec<Error>) -> Refused {
+        Refused { errors, merged: None }
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let place = if self.merged.is_some() { "the merged pipeline" } else { "the kojo block" };
+        self.errors.iter().map(|e| e.at(place)).collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Change {
+    pub sign: char,
+    pub line: String,
+}
+
+pub fn diff(before: &str, after: &str) -> Vec<Change> {
+    let (a, b): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
+    let mut common = vec![vec![0u32; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            common[i][j] = if a[i] == b[j] { common[i + 1][j + 1] + 1 } else { common[i + 1][j].max(common[i][j + 1]) };
+        }
+    }
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            out.push(Change { sign: ' ', line: a[i].to_string() });
+            (i, j) = (i + 1, j + 1);
+        } else if i < a.len() && (j == b.len() || common[i + 1][j] >= common[i][j + 1]) {
+            out.push(Change { sign: '-', line: a[i].to_string() });
+            i += 1;
+        } else {
+            out.push(Change { sign: '+', line: b[j].to_string() });
+            j += 1;
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy)]
 enum Origin {
     Line(usize),
@@ -20,12 +67,12 @@ enum Origin {
     New,
 }
 
-pub fn emitted(current: &Pipeline, emitter: &str, block: &str, context: &Context) -> Result<Revision, Vec<Error>> {
+pub fn emitted(current: &Pipeline, emitter: &str, block: &str, context: &Context) -> Result<Revision, Refused> {
     let Some(stage) = current.stage(emitter) else {
-        return Err(vec![Error::new(1, Rule::Emits, format!("no stage named '{emitter}'"))]);
+        return Err(Refused::block(vec![Error::new(1, Rule::Emits, format!("no stage named '{emitter}'"))]));
     };
     if !stage.agent().is_some_and(|a| a.emits) {
-        return Err(vec![Error::new(stage.line, Rule::Emits, format!("stage '{emitter}' has no emits, so its answer can't change the pipeline"))]);
+        return Err(Refused::block(vec![Error::new(1, Rule::Emits, format!("stage '{emitter}' has no emits, so its answer can't change the pipeline"))]));
     }
     let (lines, mut errors) = read(block);
     let raw: Vec<&str> = block.lines().collect();
@@ -36,13 +83,13 @@ pub fn emitted(current: &Pipeline, emitter: &str, block: &str, context: &Context
     for line in lines {
         match line {
             Line::Stage(found) if current.stage(&found.name).is_some() || names.contains(&found.name) => {
-                errors.push(Error::new(found.line, Rule::Redefined, format!("stage '{}' exists already; a pipe block can only add stages", found.name)));
+                errors.push(Error::new(found.line, Rule::Redefined, format!("stage '{}' exists already; a kojo block can only add stages", found.name)));
             }
             Line::Stage(found) => {
                 names.push(found.name.clone());
                 added.push((raw[found.line - 1].trim().to_string(), Origin::New));
             }
-            Line::Budget(found) => errors.push(Error::new(found.line, Rule::Emits, "a pipe block can't change the budget")),
+            Line::Budget(found) => errors.push(Error::new(found.line, Rule::Emits, "a kojo block can't change the budget")),
             Line::Flow(_, arrows) => {
                 for arrow in arrows {
                     let group = if arrow.from == emitter { &mut ahead } else { &mut after };
@@ -52,7 +99,7 @@ pub fn emitted(current: &Pipeline, emitter: &str, block: &str, context: &Context
         }
     }
     if !errors.is_empty() {
-        return Err(errors);
+        return Err(Refused::block(errors));
     }
     let stage_lines: Vec<usize> = current.stages.iter().map(|s| s.line).collect();
     for (index, arrow) in current.arrows.iter().enumerate().filter(|(_, a)| stage_lines.contains(&a.line)) {
@@ -74,7 +121,8 @@ pub fn emitted(current: &Pipeline, emitter: &str, block: &str, context: &Context
     out.append(&mut added);
     out.append(&mut ahead);
     out.append(&mut after);
-    revision(current, &out, context)
+    let text = merged(current, &out);
+    revision(current, &out, &text, context).map_err(|errors| Refused { errors, merged: Some(text) })
 }
 
 pub fn edited(current: &Pipeline, text: &str, context: &Context) -> Result<Revision, Vec<Error>> {
@@ -93,12 +141,16 @@ pub fn edited(current: &Pipeline, text: &str, context: &Context) -> Result<Revis
     Ok(Revision { pipeline, carried })
 }
 
-fn revision(current: &Pipeline, out: &[(String, Origin)], context: &Context) -> Result<Revision, Vec<Error>> {
+fn merged(current: &Pipeline, out: &[(String, Origin)]) -> String {
     let mut text: String = out.iter().map(|(line, _)| format!("{line}\n")).collect();
     if !current.text.ends_with('\n') && current.text.lines().count() == out.len() {
         text.pop();
     }
-    let pipeline = parse(&text)?;
+    text
+}
+
+fn revision(current: &Pipeline, out: &[(String, Origin)], text: &str, context: &Context) -> Result<Revision, Vec<Error>> {
+    let pipeline = parse(text)?;
     pipeline.check(context)?;
     let mut carried = Vec::new();
     let mut nth = (0, 0);

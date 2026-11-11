@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-10-26T00:29:46.411302+00:00",
+  "codex": "codex-cli 0.163.0",
+  "phases": [
+    {
+      "phase": "tui_starts_on_injected_invalid_token",
+      "marker": true,
+      "renewals": 1,
+      "threads": 1
+    },
+    {
+      "phase": "same_tui_after_holder_refresh_and_second_invalid_token",
+      "marker": true,
+      "renewals": 1,
+      "same_process": true,
+      "same_thread": true
+    }
+  ],
+  "account_type": "chatgpt",
+  "renewal_reasons": [
+    "unauthorized"
+  ],
+  "renewal_account_matches": true,
+  "worker_login_file": false,
+  "notifications": [
+    "account/updated"
+  ],
+  "passed": true
+}

@@ -17,6 +17,10 @@ enum TerminalDebug {
                 _ = ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
             }
             if let zoom = args["zoom"]?.number { view.zoom(by: Int(zoom)) }
+            if let lines = args["scroll"]?.number {
+                view.scrolled?()
+                ghostty_surface_mouse_scroll(surface, 0, lines, 0)
+            }
             if case .object(let click)? = args["click"] { try Self.click(view, click) }
             let size = ghostty_surface_size(surface)
             var colors = ghostty_surface_colors_s()
@@ -31,7 +35,11 @@ enum TerminalDebug {
                 "links": .array(effects.links.map { ["url": .string($0.url), "decision": .string($0.decision)] }), "bells": .number(Double(effects.bells)),
                 "notifications": .array(effects.notifications.map { ["title": .string($0.title), "body": .string($0.body)] }),
                 "settings": .object(runtime.settings.objectFields), "focused": .bool(view.window?.firstResponder === view),
+                "width": .number(Double(view.bounds.width)), "inset": .number(Double(view.canvas.frame.minX)),
+                "gridWidth": .number(Double(view.canvas.frame.width)), "scale": .number(Double(view.window?.backingScaleFactor ?? 0)),
+                "marginColor": view.marginColor.map { .string($0) } ?? .null,
             ]
+            if let grid = view.grid { reply["grid"] = [.number(Double(grid.cols)), .number(Double(grid.rows))] }
             if let progress = view.progress {
                 reply["progress"] = ["state": .number(Double(progress.state.rawValue)), "value": .number(Double(progress.progress))]
             }
@@ -47,7 +55,7 @@ enum TerminalDebug {
         } else if case .array(let cell)? = click["cell"], cell.count == 2, let column = cell[0].number, let row = cell[1].number {
             let size = ghostty_surface_size(surface)
             let scale = Double(window.backingScaleFactor)
-            (x, y) = (2 + (column + 0.5) * Double(size.cell_width_px) / scale, 2 + (row + 0.5) * Double(size.cell_height_px) / scale)
+            (x, y) = (TerminalSurfaceView.margin + 2 + (column + 0.5) * Double(size.cell_width_px) / scale, 2 + (row + 0.5) * Double(size.cell_height_px) / scale)
         } else {
             throw KannaError("bad_request", "click needs at: [x, y] from the pane's top left, or cell: [column, row]")
         }

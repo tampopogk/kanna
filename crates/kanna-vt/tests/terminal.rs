@@ -230,6 +230,32 @@ fn size_reports_follow_the_grid() {
 }
 
 #[test]
+fn a_snapshot_with_history_keeps_the_screen_and_the_newest_scrollback() {
+    let mut t = Terminal::new(40, 10, 100_000).unwrap();
+    for i in 0..20_000 {
+        t.write(format!("\x1b[3{}mline {i}\x1b[0m\r\n", i % 8).as_bytes());
+    }
+    t.write(b"\x1b[1mprompt\x1b_unfinished");
+    let full = t.snapshot().unwrap();
+    let (bounded, more) = t.snapshot_with_history(200).unwrap();
+    assert!(more);
+    assert!(bounded.len() * 10 < full.len(), "{} of {} bytes", bounded.len(), full.len());
+    let mut r = Terminal::from_snapshot(&bounded).unwrap();
+    assert_eq!(r.text(Lines::Screen), t.text(Lines::Screen));
+    let kept = r.scrollback_rows();
+    assert!((200..20_000).contains(&kept), "{kept} rows of scrollback");
+    assert_eq!(r.text(Lines::Last(kept + 10)), t.text(Lines::Last(kept + 10)));
+    let none = Terminal::from_snapshot(&t.snapshot_with_history(0).unwrap().0).unwrap();
+    assert!(!Terminal::new(40, 10, 100).unwrap().snapshot_with_history(200).unwrap().1, "nothing more when everything fit");
+    assert_eq!(none.text(Lines::Screen), t.text(Lines::Screen));
+    assert!(none.scrollback_rows() < kept, "{} rows with no history asked for", none.scrollback_rows());
+    for out in [&mut t, &mut r] {
+        out.write(b"\x1b\\ done");
+    }
+    assert_eq!(r.text(Lines::Screen), t.text(Lines::Screen));
+}
+
+#[test]
 fn snapshot_round_trip() {
     let mut t = Terminal::new(30, 6, 1000).unwrap();
     for i in 0..40 {
@@ -446,6 +472,19 @@ fn states(t: &Terminal) -> Vec<(String, ProgramState)> {
 }
 
 #[test]
+fn every_turn_the_program_reports_is_counted_even_between_looks() {
+    let mut t = Terminal::new(20, 5, 0).unwrap();
+    t.write(b"\x1b]7501;state=idle\x1b\\");
+    assert_eq!(t.program_turns(), 0);
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=idle\x1b\\");
+    t.write(b"\x1b]7501;state=working:id=sub\x1b\\\x1b]7501;state=done:id=sub\x1b\\");
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=blocked\x1b\\\x1b]7501;state=done\x1b\\");
+    assert_eq!(t.program_turns(), 1);
+    t.write(b"\x1b]7501;state=working\x1b\\\x1b]7501;state=done\x1b\\");
+    assert_eq!(t.program_turns(), 2);
+}
+
+#[test]
 fn the_program_status_query_is_answered_and_nothing_is_echoed() {
     let mut t = Terminal::new(20, 5, 0).unwrap();
     let answer = "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth";
@@ -540,3 +579,30 @@ fn a_record_without_an_app_takes_its_nearest_ancestor_s() {
     assert_eq!(apps, [("", "deploy"), ("eu", "eu-tool"), ("eu/db", "eu-tool"), ("us", "deploy")].map(|(i, a)| (i.to_string(), a.to_string())));
 }
 
+
+#[test]
+fn restored_records_come_back_in_order_and_count_no_turn_until_a_new_report_ends_one() {
+    let mut t = Terminal::new(20, 5, 0).unwrap();
+    t.write(b"\x1b]7501;state=done:id=b\x1b\\\x1b]7501;state=working:app=claude\x1b\\\x1b]7501;state=idle:id=a\x1b\\");
+    let saved = t.program_records();
+    assert_eq!(saved.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b", "", "a"], "oldest first");
+    let mut again = Terminal::new(20, 5, 0).unwrap();
+    again.restore_program_records(saved.clone());
+    assert_eq!(again.program_records(), saved);
+    assert_eq!(again.program_status().unwrap().state, ProgramState::Working);
+    assert_eq!(again.program_turns(), 0);
+    assert!(again.program_status_serial() > 0);
+    again.write(b"\x1b]7501;state=idle\x1b\\");
+    assert_eq!(again.program_turns(), 1, "a report after the restored working one ends its turn");
+}
+
+#[test]
+fn states_and_needs_parse_from_their_names() {
+    for state in [ProgramState::Idle, ProgramState::Working, ProgramState::Done, ProgramState::Blocked, ProgramState::Error] {
+        assert_eq!(ProgramState::parse(state.as_str()), Some(state));
+    }
+    for need in [Need::Permission, Need::Question, Need::Auth] {
+        assert_eq!(Need::parse(need.as_str()), Some(need));
+    }
+    assert_eq!(ProgramState::parse("sleeping"), None);
+}

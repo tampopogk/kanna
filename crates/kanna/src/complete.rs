@@ -21,7 +21,7 @@ pub enum Want {
 const MARKDOWN: &[&str] = &["md", "markdown", "mdown"];
 const HTML: &[&str] = &["html", "htm"];
 
-pub const AGENTS: &[&str] = &["antigravity", "claude", "codex", "copilot", "opencode"];
+pub const AGENTS: &[&str] = &["antigravity", "claude", "codex", "opencode"];
 
 const GLOBAL: &[(&str, &str)] = &[
     ("--mux kanna|kmux", "Which multiplexer to control."),
@@ -68,7 +68,9 @@ const TYPES: &[(&str, &str)] = &[
     ("ios", "An app in the iOS simulator."),
     ("code", "A source file, highlighted."),
     ("diff", "What git diff shows, with untracked files."),
+    ("log", "The history as a graph, task branches labelled."),
     ("serial", "A serial port, shared with kanna serial."),
+    ("run", "A run of a pipeline: its graph, numbers and visits."),
 ];
 
 pub fn wants(words: &[String]) -> Vec<Want> {
@@ -341,7 +343,7 @@ fn refine(form: &[&'static str], slot: &'static str) -> &'static str {
     match (form.first().copied(), slot) {
         (Some("md"), "FILE") => "FILE.md",
         (Some("web"), "URL") => "FILE.html",
-        (Some("remove"), "NAME|ID") => "SCHEDULE",
+        (Some("remove" | "pause" | "resume" | "run" | "reply"), "NAME|ID") => "SCHEDULE",
         (_, slot) if slot.starts_with("FILE[") => "FILE",
         _ => slot,
     }
@@ -444,7 +446,7 @@ pub fn schedules(list: &Value) -> Vec<String> {
 }
 
 pub fn panes(list: &Value, current: &str) -> Vec<String> {
-    let by_id = ["term", "file", "page", "ios", "diff"].iter().any(|prefix| current.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')).is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())));
+    let by_id = ["term", "file", "page", "ios", "diff", "log"].iter().any(|prefix| current.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')).is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())));
     let mut out = Vec::new();
     for pane in list["panes"].as_array().into_iter().flatten() {
         let id = pane["id"].as_str().unwrap_or_default();
@@ -468,6 +470,7 @@ fn describe(pane: &Value) -> String {
             None => file(path),
         }),
         "ios" => pane["app"].as_str().map(String::from),
+        "log" => Some(std::iter::once("git log".to_string()).chain(pane["args"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(String::from))).collect::<Vec<_>>().join(" ")),
         "diff" => Some(std::iter::once("git diff".to_string()).chain(pane["args"].as_array().into_iter().flatten().filter_map(|a| a.as_str().map(String::from))).collect::<Vec<_>>().join(" ")),
         _ => Some(pane["cmd"].as_str().map(short).unwrap_or_else(|| "shell".into())),
     };
@@ -575,7 +578,7 @@ mod tests {
 
     #[test]
     fn open_completes_the_pane_type_then_its_file() {
-        assert_eq!(words(&at("open ")), ["term", "web", "md", "ios", "code", "diff", "serial"]);
+        assert_eq!(words(&at("open ")), ["term", "web", "md", "ios", "code", "diff", "log", "serial", "run"]);
         assert_eq!(at("open code "), [Want::Files(&[])]);
         assert_eq!(at("open md "), [Want::Files(MARKDOWN)]);
         assert_eq!(at("open md --name x "), [Want::Files(MARKDOWN)]);
@@ -613,7 +616,7 @@ mod tests {
         assert_eq!(words(&at("move p1 --side ")), ["left", "right", "top", "bottom", "swap"]);
         assert_eq!(at("rename-tab "), [Want::Tabs]);
         assert_eq!(at("navigate "), [Want::Panes]);
-        assert_eq!(at("navigate p1 "), [Want::Words(vec![("diff".into(), String::new())]), Want::Files(MARKDOWN), Want::Files(&[])]);
+        assert_eq!(at("navigate p1 "), [Want::Words(vec![("diff".into(), String::new()), ("log".into(), String::new())]), Want::Files(MARKDOWN), Want::Files(&[])]);
         assert_eq!(at("markup ")[1..], [Want::Files(MARKDOWN), Want::Files(HTML), Want::Panes]);
         assert_eq!(lines(&[Want::Files(MARKDOWN), Want::Files(HTML)], &[String::new()], &|_| None), [":files md markdown mdown html htm"]);
         assert_eq!(lines(&[Want::Files(MARKDOWN), Want::Files(&[])], &[String::new()], &|_| None), [":files"]);
@@ -636,10 +639,8 @@ mod tests {
 
     #[test]
     fn status_and_help_have_their_own_words() {
-        assert_eq!(words(&at("status ")), ["explain", "update"]);
+        assert_eq!(words(&at("status ")), ["explain"]);
         assert_eq!(at("status explain "), [Want::Panes]);
-        let agents: Vec<String> = AGENTS.iter().map(|a| a.to_string()).collect();
-        assert_eq!(words(&at("status explain --file s.txt --agent ")), agents);
         assert!(words(&at("help ")).contains(&"move-tab".into()));
         assert!(words(&at("help ")).contains(&"completions".into()));
         assert_eq!(words(&at("completions ")), ["zsh", "bash"]);
@@ -647,7 +648,7 @@ mod tests {
 
     #[test]
     fn schedule_completes_its_actions_the_rule_its_target_and_what_to_remove() {
-        assert_eq!(words(&at("schedule ")), ["add", "list", "remove"]);
+        assert_eq!(words(&at("schedule ")), ["add", "list", "remove", "pause", "resume", "run", "reply"]);
         assert!(words(&at("schedule add ")).starts_with(&["daily".into(), "weekdays".into(), "weekends".into(), "every".into()]));
         assert_eq!(words(&at("schedule add daily ")), ["09:00", "12:00", "17:30", "18:00"]);
         assert_eq!(words(&at("schedule add every ")), ["30m", "1h", "2h", "4h"]);
@@ -658,6 +659,10 @@ mod tests {
         assert_eq!(at("schedule add 'daily 09:00' planner "), []);
         assert_eq!(at("schedule add daily 09:00 planner "), []);
         assert_eq!(at("schedule remove "), [Want::Schedules]);
+        assert_eq!(at("schedule pause "), [Want::Schedules]);
+        assert_eq!(at("schedule resume "), [Want::Schedules]);
+        assert_eq!(at("schedule run "), [Want::Schedules]);
+        assert_eq!(at("schedule reply "), [Want::Schedules]);
         assert_eq!(at("schedule list --repo "), [Want::Dirs]);
         assert!(words(&at("schedule add daily 09:00 planner hi -")).contains(&"--name".into()));
         let list = json!({ "schedules": [{ "schedule": "s1", "name": "quiz", "rule": "daily 09:00", "target": "planner" }, { "schedule": "s2", "name": null, "rule": "every 2h", "target": "agent" }] });
@@ -670,8 +675,8 @@ mod tests {
     }
 
     #[test]
-    fn the_agents_are_the_bundled_rules() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agent-rules");
+    fn the_agents_are_those_with_quit_files() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agent-rules/quit");
         let mut names: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
             .flatten()

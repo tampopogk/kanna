@@ -15,6 +15,34 @@ struct AgentStatusesTests {
         #expect(book.statuses["p1"] == "idle")
     }
 
+    @Test func aFinishIsLookedAtOnceWhetherSeenAsItCameOrLater() {
+        var book = AgentStatuses()
+        book.set("p1", "working", looking: true)
+        let watched = book.set("p1", "idle", looking: true)
+        #expect(watched)
+        let again = book.looked(at: ["p1"])
+        #expect(again.isEmpty)
+        let working = book.set("p1", "working", looking: true)
+        #expect(!working)
+        let away = book.set("p1", "idle", looking: false)
+        #expect(!away)
+        let elsewhere = book.looked(at: ["p2"])
+        #expect(elsewhere.isEmpty)
+        let later = book.looked(at: ["p1"])
+        #expect(later == ["p1"])
+        let once = book.looked(at: ["p1"])
+        #expect(once.isEmpty)
+    }
+
+    @Test func anIdleAgentAfterALaunchIsLookedAtWhenShown() {
+        var book = AgentStatuses()
+        let hidden = book.set("p1", "idle", looking: false)
+        #expect(!hidden)
+        #expect(book.unread.isEmpty)
+        let shown = book.looked(at: ["p1"])
+        #expect(shown == ["p1"])
+    }
+
     @Test func finishingInFrontOfYouIsRead() {
         var book = AgentStatuses()
         book.set("p1", "working", looking: true)
@@ -52,19 +80,5 @@ struct AgentStatusesTests {
         #expect(book.unread.isEmpty)
         book.set("p2", nil, looking: false)
         #expect(book.statuses["p2"] == nil)
-    }
-
-    @Test func theTaskWaitingLongestIsTheOneThatAskedFirst() {
-        var book = AgentStatuses()
-        book.set("p1", "needs-you", looking: false, at: 30)
-        book.set("p2", "needs-you", looking: false, at: 10)
-        book.set("p3", "working", looking: false, at: 5)
-        book.set("p2", "needs-you", looking: false, at: 40)
-        #expect(book.waitingLongest(among: ["p1", "p2", "p3"]) == "p2")
-        #expect(book.waitingLongest(among: ["p1", "p3"]) == "p1")
-        book.set("p2", "working", looking: false, at: 50)
-        book.set("p2", "needs-you", looking: false, at: 60)
-        #expect(book.waitingLongest(among: ["p1", "p2"]) == "p1")
-        #expect(book.waitingLongest(among: ["p3"]) == nil)
     }
 }

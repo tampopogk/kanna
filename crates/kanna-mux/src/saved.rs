@@ -37,6 +37,9 @@ fn put_tabs(out: &mut Map, tabs: &Tabs) {
     out.insert("focused".into(), opt(tabs.focused.as_deref()));
     out.insert("zoomed".into(), opt(tabs.zoomed().map(String::as_str)));
     out.insert("tabCount".into(), num(tabs.count as f64));
+    if !tabs.recent.is_empty() {
+        out.insert("recent".into(), Value::Array(tabs.recent.iter().cloned().map(Value::String).collect()));
+    }
     out.insert("tabs".into(), Value::Array(tabs.tabs.iter().map(tab_json).collect()));
 }
 
@@ -61,6 +64,9 @@ fn put_workspace(out: &mut Map, ws: &Workspace) {
     out.insert("dock".into(), dock_json(&ws.dock));
     if let Some(at) = ws.left_at {
         out.insert("leftAt".into(), num(at));
+    }
+    if !ws.background.is_empty() {
+        out.insert("background".into(), ws.background.clone().into());
     }
 }
 
@@ -149,6 +155,11 @@ fn build(node: &Value, panes: &HashSet<String>, placed: &mut HashSet<String>) ->
 }
 
 impl Reader<'_> {
+    fn background(&mut self, item: &Value) -> Vec<String> {
+        let saved = item.get("background").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+        saved.filter(|id| self.panes.contains(*id)).filter(|id| self.placed.insert(id.to_string())).map(String::from).collect()
+    }
+
     fn tabs(&mut self, item: &Value) -> Result<Tabs, KmuxError> {
         let saved = item.get("tabs").and_then(Value::as_array).ok_or_else(|| bad(&format!("window {}", quoted(item.get("id")))))?;
         let mut tabs = Tabs::default();
@@ -181,6 +192,8 @@ impl Reader<'_> {
         let active = string(item, "active");
         tabs.active = if tabs.tabs.iter().any(|t| Some(t.id.as_str()) == active) { active.map(String::from) } else { tabs.tabs.first().map(|t| t.id.clone()) };
         tabs.count = whole(item.get("tabCount")).unwrap_or(0).max(tabs.tabs.len());
+        let ids = tabs.panes();
+        tabs.recent = item.get("recent").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).filter(|id| ids.iter().any(|i| i == id)).map(String::from).collect();
         Ok(tabs)
     }
 
@@ -324,7 +337,9 @@ pub fn read(state: &Value, panes: &HashSet<String>) -> Result<SavedLayout, KmuxE
         match dock {
             Some(dock) => {
                 claim(id)?;
-                workspaces.push(read_workspace(id, item, dock, tabs, place));
+                let mut ws = read_workspace(id, item, dock, tabs, place);
+                ws.background = reader.background(item);
+                workspaces.push(ws);
             }
             None => orphans.push(tabs),
         }

@@ -1,8 +1,6 @@
 import Foundation
 
 public struct CodeFile: Equatable {
-    public static let sniffBytes = 8192
-
     public let text: String
     public let lineStarts: [Int]
 
@@ -40,28 +38,5 @@ public struct CodeFile: Equatable {
             if case .insert(let offset, _, _) = change { changed.insert(offset + 1) }
         }
         return changed.filter { $0 <= lineCount }
-    }
-
-    public enum Failure: Error, Equatable {
-        case missing(String)
-        case folder(String)
-        case binary(String)
-
-        public var message: String {
-            switch self {
-            case .missing(let path): "No such file: \(path)"
-            case .folder(let path): "\(path) is a folder, not a file"
-            case .binary(let path): "\(path) isn't a text file"
-            }
-        }
-    }
-
-    public static func read(_ path: String) -> Result<CodeFile, Failure> {
-        var directory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &directory) else { return .failure(.missing(path)) }
-        if directory.boolValue { return .failure(.folder(path)) }
-        guard let data = FileManager.default.contents(atPath: path) else { return .failure(.missing(path)) }
-        if data.prefix(sniffBytes).contains(0) { return .failure(.binary(path)) }
-        return .success(CodeFile(text: String(decoding: data, as: UTF8.self)))
     }
 }

@@ -8,6 +8,13 @@ protocol TerminalLink: AnyObject {
     func resizeRequested(_ terminal: ExternalTerminal, cols: UInt16, rows: UInt16, width: UInt32, height: UInt32)
     func closed(_ terminal: ExternalTerminal)
     func settingsChanged(_ settings: TerminalSettings)
+    func scrolledToTop(_ terminal: ExternalTerminal) -> Bool
+    func used(_ terminal: ExternalTerminal)
+}
+
+extension TerminalLink {
+    func scrolledToTop(_ terminal: ExternalTerminal) -> Bool { false }
+    func used(_ terminal: ExternalTerminal) {}
 }
 
 @MainActor
@@ -60,6 +67,7 @@ final class ExternalTerminal {
             pending.removeFirst()
             switch item {
             case .output(_, let done?), .snapshot(_, let done?): done()
+            case .grid(let cols, let rows): view?.grid = (cols, rows)
             default: break
             }
         }
@@ -102,12 +110,25 @@ final class ExternalIOBackend: TerminalBackend {
     private let runtime: GhosttyRuntime
     private let link: TerminalLink
     private var terminals: [UInt: ExternalTerminal] = [:]
+    private var growing: [UInt: UInt64] = [:]
 
     init(runtime: GhosttyRuntime, link: TerminalLink) {
         self.runtime = runtime
         self.link = link
         Self.shared = self
         runtime.onSettings = { [weak link] settings in link?.settingsChanged(settings) }
+        runtime.onScrollbar = { [weak self] view, scrollbar in
+            guard let self, let terminal = terminals[view.surfaceID] else { return }
+            if let before = growing[view.surfaceID], scrollbar.total > before {
+                growing.removeValue(forKey: view.surfaceID)
+                if let surface = view.surface {
+                    let action = "scroll_to_row:\(scrollbar.total - before)"
+                    _ = ghostty_surface_binding_action(surface, action, UInt(action.utf8.count))
+                }
+            } else if scrollbar.offset == 0, scrollbar.total > scrollbar.len, growing[view.surfaceID] == nil, link.scrolledToTop(terminal) {
+                growing[view.surfaceID] = scrollbar.total
+            }
+        }
     }
 
     func start(_ view: TerminalSurfaceView, terminal id: String) -> Bool {
@@ -126,6 +147,9 @@ final class ExternalIOBackend: TerminalBackend {
         }
         let terminal = ExternalTerminal(id: id, view: view)
         terminals[view.surfaceID] = terminal
+        view.scrolled = { [weak self, weak terminal] in
+            if let self, let terminal { link.used(terminal) }
+        }
         guard runtime.attach(view, options: &options) else {
             terminals.removeValue(forKey: view.surfaceID)
             return false
@@ -135,6 +159,7 @@ final class ExternalIOBackend: TerminalBackend {
     }
 
     func stop(_ view: TerminalSurfaceView) {
+        growing.removeValue(forKey: view.surfaceID)
         if let terminal = terminals.removeValue(forKey: view.surfaceID) {
             link.closed(terminal)
             terminal.discard()

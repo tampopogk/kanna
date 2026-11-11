@@ -1,0 +1,450 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		03E748CDC87945168F390B61 /* Machines.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20066FD054B0BB01A7746B9 /* Machines.swift */; };
+		05316CFDEB96B7D8E9994D43 /* Shelf.swift in Sources */ = {isa = PBXBuildFile; fileRef = 694916B87D05BA8C88D56B95 /* Shelf.swift */; };
+		1860AF724350F72565BBAE10 /* Common.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AB8217F0F8E52853455B17C /* Common.swift */; };
+		245A0AA10DE65DB7ABD1ABAC /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 045C5AB8E314BFFDF6B6F35D /* Theme.swift */; };
+		3D3B1D1FBB11D67FB62EFAFB /* Quiz.swift in Sources */ = {isa = PBXBuildFile; fileRef = B117775ADE2739266AF4F15B /* Quiz.swift */; };
+		6572B9D3E4FB1595BDAF530E /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED3EEDF6416A9FE3C54DF349 /* App.swift */; };
+		74D7E58D821A0EEDCFD79E2E /* Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFE6A9428F34F898101835E6 /* Store.swift */; };
+		7D95C274F51D84DF621DC115 /* Fixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = E69FDA579F292876F340B13F /* Fixtures.swift */; };
+		8A458B80F1527B9694081F06 /* Pairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = F68B380BD2582532415430FF /* Pairing.swift */; };
+		976E1D61750E31714C6AF8D8 /* Code.swift in Sources */ = {isa = PBXBuildFile; fileRef = 427E289E1417016FAA7DC932 /* Code.swift */; };
+		ADA0EE7D88017A48F7B19727 /* Scenes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E78C3F7B038FE93F383DF83E /* Scenes.swift */; };
+		BD27A549C321467CE73073CE /* Stats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CA9B88BC3D75F6456ED29C /* Stats.swift */; };
+		E7B481243EF2DA6808A04878 /* FlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 511D800A7B27575868BB0EB8 /* FlowTests.swift */; };
+		F9C5F9C8C505BFB161B20437 /* Chat.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB79FE155C4B9D95A29DE678 /* Chat.swift */; };
+		FA636CBDE05FF65D8FE3229A /* Model.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1654C5507537BA1B2BE63AD2 /* Model.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		8F48D86BC21B68E5B407462F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EAF7FF981735309AEE77F371 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 609876EF275FED45BEB8335A;
+			remoteInfo = KannaMobile;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		045C5AB8E314BFFDF6B6F35D /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		0AB8217F0F8E52853455B17C /* Common.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Common.swift; sourceTree = "<group>"; };
+		1654C5507537BA1B2BE63AD2 /* Model.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Model.swift; sourceTree = "<group>"; };
+		32CA9B88BC3D75F6456ED29C /* Stats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Stats.swift; sourceTree = "<group>"; };
+		427E289E1417016FAA7DC932 /* Code.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Code.swift; sourceTree = "<group>"; };
+		510AF2C9ED0DF8172B95D3D2 /* KannaMobileUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = KannaMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		511D800A7B27575868BB0EB8 /* FlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowTests.swift; sourceTree = "<group>"; };
+		694916B87D05BA8C88D56B95 /* Shelf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shelf.swift; sourceTree = "<group>"; };
+		90CC5FE0E783F4D3A9C1AFF5 /* KannaMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = KannaMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B117775ADE2739266AF4F15B /* Quiz.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Quiz.swift; sourceTree = "<group>"; };
+		BB79FE155C4B9D95A29DE678 /* Chat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chat.swift; sourceTree = "<group>"; };
+		E20066FD054B0BB01A7746B9 /* Machines.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Machines.swift; sourceTree = "<group>"; };
+		E69FDA579F292876F340B13F /* Fixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fixtures.swift; sourceTree = "<group>"; };
+		E78C3F7B038FE93F383DF83E /* Scenes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Scenes.swift; sourceTree = "<group>"; };
+		ED3EEDF6416A9FE3C54DF349 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
+		EFE6A9428F34F898101835E6 /* Store.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Store.swift; sourceTree = "<group>"; };
+		F68B380BD2582532415430FF /* Pairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pairing.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		213F205C43279206C3CFB73E /* KannaMobileUITests */ = {
+			isa = PBXGroup;
+			children = (
+				511D800A7B27575868BB0EB8 /* FlowTests.swift */,
+			);
+			path = KannaMobileUITests;
+			sourceTree = "<group>";
+		};
+		3CACB2AB8A6C87FADDCBF780 /* KannaMobile */ = {
+			isa = PBXGroup;
+			children = (
+				ED3EEDF6416A9FE3C54DF349 /* App.swift */,
+				BB79FE155C4B9D95A29DE678 /* Chat.swift */,
+				427E289E1417016FAA7DC932 /* Code.swift */,
+				0AB8217F0F8E52853455B17C /* Common.swift */,
+				E69FDA579F292876F340B13F /* Fixtures.swift */,
+				E20066FD054B0BB01A7746B9 /* Machines.swift */,
+				1654C5507537BA1B2BE63AD2 /* Model.swift */,
+				F68B380BD2582532415430FF /* Pairing.swift */,
+				B117775ADE2739266AF4F15B /* Quiz.swift */,
+				E78C3F7B038FE93F383DF83E /* Scenes.swift */,
+				694916B87D05BA8C88D56B95 /* Shelf.swift */,
+				32CA9B88BC3D75F6456ED29C /* Stats.swift */,
+				EFE6A9428F34F898101835E6 /* Store.swift */,
+				045C5AB8E314BFFDF6B6F35D /* Theme.swift */,
+			);
+			path = KannaMobile;
+			sourceTree = "<group>";
+		};
+		586647F1C9776180BC9967CF /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				90CC5FE0E783F4D3A9C1AFF5 /* KannaMobile.app */,
+				510AF2C9ED0DF8172B95D3D2 /* KannaMobileUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		7C8F3B6D330C9D1FB3B245F3 = {
+			isa = PBXGroup;
+			children = (
+				3CACB2AB8A6C87FADDCBF780 /* KannaMobile */,
+				213F205C43279206C3CFB73E /* KannaMobileUITests */,
+				586647F1C9776180BC9967CF /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		609876EF275FED45BEB8335A /* KannaMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9A835A46ADF0749E55A56F2A /* Build configuration list for PBXNativeTarget "KannaMobile" */;
+			buildPhases = (
+				D5623AD81550F0ED23FD5AD8 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = KannaMobile;
+			packageProductDependencies = (
+			);
+			productName = KannaMobile;
+			productReference = 90CC5FE0E783F4D3A9C1AFF5 /* KannaMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		6A6613369DEC7C9F3330529E /* KannaMobileUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9968E9A2CAC7210553F512D6 /* Build configuration list for PBXNativeTarget "KannaMobileUITests" */;
+			buildPhases = (
+				9E670A251628F8CE8BFA20FC /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CF2E16E4656EC249C9EC3639 /* PBXTargetDependency */,
+			);
+			name = KannaMobileUITests;
+			packageProductDependencies = (
+			);
+			productName = KannaMobileUITests;
+			productReference = 510AF2C9ED0DF8172B95D3D2 /* KannaMobileUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		EAF7FF981735309AEE77F371 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					609876EF275FED45BEB8335A = {
+						ProvisioningStyle = Automatic;
+					};
+					6A6613369DEC7C9F3330529E = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = 609876EF275FED45BEB8335A;
+					};
+				};
+			};
+			buildConfigurationList = B408980AC4F77E4F55010FF7 /* Build configuration list for PBXProject "KannaMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 7C8F3B6D330C9D1FB3B245F3;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 586647F1C9776180BC9967CF /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				609876EF275FED45BEB8335A /* KannaMobile */,
+				6A6613369DEC7C9F3330529E /* KannaMobileUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		9E670A251628F8CE8BFA20FC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7B481243EF2DA6808A04878 /* FlowTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D5623AD81550F0ED23FD5AD8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6572B9D3E4FB1595BDAF530E /* App.swift in Sources */,
+				F9C5F9C8C505BFB161B20437 /* Chat.swift in Sources */,
+				976E1D61750E31714C6AF8D8 /* Code.swift in Sources */,
+				1860AF724350F72565BBAE10 /* Common.swift in Sources */,
+				7D95C274F51D84DF621DC115 /* Fixtures.swift in Sources */,
+				03E748CDC87945168F390B61 /* Machines.swift in Sources */,
+				FA636CBDE05FF65D8FE3229A /* Model.swift in Sources */,
+				8A458B80F1527B9694081F06 /* Pairing.swift in Sources */,
+				3D3B1D1FBB11D67FB62EFAFB /* Quiz.swift in Sources */,
+				ADA0EE7D88017A48F7B19727 /* Scenes.swift in Sources */,
+				05316CFDEB96B7D8E9994D43 /* Shelf.swift in Sources */,
+				BD27A549C321467CE73073CE /* Stats.swift in Sources */,
+				74D7E58D821A0EEDCFD79E2E /* Store.swift in Sources */,
+				245A0AA10DE65DB7ABD1ABAC /* Theme.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		CF2E16E4656EC249C9EC3639 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 609876EF275FED45BEB8335A /* KannaMobile */;
+			targetProxy = 8F48D86BC21B68E5B407462F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		4F15184DC333E4BA4E9D4253 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		5BFC8F014CE55246578D3147 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Kanna Proto";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.kanna.prototype.mobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5E4A75A5C097D4DB8A9D610C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.kanna.prototype.mobile.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = KannaMobile;
+			};
+			name = Release;
+		};
+		7ED3003FE9D10DEF591F7271 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.kanna.prototype.mobile.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = KannaMobile;
+			};
+			name = Debug;
+		};
+		C881D5A38CF64319B04D0D65 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_CFBundleDisplayName = "Kanna Proto";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.kanna.prototype.mobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		D6B703655062DD679E2B10DD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		9968E9A2CAC7210553F512D6 /* Build configuration list for PBXNativeTarget "KannaMobileUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7ED3003FE9D10DEF591F7271 /* Debug */,
+				5E4A75A5C097D4DB8A9D610C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9A835A46ADF0749E55A56F2A /* Build configuration list for PBXNativeTarget "KannaMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5BFC8F014CE55246578D3147 /* Debug */,
+				C881D5A38CF64319B04D0D65 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B408980AC4F77E4F55010FF7 /* Build configuration list for PBXProject "KannaMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4F15184DC333E4BA4E9D4253 /* Debug */,
+				D6B703655062DD679E2B10DD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = EAF7FF981735309AEE77F371 /* Project object */;
+}
