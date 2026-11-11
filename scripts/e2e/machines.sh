@@ -671,6 +671,6 @@ WANT
   [[ "$again" == *"$vm/again.png"* ]] || { echo "remote_workspace: with vm's own app gone, the screenshot went nowhere: $again"; return 1; }
   rk task stop >/dev/null 2>&1; rk task park >/dev/null 2>&1
   raw '{"id":1,"cmd":"debug.click","args":{"deskView":"d1"}}' >/dev/null
-  local hidden; hidden="$(cd "$rwork" && rk screenshot spec-remote 2>&1)" && { echo "remote_workspace: shot a pane that isn't showing"; return 1; }
-  [[ "$hidden" == *"isn't showing"* || "$hidden" == *"isn't in a window"* ]] || { echo "remote_workspace: a hidden pane: $hidden"; return 1; }
+  local hidden; hidden="$(cd "$rwork" && rk screenshot spec-remote -o "$vm/hidden.png" --json 2>&1)"
+  [[ "$(field hidden <<<"$hidden")" == True && "$(head -c 4 "$vm/hidden.png" | tail -c 3)" == PNG ]] || { echo "remote_workspace: a parked pane wasn't drawn off screen: $hidden"; return 1; }
 }
