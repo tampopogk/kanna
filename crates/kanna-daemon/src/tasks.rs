@@ -24,6 +24,9 @@ mod instance;
 mod merging;
 mod moving;
 mod phone;
+mod workers;
+
+pub use workers::{Offer, Placed};
 
 pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
@@ -1060,6 +1063,7 @@ pub struct Tasks {
     ending: RefCell<HashMap<String, Option<String>>>,
     moving_instance: RefCell<Option<String>>,
     pub move_hooks: RefCell<Option<instance::MoveHooks>>,
+    hosted: workers::Hosted,
 }
 
 #[derive(Clone)]
@@ -1101,6 +1105,10 @@ enum Asked {
     Packed(Box<moving::Moving>, String),
     Transfer(moving::Sending),
     Unbundled(moving::Taking),
+    Seek { id: String, owner: String },
+    WorkSent(String),
+    WorkBack(String),
+    WorkUnbundled(workers::Taking),
 }
 
 const SYNC_EVERY: Duration = Duration::from_secs(3);
@@ -1142,7 +1150,7 @@ impl TaskBook for Book {
     }
 
     fn starting(&self, task: &str) -> bool {
-        self.0.upgrade().is_some_and(|tasks| tasks.launching.borrow().contains(task))
+        self.0.upgrade().is_some_and(|tasks| tasks.launching.borrow().contains(task) || tasks.opening_worker(task))
     }
 }
 
@@ -1251,6 +1259,7 @@ impl Tasks {
             ending: RefCell::default(),
             moving_instance: RefCell::default(),
             move_hooks: RefCell::default(),
+            hosted: workers::Hosted::default(),
         }
     }
 
@@ -1621,6 +1630,8 @@ impl Tasks {
     pub fn join(&self) {
         let me = self.machines().me;
         self.replica.borrow_mut().set_device(if me.key.is_empty() { "this" } else { &me.key });
+        self.hosting();
+        self.publish_roles();
         let mut held: Vec<(Entry, Place, Option<String>)> = self.entries.borrow().iter().map(|e| (e.clone(), Place::Shelf, e.held.clone())).collect();
         held.extend(self.running.borrow().iter().map(|r| (r.entry.clone(), r.place, Some(r.pane.clone()))));
         for (mut entry, place, pane) in held {
@@ -1699,7 +1710,7 @@ impl Tasks {
     fn adopt(&self) {
         let Ok(held) = Replica::held(&self.db) else { return };
         let mut adopted = false;
-        for (task, birth, _) in held.into_iter().filter(|(_, _, a)| a.permit == Permit::Ready) {
+        for (task, birth, _) in held.into_iter().filter(|(task, _, a)| a.permit == Permit::Ready && !task.starts_with(replica::WORKER)) {
             if self.is_open(&task) {
                 continue;
             }
@@ -1793,9 +1804,12 @@ impl Tasks {
             self.send_to(&peer.key, json!({ "action": "sync", "vector": vector }), Asked::Sync(peer.key.clone()));
         }
         self.resend_transfers();
+        self.publish_roles();
+        self.resend_workers();
+        self.seek_workers();
         let sending: HashSet<String> = self.asked.borrow().values().filter_map(|a| if let Asked::Grant(g) = a { Some(g.task.clone()) } else { None }).collect();
         for grant in Replica::outbox(&self.db).unwrap_or_default() {
-            if !sending.contains(&grant.task) && machines.peers.iter().any(|p| p.key == grant.to) {
+            if !sending.contains(&grant.task) && !grant.task.starts_with(replica::WORKER) && machines.peers.iter().any(|p| p.key == grant.to) {
                 let args = json!({ "action": "grant", "task": grant.task, "birth": grant.birth, "epoch": grant.epoch });
                 self.send_to(&grant.to.clone(), args, Asked::Grant(grant));
             }
@@ -1807,6 +1821,7 @@ impl Tasks {
         let asked = match asked {
             Asked::Packed(moving, id) => return self.packed(*moving, id, reply),
             Asked::Unbundled(taking) => return self.unbundled(taking, reply),
+            Asked::WorkUnbundled(taking) => return self.work_unbundled(taking, reply),
             other => other,
         };
         let reply = reply.and_then(|r| if r["ok"] == true { Ok(r) } else { Err(format!("{} [{}]", r["error"]["message"].as_str().unwrap_or("refused"), r["error"]["code"].as_str().unwrap_or("failed"))) });
@@ -1830,7 +1845,10 @@ impl Tasks {
                     }
                 }
             }
-            Asked::Ops | Asked::Ack | Asked::Packed(..) | Asked::Unbundled(_) => {}
+            Asked::Ops | Asked::Ack | Asked::Packed(..) | Asked::Unbundled(_) | Asked::WorkUnbundled(_) => {}
+            Asked::Seek { id, owner } => self.sought(id, owner, reply),
+            Asked::WorkSent(id) => self.worker_sent(id, reply),
+            Asked::WorkBack(id) => self.worker_back(id, reply),
             Asked::Heads(moving) => self.heads_came(*moving, reply),
             Asked::Transfer(sending) => self.transferred(sending, reply),
             Asked::Ask { task, birth, owner, repo } => {
@@ -1874,6 +1892,8 @@ impl Tasks {
             Ok(_) => self.revised(),
             Err(error) => return log!("kanna-daemon: couldn't save other machines' tasks in {}: {error}", db::FILE),
         }
+        self.seek_workers();
+        self.worker_changed();
         self.refresh();
         self.refill();
     }
@@ -1986,7 +2006,7 @@ impl Tasks {
         let action = string(args, "action").unwrap_or_default();
         if action == "list" {
             let replica = self.replica.borrow();
-            let records = replica.records().map(|r| r.to_value()).collect();
+            let records = replica.all().map(|r| r.to_value()).collect();
             let held = Replica::held(&self.db).unwrap_or_default().into_iter().map(|(task, birth, a)| {
                 let mut value = Value::Object(replica::authority_value(&a));
                 value["task"] = json!(task);
@@ -2011,6 +2031,7 @@ impl Tasks {
                 self.take_ops(&args["ops"]);
                 Ok(Map::new())
             }
+            "ask" if task.starts_with(replica::WORKER) => self.grant_worker(&peer, task, birth, args),
             "ask" => self.grant_to(&peer, task, birth),
             "grant" => match self.take_grant(&peer, task, birth, args["epoch"].as_i64().unwrap_or(0)) {
                 true => Ok(Map::new()),
@@ -2377,7 +2398,8 @@ impl Tasks {
         let finishing = self.finishing.borrow().values().flat_map(|f| [Some(f.by), f.turn.due()]).flatten().min();
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         let news = self.tell_planners(now);
-        [turns, quits, finishing, setups, self.fill_at.get(), events, mail, news, Some(self.sync_at.get())].into_iter().flatten().min()
+        let workers = self.tick_workers();
+        [turns, quits, finishing, setups, self.fill_at.get(), events, mail, news, workers, Some(self.sync_at.get())].into_iter().flatten().min()
     }
 
     fn look_for_background(&self, now: Instant) {
@@ -2668,7 +2690,7 @@ impl Tasks {
         let heard = self.heard_from_all(&machines);
         let total = machine_runners(&my_config());
         let taken: Vec<&str> = entries.iter().filter(|e| starting.contains(&e.id) || e.held.as_deref().is_some_and(|pane| alive(core, pane))).map(|e| e.repo.as_str()).chain(asking.iter().map(|(repo, _)| repo.as_str())).collect();
-        let mut busy = taken.len();
+        let mut busy = taken.len() + self.hosted_workers();
         let mut limits: HashMap<String, (usize, usize)> = HashMap::new();
         let mut queue: Vec<(Hlc, String, Candidate)> = Vec::new();
         for repo in repos {
@@ -2899,6 +2921,7 @@ impl Tasks {
             "replica",
             Rc::new(move |args, responder| match this.upgrade() {
                 Some(this) if this.holds_for_move(&args) => responder.reply(Err(this.moving_refusal())),
+                Some(this) if string(&args, "action") == Some("transfer") && args.get("worker").is_some() => this.take_worker(&args, responder),
                 Some(this) if string(&args, "action") == Some("transfer") => this.take_transfer(&args, responder),
                 Some(this) => responder.reply(this.replica_command(&args)),
                 None => responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))),

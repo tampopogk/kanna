@@ -337,6 +337,19 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         state text not null,
         doc text not null default '{}' check (json_valid(doc))
     );
+"), Step::Sql("
+    create table transfers_wider (
+        id text primary key,
+        task text not null,
+        role text not null check (role in ('out', 'in', 'work-out', 'work-in', 'work-back')),
+        peer text not null,
+        state text not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        at real not null
+    );
+    insert into transfers_wider select id, task, role, peer, state, doc, at from transfers;
+    drop table transfers;
+    alter table transfers_wider rename to transfers;
 ")];
 
 const TERMINAL_COUNTERS: &str = "terminal_counters";
@@ -1719,8 +1732,8 @@ impl Db {
             return Ok(self.conn.last_insert_rowid());
         }
         self.conn.execute(
-            "update run_stages set ended_at = ?2, verdict = ?3, session = ?4, terminal = ?5, worktree = ?6, branch = ?7, doc = json_patch(doc, ?8) where id = ?1",
-            params![stage.id, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string()],
+            "update run_stages set ended_at = ?2, verdict = ?3, session = ?4, terminal = ?5, worktree = ?6, branch = ?7, doc = json_patch(doc, ?8), machine = ?9 where id = ?1",
+            params![stage.id, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string(), stage.machine],
         )?;
         Ok(stage.id)
     }

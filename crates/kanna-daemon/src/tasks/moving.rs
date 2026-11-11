@@ -79,7 +79,7 @@ fn valid_task(id: &str) -> bool {
     id.len() == 13 && id.starts_with("task-") && id[5..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn valid_branch(repo: &Path, branch: &str) -> bool {
+pub(super) fn valid_branch(repo: &Path, branch: &str) -> bool {
     !branch.starts_with('-') && git(repo, &["check-ref-format", "--branch", branch]).is_ok()
 }
 

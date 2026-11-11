@@ -2,7 +2,7 @@ use crate::db::{Db, RunRow, StageRow};
 use crate::pipelines;
 use crate::run_notice;
 use crate::task_scripts;
-use crate::tasks::{self, git, Entry, Tasks};
+use crate::tasks::{self, git, Entry, Offer, Placed, Tasks};
 use crate::usage;
 use crate::runtime;
 use kanna_mux::json::{json, num, opt, string, Map, Value};
@@ -329,7 +329,7 @@ pub fn over_budget(pipeline: &Pipeline, doc: &Doc, stage: &Stage, sizes: &Sizes,
     None
 }
 
-pub fn unbuilt(pipeline: &Pipeline, host: &str) -> Vec<String> {
+pub fn unbuilt(pipeline: &Pipeline) -> Vec<String> {
     let mut out = vec![];
     for stage in &pipeline.stages {
         let line = stage.line;
@@ -344,9 +344,6 @@ pub fn unbuilt(pipeline: &Pipeline, host: &str) -> Vec<String> {
             if agent.resume.is_some() {
                 say("resume");
             }
-        }
-        if let Some(on) = stage.on.as_deref().filter(|on| *on != "here" && *on != host) {
-            out.push(format!("{line}: {} is on {on}: no such machine: stages run on this machine (here, or {host}) until machines are built", stage.name));
         }
     }
     out
@@ -434,7 +431,7 @@ pub fn changes(before: &Pipeline, after: &Pipeline) -> String {
 
 pub fn edit_errors(current: &Pipeline, text: &str, context: &Context, at: Option<&str>) -> Result<kanna_pipe::Revision, Vec<(usize, String)>> {
     let revision = kanna_pipe::edited(current, text, context).map_err(|errors| errors.into_iter().map(|e| (e.line, e.message)).collect::<Vec<_>>())?;
-    let mut errors: Vec<(usize, String)> = unbuilt(&revision.pipeline, context.machine.as_deref().unwrap_or("here")).iter().filter_map(|u| u.split_once(": ").and_then(|(line, message)| Some((line.parse().ok()?, message.to_string())))).collect();
+    let mut errors: Vec<(usize, String)> = unbuilt(&revision.pipeline).iter().filter_map(|u| u.split_once(": ").and_then(|(line, message)| Some((line.parse().ok()?, message.to_string())))).collect();
     if let Some(at) = at.filter(|at| revision.pipeline.stage(at).is_none()) {
         errors.push((1, format!("the run is at {at}, so an edit can't remove it")));
     }
@@ -447,7 +444,7 @@ pub fn edit_errors(current: &Pipeline, text: &str, context: &Context, at: Option
 
 pub fn emit_errors(current: &Pipeline, stage: &str, block: &str, context: &Context) -> Result<kanna_pipe::Revision, Vec<String>> {
     let revision = kanna_pipe::emitted(current, stage, block, context).map_err(|refused| refused.lines())?;
-    let unbuilt = unbuilt(&revision.pipeline, context.machine.as_deref().unwrap_or("here"));
+    let unbuilt = unbuilt(&revision.pipeline);
     if unbuilt.is_empty() {
         Ok(revision)
     } else {
@@ -720,6 +717,7 @@ enum Work {
     Agent { agent: String },
     Ask { question: String },
     Command { log: PathBuf, exit: PathBuf },
+    Remote { worker: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -972,6 +970,7 @@ pub struct Runs {
     pub on_tell: RefCell<Option<OnTell>>,
     flagged: RefCell<HashSet<String>>,
     asks_changed: Cell<bool>,
+    polled: Cell<f64>,
     carrying: RefCell<Vec<String>>,
     pub on_status: RefCell<Option<Box<dyn Fn(&str)>>>,
 }
@@ -993,6 +992,7 @@ impl Runs {
             let open: Vec<StageRow> = db.stages(&entry.row.id).unwrap_or_default().into_iter().filter(|s| s.ended_at.is_none()).collect();
             for row in open {
                 let work = match row.kind.as_str() {
+                    _ if row.doc["remote"]["worker"].is_string() => Work::Remote { worker: row.doc["remote"]["worker"].as_str().unwrap_or_default().to_string() },
                     "agent" => Work::Agent { agent: row.agent.clone().unwrap_or_default() },
                     "ask" => Work::Ask { question: string(&row.doc, "question").unwrap_or("").to_string() },
                     _ => Work::Command { log: PathBuf::from(string(&row.doc, "log").unwrap_or("")), exit: PathBuf::from(string(&row.doc, "exit").unwrap_or("")) },
@@ -1017,7 +1017,7 @@ impl Runs {
             log!("kanna-daemon: {} carries on ({}, {at})", entry.row.id, entry.row.state);
             live.push(entry);
         }
-        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() };
+        let this = Runs { db, core, tasks, live: RefCell::new(live), soon: Cell::new(true), host: machine(), flagged: RefCell::default(), asks_changed: Cell::new(true), polled: Cell::new(0.0), carrying: RefCell::default(), on_status: RefCell::default(), views: RefCell::default(), on_run: RefCell::new(None), heed: RefCell::new(None), on_end: RefCell::default(), on_moved: RefCell::default(), on_tell: RefCell::default() };
         for (row, repo) in this.db.unmeasured().unwrap_or_default() {
             this.measure(Measuring::of(&row, &repo, None, None));
         }
@@ -1070,7 +1070,24 @@ impl Runs {
         );
     }
 
+    pub fn wake(&self) {
+        self.soon.set(true);
+    }
+
+    fn placed(&self, on: Option<&str>) -> Placed {
+        match (on, self.tasks.upgrade()) {
+            (Some(on), Some(tasks)) if on != "here" && on != self.host => tasks.placement(Some(on)),
+            (Some(on), None) if on != "here" && on != self.host => Placed::Nowhere("no such machine: the daemon is stopping".into()),
+            _ => Placed::Here,
+        }
+    }
+
     fn handle(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+        if let Some("done" | "need" | "command") = string(args, "action") {
+            if let Some(reply) = self.tasks.upgrade().and_then(|tasks| tasks.worker_done(args)) {
+                return reply;
+            }
+        }
         match string(args, "action") {
             Some("start") => self.start_run(args),
             Some("list") => self.list(args),
@@ -1145,12 +1162,16 @@ impl Runs {
     }
 
     fn checked(&self, text: &str, shown: &str, prompts: &BTreeMap<String, String>) -> Result<Pipeline, KmuxError> {
-        let context = Context { prompts: prompts.clone(), machine: Some(self.host.clone()), ..Context::default() };
+        let (machines, roles) = self.tasks.upgrade().map(|tasks| tasks.placements()).unwrap_or_default();
+        let context = Context { prompts: prompts.clone(), machine: Some(self.host.clone()), machines, roles, ..Context::default() };
         let pipeline = kanna_pipe::parse(text).map_err(|errors| KmuxError::new("invalid", errors.iter().map(|e| e.at(shown)).collect::<Vec<_>>().join("\n")))?;
-        let unbuilt = unbuilt(&pipeline, &self.host);
-        let placed: Vec<&String> = unbuilt.iter().filter(|u| u.contains("no such machine")).collect();
-        if !placed.is_empty() {
-            return Err(KmuxError::new("no_such_machine", placed.iter().map(|u| format!("{shown}:{u}")).collect::<Vec<_>>().join("\n")));
+        let unbuilt = unbuilt(&pipeline);
+        let nowhere: Vec<String> = pipeline.stages.iter().filter_map(|stage| match self.placed(stage.on.as_deref()) {
+            Placed::Nowhere(why) => Some(format!("{shown}:{}: {} is on {}: {why}", stage.line, stage.name, stage.on.as_deref().unwrap_or("here"))),
+            _ => None,
+        }).collect();
+        if !nowhere.is_empty() {
+            return Err(KmuxError::new("no_such_machine", nowhere.join("\n")));
         }
         pipeline.check(&context).map_err(|errors| KmuxError::new("invalid", errors.iter().map(|e| e.at(shown)).collect::<Vec<_>>().join("\n")))?;
         if !unbuilt.is_empty() {
@@ -1275,7 +1296,7 @@ impl Runs {
             .iter()
             .filter(|l| l.row.id == row.id)
             .flat_map(|l| l.visits.iter())
-            .map(|v| json!({ "stage": v.row.stage, "instance": opt(v.row.instance.as_deref()), "kind": v.row.kind, "terminal": opt(v.row.terminal.as_deref()), "worktree": opt(v.row.worktree.as_deref()) }))
+            .map(|v| json!({ "stage": v.row.stage, "instance": opt(v.row.instance.as_deref()), "kind": v.row.kind, "machine": v.row.machine, "terminal": opt(v.row.terminal.as_deref()), "worktree": opt(v.row.worktree.as_deref()) }))
             .collect();
         let events = self.db.run_events(&row.id).map_err(failed)?;
         let stages = self.db.stages(&row.id).map_err(failed)?;
@@ -1381,6 +1402,11 @@ impl Runs {
                 log!("kanna-daemon: {id} couldn't carry on once its task started: {}", error.message);
             }
         }
+        let afar = self.live.borrow().iter().any(|l| l.visits.iter().any(|v| matches!(v.work, Work::Remote { .. })));
+        if afar && self.polled.get() + 1.0 <= now() {
+            self.polled.set(now());
+            self.soon.set(true);
+        }
         if self.soon.replace(false) || self.deadline().is_some_and(|at| at <= now()) {
             let ids: Vec<String> = self.live.borrow().iter().filter(|l| l.row.state == "running" || l.visits.iter().any(|v| !v.paused)).map(|l| l.row.id.clone()).collect();
             for id in &ids {
@@ -1391,7 +1417,8 @@ impl Runs {
         if self.soon.get() {
             return Some(Instant::now());
         }
-        self.deadline().map(|at| Instant::now() + Duration::from_secs_f64((at - now()).max(0.0)))
+        let poll = afar.then(|| self.polled.get() + 1.0);
+        self.deadline().into_iter().chain(poll).min_by(f64::total_cmp).map(|at| Instant::now() + Duration::from_secs_f64((at - now()).max(0.0)))
     }
 
     fn deadline(&self) -> Option<f64> {
@@ -1683,6 +1710,9 @@ impl Runs {
             }
             return;
         }
+        if let Work::Remote { worker } = &visit.work {
+            return self.step_remote(id, visit, worker, late);
+        }
         let Some(pane) = visit.row.terminal.clone() else { return };
         let stopped = self.live.borrow().iter().any(|l| l.row.id == id && l.doc.held);
         if stopped && visit.reported.is_none() && visit.needs.is_none() {
@@ -1734,8 +1764,122 @@ impl Runs {
                     self.command_ended(id, n, &pane, log, exit);
                 }
             }
-            Work::Ask { .. } => {}
+            Work::Ask { .. } | Work::Remote { .. } => {}
         }
+    }
+
+    fn step_remote(self: &Rc<Self>, id: &str, visit: &Visit, worker: &str, late: bool) {
+        let Ok(tasks) = self.tasks() else { return };
+        let (n, stage) = (visit.n, visit.label());
+        if late {
+            if !self.mark_ending(id, n) {
+                return;
+            }
+            tasks.drop_worker(worker);
+            let verdicts = self.live.borrow().iter().find(|l| l.row.id == id).is_some_and(|l| visit.row.kind != "agent" || l.pipeline.stage(&visit.row.stage).is_some_and(Stage::verdicts));
+            if !verdicts {
+                return self.stop(id, "stopped", &format!("{stage} timed out before its agent reported it was done"), Some("daemon"), true);
+            }
+            return self.finished(id, n, Ended { verdict: Some(Verdict::Fail), shown: "fail", answer: String::new(), feedback: "timed out".into(), full: String::new(), failures: None, note: Some("timed out".into()), by: None }, None);
+        }
+        let Some(remote) = tasks.worker(worker) else {
+            if self.mark_ending(id, n) {
+                log!("kanna-daemon: {id}'s {stage} lost its worker {worker}, so it's recorded interrupted and runs again");
+                self.rerun(id, visit, "interrupted");
+            }
+            return;
+        };
+        let terminal = remote.terminal.as_ref().zip(remote.machine.as_ref()).filter(|_| remote.state == "started").map(|(terminal, machine)| format!("{terminal}@{machine}"));
+        let machine = remote.machine.clone().unwrap_or_else(|| visit.row.machine.clone());
+        let why = remote.waits.as_ref().map(|waits| format!("{stage} {waits}"));
+        let known = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.doc.why.clone());
+        let moved = terminal.is_some() && visit.row.terminal != terminal || machine != visit.row.machine;
+        if moved || (known != why && self.state(id).as_deref() == Some("running")) {
+            let mut saved = None;
+            let started = terminal.is_some() && visit.row.terminal.is_none();
+            self.update(id, |live| {
+                if live.row.state == "running" {
+                    live.doc.why = why.clone();
+                }
+                let visit = live.visit_mut(n)?;
+                visit.row.machine = machine.clone();
+                if terminal.is_some() {
+                    visit.row.terminal = terminal.clone();
+                }
+                saved = Some(visit.row.clone());
+                started.then(|| ("stage", Some("daemon".into()), json!({ "stage": visit.row.stage, "visit": visit.row.visit, "instance": opt(visit.row.instance.as_deref()), "kind": visit.row.kind, "terminal": terminal, "machine": machine })))
+            });
+            if let Some(row) = saved.filter(|_| moved) {
+                let _ = self.db.put_stage(&StageRow { doc: json!({}), ..row });
+            }
+            if started {
+                log!("kanna-daemon: {id}'s {stage} runs on {machine} in {}", terminal.as_deref().unwrap_or(""));
+                self.take_tab(id, terminal.as_deref().unwrap_or_default());
+            }
+        }
+        let Some(result) = remote.result else { return };
+        let leave = |this: &Rc<Self>| {
+            let shown = this.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit(n)).and_then(|v| v.row.terminal.clone());
+            if let Some(shown) = shown {
+                this.close(&shown);
+            }
+        };
+        if let Some(why) = string(&result, "stopped") {
+            if self.mark_ending(id, n) {
+                tasks.drop_worker(worker);
+                self.stop(id, "stopped", &format!("{stage} on {machine}: {why}"), Some("daemon"), true);
+            }
+            return;
+        }
+        if result["interrupted"] == true {
+            if self.mark_ending(id, n) {
+                log!("kanna-daemon: {id}'s {stage} lost its terminal on {machine}, so it's recorded interrupted and runs again");
+                tasks.drop_worker(worker);
+                leave(self);
+                self.rerun(id, visit, "interrupted");
+            }
+            return;
+        }
+        if !remote.landed || !self.mark_ending(id, n) {
+            return;
+        }
+        let shown = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visit(n)).and_then(|v| v.row.terminal.clone());
+        if let Some(shown) = shown {
+            self.retire(id, &shown);
+        }
+        let mut ended = reported(&result);
+        if visit.row.kind != "agent" {
+            let log = PathBuf::from(visit.worktree()).join(SCRATCH).join(format!("stage-{n}.log"));
+            let _ = fs::write(&log, string(&result, "output").unwrap_or(""));
+            ended.answer = String::new();
+            ended.feedback = string(&result, "feedback").unwrap_or("").to_string();
+            ended.full = log.to_string_lossy().into_owned();
+            ended.failures = Some(result["failures"].as_array().map_or(vec![], |l| l.iter().filter_map(Value::as_str).map(String::from).collect()));
+            ended.note = string(&result, "note").map(String::from);
+        }
+        tasks.drop_worker(worker);
+        self.finished(id, n, ended, None);
+    }
+
+    fn take_tab(self: &Rc<Self>, id: &str, guest: &str) {
+        let Some(core) = self.core.upgrade() else { return };
+        let Some(old) = self.live.borrow_mut().iter_mut().find(|l| l.row.id == id).and_then(|l| l.last.take()) else { return };
+        let (this, placing, id, guest) = (Rc::downgrade(self), core.weak(), id.to_string(), guest.to_string());
+        core.handle(json!({ "cmd": "list" }), move |reply| {
+            let (Some(this), Some(core)) = (this.upgrade(), placing.upgrade()) else { return };
+            if !shown(&reply, &old) {
+                return this.close(&old);
+            }
+            let again = Rc::downgrade(&this);
+            core.show_guest(&guest.clone(), json!({ "from": old }), move |placed| {
+                let Some(this) = again.upgrade() else { return };
+                this.close(&old);
+                if placed.is_ok() {
+                    log!("kanna-daemon: {id}'s next worker {guest} takes the tab {old} was shown in");
+                    this.name_tab(&id, &guest);
+                }
+            });
+        });
     }
 
     pub fn too_old(self: &Rc<Self>, pane: &str, why: &str) -> bool {
@@ -2099,7 +2243,13 @@ impl Runs {
 
     fn end_visit(self: &Rc<Self>, visit: &Visit, then: impl FnOnce(&Rc<Self>, Option<String>) + 'static) {
         let this = Rc::downgrade(self);
-        let pane = visit.row.terminal.clone().filter(|_| !visit.paused);
+        let pane = visit.row.terminal.clone().filter(|_| !visit.paused && !matches!(visit.work, Work::Remote { .. }));
+        if let (Work::Remote { worker }, Some(tasks)) = (&visit.work, self.tasks.upgrade()) {
+            tasks.drop_worker(worker);
+            if let Some(terminal) = &visit.row.terminal {
+                self.close(terminal);
+            }
+        }
         let closing = pane.clone();
         let finish = move |said: Option<String>| {
             let Some(this) = this.upgrade() else { return };
@@ -2136,8 +2286,10 @@ impl Runs {
     fn open_beside(self: &Rc<Self>, id: &str, n: u32, cwd: &str, command: &str, last: Option<(String, bool)>, opened: impl FnOnce(&Rc<Self>, &str, &str) + 'static) {
         let Some(core) = self.core.upgrade() else { return };
         let task = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| l.row.task.clone()).unwrap_or_default();
-        let args = match &last {
-            Some((old, true)) => json!({ "type": "term", "from": old, "cwd": cwd, "cmd": command, "wait": false }),
+        let workspace = self.tasks.upgrade().and_then(|tasks| tasks.entry(&task)).and_then(|entry| entry.workspace);
+        let args = match (&last, workspace) {
+            (Some((old, true)), Some(workspace)) if old.contains('@') => json!({ "type": "term", "workspace": workspace, "tab": true, "cwd": cwd, "cmd": command, "wait": false }),
+            (Some((old, true)), _) => json!({ "type": "term", "from": old, "cwd": cwd, "cmd": command, "wait": false }),
             _ => json!({ "type": "term", "background": true, "workspace": task, "cwd": cwd, "cmd": command, "wait": false }),
         };
         let (this, id) = (Rc::downgrade(self), id.to_string());
@@ -2241,6 +2393,12 @@ impl Runs {
     }
 
     fn close(&self, pane: &str) {
+        if pane.contains('@') {
+            if let Some(core) = self.core.upgrade() {
+                core.drop_guest(pane);
+            }
+            return;
+        }
         if let Some(core) = self.core.upgrade() {
             core.handle(json!({ "cmd": "close", "args": { "pane": pane } }), |_| {});
         }
@@ -2523,6 +2681,14 @@ impl Runs {
         if let Kind::Ask { question } = &running.kind {
             return self.ask(id, n, role, stage_row, row_doc, question);
         }
+        let afar = match (role, self.placed(running.on.as_deref())) {
+            (Role::Main(_), Placed::There) => true,
+            (Role::Main(_), Placed::Nowhere(why)) => return self.stop(id, "stopped", &format!("{} is on {}: {why}", running.name, running.on.as_deref().unwrap_or("here")), Some("daemon"), true),
+            _ => false,
+        };
+        if afar {
+            return self.launch_afar(id, n, role, &running, item.as_ref().filter(|_| !step.attempts).map(|i| i.text.clone()), stage_row, row_doc);
+        }
         let files = tasks::config_files(Path::new(&row.repo));
         let mut vars = self.vars(&row, &doc, &stage_row, &step.stage);
         let (command, work, sessions) = match &running.kind {
@@ -2591,6 +2757,66 @@ impl Runs {
                 Some(("stage", Some("daemon".into()), event))
             });
         });
+    }
+
+    fn launch_afar(self: &Rc<Self>, id: &str, n: u32, role: Role, running: &Stage, part: Option<String>, mut stage_row: StageRow, mut row_doc: Value) {
+        let Some((doc, row)) = self.live.borrow().iter().find(|l| l.row.id == id).map(|l| (l.doc.clone(), l.row.clone())) else { return };
+        let Ok(tasks) = self.tasks() else { return };
+        let on = running.on.clone().unwrap_or_default();
+        let label = label(&stage_row);
+        let task = tasks.entry(&row.task);
+        let mut spec = json!({
+            "run": row.id, "task": row.task, "taskName": task.as_ref().and_then(|t| t.name.clone()), "stage": stage_row.stage, "instance": opt(stage_row.instance.as_deref()), "label": label,
+            "n": n, "base": doc.base, "within": command_timeout(running.within), "verdicts": running.verdicts(),
+        });
+        let sessions = match &running.kind {
+            Kind::Agent(agent) => {
+                let prompts = self.db.revisions(id).ok().and_then(|r| r.last().and_then(|r| r.doc.get("prompts").cloned())).unwrap_or(Value::Null);
+                let worker = PathBuf::from(stage_row.worktree.clone().unwrap_or_default());
+                let file = running.prompt().and_then(|p| string(&prompts, p).map(String::from)).or_else(|| running.prompt().and_then(|p| fs::read_to_string(worker.join(format!(".kanna/prompts/{p}.md"))).ok())).unwrap_or_default();
+                let feedback = doc.feedback.as_ref().map(|f| Feedback { full: String::new(), ..f.clone() });
+                spec["kind"] = json!("agent");
+                spec["agent"] = json!(agent.agent);
+                spec["effort"] = opt(agent.effort.as_deref());
+                spec["model"] = opt(agent.model.as_deref());
+                spec["prompt"] = json!(prompt(running, &file, &doc.request, part.as_deref(), feedback.as_ref(), &doc.answers, &format!("{SCRATCH}/answer-{n}.md")));
+                stage_row.kind = "agent".into();
+                stage_row.agent = Some(agent.agent.clone());
+                1
+            }
+            Kind::Run { command } => {
+                spec["kind"] = json!("run");
+                spec["command"] = json!(command);
+                spec["feedback"] = json!(doc.feedback.as_ref().map(|f| fs::read_to_string(&f.full).unwrap_or_else(|_| f.text.clone())).unwrap_or_default());
+                stage_row.kind = "run".into();
+                0
+            }
+            _ => return self.stop(id, "stopped", &format!("{} is a kind of stage that runs on this machine only", running.name), Some("daemon"), true),
+        };
+        let worker = match tasks.offer_worker(Offer { repo: row.repo.clone(), worktree: stage_row.worktree.clone().unwrap_or_default(), on: on.clone(), spec }) {
+            Ok(worker) => worker,
+            Err(why) => return self.stop(id, "stopped", &format!("{label} can't run on {on}: {why}"), Some("daemon"), true),
+        };
+        row_doc["remote"] = json!({ "worker": worker, "on": on });
+        stage_row.machine = on.clone();
+        stage_row.doc = row_doc;
+        match self.db.put_stage(&stage_row) {
+            Ok(row_id) => stage_row.id = row_id,
+            Err(error) => {
+                tasks.drop_worker(&worker);
+                return self.stop(id, "stopped", &format!("can't save {label}'s visit: {error}"), Some("daemon"), true);
+            }
+        }
+        log!("kanna-daemon: {id} offers {label} (visit {}) to {on} as {worker}", stage_row.visit);
+        let event = json!({ "stage": stage_row.stage, "visit": stage_row.visit, "instance": opt(stage_row.instance.as_deref()), "kind": stage_row.kind, "on": on, "worker": worker });
+        let within = running.within;
+        self.update(id, |live| {
+            live.doc.visits = n;
+            live.doc.sessions += sessions;
+            live.visits.push(Visit { n, role, row: stage_row, work: Work::Remote { worker: worker.clone() }, within, opening: false, ending: false, reported: None, needs: None, paused: false });
+            Some(("offered", Some("daemon".into()), event))
+        });
+        self.soon.set(true);
     }
 
     fn ask(self: &Rc<Self>, id: &str, n: u32, role: Role, mut stage_row: StageRow, mut row_doc: Value, question: &str) {
@@ -2928,6 +3154,15 @@ impl Runs {
                     self.measure(Measuring::of(&row, &repo, None, None));
                 }
             }
+            if let Work::Remote { worker } = &visit.work {
+                if let Some(tasks) = self.tasks.upgrade() {
+                    tasks.drop_worker(worker);
+                }
+                if let Some(terminal) = &row.terminal {
+                    self.close(terminal);
+                }
+                continue;
+            }
             if let (Some(pane), false) = (row.terminal.clone(), visit.ending || visit.paused) {
                 match (&visit.work, self.tasks.upgrade()) {
                     (Work::Agent { agent }, Some(tasks)) => {
@@ -3061,7 +3296,8 @@ impl Runs {
                 prompts.entry(name).or_insert(text);
             }
         }
-        Context { prompts, machine: Some(self.host.clone()), ..Context::default() }
+        let (machines, roles) = self.tasks.upgrade().map(|tasks| tasks.placements()).unwrap_or_default();
+        Context { prompts, machine: Some(self.host.clone()), machines, roles, ..Context::default() }
     }
 
     fn adopt(&self, id: &str, by: &str, revision: kanna_pipe::Revision, context: &Context, more: Value) -> Result<(i64, String), String> {
@@ -3309,6 +3545,32 @@ impl Runs {
         let Some(core) = self.core.upgrade() else { return responder.reply(Err(KmuxError::new("app_gone", "the daemon is stopping"))) };
         let (run, terminal) = terminal;
         let by = string(args, "by").unwrap_or("user").to_string();
+        if let Some((pane, machine)) = terminal.split_once('@').map(|(pane, machine)| (pane.to_string(), machine.to_string())) {
+            let task = self.live.borrow().iter().find(|l| l.row.id == run).map(|l| l.row.task.clone()).unwrap_or_default();
+            let Some(workspace) = self.tasks.upgrade().and_then(|tasks| tasks.entry(&task)).and_then(|entry| entry.workspace) else {
+                return responder.reply(Err(failed(format!("can't show {terminal} in a tab: {task} has no workspace"))));
+            };
+            let this = Rc::downgrade(self);
+            let shown = terminal.clone();
+            return core.show_guest(&shown, json!({ "workspace": workspace, "tab": true }), move |placed| {
+                let placed = match placed {
+                    Ok(placed) => placed,
+                    Err(error) => return responder.reply(Err(failed(format!("can't show {terminal} in a tab: {}", error.message)))),
+                };
+                if let Some(this) = this.upgrade() {
+                    let _ = this.db.run_event(&run, "watched", Some(&by), &json!({ "terminal": terminal, "machine": machine }));
+                    log!("kanna-daemon: {run} is watched in {pane} on {machine}");
+                    this.name_tab(&run, &terminal);
+                }
+                let mut out = Map::from_iter([("run".to_string(), json!(run)), ("terminal".to_string(), json!(terminal)), ("machine".to_string(), json!(machine))]);
+                for key in ["tab", "workspace", "window"] {
+                    if let Some(value) = placed.get(key) {
+                        out.insert(key.to_string(), value.clone());
+                    }
+                }
+                responder.reply(Ok(out));
+            });
+        }
         let (this, focusing) = (Rc::downgrade(self), core.weak());
         core.handle(json!({ "cmd": "move", "args": { "pane": terminal, "tab": "new" } }), move |moved| {
             if moved.get("ok") != Some(&Value::Bool(true)) {
@@ -3332,7 +3594,8 @@ impl Runs {
     }
 
     fn name_tab(&self, id: &str, pane: &str) {
-        let title = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visits.iter().find(|v| v.row.terminal.as_deref() == Some(pane)).or(l.visits.first()).map(|v| format!("{} · {}", v.label(), run_notice::who(&l.pipeline, &v.row))));
+        let afar = pane.split_once('@').map_or(String::new(), |(_, machine)| format!(" · on {machine}"));
+        let title = self.live.borrow().iter().find(|l| l.row.id == id).and_then(|l| l.visits.iter().find(|v| v.row.terminal.as_deref() == Some(pane)).or(l.visits.first()).map(|v| format!("{} · {}{afar}", v.label(), run_notice::who(&l.pipeline, &v.row))));
         let (Some(title), Some(core)) = (title, self.core.upgrade()) else { return };
         let (renaming, pane) = (core.weak(), pane.to_string());
         core.handle(json!({ "cmd": "list" }), move |list| {
@@ -3466,15 +3729,9 @@ mod tests {
     }
 
     #[test]
-    fn what_runs_can_t_do_yet_is_refused_by_line_and_on_takes_only_this_machine() {
+    fn what_runs_can_t_do_yet_is_refused_by_line() {
         let p = pipeline("plan = claude\nbuild = claude each plan.parts on mbp\nok = ask \"Is the plan right?\"\njoin = merge build on here\nboth = claude each plan.parts x2 by check\ncheck = run make\nfix = claude guard check on mini\nplan -> ok -> build -> join -> both -> check -> fix -> done\n");
-        assert_eq!(
-            unbuilt(&p, "mbp"),
-            vec![
-                "5: both uses each with xN, which runs can't do yet",
-                "7: fix is on mini: no such machine: stages run on this machine (here, or mbp) until machines are built",
-            ]
-        );
+        assert_eq!(unbuilt(&p), vec!["5: both uses each with xN, which runs can't do yet"]);
     }
 
     #[test]

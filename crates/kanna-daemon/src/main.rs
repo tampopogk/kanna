@@ -451,6 +451,12 @@ fn run() -> Result<(), String> {
     *tasks.run_of.borrow_mut() = Some(Box::new(move |task| staging.upgrade().and_then(|runs| runs.stage_of(task))));
     let heeding = wire.clone();
     *runs.heed.borrow_mut() = Some(Box::new(move |terminal| heeding.heed(terminal)));
+    let waking = Rc::downgrade(&runs);
+    tasks.on_worker(Box::new(move || {
+        if let Some(runs) = waking.upgrade() {
+            runs.wake();
+        }
+    }));
     let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
     *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = stopping.upgrade() {
@@ -979,6 +985,7 @@ fn run() -> Result<(), String> {
                     app.status(&pane, core.pane(&pane).and_then(|p| p.status().map(String::from)).as_deref());
                     tasks.status(&pane, status, ended);
                     runs.status(&pane, ended);
+                    tasks.worker_status(&pane, ended);
                 }
             }
             Event::Reported { terminal, serial, kept } => {
