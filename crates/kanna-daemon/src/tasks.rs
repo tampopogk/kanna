@@ -1061,6 +1061,7 @@ pub struct Tasks {
     following: RefCell<HashSet<PathBuf>>,
     news: RefCell<News>,
     ending: RefCell<HashMap<String, Option<String>>>,
+    picking: RefCell<HashSet<String>>,
     moving_instance: RefCell<Option<String>>,
     pub move_hooks: RefCell<Option<instance::MoveHooks>>,
     hosted: workers::Hosted,
@@ -1257,6 +1258,7 @@ impl Tasks {
             following: RefCell::default(),
             news: RefCell::default(),
             ending: RefCell::default(),
+            picking: RefCell::default(),
             moving_instance: RefCell::default(),
             move_hooks: RefCell::default(),
             hosted: workers::Hosted::default(),
@@ -2378,6 +2380,9 @@ impl Tasks {
         let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !(self.has_mail(pane) && self.ready.borrow().get(*pane).is_some_and(|r| r.at().is_some()))).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now).map(|why| (pane.clone(), why))).collect();
         for (pane, why) in over {
             let Some((_, entry)) = running.iter().find(|(p, _)| *p == pane) else { continue };
+            if self.picking.borrow().contains(&entry.id) {
+                continue;
+            }
             if runners(&config_files(Path::new(&entry.repo))) == 0 {
                 self.turns.borrow_mut().insert(pane, Turn::default());
                 continue;
@@ -4433,7 +4438,15 @@ impl Tasks {
             return responder.reply(Err(error));
         }
         let freed = string(args, "room").map(String::from);
-        self.room(entry, app, who(args).map(String::from), freed, Answer::To(responder));
+        let (this, id) = (Rc::downgrade(self), entry.id.clone());
+        self.picking.borrow_mut().insert(id.clone());
+        let answer = Answer::Then(Box::new(move |result| {
+            if let Some(this) = this.upgrade() {
+                this.picking.borrow_mut().remove(&id);
+            }
+            responder.reply(result)
+        }));
+        self.room(entry, app, who(args).map(String::from), freed, answer);
     }
 
     fn start(self: &Rc<Self>, args: &Value, responder: Responder) {
@@ -5118,6 +5131,22 @@ impl Tasks {
             let entry = Entry { held: None, ..entry };
             let folder = entry.folder.clone().unwrap_or_default();
             let live = weak.upgrade().is_some_and(|core| alive(&core, &pane));
+            let quitting = live && this.quitting_now(&pane);
+            if quitting {
+                let id = entry.id.clone();
+                let picked = this.started(&pane, entry, &app, by.as_deref()).map(|_| app.clone());
+                log!("kanna-daemon: {id} is on {app}'s Desk while its agent quits, so it starts again once it has");
+                let again = Rc::downgrade(&this);
+                return this.after_quit(&pane.clone(), move |session| {
+                    let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
+                    this.keep_session(&pane, session);
+                    let Some(entry) = this.pane_entry(&pane) else { return responder.reply(Err(not_found(&id))) };
+                    this.resumed(entry, move |this, entry| {
+                        let command = this.again(&entry);
+                        this.start_on_desk(pane, entry.id, folder, picked, command, responder)
+                    });
+                });
+            }
             let place = move |this: &Rc<Tasks>, entry: Entry| {
                 let command = (!live).then(|| this.again(&entry));
                 let id = entry.id.clone();
@@ -5126,25 +5155,43 @@ impl Tasks {
                     return this.with_branch(picked.map(|_| Self::reply_out(&id, &pane, Some(&folder), Some(&app))), &folder, None, responder);
                 };
                 log!("kanna-daemon: {id} is on {app}'s Desk, and its agent and tabs start");
-                let again = Rc::downgrade(this);
-                this.after_this_turn(move || {
-                    let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
-                    let again = Rc::downgrade(&this);
-                    this.revive(&pane.clone(), Some(command), move |result| {
-                        let Some(this) = again.upgrade() else { return };
-                        match &result {
-                            Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
-                            Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
-                        }
-                        let out = picked.and(result).map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app)));
-                        this.with_branch(out, &folder, None, responder);
-                    });
-                });
+                this.start_on_desk(pane, id, folder, picked.map(|_| app), command, responder);
             };
             match live {
                 true => place(&this, entry),
                 false => this.resumed(entry, place),
             }
+        });
+    }
+
+    fn quitting_now(&self, pane: &str) -> bool {
+        self.quitting.borrow().contains_key(pane) || self.finishing.borrow().contains_key(pane)
+    }
+
+    fn after_quit(&self, pane: &str, then: impl FnOnce(Option<String>) + 'static) {
+        if let Some(quitting) = self.quitting.borrow_mut().get_mut(pane) {
+            return quitting.then.push(Box::new(then));
+        }
+        if let Some(finishing) = self.finishing.borrow_mut().get_mut(pane) {
+            return finishing.then.push(Box::new(then));
+        }
+        then(None)
+    }
+
+    fn start_on_desk(self: &Rc<Self>, pane: String, id: String, folder: String, picked: Result<String, KmuxError>, command: String, responder: Answer) {
+        let again = Rc::downgrade(self);
+        self.after_this_turn(move || {
+            let Some(this) = again.upgrade() else { return responder.reply(Err(gone())) };
+            let again = Rc::downgrade(&this);
+            this.revive(&pane.clone(), Some(command), move |result| {
+                let Some(this) = again.upgrade() else { return };
+                match &result {
+                    Ok(_) => log!("kanna-daemon: {id}'s agent and tabs started"),
+                    Err(error) => log!("kanna-daemon: {id} is on the Desk, but its agent didn't start: {}", error.message),
+                }
+                let out = picked.and_then(|app| result.map(|pane| Self::reply_out(&id, &pane, Some(&folder), Some(&app))));
+                this.with_branch(out, &folder, None, responder);
+            });
         });
     }
 
@@ -5198,7 +5245,6 @@ impl Tasks {
     fn started(&self, pane: &str, ran: Entry, app: &str, by: Option<&str>) -> Result<(), KmuxError> {
         self.take(&ran.id);
         self.turns.borrow_mut().remove(pane);
-        self.quitting.borrow_mut().remove(pane);
         let ran = Entry { stopped: None, claim: Some(self.desk_of(app)), ..ran };
         let saved = self.store(&ran, Place::Desk, Some(pane), Some(Change::new("picked").moved(Place::Shelf, Place::Desk).by(by).with("app", json!(app))));
         self.tell_planner(&ran, What::Picked, by);
@@ -7926,6 +7972,73 @@ mod tests {
         t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
         assert!(ended.elapsed() >= kanna_detect::turn::GRACE);
         assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("finished"));
+    }
+
+    fn turn_over(t: &Stopping, pane: &str, child: &Rc<RefCell<Vec<Process>>>) {
+        t.status(pane, "idle");
+        child.borrow_mut().clear();
+        t.tasks.turns.borrow_mut().get_mut(pane).unwrap().background(false, Instant::now() - kanna_detect::turn::GRACE - Duration::from_secs(1));
+    }
+
+    fn picked(t: &Stopping, meanwhile: impl FnOnce()) -> Result<Map, KmuxError> {
+        let (responder, reply) = kanna_mux::responder();
+        t.tasks.pick(&json!({ "task": "task-1dfb12c2", "app": "mac" }), responder);
+        meanwhile();
+        let mut reply = Box::pin(reply);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let by = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let std::task::Poll::Ready(answer) = reply.as_mut().poll(&mut cx) {
+                return answer;
+            }
+            assert!(Instant::now() < by, "no answer");
+            t.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn on_the_desk_running(t: &Stopping, pane: &str) {
+        let by = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < by {
+            t.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(t.tasks.running.borrow().iter().any(|r| r.pane == pane && r.place == Place::Desk), "it's on the Desk");
+        assert!(alive(&t.core, pane), "its agent runs on the Desk");
+        assert!(t.tasks.quitting.borrow().is_empty() && t.tasks.turns.borrow().get(pane).is_none(), "no stop is left for it");
+    }
+
+    #[test]
+    fn a_pick_cancels_a_shelf_stop_that_is_pending() {
+        let (t, pane, child) = idle_with_a_child("pick-pending");
+        turn_over(&t, &pane, &child);
+        picked(&t, || {
+            t.tasks.tick();
+        })
+        .unwrap();
+        on_the_desk_running(&t, &pane);
+        assert!(t.agents.typed.borrow().is_empty(), "nothing was typed to quit it");
+    }
+
+    #[test]
+    fn a_pick_while_a_shelf_stop_is_under_way_starts_the_agent_again_on_the_desk() {
+        for typed in ["paste /exit", "return"] {
+            let (t, pane, child) = idle_with_a_child(&format!("pick-stopping-{}", typed.len()));
+            turn_over(&t, &pane, &child);
+            t.settle(|| t.agents.typed.borrow().iter().any(|k| k.ends_with(typed)));
+            picked(&t, || {}).unwrap();
+            on_the_desk_running(&t, &pane);
+            assert!(t.core.pane(&pane).and_then(|p| p.command).is_some_and(|c| c.contains("given")), "{typed}: it resumes its session");
+        }
+    }
+
+    #[test]
+    fn a_pick_after_a_shelf_stop_starts_the_agent_again_on_the_desk() {
+        let (t, pane, child) = idle_with_a_child("pick-stopped");
+        turn_over(&t, &pane, &child);
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        picked(&t, || {}).unwrap();
+        on_the_desk_running(&t, &pane);
     }
 
     #[test]

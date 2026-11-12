@@ -1127,6 +1127,34 @@ print(" ".join(p["command"] for e in json.load(sys.stdin)["events"] if e["what"]
   check test "$(of $(tid 24) 2)" == waiting || { echo "shelf_runners: a repo's 0 didn't hold"; shelf; return 1; }
 }
 
+scenario shelf_stop_pick M4
+shelf_stop_pick() {
+  start_daemon && start_app || { echo "shelf_stop_pick line $LINENO"; return 1; }
+  local repo fake="$KANNA_STATE_DIR/agents"
+  repo="$(e2e_repo stop-pick)" && mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/codex" || { echo "shelf_stop_pick line $LINENO"; return 1; }
+  printf '#!/bin/sh\nKANNA_MOCK_EXIT_DELAY=3 exec %s "$@"\n' "$fake/bin/codex" >"$fake/codex" && chmod +x "$fake/codex" || { echo "shelf_stop_pick line $LINENO"; return 1; }
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  held() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+print(next((t.get("held") or "-" for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]), "-"))' "$1"; }
+  machine_runners 0
+  local opened; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ d[0-9]+ ]] || { echo "shelf_stop_pick line $LINENO: $opened"; return 1; }
+  in_repo task new "Picked" "work 1" --agent "$fake/codex" >/dev/null || { echo "shelf_stop_pick line $LINENO"; return 1; }
+  machine_runners 1
+  local task agent said session; task="$(tid 1)"
+  check wait_for 15 eval '[[ "$(held "$task")" == term-* ]]' || { echo "shelf_stop_pick: the runner didn't start it"; return 1; }
+  agent="$(held "$task")"
+  check wait_for 20 shows "$agent" "To continue this session" || { echo "shelf_stop_pick: the runner didn't stop it at its turn's end"; kanna read "$agent"; return 1; }
+  check is "$agent" state running || { echo "shelf_stop_pick: the agent quit before the pick could land in its stop"; return 1; }
+  said="$(kanna read "$agent" | grep -o 'codex resume [0-9a-f-]*' | tail -1)" session="${said##* }"
+  [[ "$(kanna task pick "$task")" == "moved $(sid 1) to the Desk: "* ]] || { echo "shelf_stop_pick: the pick mid-stop failed"; return 1; }
+  machine_runners 0
+  check wait_for 15 shows "$agent" "resumed $session" || { echo "shelf_stop_pick: picked while the Shelf stopped it, its agent didn't start again on the Desk"; kanna read "$agent"; return 1; }
+  sleep 6
+  check is "$agent" state running || { echo "shelf_stop_pick: its agent isn't running on the Desk"; kanna read "$agent"; return 1; }
+  in_repo task list | placed | grep -qE "^$(sid 1) +Picked +Desk" || { echo "shelf_stop_pick: it isn't on the Desk"; in_repo task list; return 1; }
+  stop_agents
+}
+
 scenario merge_queue M4
 merge_queue() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/queue" fake="$KANNA_STATE_DIR/agents"
