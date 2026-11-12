@@ -8033,6 +8033,20 @@ mod tests {
     }
 
     #[test]
+    fn a_pick_while_kanna_task_stop_quits_the_agent_starts_it_again_on_the_desk() {
+        let (t, pane, child) = idle_with_a_child("pick-stop-command");
+        child.borrow_mut().clear();
+        t.status(&pane, "idle");
+        let (responder, reply) = kanna_mux::responder();
+        t.tasks.stop(&json!({ "task": "task-1dfb12c2" }), responder);
+        t.settle(|| t.agents.typed.borrow().iter().any(|k| k.ends_with("paste /exit")));
+        picked(&t, || {}).unwrap();
+        on_the_desk_running(&t, &pane);
+        assert!(t.core.pane(&pane).and_then(|p| p.command).is_some_and(|c| c.contains("given")), "it resumes its session");
+        drop(reply);
+    }
+
+    #[test]
     fn a_pick_after_a_shelf_stop_starts_the_agent_again_on_the_desk() {
         let (t, pane, child) = idle_with_a_child("pick-stopped");
         turn_over(&t, &pane, &child);
