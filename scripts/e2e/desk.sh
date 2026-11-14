@@ -230,10 +230,10 @@ desk_tasks() {
   check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == term-1 ]]' || { echo "desk_tasks line $LINENO"; app_view; return 1; }
   check test "$(desk desk)" == True || return 1
   check test "$(desk strip)" == True || return 1
-  check test "$(desk title)" == agent || return 1
+  check test "$(desk title)" == "tasks — agent" || return 1
   check wait_for 5 eval '[[ "$(desk header)" == "$(e2e_repo)/.kanna-worktrees/$(tid 1) · $(tid 1)" ]]' || { desk header; return 1; }
   expected="parked $(sid 1): d1 shows the Desk view, and $(sid 1) stays active"; says kanna task park agent || return 1
-  check test "$(desk title)" == Desk || return 1
+  check test "$(desk title)" == "tasks — Desk" || return 1
   check test "$(desk empty)" == True || return 1
   check test "$(desk page)" == True || return 1
   check test "$(desk tasks.0.task)" == term-1 || return 1
@@ -546,7 +546,7 @@ desk_scrolls() {
   kanna task pick $(tid 21) >/dev/null && kanna task pick $(tid 22) >/dev/null || { echo "desk_scrolls line $LINENO"; return 1; }
   check wait_for 10 eval '[[ "$(desk running)" == 3 ]]' || { desk running; return 1; }
   kanna task activate "Task 20" >/dev/null || { echo "desk_scrolls line $LINENO"; return 1; }
-  check wait_for 10 eval '[[ "$(desk strip)" == True && "$(desk title)" == "Task 20" ]]' || { desk stripLayout; return 1; }
+  check wait_for 10 eval '[[ "$(desk strip)" == True && "$(desk title)" == *" — Task 20" ]]' || { desk stripLayout; return 1; }
   fits() { desk stripLayout "$1" | python3 -c 'import json, sys; g = json.load(sys.stdin); items = g["items"]
 last = g["hintRight"] if g["countLeft"] is None else g["countLeft"]
 sys.exit(not (len(items) == 2 and all(i["meta"].startswith("· ") for i in items) and all(i["right"] <= g["hintLeft"] for i in items) and g["hintRight"] <= last <= g["width"] and (g["countLeft"] is not None or g["width"] - g["hintRight"] <= 12)))'; }
@@ -673,7 +673,7 @@ print(next((i["shortcut"] for i in items if i["menu"] == "Task" and i["item"] ==
   key cmd+up; key down
   check test "$(search selection)" == "$(tid 3)" || { desk search; return 1; }
   key return
-  check wait_for 10 eval '[[ "$(desk title)" == Charlie && "$(desk page)" == False ]]' || { echo "desk_keys: ↩ didn't make Charlie active"; desk title; return 1; }
+  check wait_for 10 eval '[[ "$(desk title)" == *" — Charlie" && "$(desk page)" == False ]]' || { echo "desk_keys: ↩ didn't make Charlie active"; desk title; return 1; }
   check test "$(search keyed)" == False || { echo "desk_keys: the selection kept the keyboard with the task shown"; return 1; }
   check test "$(menu_key "Move to Desk")$(menu_key "Move to Shelf")" == "" || { echo "desk_keys: ↩ or ⇧⌘⌫ stayed a menu key with the task shown"; return 1; }
 
@@ -1023,4 +1023,35 @@ restart_while_desk_opens() {
   check wait_for 15 eval '[[ "$(cat "$KANNA_STATE_DIR/daemon.pid")" != "$daemon" ]] && app_attached' || { echo "restart_while_desk_opens: the app didn't start the next daemon"; return 1; }
   check wait_for 20 shows "$planner" "No agent Kanna knows is installed" || { echo "restart_while_desk_opens: the planning terminal didn't get past agent setup"; kanna read "$planner"; return 1; }
   ! shows "$planner" "nothing answers" || { echo "restart_while_desk_opens: the planning terminal ran while nothing answered"; kanna read "$planner"; return 1; }
+}
+
+scenario window_titles M4
+window_titles() {
+  start_daemon && start_app || { echo "window_titles line $LINENO"; return 1; }
+  desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$2\"}}" | field "$1"; }
+  local alpha pencil other
+  alpha="$(e2e_repo alpha)" && pencil="$(e2e_repo pencilword)" || { echo "window_titles line $LINENO"; return 1; }
+  expected="opened d1 on $alpha"; says kanna "$alpha" || { echo "window_titles line $LINENO"; return 1; }
+  expected="opened d2 on $pencil"; says kanna "$pencil" || { echo "window_titles line $LINENO"; return 1; }
+  desk_task "Fix login" "" alpha || { echo "window_titles line $LINENO"; return 1; }
+  kanna task activate "Fix login" >/dev/null || { echo "window_titles line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk title d1)" == "alpha — Fix login" ]]' || { echo "window_titles: the Desk with a task active: $(desk title d1)"; return 1; }
+  check wait_for 10 eval '[[ "$(desk title d2)" == "pencilword — Desk" ]]' || { echo "window_titles: the Desk in the Desk view: $(desk title d2)"; return 1; }
+  local own loose
+  own="$(KANNA_TERMINAL="$(pane "Fix login" id)" kanna open --name notes --window new)" || { echo "window_titles line $LINENO"; return 1; }
+  [[ "$own" =~ " in "[^[:space:]]+"'s "(win-[0-9]+)" (" ]] || { echo "window_titles: $own"; return 1; }
+  own="${BASH_REMATCH[1]}"
+  check wait_for 10 eval '[[ "$(desk title "$own")" == "alpha — Fix login — notes" ]]' || { echo "window_titles: the task's own window: $(desk title "$own")"; return 1; }
+  loose="$(kanna open --name loose --window new)" || { echo "window_titles line $LINENO"; return 1; }
+  [[ "$loose" =~ " in "(win-[0-9]+)", tab-" ]] || { echo "window_titles: $loose"; return 1; }
+  loose="${BASH_REMATCH[1]}"
+  check wait_for 10 eval '[[ "$(desk title "$loose")" == "loose — $loose" ]]' || { echo "window_titles: a free window: $(desk title "$loose")"; return 1; }
+  kanna close loose >/dev/null && kanna close notes >/dev/null || { echo "window_titles line $LINENO"; return 1; }
+  sleep 1; snap d1 window_titles-alpha >/dev/null; snap d2 window_titles-pencilword >/dev/null
+  other="$KANNA_AGENTS_HOME/.kanna-v4/repos/someone/alpha"
+  mkdir -p "$other" && git -C "$other" init -q -b main && git -C "$other" remote add origin git@github.com:someone/alpha.git && git -C "$other" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "window_titles line $LINENO"; return 1; }
+  other="$(cd "$other" && pwd -P)"
+  expected="opened d3 on $other"; says kanna "$other" || { echo "window_titles line $LINENO"; return 1; }
+  check wait_for 10 eval '[[ "$(desk title d1)" == "local/alpha — Fix login" && "$(desk title d3)" == "someone/alpha — Desk" ]]' || { echo "window_titles: two alphas: $(desk title d1), $(desk title d3)"; return 1; }
+  check test "$(desk title d2)" == "pencilword — Desk" || { echo "window_titles: pencilword took a longer name: $(desk title d2)"; return 1; }
 }

@@ -59,7 +59,7 @@ flowchart LR
 - **Docs are the window's tabs.** Each is an ordinary tab: markdown (with comments), a web page, an image, video or PDF (shown in a web pane), or a terminal (tests, a server), and a tab can hold splits.
   - **What opens a tab:** the agent running `kanna open md|web FILE` from its pane, a markdown link, or **+**.
   - Opening a file that's already open shows its tab.
-- **The title bar** (top) shows only the active task's title (or Desk, in the Desk view).
+- **The title bar** (top) shows the project's name and the active task's title, `kanna — Fix login` (or `kanna — Desk`, in the Desk view) ([window titles](window-titles.md)).
 - **Plain windows stay** exactly as now, so every kmux behaviour is unchanged.
 
 ## 3. The Desk's tasks

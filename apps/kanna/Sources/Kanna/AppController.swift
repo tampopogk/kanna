@@ -457,6 +457,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func windowTitles() -> [String: String] {
+        let folders = windows.compactMap { window in window["id"]?.string.flatMap { id in physical.desk(id).flatMap(deskProject).map { (id, $0) } } }
+        let names = WindowTitles.projectNames(folders.map(\.1), home: NSHomeDirectory())
+        var titles: [String: String] = [:]
+        var tasks: [String: String] = [:]
+        let projects = Dictionary(folders.compactMap { id, folder in names[folder].map { (id, $0) } }, uniquingKeysWith: { first, _ in first })
+        for window in windows where window["desk"]?.bool == true {
+            guard let id = window["id"]?.string else { continue }
+            let project = projects[id]
+            let task = window["dock"]?["pane"]?.string.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
+            titles[id] = WindowTitles.title(project, task ?? "Desk")
+            if let project, let task, let workspace = window["shows"]?.string { tasks[workspace] = WindowTitles.title(project, task) }
+        }
+        for window in windows where window["desk"]?.bool != true {
+            guard let id = window["id"]?.string, let workspace = window["workspace"]?.string, let prefix = tasks[workspace] else { continue }
+            titles[id] = prefix
+        }
+        return titles
+    }
+
     func taskTitle(_ id: String, name: String?) -> String {
         if let name { return name }
         if let title = panes[id]?.terminal?.title, !title.isEmpty { return title }
@@ -646,11 +666,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let rows = machineRows
         var held = Set<String>()
         for window in windows {
+            if let id = window["id"]?.string, let root = window["lead"]?["pane"]?.string.flatMap(projectRoot) { deskMoved(id, to: root) }
+        }
+        let titles = windowTitles()
+        for window in windows {
             guard let id = window["id"]?.string else { continue }
             let controller = controllers[id] ?? makeController(id, window)
             let docked = window["dock"]?["pane"]?.string
             let lead = window["lead"]?["pane"]?.string
-            if let root = lead.flatMap(projectRoot) { deskMoved(id, to: root) }
             controller.projectRoot = physical.desk(id).flatMap(deskProject)
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.deskTasks = mine
@@ -666,7 +689,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.merging = shelved.filter { $0.queue != nil }.sorted { ($0.queue?.position ?? 0) < ($1.queue?.position ?? 0) }
             controller.running = runningTasks(in: controller.projectRoot)
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
-            controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
+            controller.titlePrefix = titles[id]
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
             controller.machines = rows
             controller.phones = phoneNames

@@ -455,13 +455,13 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"toasts.png"}}' >/dev/null && cp "$KANNA_STATE_DIR/toasts.png" "$out/toasts.png"
   check test "$(desk empty)" == True || { echo "toasts: the Desk isn't empty before the click"; return 1; }
   raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-3"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk title)" == "Lint fixes"* ]]' || { echo "toasts: clicking the toast didn't bring Lint fixes onto the Desk: $(desk title)"; return 1; }
+  check wait_for 5 eval '[[ "$(desk title)" == *" — Lint fixes"* ]]' || { echo "toasts: clicking the toast didn't bring Lint fixes onto the Desk: $(desk title)"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Lint fixes" id)" ]]' || { echo "toasts: the task's agent isn't focused"; return 1; }
   check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-2 toast-1" ]]' || { echo "toasts: the clicked toast stayed: $(toasted)"; return 1; }
   check test "$(kanna toast "Docs pass waits" --task "$(tid 2)")" == "raised toast-4" || return 1
   check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-4"* ]]' || return 1
   raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-4"}}' >/dev/null
-  check wait_for 15 eval '[[ "$(desk title)" == "Docs pass"* ]]' || { echo "toasts: clicking a Shelf task's toast didn't shelve and show it: $(desk title)"; desk note; return 1; }
+  check wait_for 15 eval '[[ "$(desk title)" == *" — Docs pass"* ]]' || { echo "toasts: clicking a Shelf task's toast didn't shelve and show it: $(desk title)"; desk note; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Docs pass" id)" ]]' || { echo "toasts: the Shelf task's agent isn't focused"; return 1; }
   kanna toast "Kept" "the pointer is on it" >/dev/null && kanna toast "Fades" >/dev/null || { echo "toasts line $LINENO"; return 1; }
   raw '{"id":1,"cmd":"debug.toasts","args":{"hover":"toast-5"}}' >/dev/null
