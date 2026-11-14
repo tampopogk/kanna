@@ -110,7 +110,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kanna-reports-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let idle = Kept { owner: Some(7), records: vec![record("", ProgramState::Idle)] };
         let working = Kept { owner: Some(8), records: vec![record("", ProgramState::Working)] };
         save(&db, &[("term-1".into(), Some(working.clone())), ("term-2".into(), Some(idle.clone())), ("term-3".into(), Some(idle.clone()))]);
@@ -118,7 +118,7 @@ mod tests {
         save(&db, &[("term-2".into(), None)]);
         save(&db, &[("term-4".into(), Some(Kept { owner: Some(9), records: vec![] }))]);
         drop(db);
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(load(&db), HashMap::from([("term-1".to_string(), idle.clone()), ("term-3".to_string(), idle.clone())]), "an empty one is no row");
         keep_only(&db, &["term-3".into()]);
         assert_eq!(load(&db), HashMap::from([("term-3".to_string(), idle)]));

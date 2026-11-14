@@ -39,6 +39,15 @@ pub fn main() -> std::process::ExitCode {
             }
         };
     }
+    if args.first().is_some_and(|a| a == "builds") {
+        return match commands::builds::run(&args[1..], &process_env) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(failure) => {
+                eprintln!("kanna: {}", failure.message);
+                std::process::ExitCode::from(failure.code)
+            }
+        };
+    }
     if args.first().is_some_and(|a| a == "guests") {
         return match commands::guests::run(&args[1..], &process_env) {
             Ok(()) => std::process::ExitCode::SUCCESS,

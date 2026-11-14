@@ -53,6 +53,10 @@ impl Coverage {
         Coverage { db, events, state, running: RefCell::default(), tried: RefCell::default() }
     }
 
+    pub fn covering(&self, repo: &str) -> bool {
+        self.running.borrow().contains_key(repo)
+    }
+
     pub fn status(&self, repo: &str) -> Option<String> {
         if let Some(run) = self.running.borrow().get(repo) {
             return Some(format!("running at {} since {}", short(&run.commit), clock(run.started)));

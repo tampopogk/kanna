@@ -8,21 +8,21 @@ import KannaOverview
 struct MarkdownOverviewTests {
     let digit = MarkdownOverviewLayout.digit
 
-    func cutoff(zoom: CGFloat = 1) -> CGFloat {
+    func cutoff() -> CGFloat {
         var width: CGFloat = 0
-        while MarkdownOverviewLayout.textColumn(room: width, zoom: zoom) < OverviewMetrics.columns * digit * zoom { width += 1 }
+        while MarkdownOverviewLayout.column(width) < OverviewMetrics.columns * digit { width += 1 }
         return width + OverviewMetrics.width
     }
 
-    func shown(_ width: CGFloat, comments: Bool = false, forced: Bool = false, zoom: CGFloat = 1) -> (overview: Bool, comments: Bool) {
-        MarkdownOverviewLayout.shown(overview: true, comments: comments, forced: forced, width: width, zoom: zoom, digit: digit)
+    func shown(_ width: CGFloat, comments: Bool = false, forced: Bool = false) -> (overview: Bool, comments: Bool) {
+        MarkdownOverviewLayout.shown(overview: true, comments: comments, forced: forced, width: width, digit: digit)
     }
 
     @Test func eightyColumnsAreCountedInTheTextColumn() {
         let width = cutoff()
         #expect(shown(width).overview)
         #expect(!shown(width - 1).overview)
-        #expect(MarkdownOverviewLayout.textColumn(room: width - OverviewMetrics.width, zoom: 1) >= 80 * digit)
+        #expect(MarkdownOverviewLayout.column(width - OverviewMetrics.width) >= 80 * digit)
     }
 
     @Test func aWidePaneGivesTheOverviewOnlyMargin() {
@@ -31,10 +31,25 @@ struct MarkdownOverviewTests {
         #expect(MarkdownOverviewLayout.column(room - OverviewMetrics.width) == MarkdownTheme.maxTextWidth)
     }
 
-    @Test func zoomingInNeedsAWiderPane() {
-        #expect(shown(cutoff()).overview)
-        #expect(!shown(cutoff(), zoom: 1.5).overview)
-        #expect(shown(cutoff(zoom: 1.5), zoom: 1.5).overview)
+    @Test func theDocIsMeasuredAtFullSizeAtItsWidth() {
+        let paragraph = String(repeating: "The redirect is checked before the app trusts it. ", count: 40)
+        let storage = NSTextStorage(string: paragraph, attributes: [.font: NSFont.systemFont(ofSize: MarkdownTheme.bodySize)])
+        let layout = MarkdownFullSizeLayout(storage: storage, padding: 5)
+        let wide = layout.height(key: [1], width: 1200, insetHeight: 22)
+        let narrow = layout.height(key: [1], width: 600, insetHeight: 22)
+        #expect(narrow > wide)
+        #expect(wide > 44)
+        storage.append(NSAttributedString(string: paragraph, attributes: [.font: NSFont.systemFont(ofSize: MarkdownTheme.bodySize)]))
+        #expect(layout.height(key: [1], width: 600, insetHeight: 22) == narrow)
+        #expect(layout.height(key: [2], width: 600, insetHeight: 22) > narrow)
+        layout.detach()
+        #expect(storage.layoutManagers.isEmpty)
+    }
+
+    @Test func itShowsForADocTallerThanThePaneAtFullSize() {
+        #expect(MarkdownOverviewLayout.wanted(enabled: true, contentHeight: 701, paneHeight: 700))
+        #expect(!MarkdownOverviewLayout.wanted(enabled: true, contentHeight: 700, paneHeight: 700))
+        #expect(!MarkdownOverviewLayout.wanted(enabled: false, contentHeight: 5000, paneHeight: 700))
     }
 
     @Test func theCommentsListLeavesTheOverviewAlone() {
@@ -45,8 +60,8 @@ struct MarkdownOverviewTests {
     }
 
     @Test func theListShowsAtTwiceItsWidthAlone() {
-        #expect(MarkdownOverviewLayout.shown(overview: false, comments: true, forced: false, width: 560, zoom: 1, digit: digit).comments)
-        #expect(!MarkdownOverviewLayout.shown(overview: false, comments: true, forced: false, width: 559, zoom: 1, digit: digit).comments)
+        #expect(MarkdownOverviewLayout.shown(overview: false, comments: true, forced: false, width: 560, digit: digit).comments)
+        #expect(!MarkdownOverviewLayout.shown(overview: false, comments: true, forced: false, width: 559, digit: digit).comments)
     }
 
     @Test func aListOpenedOnPurposeStays() {

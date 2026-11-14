@@ -219,7 +219,8 @@ kanna_cargo_seed() {
   kanna_main_checkout "$1" >/dev/null || return 0
   seed_triple="${2:-$(kanna_host_triple)}"
   here="$(kanna_rust_dir "$1" "$seed_triple")" || return 1
-  [ -e "$here" ] && return 0
+  [ -L "$here" ] && here="$(readlink "$here")"
+  [ -e "$here" ] && [ -n "$(ls -A "$here")" ] && return 0
   store="$(kanna_store_root "$1")"
   family="$(kanna_cargo_family "$1" "$seed_triple")"
   seed_key="$family-$(kanna_cargo_inputs "$1" | shasum -a 256 | cut -c1-8)"
@@ -239,8 +240,9 @@ kanna_cargo_seed() {
   [ -f "$entry/seed" ] && [ -d "$from" ] || return 0
   mkdir -p "$(dirname "$here")" || return 1
   if kanna_clone "$from" "$here.seeding"; then
+    rmdir "$here" 2>/dev/null
     mv "$here.seeding" "$here"
-    echo "==> Started ${here#"$1/"} from the store's $(basename "$entry")" >&2
+    echo "==> Started $here from the store's $(basename "$entry")" >&2
   else
     kanna_remove "$here.seeding"
   fi

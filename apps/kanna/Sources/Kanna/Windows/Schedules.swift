@@ -14,12 +14,12 @@ extension AppController {
             guard let self, let controller, controller.projectRoot == root, let list = reply["schedules"]?.array else { return }
             controller.schedules = list.map(ScheduleRow.init)
             controller.schedulesRepo = reply["repo"]?.string
-            if controller.shownPage == WindowController.pages[3] { redraw(controller) }
+            if controller.shownPage == WindowController.pages[4] { redraw(controller) }
         }
     }
 
     func schedulesChanged(on machine: String?) {
-        for controller in controllers.values where controller.shownPage == WindowController.pages[3] {
+        for controller in controllers.values where controller.shownPage == WindowController.pages[4] {
             guard let root = controller.projectRoot, MachineIDs.split(location: root).0 == machine else { continue }
             loadSchedules(controller)
         }

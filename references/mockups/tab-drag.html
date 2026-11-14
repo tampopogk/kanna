@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tab drag</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --term: #16181c; --page: #0d0e10; --desk: #262a31;
+  --shadow: 0 20px 50px rgba(0,0,0,.5); --lift: 0 6px 18px rgba(0,0,0,.55);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --term: #fbfbfc; --page: #dfe2e7; --desk: #c9ced6;
+  --shadow: 0 20px 50px rgba(0,0,0,.18); --lift: 0 6px 18px rgba(0,0,0,.22);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1180px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro, body.picture .controls { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
+.controls label { color: var(--muted); font-size: 12px; margin-left: 8px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+#desk { position: relative; width: 1120px; height: 620px; background: var(--desk); border-radius: 10px; overflow: hidden; touch-action: none; user-select: none; }
+body.picture #desk { border-radius: 0; }
+.window { position: absolute; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); display: flex; flex-direction: column; }
+.window.grow { transition: left .24s cubic-bezier(.2,.8,.2,1), top .24s cubic-bezier(.2,.8,.2,1), width .24s cubic-bezier(.2,.8,.2,1), height .24s cubic-bezier(.2,.8,.2,1); }
+.title { height: 28px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 10px; background: var(--panel); color: var(--muted); font-size: 12px; }
+.title i { width: 11px; height: 11px; border-radius: 50%; background: var(--line); display: block; }
+.title span { flex: 1; text-align: center; margin-right: 50px; white-space: nowrap; overflow: hidden; }
+.bar { position: relative; height: 34px; flex: none; background: var(--panel); border-bottom: 1px solid var(--line); }
+.tab, .ghost-tab { position: absolute; top: 0; height: 34px; display: flex; align-items: center; padding: 0 0 0 10px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.tab.slide { transition: left .16s cubic-bezier(.2,.8,.2,1); }
+.tab.active, .ghost-tab.active { color: var(--text); font-weight: 600; }
+.tab.active::after, .ghost-tab.active::after { content: ""; position: absolute; left: 6px; right: 6px; top: 1px; height: 2px; background: var(--accent); }
+.tab .x, .ghost-tab .x { margin-left: auto; width: 24px; text-align: center; color: var(--muted); opacity: .6; }
+.plus { position: absolute; top: 6px; width: 22px; height: 22px; text-align: center; line-height: 22px; color: var(--muted); font-size: 15px; }
+.plus.slide { transition: left .16s cubic-bezier(.2,.8,.2,1); }
+.body { flex: 1; background: var(--term); padding: 8px 10px; font: 11px/1.6 var(--mono); color: var(--muted); overflow: hidden; white-space: pre; }
+.body b { color: var(--text); font-weight: 500; }
+#ghost { position: absolute; display: none; pointer-events: none; z-index: 20; border-radius: 6px; overflow: hidden; background: var(--panel2); box-shadow: var(--lift);
+  transition: width .18s cubic-bezier(.2,.8,.2,1), height .18s cubic-bezier(.2,.8,.2,1), border-radius .18s; }
+#ghost .ghost-tab { left: 0; right: 0; }
+#ghost .mini { position: absolute; inset: 0; opacity: 0; transition: opacity .12s; display: flex; flex-direction: column; background: var(--bg); }
+#ghost.preview { border-radius: 8px; border: 1px solid #000; }
+#ghost.preview .mini { opacity: 1; }
+#ghost.preview .ghost-tab { opacity: 0; }
+.mini .t { height: 9px; background: var(--panel); }
+.mini .b { height: 11px; background: var(--panel); border-bottom: 1px solid var(--line); position: relative; }
+.mini .b::after { content: ""; position: absolute; left: 6px; top: 3px; width: 34%; height: 6px; border-radius: 2px; background: var(--accent); opacity: .7; }
+.mini .c { flex: 1; background: var(--term); padding: 5px 6px; font: 5px/1.5 var(--mono); color: var(--muted); white-space: pre; overflow: hidden; }
+.reduce #ghost, .reduce #ghost .mini, .reduce .tab.slide, .reduce .plus.slide, .reduce .window.grow { transition: none; }
+#cursor { position: absolute; z-index: 30; width: 14px; height: 20px; pointer-events: none; display: none; }
+#log { margin-top: 10px; color: var(--muted); font: 12px var(--mono); min-height: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Tab drag</h1>
+    <p>Drag any tab. It follows the cursor and the other tabs slide aside; it settles into its gap with a short spring. Pulled out of the bar it becomes a preview of its window; dropped anywhere off a tab bar, even over another window, the new window grows from it; over any tab bar it folds back into a tab. Escape, or dropping where it started, slides it home. Spec: <code>docs/specs/tab-drag.md</code>.</p>
+  </div>
+  <div class="controls">
+    <button data-play="reorder">Play: reorder</button>
+    <button data-play="between">Play: to another window</button>
+    <button data-play="tearoff">Play: tear off</button>
+    <button data-play="escape">Play: Escape</button>
+    <button data-play="home">Play: drop where it started</button>
+    <button id="reset">Reset</button>
+    <label><input type="checkbox" id="reduce"> Reduce Motion</label>
+    <label><input type="checkbox" id="light"> Light</label>
+  </div>
+  <div id="desk">
+    <div id="ghost"><div class="ghost-tab"></div><div class="mini"><div class="t"></div><div class="b"></div><div class="c"></div></div></div>
+    <svg id="cursor" viewBox="0 0 14 20"><path d="M1 1 L1 16 L5 12 L8 19 L10.5 18 L7.5 11 L13 11 Z" fill="#fff" stroke="#000" stroke-width="1.2"/></svg>
+  </div>
+  <div id="log"></div>
+</main>
+<script>
+const BAR_TOP = 28, BAR_H = 34, SPACING = 2, START = 8, PULL = 14, SCALE = 0.32;
+const SPRING = { stiffness: 600, damping: 0.72 };
+const desk = document.getElementById('desk'), ghost = document.getElementById('ghost'), cursor = document.getElementById('cursor'), log = document.getElementById('log');
+const lines = {
+  'store.rs': ['<b>fn</b> move_tab(&mut self, args: &Value)', '    let moving = tabs.remove(t);', '    tabs.insert(index, moving);'],
+  'server': ['$ cargo run -p kanna-daemon', '<b>listening</b> on kanna.sock', 'attach app pid 4120'],
+  'notes.md': ['# Tab drag', '- live reorder', '- spring on drop'],
+  'zsh': ['$ git status', 'On branch tab-drag-motion', 'nothing to commit'],
+  'logs': ['12:01 move-tab tab-4 index 0', '12:01 layout v812', '12:02 move-tab tab-2 window new'],
+  'tests': ['$ scripts/e2e-kanna.sh tab_drag', '<b>ok</b> reorder', '<b>ok</b> tear off'],
+};
+let windows, nextWin, drag = null, playing = false;
+const reduce = () => document.getElementById('reduce').checked;
+
+function reset() {
+  windows = [
+    { id: 'win-1', x: 24, y: 24, w: 560, h: 300, tabs: ['store.rs', 'server', 'notes.md', 'zsh'], active: 'store.rs' },
+    { id: 'win-2', x: 600, y: 300, w: 480, h: 280, tabs: ['logs', 'tests'], active: 'logs' },
+  ];
+  nextWin = 3;
+  drag = null;
+  ghost.style.display = 'none';
+  render();
+}
+
+const width = title => Math.min(Math.max(title.length * 7, 40), 220) + 34;
+const slots = (tabs, gap, w) => {
+  let x = START, out = [];
+  tabs.forEach((t, i) => { if (i === gap) x += w + SPACING; out.push(x); x += width(t) + SPACING; });
+  if (gap === tabs.length) x += w + SPACING;
+  return { xs: out, plus: x + 4 };
+};
+
+function gapIndex(win, centre) {
+  const others = win.tabs.filter(t => !drag || t !== drag.tab);
+  let x = START;
+  for (let i = 0; i < others.length; i++) {
+    const wj = width(others[i]);
+    if (centre <= x + (wj + drag.w) / 2) return i;
+    x += wj + SPACING;
+  }
+  return others.length;
+}
+
+function render() {
+  const keep = new Set(windows.map(w => w.id));
+  desk.querySelectorAll('.window').forEach(el => { if (!keep.has(el.dataset.id)) el.remove(); });
+  windows.forEach((win, z) => {
+    let el = desk.querySelector(`.window[data-id="${win.id}"]`);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'window';
+      el.dataset.id = win.id;
+      el.innerHTML = '<div class="title"><i></i><i></i><i></i><span></span></div><div class="bar"></div><div class="body"></div>';
+      desk.insertBefore(el, ghost);
+    }
+    el.style.zIndex = z + 1;
+    Object.assign(el.style, { left: win.x + 'px', top: win.y + 'px', width: win.w + 'px', height: win.h + 'px' });
+    el.querySelector('.title span').textContent = `${win.active} — ${win.id}`;
+    el.querySelector('.body').innerHTML = (lines[win.active] || []).join('\n');
+    layoutBar(win, el.querySelector('.bar'));
+  });
+}
+
+function layoutBar(win, bar) {
+  const over = drag && drag.over && drag.over.win === win.id ? drag.over.gap : null;
+  const shown = win.tabs.filter(t => !drag || t !== drag.tab);
+  const { xs, plus } = slots(shown, over, drag ? drag.w : 0);
+  const have = new Map([...bar.querySelectorAll('.tab')].map(el => [el.dataset.title, el]));
+  bar.querySelectorAll('.tab').forEach(el => { if (!shown.includes(el.dataset.title)) el.remove(); });
+  shown.forEach((t, i) => {
+    let el = have.get(t);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tab';
+      el.dataset.title = t;
+      el.innerHTML = `<span>${t}</span><span class="x">×</span>`;
+      el.style.width = width(t) + 'px';
+      el.style.left = xs[i] + 'px';
+      bar.appendChild(el);
+      el.addEventListener('pointerdown', e => { if (playing) return; desk.setPointerCapture(e.pointerId); down(t, win.id, ...local(e)); });
+    }
+    el.classList.toggle('active', t === win.active);
+    el.classList.toggle('slide', !!drag);
+    el.style.left = xs[i] + 'px';
+  });
+  let p = bar.querySelector('.plus');
+  if (!p) { p = document.createElement('div'); p.className = 'plus'; p.textContent = '+'; bar.appendChild(p); }
+  p.classList.toggle('slide', !!drag);
+  p.style.left = plus + 'px';
+}
+
+const winById = id => windows.find(w => w.id === id);
+const barRect = win => ({ x: win.x, y: win.y + BAR_TOP, w: win.w, h: BAR_H });
+const inRect = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+function windowAt(x, y) { for (let i = windows.length - 1; i >= 0; i--) if (inRect(windows[i], x, y)) return windows[i]; return null; }
+function barAt(x, y) {
+  for (let i = windows.length - 1; i >= 0; i--) {
+    const w = windows[i], r = barRect(w);
+    if (inRect({ x: r.x, y: r.y - PULL, w: r.w, h: r.h + 2 * PULL }, x, y)) return w;
+    if (inRect(w, x, y)) return null;
+  }
+  return null;
+}
+
+function down(tab, winId, x, y) {
+  const win = winById(winId), shown = win.tabs;
+  const index = shown.indexOf(tab), xs = slots(shown, null, 0).xs;
+  drag = { tab, from: winId, index, w: width(tab), grab: x - (win.x + xs[index]), startX: x, startY: y, live: false, over: { win: winId, gap: index }, cx: x, cy: y, anim: null };
+}
+
+function start() {
+  const win = winById(drag.from);
+  drag.live = true;
+  const g = ghost.querySelector('.ghost-tab');
+  g.innerHTML = `<span>${drag.tab}</span><span class="x">×</span>`;
+  g.classList.toggle('active', win.active === drag.tab);
+  ghost.querySelector('.mini .c').innerHTML = (lines[drag.tab] || []).join('\n');
+  ghost.classList.remove('preview');
+  ghost.style.display = 'block';
+  ghost.style.width = drag.w + 'px';
+  ghost.style.height = BAR_H + 'px';
+  render();
+}
+
+function target(x, y) {
+  const win = barAt(x, y);
+  if (!win) return null;
+  const centre = x - drag.grab + drag.w / 2 - win.x;
+  return { win: win.id, gap: gapIndex(win, centre) };
+}
+
+function ghostRect(x, y) {
+  const over = drag.over && winById(drag.over.win);
+  if (over) {
+    const r = barRect(over), others = over.tabs.filter(t => t !== drag.tab);
+    const left = Math.min(Math.max(x - drag.grab, r.x + START), r.x + gapX(others, others.length));
+    return { x: left, y: r.y, w: drag.w, h: BAR_H, preview: false };
+  }
+  const src = winById(drag.from);
+  const w = src.w * SCALE, h = src.h * SCALE;
+  return { x: x - 40 * SCALE, y: y - 12 * SCALE, w, h, preview: true };
+}
+
+function placeGhost(r) {
+  ghost.classList.toggle('preview', r.preview);
+  ghost.style.left = r.x + 'px';
+  ghost.style.top = r.y + 'px';
+  ghost.style.width = r.w + 'px';
+  ghost.style.height = r.h + 'px';
+}
+
+function move(x, y) {
+  if (!drag || drag.anim) return;
+  drag.cx = x; drag.cy = y;
+  if (!drag.live) { if (Math.hypot(x - drag.startX, y - drag.startY) < 5) return; start(); }
+  const was = JSON.stringify(drag.over);
+  drag.over = target(x, y);
+  if (JSON.stringify(drag.over) !== was) render();
+  placeGhost(ghostRect(x, y));
+  const o = drag.over;
+  log.textContent = o ? `over ${o.win}: gap ${o.gap}` : (windowAt(x, y) ? 'over a window: let go to cancel' : 'outside every window: let go for a new window');
+}
+
+function spring(from, to, done) {
+  if (reduce()) { placeGhost(to); return done(); }
+  const k = SPRING.stiffness, c = 2 * SPRING.damping * Math.sqrt(k);
+  let p = { x: from.x, y: from.y }, v = { x: 0, y: 0 }, last = performance.now();
+  ghost.classList.remove('preview');
+  ghost.style.width = to.w + 'px'; ghost.style.height = to.h + 'px';
+  const step = now => {
+    const dt = Math.min((now - last) / 1000, 1 / 30); last = now;
+    for (const a of ['x', 'y']) { v[a] += (-k * (p[a] - to[a]) - c * v[a]) * dt; p[a] += v[a] * dt; }
+    ghost.style.left = p.x + 'px'; ghost.style.top = p.y + 'px';
+    if (Math.abs(p.x - to.x) + Math.abs(p.y - to.y) < 0.3 && Math.abs(v.x) + Math.abs(v.y) < 5) { placeGhost(to); return done(); }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function slotRect(winId, gap) {
+  const win = winById(winId), others = win.tabs.filter(t => t !== drag.tab);
+  const r = barRect(win);
+  return { x: r.x + gapX(others, gap), y: r.y, w: drag.w, h: BAR_H, preview: false };
+}
+function gapX(others, gap) { let x = START; for (let i = 0; i < gap; i++) x += width(others[i]) + SPACING; return x; }
+
+function finish() {
+  ghost.style.display = 'none';
+  drag = null;
+  render();
+}
+
+function home(why) {
+  drag.over = { win: drag.from, gap: drag.index };
+  render();
+  log.textContent = why;
+  const from = { x: parseFloat(ghost.style.left), y: parseFloat(ghost.style.top) };
+  drag.anim = true;
+  spring(from, slotRect(drag.from, drag.index), finish);
+}
+
+function up() {
+  if (!drag) return;
+  if (!drag.live) { const w = winById(drag.from); w.active = drag.tab; drag = null; render(); return; }
+  if (drag.anim) return;
+  const o = drag.over;
+  if (o) {
+    if (o.win === drag.from && o.gap === drag.index) return home('dropped where it started: slides home');
+    const from = { x: parseFloat(ghost.style.left), y: parseFloat(ghost.style.top) };
+    drag.anim = true;
+    log.textContent = `move-tab ${drag.tab} to ${o.win} index ${o.gap}`;
+    spring(from, slotRect(o.win, o.gap), () => {
+      const src = winById(drag.from), dst = winById(o.win);
+      src.tabs = src.tabs.filter(t => t !== drag.tab);
+      dst.tabs.splice(o.gap, 0, drag.tab);
+      dst.active = drag.tab;
+      if (src !== dst && !src.tabs.length) windows = windows.filter(w => w !== src);
+      else if (src !== dst && src.active === drag.tab) src.active = src.tabs[Math.max(0, drag.index - 1)];
+      finish();
+    });
+    return;
+  }
+  tearOff();
+}
+
+function tearOff() {
+  const src = winById(drag.from), r = ghostRect(drag.cx, drag.cy);
+  const full = { x: drag.cx - 40, y: drag.cy - 12, w: src.w, h: src.h };
+  full.x = Math.min(Math.max(full.x, 0), desk.clientWidth - full.w);
+  full.y = Math.min(Math.max(full.y, 0), desk.clientHeight - full.h);
+  log.textContent = `move-tab ${drag.tab} window new`;
+  src.tabs = src.tabs.filter(t => t !== drag.tab);
+  if (src.active === drag.tab) src.active = src.tabs[Math.max(0, drag.index - 1)];
+  if (!src.tabs.length) windows = windows.filter(w => w !== src);
+  const win = { id: `win-${nextWin++}`, x: r.x, y: r.y, w: r.w, h: r.h, tabs: [drag.tab], active: drag.tab };
+  windows.push(win);
+  ghost.style.display = 'none';
+  drag = null;
+  render();
+  if (reduce()) { Object.assign(win, full); return render(); }
+  const el = desk.querySelector(`.window[data-id="${win.id}"]`);
+  el.getBoundingClientRect();
+  el.classList.add('grow');
+  Object.assign(win, full);
+  render();
+  setTimeout(() => el.classList.remove('grow'), 300);
+}
+
+function cancel() { if (drag && drag.live && !drag.anim) home('Escape: slides home'); }
+
+const local = e => { const r = desk.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+desk.addEventListener('pointermove', e => { if (!playing) move(...local(e)); });
+desk.addEventListener('pointerup', () => { if (!playing) up(); });
+window.addEventListener('keydown', e => { if (e.key === 'Escape') cancel(); });
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function tabPoint(winId, title) {
+  const win = winById(winId), i = win.tabs.indexOf(title), x = slots(win.tabs, null, 0).xs[i];
+  return [win.x + x + width(title) / 2, win.y + BAR_TOP + BAR_H / 2];
+}
+async function glide(from, to, ms) {
+  const n = Math.max(2, Math.round(ms / 16));
+  for (let i = 1; i <= n; i++) {
+    const t = i / n, e = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    const p = [from[0] + (to[0] - from[0]) * e, from[1] + (to[1] - from[1]) * e];
+    cursor.style.left = p[0] + 'px'; cursor.style.top = p[1] + 'px';
+    move(...p);
+    await sleep(16);
+  }
+  return to;
+}
+const plays = {
+  async reorder() { let p = tabPoint('win-1', 'store.rs'); begin(p, 'store.rs', 'win-1'); p = await glide(p, [p[0] + 300, p[1] + 3], 1100); await sleep(250); p = await glide(p, [p[0] - 110, p[1]], 500); await sleep(200); up(); },
+  async between() { let p = tabPoint('win-1', 'server'); begin(p, 'server', 'win-1'); p = await glide(p, [p[0] + 40, p[1] + 120], 500); p = await glide(p, [690, 300 + BAR_TOP + 16], 900); await sleep(200); p = await glide(p, [770, 300 + BAR_TOP + 18], 500); await sleep(250); up(); },
+  async tearoff() { let p = tabPoint('win-1', 'notes.md'); begin(p, 'notes.md', 'win-1'); p = await glide(p, [p[0] + 10, p[1] + 60], 400); p = await glide(p, [560, 420], 900); await sleep(300); p = await glide(p, [540, 470], 300); await sleep(200); up(); },
+  async escape() { let p = tabPoint('win-1', 'zsh'); begin(p, 'zsh', 'win-1'); p = await glide(p, [p[0] - 220, p[1]], 700); await sleep(150); p = await glide(p, [p[0] + 160, p[1] + 200], 700); await sleep(250); cancel(); },
+  async home() { let p = tabPoint('win-1', 'server'); begin(p, 'server', 'win-1'); p = await glide(p, [p[0] + 150, p[1]], 600); await sleep(150); p = await glide(p, [p[0] - 150, p[1]], 600); await sleep(150); up(); },
+};
+function begin(p, tab, win) { cursor.style.display = 'block'; cursor.style.left = p[0] + 'px'; cursor.style.top = p[1] + 'px'; down(tab, win, ...p); }
+document.querySelectorAll('[data-play]').forEach(b => b.addEventListener('click', async () => {
+  if (playing) return;
+  reset(); playing = true;
+  await sleep(250);
+  await plays[b.dataset.play]();
+  await sleep(700);
+  cursor.style.display = 'none'; playing = false;
+}));
+document.getElementById('reset').addEventListener('click', reset);
+const media = matchMedia('(prefers-reduced-motion: reduce)');
+document.getElementById('reduce').checked = media.matches;
+const applyReduce = () => document.body.classList.toggle('reduce', reduce());
+document.getElementById('reduce').addEventListener('change', applyReduce);
+document.getElementById('light').addEventListener('change', e => document.documentElement.dataset.theme = e.target.checked ? 'light' : '');
+applyReduce();
+reset();
+
+const params = new URLSearchParams(location.search);
+if (params.has('picture')) document.body.classList.add('picture');
+if (params.get('theme') === 'light') document.documentElement.dataset.theme = 'light';
+const scenes = {
+  reorder() { const p = tabPoint('win-1', 'store.rs'); down('store.rs', 'win-1', ...p); move(p[0] + 8, p[1]); move(p[0] + 190, p[1] + 2); },
+  tearoff() { const p = tabPoint('win-1', 'notes.md'); down('notes.md', 'win-1', ...p); move(p[0], p[1] + 20); move(560, 440); },
+  between() { const p = tabPoint('win-1', 'server'); down('server', 'win-1', ...p); move(p[0], p[1] + 20); move(770, 300 + BAR_TOP + 18); },
+};
+if (scenes[params.get('scene')]) {
+  document.body.classList.add('reduce');
+  scenes[params.get('scene')]();
+  const [x, y] = [drag.cx, drag.cy];
+  cursor.style.display = 'block'; cursor.style.left = x + 'px'; cursor.style.top = y + 'px';
+}
+</script>
+</body>
+</html>

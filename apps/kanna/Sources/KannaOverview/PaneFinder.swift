@@ -69,7 +69,7 @@ public final class PaneFinder: NSObject {
         if !container.isFindBarVisible { keepingScroll(container) { container.isFindBarVisible = true } }
         bar.window?.makeFirstResponder(bar.field)
         bar.field.currentEditor()?.selectAll(nil)
-        search(scroll: true)
+        search(scroll: false)
     }
 
     public func hide() {

@@ -252,8 +252,15 @@ impl Crashes {
         if std::env::var("KANNA_DEBUG").as_deref() == Ok("1") {
             core.add_command(
                 "debug.panic",
-                Rc::new(move |_, _responder: Responder| {
-                    panic!("debug.panic in the daemon's main loop");
+                Rc::new(move |args, responder: Responder| {
+                    if args.get("task").and_then(Value::as_bool) != Some(true) {
+                        panic!("debug.panic in the daemon's main loop");
+                    }
+                    responder.reply(Ok(Map::new()));
+                    crate::runtime::spawn("debug.panic", async {
+                        tokio::task::yield_now().await;
+                        panic!("debug.panic in a task on the daemon's main loop");
+                    });
                 }),
             );
         }

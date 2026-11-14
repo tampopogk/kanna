@@ -129,7 +129,7 @@ A pty pair stands in for the device. `KANNA_SERIAL_PORTS` names a JSON file of p
 
 - **Unit:** line splitting (LF, CRLF, a lone CR, across chunks, the 16 KiB cut), `\xNN` and C1 round trips, levels of the three formats (`serial::lines`); `--since` times, `borrow`'s argv, colours-only output (`kanna::serial`); ANSI, levels, escapes, the hex dump, history and appending (`KannaSerialTests`).
 - **Daemon** (`crates/kanna-daemon/tests/serial.rs`): list, open by USB ID, a missing port refused, rows with levels and escapes, the partial line, a long-poll read, send with each ending and `--hex`, `--since` and `--last`, the log file, lending by command and by a PID that exits, the app's subscribe and pushes, unplug and replug under a new path; two panes sharing a port; a daemon restart reopening it.
-- **E2e** (`serial_pane` in `scripts/e2e-kanna.sh`, the real app on a private instance): the pane opens and shows the boot, the send line reaches the device with history, the status names ESP-IDF, bytes as escapes and in hex, pause counts new lines, a crash, unplug and back, an app relaunch keeping the backlog; light and dark snapshots.
+- **E2e** (`serial_pane` in `scripts/e2e/panes.sh`, the real app on a private instance): the pane opens and shows the boot, the send line reaches the device with history, the status names ESP-IDF, bytes as escapes and in hex, pause counts new lines, a crash, unplug and back, an app relaunch keeping the backlog; light and dark snapshots.
 - **Still to do by hand:** an ESP32-S3 (USB JTAG/serial), an ESP32 on a CP2102 (the auto-reset circuit: open doesn't reset it, Reset does) and a Zephyr board (DTR held), each unplugged and plugged back in, and a real flash with `borrow`.
 
 ## 8. Later: decoding backtraces

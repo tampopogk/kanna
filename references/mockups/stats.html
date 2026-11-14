@@ -71,6 +71,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 .chart svg { display: block; overflow: visible; }
 .chart text { font: 10px var(--sans); fill: var(--muted); font-variant-numeric: tabular-nums; }
+.status { color: var(--muted); font-size: 12px; margin: 6px 0 -10px; }
 .empty-note { color: var(--muted); font-size: 12px; margin-top: 10px; max-width: 520px; }
 
 .ranked { margin-top: 10px; }
@@ -97,6 +98,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button id="empty">A new project</button>
+      <button id="updating">Updating</button>
     </div>
   </div>
   <div id="stage"></div>
@@ -106,6 +108,7 @@ const DAY = 86400000;
 const DAYS = 30;
 const today = new Date(2026, 9, 31);
 let fresh = location.hash.includes("empty");
+let updating = location.hash.includes("updating");
 
 const sum = a => a.reduce((x, y) => x + (y || 0), 0);
 function rng(seed) { let x = seed; return () => (x = (x * 1103515245 + 12345) % 2147483648) / 2147483648; }
@@ -294,6 +297,7 @@ function render() {
   const page = `
     <h2>Stats</h2>
     <p class="sub">${esc(d.project)} · main · last 30 days</p>
+    ${updating ? `<p class="status">Updating: measuring code, 3 of 14 commits</p>` : ""}
     <div class="section"><div class="sh"><b>Quiz</b><span>what you know of the code, from your kept answers</span></div>${quiz}</div>
     <div class="section"><div class="sh"><b>Main</b><span>what landed</span></div>
       <div class="grid">
@@ -325,6 +329,7 @@ function render() {
 }
 document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; render(); };
 document.getElementById("empty").onclick = () => { fresh = !fresh; render(); };
+document.getElementById("updating").onclick = () => { updating = !updating; render(); };
 if (location.hash.includes("picture")) document.body.classList.add("picture");
 if (location.hash.includes("light")) document.documentElement.dataset.theme = "light";
 addEventListener("resize", () => document.querySelectorAll("[data-chart]").forEach(draw));

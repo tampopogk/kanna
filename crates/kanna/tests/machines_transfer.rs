@@ -167,13 +167,41 @@ fn a_claude_task_and_a_codex_task_move_to_another_machine_and_carry_on_there_fro
     carries_on_from_its_handoff(&vm, &task, &there_folder, &session);
     assert!(Path::new(&there_folder).join("draft.md").is_file());
 
+    within(30, "its turn on vm to end", || shelf_task(&vm, &task)["running"] == false);
     let session = shelf_task(&vm, &task)["session"].as_str().unwrap().to_string();
+    within(30, "the turn on its handoff to end", || shelf_task(&vm, &task)["running"] == false);
     let back = vm.kanna(&["task", "move", &task, "mbp", "--json"]).json();
     let home_again = back["folder"].as_str().unwrap_or_else(|| panic!("{back}")).to_string();
     assert_eq!(home_again, folder, "back on mbp it gets the worktree it had");
     assert_eq!(git(Path::new(&home_again), &["diff", "--cached", "--name-status"]), "M\tREADME.md\nA\tdraft.md");
     carries_on_from_its_handoff(&mbp, &task, &home_again, &session);
     within(10, "vm to see mbp own it again", || record(&vm, &task)["owner"].as_str() == Some(key(&mbp).as_str()));
+}
+
+#[test]
+fn a_moved_task_is_listed_where_it_runs_and_done_from_the_sender_ends_it_there() {
+    let (mbp, vm) = (machine("mbp"), machine("vm"));
+    pair(&mbp, &vm);
+    let (here, _there) = (clone(&mbp), clone(&vm));
+    let claude = mock(&mbp, "claude");
+    let (task, _, _) = started_task(&mbp, &here, &claude);
+    let done_ids = |list: &Value| list["done"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    mbp.kanna(&["task", "move", &task, "vm", "--json"]).json();
+    within(10, "mbp to see vm own it", || record(&mbp, &task)["owner"].as_str() == Some(key(&vm).as_str()) && record(&mbp, &task)["state"] == "started");
+
+    let listed = mbp.kanna_in(&here, &["task", "list", "--include-done", "--json"]).json();
+    assert!(done_ids(&listed).is_empty(), "a task running on vm isn't done: {listed}");
+    assert_eq!(listed["elsewhere"][0]["machine"], "vm", "{listed}");
+
+    std::thread::sleep(Duration::from_secs(2));
+    mbp.kanna_in(&here, &["task", "done", &task]).ok();
+    within(30, "vm to end it", || shelf_task(&vm, &task).is_null());
+    within(10, "mbp to see it finished on vm", || record(&mbp, &task)["state"] == "done");
+    let listed = mbp.kanna_in(&here, &["task", "list", "--include-done", "--json"]).json();
+    assert_eq!(done_ids(&listed), [task.clone()], "{listed}");
+    assert!(listed["elsewhere"].as_array().unwrap().is_empty(), "{listed}");
+    let finished = &listed["done"][0];
+    assert!(finished["doneAt"].as_f64().unwrap() > finished["madeAt"].as_f64().unwrap() + 2.0, "it says when it finished, not when it was made: {listed}");
 }
 
 #[test]
@@ -223,4 +251,35 @@ fn a_task_a_machine_cant_take_or_whose_agent_writes_no_handoff_stays_where_it_wa
     assert!(shelf_task(&vm, &task).is_null());
     assert!(!shelf_task(&mbp, &task).is_null(), "it stays on mbp, stopped");
     mbp.kanna(&["task", "start", &task]).ok();
+}
+
+#[test]
+fn an_agent_with_a_first_message_stays_while_nothing_says_its_first_turn_is_over() {
+    let (mbp, vm) = (machine("mbp"), machine("vm"));
+    pair(&mbp, &vm);
+    std::fs::write(mbp.dir.join("mock-silent"), "").unwrap();
+    let (here, _there) = (clone(&mbp), clone(&vm));
+    let claude = mock(&mbp, "claude");
+    let task = new_task(&mbp, &here, &["Notes", "work 1", "--agent", &claude, "--on", "mbp"]);
+    within(30, "the task to start on mbp", || shelf_task(&mbp, &task)["held"].is_string());
+    let pane = shelf_task(&mbp, &task)["held"].as_str().unwrap().to_string();
+    let mut session = String::new();
+    within(30, "the agent to say its session", || {
+        session = screen(&mbp, &pane).lines().find_map(|l| l.trim().strip_prefix("session ").map(String::from)).unwrap_or_default();
+        !session.is_empty()
+    });
+    within(10, "Kanna to know its agent, which reports nothing", || mbp.kanna(&["status", "explain", &pane]).out.contains("no report yet"));
+    let entry = shelf_task(&mbp, &task);
+    assert_eq!((&entry["status"], &entry["running"]), (&Value::Null, &json!(true)), "{entry}");
+
+    mbp.kanna(&["task", "move", &task, "vm"]).fails(1, "in the middle of a turn");
+    assert_eq!(shelf_task(&mbp, &task)["running"], true, "its agent wasn't quit");
+    assert!(shelf_task(&vm, &task).is_null());
+    let log = std::fs::read_to_string(mbp.dir.join("daemon.log")).unwrap_or_default();
+    assert!(!log.contains("so its agent quits"), "{log}");
+
+    mbp.kanna(&["task", "stop", &task]).ok();
+    let moved = mbp.kanna(&["task", "move", &task, "vm", "--json"]).json();
+    assert!(moved["folder"].is_string(), "stopped, it moves as it is: {moved}");
+    assert!(std::fs::read_to_string(Path::new(moved["folder"].as_str().unwrap()).join(".kanna/tmp/handoff.md")).unwrap().contains(&session));
 }

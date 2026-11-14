@@ -8,9 +8,7 @@ extension AppController {
     func installMenu() {
         let runtime = runtime!
         let main = NSMenu()
-        func menu(_ title: String, _ items: [(String, Selector, String?, Shortcut?)?]) -> NSMenu {
-            let item = NSMenuItem()
-            let submenu = NSMenu(title: title)
+        func fill(_ submenu: NSMenu, _ items: [(String, Selector, String?, Shortcut?)?]) {
             for entry in items {
                 guard let (label, action, ghostty, fallback) = entry else {
                     submenu.addItem(.separator())
@@ -21,6 +19,11 @@ extension AppController {
                 menuItem.keyEquivalentModifierMask = shortcut?.modifiers ?? []
                 menuItem.target = self
             }
+        }
+        func menu(_ title: String, _ items: [(String, Selector, String?, Shortcut?)?]) -> NSMenu {
+            let item = NSMenuItem()
+            let submenu = NSMenu(title: title)
+            fill(submenu, items)
             item.submenu = submenu
             main.addItem(item)
             return submenu
@@ -70,29 +73,34 @@ extension AppController {
         let editItem = NSMenuItem()
         editItem.submenu = edit
         main.addItem(editItem)
-        paneMenu = menu("Pane", [
-            ("Split Right", #selector(splitRight), "new_split:right", .cmd("d")),
-            ("Split Down", #selector(splitDown), "new_split:down", .shiftCmd("d")),
+        let newPane = NSMenu(title: "New Pane")
+        fill(newPane, [
             ("New Web Pane Right", #selector(webRight), nil, nil),
             ("New Web Pane Below", #selector(webDown), nil, nil),
             ("New iOS Pane Right", #selector(iosRight), nil, nil),
             ("New iOS Pane Below", #selector(iosDown), nil, nil),
             ("New Markdown Pane Right…", #selector(markdownRight), nil, nil),
             ("New Markdown Pane Below…", #selector(markdownDown), nil, nil),
-            ("Open URL…", #selector(openURL), nil, .cmd("l")),
-            ("Back", #selector(goBack), nil, nil),
-            ("Forward", #selector(goForward), nil, nil),
-            ("Home", #selector(pressHome), nil, .shiftCmd("h")),
-            ("Comments", #selector(toggleComments), nil, nil),
+        ])
+        let pane = menu("Pane", [
             nil,
+            ("Split Right", #selector(splitRight), "new_split:right", .cmd("d")),
+            ("Split Down", #selector(splitDown), "new_split:down", .shiftCmd("d")),
             ("Next Pane", #selector(nextPane), "goto_split:next", .cmd("]")),
             ("Previous Pane", #selector(previousPane), "goto_split:previous", .cmd("[")),
             ("Zoom", #selector(toggleZoom), "toggle_split_zoom", .shiftCmd("\r")),
             ("Move Pane to New Window", #selector(movePaneToNewWindow), nil, nil),
-            nil,
-            ("Reload", #selector(reloadPane), nil, .cmd("r")),
             ("Close Pane", #selector(closeFocusedPane), "close_surface", .cmd("w")),
+            nil,
+            ("Open URL…", #selector(openURL), nil, .cmd("l")),
+            ("Back", #selector(goBack), nil, nil),
+            ("Forward", #selector(goForward), nil, nil),
+            ("Reload", #selector(reloadPane), nil, .cmd("r")),
+            ("Comments", #selector(toggleComments), nil, nil),
+            ("Home", #selector(pressHome), nil, .shiftCmd("h")),
         ])
+        pane.insertItem(withTitle: "New Pane", action: nil, keyEquivalent: "", at: 0).submenu = newPane
+        paneMenu = pane
         _ = menu("View", [
             ("New Tab", #selector(newTabInKeyWindow), "new_tab", .cmd("t")),
             ("Next Tab", #selector(nextTab), "next_tab", .shiftCmd("]")),
@@ -107,6 +115,12 @@ extension AppController {
         _ = menu("Task", [
             ("Show Desk", #selector(toggleDeskView), nil, .cmd(".")),
             ("Move to Shelf", #selector(deferTask), nil, nil),
+            nil,
+            ("Select Previous Task", #selector(deskPrevious), nil, .shiftCmd("p")),
+            ("Select Next Task", #selector(deskNext), nil, .shiftCmd("n")),
+            nil,
+            ("Move to Desk", #selector(deskEnter), nil, nil),
+            ("Start", #selector(deskRun), nil, nil),
             nil,
             ("Desk Task 1", #selector(activateDeskTask1), "goto_tab:1", .cmd("1")),
             ("Desk Task 2", #selector(activateDeskTask2), "goto_tab:2", .cmd("2")),
@@ -188,6 +202,7 @@ extension AppController {
     private var allMenus: [NSMenu] {
         func within(_ menu: NSMenu) -> [NSMenu] {
             menu.delegate?.menuNeedsUpdate?(menu)
+            menu.update()
             return [menu] + menu.items.compactMap(\.submenu).flatMap(within)
         }
         return (NSApp.mainMenu?.items ?? []).compactMap(\.submenu).flatMap(within)
@@ -300,7 +315,16 @@ extension AppController {
         case #selector(toggleDeskView):
             item.title = keyWindow?["dock"]?["pane"] != nil || deskBack == nil ? "Show Desk" : "Show Active Task"
             return keyWindow?["dock"]?["pane"] != nil || deskBack != nil
-        case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil
+        case #selector(deferTask): return keyWindow?["dock"]?["pane"] != nil || deskSelection?.onDesk == true
+        case #selector(deskPrevious), #selector(deskNext): return deskView?.canSelect == true
+        case #selector(deskEnter):
+            let task = deskSelection
+            item.title = task.map { $0.onDesk ? ($0.active ? "Show Active Task" : "Make Active") : "Move to Desk" } ?? "Move to Desk"
+            return task != nil
+        case #selector(deskRun):
+            let task = deskSelection
+            item.title = task?.running == true ? "Stop" : "Start"
+            return task.map { !$0.onDesk } ?? false
         case #selector(activateDeskTask1): return keyedDeskTask(1) != nil
         case #selector(activateDeskTask2): return keyedDeskTask(2) != nil
         default: return true
@@ -418,7 +442,7 @@ extension AppController {
             controller?.tabBar.onPage?(String(next.dropFirst(5)))
             return
         }
-        if controller?.page != nil {
+        if controller?.shownPage != nil {
             controller?.page = nil
             refresh()
         }
@@ -476,11 +500,44 @@ extension AppController {
         return keyedDeskTask(1)
     }
 
+    private var deskView: DeskView? {
+        keyWindow?["id"]?.string.flatMap { controllers[$0] }.map(\.deskView)
+    }
+
+    private var deskSelection: (id: String, onDesk: Bool, blocked: Bool, running: Bool, active: Bool)? { deskView?.selectedTask }
+
+    @objc func deskPrevious() { deskView?.select(-1) }
+
+    @objc func deskNext() { deskView?.select(1) }
+
+    @objc func deskEnter() { deskView?.enter() }
+
+    @objc func deskRun() { deskView?.run() }
+
+    func deskKeysChanged() {
+        let keyed = deskView?.keyed == true
+        for item in NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items) ?? [] {
+            switch item.action {
+            case #selector(deferTask)?:
+                item.keyEquivalent = keyed ? "\u{7f}" : ""
+                item.keyEquivalentModifierMask = keyed ? [.command, .shift] : []
+            case #selector(deskEnter)?:
+                item.keyEquivalent = keyed ? "\r" : ""
+                item.keyEquivalentModifierMask = []
+            case #selector(deskRun)?:
+                item.keyEquivalent = keyed ? "\r" : ""
+                item.keyEquivalentModifierMask = keyed ? .command : []
+            default: break
+            }
+        }
+    }
+
     @objc func deferTask() {
+        if deskView?.shelveSelected() == true { return }
         guard let window = keyWindow?["id"]?.string, let pane = keyWindow?["dock"]?["pane"]?.string else { return }
         request("tasks", ["action": "shelve", "task": .string(pane)]) { [weak self] reply in
             guard let self, reply["ok"]?.bool != true, let controller = controllers[window] else { return }
-            controller.note = reply["error"]?["message"]?.string ?? "it didn't move"
+            controller.note = refusal(reply, otherwise: "it didn't move")
             refresh()
         }
     }

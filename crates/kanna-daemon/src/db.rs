@@ -14,7 +14,7 @@ const BACKUP: &str = "kanna.db.bak";
 
 const BACKLOG: &str = "backlog.json";
 
-const IMPORTED: &str = "backlog.json.imported";
+pub const IMPORTED_BACKLOG: &str = "backlog.json.imported";
 
 const MAX_BACKLOG: u64 = 4 << 20;
 
@@ -329,7 +329,32 @@ const MIGRATIONS: &[Step] = &[Step::Sql("
         doc text not null default '{}' check (json_valid(doc))
     );
     create index merge_queue_by_repo on merge_queue (repo, state, queued_at);
+"), Step::Sql("
+    create table terminals (
+        id text primary key,
+        pane text not null unique,
+        keeper text not null unique,
+        state text not null,
+        doc text not null default '{}' check (json_valid(doc))
+    );
+"), Step::Sql("
+    create table transfers_wider (
+        id text primary key,
+        task text not null,
+        role text not null check (role in ('out', 'in', 'work-out', 'work-in', 'work-back')),
+        peer text not null,
+        state text not null,
+        doc text not null default '{}' check (json_valid(doc)),
+        at real not null
+    );
+    insert into transfers_wider select id, task, role, peer, state, doc, at from transfers;
+    drop table transfers;
+    alter table transfers_wider rename to transfers;
 ")];
+
+const TERMINAL_COUNTERS: &str = "terminal_counters";
+
+const TERMINALS_IMPORTED: &str = "terminals_imported";
 
 pub const RECENT: usize = 10;
 pub const SAID_KEPT: i64 = 100;
@@ -570,10 +595,39 @@ pub struct Life {
     pub done: Option<f64>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerminalRow {
+    pub id: String,
+    pub pane: String,
+    pub keeper: String,
+    pub state: String,
+    pub doc: Value,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TerminalCounters {
+    pub pane: usize,
+    pub terminal: usize,
+    pub pty: usize,
+}
+
+impl TerminalCounters {
+    fn json(self) -> String {
+        serde_json::json!({ "pane": self.pane, "terminal": self.terminal, "pty": self.pty }).to_string()
+    }
+
+    fn parse(text: &str) -> TerminalCounters {
+        let doc: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+        let count = |key: &str| doc[key].as_u64().unwrap_or(0) as usize;
+        TerminalCounters { pane: count("pane"), terminal: count("terminal"), pty: count("pty") }
+    }
+}
+
 pub struct Db {
     conn: Connection,
     layout: RefCell<Option<Box<dyn Fn() -> Option<Value>>>>,
     checkpoints: Option<Checkpoints>,
+    lost: bool,
 }
 
 struct Checkpoints {
@@ -665,7 +719,7 @@ fn open_checked(path: &Path) -> Opened {
     if found > version() {
         return Opened::Newer(found);
     }
-    let mut db = Db { conn, layout: RefCell::default(), checkpoints: None };
+    let mut db = Db { conn, layout: RefCell::default(), checkpoints: None, lost: false };
     match db.migrate(found) {
         Ok(()) => Opened::Good(db),
         Err(error) => Opened::Bad(format!("migrating from version {found}: {error}")),
@@ -673,7 +727,7 @@ fn open_checked(path: &Path) -> Opened {
 }
 
 impl Db {
-    pub fn open(state_dir: &Path) -> Db {
+    pub fn open(state_dir: &Path) -> Result<Db, String> {
         let path = state_dir.join(FILE);
         let backup = state_dir.join(BACKUP);
         let mut lost = false;
@@ -692,7 +746,7 @@ impl Db {
                     lost = true;
                 }
             }
-        } else if backup.exists() || state_dir.join(IMPORTED).exists() {
+        } else if backup.exists() || state_dir.join(IMPORTED_BACKLOG).exists() {
             say(format!("{} is missing", path.display()));
             lost = true;
         }
@@ -711,8 +765,9 @@ impl Db {
         }
         let mut db = match db {
             Some(db) => db,
-            None => Db::fresh(&path, state_dir, lost),
+            None => Db::fresh(&path, state_dir, lost)?,
         };
+        db.lost = lost;
         db.absorb(state_dir);
         if let Err(error) = db.conn.backup(rusqlite::MAIN_DB, &backup, None) {
             say(format!("couldn't copy {} to {}: {error}", path.display(), backup.display()));
@@ -725,19 +780,18 @@ impl Db {
                 let _ = db.conn.pragma_update(None, "wal_autocheckpoint", 0);
             }
         }
-        db
+        Ok(db)
     }
 
-    fn fresh(path: &Path, state_dir: &Path, lost: bool) -> Db {
-        let mut db = match connect(path) {
-            Ok(conn) => Db { conn, layout: RefCell::default(), checkpoints: None },
-            Err(error) => {
-                say(format!("can't make {} ({error}); keeping tasks in memory only until the daemon restarts", path.display()));
-                Db { conn: Connection::open_in_memory().expect("an in-memory database"), layout: RefCell::default(), checkpoints: None }
-            }
-        };
-        db.migrate(0).expect("a new database takes the schema");
-        let imported = state_dir.join(IMPORTED);
+    pub fn lost(&self) -> bool {
+        self.lost
+    }
+
+    fn fresh(path: &Path, state_dir: &Path, lost: bool) -> Result<Db, String> {
+        let conn = connect(path).map_err(|error| format!("can't make {}: {error}", path.display()))?;
+        let mut db = Db { conn, layout: RefCell::default(), checkpoints: None, lost: false };
+        db.migrate(0).map_err(|error| format!("can't make {}: {error}", path.display()))?;
+        let imported = state_dir.join(IMPORTED_BACKLOG);
         if lost && !state_dir.join(BACKLOG).exists() {
             match imported.exists() {
                 true => match read_backlog(&imported).and_then(|saved| db.import(&saved).map_err(|e| e.to_string())) {
@@ -747,7 +801,7 @@ impl Db {
                 false => say(format!("started a new, empty {}: there's no copy of the tasks to restore", path.display())),
             }
         }
-        db
+        Ok(db)
     }
 
     fn absorb(&self, state_dir: &Path) {
@@ -759,7 +813,7 @@ impl Db {
             Ok(count) => count,
             Err(error) => return say(format!("can't import {} ({error}); left it where it is", file.display())),
         };
-        let to = state_dir.join(IMPORTED);
+        let to = state_dir.join(IMPORTED_BACKLOG);
         match fs::rename(&file, &to) {
             Ok(()) => say(format!("imported {imported} tasks from {} into {FILE}; the file is now {}", file.display(), to.display())),
             Err(error) => say(format!("imported {imported} tasks from {} into {FILE}, but can't rename it ({error})", file.display())),
@@ -819,10 +873,10 @@ impl Db {
         Ok(rows)
     }
 
-    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, f64)>> {
+    pub fn done_tasks(&self) -> rusqlite::Result<Vec<(Row, Option<f64>)>> {
         let mut statement = self.conn.prepare(
-            "select t.id, t.repo, t.terminal, t.made_at, t.doc, coalesce((select max(at) from task_events e where e.task = t.id and e.what = 'done'), t.made_at) as done_at \
-             from tasks t where t.place = 'done' order by done_at desc, t.rowid desc",
+            "select t.id, t.repo, t.terminal, t.made_at, t.doc, (select max(at) from task_events e where e.task = t.id and e.what = 'done') as done_at \
+             from tasks t where t.place = 'done' order by coalesce(done_at, t.made_at) desc, t.rowid desc",
         )?;
         let rows = statement.query_map([], |r| {
             let doc: String = r.get(4)?;
@@ -1200,6 +1254,16 @@ impl Db {
         rows.collect()
     }
 
+    pub fn samples_of(&self, repo: &str, metrics: &[&str]) -> rusqlite::Result<Vec<Sample>> {
+        let mut rows = vec![];
+        let mut statement = self.conn.prepare("select commit_id, metric, at, value, doc, revision from samples where repo = ?1 and metric = ?2 order by at, commit_id")?;
+        for metric in metrics {
+            let found = statement.query_map(params![repo, metric], |r| Ok(Sample { commit: r.get(0)?, metric: r.get(1)?, at: r.get(2)?, value: r.get(3)?, doc: doc_of(r.get(4)?), revision: r.get(5)? }))?;
+            rows.extend(found.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(rows)
+    }
+
     pub fn put_samples(&self, repo: &str, samples: &[Sample]) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for sample in samples {
@@ -1225,6 +1289,12 @@ impl Db {
         )?;
         let rows = statement.query_map([repo], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
         rows.map(|row| row.map(|(branch, name, message)| (branch, format!("{name}. {}", kanna_quality::szz::first_sentence(&message))))).collect()
+    }
+
+    pub fn names(&self, repo: &str) -> rusqlite::Result<HashMap<String, String>> {
+        let mut statement = self.conn.prepare("select id, coalesce(json_extract(doc, '$.name'), id) from tasks where repo = ?1")?;
+        let rows = statement.query_map([repo], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     }
 
     pub fn agent_rows(&self, repo: &str, since: f64) -> rusqlite::Result<Vec<AgentRow>> {
@@ -1412,6 +1482,42 @@ impl Db {
 
     pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
         self.conn.query_row("select value from meta where key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn terminals(&self) -> rusqlite::Result<(Vec<TerminalRow>, TerminalCounters)> {
+        let mut statement = self.conn.prepare("select id, pane, keeper, state, doc from terminals")?;
+        let rows = statement.query_map([], |r| {
+            let doc: String = r.get(4)?;
+            Ok(TerminalRow { id: r.get(0)?, pane: r.get(1)?, keeper: r.get(2)?, state: r.get(3)?, doc: serde_json::from_str(&doc).unwrap_or(Value::Null) })
+        })?;
+        let rows = rows.collect::<rusqlite::Result<Vec<TerminalRow>>>()?;
+        let counters = self.meta(TERMINAL_COUNTERS)?.map_or_else(TerminalCounters::default, |text| TerminalCounters::parse(&text));
+        Ok((rows, counters))
+    }
+
+    pub fn put_terminals(&self, gone: &[String], rows: &[TerminalRow], counters: TerminalCounters) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in gone {
+            tx.execute("delete from terminals where id = ?1", [id])?;
+        }
+        put_terminal_rows(&tx, rows, counters)?;
+        tx.commit()
+    }
+
+    pub fn terminals_imported(&self) -> rusqlite::Result<bool> {
+        Ok(self.meta(TERMINALS_IMPORTED)?.is_some())
+    }
+
+    pub fn mark_terminals_imported(&self) -> rusqlite::Result<()> {
+        self.put_meta(TERMINALS_IMPORTED, "1")
+    }
+
+    pub fn import_terminals(&self, rows: &[TerminalRow], counters: TerminalCounters) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("delete from terminals", [])?;
+        put_terminal_rows(&tx, rows, counters)?;
+        tx.execute("insert into meta (key, value) values (?1, '1') on conflict (key) do update set value = excluded.value", [TERMINALS_IMPORTED])?;
+        tx.commit()
     }
 
     pub fn put_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
@@ -1626,10 +1732,26 @@ impl Db {
             return Ok(self.conn.last_insert_rowid());
         }
         self.conn.execute(
-            "update run_stages set ended_at = ?2, verdict = ?3, session = ?4, terminal = ?5, worktree = ?6, branch = ?7, doc = json_patch(doc, ?8) where id = ?1",
-            params![stage.id, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string()],
+            "update run_stages set ended_at = ?2, verdict = ?3, session = ?4, terminal = ?5, worktree = ?6, branch = ?7, doc = json_patch(doc, ?8), machine = ?9 where id = ?1",
+            params![stage.id, stage.ended_at, stage.verdict, stage.session, stage.terminal, stage.worktree, stage.branch, stage.doc.to_string(), stage.machine],
         )?;
         Ok(stage.id)
+    }
+
+    pub fn patch_stage(&self, id: i64, session: Option<&str>, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update run_stages set session = coalesce(session, ?2), doc = json_patch(doc, ?3) where id = ?1", params![id, session, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn patch_run(&self, id: &str, doc: &Value) -> rusqlite::Result<()> {
+        self.conn.execute("update runs set doc = json_patch(doc, ?2) where id = ?1", params![id, doc.to_string()])?;
+        Ok(())
+    }
+
+    pub fn unmeasured(&self) -> rusqlite::Result<Vec<(StageRow, String)>> {
+        let mut statement = self.conn.prepare(&format!("select {COLUMNS}, r.repo from run_stages s join runs r on r.id = s.run where s.ended_at is not null and json_extract(s.doc, '$.measured') is null order by s.id", COLUMNS = STAGE.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ")))?;
+        let rows = statement.query_map([], |r| Ok((stage_row(r)?, r.get(16)?)))?;
+        rows.collect()
     }
 
     pub fn stages(&self, run: &str) -> rusqlite::Result<Vec<StageRow>> {
@@ -1694,6 +1816,18 @@ fn log(conn: &Connection, task: &str, change: &Change) -> rusqlite::Result<()> {
 }
 
 pub const TASK: &str = "task-";
+
+fn put_terminal_rows(conn: &Connection, rows: &[TerminalRow], counters: TerminalCounters) -> rusqlite::Result<()> {
+    for row in rows {
+        conn.execute(
+            "insert into terminals (id, pane, keeper, state, doc) values (?1, ?2, ?3, ?4, ?5) \
+             on conflict (id) do update set pane = excluded.pane, keeper = excluded.keeper, state = excluded.state, doc = json_patch(doc, excluded.doc)",
+            params![row.id, row.pane, row.keeper, row.state, row.doc.to_string()],
+        )?;
+    }
+    conn.execute("insert into meta (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value", [TERMINAL_COUNTERS, &counters.json()])?;
+    Ok(())
+}
 
 fn put_layout(conn: &Connection, doc: &Value) -> rusqlite::Result<()> {
     conn.execute("insert into layout (id, doc) values (1, ?1) on conflict (id) do update set doc = excluded.doc", params![doc.to_string()])?;
@@ -1802,11 +1936,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_db_that_cannot_be_made_is_refused() {
+        let dir = folder("refused");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let opened = Db::open(&dir);
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(opened.is_err_and(|error| error.contains("can't make")));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_checkpoint_thread_makes_no_file_once_the_db_is_open() {
+        let dir = std::env::temp_dir().join(format!("kanna-checkpoint-files-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir).unwrap();
+        let wal = dir.join(format!("{FILE}-wal"));
+        fs::remove_file(&wal).unwrap();
+        std::thread::sleep(CHECKPOINT_EVERY + std::time::Duration::from_millis(500));
+        assert!(!wal.exists(), "the thread's first checkpoint made the WAL again");
+        drop(db);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_wal_is_checkpointed_beside_the_loop() {
         let dir = std::env::temp_dir().join(format!("kanna-checkpoint-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let auto: i64 = db.conn.query_row("pragma wal_autocheckpoint", [], |row| row.get(0)).unwrap();
         assert_eq!(auto, 0, "the loop's connection never checkpoints");
         let size = || fs::metadata(dir.join(FILE)).unwrap().len();
@@ -1850,8 +2008,8 @@ mod tests {
         let dir = folder("import");
         let saved = real();
         fs::write(dir.join(BACKLOG), saved.to_string()).unwrap();
-        let db = Db::open(&dir);
-        assert!(!dir.join(BACKLOG).exists() && dir.join(IMPORTED).exists());
+        let db = Db::open(&dir).unwrap();
+        assert!(!dir.join(BACKLOG).exists() && dir.join(IMPORTED_BACKLOG).exists());
         let rows = db.tasks().unwrap();
         let waiting = saved["tasks"].as_array().unwrap();
         let running = saved["running"].as_array().unwrap();
@@ -1878,7 +2036,7 @@ mod tests {
         }
         assert!(rows.iter().filter(|r| r.place == Place::Shelf).all(|r| r.terminal.is_none()));
         drop(db);
-        let again = Db::open(&dir);
+        let again = Db::open(&dir).unwrap();
         assert_eq!(again.tasks().unwrap().len(), rows.len(), "nothing is imported twice");
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1903,7 +2061,7 @@ mod tests {
             { "id": "t3", "name": "No repo" },
         ]});
         fs::write(dir.join(BACKLOG), saved.to_string()).unwrap();
-        let rows = Db::open(&dir).tasks().unwrap();
+        let rows = Db::open(&dir).unwrap().tasks().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].place, rows[0].terminal.as_deref()), (Place::Shelf, Some("p9")));
         fs::remove_dir_all(&dir).unwrap();
@@ -1912,11 +2070,11 @@ mod tests {
     #[test]
     fn tasks_load_oldest_first_with_the_id_breaking_a_tie() {
         let dir = folder("order");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         for (id, made_at) in [("task-0000000c", 2.0), ("task-0000000b", 1.0), ("task-0000000d", 3.0), ("task-0000000a", 1.0)] {
             db.put(&Row { id: id.into(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at, doc: json!({}) }, None).unwrap();
         }
-        let ids = Db::open(&dir).tasks().unwrap().into_iter().map(|row| row.id).collect::<Vec<_>>();
+        let ids = Db::open(&dir).unwrap().tasks().unwrap().into_iter().map(|row| row.id).collect::<Vec<_>>();
         assert_eq!(ids, ["task-0000000a", "task-0000000b", "task-0000000c", "task-0000000d"]);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -1924,7 +2082,7 @@ mod tests {
     #[test]
     fn a_change_and_its_event_are_written_together_and_unknown_doc_keys_are_kept() {
         let dir = folder("put");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let id = db.new_id(vec![random_id().unwrap()], |_| true).unwrap();
         assert!(is_task_id(&id), "{id}");
         let mut row = Row { id: id.clone(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at: 1.0, doc: json!({ "name": "A", "later": "kept" }) };
@@ -1947,7 +2105,7 @@ mod tests {
     #[test]
     fn a_task_marked_done_writes_the_layout_in_the_same_transaction() {
         let dir = folder("done-layout");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(db.layout().unwrap(), None);
         db.saves_layout_with_done(|| Some(json!({ "workspaces": [] })));
         let mut row = Row { id: db.new_id(vec![random_id().unwrap()], |_| true).unwrap(), repo: "/r".into(), place: Place::Desk, terminal: Some("term-1".into()), made_at: 1.0, doc: json!({}) };
@@ -1957,14 +2115,14 @@ mod tests {
         db.put(&row, None).unwrap();
         assert_eq!(db.layout().unwrap(), Some(json!({ "workspaces": [] })));
         db.put_layout(&json!({ "workspaces": [{ "id": "ws-1" }] })).unwrap();
-        assert_eq!(Db::open(&dir).layout().unwrap(), Some(json!({ "workspaces": [{ "id": "ws-1" }] })));
+        assert_eq!(Db::open(&dir).unwrap().layout().unwrap(), Some(json!({ "workspaces": [{ "id": "ws-1" }] })));
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn done_tasks_come_newest_done_first_with_when_they_were_done() {
         let dir = folder("done");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         for (id, made, done) in [("t1", 1.0, Some(30.0)), ("t2", 2.0, Some(20.0)), ("t3", 3.0, None), ("t4", 4.0, Some(40.0))] {
             let row = Row { id: id.into(), repo: "/r".into(), place: Place::Shelf, terminal: None, made_at: made, doc: json!({ "name": id }) };
             db.put(&row, Some(&Change::new("made"))).unwrap();
@@ -1975,7 +2133,7 @@ mod tests {
             }
         }
         let done = db.done_tasks().unwrap();
-        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", 40.0), ("t1", 30.0), ("t2", 20.0)]);
+        assert_eq!(done.iter().map(|(r, at)| (r.id.as_str(), *at)).collect::<Vec<_>>(), [("t4", Some(40.0)), ("t1", Some(30.0)), ("t2", Some(20.0))]);
         assert_eq!(done[0].0.doc["name"], "t4");
         assert_eq!(db.tasks().unwrap().len(), 1, "the open tasks leave out the done ones");
         fs::remove_dir_all(&dir).unwrap();
@@ -1985,12 +2143,12 @@ mod tests {
     fn a_corrupt_db_is_moved_aside_and_the_last_good_copy_restored() {
         let dir = folder("corrupt");
         fs::write(dir.join(BACKLOG), real().to_string()).unwrap();
-        let count = Db::open(&dir).tasks().unwrap().len();
+        let count = Db::open(&dir).unwrap().tasks().unwrap().len();
         assert!(dir.join(BACKUP).exists());
         let _ = fs::remove_file(dir.join(format!("{FILE}-wal")));
         let _ = fs::remove_file(dir.join(format!("{FILE}-shm")));
         fs::write(dir.join(FILE), b"not a database, just garbage that isn't sqlite at all ".repeat(100)).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(db.tasks().unwrap().len(), count, "the backup's tasks are back");
         assert!(fs::read_dir(&dir).unwrap().flatten().any(|f| f.file_name().to_string_lossy().starts_with("kanna.db.bad-")));
         fs::remove_dir_all(&dir).unwrap();
@@ -2000,16 +2158,16 @@ mod tests {
     fn a_missing_db_comes_back_from_its_copy_then_from_the_imported_backlog() {
         let dir = folder("missing");
         fs::write(dir.join(BACKLOG), real().to_string()).unwrap();
-        let count = Db::open(&dir).tasks().unwrap().len();
+        let count = Db::open(&dir).unwrap().tasks().unwrap().len();
         for file in [FILE.to_string(), format!("{FILE}-wal"), format!("{FILE}-shm")] {
             let _ = fs::remove_file(dir.join(file));
         }
-        assert_eq!(Db::open(&dir).tasks().unwrap().len(), count, "from kanna.db.bak");
+        assert_eq!(Db::open(&dir).unwrap().tasks().unwrap().len(), count, "from kanna.db.bak");
         for file in [FILE.to_string(), format!("{FILE}-wal"), format!("{FILE}-shm")] {
             let _ = fs::remove_file(dir.join(file));
         }
         fs::write(dir.join(BACKUP), b"garbage").unwrap();
-        assert_eq!(Db::open(&dir).tasks().unwrap().len(), count, "from backlog.json.imported");
+        assert_eq!(Db::open(&dir).unwrap().tasks().unwrap().len(), count, "from backlog.json.imported");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2019,7 +2177,7 @@ mod tests {
         let conn = Connection::open(dir.join(FILE)).unwrap();
         conn.pragma_update(None, "user_version", version() + 1).unwrap();
         drop(conn);
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert!(dir.join(format!("{FILE}.newer")).exists());
         assert!(db.tasks().unwrap().is_empty());
         fs::remove_dir_all(&dir).unwrap();
@@ -2029,9 +2187,9 @@ mod tests {
     fn a_backlog_json_written_beside_the_db_adds_only_the_tasks_it_lacks() {
         let dir = folder("beside");
         fs::write(dir.join(BACKLOG), json!({ "counter": 1, "tasks": [{ "id": "t1", "name": "In the db", "repo": "/r", "madeAt": 1.0 }] }).to_string()).unwrap();
-        drop(Db::open(&dir));
+        drop(Db::open(&dir).unwrap());
         fs::write(dir.join(BACKLOG), json!({ "counter": 5, "tasks": [{ "id": "t1", "name": "Older", "repo": "/r" }, { "id": "t5", "name": "New", "repo": "/r", "madeAt": 2.0 }] }).to_string()).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let rows = db.tasks().unwrap();
         assert_eq!(rows.iter().map(|r| r.doc["name"].as_str().unwrap()).collect::<Vec<_>>(), ["In the db", "New"]);
         assert!(rows.iter().all(|r| is_task_id(&r.id)));
@@ -2058,7 +2216,7 @@ mod tests {
             insert into task_events (task, at, what, doc) values ('t1', 1.0, 'made', '{}'), ('t1', 2.0, 'shelved', '{}'), ('t2', 2.0, 'made', '{}'), ('t2', 3.0, 'edited', '{"after": ["t1", "t3"]}'), ('t3', 3.0, 'made', '{}'), ('t3', 4.0, 'done', '{}');
         "#).unwrap();
         drop(conn);
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let new = renumbered(&db);
         assert_eq!(new.len(), 5);
         assert_eq!((new["t1"].as_str(), new["t3"].as_str()), ("task-1dfb12c2", "task-00c0ffee"));
@@ -2093,7 +2251,7 @@ mod tests {
         let events: i64 = before.query_row("select count(*) from task_events", [], |r| r.get(0)).unwrap();
         drop(statement);
         drop(before);
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let new = renumbered(&db);
         assert_eq!(new.len(), old.len(), "every task got a new ID");
         let (mut folders, mut blockers) = (0, 0);
@@ -2153,7 +2311,7 @@ mod tests {
                 ('task-00000003', 3.0, 'done', 'desk', 'done', 'user');
         "#).unwrap();
         drop(conn);
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let place = |id: &str| db.task(id).unwrap().unwrap().place;
         assert_eq!([place("task-00000001"), place("task-00000002"), place("task-00000003")], [Place::Desk, Place::Shelf, Place::Done]);
         let events = |id: &str| db.events(id).unwrap().into_iter().map(|e| (e.what, e.from, e.to)).collect::<Vec<_>>();
@@ -2175,7 +2333,7 @@ mod tests {
         conn.pragma_update(None, "user_version", 1).unwrap();
         conn.execute("insert into tasks (id, repo, place, made_at, doc) values ('t1', '/r', 'backlog', 1.0, '{\"name\": \"Old\"}')", []).unwrap();
         drop(conn);
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let found: i64 = db.conn.query_row("pragma user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(found, version());
         assert_eq!(db.tasks().unwrap()[0].doc["name"], "Old");
@@ -2188,7 +2346,7 @@ mod tests {
     #[test]
     fn a_miss_stays_a_miss_until_it_is_asked_again() {
         let dir = folder("quiz-misses");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let first = db.start_round("/r", "abc", &json!({ "commits": ["abc"], "gone": null })).unwrap();
         let missed = db.answer(first, "where", "src/a.rs", false, None, &json!({ "question": "Where?", "line": 4 })).unwrap();
         let kept = db.answer(first, "why", "docs/b.md", false, None, &json!({})).unwrap();
@@ -2213,24 +2371,24 @@ mod tests {
     #[test]
     fn the_machines_doc_starts_empty_and_keeps_what_was_put() {
         let dir = folder("machines");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(db.machines().unwrap(), serde_json::json!({}));
         let doc = serde_json::json!({ "name": "mbp", "entries": [{ "body": {}, "signature": "00" }] });
         db.put_machines(&doc).unwrap();
         db.put_machines(&doc).unwrap();
-        assert_eq!(Db::open(&dir).machines().unwrap(), doc);
+        assert_eq!(Db::open(&dir).unwrap().machines().unwrap(), doc);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_project_s_planner_is_kept_across_a_restart_and_replaced_by_the_next() {
         let dir = folder("planners");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(db.planner("/w/app").unwrap(), None);
         db.put_planner("/w/app", &serde_json::json!({ "agent": "claude", "session": "s1" })).unwrap();
         db.put_planner("/w/tool", &serde_json::json!({ "agent": "codex" })).unwrap();
         db.put_planner("/w/app", &serde_json::json!({ "agent": "claude", "session": "s2" })).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(db.planner("/w/app").unwrap(), Some(serde_json::json!({ "agent": "claude", "session": "s2" })));
         assert_eq!(db.planner("/w/tool").unwrap(), Some(serde_json::json!({ "agent": "codex" })));
         let _ = fs::remove_dir_all(&dir);
@@ -2250,7 +2408,7 @@ mod tests {
         conn.pragma_update(None, "user_version", rename as i64).unwrap();
         conn.execute("insert into fleet (id, doc) values (1, '{\"name\": \"mbp\", \"port\": 7470, \"addrs\": {\"k\": [\"10.0.0.5:7470\"]}, \"anchor\": {\"key\": \"k\"}, \"entries\": [{\"body\": {}}]}')", []).unwrap();
         drop(conn);
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         assert_eq!(db.machines().unwrap(), serde_json::json!({ "name": "mbp", "port": 7470, "addrs": { "k": ["10.0.0.5:7470"] } }));
         let fleet: i64 = db.conn.query_row("select count(*) from sqlite_master where name = 'fleet'", [], |r| r.get(0)).unwrap();
         assert_eq!(fleet, 0);
@@ -2262,7 +2420,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kanna-said-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         db.put_said("task-a", "one", false).unwrap();
         db.put_said("task-a", "one", false).unwrap();
         db.put_said("task-a", "two", false).unwrap();
@@ -2283,7 +2441,7 @@ mod tests {
     #[test]
     fn a_message_waits_until_it_is_delivered_and_stays_in_both_tasks_history() {
         let dir = folder("messages");
-        let db = Db::open(&dir);
+        let db = Db::open(&dir).unwrap();
         let first = db.put_message("task-71af0000", "/r", "task-5e2c0000", "Is your spec final?", Some("bypass"), None).unwrap();
         let second = db.put_message("planner", "/r", "task-71af0000", "I'm done", None, None).unwrap();
         assert_eq!(db.waiting_messages().unwrap().iter().map(|m| m.id).collect::<Vec<_>>(), [first.id, second.id]);
@@ -2294,12 +2452,12 @@ mod tests {
         assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].text, "Is your spec final?");
         assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].mode.as_deref(), Some("bypass"), "the sender's permissions");
         drop(db);
-        assert_eq!(Db::open(&dir).waiting_messages().unwrap().len(), 1, "a waiting message outlives the daemon");
-        let db = Db::open(&dir);
+        assert_eq!(Db::open(&dir).unwrap().waiting_messages().unwrap().len(), 1, "a waiting message outlives the daemon");
+        let db = Db::open(&dir).unwrap();
         let comment = Comment { file: "/r/docs/a.md".into(), thread: "c2".into() };
         let third = db.put_message("task-71af0000", "/r", "user", "[kanna comment c2 · docs/a.md:3]\nFix it.", None, Some(&comment)).unwrap();
         assert_eq!(third.comment.as_ref(), Some(&comment));
-        assert_eq!(Db::open(&dir).waiting_messages().unwrap().iter().find(|m| m.id == third.id).and_then(|m| m.comment.clone()), Some(comment), "a comment's thread outlives the daemon");
+        assert_eq!(Db::open(&dir).unwrap().waiting_messages().unwrap().iter().find(|m| m.id == third.id).and_then(|m| m.comment.clone()), Some(comment), "a comment's thread outlives the daemon");
         assert_eq!(db.messages(Some("task-5e2c0000")).unwrap()[0].comment.clone(), None);
         fs::remove_dir_all(&dir).unwrap();
     }

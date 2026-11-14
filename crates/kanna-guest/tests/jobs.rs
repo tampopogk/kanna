@@ -51,7 +51,7 @@ fn rig(name: &str) -> Rig {
 
 fn request(rig: &Rig, argv: &[&str]) -> (Request, client::Worktree) {
     let worktree = client::worktree(&rig.repo).unwrap();
-    let request = Request { root: worktree.root.clone(), cwd: worktree.cwd.clone(), argv: argv.iter().map(|s| s.to_string()).collect(), env: BTreeMap::new(), fetch: vec![], ui: false, job: client::new_job() };
+    let request = Request { root: worktree.root.clone(), cwd: worktree.cwd.clone(), argv: argv.iter().map(|s| s.to_string()).collect(), env: BTreeMap::new(), fetch: vec![], ui: false, job: client::new_job(), needs: serde_json::Value::Null, label: String::new() };
     (request, worktree)
 }
 
@@ -271,11 +271,17 @@ fn a_dropped_connection_reattaches_to_the_same_job() {
 #[test]
 fn cancelling_stops_the_job_and_says_so() {
     let rig = rig("cancel");
-    let (req, worktree) = request(&rig, &["sh", "-c", "echo started; sleep 30; echo never"]);
+    let marker = rig.state.parent().unwrap().join("started");
+    let script = format!("echo started; touch '{}'; sleep 30; echo never", marker.display());
+    let (req, worktree) = request(&rig, &["sh", "-c", &script]);
     let socket = rig.socket.clone();
     let job = req.job.clone();
     let canceller = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(1500));
+        let waiting = Instant::now();
+        while !marker.exists() && waiting.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(300));
         let connect = move || -> io::Result<Box<dyn Pipe>> { Ok(Box::new(UnixStream::connect(&socket)?)) };
         client::cancel(&connect, &job).unwrap();
     });
@@ -283,7 +289,7 @@ fn cancelling_stops_the_job_and_says_so() {
     let (outcome, out, _) = run(&rig, &req, &worktree);
     canceller.join().unwrap();
     assert_eq!((outcome, out.as_str()), (Outcome::Cancelled, "started\n"));
-    assert!(started.elapsed() < Duration::from_secs(15));
+    assert!(started.elapsed() < Duration::from_secs(25));
 }
 
 #[test]

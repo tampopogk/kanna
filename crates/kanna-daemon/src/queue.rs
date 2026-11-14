@@ -225,7 +225,7 @@ impl Queue {
             .ok_or_else(|| bad("which task? run it in the task's terminal, or name it: kanna task merge TASK"))
     }
 
-    fn add(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+    pub(crate) fn add(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
         let tasks = self.tasks()?;
         let reference = self.task_named(args)?;
         let candidate = tasks.merge_candidate(&reference)?;
@@ -274,7 +274,7 @@ impl Queue {
         log!("kanna-daemon: {} goes into {}'s merge queue as {id}, at {head}", entry.id, entry.repo);
         let weak = Rc::downgrade(self);
         let settling = id.clone();
-        tasks.enqueue(candidate, &id, Some(by), move || {
+        tasks.enqueue(candidate, &id, &head, Some(by), move || {
             if let Some(this) = weak.upgrade() {
                 this.settle(&settling);
             }
@@ -289,7 +289,7 @@ impl Queue {
         Ok(Map::from_iter([("queue".to_string(), json!(id)), ("task".to_string(), json!(entry.id)), ("position".to_string(), json!(position)), ("head".to_string(), json!(head)), ("said".to_string(), json!(said))]))
     }
 
-    fn cancel(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+    pub(crate) fn cancel(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
         let tasks = self.tasks()?;
         let reference = self.task_named(args)?;
         let id = tasks.resolve(&reference)?.ok_or_else(|| KmuxError::new("not_found", format!("no task {reference}")))?;
@@ -530,6 +530,7 @@ impl Queue {
             prompts,
             owner: Some(runs::QUEUE.into()),
             by: row.id.clone(),
+            agent: false,
         };
         let run = runs.start_owned(started).map_err(|e| e.message)?;
         row.state = "testing".into();
@@ -723,7 +724,7 @@ impl Queue {
         }
     }
 
-    fn fail(self: &Rc<Self>, queue: &str, why: &str, lines: Vec<String>) {
+    pub(crate) fn fail(self: &Rc<Self>, queue: &str, why: &str, lines: Vec<String>) {
         let Some(mut row) = self.live.borrow().iter().find(|q| q.id == queue).cloned() else { return };
         log!("kanna-daemon: {queue} failed: {why}");
         self.release_worker(&row, false);
@@ -924,7 +925,7 @@ mod tests {
         assert!(!said.contains("in the background and wait"), "{said}");
         let pipeline = kanna_pipe::parse(&test_pipeline("sh test.sh", "claude")).unwrap();
         let feedback = runs::Feedback { stage: TEST.into(), text: "FAILED a".into(), full: "/w/.kanna/tmp/stage-1.log".into() };
-        let whole = runs::prompt(pipeline.stage(JUDGE).unwrap(), &said, "Merge branch 'add-a': Add a", Some(&feedback), &BTreeMap::new(), ".kanna/tmp/answer-2.md");
+        let whole = runs::prompt(pipeline.stage(JUDGE).unwrap(), &said, "Merge branch 'add-a': Add a", None, Some(&feedback), &BTreeMap::new(), ".kanna/tmp/answer-2.md");
         assert!(whole.contains("# Feedback from test\n\nFAILED a\n\nAll of its output is in `/w/.kanna/tmp/stage-1.log`.\n"), "{whole}");
     }
 
@@ -983,7 +984,8 @@ mod tests {
         let repo = dir.join("repo");
         fs::create_dir_all(repo.join(".kanna")).unwrap();
         fs::write(repo.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "cargo test"}}"#).unwrap();
-        let db = Rc::new(Db::open(&dir.join("state")));
+        fs::create_dir_all(dir.join("state")).unwrap();
+        let db = Rc::new(Db::open(&dir.join("state")).unwrap());
         let queue = Rc::new(Queue::open(db, Weak::new(), Weak::new()));
         let row = QueueRow { id: "queue-1".into(), repo: repo.to_string_lossy().into_owned(), task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": own, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "branch": "a", "stage": "test", "needs": "judge stopped without reporting", "told": "x" }) };
         queue.db.put_queued(&row).unwrap();

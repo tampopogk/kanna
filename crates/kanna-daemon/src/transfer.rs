@@ -41,7 +41,7 @@ pub fn save(conn: &Connection, saved: &Saved) -> rusqlite::Result<()> {
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
     conn.execute(
         "insert into transfers (id, task, role, peer, state, doc, at) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         on conflict (id) do update set state = excluded.state, doc = excluded.doc, at = excluded.at",
+         on conflict (id) do update set peer = excluded.peer, state = excluded.state, doc = excluded.doc, at = excluded.at",
         params![saved.id, saved.task, saved.role, saved.peer, saved.state, saved.doc.to_string(), at],
     )?;
     Ok(())

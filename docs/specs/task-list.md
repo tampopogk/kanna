@@ -135,7 +135,7 @@ flowchart TD
 - **The caller's repo by default:** the repo the CLI runs in (its git common dir, as `kanna task new` finds it). Outside a git repo, every repo's.
 - **`--all`:** every repo's, as the list was before.
 - **QUERY** filters as before ([Shelf search](shelf-search.md#cli)).
-- **`--include-done`:** done tasks too, from `kanna.db` ([database](database.md)), with `done` and `doneAt` in `--json`. With QUERY, every done task that matches; without it, only the 5 done last, and `moreDone` in `--json` says how many are left out: every task ever made would swamp an agent's context.
+- **`--include-done`:** done tasks too, from `kanna.db` ([database](database.md)), with `done` and `doneAt` in `--json`. With QUERY, every done task that matches; without it, only the 5 done last, and `moreDone` in `--json` says how many are left out: every task ever made would swamp an agent's context. A task that left this machine and still runs on another ([moved](task-transfer.md), granted or taken over) is under Other machines, not Done. Once its record says it's done it joins Done, at the time its record says.
 
 ## 5. --json
 
@@ -171,7 +171,7 @@ sequenceDiagram
 - **`replied`** is read from the messages not yet delivered whose recipient is `planner`.
 - **This app's Desk, wherever it runs:** a claim on this machine's layout is this app's when it's `mac`; any other is a remote app's, named by its machine ([machine links §4](machine-links.md#4-projects-desks-and-claims)), and goes to `otherDesks`. A task another machine runs is on this app's Desk when its replicated record's `claim` is this machine's name: the daemon lists those as `claimed`, with `leftAt` the time of the claim's op, instead of in `elsewhere`, and the CLI places each among the local Desk rows by `leftAt`.
 
-**Tested** by `commands/task.rs`'s `list_tests` (the layout, the agent and repo only where they differ, waits by name), `task_scripts.rs`'s `a_worktree_is_merged_once_its_own_commits_are_in_main`, `tests/cli.rs` (the caller's repo, `--all`, QUERY), `machines_shelf.rs`'s `a_task_on_this_app_s_desk_lists_under_its_desk_wherever_it_runs_and_the_machine_running_it_says_whose_desk` (two daemons: a task the Studio runs for mbp's Desk lists under mbp's Desk `on studio`, and under the Studio's Other Desks `on mbp's Desk`, text and `--json`), and e2e `task_shelf` (a Desk task reads `replied` while its message to the planner waits, stays so after an unmerged commit, then `merged` once main merges it, and `--json` says `merged`).
+**Tested** by `commands/task.rs`'s `list_tests` (the layout, the agent and repo only where they differ, waits by name), `task_scripts.rs`'s `a_worktree_is_merged_once_its_own_commits_are_in_main`, `tests/cli.rs` (the caller's repo, `--all`, QUERY), `machines_shelf.rs`'s `a_task_on_this_app_s_desk_lists_under_its_desk_wherever_it_runs_and_the_machine_running_it_says_whose_desk` (two daemons: a task the Studio runs for mbp's Desk lists under mbp's Desk `on studio`, and under the Studio's Other Desks `on mbp's Desk`, text and `--json`), e2e `machine_remote_task` (with an app: vm's task on mbp's Desk is in vm's `otherDesks` with `desk` `mbp`, and in mbp's `tasks` with `machine` `vm`), and e2e `task_shelf` (a Desk task reads `replied` while its message to the planner waits, stays so after an unmerged commit, then `merged` once main merges it, and `--json` says `merged`).
 
 ## 7. Rejected
 

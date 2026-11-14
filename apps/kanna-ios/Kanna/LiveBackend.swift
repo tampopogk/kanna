@@ -246,6 +246,8 @@ final class LiveBackend: Backend {
             onNotice?(.tasks(repo: repo))
         case "quiz":
             onNotice?(.quiz(repo: repo))
+        case "stats":
+            onNotice?(.stats(repo: repo))
         default: break
         }
     }

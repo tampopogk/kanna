@@ -12,6 +12,7 @@ struct TerminalSettings: Equatable {
     var graphemes: Bool
     var bell: UInt32
     var notifications: Bool
+    var opacity: Double
 
     init(_ config: ghostty_config_t, dark: Bool, cursor: String?) {
         func color(_ key: String) -> String? {
@@ -43,6 +44,8 @@ struct TerminalSettings: Equatable {
         var bell: UInt32 = 0
         self.bell = ghostty_config_get(config, &bell, "bell-features", UInt("bell-features".utf8.count)) ? bell : 0b1100
         notifications = flag("desktop-notifications") ?? true
+        var opacity = 1.0
+        self.opacity = ghostty_config_get(config, &opacity, "background-opacity", UInt("background-opacity".utf8.count)) ? opacity : 1
     }
 
     static func hex(_ color: ghostty_config_color_s) -> String {

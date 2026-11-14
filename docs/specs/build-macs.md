@@ -1,6 +1,6 @@
 # Build Macs and the xcodebuild Shim
 
-**Status:** first version being built (Cloud 7), for the operator as the only tenant · **Part of:** [Kanna Cloud](kanna-cloud.md#8-build-macs) · **Isolation:** [shared build Macs](build-mac-isolation.md) · **Research:** [xcodebuild shim](../research/xcodebuild-shim.md) · **Models:** [xcodebuild-shim](../../references/prototypes/xcodebuild-shim/README.md), [build-mac-isolation](../../references/prototypes/build-mac-isolation/README.md) · **Tests:** `cargo test -p kanna-guest` (jobs between the client and a supervisor: dirty, untracked and deleted files, a warm rerun, diagnostics, a fetched `.app`, a dropped connection, cancelling, a cancel before the job arrives, a commit moved after capture, `DEVELOPER_DIR`, replacing only kanna build's own products, a linked folder in a destination's path, a build Mac sending garbage; the intake's refusals; the job proxy), `cargo test -p kanna --test machines_build` (two paired daemons, a guest's socket on the build Mac, the CLI and the `xcrun` shim, no guest running)
+**Status:** Cloud 7 and the queue of Cloud 12 built, for the operator as the only tenant · **Part of:** [Kanna Cloud](kanna-cloud.md#8-build-macs) · **Isolation:** [shared build Macs](build-mac-isolation.md) · **Research:** [xcodebuild shim](../research/xcodebuild-shim.md) · **Models:** [xcodebuild-shim](../../references/prototypes/xcodebuild-shim/README.md), [build-mac-isolation](../../references/prototypes/build-mac-isolation/README.md) · **Tests:** `cargo test -p kanna-guest` (jobs between the client and a supervisor: dirty, untracked and deleted files, a warm rerun, diagnostics, a fetched `.app`, a dropped connection, cancelling, a cancel before the job arrives, a commit moved after capture, `DEVELOPER_DIR`, replacing only kanna build's own products, a linked folder in a destination's path, a build Mac sending garbage; the intake's refusals; the job proxy), `cargo test -p kanna --test machines_build` (two paired daemons, a guest's socket on the build Mac, the CLI and the `xcrun` shim, no guest running)
 
 A task on Linux works on Apple code as if Xcode were local. Its `xcodebuild`, `xcrun`, `simctl`, `codesign` and project-chosen `swift` calls run on a **build Mac** against the agent's current worktree. Output and the exit code stream back, and test results, screenshots and built apps arrive where the agent expects them. Any number of Macs, Intel and Apple Silicon, form the **pool**. Build Macs are a [Kanna Cloud](kanna-cloud.md#8-build-macs) feature: [your machines](machines.md) aren't designed around them, though a self-hoster can run them, for example in their own Kanna Cloud.
 
@@ -99,6 +99,8 @@ flowchart LR
 
 ## 5. The pool
 
+The queue, its slots, matching and cancelling are specified in [build queue](build-queue.md).
+
 - **Each build Mac advertises** admitted guest capacity, guest arch/macOS, installed Xcode versions, Simulator runtimes, cores, RAM and free disk. A job states what it needs (`xcode: 26.x`, `arch: arm64`); Kanna picks a compatible tenant-owned guest with the shortest queue, preferring one that already has the task's mirror.
 - **Slots:** one heavy build and one UI-test slot per guest to start, with a host-wide admission cap based on measured memory/CPU pressure and allowed VM capacity (two macOS guests per host is Virtualization.framework's limit). Xcode's own test parallelism is bounded as well.
 - **Simulators are leased** by (guest, UDID) across a job's install, launch and screenshot steps, never `booted`. UI tests run through a LaunchAgent in the guest job user's console session.
@@ -108,18 +110,18 @@ flowchart LR
 
 ## 6. iOS for remote tasks
 
-The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is fetched over the link and installed with `simctl`, and the `ios-N` content lives on the MBP's daemon in the existing iOS pane ([app panes](app-panes.md)). Streaming a build Mac's Simulator screen comes later.
+The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac and fetched to its worktree, is fetched again over the link and installed with `simctl` in the existing iOS pane ([build queue §4](build-queue.md#4-a-remote-tasks-ios-app)). Streaming a build Mac's Simulator screen comes later.
 
 ## 7. Interfaces
 
 | Where | What |
 |---|---|
-| CLI | `kanna build [--mac NAME] [--fetch PATH]... [--ui] [--] COMMAND [ARG]...`; the shim's links; `kanna guests [create\|data\|start\|stop\|retire]` on a build Mac |
+| CLI | `kanna build [--mac NAME] [--xcode V] [--arch A] [--macos V] [--runtime V] [--fetch PATH]... [--ui] [--] COMMAND [ARG]...`; `kanna builds [cancel JOB]`; the shim's links; `kanna guests [create\|data\|start\|stop\|retire]` on a build Mac |
 | Settings | `build.mac` in `~/.kanna-v4/config.json` (default: your only Mac); `build.swift: "mac"` in a repo's `.kanna/config.json` |
 | Unix socket | `build.open {mac}`: answered by one line, `{ok, mac}`, then the socket carries the job's frames to the guest and back |
 | Daemon link | a `job` stream (a daemon's only; an app's certificate is refused), carrying the same frames ([machines §3](machines.md)) |
-| Frames | a 4-byte big-endian length, a JSON header with `op` and `size`, then `size` bytes; a header stays under 64 KiB, so lists go in payloads. Caller: `run` (manifest as payload), `bundle`, `blob {hash}`, `sent`, `attach {job, at: [stdout, stderr]}`, `cancel {job}`, `status {job}`, `hello`. Guest: `need {commit}` with `{blobs, heads}` as its payload, `exists`, `started` with `{src, argv, map, results, versions, identity}` as its payload, `out {fd, at}`, `exit {status}`, `artifact {to\|name\|fetch, dir}` then `file {path, exec, sha}`/`dir`/`link {target}` frames and `end`, `done {status}`, `error` |
-| Build Mac state | `guests/NAME/{vm/{config.json, disk.img, nvram.bin, data.img}, guest.json, agent.sock, egress.sock, egress.log, vm.log}`, `guests/routes.json`, `guests/egress.json` |
+| Frames | a 4-byte big-endian length, a JSON header with `op` and `size`, then `size` bytes; a header stays under 64 KiB, so lists go in payloads. Caller: `run` (manifest as payload), `bundle`, `blob {hash}`, `sent`, `attach {job, at: [stdout, stderr]}`, `cancel {job}`, `status {job}`, `hello`. Build Mac's daemon: `queued {ahead, jobs}`, `granted {guest}`, `done`, `error`, before the guest answers. Guest: `need {commit}` with `{blobs, heads}` as its payload, `exists`, `started` with `{src, argv, map, results, versions, identity}` as its payload, `out {fd, at}`, `exit {status}`, `artifact {to\|name\|fetch, dir}` then `file {path, exec, sha}`/`dir`/`link {target}` frames and `end`, `done {status}`, `error` |
+| Build Mac state | `guests/NAME/{vm/{config.json, disk.img, nvram.bin, data.img}, guest.json, agent.sock, egress.sock, egress.log, vm.log}`, `guests/routes.json`, `guests/egress.json`, `guests/queue.json`, `guests/pool.json` |
 | Guest state | `/Volumes/KannaData/kanna-build/{store/, repos/, mirrors/, jobs/<job>/{request.json, manifest.json, status.json, out1, out2, results/, fetched/}}` |
 | Linux worktree | `.kanna/build/{<job>/{job.json, diagnostics.txt, tests.json, attachments/, Tests.xcresult}, last, products}` |
 
@@ -141,7 +143,7 @@ The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is 
   - The Kanna repo's snapshot reached the guest in 4.2 s cold and 0.68 s warm; a 3 MB and a 300 KB file arrived with matching checksums; the `xcrun` shim reached the guest through arg0.
   - On the real path the guest needed, besides the master's Xcode and Rust: gettext, the Metal toolchain, Codeberg on the allowlist, and a data disk.
   - Covered by tests rather than on the real path: dirty, untracked and deleted files, a warm rebuild, cancelling, a dropped connection. **Not done:** two tasks at once, a failed test's attachments and a screenshot coming back (which needs the readiness step below).
-- **12, the pool:** several Macs with tenant-isolated guest slots, matched by guest capability, guest-scoped Simulator leases, the queue shown in the app, the `.app` fetched to the MBP. Never pool different tenants inside one guest.
+- **12, the pool:** built ([build queue](build-queue.md)): guest slots in the build Mac's daemon, matching across Macs by guest capability, the queue in the app and `kanna builds`, the `.app` fetched to the MBP. Still to come, each its own task: guest-scoped Simulator leases, and the restricted host VM manager. Never pool different tenants inside one guest.
 
 ## 9. Limits
 
@@ -152,4 +154,5 @@ The Simulator runs on the MBP. A remote task's `.app`, built on a build Mac, is 
 - **Submission isn't retried:** if the link between the machines drops while the snapshot or bundle is being sent (seen once, about a minute of `unreachable`), `kanna build` exits 125 and is run again; only an accepted job reattaches.
 - **Capabilities live in the daemon's memory:** restarting the build Mac's daemon ends every running job's egress (its proxy answers 407) though the guest and the job keep running.
 - **The master was promoted from a force-stopped clone** (see [guest image](#guest-image)); APFS and the apps in it came through, but a clean shutdown it never had.
-- **No Simulator leases, queue display or capability matching:** slice 12.
+- **No Simulator leases:** a task of its own; the guest's UI jobs still serialize on its one UI slot.
+- **The daemon runs guests itself:** the restricted host VM manager is a task of its own.

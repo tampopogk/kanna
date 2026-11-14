@@ -2,7 +2,7 @@
 
 **Status:** built · **Tested:** e2e `merge_queue` · **Mockup:** [`references/mockups/merge-queue.html`](../../references/mockups/merge-queue.html) · **Builds on:** [merge queue](merge-queue.md), [Desk view](desk-view.md), [machine links](machine-links.md#5-paths-the-machines-tab-and-offline)
 
-**The window's fifth fixed tab shows the repo's merge queue and each entry's tests or judge at work.** The queue is the repo's machinery, so it has a tab of its own beside Desk, Machines, Stats and [Schedules](schedules-tab.md). It lists what's in line and what ended lately, and shows the picked entry's terminal or log. How the queue itself works is in [merge queue](merge-queue.md).
+**The window's sixth fixed tab shows the repo's merge queue and each entry's tests or judge at work.** The queue is the repo's machinery, so it has a tab of its own beside Desk, Machines, [Builds](build-queue.md#3-the-builds-tab), Stats and [Schedules](schedules-tab.md). It lists what's in line and what ended lately, and shows the picked entry's terminal or log. How the queue itself works is in [merge queue](merge-queue.md).
 
 ![The Merge queue tab: one entry's tests running in their terminal and two entries waiting, then the entries that landed or failed lately](merge-queue.png)
 

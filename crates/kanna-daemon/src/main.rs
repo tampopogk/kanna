@@ -9,9 +9,11 @@ mod agent_stats;
 mod agents;
 mod app_link;
 mod builds;
+mod build_queue;
 mod cli;
 mod guests;
 mod instance_move;
+mod ios_apps;
 mod tasks;
 mod db;
 mod desk_news;
@@ -40,6 +42,7 @@ mod stats;
 mod quality;
 mod coverage;
 mod reader;
+mod run_notice;
 mod runtime;
 mod runs;
 mod schedule;
@@ -59,6 +62,8 @@ mod store;
 mod stacks;
 mod task_events;
 mod task_scripts;
+mod pipelines;
+mod usage;
 mod terminals;
 mod transfer;
 mod toasts;
@@ -117,6 +122,7 @@ enum Shutdown {
 pub enum Event {
     Request(Value, Box<dyn FnOnce(Value) + Send>),
     Output { terminal: String, serial: u64 },
+    Typed { terminal: String },
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
@@ -136,6 +142,7 @@ pub enum Event {
     KeeperReadable,
     KeeperHeard,
     KeeperLost(String),
+    SessionLeft(i32),
     AppHello { conn: u64, hello: Value, out: Outbox, stream: UnixStream, remote: Option<String> },
     AppCaughtUp { conn: u64 },
     AppBehind { conn: u64, queued: usize },
@@ -157,6 +164,7 @@ impl Event {
         match self {
             Event::Request(..) => "loop.request",
             Event::Output { .. } => "loop.output",
+            Event::Typed { .. } => "loop.typed",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
             Event::TooOld { .. } => "loop.status",
@@ -168,7 +176,7 @@ impl Event {
             Event::Serial(_) => "loop.serial",
             Event::Sampled(_) => "loop.stats",
             Event::Covered(_) => "loop.coverage",
-            Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) => "loop.keeper",
+            Event::KeeperReadable | Event::KeeperHeard | Event::KeeperLost(_) | Event::SessionLeft(_) => "loop.keeper",
             Event::AppHello { .. } | Event::AppCaughtUp { .. } | Event::AppBehind { .. } | Event::AppUsed { .. } | Event::AppGone { .. } => "loop.app",
             Event::AppMessage { .. } => "loop.app.message",
             Event::MachineConfirm { .. } | Event::MachinesSave(_) | Event::Replica { .. } => "loop.machines",
@@ -177,6 +185,8 @@ impl Event {
         }
     }
 }
+
+const PANICKED: i32 = 101;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -193,9 +203,13 @@ fn main() {
         }
     }
     let unstamped = std::panic::take_hook();
+    let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
         eprint!("{} ", stamp());
-        unstamped(info)
+        unstamped(info);
+        if std::thread::current().id() == main_thread {
+            std::process::exit(PANICKED);
+        }
     }));
     match run() {
         Ok(()) => {}
@@ -271,7 +285,7 @@ fn run() -> Result<(), String> {
     let retired = instance_move::settle(&state_dir, &socket)?;
     let socket = kanna_build::own_socket(&given);
     let socket_path = socket.to_string_lossy().into_owned();
-    let db = Rc::new(db::Db::open(&state_dir));
+    let db = Rc::new(db::Db::open(&state_dir).map_err(|error| format!("can't keep the records in {}: {error}", state_dir.display()))?);
     if let Some(old) = &retired {
         if let Err(error) = db.keep_from_moved(old) {
             log!("kanna-daemon: couldn't keep the windows of {}: {error}", old.display());
@@ -316,7 +330,7 @@ fn run() -> Result<(), String> {
         }
     };
     log!("kanna-daemon: using the keeper of {} (pid {})", state_dir.display(), keeper.pid());
-    let store = match Store::open(&state_dir) {
+    let store = match Store::open(&state_dir, db.clone()) {
         Ok(store) => store,
         Err(error) => {
             server.stop();
@@ -433,6 +447,16 @@ fn run() -> Result<(), String> {
             queue.task_closed(task);
         }
     }));
+    let staging = Rc::downgrade(&runs);
+    *tasks.run_of.borrow_mut() = Some(Box::new(move |task| staging.upgrade().and_then(|runs| runs.stage_of(task))));
+    let heeding = wire.clone();
+    *runs.heed.borrow_mut() = Some(Box::new(move |terminal| heeding.heed(terminal)));
+    let waking = Rc::downgrade(&runs);
+    tasks.on_worker(Box::new(move || {
+        if let Some(runs) = waking.upgrade() {
+            runs.wake();
+        }
+    }));
     let (stopping, starting) = (Rc::downgrade(&runs), Rc::downgrade(&runs));
     *tasks.on_stop.borrow_mut() = Some(Box::new(move |task| {
         if let Some(runs) = stopping.upgrade() {
@@ -459,6 +483,8 @@ fn run() -> Result<(), String> {
     scheduler.watch_deliveries(&tasks);
     let guests = guests::Guests::new(&state_dir);
     guests.install(&core);
+    builds::install(&state_dir, &core, build_callers.clone());
+    ios_apps::install(&state_dir, &core, build_callers.clone());
     if cfg!(target_os = "macos") {
         guests.start();
     }
@@ -608,6 +634,7 @@ fn run() -> Result<(), String> {
     tasks.repair_comment_targets();
     tasks.settle_statuses();
     tasks.close_ended_planners();
+    tasks.resume_lost();
     if let Err(error) = keeper.watch() {
         server.stop();
         terminals.shutdown();
@@ -649,7 +676,16 @@ fn run() -> Result<(), String> {
             app.status(pane, core.pane(pane).and_then(|p| p.status().map(String::from)).as_deref());
         }
     }));
-    let _phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let phone = phone::Phone::install(&core, db.clone(), tasks.clone(), quiz.clone(), machines.as_ref().and_then(|m| m.caller()), app.clone());
+    let (stats_link, stats_phone) = (Rc::downgrade(&app), Rc::downgrade(&phone));
+    *stats.on_change.borrow_mut() = Some(Box::new(move |repo| {
+        if let Some(app) = stats_link.upgrade() {
+            app.stats_changed(repo);
+        }
+        if let Some(phone) = stats_phone.upgrade() {
+            phone.stats_changed(repo);
+        }
+    }));
     if let Some(machines) = &machines {
         let machines = Rc::downgrade(machines);
         *app.machine.borrow_mut() = Some(Box::new(move || machines.upgrade().map_or(Value::Null, |m| m.machine())));
@@ -695,7 +731,7 @@ fn run() -> Result<(), String> {
     let crashes = Rc::new(crashes::Crashes::new(db.clone(), &state_dir, build.clone()));
     crashes.install(&core);
     let posting = Rc::downgrade(&tasks);
-    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), "kanna", text).map_err(|error| error.message)));
+    *crashes.post.borrow_mut() = Some(Box::new(move |repo, text| posting.upgrade().ok_or_else(|| "the daemon is stopping".to_string())?.post(messages::PLANNER, Some(repo), messages::KANNA, text).map_err(|error| error.message)));
     let banner_link = Rc::downgrade(&app);
     *crashes.show.borrow_mut() = Some(Box::new(move |record| banner_link.upgrade().is_some_and(|app| app.toast(record))));
     crashes.scan();
@@ -703,6 +739,13 @@ fn run() -> Result<(), String> {
     *diffs.on_diff.borrow_mut() = Some(Box::new(move |views, payload| {
         if let Some(app) = diff_link.upgrade() {
             app.diff(views, payload);
+        }
+    }));
+    app.connect_runs(&runs);
+    let run_link = Rc::downgrade(&app);
+    *runs.on_run.borrow_mut() = Some(Box::new(move |views, payload| {
+        if let Some(app) = run_link.upgrade() {
+            app.run(views, payload);
         }
     }));
     let log_link = Rc::downgrade(&app);
@@ -737,11 +780,15 @@ fn run() -> Result<(), String> {
     }));
     let link = Rc::downgrade(&app);
     let screenshot = link.clone();
+    let shelved = Rc::downgrade(&tasks);
     let shooting = machines.as_ref().and_then(|m| m.caller());
     core.add_command(
         "screenshot",
-        Rc::new(move |args, responder| {
+        Rc::new(move |mut args, responder| {
             if let Some(link) = screenshot.upgrade() {
+                if args.get("pane").is_some() {
+                    args["stopped"] = Value::Array(shelved.upgrade().map(|tasks| tasks.stopped_on_shelf()).unwrap_or_default());
+                }
                 screenshot::take(&link, shooting.clone(), args, responder);
             }
         }),
@@ -922,6 +969,11 @@ fn run() -> Result<(), String> {
                     app.resync(conn, &terminal);
                 }
             }
+            Event::Typed { terminal } => {
+                if let Some(pane) = terminals.pane_of(&terminal) {
+                    runs.typed(&pane);
+                }
+            }
             Event::Drained { terminal, serial } => {
                 if let Some(code) = terminals.drained(&terminal, serial) {
                     ended(&terminals, &tasks, &app, &terminal, code);
@@ -933,6 +985,7 @@ fn run() -> Result<(), String> {
                     app.status(&pane, core.pane(&pane).and_then(|p| p.status().map(String::from)).as_deref());
                     tasks.status(&pane, status, ended);
                     runs.status(&pane, ended);
+                    tasks.worker_status(&pane, ended);
                 }
             }
             Event::Reported { terminal, serial, kept } => {
@@ -968,7 +1021,7 @@ fn run() -> Result<(), String> {
             }
             Event::Serial(event) => serial.event_in(event),
             Event::Sampled(sampled) => stats.sampled(sampled),
-            Event::Covered(covered) => stats.coverage().covered(covered),
+            Event::Covered(covered) => stats.covered(covered),
             Event::KeeperReadable | Event::KeeperHeard => {
                 let heard = keeper.take();
                 if matches!(event, Event::KeeperReadable) {
@@ -990,6 +1043,7 @@ fn run() -> Result<(), String> {
                     }
                 }
             }
+            Event::SessionLeft(session) => terminals.session_left(session),
             Event::KeeperLost(_) if matches!(shutdown, Some(Shutdown::Keeper(_))) => {
                 log!("kanna-daemon: the keeper stopped");
                 break;
@@ -1019,7 +1073,7 @@ fn run() -> Result<(), String> {
                             args.remove(kanna_net::PEER);
                         }
                     }
-                    if let Some(refused) = machines::refuse_remote(&request).filter(|_| !app.is_here(conn)) {
+                    if let Some(refused) = machines::refuse_link(&request).filter(|_| !app.is_here(conn)) {
                         app.answer_app(conn, refused);
                         continue;
                     }

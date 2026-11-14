@@ -117,6 +117,7 @@ pub fn prompt(messages: &[(Option<String>, String)]) -> String {
 }
 
 pub const RETRY: Duration = Duration::from_secs(5);
+pub const THREAD_EVENT_QUIET: Duration = Duration::from_secs(2);
 
 pub const AGAIN: Duration = Duration::from_secs(3);
 
@@ -507,6 +508,16 @@ mod tests {
         assert_eq!(permissions(&[argv("/k/kanna-daemon --codex-remote /s codex --yolo").remove(0), argv("codex --remote unix:///s").remove(0)]), Some(BYPASS));
         assert_eq!(permissions(&argv("claude --permission-mode acceptEdits")), Some(PROMPTING));
         assert_eq!(permissions(&[]), None);
+    }
+
+    #[test]
+    fn messages_from_you_and_kanna_for_you_take_the_recipients_class() {
+        for sender in [USER, DESK, PHONE, KANNA, "schedule quiz", "run-3"] {
+            assert!(yours(sender), "{sender}");
+        }
+        for sender in [PLANNER, "task-5e2c"] {
+            assert!(!yours(sender), "{sender}");
+        }
     }
 
     #[test]

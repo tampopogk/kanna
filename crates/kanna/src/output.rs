@@ -132,6 +132,8 @@ pub fn ago(seconds: f64) -> String {
     }
 }
 
+const COMMAND_SHOWN: usize = 80;
+
 pub fn what(pane: &Value) -> Option<String> {
     if let Some(app) = pane["app"].as_str() {
         return Some(match pane["device"].as_str() {
@@ -145,7 +147,14 @@ pub fn what(pane: &Value) -> Option<String> {
             _ => path.into(),
         });
     }
-    pane["cmd"].as_str().or(pane["url"].as_str()).map(String::from)
+    if let Some(command) = pane["cmd"].as_str() {
+        let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
+        return Some(match flat.char_indices().nth(COMMAND_SHOWN) {
+            Some((at, _)) => format!("{}…", &flat[..at]),
+            None => flat,
+        });
+    }
+    pane["url"].as_str().map(String::from)
 }
 
 pub fn pane_state(reply: &Value) -> String {
@@ -178,5 +187,22 @@ pub fn home_relative(path: &str) -> String {
     match std::env::var("HOME").ok().filter(|h| !h.is_empty()).and_then(|home| path.strip_prefix(&home).map(String::from)) {
         Some(rest) if rest.starts_with('/') => format!("~{rest}"),
         _ => path.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_pane_s_state_shows_a_long_command_s_start_on_one_line() {
+        let short = json!({ "pane": { "id": "term-1", "name": "a", "cmd": "exec /bin/sh", "state": "running" } });
+        assert_eq!(pane_state(&short), "term-1 (a) (exec /bin/sh) is running");
+        let first = format!("claude --resume 'abc' || claude --session-id 'abc' 'Your task: {}\nsecond line'", "word ".repeat(200));
+        let agent = json!({ "pane": { "id": "term-2", "name": "Fix it", "cmd": first, "state": "running" } });
+        let said = pane_state(&agent);
+        assert_eq!(said, format!("term-2 (Fix it) ({}…) is running", &first[..80]));
+        assert!(!said.contains('\n'));
     }
 }

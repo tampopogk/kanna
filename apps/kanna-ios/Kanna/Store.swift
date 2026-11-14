@@ -432,6 +432,11 @@ final class Store {
         case .planner(let repo, let status, let since): change(repo) { $0.planner = Planner(status: status, since: since) }
         case .tasks(let repo): if repo == currentID { refreshShelf() }
         case .quiz(let repo): Task { await readRounds(repo) }
+        case .stats(let repo):
+            if repo == currentID, tab == .stats {
+                askedStats = .distantPast
+                refreshStats()
+            }
         case .projects: reread()
         }
     }
@@ -935,7 +940,8 @@ final class Store {
         askedStats = Date()
         let id = currentID
         Task {
-            guard let page = try? await backend.stats(repo: id) else { return }
+            guard let reply = try? await backend.stats(repo: id) else { return }
+            let page = reply.keeping(statsPages[id])
             statsPages[id] = page
             keep.put(page: page, key: "stats/\(id)")
         }

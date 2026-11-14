@@ -22,6 +22,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
     var agent: String? { didSet { markup?.agent = agent } }
     var agentStatus: String? { didSet { markup?.agentStatus = agentStatus } }
     var onSend: DocSend? { didSet { markup?.onSend = onSend } }
+    var onThreadEvent: DocThreadEvent? { didSet { markup?.onThreadEvent = onThreadEvent } }
     var onMarkup: ((PageMarkupView?) -> Void)?
     var onComments: ((NSView) -> Void)?
     var agentName: ((String) -> String)? { didSet { markup?.agentName = agentName } }
@@ -42,6 +43,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
         relay = PageMarkupView.install(on: configuration)
         webView = FocusReportingWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
+        if TerminalSurfaceView.ignoresOcclusion { webView.ignoreOcclusion() }
         webView.navigationDelegate = self
         titled = webView.observe(\.title, options: [.new]) { [weak self] view, _ in
             MainActor.assumeIsolated { self?.onTitleChange?(view.title ?? "") }
@@ -87,6 +89,7 @@ final class WebPaneView: NSView, WKNavigationDelegate, NSTextFieldDelegate {
             view.agent = agent
             view.agentStatus = agentStatus
             view.onSend = onSend
+            view.onThreadEvent = onThreadEvent
             view.agentName = agentName
             addSubview(view, positioned: .below, relativeTo: notice)
             markup = view
@@ -244,6 +247,13 @@ final class FocusReportingWebView: WKWebView {
             extra.removeItem(item)
             menu.addItem(item)
         }
+    }
+
+    func ignoreOcclusion() {
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard let method = class_getInstanceMethod(WKWebView.self, selector) else { return }
+        unsafeBitCast(method_getImplementation(method), to: Setter.self)(self, selector, false)
     }
 
     func zoom(to target: CGFloat, around point: NSPoint) {

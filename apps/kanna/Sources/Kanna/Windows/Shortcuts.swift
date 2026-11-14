@@ -32,7 +32,7 @@ struct Shortcut: Equatable {
 
     var label: String {
         (modifiers.contains(.control) ? "⌃" : "") + (modifiers.contains(.option) ? "⌥" : "") + (modifiers.contains(.shift) ? "⇧" : "")
-            + (modifiers.contains(.command) ? "⌘" : "") + key.replacingOccurrences(of: "\r", with: "↩")
+            + (modifiers.contains(.command) ? "⌘" : "") + key.replacingOccurrences(of: "\r", with: "↩").replacingOccurrences(of: "\u{7f}", with: "⌫")
     }
 
     private static let physical: [ghostty_input_key_e: String] = {

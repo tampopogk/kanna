@@ -13,7 +13,7 @@ Find a Shelf task by typing part of its name, first message or branch, or its ID
 - **The field sits in the Shelf header** of the Desk view, between "Shelf" and the count, which reads "2 of 12" while you search. Its placeholder is "Search the Shelf". It shows only when the Shelf has tasks.
 - **⌘F** (Edit › Find…) puts the cursor in it while the Desk view shows, from the planning terminal too; it scrolls the field into view.
 - **It filters as you type.** A task matches when every word you type, ignoring case, in any order, starts its ID (`task-1dfb`, `TASK-1DFB12C2`, or 4 hex digits or more without `task-`: `1dfb`) or is its agent's pane ID (`term-12`), or appears in its name, first message or branch (`save-default`). Matches are marked in the name and first message. No match: "No Shelf task matches "…"."
-- **The first match is selected.** ↑ ↓ move the selection, and ↩ moves the selected task to the Desk, as clicking it does (refused the same way when the Desk is full). Clicking any row still works.
+- **The first match is selected.** ↑ ↓ move the selection, on through the Desk's rows too, and ↩ moves the selected task to the Desk, as clicking it does (refused the same way when the Desk is full): the selection and its keys are [Desk view keys](desk-keys.md). Clicking any row still works.
 - **esc** clears the search; with nothing typed, it goes back to the planning terminal. The field's **×** clears it too, and shows in place of the ⌘F hint once you've typed.
 - **The search clears** when you start a task from it, and when the active task shows again.
 - **Rows look as they do unfiltered,** whatever state they show (waiting, running on the Shelf, blocked): the search only hides the ones that don't match.
@@ -41,7 +41,7 @@ Only an ID that never existed gets `no task matches "task-1dfb"`. The daemon's `
 
 - **Matching IDs by any part:** `1df` in the middle of an ID means nothing to anyone. A word matches an ID only from its start, as commands take it ([task IDs](task-ids.md#naming-a-task-in-a-command)), and without `task-` only from 4 hex digits, so a short word like `add` doesn't pull in every task whose ID starts that way. Pane IDs match whole; branches by any part.
 - **Matching the maker or the repo:** the Desk view's Shelf is already one repo's, and the maker is rarely what you remember.
-- **Typing anywhere on the page to search:** the planning terminal has the keyboard in the Desk view; ⌘F is the one way in.
+- **Typing anywhere on the page to search:** the planning terminal has the keyboard in the Desk view; ⌘F is the one way in ([Desk view keys](desk-keys.md)).
 
 ## Checked by
 

@@ -27,6 +27,13 @@ struct DocThreadsTests {
         #expect(DocEdit(delivered: .failed("not connected to the daemon"), line: 3) == DocEdit(status: "unsent", error: .some("not connected to the daemon"), line: 3))
     }
 
+    @Test func aStateEventNamesTheThreadFileAndLine() {
+        var one = thread("the cat")
+        one.line = 12
+        #expect(Doc.stateEvent(one, file: "docs/a.md", open: false) == "[kanna resolved c1 · docs/a.md:12]")
+        #expect(Doc.stateEvent(one, file: "docs/a\nb.md", open: true) == "[kanna reopened c1 · docs/a?b.md:12]")
+    }
+
     @Test func aThreadWaitsWhileItsLastMessageIsYours() {
         let posted = Doc.date("2026-10-16T10:00:00")!
         var t = thread("x")

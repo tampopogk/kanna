@@ -67,6 +67,10 @@ impl Host for DaemonHost {
         let state_dir = self.3.clone();
         let _ = std::thread::Builder::new().name("kanna.build.relay".into()).spawn(move || crate::builds::relay(&state_dir, &from, stream));
     }
+
+    fn bundle(&self, _from: String, path: String, stream: std::os::unix::net::UnixStream) {
+        let _ = std::thread::Builder::new().name("kanna.bundle.send".into()).spawn(move || crate::ios_apps::serve(&path, stream));
+    }
 }
 
 #[derive(Clone)]
@@ -122,9 +126,21 @@ impl Caller {
     }
 }
 
+impl Caller {
+    pub fn bundle(&self, host: &str, path: &str) -> Result<std::os::unix::net::UnixStream, Failure> {
+        let opened = self.handle.block_on(async { tokio::time::timeout(CALL_WAIT, self.node.bundle(host, path)).await });
+        opened.unwrap_or_else(|_| Err(Failure::new("unreachable", format!("{host} didn't answer in time"))))
+    }
+}
+
 pub fn refuse_remote(request: &Value) -> Option<Value> {
     let certify = request.get("cmd").and_then(Value::as_str) == Some("machine") && request.pointer("/args/action").and_then(Value::as_str) == Some("certify");
     certify.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "only this machine's own Kanna.app can have its endpoint certified" } }))
+}
+
+pub fn refuse_link(request: &Value) -> Option<Value> {
+    let accounts = request.get("cmd").and_then(Value::as_str) == Some(crate::accounts::COMMAND);
+    refuse_remote(request).or_else(|| accounts.then(|| json!({ "id": request.get("id").cloned().unwrap_or(Value::Null), "ok": false, "error": { "code": "local_only", "message": "agent accounts aren't open to an app on another machine" } })))
 }
 
 fn hostname() -> String {

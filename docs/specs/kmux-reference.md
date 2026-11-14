@@ -8,7 +8,7 @@ kmux stays as it is. It's the model Kanna's mux is checked against, not a librar
 flowchart LR
     KMUX["kmux<br/>unchanged"] -->|"protocol cases"| KM["kanna-mux<br/>(layer 4)"]
     KMUX -->|"pane views to start from"| UI["Kanna's mux UI<br/>(layer 3)"]
-    KMUX -->|"behaviour to match"| SC["scripts/e2e-kanna.sh<br/>scenarios"]
+    KMUX -->|"behaviour to match"| SC["scripts/e2e/<br/>scenarios"]
     classDef kmuxapp fill:#4f3f7f,stroke:#b39cff,color:#ffffff
     classDef kmux fill:#2f4f8f,stroke:#7fa7ff,color:#ffffff
     classDef kanna fill:#2f6f4f,stroke:#6fcf97,color:#ffffff

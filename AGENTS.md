@@ -38,6 +38,7 @@ Rules for every agent working here, the planning agent and task agents alike.
 ## Tests
 
 - Start GUI instances in the background (`--bg` or `KANNA_BG=1`; kmux's `--bg` or `KMUX_BG=1`) so windows don't jump in front of the user. The product's default stays foreground.
+- A new e2e scenario goes in its area's file under `scripts/e2e/`, with no list to edit ([e2e scenarios](docs/specs/e2e-scenarios.md)).
 - Many agents run at once in parallel worktrees and may share the system `TMPDIR`. Write build and test logs to a path unique to you (in your worktree, or a `mktemp -d` dir), never a fixed name like `$TMPDIR/build.log`.
 
 ## Rules

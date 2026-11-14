@@ -1,4 +1,4 @@
-use super::{absolute, diagrams, file_line, file_url, from_caller, git_line, is_markdown, no_dock, usage, Call, Command, Flow};
+use super::{absolute, caller, diagrams, file_line, file_url, from_caller, git_line, is_markdown, no_dock, usage, Call, Command, Flow};
 use crate::args::Argv;
 use crate::output::{label, state, whose_text};
 use crate::target::Session;
@@ -8,8 +8,8 @@ use serde_json::{json, Map, Value};
 pub const COMMAND: Command = Command {
     name: "open",
     group: "Panes",
-    summary: "Open a terminal, web, iOS, markdown, code, diff, log or serial pane and wait until it is running.",
-    usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open log [REV...] [-- PATH...] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]",
+    summary: "Open a terminal, web, iOS, markdown, code, diff, log, serial or run pane and wait until it is running.",
+    usage: "kanna open [term] [--cmd CMD] [--cwd DIR] [--name NAME] [--split right|down|auto] [--size FRACTION] [--tab] [--window ID|new] [--no-wait]\n       kanna open web URL [--history] [same placement options]\n       kanna open md FILE [same placement options]\n       kanna open ios --app APP [--device DEVICE] [same placement options]\n       kanna open code FILE[:LINE] [same placement options]\n       kanna open diff [GIT-DIFF-ARGS] [same placement options]\n       kanna open log [REV...] [-- PATH...] [same placement options]\n       kanna open md FILE --diff [REF|A..B] [same placement options]\n       kanna open serial PORT [--baud N] [--line-ending lf|crlf|cr] [same placement options]\n       kanna open run [RUN] [same placement options]\n       kanna open run [RUN] --watch [WORKER]",
     options: &[
         ("--cmd CMD", "Shell command line to run in your login shell, e.g. \"npm run dev\". Put it in single quotes if it uses $VARS or ;, so your own shell leaves it alone. Default: an interactive shell."),
         ("--cwd DIR", "Working directory."),
@@ -22,6 +22,7 @@ pub const COMMAND: Command = Command {
         ("--app APP", "iOS panes: a .app built for the simulator (installed, then launched) or the bundle ID of an installed app, e.g. com.apple.Preferences."),
         ("--device DEVICE", "iOS panes: a simulator device name or UDID, e.g. \"iPhone 16\". Default: a booted iPhone, else the newest one. The device is booted if needed (this can take a minute) and stays booted after the pane closes."),
         ("--history", "Web panes only: keep back/forward history (off by default), for `kanna navigate PANE --back` and the Pane menu's Back and Forward."),
+        ("--watch [WORKER]", "Run panes only: show the run's current worker terminal (or WORKER) in a tab of the task's workspace instead; the tab follows the run to each next stage's worker, and what you type there is kept as an intervention."),
     ],
     notes: "Prints the new pane's ID and name. A pane whose command exits stays on screen as `exited`. A docked pane closes only with its window.\nA terminal opened without --split, --size, --tab or --window opens even with Kanna.app closed, and takes its place when the app next opens; anything else starts the app.\nRun from a pane without --window, it opens in that pane's window, not the key one; from a task kept off-screen (on the Desk but not shown, or on the Shelf), in a new tab of the task's window. Run from outside a Kanna terminal, it needs --window: there's no window of yours to open in.\nA docked pane is a task's agent, so open docks none: make a task with `kanna task new`, then `kanna task pick` or `kanna task start`.\n--diff [REF] marks what changed in a markdown doc since REF, inline: added text in green, removed text struck through in red, a bar beside each changed block; ]c and [c jump to the next and previous change. REF is any commit or branch, compared as `git diff REF...` compares: from where HEAD and REF meet, uncommitted changes included. Default: main (or master), so a task's doc shows everything the task changed. --diff A..B shows the doc as it is in commit B, marked against commit A (compared directly, not from where they meet); it's read-only, doesn't follow the file and takes no comments.",
     examples: &[
@@ -37,11 +38,21 @@ pub const COMMAND: Command = Command {
         ("kanna open diff --merge-base main", "Show everything this branch changed since it left main, committed or not, with untracked files; it follows the worktree."),
         ("kanna open log", "Show the history as a graph: from a task, its branch and main; from the main checkout, main and the open tasks' branches, each labelled with its task. It follows the repo."),
         ("kanna open serial usbmodem1101 --tab", "Show what the device on /dev/cu.usbmodem1101 sends, at 115200; `kanna serial` reads and writes the same port."),
+        ("kanna open run", "Show the latest run of this terminal's task in a Run tab: its pipeline, numbers and visits, with buttons to steer it."),
+        ("kanna open run --watch", "Show the stage running now in a tab that follows the run from stage to stage."),
     ],
     parse,
     show,
-    flow: Flow { unplaced: Some(unplaced), after: Some(after), ..Flow::PLAIN },
+    flow: Flow { wire: Some(wire), unplaced: Some(unplaced), after: Some(after), ..Flow::PLAIN },
 };
+
+fn wire(request: &Value) -> &'static str {
+    if request["action"] == "watch" {
+        "run"
+    } else {
+        "open"
+    }
+}
 
 fn after(request: &Value, reply: &mut Value, _: &mut Session, call: &mut Call) -> Result<(), Failure> {
     if let (Some(path), "md") = (request["path"].as_str(), request["type"].as_str().unwrap_or_default()) {
@@ -53,6 +64,9 @@ fn after(request: &Value, reply: &mut Value, _: &mut Session, call: &mut Call) -
 }
 
 fn unplaced(request: &Value) -> Option<&'static str> {
+    if request["type"] == "run" || request["action"] == "watch" {
+        return None;
+    }
     (!["window", "workspace", "from"].iter().any(|key| !request[*key].is_null())).then_some("add --window WINDOW (or --window new)")
 }
 
@@ -83,15 +97,16 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
         out.insert("wait".into(), json!(false));
     }
     let history = args.flag("--history");
+    let watch = args.optional("--watch", |word| !word.starts_with('-'));
     let diff = args.optional("--diff", |word| !word.starts_with('-') && !is_markdown(word));
     let kind = match args.positional() {
         None => "term".to_string(),
-        Some(kind) if ["term", "web", "ios", "md", "code", "diff", "log", "serial"].contains(&kind.as_str()) => kind,
+        Some(kind) if ["term", "web", "ios", "md", "code", "diff", "log", "serial", "run"].contains(&kind.as_str()) => kind,
         Some(other) if is_markdown(&other) => {
             return Err(usage("open", &format!("to show a markdown file use: kanna open md {other}")));
         }
         Some(other) => {
-            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code, diff, log or serial). To run a command use --cmd \"{other}\"")));
+            return Err(usage("open", &format!("unknown pane type \"{other}\" (term, web, ios, md, code, diff, log, serial or run). To run a command use --cmd \"{other}\"")));
         }
     };
     if kind == "web" {
@@ -131,6 +146,36 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
     } else if baud.is_some() || ending.is_some() {
         return Err(usage("open", "--baud and --line-ending are only for serial panes: kanna open serial PORT --baud N"));
     }
+    if kind == "run" {
+        let run = args.positional().filter(|r| !r.is_empty());
+        if let Some(watch) = watch {
+            let mut request = json!({ "action": "watch" });
+            if let Some(run) = run {
+                request["run"] = json!(run);
+            }
+            if let Some(worker) = watch {
+                request["worker"] = json!(worker);
+            }
+            if let Some(by) = caller() {
+                request["by"] = json!(by);
+            }
+            if let Ok(here) = std::env::current_dir() {
+                request["cwd"] = json!(here.to_string_lossy());
+            }
+            return Ok(request);
+        }
+        if let Some(run) = run {
+            out.insert("run".into(), json!(run));
+        }
+        if let Some(by) = caller() {
+            out.insert("by".into(), json!(by));
+        }
+        if let Ok(here) = std::env::current_dir() {
+            out.insert("cwd".into(), json!(here.to_string_lossy()));
+        }
+    } else if watch.is_some() {
+        return Err(usage("open", "--watch is only for the Run tab: kanna open run --watch [WORKER]"));
+    }
     if kind == "ios" && !out.contains_key("app") {
         return Err(usage("open", "iOS panes need an app: kanna open ios --app MyApp.app (or a bundle ID)"));
     }
@@ -155,7 +200,16 @@ fn parse(args: &mut Argv) -> Result<Value, Failure> {
     Ok(Value::Object(out))
 }
 
+fn watching(reply: &Value) -> String {
+    let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("its task's workspace").to_string());
+    let tab = reply["tab"].as_str().map(|t| format!(", {t}")).unwrap_or_default();
+    format!("{} shows {}'s worker in {place}{tab}; the tab follows the run to the next stage", reply["terminal"].as_str().unwrap_or("?"), reply["run"].as_str().unwrap_or("?"))
+}
+
 pub fn show(request: &Value, reply: &Value) -> String {
+    if request["action"] == "watch" {
+        return watching(reply);
+    }
     let place = whose_text(reply).unwrap_or_else(|| reply["window"].as_str().unwrap_or("?").to_string());
     if reply["background"] == true {
         return format!("opened {} in the background of {place}: {}", label(&reply["pane"]), state(&reply["pane"]));

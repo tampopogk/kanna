@@ -16,6 +16,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var views: [String: JSON] = [:]
     var shelves: [String: [JSON]] = [:]
     var deskMade: [String: [String: Int]] = [:]
+    var deskIDs: [String: [String: String]] = [:]
     var deskStacks: [String: [String: String]] = [:]
     var paneSets: [String: Set<String>] = [:]
     var places: [String: JSON] = [:]
@@ -32,6 +33,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let contents = Contents()
     var panes: PaneViews!
     var controllers: [String: WindowController] = [:]
+    var arriving: (frame: NSRect, hidden: Bool)?
     private(set) var state: JSON = ["windows": []]
     private(set) var published: JSON = ["windows": []]
     private var plain: JSON = ["windows": []]
@@ -63,6 +65,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var updates: Updates?
     var toastShowing: (pane: String, desk: String?)?
     var statsTimer: Timer?
+    var buildsTimer: Timer?
     var queueTimer: Timer?
 
     static var daemonSocketPath: String {
@@ -129,6 +132,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             fatal("kanna: \(error.localizedDescription)")
         }
+        TerminalSurfaceView.isKey = { [weak self] window in
+            guard let self, let id = keyWindow?["id"]?.string else { return false }
+            return controllers[id]?.window === window
+        }
         if echo {
             terminals = ExternalIOBackend(runtime: runtime, link: EchoLink())
             let server = SocketServer(path: Self.echoSocketPath) { [weak self] request in await self?.commands.handle(request) ?? nil }
@@ -171,8 +178,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panes.terminalOf = { [weak self] pane in self?.terminalIDs[pane] }
         panes.onFocus = { [weak self] pane in self?.userFocused(pane) }
         panes.onDrag = { [weak self] pane in self?.dragPane(pane) }
-        panes.contextMenu = { [weak self] in self?.paneMenu?.copy() as? NSMenu }
+        panes.contextMenu = { [weak self] in
+            guard let menu = self?.paneMenu?.copy() as? NSMenu else { return nil }
+            menu.insertItem(.separator(), at: 0)
+            menu.insertItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "", at: 0)
+            menu.insertItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "", at: 0)
+            return menu
+        }
         contents.onFocus = { [weak self] pane in self?.userFocused(pane) }
+        contents.onBadge = { [weak self] in self?.refresh() }
         contents.textSize = { [weak self] pane in self?.physical.textSize(pane) }
         contents.onTextSize = { [weak self] pane, size in self?.physical.setTextSize(pane, size) }
         contents.pageZoom = { [weak self] pane in self?.physical.pageZoom(pane) }
@@ -269,7 +283,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         link.onFile = { [weak self] content, message in self?.contents.received(file: message, content: content) }
         link.onMarkup = { [weak self] content, message in self?.contents.received(markup: message, content: content) }
         link.onSerial = { [weak self] content, message in self?.contents.received(serial: message, content: content) }
+        link.onRun = { [weak self] content, message in self?.contents.received(run: message, content: content) }
         link.onSchedules = { [weak self] in self?.schedulesChanged(on: machine) }
+        link.onStats = { [weak self] repo in self?.statsChanged(repo, on: machine) }
         link.onPane = { [weak self] pane in
             self?.learn(pane)
             self?.contents.update(pane)
@@ -336,6 +352,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         contents.subscribeLogs(on: machine)
         contents.subscribeFiles(on: machine)
         contents.subscribeSerials(on: machine)
+        contents.subscribeRuns(on: machine)
         schedulesChanged(on: machine)
         loadRecent()
         layoutChanged()
@@ -436,8 +453,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         deskEntries.compactMap { entry -> DeskTask? in
             guard let id = entry["task"]?.string else { return nil }
             return DeskTask(id: id, title: taskTitle(id, name: entry["name"]?.string), leftAt: entry["leftAt"]?.number, status: agentStatuses.statuses[id], detail: taskDetail(id), agent: entry["agent"]?.string,
-                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id))
+                             place: placeText(id), offline: offline(MachineIDs.machine(of: id)), made: made(id), stack: stack(id), task: deskTaskID(id))
         }
+    }
+
+    private func windowTitles() -> [String: String] {
+        let folders = windows.compactMap { window in window["id"]?.string.flatMap { id in physical.desk(id).flatMap(deskProject).map { (id, $0) } } }
+        let names = WindowTitles.projectNames(folders.map(\.1), home: NSHomeDirectory())
+        var titles: [String: String] = [:]
+        var tasks: [String: String] = [:]
+        let projects = Dictionary(folders.compactMap { id, folder in names[folder].map { (id, $0) } }, uniquingKeysWith: { first, _ in first })
+        for window in windows where window["desk"]?.bool == true {
+            guard let id = window["id"]?.string else { continue }
+            let project = projects[id]
+            let task = window["dock"]?["pane"]?.string.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
+            titles[id] = WindowTitles.title(project, task ?? "Desk")
+            if let project, let task, let workspace = window["shows"]?.string { tasks[workspace] = WindowTitles.title(project, task) }
+        }
+        for window in windows where window["desk"]?.bool != true {
+            guard let id = window["id"]?.string, let workspace = window["workspace"]?.string, let prefix = tasks[workspace] else { continue }
+            titles[id] = prefix
+        }
+        return titles
     }
 
     func taskTitle(_ id: String, name: String?) -> String {
@@ -616,6 +653,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusSeen()
             notePanes()
             placeToasts()
+            GhosttyRuntime.shared?.syncFocus()
         }
         let ids = Set(windows.compactMap { $0["id"]?.string })
         for (id, controller) in controllers where !ids.contains(id) {
@@ -628,11 +666,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let rows = machineRows
         var held = Set<String>()
         for window in windows {
+            if let id = window["id"]?.string, let root = window["lead"]?["pane"]?.string.flatMap(projectRoot) { deskMoved(id, to: root) }
+        }
+        let titles = windowTitles()
+        for window in windows {
             guard let id = window["id"]?.string else { continue }
             let controller = controllers[id] ?? makeController(id, window)
             let docked = window["dock"]?["pane"]?.string
             let lead = window["lead"]?["pane"]?.string
-            if let root = lead.flatMap(projectRoot) { deskMoved(id, to: root) }
             controller.projectRoot = physical.desk(id).flatMap(deskProject)
             let mine = controller.projectRoot.map { root in tasks.filter { sameProject(projectRoot($0.id), root) } } ?? tasks
             controller.deskTasks = mine
@@ -648,7 +689,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.merging = shelved.filter { $0.queue != nil }.sorted { ($0.queue?.position ?? 0) < ($1.queue?.position ?? 0) }
             controller.running = runningTasks(in: controller.projectRoot)
             controller.project = controller.projectRoot.map(displayName) ?? projectName(mine.map(\.id))
-            controller.taskTitle = docked.map { taskTitle($0, name: window["dock"]?["name"]?.string) }
+            controller.titlePrefix = titles[id]
             controller.headerText = docked.map(headerText) ?? leadHeader(window, controller.projectRoot)
             controller.machines = rows
             controller.phones = phoneNames
@@ -682,7 +723,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let saved = initial["frame"], let x = saved["x"]?.number, let y = saved["y"]?.number, let w = saved["w"]?.number, let h = saved["h"]?.number {
             let frame = NSRect(x: x, y: y, width: w, height: h)
             if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { controller.window.setFrame(frame, display: false) }
+        } else if let arriving {
+            self.arriving = nil
+            controller.window.setFrame(arriving.frame, display: false)
+            if arriving.hidden { controller.window.alphaValue = 0 }
         }
+        if let desk = physical.desk(id) {
+            controller.page = desk.page
+            controller.deskTab = desk.tab
+        }
+        controller.onDeskTab = { [weak self] page, tab in self?.physical.setDeskTab(id, page: page, tab: tab) }
         controller.machinesPage.pair = { [weak self, weak controller] in self?.pairPhone(over: controller?.window) }
         controller.machinesPage.revoke = { [weak self, weak controller] name in self?.revokePhone(name, over: controller?.window) }
         controller.onFrameChange = { [weak self] in
@@ -702,25 +752,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refresh()
         }
         controller.tabBar.onSelect = { [weak self, weak controller] tab in
-            if controller?.page != nil {
+            if controller?.shownPage != nil {
                 controller?.page = nil
                 self?.refresh()
             }
             self?.layoutCommand("focus", ["tab": .string(tab)])
         }
+        controller.buildsPage.onCancel = { [weak self] job in self?.cancelBuild(job) }
         controller.tabBar.onPage = { [weak self, weak controller] page in
             guard let self, let controller else { return }
             controller.page = page
             if page == WindowController.pages[1] { links?.refresh() }
-            if page == WindowController.pages[2] { loadStats(controller) }
-            if page == WindowController.pages[3] { loadSchedules(controller) }
-            if page == WindowController.pages[4] { loadQueue(controller) }
+            if page == WindowController.pages[2] { loadBuilds() }
+            if page == WindowController.pages[3] { loadStats(controller) }
+            if page == WindowController.pages[4] { loadSchedules(controller) }
+            if page == WindowController.pages[5] { loadQueue(controller) }
             redraw(controller)
         }
         controller.tabBar.onCycle = { [weak self] step in self?.cycleTab(step) }
+        controller.tabBar.badge = { [weak self] pane in self?.contents.badge(pane) }
         controller.tabBar.onClose = { [weak self] tab in self?.closeTab(tab) }
         controller.tabBar.onNew = { [weak self] in self?.newTab(in: id) }
-        controller.tabBar.onDrag = { [weak self] tab in self?.dragTab(tab) }
+        controller.tabBar.onDrag = { [weak self] tab, grab in self?.dragTab(tab, grab: grab) }
         controller.tabBar.onMoveToNewWindow = { [weak self] tab in self?.layoutCommand("move-tab", ["tab": .string(tab), "window": "new"]) }
         controller.tabBar.onEditEnded = { [weak self, weak controller] in
             guard let self, let controller else { return }
@@ -741,6 +794,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         controller.deskView.onStart = { [weak self] task in self?.startTask(task, from: id) }
         controller.deskView.onShelve = { [weak self] task in self?.shelveTask(task, from: id) }
+        controller.deskView.onRun = { [weak self] task in self?.runTask(task, from: id) }
+        controller.deskView.onKeyed = { [weak self] _ in self?.deskKeysChanged() }
+        controller.deskView.onDismissNote = { [weak self, weak controller] in
+            controller?.note = ""
+            self?.refresh()
+        }
         controller.deskView.onLog = { [weak self, weak controller] entry in
             guard let self, let controller else { return }
             showQueue(controller, at: entry)
@@ -763,8 +822,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.onBecomeKey = { [weak self, weak controller] in
             guard let self, let controller else { return }
             if controller.window.isKeyWindow { physical.setFront(id) }
+            deskKeysChanged()
             if let window = window(id) { controller.render(window, panes) }
             placeToasts()
+            GhosttyRuntime.shared?.syncFocus()
         }
         controllers[id] = controller
         recordFrame(id)

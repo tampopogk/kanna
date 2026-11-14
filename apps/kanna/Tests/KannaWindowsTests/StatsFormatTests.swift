@@ -2,6 +2,15 @@ import Testing
 @testable import KannaWindows
 
 struct StatsFormatTests {
+    @Test func aRunSitsAcrossItsWindow() {
+        #expect(StatsFormat.across(50, from: 0, to: 100) == 0.5)
+        #expect(StatsFormat.across(-5, from: 0, to: 100) == 0)
+        #expect(StatsFormat.across(500, from: 0, to: 100) == 1)
+        #expect(StatsFormat.across(5, from: 5, to: 5) == 1)
+        #expect(StatsFormat.windowStart(from: 0, to: 30 * 86400) == "30 days ago")
+        #expect(StatsFormat.windowStart(from: 0, to: 3600) == "today")
+    }
+
     @Test func numbersReadAsTheTileSaysTheyAre() {
         #expect(StatsFormat.figure(79.3, unit: "%") == "79%")
         #expect(StatsFormat.figure(12780, unit: "s") == "3h 33m")

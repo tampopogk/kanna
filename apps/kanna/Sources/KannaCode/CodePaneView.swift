@@ -379,6 +379,7 @@ public final class CodePaneView: NSView {
         let visible = scrollView.contentSize
         let lineHeight = layoutManager.defaultLineHeight(for: CodeTheme.font(size: fontSize))
         let height = max(visible.height, used.height + textView.textContainerInset.height * 2 + max(0, visible.height - lineHeight * 3))
+        textView.height = height
         textView.setFrameSize(NSSize(width: max(visible.width, used.width + 24), height: height))
         let thickness = gutter.thickness(font: CodeTheme.font(size: fontSize))
         if gutter.ruleThickness != thickness {
@@ -495,7 +496,7 @@ public final class CodePaneView: NSView {
         let clip = scrollView.contentView
         return ["clip_top": Double(convert(clip.frame, from: scrollView).maxY), "height": Double(bounds.height), "sticky_top": Double(sticky.frame.maxY), "find_bar_height": Double(scrollView.findBarView?.frame.height ?? -1), "find_bar_y": Double(scrollView.findBarView.map { convert($0.frame, from: $0.superview).minY } ?? -1), "find_bar": scrollView.isFindBarVisible ? 1 : 0, "find_matches": Double(textView.matches.count), "selection_line": Double(file.line(at: textView.selectedRange().location)), "selection_length": Double(textView.selectedRange().length), "zoom": Double(zoom), "font_size": Double(fontSize), "spans": Double(highlights.spans.count), "scopes": Double(highlights.scopes.count), "lines": Double(file.lineCount), "top": Double(topLine), "current": Double(currentLine), "gutter": Double(gutter.ruleThickness),
                 "clip_x": Double(clip.frame.minX), "clip_width": Double(clip.frame.width), "scroll_x": Double(clip.bounds.minX),
-                "scroll_y": Double(clip.bounds.minY), "changed": Double(textView.changed.min() ?? 0), "pinned": Double(pinned.count), "indent_unit": Double(textView.indentUnit), "text_x": Double(textView.frame.minX), "text_width": Double(textView.frame.width),
+                "scroll_y": Double(clip.bounds.minY), "changed": Double(textView.changed.min() ?? 0), "pinned": Double(pinned.count), "indent_unit": Double(textView.indentUnit), "text_x": Double(textView.frame.minX), "text_width": Double(textView.frame.width), "text_height": Double(textView.frame.height),
                 "comment_first": Double(textView.comment?.first ?? 0), "comment_last": Double(textView.comment?.last ?? 0), "comment_gap": Double(textView.gap),
                 "comment_box_height": Double(box?.frame.height ?? 0), "comment_box_top": Double(box?.frame.minY ?? -1), "comment_box_bottom": Double(box?.frame.maxY ?? -1),
                 "comment_gap_top": Double(textView.comment.flatMap { textView.rawRect(forLine: $0.first)?.minY } ?? -1), "comment_line_top": Double(textView.comment.flatMap { textView.rect(forLine: $0.first)?.minY } ?? -1), "comment_box_visible": box.map { clip.bounds.intersects($0.frame) && $0.frame.minY >= clip.bounds.minY ? 1 : 0 } ?? 0]
@@ -571,10 +572,15 @@ final class CodeTextView: NSTextView {
     var comment: CodeComment? { didSet { needsDisplay = true; onMarks?() } }
     var changed: Set<Int> = [] { didSet { needsDisplay = true; onMarks?() } }
     var gap: CGFloat = 0
+    var height: CGFloat = 0
     let finder = PaneFinder()
     private var keyObservers: [NSObjectProtocol] = []
     private var flashing: Int? { didSet { needsDisplay = true; onMarks?() } }
     private var flashTask: DispatchWorkItem?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(NSSize(width: newSize.width, height: max(newSize.height, height)))
+    }
 
     func startFinder(in container: NSScrollView) {
         finder.attach(self, in: container)

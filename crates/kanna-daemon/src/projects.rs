@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn the_latest_project_comes_first_and_ten_are_kept() {
         let dir = folder("order");
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), None);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state")).unwrap()), Some(dir.join("home")), None);
         let made: Vec<PathBuf> = (0..12).map(|n| dir.join(format!("p{n}"))).collect();
         for p in &made {
             fs::create_dir_all(p).unwrap();
@@ -476,7 +476,7 @@ mod tests {
     fn a_folder_that_is_gone_drops_off_and_home_is_not_a_project() {
         let dir = folder("gone");
         fs::create_dir_all(dir.join("home")).unwrap();
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(dir.join("home")), None);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state")).unwrap()), Some(dir.join("home")), None);
         let (kept, gone) = (dir.join("kept"), dir.join("gone"));
         fs::create_dir_all(&kept).unwrap();
         fs::create_dir_all(&gone).unwrap();
@@ -497,7 +497,7 @@ mod tests {
         let dir = folder("labels");
         let home = dir.join("home");
         let repos = home.join(REPOS);
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), Some(home.clone()), Some(repos.clone()));
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state")).unwrap()), Some(home.clone()), Some(repos.clone()));
         for folder in [repos.join("local/kojo"), repos.join("local/recipe-box"), home.join("work/app"), dir.join("elsewhere"), repos.join("local/kojo/sub")] {
             fs::create_dir_all(&folder).unwrap();
             touch(&projects, &folder);
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn a_worktree_or_a_subfolder_is_its_repo() {
         let dir = folder("worktree");
-        let projects = Projects::new(Rc::new(Db::open(&dir.join("state"))), None, None);
+        let projects = Projects::new(Rc::new(Db::open(&dir.join("state")).unwrap()), None, None);
         let repo = dir.join("app");
         fs::create_dir_all(repo.join("src")).unwrap();
         git(&repo, &["init", "-q"]);

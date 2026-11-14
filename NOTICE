@@ -262,6 +262,21 @@ Kanna.app links GhosttyKit and the daemon links libghostty-vt, both built
 from a fork of Ghostty: the kanna4 branch (Kanna v3's kanna3 branch, on upstream
 a806905, plus Kanna v4's commits) at the commit scripts/env.sh pins.
 
+Kanna.app includes, unmodified, from the same Ghostty build: its compiled
+terminfo (Contents/Resources/terminfo) and shell integration scripts
+(Contents/Resources/ghostty/shell-integration), under Ghostty's licence
+below, and four of its themes (Contents/Resources/ghostty/themes), which
+Ghostty takes from iTerm2-Color-Schemes
+(https://github.com/mbadolato/iTerm2-Color-Schemes, MIT, Copyright (c) 2011
+to Present Mark Badolato; each theme keeps its author's licence):
+
+  GitHub Light Default, GitHub Dark Default
+      MIT, Copyright (c) 2020 Primer
+      (https://github.com/primer/github-vscode-theme).
+  Catppuccin Latte, Catppuccin Mocha
+      MIT, Copyright (c) 2021 Catppuccin
+      (https://github.com/catppuccin/palette).
+
 MIT License
 
 Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors

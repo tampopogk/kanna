@@ -25,14 +25,14 @@ A markdown pane has two zooms, each saved per pane:
 - **⌘0 resets the text size** to 100 %. The page zoom stays; pinch back to undo it.
 - **What the pane shows** is the page at the text size times the page zoom.
 - **Saved per pane, separately.** Text size and page zoom are kept by pane in the app's `app-state.json` (`textSizes`, `pageZooms`; 1 isn't kept), and a pane opens at both. A markdown pane that goes back to a doc in its history gets the doc's scroll, text size and page zoom back.
-- **The overview** ([markdown overview](markdown-overview.md)) follows both. Its box is the part of the page on screen, so a pinch changes the box's size. The picture is of the page as laid out, so a text-size step draws it again and a pinch doesn't. Whether it shows (the 80 columns, the doc fitting the pane) is measured at the text size, so a pinch never shows or hides it, which would change the page's width.
+- **The overview** ([markdown overview](markdown-overview.md)) follows both. Its box is the part of the page on screen, so a pinch changes the box's size. The picture is of the page as laid out, so a text-size step draws it again and a pinch doesn't. Whether it shows (the 80 columns, the doc fitting the pane) is measured at 100 % ([markdown overview §2](markdown-overview.md#2-when-it-shows)), so neither a pinch nor a text-size step shows or hides it.
 
 ## 2. How it's built
 
 | Part | Where |
 |---|---|
 | Text size, page zoom, the laid-out width, the reading line kept on a step | `MarkdownPaneView` (`KannaMarkdown`) |
-| Overview rules at the text size | `MarkdownPaneView.sides` in `MarkdownOverview.swift` |
+| Overview rules at 100 % | `MarkdownPaneView.sides` and `MarkdownFullSizeLayout` in `MarkdownOverview.swift` |
 | Saved by pane | `Contents` (`textSize`, `pageZoom`, and back in history), `Physical` (`textSizes`, `pageZooms`) |
 
 - **One magnification.** The scroll view's magnification is the text size times the page zoom. The text view is laid out at the scroll view's width over the text size, so a change in magnification alone (a pinch) leaves the layout alone. Its range is the text size times 50 % to 400 %.

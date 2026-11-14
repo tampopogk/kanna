@@ -166,6 +166,35 @@ kanna_running_paths() { return 1; }
 [[ -d "$repo/task-held" ]] || fail "evict: removed a folder without knowing what runs"
 grep -q "removing nothing" "$dir/said" || fail "evict: didn't say why it removed nothing: $(cat "$dir/said")"
 
+config "$root"
+lay="$(worktree task-layout)" && (kanna_targets "$lay") 2>/dev/null
+[[ -d "$lay/target" && ! -L "$lay/target" ]] || fail "layout: target/ isn't a folder on this disk: $(ls -ld "$lay/target")"
+for n in debug kanna-build signed; do
+  [[ "$(readlink "$lay/target/$n")" == "$repo/task-layout/$n" && -d "$repo/task-layout/$n" ]] || fail "layout: $n isn't linked to the volume: $(ls -l "$lay/target")"
+done
+[[ -f "$repo/task-layout/.used" ]] || fail "layout: didn't touch .used"
+mkdir -p "$lay/target/Kanna.app/Contents" "$lay/target/e2e-kanna" "$lay/target/tmp" && echo t >"$lay/target/CACHEDIR.TAG"
+(kanna_targets "$lay") 2>/dev/null
+[[ -d "$lay/target/Kanna.app/Contents" && ! -L "$lay/target/Kanna.app" && -d "$lay/target/e2e-kanna" && ! -L "$lay/target/e2e-kanna" ]] || fail "layout: moved the app or e2e-kanna to the volume: $(ls -l "$lay/target")"
+[[ "$(readlink "$lay/target/tmp")" == "$repo/task-layout/tmp" && -f "$lay/target/CACHEDIR.TAG" && ! -L "$lay/target/CACHEDIR.TAG" ]] || fail "layout: a new folder isn't moved, or a file is: $(ls -l "$lay/target")"
+
+old="$(worktree task-oldlayout)" && mkdir -p "$repo/task-oldlayout/debug/deps" "$repo/task-oldlayout/Kanna.app/Contents" "$repo/task-oldlayout/ghostty-vt/x" && echo dep >"$repo/task-oldlayout/debug/deps/d" && ln -s "$repo/task-oldlayout" "$old/target"
+(kanna_targets "$old") 2>/dev/null
+[[ -d "$old/target" && ! -L "$old/target" ]] || fail "old layout: target/ is still a link"
+[[ "$(cat "$old/target/debug/deps/d" 2>/dev/null)" == dep && "$(readlink "$old/target/debug")" == "$repo/task-oldlayout/debug" ]] || fail "old layout: lost debug/: $(ls -l "$old/target")"
+[[ ! -e "$repo/task-oldlayout/Kanna.app" && ! -e "$repo/task-oldlayout/ghostty-vt" ]] || fail "old layout: left the app or ghostty-vt on the volume: $(ls "$repo/task-oldlayout")"
+
+mkdir -p "$old/target/Kanna.app"
+config "/Volumes/kanna-no-volume-$$/kanna-targets" && mv "$root" "$root.unplugged"
+(kanna_targets "$old") 2>/dev/null
+mv "$root.unplugged" "$root"
+[[ ! -e "$old/target/debug" && ! -L "$old/target/debug" && -d "$old/target/Kanna.app" ]] || fail "unplugged: kept a link to the missing volume, or removed the app: $(ls -l "$old/target")"
+mkdir -p "$old/target/debug/deps" && echo offline >"$old/target/debug/deps/o"
+config "$root"
+(kanna_targets "$old") 2>/dev/null
+[[ "$(readlink "$old/target/debug")" == "$repo/task-oldlayout/debug" && "$(cat "$repo/task-oldlayout/debug/deps/o" 2>/dev/null)" == offline ]] || fail "plugged back: didn't move what it built to the volume: $(ls -l "$old/target")"
+rm -rf "$repo/task-layout" "$repo/task-oldlayout"
+
 builds=0
 cargo() {
   [[ "$1" == build ]] && builds=$((builds + 1)) && echo built >>"$dir/cargo-builds"

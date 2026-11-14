@@ -5,7 +5,7 @@ use crate::Event;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kanna_mux::json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
@@ -29,6 +29,7 @@ struct Line {
 struct State {
     links: HashMap<u64, Link>,
     lines: HashMap<String, Line>,
+    heeded: HashSet<String>,
     last_user: u64,
 }
 
@@ -63,7 +64,9 @@ impl Wire {
     }
 
     pub fn remove(&self, id: &str) {
-        self.state().lines.remove(id);
+        let mut state = self.state();
+        state.heeded.remove(id);
+        state.lines.remove(id);
     }
 
     pub fn input(&self, conn: u64, id: &str, bytes: Vec<u8>, at: Instant) {
@@ -77,8 +80,15 @@ impl Wire {
         let report = is_focus_report(&bytes);
         let _ = line.input.send(bytes);
         if !report {
+            if state.heeded.remove(id) {
+                let _ = self.events.lock().unwrap_or_else(PoisonError::into_inner).send(Event::Typed { terminal: id.to_string() });
+            }
             self.note_user(&mut state, conn, id);
         }
+    }
+
+    pub fn heed(&self, id: &str) {
+        self.state().heeded.insert(id.to_string());
     }
 
     pub fn used(&self, conn: u64, id: &str) {

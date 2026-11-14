@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Markdown Diff Sentences</title>
+<style>
+:root {
+  --page: #111214; --ctl-text: #e6e6e6; --ctl-dim: #8b8f98;
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+.window.dark { --bg: #14161a; --panel: #1b1e24; --line: #2c313a; --fg: #e6e8eb; --muted: #8b93a0; --code: #22262d;
+  --added-tint: #1d4428; --added-bar: #3fb950; --removed: #f47067; --changed-bar: #d29922; }
+.window.light { --bg: #ffffff; --panel: #f4f5f7; --line: #d8dce2; --fg: #1d2026; --muted: #6b7280; --code: #eaecf0;
+  --added-tint: #ccf2d4; --added-bar: #1a7f37; --removed: #cf222e; --changed-bar: #bf8700; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ctl-text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+.intro p { color: var(--ctl-dim); margin: 0 0 12px; max-width: 940px; }
+h1.t { font-size: 15px; margin: 0 0 4px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .pair { grid-template-columns: 1fr; } }
+.cap { color: var(--ctl-dim); font-size: 12px; margin: 0 0 6px; }
+.window { background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+.head { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.head .chip { margin-left: auto; border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; }
+.doc { padding: 14px 22px 18px 30px; font-size: 14px; line-height: 1.55; }
+.doc h2 { font-size: 18px; margin: 4px 0 10px; }
+.doc p, .doc li { margin: 0 0 10px; }
+.doc ul { margin: 0 0 10px; padding-left: 18px; }
+.doc code { font: 12.5px var(--mono); background: var(--code); padding: 0 3px; border-radius: 3px; }
+.c { position: relative; }
+.c::before { content: ""; position: absolute; left: -16px; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: var(--changed-bar); }
+li.c::before { left: -34px; }
+ins { text-decoration: none; background: var(--added-tint); }
+del { color: var(--removed); text-decoration: line-through; text-decoration-color: var(--removed); }
+.note { color: var(--ctl-dim); font-size: 12px; margin: -8px 0 16px; }
+</style>
+</head>
+<body>
+<main>
+<div class="intro">
+  <h1 class="t">Markdown diff: paragraph, then sentence, then word</h1>
+  <p>Left, the old pane: every paired paragraph diffed word by word. Right, the new one: a paired paragraph is diffed by sentence; a sentence with few edits keeps the word diff, a rewritten sentence shows old whole and struck, then new whole; a paragraph that's mostly rewritten shows old above new, the change bar on both. All three are real changes to software-factory.md, Factory 2's branch vs main; the third is the "Driven by events, not a clock" item.</p>
+</div>
+
+<div class="pair">
+<div>
+<p class="cap">Before: word by word</p>
+<div class="window dark">
+  <div class="head">software-factory.md <span class="chip">vs main · 3 changes</span></div>
+  <div class="doc">
+    <p class="c">A Shelf task’s run outlives its agent’s turn: a Shelf runner stops the agent when its turn ends, as it does now; the run goes on in its workers, and the message at the end wakes the task as any message does. By the time you move the task to the Desk, the run may have <del>landed</del><ins>handed back</ins>.</p>
+    <p class="c"><b>Any task, no new kind.</b> A task is what it is: one agent in one worktree. Then its agent starts a run (<code>kanna run start PIPELINE</code>, from its terminal); you ask the agent for the feature, and the agent builds it through the pipeline. The pipeline starts at the plan, with the spec as its input<del>; its one question for you is </del><ins>, and ends by handing its branch back to </ins>the <del>last </del><ins>task’s worktree: that’s your </ins>gate<del>, before </del><ins>. You review </ins>the change <del>lands on </del><ins>there, as any task’s, and it merges to </ins>main<ins> from there, never from the run</ins>.</p>
+    <ul>
+      <li class="c"><b>Driven by events, not a clock:</b> a stage ends when its agent<ins> reports it</ins>’s <del>turn ends</del><ins>done</ins> (<del>Shelf runners: its own report</del><ins><code>kanna run done</code></ins>, <del>or idle for 3s</del><ins>with its verdict and answer</ins>; the daemon then <del>reads the answer and </del>quits the agent<del> as a runner would</del>), its command exits (the keeper’s exit code), you answer, or its <code>within</code> passes<ins>. A stage’s agent that needs something from you says so (<code>kanna run need TEXT</code>), and the run waits. Runs never guess from the screen: no turn’s-end detection, no idle timer, and they share nothing with Shelf runners</ins>. The runners’ tick (every 2s) starts the next stage, so a run that was waiting moves within 2s of your answer.</li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<div>
+<p class="cap">After: paragraph, then sentence, then word</p>
+<div class="window dark">
+  <div class="head">software-factory.md <span class="chip">vs main · 3 changes</span></div>
+  <div class="doc">
+    <p class="c">A Shelf task’s run outlives its agent’s turn: a Shelf runner stops the agent when its turn ends, as it does now; the run goes on in its workers, and the message at the end wakes the task as any message does. By the time you move the task to the Desk, the run may have <del>landed</del><ins>handed back</ins>.</p>
+    <p class="c"><b>Any task, no new kind.</b> A task is what it is: one agent in one worktree. Then its agent starts a run (<code>kanna run start PIPELINE</code>, from its terminal); you ask the agent for the feature, and the agent builds it through the pipeline. <del>The pipeline starts at the plan, with the spec as its input; its one question for you is the last gate, before the change lands on main.</del> <ins>The pipeline starts at the plan, with the spec as its input, and ends by handing its branch back to the task’s worktree: that’s your gate. You review the change there, as any task’s, and it merges to main from there, never from the run.</ins></p>
+    <ul>
+      <li class="c"><del><b>Driven by events, not a clock:</b> a stage ends when its agent’s turn ends (Shelf runners: its own report, or idle for 3s; the daemon then reads the answer and quits the agent as a runner would), its command exits (the keeper’s exit code), you answer, or its <code>within</code> passes. The runners’ tick (every 2s) starts the next stage, so a run that was waiting moves within 2s of your answer.</del>
+        <p style="margin:10px 0 0"><ins><b>Driven by events, not a clock:</b> a stage ends when its agent reports it’s done (<code>kanna run done</code>, with its verdict and answer; the daemon then quits the agent), its command exits (the keeper’s exit code), you answer, or its <code>within</code> passes. A stage’s agent that needs something from you says so (<code>kanna run need TEXT</code>), and the run waits. Runs never guess from the screen: no turn’s-end detection, no idle timer, and they share nothing with Shelf runners. The runners’ tick (every 2s) starts the next stage, so a run that was waiting moves within 2s of your answer.</ins></p></li>
+    </ul>
+  </div>
+</div>
+</div>
+</div>
+<p class="note">Three real changes from Factory 2’s branch vs main, as the old and the new pane show them. 1. A word changed: the sentence keeps its other words and the edit is in one place, so it stays word by word. 2. A rewritten sentence: the old one struck whole, then the new one, the rest of the paragraph as it was. 3. A mostly rewritten paragraph (most of its words are in rewritten or new sentences): the old paragraph struck, the new one below it, one change with its bar along both.</p>
+</main>
+</body>
+</html>

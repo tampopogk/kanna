@@ -758,7 +758,7 @@ mod tests {
     }
 
     fn schedules(dir: &Path, mailbox: &Rc<Fake>) -> Schedules {
-        let db = Rc::new(Db::open(dir));
+        let db = Rc::new(Db::open(dir).unwrap());
         *mailbox.db.borrow_mut() = Some(db.clone());
         Schedules::new(db, Box::new(Eastern), mailbox.clone())
     }
