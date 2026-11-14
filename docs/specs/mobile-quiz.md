@@ -54,6 +54,8 @@ sequenceDiagram
 A `quiz` notice says when a round is in or the writer's state changed, and the phone reads `quiz.rounds` then, whichever tab is open, so a round is on the phone before you leave the LAN.
 
 - **Offline:** the phone keeps the ready round, plays it, and sends its answers when it next connects, to the repo's planner machine only. Closing a round halfway keeps its place. The end of the round says what moved once its answers are in; offline it says they'll sync.
+- **A round belongs to its project:** the Quiz tab shows only the project in view, its banner (back to your round, an extra round, the next round), the open round, the end of a round with *Another round*, and its round cards in chat. The phone keeps one round in play per project: switching away leaves it where it was, and switching back offers it again at the same question, as closing it halfway does. Its answers still go to its own repo's planner machine. A round's result is kept under its repo and round, since two planner machines number their rounds apart.
+- **Switching project closes the open round,** keeping its place, so a round never shows over another project's tab.
 - **All on the planner machine,** so answers from the phone and the Mac meet there. A planner move leaves the map behind, as [quiz results](database.md#quiz-results) aren't replicated; [Stats across machines](stats.md#1-the-page) has the same limit.
 
 ## 3. Subsystems and mastery

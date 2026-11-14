@@ -67,7 +67,12 @@ final class Store {
     var picking: Set<String> = []
     var quizPath: [String] = []
     var roundOpen = false
-    var play: RoundPlay?
+    var plays: [String: RoundPlay] = [:]
+
+    var play: RoundPlay? {
+        get { plays[currentID] }
+        set { plays[currentID] = newValue }
+    }
 
     static func launch() -> Store {
         let defaults = UserDefaults.standard
@@ -101,7 +106,7 @@ final class Store {
         }
         lastSeen = UserDefaults.standard.object(forKey: "seen") as? Date
         kept = keep.page("quiz/kept") ?? QuizKept()
-        play = kept.play
+        plays = kept.plays
     }
 
     var repo: Repo {
@@ -360,7 +365,10 @@ final class Store {
             if let status = project.status { repo.planner = Planner(status: status, since: project.since ?? 0) }
             return repo
         }
-        if !repos.contains(where: { $0.id == currentID }) { currentID = repos.first?.id ?? "" }
+        if !repos.contains(where: { $0.id == currentID }) {
+            closeRound()
+            currentID = repos.first?.id ?? ""
+        }
         for old in keep.repos() { keep.context.delete(old) }
         for (order, repo) in repos.enumerated() {
             let status: String
@@ -664,7 +672,7 @@ final class Store {
     }
 
     private func saveQuiz() {
-        kept.play = play
+        kept.plays = plays
         keep.put(page: kept, key: "quiz/kept")
     }
 
@@ -686,7 +694,7 @@ final class Store {
         await sendAnswers()
         await readRounds(id)
         await readMap(id)
-        moveMap()
+        moveMap(id)
     }
 
     func openQuiz() {
@@ -719,16 +727,16 @@ final class Store {
     var waitingForAnswers: Bool { kept.pending.contains { $0.repo == currentID } }
 
     private func playable(_ round: QuizRound) -> Bool {
-        round.id != play?.round.id && kept.results[round.id] == nil && !kept.pending.contains { $0.round == round.id } && round.answers.isEmpty
+        round.id != play?.round.id && result(round.id) == nil && !kept.pending.contains { $0.repo == currentID && $0.round == round.id } && round.answers.isEmpty
     }
 
     var nextRound: QuizRound? { repo.rounds.first { $0.about == nil && $0.taken == nil && playable($0) } }
 
     var extraRound: QuizRound? { repo.rounds.first { $0.about != nil && $0.taken == nil && playable($0) } }
 
-    var unfinishedRound: QuizRound? { repo.rounds.first { !$0.answers.isEmpty && $0.id != play?.round.id && kept.results[$0.id] == nil } }
+    var unfinishedRound: QuizRound? { repo.rounds.first { !$0.answers.isEmpty && $0.id != play?.round.id && result($0.id) == nil } }
 
-    func result(_ round: String) -> Int? { kept.results[round] }
+    func result(_ round: String) -> Int? { kept.results["\(currentID)/\(round)"] }
 
     func subjectRound(_ name: String) -> QuizRound? { repo.rounds.first { $0.about == name && $0.taken == nil && playable($0) } }
 
@@ -761,7 +769,7 @@ final class Store {
         current.revealed = true
         kept.pending.append(PendingAnswer(repo: current.repo, round: current.round.id, n: current.index, pick: choice, again: question.again))
         UINotificationFeedbackGenerator().notificationOccurred(choice == question.answer ? .success : .warning)
-        withAnimation(.snappy) { play = current }
+        withAnimation(.snappy) { plays[current.repo] = current }
         saveQuiz()
         Task { await sendAnswers() }
     }
@@ -770,12 +778,12 @@ final class Store {
         guard var current = play else { return }
         if current.index + 1 >= current.count {
             current.finished = true
-            kept.results[current.round.id] = current.right
+            kept.results["\(current.repo)/\(current.round.id)"] = current.right
         } else {
             current.index += 1
             current.revealed = false
         }
-        withAnimation(.snappy) { play = current }
+        withAnimation(.snappy) { plays[current.repo] = current }
         saveQuiz()
         rebuild(current.repo)
         if current.finished { Task { await syncQuiz(current.repo) } }
@@ -798,12 +806,12 @@ final class Store {
         }
     }
 
-    private func moveMap() {
-        guard var current = play, current.finished, current.moves.isEmpty, !kept.pending.contains(where: { $0.round == current.round.id }) else { return }
+    private func moveMap(_ id: String) {
+        guard var current = plays[id], current.finished, current.moves.isEmpty, !kept.pending.contains(where: { $0.repo == id && $0.round == current.round.id }) else { return }
         let names = Set(current.round.questions.compactMap(\.subsystem))
         let tiles = repos.first { $0.id == current.repo }?.map ?? []
         current.moves = tiles.filter { names.contains($0.name) }.map { MapMove(name: $0.name, from: current.before[$0.name] ?? 0, to: $0.mastery ?? 0) }
-        play = current
+        plays[id] = current
         saveQuiz()
     }
 
@@ -898,6 +906,7 @@ final class Store {
     }
 
     func selectRepo(_ id: String) {
+        if id != currentID { closeRound() }
         currentID = id
         UserDefaults.standard.set(id, forKey: "repo")
         showRepos = false
@@ -1022,7 +1031,7 @@ final class Store {
         maps = [:]
         roundPages = [:]
         kept = QuizKept()
-        play = nil
+        plays = [:]
         machinePages = [:]
         statsPages = [:]
         repos = []

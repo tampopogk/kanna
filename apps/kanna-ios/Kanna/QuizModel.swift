@@ -129,9 +129,28 @@ struct PendingAnswer: Codable, Equatable {
 }
 
 struct QuizKept: Codable, Equatable {
-    var play: RoundPlay?
+    var plays: [String: RoundPlay] = [:]
     var pending: [PendingAnswer] = []
     var results: [String: Int] = [:]
+
+    init() {}
+
+    private enum CodingKeys: String, CodingKey { case plays, play, pending, results }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        plays = try c.decodeIfPresent([String: RoundPlay].self, forKey: .plays) ?? [:]
+        if let old = try c.decodeIfPresent(RoundPlay.self, forKey: .play), plays[old.repo] == nil { plays[old.repo] = old }
+        pending = try c.decodeIfPresent([PendingAnswer].self, forKey: .pending) ?? []
+        results = try c.decodeIfPresent([String: Int].self, forKey: .results) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(plays, forKey: .plays)
+        try c.encode(pending, forKey: .pending)
+        try c.encode(results, forKey: .results)
+    }
 }
 
 struct DrawingPoint: Codable, Equatable {
