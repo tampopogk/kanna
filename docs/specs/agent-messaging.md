@@ -1,6 +1,6 @@
 # Agent messaging
 
-**Status:** built · **Tested:** e2e `agent_messaging` (the mock agent as `claude` on its socket, a stopped `claude` woken by a message that makes its socket late and isn't warned about, as `codex` through its app-server, as `agy` warned), `real_agent_messages` (real Claude mid-turn, stopped and killed; real Codex busy and interrupted), `message_unknown_status`, `md_comments`, `page_comments`, `comment_before_socket` and `markup_events` (comments and thread events as messages), `cargo test -p kanna-daemon` (messages, codex_remote, db) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [agent status](agent-status.md), [Codex's app-server](codex-app-server.md) · **Why this design:** [research](../research/agent-messaging.md)
+**Status:** built · **Tested:** e2e `agent_messaging` (the mock agent as `claude` on its socket, a parked `claude` reached on its job's socket and one with no job warned about, a stopped `claude` woken by a message that makes its socket late and isn't warned about, as `codex` through its app-server, as `agy` warned), `real_agent_messages` (real Claude mid-turn, stopped and killed; real Codex busy and interrupted), `message_unknown_status`, `md_comments`, `page_comments`, `comment_before_socket` and `markup_events` (comments and thread events as messages), `cargo test -p kanna-daemon` (messages, codex_remote, db) · **Builds on:** [tasks](tasks.md), [Shelf runners](shelf-runners.md), [agent status](agent-status.md), [Codex's app-server](codex-app-server.md) · **Why this design:** [research](../research/agent-messaging.md)
 
 The user, the planning agent and task agents leave each other messages with `kanna task send`, and [doc markup](doc-markup.md#3-reaching-the-agent) comments on a doc reach its agent the same way. Agents send one only when the user asks them to pass something on, or to answer a message they got. The daemon keeps each one in `kanna.db` and hands it to the recipient's agent through the agent's own door: Claude's messaging socket, at once, since Claude holds it for the next step of its turn; Codex's app-server queue, at once, since Codex runs it after the turn. Nothing is typed into a prompt, so a message never lands in your draft, isn't lost while the agent is stopped, and shows in the agent's own terminal. Only Claude and Codex take messages; for opencode and agy `kanna task send` warns.
 
@@ -11,7 +11,8 @@ The user, the planning agent and task agents leave each other messages with `kan
 3. [Stopped tasks](#3-stopped-tasks)
 4. [CLI](#4-cli)
 5. [How it's built](#5-how-its-built)
-6. [Glossary](#6-glossary)
+6. [A parked Claude](#6-a-parked-claude)
+7. [Glossary](#7-glossary)
 
 ## 1. Sending
 
@@ -122,15 +123,54 @@ flowchart TD
 
 - **`messages` table** in `kanna.db` ([database](database.md)): who to (a task ID or `planner`), the repo, who from, when, when delivered, the text, and for a comment its doc and thread (`comment`, JSON). Keyed by task, not terminal, since a restart gives an agent a new `term-N`.
 - **The daemon delivers** (`Tasks::deliver` in `tasks.rs`, `messages.rs`): it keeps every agent pane's status and since when (`Ready`), updated from the status events agent status sends, and on each tick hands waiting messages to each recipient that can take them (`messages::mid_turn`), off the main thread. What a working Claude holds is kept in `Tasks::unread` with its door, until it reports idle (delivered) or its door changes (they go again). What Codex's queue holds is kept in `Tasks::queued` with its thread and submission, and every 2s `messages::codex_queue` says which have left it (delivered). Each delivery is a `messaged` event on the task.
-- **Which door** (`messages::Channel`): agent status knows the pane's agent and its pid, and the pid's start time gives the agent's age for the grace (`lifeline::age_of`). Claude: its socket from its registry entry. Codex: the `--remote unix://SOCKET` its TUI was started with. Anything else: none, and a waiting message holds no runner and wakes no stopped task.
-- **Claude's socket** (`messages::inbox`, `messages::post`): agent status knows the pane's agent and its pid; Kanna reads `~/.claude/sessions/PID.json` (Claude's own registry: its `messagingSocketPath`, `peerProtocol` 1) and writes `{"type":"user","message":{"role":"user","content":ENVELOPE}}` there off the main thread. When Claude was started with `CLAUDE_CONFIG_DIR`, the registry is there instead; Kanna reads it from the agent's environment. No auth: on macOS the socket is your user's alone (0600), and Claude takes a message from any process of yours.
+- **Which door** (`messages::Channel`): agent status knows the pane's agent and its pid, and the pid's start time gives the agent's age for the grace (`lifeline::age_of`). Claude: its socket from its registry entry, or the socket of the job running its conversation when it's [parked](#6-a-parked-claude). Codex: the `--remote unix://SOCKET` its TUI was started with. Anything else: none, and a waiting message holds no runner and wakes no stopped task.
+- **Claude's socket** (`messages::inbox`, `messages::post`): agent status knows the pane's agent and its pid; Kanna reads `~/.claude/sessions/PID.json` (Claude's own registry: its `messagingSocketPath`, `peerProtocol` 1) and writes `{"type":"user","message":{"role":"user","content":ENVELOPE}}` there off the main thread. When Claude was started with `CLAUDE_CONFIG_DIR`, the registry is there instead; Kanna reads it from the agent's environment. Kanna follows the entry's `parkedJobId` each time it looks ([a parked Claude](#6-a-parked-claude)). No auth: on macOS the socket is your user's alone (0600), and Claude takes a message from any process of yours.
 - **The envelope** (`messages::envelope`, `messages::permissions`): `<cross-session-message from-mode="MODE">`, a newline, the text, a newline, `</cross-session-message>`, checked against Claude Code 2.1.303. Claude takes it only in exactly the form it would write, so a closing tag inside the text is escaped as Claude escapes it (`<\/cross-session-message`); one Kanna doesn't escape the same way leaves the message held for your approval, never lost. The sender's class is kept with the message (`messages.mode`).
 - **Codex's app-server** (`messages::codex_post`): a WebSocket on the server's Unix socket, JSON-RPC `initialize` with `experimentalApi`, `thread/loaded/list` and `thread/read` to find the session (not the ephemeral thread Codex titles it with), then `thread/queue/add` with `clientUserMessageId` `kanna-ID`.
 - **Comments** (`Tasks::comment`, the `tasks` action `comment` the app calls): queued from `user` with their thread when the pane takes messages or is `Tasks::coming_up`, else typed with `send`; on delivery `Tasks::mark_sent` sets the thread's status from `waiting` to `sent` in its file (`kanna-threads`, the CLI's code and lock), once none of its comments still waits.
 - **Runners** (`Tasks::fill`) wake a stopped Shelf task with a message (`Tasks::wake`: the pane's resume command, or a new agent if its pane is gone), and the turn's end skips a pane with mail.
 - **The planner** is found from the daemon's layout: a planner workspace's terminal, running, whose folder's repo is the message's.
 
-## 6. Glossary
+## 6. A parked Claude
+
+Claude Code 2.1.321 can move a conversation out of its terminal into a background job: `←` on an empty prompt (its footer says `← for agents`), or `/background`. The terminal's claude stays, now showing Claude's agent view (`Your conversation moved to the background — enter opens it`), and Enter opens the job in the same terminal, your typing going to it. But it no longer runs the conversation: a claude that Claude's own daemon starts (`claude --bg-pty-host`, a child of launchd, not of the terminal's claude) runs it as a fork (`--fork-session --resume OLD.jsonl --session-id NEW`), and the old transcript ends with a `continued-in` record naming the new session.
+
+```mermaid
+flowchart LR
+    K["Kanna"] -->|"agent status: the pane's pid"| E["sessions/PID.json<br/>kind interactive<br/>parkedJobId JOB"]
+    E -->|"parkedJobId = jobId"| J["sessions/JOBPID.json<br/>kind bg, jobId JOB<br/>sessionId NEW"]
+    K -->|"writes the message"| S["the job's messagingSocketPath"]
+    J --> S
+    E -.->|"its own socket takes nothing in"| X["lost"]
+```
+
+| Entry | `kind` | Links | `messagingSocketPath` |
+|---|---|---|---|
+| `PID.json`, the terminal's claude | `interactive` | `parkedJobId: JOB`, kept while the job is open in the terminal | its own, which takes nothing into the conversation |
+| `JOBPID.json`, the job | `bg` | `jobId: JOB` (the first 8 of `sessionId`, the fork's) | the conversation's |
+| `SPAREPID.json`, a worker Claude's daemon keeps warm | `bg` | its own `jobId` | another conversation's |
+
+- **Kanna delivers to the job** (`messages::inbox`): when the pane's entry names a `parkedJobId`, it takes the entry whose `jobId` is that job, checked as the pane's own is (named for its `pid`, `peerProtocol` 1) and live: its pid runs a process that started no later than the entry's `startedAt` (2s slack), so an entry a dead job left, or its pid reused, isn't taken. Only `jobId` picks it: the daemon's spare workers are `bg` too, and each takes messages into a conversation of its own.
+- **No job, no door:** no such entry, or one with no socket, is a missing door. The message waits and warns as for a Claude with no socket: `Claude (pid PID) moved its conversation into background job JOB, and no running Claude in DIR has it`. A message is never written to a parked claude's own socket, where it would be marked delivered and lost.
+- **The link is read each time** Kanna looks for the door, so a conversation brought back (no `parkedJobId`) or parked again takes its messages at its new door, and what a working Claude held at the old one goes again, as for any door that changes.
+- **Checked with a real Claude** (2.1.325, the harness's mock model): after `←`, a message on the job's socket reaches the model, and the same message on the terminal's socket never does.
+
+### What else reads the pane's Claude
+
+Everything else Kanna knows about a Claude comes from the pane's process. For a parked one that's the agent view, not the conversation:
+
+| What | Reads | Parked | Status |
+|---|---|---|---|
+| Messages | the pane pid's registry entry | follows `parkedJobId` to the job's socket | fixed here |
+| [Agent status](agent-status.md) | the pane's OSC 7501 reports | the terminal's claude reports nothing for the job's turns: Kanna Staging showed the parked planner with no status (`no report yet`). Messages still go, since an unknown status doesn't hold a Claude's | to follow the job: its entry's `status` (`idle`, `busy`, `waiting`) |
+| The session kept for resume ([which agents resume](tasks.md#which-agents-resume), [planner resume](planner-resume.md)) | the `--session-id` Kanna gave it, or the one it says as it quits | still the old session: `claude --resume OLD` reopens the conversation from before the move, without what the job did | to follow the job: keep its `sessionId` |
+| A [Shelf runner](shelf-runners.md)'s turn end | the pane's status reports | none come, so a parked Shelf task holds its runner until it's stopped | to follow the job's status |
+| [Background work](shelf-runners.md#background-work) | the pane pid's descendants | the job isn't one, so it isn't seen | to follow the job |
+| Stop and quit (`end_agent`) | types `/exit` into the pane | the terminal's claude quits, and the job runs on with the conversation, which the next start doesn't resume | to end the job, or bring it back first |
+
+The last four are the task "A parked Claude's status, session and stop follow its job".
+
+## 7. Glossary
 
 | Term | Meaning |
 |---|---|
@@ -139,3 +179,4 @@ flowchart TD
 | **Held** | Waiting with a warning: the agent is opencode or agy, or has no socket |
 | **Turn's end** | The agent back at its prompt, as its OSC 7501 report says |
 | **Messaging socket** | Claude Code's Unix socket for messages from other local sessions, `/tmp/cc-socks/PID.sock`, named in `~/.claude/sessions/PID.json` |
+| **Parked** | A Claude whose conversation Claude Code moved into a background job: its registry entry names the job (`parkedJobId`), and the job's own entry has the socket that takes messages |

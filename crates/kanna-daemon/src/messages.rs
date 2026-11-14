@@ -153,17 +153,49 @@ pub fn envelope(text: &str, mode: Option<&str>) -> String {
 }
 
 pub fn inbox(config: &Path, pid: i32) -> Result<PathBuf, String> {
-    let entry = config.join("sessions").join(format!("{pid}.json"));
+    let sessions = config.join("sessions");
+    let entry = sessions.join(format!("{pid}.json"));
     let text = std::fs::read_to_string(&entry).map_err(|_| format!("Claude (pid {pid}) has no messaging socket: no {}", entry.display()))?;
-    let session: Value = serde_json::from_str(&text).map_err(|error| format!("Claude's {} isn't JSON: {error}", entry.display()))?;
+    let session = registered(&entry, &text, pid)?;
+    let Some(job) = session["parkedJobId"].as_str().filter(|job| !job.is_empty()) else { return socket_in(&entry, &session) };
+    let running = std::fs::read_dir(&sessions).into_iter().flatten().flatten().find_map(|file| {
+        let path = file.path();
+        let other: i32 = path.file_name()?.to_str()?.strip_suffix(".json")?.parse().ok()?;
+        let session = serde_json::from_str::<Value>(&std::fs::read_to_string(&path).ok()?).ok()?;
+        (other != pid && session["jobId"].as_str() == Some(job) && session["pid"].as_i64() == Some(other.into()) && live(other, &session)).then_some((path, other, session))
+    });
+    let Some((path, other, session)) = running else {
+        return Err(format!("Claude (pid {pid}) moved its conversation into background job {job}, and no running Claude in {} has it", sessions.display()));
+    };
+    if session["peerProtocol"].as_i64() != Some(1) {
+        return Err(format!("Claude (pid {other}), running background job {job}, speaks messaging protocol {}, and Kanna speaks 1", session["peerProtocol"]));
+    }
+    socket_in(&path, &session)
+}
+
+fn registered(entry: &Path, text: &str, pid: i32) -> Result<Value, String> {
+    let session: Value = serde_json::from_str(text).map_err(|error| format!("Claude's {} isn't JSON: {error}", entry.display()))?;
     if session["pid"].as_i64() != Some(pid.into()) {
         return Err(format!("Claude's {} is another process's", entry.display()));
     }
     if session["peerProtocol"].as_i64() != Some(1) {
         return Err(format!("Claude (pid {pid}) speaks messaging protocol {}, and Kanna speaks 1", session["peerProtocol"]));
     }
+    Ok(session)
+}
+
+fn socket_in(entry: &Path, session: &Value) -> Result<PathBuf, String> {
     session["messagingSocketPath"].as_str().map(PathBuf::from).filter(|socket| socket.is_absolute()).ok_or_else(|| format!("Claude's {} names no messaging socket", entry.display()))
 }
+
+fn live(pid: i32, session: &Value) -> bool {
+    let Some(age) = crate::lifeline::age_of(pid) else { return false };
+    let Some(registered) = session["startedAt"].as_f64() else { return true };
+    let started = std::time::SystemTime::now().checked_sub(age).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |t| t.as_secs_f64() * 1000.0);
+    started <= registered + REGISTERED_SLACK.as_secs_f64() * 1000.0
+}
+
+const REGISTERED_SLACK: Duration = Duration::from_secs(2);
 
 pub fn codex_socket(argv: &[Vec<String>]) -> Result<PathBuf, String> {
     argv.iter()
@@ -542,6 +574,37 @@ mod tests {
         assert!(mid_turn(&codex, Some(Status::Working), false), "Codex's queue holds it until the turn is over");
         assert!(mid_turn(&codex, Some(Status::NeedsYou), false), "and until you've answered");
         assert!(mid_turn(&codex, None, false));
+    }
+
+    #[test]
+    fn a_parked_claude_takes_messages_on_the_socket_of_the_job_running_its_conversation() {
+        let home = std::env::temp_dir().join(format!("kanna-parked-{}", std::process::id()));
+        let config = home.join(".claude");
+        let sessions = config.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let job = std::process::id() as i32;
+        let mut ended = std::process::Command::new("true").spawn().unwrap();
+        let dead = ended.id() as i32;
+        ended.wait().unwrap();
+        let write = |pid: i32, entry: Value| std::fs::write(sessions.join(format!("{pid}.json")), entry.to_string()).unwrap();
+        let parked = |job: &str| json!({ "pid": 41, "kind": "interactive", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/41.sock", "status": "idle", "parkedJobId": job });
+        write(41, parked("6b3cc108"));
+        let gone = inbox(&config, 41).unwrap_err();
+        assert_eq!(gone, format!("Claude (pid 41) moved its conversation into background job 6b3cc108, and no running Claude in {} has it", sessions.display()), "the parked process's own socket takes nothing in");
+        write(dead, json!({ "pid": dead, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/dead.sock", "startedAt": now }));
+        assert_eq!(inbox(&config, 41), Err(gone.clone()), "a job whose process ended runs nothing");
+        write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": 1000 }));
+        assert_eq!(inbox(&config, 41), Err(gone), "an entry older than the process with its pid is another's");
+        write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": now }));
+        assert_eq!(inbox(&config, 41), Ok(PathBuf::from("/tmp/cc-socks/job.sock")));
+        write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 2, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": now }));
+        assert_eq!(inbox(&config, 41), Err("Claude (pid ".to_string() + &job.to_string() + "), running background job 6b3cc108, speaks messaging protocol 2, and Kanna speaks 1"));
+        write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 1, "startedAt": now }));
+        assert!(inbox(&config, 41).unwrap_err().ends_with("names no messaging socket"), "a job with no socket keeps them waiting");
+        write(41, parked(""));
+        assert_eq!(inbox(&config, 41), Ok(PathBuf::from("/tmp/cc-socks/41.sock")), "back in the foreground, it takes them itself");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

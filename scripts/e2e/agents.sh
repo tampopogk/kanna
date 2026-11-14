@@ -684,6 +684,23 @@ print(" ".join(t["about"] + ":" + (t.get("detail") or "") for t in json.load(sys
   check wait_for 30 eval 'sterm="$(task_state $slow | cut -d" " -f2)"; [[ "$sterm" == term-* ]] && shows "$sterm" "peer: \[message from user\] while you start"' || { echo "agent_messaging: the woken claude task didn't get its message once it made its socket"; tail -5 "$out/daemon.log"; return 1; }
   raw '{"id":1,"cmd":"debug.toasts"}' | grep -q "Messages wait for Slow" && { echo "agent_messaging: a claude still starting raised a toast"; return 1; }
   ! tail -n +"$((logged + 1))" "$out/daemon.log" | grep -q "messages for $sterm wait" || { echo "agent_messaging: a claude still starting was warned about"; return 1; }
+  machine_runners 0
+  in_repo task new "Parked" "park" --agent "$fake/claude" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  local parked pterm; parked="$(tid 6)"
+  local picked; picked="$(in_repo task pick "$parked" 2>&1)" || { echo "agent_messaging: pick said: $picked"; return 1; }
+  on_desk() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+print(next((t.get("pane") or "-" for t in json.load(sys.stdin)["desk"] if t["id"] == sys.argv[1]), "-"))' "$1"; }
+  check wait_for 15 eval 'pterm="$(on_desk $parked)"; [[ "$pterm" == term-* ]] && shows "$pterm" "^PARKED "' || { echo "agent_messaging: the claude task didn't park its conversation (pick said: $picked)"; raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys; l = json.load(sys.stdin); print([(t["id"], t.get("pane"), t.get("running")) for t in l["desk"] + l["shelf"]])'; [[ "$pterm" == term-* ]] && kanna read "$pterm"; return 1; }
+  in_repo task send "$parked" "to the job" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  check wait_for 15 shows "$pterm" "peer: \[message from user\] to the job" || { echo "agent_messaging: a parked claude's message didn't reach the job running its conversation"; kanna read "$pterm"; tail -5 "$out/daemon.log"; return 1; }
+  kanna send "$pterm" "unpark" >/dev/null && check wait_for 10 shows "$pterm" "^UNPARKED" || { echo "agent_messaging line $LINENO"; return 1; }
+  kanna send "$pterm" "park nojob" >/dev/null && check wait_for 10 eval '[[ "$(times "$pterm" "^PARKED ")" == 2 ]]' || { echo "agent_messaging line $LINENO"; kanna read "$pterm"; return 1; }
+  in_repo task send "$parked" "nobody home" >/dev/null || { echo "agent_messaging line $LINENO"; return 1; }
+  parkwaits() { raw '{"id":1,"cmd":"debug.toasts"}' | python3 -c 'import json, sys
+print(" ".join(t.get("detail") or "" for t in json.load(sys.stdin)["toasts"] if t["title"] == "Messages wait for Parked"))'; }
+  check wait_for 20 eval '[[ "$(parkwaits)" == *"moved its conversation into background job "*", and no running Claude in "*" has it"* ]]' || { echo "agent_messaging: a parked claude with no job raised no toast: $(parkwaits)"; return 1; }
+  check test "$(times "$pterm" "nobody home")" -eq 0 || { echo "agent_messaging: a parked claude's message went somewhere"; kanna read "$pterm"; return 1; }
+  [[ "$(in_repo task messages "$parked")" == *"held       nobody home"*"moved its conversation into background job "* ]] || { echo "agent_messaging: task messages shows: $(in_repo task messages "$parked")"; return 1; }
 }
 
 scenario agent_too_old M4

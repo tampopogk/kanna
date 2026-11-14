@@ -3645,7 +3645,7 @@ impl Tasks {
             let same = self.unread.borrow().get(&pane).is_some_and(|(channel, _)| self.channel(&pane).as_ref() == Some(channel));
             if !same {
                 self.unread.borrow_mut().remove(&pane);
-                log!("kanna-daemon: {pane}'s agent ended before its turn did, so the messages it hadn't read go again");
+                log!("kanna-daemon: {pane}'s agent changed its door before its turn ended (it ended, or Claude moved its conversation), so the messages it hadn't read go again");
             } else if self.ready.borrow().get(&pane).is_some_and(|r| r.status() == Some(Status::Idle)) {
                 if let Some((_, list)) = self.unread.borrow_mut().remove(&pane) {
                     self.took(&pane, &list);
