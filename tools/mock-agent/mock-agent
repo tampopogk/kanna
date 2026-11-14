@@ -409,6 +409,7 @@ def bye(id):
         out(f"\r\nResume this session with:\r\nclaude --model mock-model --dangerously-skip-permissions --resume {id}\r\n")
     else:
         out(f"\r\nTo continue this session, run: {PROGRAM} resume {id}\r\n")
+    time.sleep(float(os.environ.get("KANNA_MOCK_EXIT_DELAY") or 0))
 
 
 def main():
