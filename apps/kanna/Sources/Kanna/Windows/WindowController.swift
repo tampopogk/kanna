@@ -56,7 +56,7 @@ final class WindowController: NSObject, NSWindowDelegate {
     private var deskTask = false
     let agentHeader = AgentHeader()
     var headerText = ""
-    var taskTitle: String?
+    var titlePrefix: String?
     private(set) var desk = false
     private(set) var emptyDesk = false
     private(set) var leadShown: String?
@@ -135,7 +135,8 @@ final class WindowController: NSObject, NSWindowDelegate {
         tab = state["tab"]?.string
         let instance = AppController.instanceName
         desk = state["desk"]?.bool == true
-        let named = desk ? taskTitle ?? "Desk" : state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
+        let named = desk ? titlePrefix ?? "Desk" : titlePrefix.map { WindowTitles.title($0, state["lead"]?["name"]?.string ?? state["title"]?.string) }
+            ?? state["lead"]?["name"]?.string ?? "\(state["title"]?.string ?? "Kanna") — \(id)"
         window.title = named + (instance == "default" ? "" : " · \(instance)")
         let root = state["root"] ?? .null
         let task = Self.side(state["dock"])
