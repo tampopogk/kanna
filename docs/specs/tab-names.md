@@ -32,6 +32,7 @@ A tab is named after the pane it was made with (`kanna open --tab`, Desk tabs, �
 - **It follows the pane:** a web tab follows its page's title as you browse; a terminal's tab follows a later `rename-pane`.
 - **Until it's renamed:** once the user double-clicks it or a client runs `rename-tab`, it keeps that name for good. The layout saves that it was renamed, so it survives a restart; a tab saved before this rule is treated as not renamed.
 - **Splits:** a tab with several panes keeps the name of the one it was made with. When that pane closes or moves away, the tab takes the name of the first pane left in it, and with none `Tab N`.
+- **A window's title** is its shown tab's name; a task's own window puts the project and task before it, `kanna — Fix login — store.rs` ([window titles](window-titles.md)).
 - **Duplicates stay:** two `SKILL.md` tabs both say `SKILL.md`.
 - **Control characters are dropped** from page titles and names, so a page can't put terminal escapes into `kanna workspace list`.
 

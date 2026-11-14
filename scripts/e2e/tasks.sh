@@ -874,6 +874,45 @@ sys.exit(0 if all(w in seen for w in ("ready", "stale", "fresh", "base merged"))
   stop_agents
 }
 
+scenario merge_claims_ready M4
+merge_claims_ready() {
+  start_daemon && start_app || { echo "merge_claims_ready line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/claims" agent="$repo_root/tools/mock-agent/mock-agent"
+  mkdir -p "$repo/.kanna" && git -C "$repo" init -q -b main || { echo "merge_claims_ready line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  local gate="$KANNA_STATE_DIR/claims-gate"
+  git -C "$repo" config user.email e@e && git -C "$repo" config user.name e
+  printf 'touch "%s.testing"\nfor _ in $(seq 600); do [ -e "%s" ] && exit 0; sleep 0.1; done\nexit 1\n' "$gate" "$gate" >"$repo/test.sh"
+  printf '{"version": 1, "merge": {"test": "sh test.sh"}}\n' >"$repo/.kanna/config.json"
+  printf '.kanna/tmp/\n' >"$repo/.gitignore"
+  git -C "$repo" add -A && git -C "$repo" commit -qm first || { echo "merge_claims_ready line $LINENO"; return 1; }
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  in_repo task new A "hello there" --agent "$agent" >/dev/null && in_repo task new B "hello there" --agent "$agent" --after "$(tid 1)" >/dev/null || { echo "merge_claims_ready line $LINENO"; return 1; }
+  local a b; a="$(tid 1)" b="$(tid 2)"
+  folder() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+r = json.load(sys.stdin)
+print(next((t.get("folder") or "" for t in r["shelf"] + r.get("merging", []) if t["id"] == sys.argv[1]), ""))' "$1"; }
+  in_repo task start "$a" >/dev/null || { echo "merge_claims_ready: A didn't start"; return 1; }
+  local fa fb said; fa="$(folder "$a")"
+  echo a >"$fa/a.txt" && git -C "$fa" add a.txt && git -C "$fa" commit -qm a || { echo "merge_claims_ready line $LINENO"; return 1; }
+  [[ "$(in_repo task start "$b" 2>&1)" == *"waits for"* ]] || { echo "merge_claims_ready: B started before A was claimed or merged"; return 1; }
+  said="$(in_repo task merge "$a" -m "add a" 2>&1)" || { echo "merge_claims_ready: A didn't go into the queue: $said"; return 1; }
+  check wait_for 30 test -e "$gate.testing" || { echo "merge_claims_ready: A's tests didn't start"; tail -30 "$out/daemon.log"; return 1; }
+  local listed; listed="$(in_repo task list)"
+  grep -qE "^$(sid 1) +A +testing" <<<"$listed" || { echo "merge_claims_ready: A doesn't show its queue state:"; echo "$listed"; return 1; }
+  sed -n '/^Shelf/,$p' <<<"$listed" | grep -E "^$(sid 2) +B " | grep -qvE "blocked|waits for" || { echo "merge_claims_ready: B is still blocked while A is in the queue:"; echo "$listed"; return 1; }
+  machine_runners 1
+  check wait_for 20 eval '[[ -n "$(folder "$b")" ]]' || { echo "merge_claims_ready: a Shelf runner didn't start B while A is testing"; in_repo task list; return 1; }
+  machine_runners 0
+  fb="$(folder "$b")"
+  check test "$(git -C "$fb" rev-parse HEAD)" == "$(git -C "$fa" rev-parse HEAD)" || { echo "merge_claims_ready: B didn't start on A's branch"; return 1; }
+  check test "$(git -C "$repo" log -1 --format=%s main)" == "first" || { echo "merge_claims_ready: A landed before B started"; return 1; }
+  touch "$gate"
+  check wait_for 60 eval '[[ "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select place from tasks where id = '"'$a'"'")" == done ]]' || { echo "merge_claims_ready: A didn't land"; sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select task, state, doc from merge_queue"; return 1; }
+  check wait_for 10 eval 'in_repo task messages "$b" | grep -q "\"A\"'"'"'s work is in main now. Nothing you build on"' || { echo "merge_claims_ready: B didn't hear base-merged"; in_repo task messages "$b"; return 1; }
+  stop_agents
+}
+
 scenario shelf_runners M4
 shelf_runners() {
   start_daemon && start_app || { echo "shelf_runners line $LINENO"; return 1; }

@@ -225,7 +225,7 @@ impl Queue {
             .ok_or_else(|| bad("which task? run it in the task's terminal, or name it: kanna task merge TASK"))
     }
 
-    fn add(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+    pub(crate) fn add(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
         let tasks = self.tasks()?;
         let reference = self.task_named(args)?;
         let candidate = tasks.merge_candidate(&reference)?;
@@ -274,7 +274,7 @@ impl Queue {
         log!("kanna-daemon: {} goes into {}'s merge queue as {id}, at {head}", entry.id, entry.repo);
         let weak = Rc::downgrade(self);
         let settling = id.clone();
-        tasks.enqueue(candidate, &id, Some(by), move || {
+        tasks.enqueue(candidate, &id, &head, Some(by), move || {
             if let Some(this) = weak.upgrade() {
                 this.settle(&settling);
             }
@@ -289,7 +289,7 @@ impl Queue {
         Ok(Map::from_iter([("queue".to_string(), json!(id)), ("task".to_string(), json!(entry.id)), ("position".to_string(), json!(position)), ("head".to_string(), json!(head)), ("said".to_string(), json!(said))]))
     }
 
-    fn cancel(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
+    pub(crate) fn cancel(self: &Rc<Self>, args: &Value) -> Result<Map, KmuxError> {
         let tasks = self.tasks()?;
         let reference = self.task_named(args)?;
         let id = tasks.resolve(&reference)?.ok_or_else(|| KmuxError::new("not_found", format!("no task {reference}")))?;
@@ -724,7 +724,7 @@ impl Queue {
         }
     }
 
-    fn fail(self: &Rc<Self>, queue: &str, why: &str, lines: Vec<String>) {
+    pub(crate) fn fail(self: &Rc<Self>, queue: &str, why: &str, lines: Vec<String>) {
         let Some(mut row) = self.live.borrow().iter().find(|q| q.id == queue).cloned() else { return };
         log!("kanna-daemon: {queue} failed: {why}");
         self.release_worker(&row, false);

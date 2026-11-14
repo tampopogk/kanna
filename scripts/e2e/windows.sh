@@ -93,6 +93,10 @@ windows_tabs_ui() {
     [[ "$menus" == *"\"item\":\"$item\""* ]] || { echo "no menu item \"$item\""; return 1; }
   done
   [[ "$menus" == *'"item":"Split Right","menu":"Pane","shortcut":"⌘d"'* ]] || { echo "Split Right isn't ⌘D: $menus"; return 1; }
+  [[ "$menus" == *'"item":"New Web Pane Right","menu":"New Pane"'* ]] || { echo "New Web Pane Right isn't under New Pane: $menus"; return 1; }
+  [[ "$(field items <<<"$menus" | python3 -c 'import json, sys; print(",".join(i["item"] for i in json.load(sys.stdin) if i["menu"] == "Pane"))')" == \
+     "New Pane,Split Right,Split Down,Next Pane,Previous Pane,Zoom,Move Pane to New Window,Close Pane,Open URL…,Back,Forward,Reload,Comments,Home" ]] \
+    || { echo "the Pane menu's order: $menus"; return 1; }
   [[ "$menus" == *'"item":"New Desk","menu":"File","shortcut":"⌘n"'* ]] || { echo "New Desk isn't File ⌘N: $menus"; return 1; }
   [[ "$menus" == *'"item":"New Window","menu":"Window","shortcut":""'* ]] || { echo "New Window has a shortcut: $menus"; return 1; }
   [[ "$menus" != *'"New Instance"'* && "$menus" != *'"Start a Task"'* ]] || { echo "a removed menu item is back: $menus"; return 1; }
@@ -235,7 +239,7 @@ drag_panes_tabs() {
   menu="$(raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"tab\":\"$(win win-1 tabs.0.id)\",\"button\":1}}")"
   check test "$(field menu <<<"$menu")" == '["Move Tab to New Window", "Close Tab"]' || return 1
   menu="$(raw '{"id":1,"cmd":"debug.click","args":{"pane":"db","button":1}}')"
-  for item in "Split Right" "Close Pane" "Move Pane to New Window" "Reload"; do
+  for item in "Copy" "Paste" "New Pane" "Split Right" "Close Pane" "Move Pane to New Window" "Reload"; do
     [[ "$menu" == *"\"$item\""* ]] || { echo "the pane menu has no \"$item\": $menu"; return 1; }
   done
   sleep 1
@@ -451,13 +455,13 @@ sys.exit(not (a[1] > b[1] and abs(a[0] - b[0]) < 1 and a[2] == 340))' || { echo 
   raw '{"id":1,"cmd":"debug.snapshot","args":{"path":"toasts.png"}}' >/dev/null && cp "$KANNA_STATE_DIR/toasts.png" "$out/toasts.png"
   check test "$(desk empty)" == True || { echo "toasts: the Desk isn't empty before the click"; return 1; }
   raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-3"}}' >/dev/null
-  check wait_for 5 eval '[[ "$(desk title)" == "Lint fixes"* ]]' || { echo "toasts: clicking the toast didn't bring Lint fixes onto the Desk: $(desk title)"; return 1; }
+  check wait_for 5 eval '[[ "$(desk title)" == *" — Lint fixes"* ]]' || { echo "toasts: clicking the toast didn't bring Lint fixes onto the Desk: $(desk title)"; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Lint fixes" id)" ]]' || { echo "toasts: the task's agent isn't focused"; return 1; }
   check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-2 toast-1" ]]' || { echo "toasts: the clicked toast stayed: $(toasted)"; return 1; }
   check test "$(kanna toast "Docs pass waits" --task "$(tid 2)")" == "raised toast-4" || return 1
   check wait_for 5 eval '[[ "$(toasted)" == "d1 toast-4"* ]]' || return 1
   raw '{"id":1,"cmd":"debug.toasts","args":{"click":"toast-4"}}' >/dev/null
-  check wait_for 15 eval '[[ "$(desk title)" == "Docs pass"* ]]' || { echo "toasts: clicking a Shelf task's toast didn't shelve and show it: $(desk title)"; desk note; return 1; }
+  check wait_for 15 eval '[[ "$(desk title)" == *" — Docs pass"* ]]' || { echo "toasts: clicking a Shelf task's toast didn't shelve and show it: $(desk title)"; desk note; return 1; }
   check wait_for 5 eval '[[ "$(dwin d1 focused)" == "$(pane "Docs pass" id)" ]]' || { echo "toasts: the Shelf task's agent isn't focused"; return 1; }
   kanna toast "Kept" "the pointer is on it" >/dev/null && kanna toast "Fades" >/dev/null || { echo "toasts line $LINENO"; return 1; }
   raw '{"id":1,"cmd":"debug.toasts","args":{"hover":"toast-5"}}' >/dev/null

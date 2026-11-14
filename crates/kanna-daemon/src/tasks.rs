@@ -5267,6 +5267,9 @@ impl Tasks {
         if !entry.bases.is_empty() {
             return Some("after");
         }
+        if entry.queued.is_some() {
+            return None;
+        }
         let claim = entry.claimed.as_ref()?;
         let merges = self.merges.borrow();
         let check = merges.get(&entry.id).filter(|c| c.tip == claim.head)?;
@@ -5348,7 +5351,7 @@ impl Tasks {
             bases.push(Base { head: now, branch: self.branch_name(&base.id), ..base });
         }
         let blocked: Vec<Entry> = open.iter().filter(|e| e.folder.is_none() && self.waits(e).contains(&id)).cloned().collect();
-        let mark = Mark { head: head.clone(), branch: branch.clone(), at: now() };
+        let mark = Mark { head: head.clone(), branch: branch.clone(), at: now(), queue: None };
         let change = Change::new("ready").by(who(args)).with("head", json!(head)).with("branch", json!(branch));
         let entry = self.alter(&id, change, |e| {
             e.claimed = Some(mark.clone());
@@ -6403,7 +6406,7 @@ mod tests {
 
     #[test]
     fn entries_round_trip_through_the_db() {
-        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, claimed: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0 }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }], queued: Some("queue-1".into()), merge_failed: Some(json!({ "why": "test failed" })) };
+        let entry = Entry { notes: vec![], claim: None, id: "task-0000c0de".into(), name: Some("Fix it".into()), message: None, repo: "/r".into(), by: Some("p2".into()), made_at: 5.0, agent: "codex".into(), folder: Some("/r/.kanna-worktrees/task-0000c0de".into()), session: Some("s".into()), held: Some("p3".into()), after: vec!["task-00000002".into()], stopped: Some("needs-you".into()), workspace: None, claimed: Some(Mark { head: "abc".into(), branch: "fix-it".into(), at: 7.0, queue: Some("queue-1".into()) }), bases: vec![Base { id: "task-00000002".into(), branch: "b".into(), head: "def".into() }], stale: vec!["task-00000002".into()], conflict: Some(Conflict { heads: vec!["def".into()], why: "x".into() }), birth: Some("5000.0.k".into()), on: vec!["vm".into()], hears: Hears::default(), sent: vec![Sent { event: "main-conflicts".into(), message: 3, about: Some("b a".into()), at: 8.0 }], queued: Some("queue-1".into()), merge_failed: Some(json!({ "why": "test failed" })) };
         assert_eq!(Entry::from_row(&entry.row(Place::Shelf, Some("p3"))), entry);
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).held, None, "a task on the Shelf isn't held");
         assert_eq!(Entry::from_row(&entry.row(Place::Desk, Some("p3"))).stopped, None, "nor stopped by the Shelf");
@@ -7298,6 +7301,121 @@ mod tests {
         assert_eq!((kept.bases, kept.claimed), (entry(&c).bases, entry(&c).claimed), "the stack and the claim survive a restart");
         let events = tasks.db.events(&b).unwrap().into_iter().map(|e| e.what).collect::<Vec<_>>();
         assert!(["ready", "stale", "fresh", "unready", "base merged"].iter().all(|what| events.iter().any(|e| e == what)), "{events:?}");
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    fn merge_rig(name: &str) -> (PathBuf, kanna_mux::Core, Rc<Db>, Rc<Tasks>, Rc<crate::queue::Queue>) {
+        let state = std::env::temp_dir().join(format!("kanna-merge-claim-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(&state).unwrap();
+        let state = fs::canonicalize(&state).unwrap();
+        rig_sh(&state, "git init -q -b main && git config user.name e && git config user.email e@e && mkdir .kanna && echo '{\"version\": 1, \"merge\": {\"test\": \"true\"}}' >.kanna/config.json && git add . && git commit -q -m first");
+        let core = kanna_mux::Core::default();
+        let db = Rc::new(Db::open(&state).unwrap());
+        let tasks = Rc::new(Tasks::open(db.clone(), &state, core.weak(), crate::runtime::channel().0));
+        let queue = Rc::new(crate::queue::Queue::open(db.clone(), Rc::downgrade(&tasks), Weak::new()));
+        (state, core, db, tasks, queue)
+    }
+
+    fn rig_start(tasks: &Tasks, state: &Path, id: &str) -> PathBuf {
+        let entry = tasks.entries.borrow().iter().find(|e| e.id == id).cloned().unwrap();
+        tasks.startable(&entry).unwrap();
+        let Made::Worktree { folder, bases, .. } = stacks::make(state, id, tasks.stack_of(&entry)).unwrap() else { panic!("{id} conflicts") };
+        let found = tasks.entries.borrow().iter().position(|e| e.id == id).unwrap();
+        let mut entries = tasks.entries.borrow_mut();
+        (entries[found].folder, entries[found].bases) = (Some(folder.clone()), bases);
+        PathBuf::from(folder)
+    }
+
+    #[test]
+    fn merging_a_task_claims_it_ready_so_the_tasks_waiting_for_it_start_on_its_branch_while_it_s_in_the_queue() {
+        let (state, core, db, tasks, queue) = merge_rig("start");
+        let repo = state.to_str().unwrap();
+        let made = |args: Value| tasks.add(&args).map(|m| string(&m["task"], "id").unwrap().to_string()).unwrap();
+        let a = made(json!({ "repo": repo, "name": "A" }));
+        let b = made(json!({ "repo": repo, "name": "B", "after": [a] }));
+        let entry = |id: &str| tasks.known(id).unwrap();
+        let fa = rig_start(&tasks, &state, &a);
+        rig_sh(&fa, "echo a >a && git add a && git commit -q -m a");
+        assert_eq!(tasks.startable(&entry(&b)).unwrap_err().code, "blocked", "A hasn't claimed ready");
+
+        let queued = queue.add(&json!({ "task": a, "by": "user" })).unwrap();
+        let head = git(&fa, &["rev-parse", "HEAD"]).unwrap();
+        let claim = entry(&a).claimed.expect("the merge claims A ready");
+        assert_eq!((claim.head.as_str(), claim.queue.as_ref()), (head.as_str(), queued["queue"].as_str().map(String::from).as_ref()), "at the head it queued, made by the merge");
+        assert!(tasks.waits(&entry(&b)).is_empty() && tasks.startable(&entry(&b)).is_ok(), "B can start while A is in the queue");
+        let listed = tasks.list(&json!({ "repo": repo }));
+        assert_eq!(listed["merging"][0]["queue"]["state"], "queued", "A shows its queue state: {listed:?}");
+        tasks.listened(task_events::look(tasks.main_probes()));
+        assert_eq!(tasks.merge_label(&entry(&a)), None, "and is never ready while it's queued");
+        let shelf_b = listed["shelf"].as_array().unwrap().iter().find(|t| t["id"] == b.as_str()).cloned().unwrap();
+        assert_eq!(shelf_b["waits"], json!([]), "B isn't blocked");
+        let events = db.events(&a).unwrap().into_iter().map(|e| (e.what, e.doc)).collect::<Vec<_>>();
+        assert!(events.iter().any(|(what, doc)| what == "ready" && doc["queue"] == queued["queue"]), "{events:?}");
+
+        let fb = rig_start(&tasks, &state, &b);
+        assert_eq!(git(&fb, &["rev-parse", "HEAD"]).unwrap(), head, "B starts on A's branch");
+        rig_sh(&fb, "echo b >b && git add b && git commit -q -m b");
+        assert_eq!(queue.add(&json!({ "task": b, "by": "user" })).unwrap_err().code, "merges_after", "B can't merge until A lands");
+
+        let again = Tasks::open(db.clone(), &state, core.weak(), crate::runtime::channel().0);
+        let kept = again.known(&a).unwrap();
+        assert_eq!((kept.claimed, kept.queued), (entry(&a).claimed, entry(&a).queued), "the claim and the queue entry survive a restart");
+        assert!(again.waits(&again.known(&b).unwrap()).is_empty(), "and B still isn't blocked");
+
+        rig_sh(&state, &format!("git merge -q --no-edit {head}"));
+        tasks.landed(&a);
+        assert!(tasks.open_tasks().iter().all(|e| e.id != a), "A landed, so it's Done");
+        tasks.watched(stacks::look(tasks.probes()));
+        assert!(entry(&b).bases.is_empty(), "B isn't stacked once A is in main");
+        let heard = tasks.waiting.borrow().iter().filter(|m| m.recipient == b && m.sender == KANNA).last().cloned().unwrap();
+        assert!(heard.text.contains("in main now") && heard.text.contains("you can merge"), "B hears base-merged: {}", heard.text);
+        assert!(queue.add(&json!({ "task": b, "by": "user" })).is_ok(), "and B can merge now");
+        let _ = fs::remove_dir_all(&state);
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_merge_drops_the_claim_it_made_and_keeps_the_agent_s_own() {
+        let (state, _core, _db, tasks, queue) = merge_rig("fail");
+        let repo = state.to_str().unwrap();
+        let made = |args: Value| tasks.add(&args).map(|m| string(&m["task"], "id").unwrap().to_string()).unwrap();
+        let a = made(json!({ "repo": repo, "name": "A" }));
+        let b = made(json!({ "repo": repo, "name": "B", "after": [a] }));
+        let c = made(json!({ "repo": repo, "name": "C", "after": [a] }));
+        let entry = |id: &str| tasks.known(id).unwrap();
+        let fa = rig_start(&tasks, &state, &a);
+        rig_sh(&fa, "echo a >a && git add a && git commit -q -m a");
+        let watch = || tasks.watched(stacks::look(tasks.probes()));
+
+        let first = queue.add(&json!({ "task": a, "by": "user" })).unwrap();
+        let fb = rig_start(&tasks, &state, &b);
+        assert_eq!(git(&fb, &["rev-parse", "HEAD"]).unwrap(), git(&fa, &["rev-parse", "HEAD"]).unwrap());
+        assert!(tasks.startable(&entry(&c)).is_ok());
+        queue.fail(first["queue"].as_str().unwrap(), "test failed", vec![]);
+        assert!(entry(&a).claimed.is_none() && entry(&a).queued.is_none() && entry(&a).merge_failed.is_some(), "the queue said A isn't ready to land");
+        assert_eq!(tasks.startable(&entry(&c)).unwrap_err().code, "blocked", "C hadn't started, so it's blocked again");
+        assert_eq!(entry(&b).bases.iter().map(|x| x.id.clone()).collect::<Vec<_>>(), vec![a.clone()], "B had started, so it keeps going on A");
+        watch();
+        assert!(entry(&b).stale.is_empty(), "A's branch hasn't moved");
+        rig_sh(&fa, "echo fix >a && git commit -q -am fix");
+        watch();
+        assert_eq!(entry(&b).stale, vec![a.clone()], "the fix moves A's branch, so B goes stale");
+
+        tasks.mark(&json!({ "task": a })).unwrap();
+        let own = entry(&a).claimed.unwrap();
+        queue.add(&json!({ "task": a, "by": "user" })).unwrap();
+        assert_eq!(entry(&a).claimed, Some(own.clone()), "the agent's claim at the queued head stays");
+        queue.cancel(&json!({ "task": a, "by": "user" })).unwrap();
+        assert_eq!(entry(&a).claimed, Some(own), "and cancelling leaves it");
+
+        rig_sh(&fa, "echo more >a && git commit -q -am more");
+        watch();
+        assert!(entry(&a).claimed.is_none());
+        queue.add(&json!({ "task": a, "by": "user" })).unwrap();
+        assert!(entry(&a).claimed.as_ref().is_some_and(|m| m.queue.is_some()));
+        queue.cancel(&json!({ "task": a, "by": "user" })).unwrap();
+        assert!(entry(&a).claimed.is_none() && entry(&a).queued.is_none(), "cancelling drops the claim the merge made");
+        assert_eq!(tasks.startable(&entry(&c)).unwrap_err().code, "blocked");
         let _ = fs::remove_dir_all(&state);
     }
 

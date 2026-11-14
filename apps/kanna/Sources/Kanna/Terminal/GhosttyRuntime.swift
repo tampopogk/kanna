@@ -100,6 +100,8 @@ final class GhosttyRuntime {
         return true
     }
 
+    func syncFocus() { live.values.forEach { $0.syncFocus() } }
+
     private func updateMargins() {
         for view in live.values { view.updateMargin(opacity: settings.opacity) }
     }
