@@ -272,7 +272,8 @@ build_and_package() {
     step "Build $app_name $version for $arch at $(short "$commit")"
     KANNA_VERSION="$version" "$src/scripts/build.sh" "$channel" --arch "$arch"
     triple="$(kanna_arch_triple "$arch")"
-    if [[ "$triple" == "$(kanna_host_triple)" ]]; then built="$src/target/Kanna.app"; else built="$src/target/$triple/Kanna.app"; fi
+    built="$(kanna_arch_dir "$src" "$triple")/Kanna.app"
+    update_tools="$(kanna_arch_dir "$src" "$triple")/kanna-build/artifacts/sparkle/Sparkle/bin"
 
     stage="$dist/$arch"
     rm -rf "$stage"
@@ -337,8 +338,7 @@ build_and_package() {
   dmgs+=("$linux")
 
   step "Update feeds"
-  update_tools="$(dirname "$(find "$src/target/" -path '*/artifacts/sparkle/Sparkle/bin/sign_update' -print -quit)")"
-  [[ -x "$update_tools/sign_update" ]] || fail "the build left no Sparkle sign_update under $src/target/"
+  [[ -x "$update_tools/sign_update" ]] || fail "the build left no Sparkle sign_update in $update_tools"
   update_protocol="$(tar -xzOf "$linux" kanna/release.json | jq -r .protocol)"
   [[ "$update_protocol" =~ ^[0-9]+$ ]] || fail "$(basename "$linux") names no protocol"
   macos_target="$(kanna_macos_target "$src")"
