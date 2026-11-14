@@ -15,6 +15,7 @@ pub enum Merge {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum What {
+    Made,
     Picked,
     Shelved,
     Ended { on_desk: bool },
@@ -32,12 +33,18 @@ pub struct Item {
     pub what: What,
     pub merge: Merge,
     pub at: Instant,
+    pub by: String,
+    pub after: Vec<String>,
 }
 
 impl Item {
     pub fn new(repo: &str, task: &str, short: &str, name: Option<&str>, what: What, at: Instant) -> Item {
         let merge = if matches!(what, What::Ended { .. } | What::Landed) { Merge::Pending } else { Merge::Unknown };
-        Item { repo: repo.into(), task: task.into(), short: short.into(), name: name.map(String::from), what, merge, at }
+        Item { repo: repo.into(), task: task.into(), short: short.into(), name: name.map(String::from), what, merge, at, by: String::new(), after: vec![] }
+    }
+
+    pub fn made(self, by: &str, after: Vec<String>) -> Item {
+        Item { by: by.into(), after, ..self }
     }
 
     pub fn line(&self) -> String {
@@ -46,6 +53,8 @@ impl Item {
             None => self.short.clone(),
         };
         match (self.what, &self.merge) {
+            (What::Made, _) if self.after.is_empty() => format!("{name} was made on the Shelf by {}", self.by),
+            (What::Made, _) => format!("{name} was made on the Shelf by {}, waiting for {}", self.by, listed(&self.after)),
             (What::Picked, _) => format!("{name} moved to the Desk"),
             (What::Shelved, _) => format!("{name} moved to the Shelf"),
             (What::Ended { on_desk: true }, Merge::Into(into)) => format!("{name} merged into {into} and left the Desk"),
@@ -58,6 +67,14 @@ impl Item {
             (What::Landed, _) => format!("{name} landed and left the merge queue"),
             (What::MergeFailed, _) => format!("{name} didn't merge: it's back on the Shelf, and its agent has the log"),
         }
+    }
+}
+
+fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -134,6 +151,11 @@ mod tests {
         assert_eq!(ended(false, Merge::Into("trunk".into())).line(), "task-a \"Task a\" merged into trunk and left the Shelf");
         assert_eq!(ended(false, Merge::Not("main".into())).line(), "task-a \"Task a\" was taken off the Shelf");
         assert_eq!(Item::new("r", "a", "task-a", None, What::Picked, now).line(), "task-a moved to the Desk", "a task with no name goes by its ID");
+        assert_eq!(item("r", "a", What::Made, now).made("you", vec![]).line(), "task-a \"Task a\" was made on the Shelf by you");
+        assert_eq!(item("r", "a", What::Made, now).made("task-b \"Task b\"", vec![]).line(), "task-a \"Task a\" was made on the Shelf by task-b \"Task b\"");
+        let after = |n: usize| ["task-c \"C\"", "task-d \"D\"", "task-e"].iter().take(n).map(|s| s.to_string()).collect();
+        assert_eq!(item("r", "a", What::Made, now).made("you", after(1)).line(), "task-a \"Task a\" was made on the Shelf by you, waiting for task-c \"C\"");
+        assert_eq!(item("r", "a", What::Made, now).made("you", after(3)).line(), "task-a \"Task a\" was made on the Shelf by you, waiting for task-c \"C\", task-d \"D\" and task-e");
     }
 
     #[test]
