@@ -11,6 +11,7 @@ extension AppController {
             controller.queue = entries
             guard controller.shownPage == WindowController.pages[5] else { return }
             redraw(controller)
+            controller.queuePage.motion.caughtUp()
             if controller.queuePage.wantedTerminal != tester {
                 refresh()
                 redraw(controller)

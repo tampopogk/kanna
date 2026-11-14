@@ -1025,6 +1025,62 @@ restart_while_desk_opens() {
   ! shows "$planner" "nothing answers" || { echo "restart_while_desk_opens: the planning terminal ran while nothing answered"; kanna read "$planner"; return 1; }
 }
 
+scenario row_motion M4
+row_motion() {
+  start_daemon && start_app || return 1
+  desk() { raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field "$1"; }
+  moved() { echo "row_motion: $1"; raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1"}}' | field motion; }
+  desk_task first && desk_task second || return 1
+  local a b n m; a="$(pane first id)" b="$(pane second id)"
+  kanna task activate first >/dev/null && kanna task park first >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(desk page)" == True && "$(desk tasks.1.task)" == "$b" ]]' || { moved "the Desk view doesn't show both tasks"; return 1; }
+  sleep 0.5
+  n="$(new_task arriving)" || return 1
+  check wait_for 5 eval '[[ "$(desk shelf)" == "[\"$n\"]" ]]' || { moved "the new task isn't on the Shelf"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"shelf\":\"$n\",\"window\":\"d1\"}}" | grep -q '"ok":true' || { moved "the arriving row couldn't be clicked"; return 1; }
+  check test "$(desk motion.deskView.arrived)" == "[\"shelf/$n\"]" || { moved "the arrival wasn't the last update"; return 1; }
+  check test "$(desk motion.deskView.why)" == animated || { moved "one row arriving didn't animate"; return 1; }
+  check wait_for 5 eval '[[ "$(ws "$n" where)" == "{\"desk\": \"mac\"}" ]]' || { moved "clicking the row as it arrived didn't move it to the Desk"; state; return 1; }
+  check wait_for 5 eval '[[ "$(desk tasks | count)" == 3 && "$(desk shelf)" == "[]" ]]' || { moved "the row didn't end on the Desk"; return 1; }
+  check test "$(desk motion.deskView.why)" == animated || { moved "a row moving from the Shelf to the Desk didn't animate"; return 1; }
+  m="$(pane arriving id)"
+  kanna task done arriving >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(desk tasks | count)" == 2 ]]' || { moved "the done row didn't leave"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"task\":\"$b\",\"window\":\"d1\"}}" | grep -q '"ok":true' || { moved "the row below the one leaving couldn't be clicked"; return 1; }
+  check test "$(desk motion.deskView.left)" == "[\"desk/$m\"]" || { moved "the leave wasn't the last update"; return 1; }
+  check test "$(desk motion.deskView.why)" == animated || { moved "one row leaving didn't animate"; return 1; }
+  check test "$(desk rows.0.task):$(desk rows.1.task)" == "$a:$b" || { moved "the rows left aren't in their places"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$b" && "$(desk page)" == False ]]' || { moved "clicking the row below the one leaving didn't make it active: dock $(dwin d1 dock.pane), page $(desk page), b $b"; return 1; }
+  desk_task third || return 1
+  local c; c="$(pane third id)"
+  check wait_for 5 eval '[[ "$(desk stripLayout.items.0.task):$(desk stripLayout.items.1.task)" == "$c:$a" ]]' || { moved "the strip isn't the third task, then the first"; desk stripLayout; return 1; }
+  sleep 0.5
+  kanna task activate first >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(desk stripLayout.items.0.task):$(desk stripLayout.items.1.task)" == "$b:$c" ]]' || { moved "the strip isn't in key order after switching"; desk stripLayout; return 1; }
+  check test "$(desk motion.strip.why)" == animated || { moved "the strip reordering didn't animate"; return 1; }
+  check test "$(desk motion.strip.arrived):$(desk motion.strip.left)" == "[\"$b\"]:[\"$a\"]" || { moved "the strip's update wasn't the switch"; return 1; }
+  check test "$(desk motion.strip.slid)" -ge 1 || { moved "the strip item that changed place didn't slide"; return 1; }
+  raw "{\"id\":1,\"cmd\":\"debug.click\",\"args\":{\"task\":\"$c\",\"window\":\"d1\"}}" | grep -q '"ok":true' || { moved "the strip item that moved couldn't be clicked"; return 1; }
+  check wait_for 5 eval '[[ "$(dwin d1 dock.pane)" == "$c" ]]' || { moved "clicking the strip item as it moved didn't make it active"; return 1; }
+  kanna task park third >/dev/null || return 1
+  check wait_for 5 eval '[[ "$(desk page)" == True ]]' || { moved "the Desk view didn't show"; return 1; }
+  sleep 0.5
+  local before; before="$(desk motion.deskView.updates)"
+  raw '{"id":1,"cmd":"debug.hang","args":{"ms":2500}}' >/dev/null &
+  local hang=$!
+  sleep 0.5
+  for name in burst1 burst2 burst3 burst4 burst5; do new_task "$name" >/dev/null || return 1; done
+  wait "$hang"
+  check wait_for 5 eval '[[ "$(desk shelf | count)" == 5 ]]' || { moved "the burst didn't reach the Shelf"; return 1; }
+  check test "$(desk motion.deskView.why)" == burst || { moved "five rows arriving in one update animated"; return 1; }
+  check test "$(desk motion.deskView.updates)" == "$((before + 1))" || { moved "the burst took more than one update"; return 1; }
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1","still":true}}' | grep -q '"still": *true' || { moved "Reduce Motion didn't turn on"; return 1; }
+  n="$(new_task still)" || return 1
+  check wait_for 5 eval '[[ "$(desk shelf | count)" == 6 ]]' || { moved "the task made under Reduce Motion isn't on the Shelf"; return 1; }
+  check test "$(desk motion.deskView.why)" == reduce-motion || { moved "a row arrived with motion under Reduce Motion"; return 1; }
+  raw '{"id":1,"cmd":"debug.desk","args":{"window":"d1","still":null}}' >/dev/null
+}
+
 scenario window_titles M4
 window_titles() {
   start_daemon && start_app || { echo "window_titles line $LINENO"; return 1; }

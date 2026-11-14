@@ -65,6 +65,7 @@ flowchart LR
 ## 3. The Desk's tasks
 
 - **The strip** (pictured above) holds the Desk's tasks other than the active one, in key order, ⌘1 first ([Desk view](desk-view.md#2--and-pull-back)), so the order changes as you switch tasks. A task's key shows on hover; its time stays current. "⌘. Desk" shows the Desk view when clicked.
+- **Its items arriving, leaving or changing place** move briefly: [task row animation](task-row-animation.md).
 - **A narrower strip gives way in this order**, each title in proportion to its length, down to a short floor:
 
   ![The strip at four widths: everything fits; titles truncate; the Shelf's count goes; the times go. ⌘. Desk stays](strip-narrow.png)

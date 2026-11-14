@@ -57,6 +57,7 @@ stateDiagram-v2
 - **The strip** (pictured above) goes in key order: the ⌘1 task, then ⌘2, then any task with no key. So it reorders as you switch tasks, and only then: a task that needs you keeps its place and its key. A task's key shows on hover ([Desk](desk.md#3-the-desks-tasks)).
 - **Dragging a Desk row onto the Shelf** moves that task there as it is: [Drag a Desk task to the Shelf](desk-row-shelve.md).
 - **A running Shelf task's row** shows its status: [Shelf row status](shelf-row-status.md).
+- **Rows arriving, leaving or changing place** move briefly: [task row animation](task-row-animation.md).
 - **The agent header's Park button** stays, with the tooltip "Desk view (⌘.)".
 - **The encouraging line** moves on each time the Desk view shows (before: each time the Desk was cleared).
 - **Closing a Desk window** leaves its tasks on the Desk, none active (before: it parked its task).

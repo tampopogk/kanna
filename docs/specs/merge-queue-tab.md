@@ -24,6 +24,7 @@
 - **Needs you:** an entry whose run is paused says `needs you` and why, and has Resume beside Take out ([merge queue §4.1](merge-queue.md#41-an-entry-that-needs-you)). Resume runs `kanna run resume` on its run.
 - **Take out:** runs `kanna task merge --cancel` on that entry's task.
 - **Recent:** the last 8 entries that landed or failed, newest first. One the judge let through says `passed by the judge`.
+- **Motion:** entries arriving, leaving or changing place move briefly: [task row animation](task-row-animation.md).
 
 ## 2. A picked entry
 
