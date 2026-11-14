@@ -220,6 +220,25 @@ final class FlowTests: XCTestCase {
         shot("miss-back")
     }
 
+    func testARoundStaysWithItsProject() {
+        quiz()
+        XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 8))
+        app.buttons["next-round"].tap()
+        app.buttons["drawing-1"].tap()
+        app.buttons["next-question"].tap()
+        app.buttons["close-round"].tap()
+        XCTAssertTrue(app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Back to your round")).firstMatch.waitForExistence(timeout: 5))
+        app.buttons["repo-switcher"].tap()
+        tap("kmux")
+        see("Writing your next round")
+        XCTAssertFalse(app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Back to your round")).firstMatch.exists)
+        shot("other-project")
+        app.buttons["repo-switcher"].tap()
+        tap("kanna")
+        tap("Back to your round")
+        see("2 of 5")
+    }
+
     func testARoundPlaysOfflineAndItsAnswersSyncLater() {
         quiz(["-slowWriter", "YES"])
         XCTAssertTrue(app.buttons["next-round"].waitForExistence(timeout: 8))
