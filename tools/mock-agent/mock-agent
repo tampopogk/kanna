@@ -208,21 +208,32 @@ def stage(id, prompt):
     reported("idle")
 
 
-def inbox():
+ENTRY = {}
+
+
+def registry():
     home = os.environ.get("KANNA_AGENTS_HOME")
-    if PROGRAM != "claude" or not home:
+    return home and os.path.join(home, ".claude", "sessions", f"{os.getpid()}.json")
+
+
+def announce(**changes):
+    ENTRY.update(changes)
+    with open(registry(), "w") as f:
+        json.dump({k: v for k, v in ENTRY.items() if v is not None}, f)
+
+
+def inbox(fields=None):
+    if PROGRAM != "claude" or not registry():
         return
     path = f"/tmp/kanna-mock-{os.getpid()}.sock"
-    entry = os.path.join(home, ".claude", "sessions", f"{os.getpid()}.json")
+    entry = registry()
     os.makedirs(os.path.dirname(entry), exist_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(path)
     server.listen()
     atexit.register(lambda: [os.remove(p) for p in (path, entry) if os.path.exists(p)])
-
-    def announce():
-        with open(entry, "w") as f:
-            json.dump({"pid": os.getpid(), "peerProtocol": 1, "messagingSocketPath": path}, f)
+    ENTRY.update({"pid": os.getpid(), "kind": "interactive", "peerProtocol": 1, "messagingSocketPath": path, "startedAt": int(time.time() * 1000)})
+    ENTRY.update(fields or {})
 
     delay = float(os.environ.get("KANNA_MOCK_INBOX_DELAY") or 0)
     if delay:
@@ -235,11 +246,44 @@ def inbox():
             conn, _ = server.accept()
             for line in conn.makefile():
                 message = json.loads(line)
-                if message.get("type") == "user":
+                if message.get("type") == "user" and not ENTRY.get("parkedJobId"):
                     inbound(message["message"]["content"])
             conn.close()
 
     threading.Thread(target=serve, daemon=True).start()
+
+
+JOB = {"process": None}
+
+
+def park(words):
+    job = uuid.uuid4().hex[:8]
+    if words[1:2] != ["nojob"]:
+        child = subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--mock-job", job, *sys.argv[1:]], stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, "KANNA_MOCK_REPORTS": "0"})
+        JOB["process"] = child
+        atexit.register(lambda: child.poll() is None and child.terminate())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not os.path.exists(os.path.join(os.path.dirname(registry()), f"{child.pid}.json")):
+            time.sleep(0.05)
+    announce(parkedJobId=job)
+    out(f"PARKED {job}\r\n")
+
+
+def unpark():
+    child = JOB["process"]
+    if child and child.poll() is None:
+        child.terminate()
+        child.wait()
+    JOB["process"] = None
+    announce(parkedJobId=None)
+    out("UNPARKED\r\n")
+
+
+def job_main(job):
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    inbox({"kind": "bg", "jobId": job, "sessionId": str(uuid.uuid4())})
+    while True:
+        time.sleep(1)
 
 
 def inbound(text):
@@ -373,6 +417,8 @@ def main():
         return 0
     if sys.argv[1:2] == ["app-server"]:
         return app_server(sys.argv[1:])
+    if sys.argv[1:2] == ["--mock-job"]:
+        return job_main(sys.argv[2])
     if os.isatty(sys.stdin.fileno()):
         fd = sys.stdin.fileno()
         saved = termios.tcgetattr(fd)
@@ -390,7 +436,7 @@ def main():
     if refusal:
         print(refusal)
         return 1
-    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], ask, report STATUS, focus LOG or exit\r\n")
+    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], park [nojob], unpark, ask, report STATUS, focus LOG or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
     out(f"{'resumed' if resumed else 'session'} {id}\r\n")
@@ -567,6 +613,10 @@ def answering(line):
         wake = float(words[3]) if words[2:3] == ["wake"] and len(words) > 3 else None
         threading.Thread(target=woken, args=(child, wake), daemon=True).start()
         out(f"BACKGROUND_STARTED {child.pid}\r\n")
+    elif words[:1] == ["park"]:
+        park(words)
+    elif words[:1] == ["unpark"]:
+        unpark()
     elif words[:1] == ["say"]:
         said([{"type": "text", "text": line.strip().split(None, 1)[1]}])
         out("SAID\r\n")
