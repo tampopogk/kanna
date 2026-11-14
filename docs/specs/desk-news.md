@@ -1,12 +1,13 @@
 # Desk news for the planner
 
-**Status:** built · **Tested:** e2e `desk_news` (a bypassing mock Claude planner takes it unheld), `cargo test -p kanna-daemon` (desk_news, tasks) · **Builds on:** [agent messaging](agent-messaging.md), [the CLI acts on its caller](cli-caller.md), [tasks](tasks.md), [the Desk view](desk-view.md)
+**Status:** built · **Tested:** e2e `desk_news` (a bypassing mock Claude planner takes it unheld; a task made by a task's agent is told, the planner's own aren't), `cargo test -p kanna-daemon` (desk_news, tasks) · **Builds on:** [agent messaging](agent-messaging.md), [the CLI acts on its caller](cli-caller.md), [tasks](tasks.md), [the Desk view](desk-view.md)
 
-The planning agent only learns what's on the Desk when it runs `kanna task list`. Meanwhile the user picks and shelves tasks in the Desk view, and tasks' agents merge and run `kanna task done`, so the planner reports a Desk that's no longer there. Kanna now tells the repo's planner about each change that moves a task on or off the Desk or Shelf and **it didn't make itself**, as an [agent message](agent-messaging.md) from `desk`, one short line per change naming its task by ID and name, batched:
+The planning agent only learns what's on the Desk when it runs `kanna task list`. Meanwhile the user picks and shelves tasks in the Desk view, and tasks' agents merge and run `kanna task done`, so the planner reports a Desk that's no longer there. Kanna now tells the repo's planner about each change that moves a task on or off the Desk or Shelf, and each task made, that **it didn't make itself**, as an [agent message](agent-messaging.md) from `desk`, one short line per change naming its task by ID and name, batched:
 
 ```text
 [message from desk] task-4ec3 "Markup in the pane you're looking at" merged into main and left the Desk
 task-1dfb "Fix login redirect" moved to the Desk
+task-7c6d "Window titles start with the project's name" was made on the Shelf by task-b914 "A task picked onto the Desk never arrives with its agent ended"
 ```
 
 ## Contents
@@ -21,13 +22,17 @@ task-1dfb "Fix login redirect" moved to the Desk
 
 | Change | Line |
 |---|---|
+| A task made | `TASK was made on the Shelf by MAKER` |
+| A task made to wait for others (`--after`) | `TASK was made on the Shelf by MAKER, waiting for A, B and C` |
 | A Shelf task moved to the Desk | `TASK moved to the Desk` |
 | A Desk task moved to the Shelf | `TASK moved to the Shelf` |
 | A Desk task ended, its branch merged into main | `TASK merged into main and left the Desk` |
 | A Desk task ended, not merged | `TASK ended and left the Desk, not merged into main` |
 | A Shelf task ended (taken off), merged / not | `TASK merged into main and left the Shelf` · `TASK was taken off the Shelf` |
 
-- **Only changes that move a task.** A Desk task made the active one (the user switches between Desk tasks all the time, and it changes nothing the planner works with), a task made, started, stopped or renamed, a Shelf runner's turns, a task's own messages: none of these is news; the planner hears of them as before (`kanna task list`, a task's message).
+- **Only tasks made and changes that move a task.** A Desk task made the active one (the user switches between Desk tasks all the time, and it changes nothing the planner works with), a task started, stopped or renamed (Shelf runners start and stop tasks all the time), a Shelf runner's turns, a task's own messages: none of these is news; the planner hears of them as before (`kanna task list`, a task's message).
+- **A task made** is news so the planner learns of work it didn't plan: a task's agent splitting off work, the user making one in the app or on the phone. `MAKER` is the task whose terminal ran `kanna task new` (its agent's pane, or any terminal in its worktree), by ID and name; `you` for the user (the app, the phone, a terminal outside Kanna or in no task's worktree); `the planner of REPO` for another repo's planner. What it waits for is named the same way, joined with commas and a last `and`.
+- **Which makings are covered:** every `tasks new` the daemon takes: the CLI, the app's New Task, the phone, and an agent a schedule prompted (told as that agent's). A task that arrives from another machine through the Shelf's sync (granted or taken here) isn't: it wasn't made here, and its own machine's planner was told when it was made.
 - **Merged** means the task's branch has commits of its own (its tip isn't the commit it started from, `kanna-base`) and they're all in the repo's checked-out branch (`main`, named as it is). It's decided when the task ends, before its worktree and branch are cleaned up ([task scripts](task-scripts.md)).
 - **`TASK` is its ID and name,** `task-4ec3 "Docs pass"`, as messages from tasks name their sender, or the short ID alone for a task with no name. The planner runs commands on the task by its ID and tells the user its name.
 - **From `desk`, not the task:** the line reports what the user or Kanna did, so the sender stays `desk` even when a task's agent ran `kanna task done`.
@@ -45,8 +50,8 @@ flowchart TD
 
 | Who | `by` | Told? |
 |---|---|---|
-| The planner's `kanna task pick/shelve/done` | its terminal (`term-3`) | no |
-| A task's agent running `kanna task done` | the task's terminal | yes |
+| The planner's `kanna task new/pick/shelve/done` | its terminal (`term-3`) | no |
+| A task's agent running `kanna task new` or `kanna task done` | the task's terminal | yes |
 | The Desk view, a toast, the Task menu, ⌘1, a strip click | none, so `user` | yes |
 | `kanna task …` in a terminal outside Kanna | none, so `user` | yes |
 
@@ -77,8 +82,9 @@ sequenceDiagram
 
 ## 4. How it's built
 
-- **`desk_news.rs`** (daemon): `News` gathers `Item`s (repo, task, name, what, merged, when) and decides when a repo's burst is due (`due`) and its lines (`lines`). Pure, unit-tested.
-- **`Tasks::tell_planner`** (`tasks.rs`) is called beside the event it reports: `started` (picked, to the Desk), `shelve`, `take_off` (done from the Shelf), and `sweep` (done from the Desk). It skips a change whose `by` is one of the repo's planner panes, and a repo with none.
+- **`desk_news.rs`** (daemon): `News` gathers `Item`s (repo, task, name, what, merged, when, and for a task made its maker and what it waits for) and decides when a repo's burst is due (`due`) and its lines (`lines`). Pure, unit-tested.
+- **`Tasks::tell_planner`** (`tasks.rs`) is called beside the event it reports: `started` (picked, to the Desk), `shelve`, `take_off` (done from the Shelf), and `sweep` (done from the Desk). It skips a change whose `by` is one of the repo's planner panes, and a repo with none (`news_for`).
+- **`Tasks::tell_made`** is called from `add_from` once the new task is stored, with the same skip; `maker` names the task whose agent pane is `by`, or whose worktree holds `by`'s folder, and `label` names what it waits for. `Item::made` carries both to the line.
 - **The caller of a Desk task's done:** `done` and `torn_down` put the pane's `by` in `ending` before closing it; `sweep` takes it from there for the `done` event and the news.
 - **Merged:** `finish`'s thread decides it first (`task_scripts::merge`, on `task_scripts::merged`: `kanna-base`, `merge-base --is-ancestor`), before teardown and clean-up, and sends `Event::Merged`; a task with no worktree is not merged at once. The `done` item waits for it.
 - **Flushing:** `Tasks::tick` posts each due burst with `Tasks::post` (from `desk` to `planner`), the door crash reports use, and wakes again at the next burst's time. `desk` is one of `messages::yours`, so `hand_over` gives it the planner's own class for the envelope.
@@ -88,7 +94,7 @@ sequenceDiagram
 
 | Term | Meaning |
 |---|---|
-| **News** | A Desk change the planner didn't make, waiting to be told |
+| **News** | A Desk change or a task made that the planner didn't make, waiting to be told |
 | **Burst** | A repo's news gathered into one message |
 | **Caller** | The Kanna terminal a request came from (`by`), or `user` with none |
 | **Merged** | The task's branch has commits of its own, all in the repo's checked-out branch |

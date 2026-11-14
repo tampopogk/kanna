@@ -937,7 +937,6 @@ desk_news() {
   printf '#!/bin/sh\nexec sleep 600\n' >"$agent" && chmod +x "$agent"
   printf '{"version": 1, "shelf": {"runners": 0}}\n' >"$repo/.kanna/config.json"
   repo="$(cd "$repo" && pwd -P)"
-  in_repo() { (cd "$repo" && kanna "$@"); }
   local opened d planner; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "desk_news line $LINENO: $opened"; return 1; }
   d="${BASH_REMATCH[1]}"
   desk() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$d\"}}" | field "$1"; }
@@ -951,7 +950,7 @@ desk_news() {
   news() { raw '{"id":1,"cmd":"tasks","args":{"action":"messages"}}' | python3 -c 'import json, sys
 print("\n--\n".join(m["text"] for m in json.load(sys.stdin)["messages"] if m["from"] == "desk"))'; }
   for name in "Inked" "Planner's own" "Docs pass" "Unmerged"; do
-    in_repo task new "$name" "go" --agent "$agent" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
+    as_planner task new "$name" "go" --agent "$agent" >/dev/null || { echo "desk_news line $LINENO"; return 1; }
   done
   local picked wt; picked="$(as_planner task pick "$(tid 1)")" && [[ "$picked" =~ " in "([^ ]+)" (" ]] || { echo "desk_news line $LINENO: $picked"; return 1; }
   wt="${BASH_REMATCH[1]}"
@@ -971,6 +970,8 @@ print("\n--\n".join(m["text"] for m in json.load(sys.stdin)["messages"] if m["fr
   raw '{"id":1,"cmd":"debug.menu","args":{"item":"Move to Shelf"}}' | grep -q '"ok":true' || { echo "desk_news: Move to Shelf didn't run"; return 1; }
   check wait_for 10 eval '[[ "$(news)" == "$picked_news"$'"'"'\n--\n'"'"'"$said_docs moved to the Shelf" ]]' || { echo "desk_news: the user's shelve wasn't told on its own: $(news)"; return 1; }
   check wait_for 15 unwrapped "$planner" "peer: [message from desk] $said_docs moved to the Desk" || { shows "$planner" "held peer message" && echo "desk_news: the planner held its Desk news for approval: it came without the envelope"; echo "desk_news: the planner didn't get its Desk news"; kanna read "$planner"; return 1; }
+  (cd "$wt" && KANNA_TERMINAL="$(pane Inked id)" kanna task new "Follow-up" "go" --agent "$agent" --after "$(tid 3)") >/dev/null || { echo "desk_news: the task's agent couldn't make a task"; return 1; }
+  check wait_for 10 eval '[[ "$(news)" == *$'"'"'\n--\n'"'"'"$(sid 5) \"Follow-up\" was made on the Shelf by $said_inked, waiting for $said_docs" ]]' || { echo "desk_news: the task made by a task's agent wasn't told: $(news)"; return 1; }
   git -C "$wt" -c user.email=e@e -c user.name=e commit -q --allow-empty -m inked && git -C "$repo" merge -q --ff-only "$(git -C "$wt" branch --show-current)" || { echo "desk_news line $LINENO"; return 1; }
   (cd "$wt" && KANNA_TERMINAL="$(pane Inked id)" kanna task done) >/dev/null || { echo "desk_news: the task's own done failed"; return 1; }
   check wait_for 15 eval '[[ "$(news)" == *"$said_inked merged into main and left the Desk" ]]' || { echo "desk_news: the task's own done wasn't told as merged: $(news)"; return 1; }

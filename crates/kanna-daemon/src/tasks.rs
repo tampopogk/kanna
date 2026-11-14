@@ -3831,7 +3831,8 @@ impl Tasks {
         let entry = Entry { after, ..self.mint_from(args, Some(name), message, ids)? };
         self.store(&entry, Place::Shelf, None, Some(Change { to: Some(Place::Shelf), ..Change::new("made") }.by(entry.by.as_deref().or(who(args)))))?;
         let value = self.described(&entry);
-        insert_in_order(&mut self.entries.borrow_mut(), entry);
+        insert_in_order(&mut self.entries.borrow_mut(), entry.clone());
+        self.tell_made(&entry);
         self.changed();
         self.refill();
         Ok(Map::from_iter([("task".to_string(), value)]))
@@ -4760,15 +4761,38 @@ impl Tasks {
         planners.iter().cloned().find(|pane| alive(&core, pane) && core.pane(pane).and_then(|p| project(p.cwd.as_deref())).is_some_and(|r| same_folder(&r, repo)))
     }
 
-    fn tell_planner(&self, entry: &Entry, what: What, by: Option<&str>) {
+    fn news_for(&self, entry: &Entry, what: What, by: Option<&str>) -> Option<desk_news::Item> {
         let planners = self.planners();
-        if self.planner_of(&entry.repo, &planners).is_none() {
-            return;
-        }
+        self.planner_of(&entry.repo, &planners)?;
         if by.is_some_and(|by| planners.iter().any(|p| p == by) && self.planner_of(&entry.repo, &[by.to_string()]).is_some()) {
-            return;
+            return None;
         }
-        self.news.borrow_mut().add(desk_news::Item::new(&entry.repo, &entry.id, &self.short(&entry.id), entry.name.as_deref(), what, Instant::now()));
+        Some(desk_news::Item::new(&entry.repo, &entry.id, &self.short(&entry.id), entry.name.as_deref(), what, Instant::now()))
+    }
+
+    fn tell_planner(&self, entry: &Entry, what: What, by: Option<&str>) {
+        if let Some(item) = self.news_for(entry, what, by) {
+            self.news.borrow_mut().add(item);
+        }
+    }
+
+    fn tell_made(&self, entry: &Entry) {
+        let Some(item) = self.news_for(entry, What::Made, entry.by.as_deref()) else { return };
+        let after = entry.after.iter().map(|id| self.label(id)).collect();
+        self.news.borrow_mut().add(item.made(&self.maker(entry.by.as_deref()), after));
+    }
+
+    fn maker(&self, by: Option<&str>) -> String {
+        let Some(pane) = by else { return "you".into() };
+        let cwd = self.core.upgrade().and_then(|core| core.pane(pane)).and_then(|p| p.cwd);
+        let task = self.task_of(pane).or_else(|| cwd.as_deref().and_then(|cwd| self.task_in_folder(Path::new(cwd))).map(|e| e.id));
+        if let Some(task) = task {
+            return self.label(&task);
+        }
+        match project(cwd.as_deref()).filter(|_| self.planners().iter().any(|p| p == pane)) {
+            Some(repo) => format!("the planner of {}", repo.file_name().map_or_else(|| repo.to_string_lossy(), |n| n.to_string_lossy())),
+            None => "you".into(),
+        }
     }
 
     fn tell_planners(&self, now: Instant) -> Option<Instant> {
@@ -6483,6 +6507,39 @@ mod tests {
         assert!(ids.iter().all(|id| db::is_task_id(id)), "{ids:?}");
         fs::create_dir_all(state.join(WORKTREES).join("task-1dfb12c2")).unwrap();
         assert!(taken(&state, "task-1dfb12c2") && !taken(&state, "task-00c0ffee"));
+        fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_task_made_by_anyone_but_the_planner_is_desk_news() {
+        let state = std::env::temp_dir().join(format!("kanna-made-news-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&state);
+        fs::create_dir_all(state.join(".kanna")).unwrap();
+        assert!(Command::new("git").arg("-C").arg(&state).args(["init", "-q"]).status().unwrap().success());
+        fs::write(state.join(".kanna/config.json"), r#"{"shelf": {"runners": 0}}"#).unwrap();
+        let repo = state.canonicalize().unwrap().to_string_lossy().into_owned();
+        let core = kanna_mux::Core::default();
+        let panes = ["term-1", "term-2", "term-3"].map(|id| {
+            let mut pane = Pane::new(id, None, kanna_mux::PaneType::Term);
+            pane.state = PaneState::Running;
+            pane.cwd = Some(repo.clone());
+            pane
+        });
+        core.install_panes(panes.to_vec(), 0, 3, 0);
+        let tasks = Tasks::open(Rc::new(Db::open(&state).unwrap()), &state, core.weak(), crate::runtime::channel().0);
+        tasks.entries.borrow_mut().push(Entry { id: "task-b914aaaa".into(), name: Some("Fix login".into()), repo: repo.clone(), agent: "claude".into(), held: Some("term-2".into()), ..Default::default() });
+        let made = |by: Option<&str>, name: &str, after: Option<&str>| tasks.add(&json!({ "repo": repo, "name": name, "by": by, "after": after.map(|a| vec![a]) })).unwrap()["task"]["id"].as_str().unwrap().to_string();
+        let told = || tasks.news.borrow_mut().due(Instant::now() + Duration::from_secs(60)).into_iter().map(|(_, text)| text).collect::<Vec<_>>();
+        made(Some("term-2"), "No planner", None);
+        assert!(told().is_empty(), "no planner, no news");
+        *tasks.planners.borrow_mut() = Some(Box::new(|| vec!["term-1".to_string()]));
+        made(Some("term-1"), "The planner's", None);
+        assert!(told().is_empty(), "the planner isn't told what it made");
+        let by_task = made(Some("term-2"), "By a task", None);
+        let by_you = made(None, "By you", Some("task-b914aaaa"));
+        let label = |id: &str, name: &str| format!("{} \"{name}\"", tasks.short(id));
+        let fix = label("task-b914aaaa", "Fix login");
+        assert_eq!(told(), [format!("{} was made on the Shelf by {fix}\n{} was made on the Shelf by you, waiting for {fix}", label(&by_task, "By a task"), label(&by_you, "By you"))], "one burst, one message");
         fs::remove_dir_all(&state).unwrap();
     }
 
