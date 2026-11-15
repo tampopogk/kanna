@@ -20,6 +20,7 @@ use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod comment_targets;
+mod holding;
 mod instance;
 mod merging;
 mod moving;
@@ -27,6 +28,7 @@ mod phone;
 mod workers;
 
 pub use workers::{Offer, Placed};
+use holding::{Contended, Holding, YIELDED};
 
 pub use instance::MoveHooks;
 pub use phone::{Note, ProjectRecord};
@@ -1062,6 +1064,8 @@ pub struct Tasks {
     news: RefCell<News>,
     ending: RefCell<HashMap<String, Option<String>>>,
     picking: RefCell<HashSet<String>>,
+    holding: RefCell<HashMap<String, Holding>>,
+    contended: RefCell<Contended>,
     moving_instance: RefCell<Option<String>>,
     pub move_hooks: RefCell<Option<instance::MoveHooks>>,
     hosted: workers::Hosted,
@@ -1259,6 +1263,8 @@ impl Tasks {
             news: RefCell::default(),
             ending: RefCell::default(),
             picking: RefCell::default(),
+            holding: RefCell::default(),
+            contended: RefCell::default(),
             moving_instance: RefCell::default(),
             move_hooks: RefCell::default(),
             hosted: workers::Hosted::default(),
@@ -1481,6 +1487,7 @@ impl Tasks {
         if entry.queued.is_some() {
             value["queue"] = self.queue_info(entry);
         }
+        value["holding"] = self.holding_of(entry).unwrap_or(Value::Null);
         value
     }
 
@@ -2377,6 +2384,7 @@ impl Tasks {
         let events = self.flush_thread_events(&core, now);
         let mail = self.deliver(&core, now);
         self.look_for_background(now);
+        self.ask_holders(&running, now);
         let over: Vec<(String, Status)> = self.turns.borrow().iter().filter(|(pane, _)| !(self.has_mail(pane) && self.ready.borrow().get(*pane).is_some_and(|r| r.at().is_some()))).filter(|(pane, _)| !self.setting_up.borrow().contains_key(*pane)).filter_map(|(pane, turn)| turn.ended(now).map(|why| (pane.clone(), why))).collect();
         for (pane, why) in over {
             let Some((_, entry)) = running.iter().find(|(p, _)| *p == pane) else { continue };
@@ -2411,6 +2419,7 @@ impl Tasks {
         let quiet: Vec<String> = self.turns.borrow().iter().filter(|(pane, turn)| turn.quiet(now) && !self.setting_up.borrow().contains_key(*pane)).map(|(pane, _)| pane.clone()).collect();
         for pane in quiet {
             let Some(found) = self.background.borrow().as_ref().and_then(|background| background(&pane)) else { continue };
+            self.held_by(&pane, &found, now);
             let started = self.turns.borrow_mut().get_mut(&pane).is_some_and(|turn| turn.background(!found.is_empty(), now));
             if !started {
                 continue;
@@ -2698,6 +2707,7 @@ impl Tasks {
         let mut busy = taken.len() + self.hosted_workers();
         let mut limits: HashMap<String, (usize, usize)> = HashMap::new();
         let mut queue: Vec<(Hlc, String, Candidate)> = Vec::new();
+        let mut short: Vec<String> = Vec::new();
         for repo in repos {
             let slots = runners(&config_files(Path::new(&repo)));
             if slots == 0 || self.placed(&repo).is_err() {
@@ -2715,6 +2725,7 @@ impl Tasks {
             }
             let Some((in_repo, slots)) = limits.get_mut(&repo) else { continue };
             if (busy >= total || *in_repo >= *slots) && !self.told_by_you(&candidate) {
+                short.push(repo);
                 continue;
             }
             busy += 1;
@@ -2766,6 +2777,8 @@ impl Tasks {
                 }
             }
         }
+        let waiting = short.into_iter().filter_map(|repo| limits.get(&repo).map(|(in_repo, slots)| (repo, *in_repo, *slots))).collect();
+        *self.contended.borrow_mut() = Contended { free_one: busy.saturating_sub(1) < total, waiting };
     }
 
     fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<(Hlc, Candidate)> {
@@ -2960,6 +2973,8 @@ impl Tasks {
                     Some("done") => this.done(&args, responder),
                     Some("start") => this.start(&args, responder),
                     Some("stop") => this.stop(&args, responder),
+                    Some("yield") => this.yield_runner(&args, responder),
+                    Some("wait") => responder.reply(this.wait_on(&args)),
                     Some("setup") => this.setup(&args, responder),
                     Some("pick") => this.pick(&args, responder),
                     Some("shelve") => this.shelve(&args, responder),
@@ -2978,7 +2993,7 @@ impl Tasks {
                     Some("subscribe") => responder.reply(this.subscribe(&args, true)),
                     Some("unsubscribe") => responder.reply(this.subscribe(&args, false)),
                     Some("hearing") => responder.reply(this.hearing(&args)),
-                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, thread_event, messages, subscribe, unsubscribe or hearing"))),
+                    _ => responder.reply(Err(bad("tasks needs an action: new, edit, ready, name, list, show, resolve, locate, sender, done, start, stop, yield, wait, setup, pick, shelve, plan, planner, events, activated, looked, send, comment, thread_event, messages, subscribe, unsubscribe or hearing"))),
                 }
             }),
         );
@@ -4514,6 +4529,7 @@ impl Tasks {
         let Some(reference) = string(args, "task") else { return responder.reply(Err(bad("say which task"))) };
         let found = self.entries.borrow().iter().find(|e| e.id == reference).cloned();
         let by = who(args).map(String::from);
+        let yielded = string(args, "why") == Some(YIELDED);
         let this = Rc::downgrade(self);
         let end = move |task: String, pane: String, place: &'static str, responder: Responder| {
             let Some(this) = this.upgrade() else { return responder.reply(Err(gone())) };
@@ -4528,6 +4544,7 @@ impl Tasks {
                 "idle" => Some("finished"),
                 _ => None,
             });
+            let last = if yielded { Some(YIELDED) } else { last };
             let own = by.as_deref() == Some(pane.as_str());
             let responder = if own {
                 responder.reply(Ok(Map::from_iter([("task".to_string(), json!(task)), ("pane".to_string(), json!(pane)), ("place".to_string(), json!(place)), ("after_turn".to_string(), json!(true))])));
@@ -4543,7 +4560,8 @@ impl Tasks {
                     tasks.stopped_at(&pane, last);
                 }
                 let session = tasks.pane_entry(&pane).and_then(|e| e.session);
-                tasks.note(&pane, Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref())));
+                let change = Change::new("stopped").by(by.as_deref()).with("session", opt(session.as_deref()));
+                tasks.note(&pane, if yielded { change.with("why", json!(YIELDED)) } else { change });
                 if let (Some(id), Some(on_stop)) = (tasks.task_of(&pane), tasks.on_stop.borrow().as_ref()) {
                     on_stop(&id);
                 }
@@ -8010,6 +8028,152 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         (t, pane, child)
+    }
+
+    const OTHER: &str = "task-2e2e2e2e";
+
+    fn another_waits(t: &Stopping) -> String {
+        fs::write(t.state.join(".kanna/config.json"), r#"{"shelf": {"runners": 1}}"#).unwrap();
+        let opened = t.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": "claude", "task": OTHER } }));
+        let pane = opened["pane"]["id"].as_str().unwrap().to_string();
+        t.settle(|| alive(&t.core, &pane));
+        t.core.update(&pane, PaneState::Exited, Some(0), None);
+        let repo = t.state.to_string_lossy().into_owned();
+        let other = Entry { id: OTHER.into(), repo: repo.clone(), agent: "claude".into(), made_at: 1.0, folder: Some(repo.clone()), session: Some("theirs".into()), held: Some(pane.clone()), stopped: Some("finished".into()), ..Default::default() };
+        t.tasks.store(&other, Place::Shelf, Some(&pane), None).unwrap();
+        t.tasks.entries.borrow_mut().push(other);
+        t.tasks.waiting.borrow_mut().push(Message { id: 900, recipient: OTHER.into(), repo, sender: "task-3f3f3f3f".into(), at: 0.0, delivered: None, text: "hello".into(), mode: None, comment: None });
+        t.tasks.refill();
+        t.settle(|| t.tasks.contended.borrow().for_repo(&t.state.to_string_lossy()));
+        pane
+    }
+
+    fn asked(t: &Stopping) -> Vec<String> {
+        t.tasks.waiting.borrow().iter().filter(|m| m.recipient == "task-1dfb12c2" && m.sender == KANNA).map(|m| m.text.clone()).collect()
+    }
+
+    fn due(t: &Stopping, pane: &str) {
+        t.tasks.holding.borrow_mut().get_mut(pane).unwrap().next = Instant::now();
+        for _ in 0..5 {
+            t.pump();
+        }
+    }
+
+    fn pumped(t: &Stopping, ms: u64) {
+        let by = Instant::now() + Duration::from_millis(ms);
+        while Instant::now() < by {
+            t.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_runner_held_by_background_work_is_asked_about_only_once_the_delay_passes_while_another_task_waits() {
+        let (t, pane, _child) = idle_with_a_child("ask");
+        let next = t.tasks.holding.borrow()[&pane].next;
+        assert!(next >= Instant::now() + holding::ASK_AFTER - Duration::from_secs(5), "asked 5 minutes after its turn ended, not before");
+        assert_eq!(t.tasks.described(&t.tasks.entries.borrow()[0])["holding"], json!({ "on": ["sleep"], "for": null, "asked": 0 }), "its row says what it waits on");
+        due(&t, &pane);
+        assert!(asked(&t).is_empty(), "no one waits for a runner, so nothing is asked");
+        another_waits(&t);
+        t.tasks.holding.borrow_mut().get_mut(&pane).unwrap().next = Instant::now() + Duration::from_secs(60);
+        pumped(&t, 50);
+        assert!(asked(&t).is_empty(), "the delay isn't over");
+        due(&t, &pane);
+        assert_eq!(asked(&t), ["You ended your turn with these still running: sleep 30 (pid 4242). Another task is waiting for your runner. If you're waiting on them, run `kanna task wait \"WHAT FOR\"`; if not, run `kanna task yield`."]);
+        let held = t.tasks.holding.borrow()[&pane].clone();
+        assert_eq!((held.asked, held.wait), (1, holding::ASK_AFTER * 2));
+        let events: Vec<Value> = t.tasks.db.events("task-1dfb12c2").unwrap().into_iter().filter(|e| e.what == "asked").map(|e| e.doc).collect();
+        assert_eq!(events.len(), 1);
+        assert!(alive(&t.core, &pane) && t.tasks.quitting.borrow().is_empty(), "asking stops nothing");
+    }
+
+    #[test]
+    fn no_answer_keeps_the_runner_and_asks_again_after_twice_as_long() {
+        let (t, pane, _child) = idle_with_a_child("unanswered");
+        another_waits(&t);
+        due(&t, &pane);
+        assert_eq!(asked(&t).len(), 1);
+        t.tasks.waiting.borrow_mut().retain(|m| m.sender != KANNA);
+        t.tasks.status(&pane, Some("working"), false);
+        pumped(&t, 50);
+        t.tasks.status(&pane, Some("idle"), true);
+        pumped(&t, 100);
+        assert!(t.tasks.turns.borrow()[&pane].waiting(), "it ended its turn again with the work running");
+        assert!(alive(&t.core, &pane) && t.tasks.quitting.borrow().is_empty() && t.agents.typed.borrow().is_empty(), "it keeps its runner");
+        let next = t.tasks.holding.borrow()[&pane].next;
+        assert!(next > Instant::now() + holding::ASK_AFTER * 2 - Duration::from_secs(5), "the schedule goes on: 10 minutes after the first ask");
+        due(&t, &pane);
+        assert_eq!(asked(&t).len(), 1, "asked again");
+        assert_eq!(t.tasks.holding.borrow()[&pane].wait, holding::ASK_AFTER * 4);
+    }
+
+    #[test]
+    fn wait_keeps_the_runner_says_what_for_and_doubles_the_time_to_the_next_ask() {
+        let (t, pane, _child) = idle_with_a_child("wait");
+        another_waits(&t);
+        due(&t, &pane);
+        t.tasks.waiting.borrow_mut().retain(|m| m.sender != KANNA);
+        let waited = t.tasks.wait_on(&json!({ "task": "task-1dfb12c2", "text": "the user's look at the mockup", "by": pane })).unwrap();
+        assert_eq!(waited["again"], 600, "asked at 5, the wait has it asked again after 10");
+        let row = t.tasks.described(&t.tasks.entries.borrow()[0]);
+        assert_eq!(row["holding"]["for"], "the user's look at the mockup");
+        pumped(&t, 100);
+        assert!(asked(&t).is_empty() && alive(&t.core, &pane) && t.agents.typed.borrow().is_empty(), "it keeps its runner and isn't asked");
+        due(&t, &pane);
+        assert_eq!(asked(&t).len(), 1, "asked again once that's up");
+        assert_eq!(t.tasks.holding.borrow()[&pane].wait, holding::ASK_AFTER * 4, "then after 20");
+        let refused = t.tasks.wait_on(&json!({ "task": "task-1dfb12c2", "text": " " })).unwrap_err();
+        assert!(refused.message.contains("WHAT FOR"), "{}", refused.message);
+    }
+
+    #[test]
+    fn yield_stops_the_task_at_its_turns_end_freeing_its_runner_for_the_next_task() {
+        let (t, pane, child) = idle_with_a_child("yield");
+        let theirs = another_waits(&t);
+        due(&t, &pane);
+        t.status(&pane, "working");
+        t.tasks.status(&pane, Some("working"), false);
+        let answer = t.answer(|tasks, responder| tasks.yield_runner(&json!({ "task": "task-1dfb12c2", "by": pane }), responder)).unwrap();
+        assert_eq!(answer["after_turn"], true);
+        assert!(asked(&t).is_empty(), "the question it hadn't read yet is withdrawn, so it doesn't start it again");
+        pumped(&t, 100);
+        assert!(t.agents.typed.borrow().is_empty() && !alive(&t.core, &theirs), "nothing quits until its turn ends, and the runner stays taken");
+        t.status(&pane, "idle");
+        t.tasks.status(&pane, Some("idle"), true);
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        assert!(!child.borrow().is_empty(), "its background work doesn't hold the yield");
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: paste /exit"), format!("{pane}: return")]);
+        assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("yielded"), "its row says why it stopped");
+        let stopped: Vec<Value> = t.tasks.db.events("task-1dfb12c2").unwrap().into_iter().filter(|e| e.what == "stopped").map(|e| e.doc).collect();
+        assert_eq!(stopped.last().unwrap()["why"], "yielded");
+        t.tasks.refill();
+        t.settle(|| alive(&t.core, &theirs));
+        assert!(t.core.pane(&theirs).and_then(|p| p.command).is_some_and(|c| c.contains("theirs")), "the waiting task runs, resuming its session");
+    }
+
+    #[test]
+    fn a_pick_while_a_yield_quits_the_agent_starts_it_again_on_the_desk() {
+        let (t, pane, _child) = idle_with_a_child("pick-yield");
+        t.status(&pane, "idle");
+        let (responder, reply) = kanna_mux::responder();
+        t.tasks.yield_runner(&json!({ "task": "task-1dfb12c2", "by": pane }), responder);
+        t.tasks.status(&pane, Some("idle"), true);
+        t.settle(|| t.agents.typed.borrow().iter().any(|k| k.ends_with("paste /exit")));
+        picked(&t, || {}).unwrap();
+        on_the_desk_running(&t, &pane);
+        assert!(t.core.pane(&pane).and_then(|p| p.command).is_some_and(|c| c.contains("given")), "it resumes its session");
+        drop(reply);
+    }
+
+    #[test]
+    fn yield_and_wait_are_for_a_task_running_on_the_shelf() {
+        let t = Stopping::new("yield-desk");
+        let (pane, entry) = t.agent("claude", Place::Desk);
+        let refused = t.answer(|tasks, responder| tasks.yield_runner(&json!({ "task": entry.id, "by": pane }), responder)).unwrap_err();
+        assert_eq!(refused.code, "not_on_shelf");
+        assert_eq!(t.tasks.wait_on(&json!({ "task": entry.id, "text": "x" })).unwrap_err().code, "not_on_shelf");
+        assert!(alive(&t.core, &pane));
     }
 
     #[test]
