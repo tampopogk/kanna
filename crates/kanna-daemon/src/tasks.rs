@@ -2412,7 +2412,8 @@ impl Tasks {
         let setups = (!self.setting_up.borrow().is_empty()).then(|| now + SETUP_EVERY);
         let news = self.tell_planners(now);
         let workers = self.tick_workers();
-        [turns, quits, finishing, setups, self.fill_at.get(), events, mail, news, workers, Some(self.sync_at.get())].into_iter().flatten().min()
+        let asks = self.next_ask(now);
+        [turns, quits, finishing, setups, self.fill_at.get(), events, mail, news, workers, asks, Some(self.sync_at.get())].into_iter().flatten().min()
     }
 
     fn look_for_background(&self, now: Instant) {
@@ -2779,6 +2780,7 @@ impl Tasks {
         }
         let waiting = short.into_iter().filter_map(|repo| limits.get(&repo).map(|(in_repo, slots)| (repo, *in_repo, *slots))).collect();
         *self.contended.borrow_mut() = Contended { free_one: busy.saturating_sub(1) < total, waiting };
+        self.ask_holders(&self.running_on_shelf(core), now);
     }
 
     fn candidates(&self, core: &CoreHandle, repo: &str, mine: &[&Entry], starting: &HashSet<String>, machines: &Roster, heard: bool, asked: &HashSet<String>, now: Instant) -> Vec<(Hlc, Candidate)> {
@@ -8075,8 +8077,8 @@ mod tests {
         assert_eq!(t.tasks.described(&t.tasks.entries.borrow()[0])["holding"], json!({ "on": ["sleep"], "for": null, "asked": 0 }), "its row says what it waits on");
         due(&t, &pane);
         assert!(asked(&t).is_empty(), "no one waits for a runner, so nothing is asked");
-        another_waits(&t);
         t.tasks.holding.borrow_mut().get_mut(&pane).unwrap().next = Instant::now() + Duration::from_secs(60);
+        another_waits(&t);
         pumped(&t, 50);
         assert!(asked(&t).is_empty(), "the delay isn't over");
         due(&t, &pane);
@@ -8106,6 +8108,31 @@ mod tests {
         due(&t, &pane);
         assert_eq!(asked(&t).len(), 1, "asked again");
         assert_eq!(t.tasks.holding.borrow()[&pane].wait, holding::ASK_AFTER * 4);
+    }
+
+    #[test]
+    fn an_ask_due_while_no_one_waits_goes_out_from_the_fill_that_finds_a_task_waiting() {
+        let (t, pane, _child) = idle_with_a_child("overdue");
+        due(&t, &pane);
+        assert!(asked(&t).is_empty());
+        another_waits(&t);
+        assert_eq!(asked(&t).len(), 1, "asked by the fill that saw it wait");
+    }
+
+    #[test]
+    fn a_turn_that_ends_again_with_the_work_running_starts_the_delay_again() {
+        let (t, pane, _child) = idle_with_a_child("again");
+        another_waits(&t);
+        t.tasks.holding.borrow_mut().get_mut(&pane).unwrap().next = Instant::now() + Duration::from_secs(60);
+        t.tasks.status(&pane, Some("working"), false);
+        pumped(&t, 50);
+        t.tasks.status(&pane, Some("idle"), true);
+        pumped(&t, 100);
+        assert!(t.tasks.turns.borrow()[&pane].waiting());
+        assert!(t.tasks.holding.borrow()[&pane].next >= Instant::now() + holding::ASK_AFTER - Duration::from_secs(5), "5 minutes from this turn's end, not the first one's");
+        assert!(asked(&t).is_empty());
+        let at = t.tasks.tick().unwrap();
+        assert!(at <= t.tasks.holding.borrow()[&pane].next, "the next ask is a deadline the tick wakes for");
     }
 
     #[test]

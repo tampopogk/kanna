@@ -81,6 +81,9 @@ impl Tasks {
             (gone.as_ref().is_some_and(|h| !h.processes.is_empty()), gone)
         } else {
             let held = holding.entry(pane.to_string()).or_insert_with(|| Holding::new(now));
+            if started {
+                held.next = held.next.max(now + ask_after());
+            }
             let before = names(&held.processes);
             held.processes = found.to_vec();
             (started || before != names(found), None)
@@ -103,6 +106,10 @@ impl Tasks {
         let held = holding.get(pane).filter(|h| !h.processes.is_empty())?;
         let on: Vec<String> = shown(&held.processes).into_iter().map(|(_, n)| n).collect();
         Some(json!({ "on": on, "for": opt(held.reason.as_deref()), "asked": held.asked }))
+    }
+
+    pub(super) fn next_ask(&self, now: Instant) -> Option<Instant> {
+        self.holding.borrow().values().filter(|h| !h.processes.is_empty() && h.next > now).map(|h| h.next).min()
     }
 
     pub(super) fn ask_holders(&self, running: &[(String, Entry)], now: Instant) {
