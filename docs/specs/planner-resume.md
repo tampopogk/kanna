@@ -51,6 +51,7 @@ flowchart TD
 
 - **The main checkout isn't a task's own folder:** you and other agents start sessions there too, so the newest session in the folder (as a task's resume takes) may not be the planner's. A planner's is the **first** one made there since it started, which anything started there later can't be, unless the agent says its own as it quits, which wins.
 - **Claude after `/clear`** goes on in a new session; Kanna learns it only from the `claude [FLAGS] --resume ID` line claude prints as it quits. If the terminal is closed instead, the next planner resumes the conversation from before the `/clear`.
+- **Claude after it parks its conversation** (`←`, `/background`) goes on in a background job with a session of its own ([agent messaging](agent-messaging.md#6-a-parked-claude)): Kanna keeps the job's session in the project's row as soon as it sees the move, so a closed terminal resumes the whole conversation. When Kanna quits the planner (a project import's restart, an agent too old) it stops the job first (`claude stop JOB`); `/exit` typed yourself leaves the job running, as Claude means it to, and the line claude prints names the job's session, which the row keeps.
 - **Best effort:** where no session is found (codex quit before it wrote one, opencode's records missing, antigravity always), the planner starts a new conversation and says so.
 
 ## 3. How it's built

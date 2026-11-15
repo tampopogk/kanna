@@ -126,6 +126,7 @@ pub enum Event {
     Drained { terminal: String, serial: u64 },
     Status { terminal: String, serial: u64, status: Option<&'static str>, ended: bool },
     TooOld { terminal: String, serial: u64, why: String },
+    Moved { terminal: String, serial: u64, session: String },
     Reported { terminal: String, serial: u64, kept: reports::Kept },
     Unreported { terminal: String },
     Stacks { seen: Vec<stacks::Seen> },
@@ -167,7 +168,7 @@ impl Event {
             Event::Typed { .. } => "loop.typed",
             Event::Drained { .. } => "loop.drained",
             Event::Status { .. } => "loop.status",
-            Event::TooOld { .. } => "loop.status",
+            Event::TooOld { .. } | Event::Moved { .. } => "loop.status",
             Event::Reported { .. } | Event::Unreported { .. } => "loop.reported",
             Event::Stacks { .. } | Event::Heads | Event::Turn { .. } | Event::Merged { .. } => "loop.tasks",
             Event::Diff { .. } | Event::DiffUpdating { .. } => "loop.diff",
@@ -393,8 +394,7 @@ fn run() -> Result<(), String> {
         let program = detector.program(&terminal)?;
         Some(match program.agent.as_str() {
             "claude" => {
-                let config = kanna_detect::program::environment(program.pid, "CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).unwrap_or_else(|| agents::home().join(".claude"));
-                messages::Channel::Claude(messages::inbox(&config, program.pid))
+                messages::Channel::Claude(messages::inbox(&messages::claude_config(program.pid), program.pid))
             }
             "codex" => messages::Channel::Codex(messages::codex_socket(&detector.argv(&terminal))),
             "antigravity" => messages::Channel::Other("agy".to_string()),
@@ -408,7 +408,25 @@ fn run() -> Result<(), String> {
     let (trees, run) = (Rc::downgrade(&detector), run_of.clone());
     *tasks.background.borrow_mut() = Some(Box::new(move |pane| {
         let program = trees.upgrade()?.program(&run(pane)?)?;
-        kanna_detect::agents::idle_with_background(&program.agent).then(|| kanna_detect::program::background(program.pid))
+        kanna_detect::agents::idle_with_background(&program.agent).then(|| {
+            let job = (program.agent == "claude").then(|| messages::parked_job(&messages::claude_config(program.pid), program.pid)).flatten().and_then(Result::ok);
+            let mut found = kanna_detect::program::background(program.pid);
+            found.extend(job.map(|job| kanna_detect::program::background(job.pid)).unwrap_or_default());
+            found
+        })
+    }));
+    let (parking, run) = (Rc::downgrade(&detector), run_of.clone());
+    *tasks.parked_job.borrow_mut() = Some(Box::new(move |pane| {
+        let program = parking.upgrade()?.program(&run(pane)?)?;
+        if program.agent != "claude" {
+            return None;
+        }
+        let job = messages::parked_job(&messages::claude_config(program.pid), program.pid)?.ok()?;
+        let command = kanna_detect::program::command_of(&program);
+        let env = kanna_detect::program::environ(program.pid);
+        let id = job.id.clone();
+        let stop: tasks::StopJob = Box::new(move || messages::stop_job(&command, &env, &job));
+        Some((id, stop))
     }));
     let argvs = Rc::downgrade(&detector);
     *tasks.permissions.borrow_mut() = Some(Box::new(move |pane| messages::permissions(&argvs.upgrade()?.argv(&run_of(pane)?))));
@@ -986,6 +1004,11 @@ fn run() -> Result<(), String> {
                     tasks.status(&pane, status, ended);
                     runs.status(&pane, ended);
                     tasks.worker_status(&pane, ended);
+                }
+            }
+            Event::Moved { terminal, serial, session } => {
+                if let Some(pane) = terminals.pane_of(&terminal).filter(|_| terminals.current(&terminal, serial)) {
+                    tasks.moved(&pane, &session);
                 }
             }
             Event::Reported { terminal, serial, kept } => {

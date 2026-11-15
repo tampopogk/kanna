@@ -1,3 +1,4 @@
+use crate::messages::{self, Job};
 use crate::reader::Feed;
 use crate::reports::Kept;
 use crate::Event;
@@ -27,6 +28,9 @@ struct Watch {
     reported: Option<ProgramState>,
     turns: u64,
     kept: u64,
+    parked: Option<Result<Job, String>>,
+    moved: Option<String>,
+    config: Option<std::path::PathBuf>,
 }
 
 struct Shared {
@@ -48,6 +52,7 @@ pub struct Explained {
     pub version: Option<String>,
     pub reported: Option<ProgramStatus>,
     pub records: Vec<ProgramStatus>,
+    pub parked: Option<Result<Job, String>>,
 }
 
 pub fn from_record(state: ProgramState) -> Status {
@@ -56,6 +61,24 @@ pub fn from_record(state: ProgramState) -> Status {
         ProgramState::Blocked => Status::NeedsYou,
         ProgramState::Idle | ProgramState::Done | ProgramState::Error => Status::Idle,
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Followed {
+    pub status: Option<Status>,
+    pub changed: bool,
+    pub ended: bool,
+    pub moved: Option<String>,
+}
+
+pub fn follow(before: Option<Status>, moved: Option<&str>, parked: &Result<Job, String>) -> Followed {
+    let status = match parked {
+        Ok(job) => job.agent_status(),
+        Err(_) => Some(Status::Idle),
+    };
+    let ended = before == Some(Status::Working) && status.is_some_and(|s| s != Status::Working);
+    let moved = parked.as_ref().ok().and_then(|job| job.session.clone()).filter(|session| moved != Some(session.as_str()));
+    Followed { status, changed: before != status || ended, ended, moved }
 }
 
 pub fn turn_ended(before: Option<ProgramState>, now: ProgramState) -> bool {
@@ -75,7 +98,7 @@ impl Detector {
             let feed = lock(&feed);
             (feed.turns(), feed.statuses_serial())
         };
-        let watch = Watch { serial, feed, master, program: None, version: None, version_known: false, looked: None, status: None, group: None, reported: None, turns, kept };
+        let watch = Watch { serial, feed, master, program: None, version: None, version_known: false, looked: None, status: None, group: None, reported: None, turns, kept, parked: None, moved: None, config: None };
         lock(&self.shared.watches).insert(pane.into(), watch);
         self.poke();
     }
@@ -122,6 +145,7 @@ impl Detector {
             version: watch.version.clone(),
             reported,
             records,
+            parked: watch.parked.clone(),
         })
     }
 
@@ -193,10 +217,22 @@ fn tick(shared: &Shared, now: Instant) -> bool {
                 watch.version = None;
                 watch.version_known = false;
                 watch.reported = None;
+                watch.parked = None;
+                watch.moved = None;
+                watch.config = watch.program.as_ref().filter(|p| p.agent == "claude").map(|p| messages::claude_config(p.pid));
                 if watch.status.take().is_some() {
                     send(None, false);
                 }
             }
+            if let Some((program, config)) = watch.program.as_ref().zip(watch.config.as_ref()) {
+                let parked = messages::parked_job(config, program.pid);
+                if parked.is_none() && watch.parked.is_some() {
+                    watch.reported = None;
+                }
+                watch.parked = parked;
+            }
+        } else if let Some(Ok(job)) = &watch.parked {
+            watch.parked = Some(job.reread().ok_or_else(|| job.id.clone()));
         }
         let Some(program) = watch.program.clone() else { continue };
         any = true;
@@ -208,6 +244,19 @@ fn tick(shared: &Shared, now: Instant) -> bool {
                 }
                 watch.version = version;
             }
+        }
+        if let Some(parked) = &watch.parked {
+            let followed = follow(watch.status, watch.moved.as_deref(), parked);
+            if let Some(session) = followed.moved {
+                watch.moved = Some(session.clone());
+                let _ = shared.events.send(Event::Moved { terminal: pane.clone(), serial, session });
+            }
+            if followed.changed {
+                watch.status = followed.status;
+                send(followed.status, followed.ended);
+            }
+            watch.turns = lock(&watch.feed).turns();
+            continue;
         }
         let feed = lock(&watch.feed);
         let record = feed.reported(group);
@@ -242,6 +291,19 @@ mod tests {
         for state in [ProgramState::Idle, ProgramState::Done, ProgramState::Error] {
             assert_eq!(from_record(state), Status::Idle);
         }
+    }
+
+    #[test]
+    fn a_parked_claude_takes_its_status_and_session_from_the_job_running_its_conversation() {
+        let job = |status: &str| Ok(Job { id: "c71180f2".into(), pid: 7, entry: "/c/sessions/7.json".into(), session: Some("c71180f2-ffd5".into()), status: Some(status.into()), waiting_for: None, protocol: Some(1), socket: None });
+        let busy = follow(None, None, &job("busy"));
+        assert_eq!(busy, Followed { status: Some(Status::Working), changed: true, ended: false, moved: Some("c71180f2-ffd5".into()) }, "the job's session replaces the old one once");
+        assert_eq!(follow(Some(Status::Working), Some("c71180f2-ffd5"), &job("busy")), Followed { status: Some(Status::Working), changed: false, ended: false, moved: None });
+        assert_eq!(follow(Some(Status::Working), Some("c71180f2-ffd5"), &job("idle")), Followed { status: Some(Status::Idle), changed: true, ended: true, moved: None }, "busy to idle ends the turn");
+        assert_eq!(follow(Some(Status::Working), Some("c71180f2-ffd5"), &job("waiting")), Followed { status: Some(Status::NeedsYou), changed: true, ended: true, moved: None }, "waiting is needs-you, and ends the turn");
+        assert_eq!(follow(Some(Status::Idle), Some("c71180f2-ffd5"), &job("idle")).changed, false);
+        assert_eq!(follow(Some(Status::Idle), Some("c71180f2-ffd5"), &job("other")).status, None, "a status Kanna doesn't know is none");
+        assert_eq!(follow(Some(Status::Working), Some("c71180f2-ffd5"), &Err("c71180f2".into())), Followed { status: Some(Status::Idle), changed: true, ended: true, moved: None }, "with its job gone, the parked claude sits in its agent view");
     }
 
     #[test]

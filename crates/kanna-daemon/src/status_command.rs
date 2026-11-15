@@ -1,5 +1,5 @@
 use crate::status::{from_record, Detector};
-use kanna_detect::agents;
+use kanna_detect::{agents, Status};
 use kanna_mux::json::{json, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, WeakCore};
 use kanna_vt::{Need, ProgramStatus};
@@ -46,6 +46,11 @@ impl StatusCommand {
         out.insert("status".into(), json!(pane.status()));
         out.insert("reported".into(), explained.reported.as_ref().map_or(Value::Null, record));
         out.insert("records".into(), Value::Array(explained.records.iter().map(record).collect()));
+        out.insert("job".into(), match &explained.parked {
+            None => Value::Null,
+            Some(Err(job)) => json!({ "id": job, "running": false }),
+            Some(Ok(job)) => json!({ "id": job.id, "running": true, "pid": job.pid, "session": job.session, "state": job.status, "waitingFor": job.waiting_for, "status": job.agent_status().map(Status::as_str) }),
+        });
         Ok(out)
     }
 }

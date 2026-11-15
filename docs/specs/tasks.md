@@ -101,6 +101,13 @@ A session Kanna named may have no conversation yet: claude writes its transcript
 
 The commands here ask permission; with [`agents.prompts`](settings.md#agent-prompts) set to `"skip"`, each also gets its agent's flag for not asking (`--dangerously-skip-permissions`, `--yolo`), planners' too.
 
+### A parked Claude
+
+Claude Code can move a conversation into a background job (`←` on an empty prompt, or `/background`), which a claude under Claude's daemon runs as a fork with a session of its own ([agent messaging](agent-messaging.md#6-a-parked-claude)). The session Kanna gave the task (`--session-id`) then holds only the conversation from before the move: `claude --resume OLD` reopens that, without what the job did.
+
+- **The job's session replaces the task's** as soon as Kanna sees the move (the job entry's `sessionId`), in the task's row and its pane's resuming command, with a `session` event saying `why: moved`. Moved again, the newer job's replaces it.
+- **Stop and Done end the job first** (`claude stop JOB`, which keeps its conversation), then quit the terminal's claude with `/exit`: `/exit` alone would leave the job running outside Kanna. The next start resumes the job's session in the foreground, the whole conversation in it.
+
 **After the keeper is lost** (the Mac restarts), a task whose agent was running resumes the same way without being asked; one that was stopped stays stopped ([agents after the keeper is lost](keeper-loss.md)).
 
 **`kanna restart PANE`** replies with the pane's command cut to its first 80 characters on one line, so an agent's pane doesn't print its whole first message.

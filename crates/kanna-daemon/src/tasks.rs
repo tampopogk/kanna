@@ -889,6 +889,8 @@ struct Starting {
 
 type Then = Box<dyn FnOnce(Option<String>)>;
 
+pub type StopJob = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
 struct Quitting {
     agent: String,
     by: Instant,
@@ -1026,6 +1028,8 @@ pub struct Tasks {
     pub permissions: RefCell<Option<Box<dyn Fn(&str) -> Option<&'static str>>>>,
     pub line_mode: RefCell<Option<Box<dyn Fn(&str) -> bool>>>,
     pub background: RefCell<Option<Box<dyn Fn(&str) -> Option<Vec<Process>>>>>,
+    pub parked_job: RefCell<Option<Box<dyn Fn(&str) -> Option<(String, StopJob)>>>>,
+    unparking: RefCell<HashMap<String, Vec<Then>>>,
     warned: RefCell<HashMap<String, String>>,
     delivering: RefCell<HashSet<String>>,
     posting: RefCell<HashMap<u64, (String, Vec<Message>, Channel)>>,
@@ -1219,6 +1223,8 @@ impl Tasks {
             permissions: RefCell::default(),
             line_mode: RefCell::default(),
             background: RefCell::default(),
+            parked_job: RefCell::default(),
+            unparking: RefCell::default(),
             on_warn: RefCell::default(),
             on_close: RefCell::default(),
             run_of: RefCell::default(),
@@ -2153,7 +2159,7 @@ impl Tasks {
     }
 
     fn ending(&self, pane: &str) -> bool {
-        self.quitting.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane)
+        self.quitting.borrow().contains_key(pane) || self.unparking.borrow().contains_key(pane) || self.stopping.borrow().contains(pane) || self.tearing_down.borrow().contains_key(pane)
     }
 
     fn record_status(&self, pane: &str, status: &str) {
@@ -2256,6 +2262,42 @@ impl Tasks {
         }
     }
 
+    pub fn moved(&self, pane: &str, session: &str) {
+        let replace = |entry: &mut Entry| (entry.session.as_deref() != Some(session)).then(|| {
+            entry.session = Some(session.to_string());
+            entry.clone()
+        });
+        let waiting = self.entries.borrow_mut().iter_mut().find(|e| e.held.as_deref() == Some(pane)).and_then(|e| replace(e)).map(|e| (e, Place::Shelf));
+        let found = waiting.or_else(|| {
+            let mut running = self.running.borrow_mut();
+            let r = running.iter_mut().find(|r| r.pane == pane)?;
+            let place = r.place;
+            replace(&mut r.entry).map(|e| (e, place))
+        });
+        if let Some((entry, place)) = found {
+            log!("kanna-daemon: {}'s claude in {pane} moved its conversation into a background job, so it resumes session {session}", entry.id);
+            let _ = self.store(&entry, place, Some(pane), Some(Change::new("session").by(Some("daemon")).with("session", json!(session)).with("why", json!("moved"))));
+            if let Some(found) = self.entries.borrow_mut().iter_mut().find(|e| e.id == entry.id) {
+                found.session = entry.session.clone();
+            }
+            if let Some(core) = self.core.upgrade() {
+                core.set_command(pane, entry.command(None));
+            }
+            return;
+        }
+        if !self.planners().iter().any(|p| p == pane) {
+            return;
+        }
+        let Some(core) = self.core.upgrade() else { return };
+        let Some(key) = project(core.pane(pane).and_then(|p| p.cwd).as_deref()).map(|p| p.to_string_lossy().into_owned()) else { return };
+        let Some(mut kept) = self.db.planner(&key).ok().flatten().filter(|k| string(k, "pane") == Some(pane) && string(k, "session") != Some(session)) else { return };
+        log!("kanna-daemon: the planner in {pane} moved its conversation into a background job, so {key}'s planner resumes session {session}");
+        kept["session"] = json!(session);
+        if let Err(error) = self.db.put_planner(&key, &kept) {
+            log!("kanna-daemon: can't keep {key}'s planner: {error}");
+        }
+    }
+
     fn resumed(self: &Rc<Self>, mut entry: Entry, then: impl FnOnce(&Rc<Tasks>, Entry) + 'static) {
         if !entry.looks_for_session() {
             return then(self, entry);
@@ -2309,8 +2351,9 @@ impl Tasks {
             let mut turns = self.turns.borrow_mut();
             let quitting = self.quitting.borrow();
             let finishing = self.finishing.borrow();
+            let unparking = self.unparking.borrow();
             for (pane, _) in &running {
-                if !quitting.contains_key(pane) && !finishing.contains_key(pane) {
+                if !quitting.contains_key(pane) && !finishing.contains_key(pane) && !unparking.contains_key(pane) {
                     turns.entry(pane.clone()).or_insert_with(|| {
                         let mut turn = Turn::underway();
                         turn.see(core.pane(pane).and_then(|p| p.status).as_deref().and_then(Status::parse), now);
@@ -2483,7 +2526,28 @@ impl Tasks {
         self.finishing.borrow_mut().insert(pane.to_string(), Finishing { agent, turn: Turn::underway(), by, then: vec![Box::new(then)] });
     }
 
-    fn end_agent_then(self: &Rc<Self>, pane: &str, agent: &str, mut then: Vec<Then>) {
+    fn end_agent_then(self: &Rc<Self>, pane: &str, agent: &str, then: Vec<Then>) {
+        if let Some(waiting) = self.unparking.borrow_mut().get_mut(pane) {
+            return waiting.extend(then);
+        }
+        let parked = (!self.quitting.borrow().contains_key(pane)).then(|| self.parked_job.borrow().as_ref().and_then(|parked| parked(pane))).flatten();
+        let Some((job, stop)) = parked else { return self.quit_agent(pane, agent, then) };
+        log!("kanna-daemon: {agent} in {pane} moved its conversation into background job {job}, so the job stops first");
+        self.turns.borrow_mut().remove(pane);
+        self.unparking.borrow_mut().insert(pane.to_string(), then);
+        let (this, pane, agent) = (Rc::downgrade(self), pane.to_string(), agent.to_string());
+        crate::runtime::spawn("stopping a parked claude's job", async move {
+            let stopped = crate::runtime::off_loop(stop).await.unwrap_or_else(|| Err("the daemon is stopping".into()));
+            let Some(this) = this.upgrade() else { return };
+            if let Err(error) = stopped {
+                log!("kanna-daemon: can't stop background job {job} of {agent} in {pane}: {error}");
+            }
+            let then = this.unparking.borrow_mut().remove(&pane).unwrap_or_default();
+            this.quit_agent(&pane, &agent, then);
+        });
+    }
+
+    fn quit_agent(self: &Rc<Self>, pane: &str, agent: &str, mut then: Vec<Then>) {
         if let Some(finishing) = self.finishing.borrow_mut().remove(pane) {
             then.extend(finishing.then);
         }
@@ -7888,6 +7952,60 @@ mod tests {
         assert!(t.agents.hung_up.borrow().is_empty(), "claude quit, so it isn't hung up");
         assert_eq!(t.tasks.pane_entry(&pane).and_then(|e| e.stopped).as_deref(), Some("needs-you"));
         assert_eq!(t.session(&pane).as_deref(), Some("given"), "the session Kanna gave claude stays its own");
+    }
+
+    #[test]
+    fn a_parked_claude_resumes_its_jobs_session_and_its_job_stops_before_it_quits() {
+        let t = Stopping::new("parked");
+        let (pane, entry) = t.agent("claude", Place::Shelf);
+        t.tasks.moved(&pane, "c71180f2-ffd5");
+        assert_eq!(t.session(&pane).as_deref(), Some("c71180f2-ffd5"), "the conversation moved, so the session to resume is the job's");
+        t.tasks.moved(&pane, "c71180f2-ffd5");
+        let moves: Vec<Value> = t.tasks.db.events("task-1dfb12c2").unwrap().into_iter().filter(|e| e.what == "session").map(|e| e.doc).collect();
+        assert_eq!(moves.len(), 1, "once per move");
+        assert_eq!((moves[0]["session"].as_str(), moves[0]["why"].as_str()), (Some("c71180f2-ffd5"), Some("moved")));
+        assert!(t.core.pane(&pane).and_then(|p| p.command).is_some_and(|c| c.contains("--resume 'c71180f2-ffd5'")), "its terminal resumes the job's session");
+        let stopped = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let stops = stopped.clone();
+        *t.tasks.parked_job.borrow_mut() = Some(Box::new(move |_| {
+            let stops = stops.clone();
+            let stop: StopJob = Box::new(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                stops.lock().unwrap().push("c71180f2".into());
+                Ok(())
+            });
+            Some(("c71180f2".to_string(), stop))
+        }));
+        t.tasks.turns.borrow_mut().insert(pane.clone(), Turn::underway());
+        t.tasks.quit(&pane, &entry, Status::NeedsYou);
+        t.tasks.end_agent(&pane, "claude", |_| {});
+        t.tasks.tick();
+        assert!(!t.tasks.turns.borrow().contains_key(&pane), "its turn isn't ended again while its job stops");
+        assert!(t.agents.typed.borrow().is_empty(), "nothing is typed while its job stops");
+        t.settle(|| t.tasks.pane_entry(&pane).and_then(|e| e.stopped).is_some());
+        assert_eq!(*stopped.lock().unwrap(), ["c71180f2"], "its job stopped, once");
+        assert_eq!(*t.agents.typed.borrow(), [format!("{pane}: ctrl+c"), format!("{pane}: ctrl+c")], "then the terminal's claude quits");
+        assert_eq!(t.session(&pane).as_deref(), Some("c71180f2-ffd5"));
+    }
+
+    #[test]
+    fn a_parked_planner_keeps_its_jobs_session_for_its_project() {
+        let t = Stopping::new("planner-moved");
+        let repo = t.state.join("app");
+        fs::create_dir_all(&repo).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
+        let repo = repo.canonicalize().unwrap();
+        let opened = t.core.handle_blocking(json!({ "cmd": "open", "args": { "type": "term", "cmd": "claude", "cwd": repo } }));
+        let pane = opened["pane"]["id"].as_str().unwrap_or_else(|| panic!("{opened}")).to_string();
+        t.core.with_pane_mut(&pane, |p| p.cwd = Some(repo.to_string_lossy().into_owned()));
+        let planner = pane.clone();
+        *t.tasks.planners.borrow_mut() = Some(Box::new(move || vec![planner.clone()]));
+        let key = project(Some(&repo.to_string_lossy())).unwrap().to_string_lossy().into_owned();
+        t.tasks.db.put_planner(&key, &json!({ "agent": "claude", "session": "old", "pane": pane, "running": true })).unwrap();
+        t.tasks.moved("term-elsewhere", "other");
+        assert_eq!(t.tasks.db.planner(&key).unwrap().unwrap()["session"], "old", "another terminal's move");
+        t.tasks.moved(&pane, "c71180f2-ffd5");
+        assert_eq!(t.tasks.db.planner(&key).unwrap().unwrap()["session"], "c71180f2-ffd5", "the project's planner resumes the job's session");
     }
 
     fn idle_with_a_child(name: &str) -> (Stopping, String, Rc<RefCell<Vec<Process>>>) {

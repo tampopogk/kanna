@@ -703,6 +703,91 @@ print(" ".join(t.get("detail") or "" for t in json.load(sys.stdin)["toasts"] if 
   [[ "$(in_repo task messages "$parked")" == *"held       nobody home"*"moved its conversation into background job "* ]] || { echo "agent_messaging: task messages shows: $(in_repo task messages "$parked")"; return 1; }
 }
 
+scenario parked_claude M4
+parked_claude() {
+  start_daemon && start_app || { echo "parked_claude line $LINENO"; return 1; }
+  local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" fake="$KANNA_STATE_DIR/agents"
+  mkdir -p "$repo/.kanna" "$fake/bin" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "parked_claude line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude"
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude"
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  task_state() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = [t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]][0]
+print("running" if t.get("running") else "stopped" if t.get("folder") else "waiting", t.get("held") or "-")' "$1"; }
+  kept() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select json_extract(doc, '$.session') from tasks where id = '$1'"; }
+  bg_entries() { grep -l '"kind": "bg"' "$KANNA_AGENTS_HOME/.claude/sessions/"*.json 2>/dev/null | wc -l | tr -d ' '; }
+  machine_runners 1
+  in_repo task new "Parked" "park busy" --agent "$fake/claude" >/dev/null || { echo "parked_claude line $LINENO"; return 1; }
+  local t term job; t="$(tid 1)"
+  check wait_for 15 eval 'term="$(task_state $t | cut -d" " -f2)"; [[ "$term" == term-* ]] && shows "$term" "^PARKED "' || { echo "parked_claude: the task didn't park its conversation"; task_state "$t"; return 1; }
+  job="$(kanna read "$term" | sed -n 's/^PARKED //p' | head -1)"
+  check wait_for 10 is "$term" status working || { echo "parked_claude: a busy job didn't show its task as working"; kanna status explain "$term"; return 1; }
+  [[ "$(kanna status explain "$term")" == *"parked: background job $job (pid "*"runs its conversation: busy"* ]] || { echo "parked_claude: status explain says: $(kanna status explain "$term")"; return 1; }
+  check wait_for 5 eval '[[ "$(kept $t)" == "$job"-* ]]' || { echo "parked_claude: the session kept for resume isn't the job's ($job): $(kept $t)"; return 1; }
+  sleep 2
+  check test "$(task_state $t | cut -d' ' -f1)" == running || { echo "parked_claude: a runner stopped the task while its job was busy"; return 1; }
+  in_repo task send "$t" "mock: background 4" >/dev/null || { echo "parked_claude line $LINENO"; return 1; }
+  check wait_for 15 shows "$term" "^BACKGROUND_STARTED" || { echo "parked_claude: the job didn't get its message"; kanna read "$term"; return 1; }
+  check wait_for 10 is "$term" status idle || { echo "parked_claude: the job's idle didn't reach its task"; kanna status explain "$term"; return 1; }
+  check wait_for 5 grep -q "$t's agent $term ended its turn with background work running, so it waits: sleep 4" "$out/daemon.log" || { echo "parked_claude: the job's background work didn't hold its runner"; tail -5 "$out/daemon.log"; return 1; }
+  check test "$(task_state $t | cut -d' ' -f1)" == running || { echo "parked_claude: the task stopped while its job's background work ran"; return 1; }
+  check wait_for 30 eval '[[ "$(task_state $t)" == stopped* ]]' || { echo "parked_claude: the job's turn end didn't free its runner"; task_state "$t"; return 1; }
+  check wait_for 5 eval '[[ "$(bg_entries)" == 0 ]]' || { echo "parked_claude: the job runs on after its task stopped"; ls "$KANNA_AGENTS_HOME/.claude/sessions"; return 1; }
+  grep -q "moved its conversation into background job $job, so the job stops first" "$out/daemon.log" || { echo "parked_claude: the job wasn't stopped by Kanna"; return 1; }
+  check test "$(kept $t | cut -c1-8)" == "$job" || { echo "parked_claude: the stop kept $(kept $t), not the job's session"; return 1; }
+  machine_runners 0
+  in_repo task start "$t" >/dev/null || { echo "parked_claude line $LINENO"; return 1; }
+  check wait_for 15 eval 'term="$(task_state $t | cut -d" " -f2)"; [[ "$term" == term-* ]] && shows "$term" "^resumed $job"' || { echo "parked_claude: the start didn't resume the job's session"; [[ "$term" == term-* ]] && kanna read "$term"; return 1; }
+  kanna send "$term" "park waiting" >/dev/null || { echo "parked_claude line $LINENO"; return 1; }
+  check wait_for 10 shows "$term" "^PARKED " || { echo "parked_claude line $LINENO"; kanna read "$term"; return 1; }
+  local again; again="$(kanna read "$term" | sed -n 's/^PARKED //p' | head -1)"
+  check wait_for 10 is "$term" status needs-you || { echo "parked_claude: a waiting job didn't show its task as needing you"; kanna status explain "$term"; return 1; }
+  check wait_for 5 eval '[[ "$(kept $t)" == "$again"-* ]]' || { echo "parked_claude: moving again didn't replace the session: $(kept $t)"; return 1; }
+  in_repo task stop "$t" >/dev/null || { echo "parked_claude line $LINENO"; return 1; }
+  check wait_for 15 eval '[[ "$(task_state $t)" == stopped* ]]' || { echo "parked_claude: stop didn't stop it"; task_state "$t"; return 1; }
+  check wait_for 5 eval '[[ "$(bg_entries)" == 0 ]]' || { echo "parked_claude: the job runs on after stop"; return 1; }
+  check test "$(kept $t | cut -c1-8)" == "$again" || { echo "parked_claude: stop kept $(kept $t)"; return 1; }
+}
+
+scenario real_agent_parked M4
+real_agent_parked() {
+  local claude="${KANNA_E2E_CLAUDE:-$(command -v claude)}"
+  [[ -x "$claude" ]] || { echo "real_agent_parked: claude isn't installed (or set KANNA_E2E_CLAUDE)"; return 1; }
+  local agents="$KANNA_STATE_DIR/agents" repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/repo" harness="$repo_root/tools/agent-harness"
+  start_daemon && start_app || { echo "real_agent_parked line $LINENO"; return 1; }
+  mkdir -p "$agents" "$repo" && git -C "$repo" init -q -b main && git -C "$repo" -c user.email=e@e -c user.name=e commit -q --allow-empty -m first || { echo "real_agent_parked line $LINENO"; return 1; }
+  repo="$(cd "$repo" && pwd -P)"
+  python3 -I "$harness/mock_server.py" --log "$agents/mock.jsonl" >"$agents/port" 2>"$agents/mock.log" &
+  check wait_for 10 eval '[[ -s "$agents/port" ]]' || { echo "real_agent_parked: the mock model didn't start"; return 1; }
+  python3 -I "$harness/isolate.py" --agent claude --real "$claude" --home "$agents/claude-home" --port "$(cat "$agents/port")" --trust "$repo" --out "$agents/bin/claude" --cli "$bin/kanna" || { echo "real_agent_parked line $LINENO"; return 1; }
+  local sessions="$agents/claude-home/.claude/sessions"
+  explain() { raw "{\"id\":1,\"cmd\":\"status\",\"args\":{\"action\":\"explain\",\"pane\":\"claude task\"}}"; }
+  kept() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select json_extract(doc, '$.session') from tasks where id = '$1'"; }
+  machine_runners 0
+  (cd "$repo" && kanna task new "claude task" "PARK_FIRST" --agent "$agents/bin/claude") >/dev/null || { echo "real_agent_parked line $LINENO"; return 1; }
+  local id; id="$(tid 1)"
+  kanna task start "$id" >/dev/null || { echo "real_agent_parked: the task didn't start"; return 1; }
+  check wait_for 60 shows "claude task" "Agent status probe" || { echo "real_agent_parked: claude didn't answer"; kanna read "claude task"; return 1; }
+  check wait_for 30 eval '[[ "$(explain | field status)" == idle ]]' || { echo "real_agent_parked: claude didn't go idle"; return 1; }
+  local old; old="$(kept "$id")"
+  kanna send-key "claude task" left >/dev/null || { echo "real_agent_parked line $LINENO"; return 1; }
+  check wait_for 30 eval '[[ "$(explain | python3 -c "import json, sys; print(json.load(sys.stdin)[\"job\"][\"running\"])")" == True ]]' || { echo "real_agent_parked: ← didn't park the conversation"; explain; kanna read "claude task"; return 1; }
+  local job new; job="$(explain | field job.id)" new="$(explain | field job.session)"
+  [[ "$new" == "$job"* && "$new" != "$old" ]] || { echo "real_agent_parked: the job $job runs session $new (was $old)"; return 1; }
+  check test "$(explain | field status)" == idle || { echo "real_agent_parked: the parked claude's status is $(explain | field status)"; explain; return 1; }
+  check wait_for 10 eval '[[ "$(kept "$id")" == "$new" ]]' || { echo "real_agent_parked: the session kept is $(kept "$id"), not the job's $new"; return 1; }
+  [[ "$(kanna task stop "$id")" == "stopped "*" on the Shelf; "* ]] || { echo "real_agent_parked: the task didn't stop"; return 1; }
+  check wait_for 15 is "claude task" state exited || { echo "real_agent_parked: claude is still running"; kanna read "claude task"; return 1; }
+  ! grep -ls "\"jobId\":\"$job\"" "$sessions"/*.json >/dev/null || { echo "real_agent_parked: the job runs on after stop"; return 1; }
+  grep -q "can't stop background job $job" "$out/daemon.log" && { echo "real_agent_parked: $(grep "can't stop background job $job" "$out/daemon.log")"; return 1; }
+  check test "$(kept "$id")" == "$new" || { echo "real_agent_parked: stop kept $(kept "$id")"; return 1; }
+  kanna task start "$id" >/dev/null || { echo "real_agent_parked line $LINENO"; return 1; }
+  check wait_for 60 eval 'shows "claude task" "PARK_FIRST" && shows "claude task" "Agent status probe"' || { echo "real_agent_parked: the start didn't come back to the conversation"; kanna read "claude task"; return 1; }
+  check wait_for 30 eval '[[ "$(pane "claude task" cmd)" == *"--resume '"'"'$new'"'"'"* ]]' || { echo "real_agent_parked: its pane resumes $(pane "claude task" cmd)"; return 1; }
+  kanna task stop "$id" >/dev/null
+}
+
 scenario agent_too_old M4
 agent_too_old() {
   start_daemon && start_app || { echo "agent_too_old line $LINENO"; return 1; }

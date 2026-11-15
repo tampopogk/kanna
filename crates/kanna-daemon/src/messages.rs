@@ -152,25 +152,103 @@ pub fn envelope(text: &str, mode: Option<&str>) -> String {
     format!("<{ENVELOPE} from-mode=\"{mode}\">\n{body}\n</{ENVELOPE}>")
 }
 
+pub fn claude_config(pid: i32) -> PathBuf {
+    kanna_detect::program::environment(pid, "CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from).unwrap_or_else(|| crate::agents::home().join(".claude"))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub id: String,
+    pub pid: i32,
+    pub entry: PathBuf,
+    pub session: Option<String>,
+    pub status: Option<String>,
+    pub waiting_for: Option<String>,
+    pub protocol: Option<i64>,
+    pub socket: Option<PathBuf>,
+}
+
+impl Job {
+    fn of(entry: PathBuf, pid: i32, session: &Value) -> Job {
+        let text = |key: &str| session[key].as_str().filter(|s| !s.is_empty()).map(String::from);
+        Job {
+            id: text("jobId").unwrap_or_default(),
+            pid,
+            session: text("sessionId"),
+            status: text("status"),
+            waiting_for: text("waitingFor"),
+            protocol: session["peerProtocol"].as_i64(),
+            socket: text("messagingSocketPath").map(PathBuf::from),
+            entry,
+        }
+    }
+
+    pub fn reread(&self) -> Option<Job> {
+        let session = serde_json::from_str::<Value>(&std::fs::read_to_string(&self.entry).ok()?).ok()?;
+        (session["jobId"].as_str() == Some(self.id.as_str()) && session["pid"].as_i64() == Some(self.pid.into())).then(|| Job::of(self.entry.clone(), self.pid, &session))
+    }
+
+    pub fn agent_status(&self) -> Option<Status> {
+        match self.status.as_deref()? {
+            "busy" => Some(Status::Working),
+            "idle" => Some(Status::Idle),
+            "waiting" => Some(Status::NeedsYou),
+            _ => None,
+        }
+    }
+}
+
+pub fn parked_job(config: &Path, pid: i32) -> Option<Result<Job, String>> {
+    let entry = config.join("sessions").join(format!("{pid}.json"));
+    let session = serde_json::from_str::<Value>(&std::fs::read_to_string(&entry).ok()?).ok()?;
+    (session["pid"].as_i64() == Some(pid.into())).then_some(())?;
+    job_of(config, pid, &session)
+}
+
+fn job_of(config: &Path, pid: i32, session: &Value) -> Option<Result<Job, String>> {
+    let job = session["parkedJobId"].as_str().filter(|job| !job.is_empty())?;
+    let sessions = config.join("sessions");
+    let running = std::fs::read_dir(&sessions).into_iter().flatten().flatten().find_map(|file| {
+        let path = file.path();
+        let other: i32 = path.file_name()?.to_str()?.strip_suffix(".json")?.parse().ok()?;
+        let session = serde_json::from_str::<Value>(&std::fs::read_to_string(&path).ok()?).ok()?;
+        (other != pid && session["jobId"].as_str() == Some(job) && session["pid"].as_i64() == Some(other.into()) && live(other, &session)).then(|| Job::of(path, other, &session))
+    });
+    Some(running.ok_or_else(|| job.to_string()))
+}
+
+pub fn stop_job(claude: &[String], env: &[String], job: &Job) -> Result<(), String> {
+    let (program, args) = claude.split_first().ok_or("no claude to run")?;
+    let mut command = std::process::Command::new(program);
+    command.args(args).arg("stop").arg(&job.id).stdin(std::process::Stdio::null());
+    if !env.is_empty() {
+        command.env_clear().envs(env.iter().filter_map(|entry| entry.split_once('=')));
+    }
+    let shown = claude.join(" ");
+    let out = command.output().map_err(|error| format!("{shown}: {error}"))?;
+    if !out.status.success() {
+        return Err(format!("{shown} stop {} failed ({}): {}", job.id, out.status, String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let deadline = Instant::now() + STOP_WAIT;
+    while crate::lifeline::age_of(job.pid).is_some() && job.reread().is_some() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+const STOP_WAIT: Duration = Duration::from_secs(5);
+
 pub fn inbox(config: &Path, pid: i32) -> Result<PathBuf, String> {
     let sessions = config.join("sessions");
     let entry = sessions.join(format!("{pid}.json"));
     let text = std::fs::read_to_string(&entry).map_err(|_| format!("Claude (pid {pid}) has no messaging socket: no {}", entry.display()))?;
     let session = registered(&entry, &text, pid)?;
-    let Some(job) = session["parkedJobId"].as_str().filter(|job| !job.is_empty()) else { return socket_in(&entry, &session) };
-    let running = std::fs::read_dir(&sessions).into_iter().flatten().flatten().find_map(|file| {
-        let path = file.path();
-        let other: i32 = path.file_name()?.to_str()?.strip_suffix(".json")?.parse().ok()?;
-        let session = serde_json::from_str::<Value>(&std::fs::read_to_string(&path).ok()?).ok()?;
-        (other != pid && session["jobId"].as_str() == Some(job) && session["pid"].as_i64() == Some(other.into()) && live(other, &session)).then_some((path, other, session))
-    });
-    let Some((path, other, session)) = running else {
-        return Err(format!("Claude (pid {pid}) moved its conversation into background job {job}, and no running Claude in {} has it", sessions.display()));
-    };
-    if session["peerProtocol"].as_i64() != Some(1) {
-        return Err(format!("Claude (pid {other}), running background job {job}, speaks messaging protocol {}, and Kanna speaks 1", session["peerProtocol"]));
+    match job_of(config, pid, &session) {
+        None => socket_in(&entry, &session),
+        Some(Err(job)) => Err(format!("Claude (pid {pid}) moved its conversation into background job {job}, and no running Claude in {} has it", sessions.display())),
+        Some(Ok(job)) if job.protocol != Some(1) => Err(format!("Claude (pid {}), running background job {}, speaks messaging protocol {}, and Kanna speaks 1", job.pid, job.id, job.protocol.map_or("null".to_string(), |p| p.to_string()))),
+        Some(Ok(job)) => job.socket.filter(|socket| socket.is_absolute()).ok_or_else(|| format!("Claude's {} names no messaging socket", job.entry.display())),
     }
-    socket_in(&path, &session)
 }
 
 fn registered(entry: &Path, text: &str, pid: i32) -> Result<Value, String> {
@@ -598,12 +676,23 @@ mod tests {
         assert_eq!(inbox(&config, 41), Err(gone), "an entry older than the process with its pid is another's");
         write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": now }));
         assert_eq!(inbox(&config, 41), Ok(PathBuf::from("/tmp/cc-socks/job.sock")));
+        assert_eq!(parked_job(&config, 41).and_then(Result::ok).map(|found| (found.pid, found.session.clone(), found.agent_status())), Some((job, None, None)));
+        write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "sessionId": "6b3cc108-aaaa", "status": "waiting", "waitingFor": "permission prompt", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": now }));
+        let found = parked_job(&config, 41).unwrap().unwrap();
+        assert_eq!((found.session.as_deref(), found.agent_status(), found.waiting_for.as_deref()), (Some("6b3cc108-aaaa"), Some(Status::NeedsYou), Some("permission prompt")));
+        write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "sessionId": "6b3cc108-aaaa", "status": "busy", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": now }));
+        assert_eq!(found.reread().and_then(|job| job.agent_status()), Some(Status::Working), "its status is read again from its entry");
+        std::fs::remove_file(sessions.join(format!("{job}.json"))).unwrap();
+        assert_eq!(found.reread(), None, "a stopped job leaves no entry");
+        assert_eq!(parked_job(&config, 41), Some(Err("6b3cc108".to_string())));
+        write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 1, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": now }));
         write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 2, "messagingSocketPath": "/tmp/cc-socks/job.sock", "startedAt": now }));
         assert_eq!(inbox(&config, 41), Err("Claude (pid ".to_string() + &job.to_string() + "), running background job 6b3cc108, speaks messaging protocol 2, and Kanna speaks 1"));
         write(job, json!({ "pid": job, "kind": "bg", "jobId": "6b3cc108", "peerProtocol": 1, "startedAt": now }));
         assert!(inbox(&config, 41).unwrap_err().ends_with("names no messaging socket"), "a job with no socket keeps them waiting");
         write(41, parked(""));
         assert_eq!(inbox(&config, 41), Ok(PathBuf::from("/tmp/cc-socks/41.sock")), "back in the foreground, it takes them itself");
+        assert_eq!(parked_job(&config, 41), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 
