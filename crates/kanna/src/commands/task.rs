@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 pub const COMMAND: Command = Command {
     name: "task",
     group: "Tabs and windows",
-    summary: "Make, edit, list, start, stop, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
-    usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task subscribe|unsubscribe EVENT [TASK]\n       kanna task events [TASK]\n       kanna task done [TASK] [--keep]\n       kanna task merge [TASK] [-m MESSAGE]\n       kanna task merge --cancel [TASK]",
+    summary: "Make, edit, list, start, stop, yield, set up, pick, shelve, activate, park, name, message or end tasks: an agent docked with its tabs, on Kanna.app's Desk or on its repo's Shelf.",
+    usage: "kanna task new NAME [FIRST-MESSAGE] [--agent CMD] [--after TASK,...] [--on MACHINE,...]\n       kanna task edit TASK --after TASK,...|none\n       kanna task ready [TASK]\n       kanna task start TASK\n       kanna task stop [TASK]\n       kanna task yield\n       kanna task wait TEXT\n       kanna task setup [TASK]\n       kanna task pick TASK\n       kanna task shelve [TASK]\n       kanna task move TASK MACHINE\n       kanna task list [QUERY] [--all] [--include-done]\n       kanna task activate TASK\n       kanna task park [TASK]\n       kanna task name [TASK] NAME\n       kanna task send TASK|planner TEXT\n       kanna task messages [TASK]\n       kanna task subscribe|unsubscribe EVENT [TASK]\n       kanna task events [TASK]\n       kanna task done [TASK] [--keep]\n       kanna task merge [TASK] [-m MESSAGE]\n       kanna task merge --cancel [TASK]",
     options: &[
         ("--agent CMD", "new: the agent to start (default: claude)."),
         ("--after TASK,...|none", "new, edit: the tasks it waits for; it can't start until each is done or ready. edit: replaces the list, and none clears it."),
@@ -28,6 +28,8 @@ pub const COMMAND: Command = Command {
         ("kanna task start 3f9a", "Start a Shelf task where it is: its own worktree and branch, and its agent with the first message."),
         ("kanna task pick 3f9a", "Pick a task off the Shelf onto the Desk, starting it if it's stopped."),
         ("kanna task stop 3f9a", "End a task's agent and hang up its terminals, leaving it and its tabs where they are; start it again to resume its conversation and rerun its terminals."),
+        ("kanna task yield", "From a Shelf task's terminal, when Kanna asks about the background work you left running: stop this task at this turn's end so its runner goes to a waiting task; a message or a pick starts it again."),
+        ("kanna task wait \"the dev server for the mockup review\"", "From a Shelf task's terminal, when Kanna asks: keep the runner for what you're waiting on; kanna task list shows it, and Kanna asks again after twice as long."),
         ("kanna task setup 3f9a", "Run the repo's tasks.setup in task-3f9a's worktree again: then its agent, if it's stopped."),
         ("kanna task list", "This repo's tasks, the Desk's then the Shelf's, and their state: working, idle, needs you, stopped, blocked, ready (only the merge is left), conflicts (claimed, but it doesn't merge into main cleanly), stale (with what it's behind), merged (its branch is in main) or replied (its message to the planner waits); a stacked task says what it merges after."),
         ("kanna task ready 3f9a", "From a task's own terminal, or naming it: all that's left is to merge, at this commit, with the tests passing. Its row says ready while it merges into main cleanly, and tasks waiting for it can start on its branch. The claim drops by itself when the branch moves."),
@@ -53,7 +55,7 @@ pub const COMMAND: Command = Command {
         ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
     ],
     parse: |args| {
-        let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages, subscribe, unsubscribe, events, merge or done"))?;
+        let action = args.positional().ok_or_else(|| usage("task", "say what: new, edit, ready, start, stop, yield, wait, setup, pick, shelve, move, list, activate, park, name, send, messages, subscribe, unsubscribe, events, merge or done"))?;
         let action = match action.as_str() {
             "defer" => "shelve".to_string(),
             "pull" => "activate".to_string(),
@@ -122,6 +124,17 @@ pub const COMMAND: Command = Command {
             "stop" => {
                 let task = args.positional().or_else(|| caller());
                 out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
+            }
+            "yield" => {
+                if let Some(task) = caller() {
+                    out["task"] = json!(task);
+                }
+            }
+            "wait" => {
+                out["text"] = json!(args.rest().ok_or_else(|| usage("task", "wait needs what you're waiting for: kanna task wait \"WHAT FOR\""))?);
+                if let Some(task) = caller() {
+                    out["task"] = json!(task);
+                }
             }
             "ready" => {
                 let task = args.positional();
@@ -201,9 +214,9 @@ pub const COMMAND: Command = Command {
                     out["by"] = json!(by);
                 }
             }
-            other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, setup, pick, shelve, move, list, activate, park, name, send, messages, subscribe, unsubscribe, events, merge or done)"))),
+            other => return Err(usage("task", &format!("unknown action \"{other}\" (new, edit, ready, start, stop, yield, wait, setup, pick, shelve, move, list, activate, park, name, send, messages, subscribe, unsubscribe, events, merge or done)"))),
         }
-        if ["edit", "ready", "start", "stop", "setup", "pick", "shelve", "move", "done", "park", "activate", "subscribe", "unsubscribe"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
+        if ["edit", "ready", "start", "stop", "yield", "wait", "setup", "pick", "shelve", "move", "done", "park", "activate", "subscribe", "unsubscribe"].contains(&action.as_str()) || (action == "name" && out.get("task").is_some()) {
             if let Some(by) = caller() {
                 out["by"] = json!(by);
             }
@@ -293,10 +306,32 @@ fn before(request: &mut Value, mux: &mut Session) -> Result<Call, Failure> {
     Ok(Call { task, shorts: shorts.unwrap_or_default(), waiting, remote, ..Call::default() })
 }
 
+fn span(seconds: u64) -> String {
+    match seconds {
+        0..60 => format!("{seconds} seconds"),
+        60..120 => "a minute".to_string(),
+        _ => format!("{} minutes", seconds / 60),
+    }
+}
+
+fn holding(t: &Value) -> Option<String> {
+    if t["running"] == false {
+        return (t["stopped"] == "yielded").then(|| "yielded its runner".to_string());
+    }
+    if t["status"].as_str().is_some_and(|s| s != "idle") {
+        return None;
+    }
+    if let Some(reason) = t["holding"]["for"].as_str() {
+        return Some(format!("waiting for {reason}"));
+    }
+    let on: Vec<&str> = t["holding"]["on"].as_array()?.iter().filter_map(Value::as_str).collect();
+    (!on.is_empty()).then(|| format!("waiting on {}", on.join(", ")))
+}
+
 fn wire(request: &Value) -> &'static str {
     let action = request["action"].as_str().unwrap_or("");
     match action {
-        "new" | "edit" | "ready" | "start" | "stop" | "setup" | "pick" | "shelve" | "move" | "send" | "messages" | "subscribe" | "unsubscribe" | "hearing" | "done" => "tasks",
+        "new" | "edit" | "ready" | "start" | "stop" | "yield" | "wait" | "setup" | "pick" | "shelve" | "move" | "send" | "messages" | "subscribe" | "unsubscribe" | "hearing" | "done" => "tasks",
         "name" if request.get("task").is_some() => "tasks",
         "name" => "rename-pane",
         "park" | "activate" | "desk" => "desk",
@@ -524,8 +559,9 @@ pub fn show(request: &Value, reply: &Value) -> String {
                 Some(format!("ran twice: {machines}"))
             };
             let failed = |t: &Value| t["mergeFailed"]["why"].as_str().filter(|_| t["running"] != true).map(String::from);
+            let held = |t: &Value| holding(t);
             let row = |t: &Value, id: &str, last: Option<String>| -> [String; 4] {
-                let tail: Vec<String> = [agent(t), repo(t), failed(t).or_else(|| waits(t)).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last), twice(id)].into_iter().flatten().collect();
+                let tail: Vec<String> = [agent(t), repo(t), held(t), failed(t).or_else(|| waits(t)).or_else(|| conflict(t)).or_else(|| stacked(t)).or(last), twice(id)].into_iter().flatten().collect();
                 [id.into(), t["name"].as_str().unwrap_or("").into(), state(t), tail.join("  ")]
             };
             let desk: Vec<[String; 4]> = tasks.iter().map(|t| {
@@ -601,6 +637,9 @@ pub fn show(request: &Value, reply: &Value) -> String {
         Some("setup") => format!("{id}'s setup runs again in {}, then its agent", reply["pane"].as_str().unwrap_or("?")),
         Some("move") if reply["waiting"] == true => format!("{} moves to {} when it's reachable ({})", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["why"].as_str().unwrap_or("away")),
         Some("move") => format!("{} carries on on {}{}", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["folder"].as_str().map_or(String::new(), |f| format!(", in {f}"))),
+        Some("yield") if reply["after_turn"] == Value::Bool(true) => format!("{} stops when this turn ends and its runner goes to the next task: end your turn now; a message or a pick starts it again", reply["task"].as_str().unwrap_or("?")),
+        Some("yield") => format!("stopped {}: its runner goes to the next task; a message or a pick starts it again", reply["task"].as_str().unwrap_or("?")),
+        Some("wait") => format!("{} keeps its runner, waiting for {}: Kanna asks again in {} if another task is waiting", reply["task"].as_str().unwrap_or("?"), reply["for"].as_str().unwrap_or("?"), span(reply["again"].as_u64().unwrap_or(0))),
         Some("stop") if reply["after_turn"] == Value::Bool(true) => format!("{} stops when this turn ends: end your turn now, and its agent quits then", reply["task"].as_str().unwrap_or("?")),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
         Some("pick") => format!(
@@ -767,6 +806,23 @@ mod blocked_tests {
         assert_eq!(own, "t12 is done when this turn ends: end your turn now, and its agent quits then", "nothing's freed until it's done");
         assert_eq!(show(&json!({ "action": "stop" }), &json!({ "task": "t12", "pane": "p40", "place": "desk", "after_turn": true })), "t12 stops when this turn ends: end your turn now, and its agent quits then");
         assert_eq!(show(&json!({ "action": "edit" }), &json!({ "task": { "id": "t14", "waits": [] } })), "t14 waits for nothing: it can start");
+    }
+
+    #[test]
+    fn a_shelf_task_holding_its_runner_says_what_on_and_one_that_yielded_says_so() {
+        let shelf = json!([
+            { "id": "t1", "name": "Mockup", "repo": "/r", "running": true, "status": "idle", "holding": { "on": ["Google Chrome", "python3"], "for": null } },
+            { "id": "t2", "name": "Review", "repo": "/r", "running": true, "status": "idle", "holding": { "on": ["Google Chrome"], "for": "the user's look at the mockup" } },
+            { "id": "t3", "name": "Gave up", "repo": "/r", "running": false, "stopped": "yielded" },
+            { "id": "t4", "name": "Busy", "repo": "/r", "running": true, "status": "working", "holding": { "on": ["sleep"], "for": null } }
+        ]);
+        let text = show(&json!({ "action": "list", "repo": "/r" }), &json!({ "tasks": [], "shelf": shelf }));
+        assert!(text.contains("t1  Mockup   idle     waiting on Google Chrome, python3\n"), "{text}");
+        assert!(text.contains("t2  Review   idle     waiting for the user's look at the mockup\n"), "{text}");
+        assert!(text.contains("t3  Gave up  stopped  yielded its runner\n"), "{text}");
+        assert!(text.ends_with("t4  Busy     working"), "{text}");
+        assert_eq!(show(&json!({ "action": "yield" }), &json!({ "task": "t1", "pane": "p4", "place": "shelf", "after_turn": true })), "t1 stops when this turn ends and its runner goes to the next task: end your turn now; a message or a pick starts it again");
+        assert_eq!(show(&json!({ "action": "wait" }), &json!({ "task": "t1", "for": "the review", "again": 600 })), "t1 keeps its runner, waiting for the review: Kanna asks again in 10 minutes if another task is waiting");
     }
 }
 

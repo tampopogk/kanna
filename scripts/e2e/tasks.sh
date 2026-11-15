@@ -1155,6 +1155,54 @@ print(next((t.get("held") or "-" for t in json.load(sys.stdin)["shelf"] if t["id
   stop_agents
 }
 
+scenario shelf_runner_ask M4
+shelf_runner_ask() {
+  local repo fake="$KANNA_STATE_DIR/agents"
+  repo="$(e2e_repo runner-ask)" && mkdir -p "$fake/bin" && ln -s "$repo_root/tools/mock-agent/mock-agent" "$fake/bin/claude" || { echo "shelf_runner_ask line $LINENO"; return 1; }
+  printf '#!/bin/sh\nKANNA_AGENTS_HOME=%s exec %s "$@"\n' "$KANNA_AGENTS_HOME" "$fake/bin/claude" >"$fake/claude" && chmod +x "$fake/claude" || { echo "shelf_runner_ask line $LINENO"; return 1; }
+  machine_runners 0
+  KANNA_ASK_AFTER=3 start_daemon && start_app || { echo "shelf_runner_ask line $LINENO"; return 1; }
+  in_repo() { (cd "$repo" && kanna "$@"); }
+  of() { raw '{"id":1,"cmd":"tasks","args":{"action":"list"}}' | python3 -c 'import json, sys
+t = next((t for t in json.load(sys.stdin)["shelf"] if t["id"] == sys.argv[1]), {})
+print(t.get("held") or "-", "running" if t.get("running") else "stopped:" + (t.get("stopped") or "-") if t.get("folder") else "waiting")' "$1"; }
+  questions() { sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from messages where recipient = '$1' and sender = 'kanna' and text like '%Another task is waiting for your runner%'"; }
+  local opened w; opened="$(cd / && kanna "$repo")" && [[ "$opened" =~ ^opened\ (d[0-9]+) ]] || { echo "shelf_runner_ask line $LINENO: $opened"; return 1; }
+  w="${BASH_REMATCH[1]}"
+  row() { raw "{\"id\":1,\"cmd\":\"debug.desk\",\"args\":{\"window\":\"$w\"}}" | python3 -c 'import json, sys
+print(next((r["sub"] for r in json.load(sys.stdin).get("times", []) if r["task"] == sys.argv[1]), ""))' "$1"; }
+  in_repo task new "Holds" "background 120" --agent "$fake/claude" >/dev/null || { echo "shelf_runner_ask line $LINENO"; return 1; }
+  machine_runners 1
+  local holds; holds="$(tid 1)"
+  check wait_for 15 eval '[[ "$(of "$holds")" == "term-"*" running" ]]' || { echo "shelf_runner_ask: the runner didn't start it"; of "$holds"; return 1; }
+  local agent; agent="$(of "$holds")" && agent="${agent%% *}"
+  check wait_for 20 eval 'in_repo task list | grep -qE "^$(sid 1) +Holds +idle( +claude)? +waiting on sleep$"' || { echo "shelf_runner_ask: kanna task list doesn't say what the runner waits on"; in_repo task list; return 1; }
+  check wait_for 5 eval '[[ "$(row "$holds")" == "idle, waiting on sleep · "* ]]' || { echo "shelf_runner_ask: the Desk view's row doesn't say what the runner waits on: $(row "$holds")"; return 1; }
+  sleep 5
+  check test "$(questions "$holds")" -eq 0 || { echo "shelf_runner_ask: asked with no task waiting for a runner"; in_repo task messages "$holds"; return 1; }
+  in_repo task new "Waits" "work 1" --agent "$fake/claude" >/dev/null || { echo "shelf_runner_ask line $LINENO"; return 1; }
+  local waits; waits="$(tid 2)"
+  check wait_for 15 eval '(( $(questions "$holds") >= 1 ))' || { echo "shelf_runner_ask: the agent holding the runner wasn't asked"; tail -20 "$out/daemon.log"; return 1; }
+  check test "$(sqlite3 -readonly "$KANNA_STATE_DIR/kanna.db" "select count(*) from messages where recipient = '$holds' and sender = 'kanna' and text like 'You ended your turn with these still running: sleep 120 (pid %). Another task is waiting for your runner.%kanna task yield%'")" -ge 1 || { echo "shelf_runner_ask: the question doesn't name what runs and the two commands"; return 1; }
+  check wait_for 10 shows "$agent" "peer: \[message from kanna\]" || { echo "shelf_runner_ask: the question didn't reach the agent"; kanna read "$agent"; return 1; }
+  check wait_for 10 is "$agent" status idle || { kanna read "$agent"; return 1; }
+  sleep 2
+  check test "$(of "$holds")" == "$agent running" || { echo "shelf_runner_ask: an agent that didn't answer lost its runner"; of "$holds"; return 1; }
+  check test "$(of "$waits")" == "- waiting" || { echo "shelf_runner_ask: two ran on one runner"; of "$waits"; return 1; }
+  check wait_for 15 eval '(( $(questions "$holds") >= 2 ))' || { echo "shelf_runner_ask: it wasn't asked again"; in_repo task messages "$holds"; return 1; }
+  local waited; waited="$(cd "$repo" && KANNA_TERMINAL="$agent" kanna task wait the mockup review)"
+  [[ "$waited" == "$(sid 1) keeps its runner, waiting for the mockup review: Kanna asks again in "* ]] || { echo "shelf_runner_ask: kanna task wait said: $waited"; return 1; }
+  check wait_for 5 eval 'in_repo task list | grep -qE "^$(sid 1) +Holds +idle( +claude)? +waiting for the mockup review$"' || { echo "shelf_runner_ask: kanna task list doesn't say what it waits for"; in_repo task list; return 1; }
+  check wait_for 5 eval '[[ "$(row "$holds")" == "idle, waiting for the mockup review · "* ]]' || { echo "shelf_runner_ask: the Desk view's row doesn't say what it waits for: $(row "$holds")"; return 1; }
+  local yielded; yielded="$(cd "$repo" && KANNA_TERMINAL="$agent" kanna task yield)"
+  [[ "$yielded" == "$(sid 1) stops when this turn ends and its runner goes to the next task: "* ]] || { echo "shelf_runner_ask: kanna task yield said: $yielded"; return 1; }
+  check wait_for 20 eval '[[ "$(of "$holds")" == "$agent stopped:yielded" ]]' || { echo "shelf_runner_ask: the yield didn't stop it"; of "$holds"; kanna read "$agent"; return 1; }
+  check wait_for 15 eval '[[ "$(of "$waits")" == "term-"*" "* && "$(of "$waits")" != *waiting ]]' || { echo "shelf_runner_ask: the waiting task didn't get the runner"; of "$waits"; return 1; }
+  in_repo task list | grep -qE "^$(sid 1) +Holds +stopped( +claude)? +yielded its runner$" || { echo "shelf_runner_ask: kanna task list doesn't say why it stopped"; in_repo task list; return 1; }
+  check wait_for 5 eval '[[ "$(row "$holds")" == "yielded its runner · "* ]]' || { echo "shelf_runner_ask: the Desk view's row doesn't say why it stopped: $(row "$holds")"; return 1; }
+  stop_agents
+}
+
 scenario merge_queue M4
 merge_queue() {
   local repo="$KANNA_AGENTS_HOME/.kanna-v4/repos/local/queue" fake="$KANNA_STATE_DIR/agents"

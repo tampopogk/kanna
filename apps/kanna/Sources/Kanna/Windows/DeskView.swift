@@ -76,6 +76,16 @@ struct ShelfTask: Equatable {
     var failed: String? = nil
     var running = false
     var failedEntry: String? = nil
+    var holding: String? = nil
+
+    static func holding(_ entry: JSON, running: Bool, status: String?) -> String? {
+        guard running else { return entry["stopped"]?.string == "yielded" ? "yielded its runner" : nil }
+        guard status == "idle" else { return nil }
+        if let reason = entry["holding"]?["for"]?.string { return "idle, waiting for " + reason }
+        guard case .array(let on)? = entry["holding"]?["on"] else { return nil }
+        let names = on.compactMap(\.string)
+        return names.isEmpty ? nil : "idle, waiting on " + names.joined(separator: ", ")
+    }
 
     static func stack(_ entry: JSON) -> String? {
         func names(_ key: String) -> String {
@@ -1237,6 +1247,9 @@ private final class ShelfRow: NSView {
         if let failed = task.failed {
             detail.append(NSAttributedString(string: "merge failed", attributes: [.font: small, .foregroundColor: NSColor.systemRed]))
             detail.append(NSAttributedString(string: " · \(failed) · its agent has the reasons · ", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        if let holding = task.holding {
+            detail.append(NSAttributedString(string: holding + " · ", attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
         }
         if let stack = task.stack {
             let color: NSColor = stack.hasPrefix("ready") ? .systemGreen : stack.hasPrefix("merges") ? .secondaryLabelColor : .systemOrange

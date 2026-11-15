@@ -302,7 +302,7 @@ extension AppController {
             if case .array(let blockers)? = entry["waits"] { waits = blockers.compactMap { $0["name"]?.string ?? $0["id"]?.string } }
             let running = entry["running"]?.bool == true && entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } != "exited"
             let status = offline(entry["machine"]?.string) ? nil : entry["running"]?.bool == true ? entry["held"]?.string.flatMap { agentStatuses.statuses[$0] } : ShelfTask.last(stopped: entry["stopped"]?.string)
-            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status, queue: QueueSpot(entry["queue"]), failed: entry["mergeFailed"]?["why"]?.string, running: running, failedEntry: entry["mergeFailed"]?["queue"]?.string)
+            return ShelfTask(id: id, name: name, message: entry["message"]?.string, from: entry["by"]?.string.flatMap(taskName), madeAt: entry["madeAt"]?.number, waits: waits, agent: ShelfTask.program(entry["agent"]?.string), pane: entry["held"]?.string, branch: entry["branch"]?.string, stack: ShelfTask.stack(entry), status: status, queue: QueueSpot(entry["queue"]), failed: entry["mergeFailed"]?["why"]?.string, running: running, failedEntry: entry["mergeFailed"]?["queue"]?.string, holding: ShelfTask.holding(entry, running: running, status: status))
         }
     }
 

@@ -1137,6 +1137,10 @@ impl Db {
         tx.commit()
     }
 
+    pub fn withdraw_message(&self, id: i64) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute("delete from messages where id = ?1 and delivered is null", params![id])? > 0)
+    }
+
     fn select_messages<P: rusqlite::Params>(&self, sql: &str, params: P) -> rusqlite::Result<Vec<Message>> {
         let mut statement = self.conn.prepare(sql)?;
         let rows = statement.query_map(params, |r| Ok(Message { id: r.get(0)?, recipient: r.get(1)?, repo: r.get(2)?, sender: r.get(3)?, at: r.get(4)?, delivered: r.get(5)?, text: r.get(6)?, mode: r.get(7)?, comment: Comment::parse(r.get(8)?) }))?;

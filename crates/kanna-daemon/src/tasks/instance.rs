@@ -1,7 +1,7 @@
 use super::*;
 use crate::instance_move::{self as im, MOVING_DB};
 
-const CHANGES: &[&str] = &["new", "edit", "ready", "name", "done", "start", "stop", "setup", "pick", "shelve", "move", "plan", "let-go", "send", "comment", "subscribe", "unsubscribe"];
+const CHANGES: &[&str] = &["new", "edit", "ready", "name", "done", "start", "stop", "yield", "wait", "setup", "pick", "shelve", "move", "plan", "let-go", "send", "comment", "subscribe", "unsubscribe"];
 
 const APP_QUIT_WAIT: Duration = Duration::from_secs(10);
 
