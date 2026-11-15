@@ -22,7 +22,7 @@ In the Desk view, a Shelf task's row shows its status with the same dot as a Des
 | On a machine that's offline | the circle: Kanna can't tell what it's doing |
 
 - **Same statuses as a Desk row:** they come from the agent's report ([agent status](agent-status.md)), by the task's held pane.
-- **Only the dot changes:** the row's text and its Move to Desk stay as they are; its keys show on hover ([Desk view keys](desk-keys.md)).
+- **Only the dot changes,** with two exceptions: the row's text and its Move to Desk stay as they are; its keys show on hover ([Desk view keys](desk-keys.md)). A task idle on a runner held by its background work starts its line with `idle, waiting on Google Chrome` (or `idle, waiting for WHAT`, once its agent said with `kanna task wait`), and one that gave its runner up with `yielded its runner` ([asking for a runner back](shelf-runners.md#3-asking-for-a-runner-back)).
 - **The dot follows the status:** a status change on a held pane refreshes the Desk view.
 - **The strip doesn't change:** it shows how many are on the Shelf and no needs-you count.
 - **Paused tasks keep their status:** Kanna pauses a [Shelf runner](shelf-runners.md) when its turn ends, as needs you or finished, and `kanna task stop` on a Shelf task records the same. The dot lasts through a restart and goes with the live status when the task starts again.

@@ -86,6 +86,16 @@ Kanna tells you when something your work depends on changes, with a message from
 - **Leave the others on** unless the user asks: without `base-moved` you still go stale, you just aren't told.
 - **Check with `kanna task events`:** what you hear, and what you were sent.
 
+## Background work on the Shelf
+
+On the Shelf, a turn you end with something still running that you started (a browser, a server, a `run_in_background` command) keeps your runner, and no other Shelf task can have it.
+
+- **Close what you started once you have what you needed:** the browser you drove, the server you served a mockup from, a watcher you no longer read.
+- **A message from `kanna` naming what's still running** means another task is waiting for your runner. Answer with a command, not words:
+  - `kanna task yield` if you aren't waiting on them: you stop at the end of this turn, keeping your conversation, and start again for a message or when the user picks you.
+  - `kanna task wait "WHAT FOR"` if you are (a build, a server the user is looking at): you keep the runner, your row says what for, and you're asked again later.
+- **Not answering** keeps the runner too, and you're asked again.
+
 ## Show it in a tab
 
 When the user asks you to show them something (a diff, a file, a doc, a page, a log), open it in a new tab of your own window, not in the chat:
@@ -161,6 +171,8 @@ When the user asks for an agent to be prompted at set times ("remind me every mo
 | `kanna task merge -m SUMMARY` · `kanna task merge --cancel` | When the user says merge: hand the branch to the merge queue, which also claims it ready, so the tasks waiting for it start, or take it back out ([Merging](#merging)) |
 | `kanna task list [QUERY] [--all] [--include-done]` | This repo's tasks, the Desk's, those in the merge queue (Merging: queued, testing, judging, needs you, landing), then the Shelf's: ID, name, state (working, idle, needs you, stopped, merged, replied, merge-failed, ready (claimed and merges into main cleanly), conflicts (claimed but conflicts with main), stale with what it's behind, or blocked with what it waits for; `merges after` a task whose work isn't in main yet), an agent other than the default; `--all`: every repo's; QUERY keeps those where every word starts the task's ID or is its agent's pane ID, or is in its name, first message or branch, and a done task's ID alone says it's done, and when; `--include-done` adds done tasks under Done, newest first: with QUERY every one that matches, without it the 5 done last |
 | `kanna task start TASK` | Run a task where it is: a Shelf task gets its worktree, branch and agent with the first message, and stays on the Shelf; a stopped task resumes its conversation |
+| `kanna task yield` | From your own terminal, when `kanna` asks about your background work: stop at this turn's end so your runner goes to a waiting task |
+| `kanna task wait TEXT` | From your own terminal, when `kanna` asks: keep your runner for what you're waiting on; your row says what for |
 | `kanna task stop [TASK]` | End a task's agent and hang up its terminals, leaving it where it is with its tabs as they are (only when the user asks) |
 | `kanna task pick TASK` | Move a Shelf task to the Desk, starting it if it's stopped (three per project; refused when the Desk is full) |
 | `kanna task activate TASK` | Make a Desk task the active one and show it (only when the user asks) |

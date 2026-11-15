@@ -126,11 +126,15 @@ pub const COMMAND: Command = Command {
                 out["task"] = json!(task.ok_or_else(|| usage("task", "stop needs a TASK, or run it from the task's terminal"))?);
             }
             "yield" => {
-                out["task"] = json!(caller().ok_or_else(|| usage("task", "yield is for a Shelf task's own terminal"))?);
+                if let Some(task) = caller() {
+                    out["task"] = json!(task);
+                }
             }
             "wait" => {
                 out["text"] = json!(args.rest().ok_or_else(|| usage("task", "wait needs what you're waiting for: kanna task wait \"WHAT FOR\""))?);
-                out["task"] = json!(caller().ok_or_else(|| usage("task", "wait is for a Shelf task's own terminal"))?);
+                if let Some(task) = caller() {
+                    out["task"] = json!(task);
+                }
             }
             "ready" => {
                 let task = args.positional();
@@ -300,6 +304,14 @@ fn before(request: &mut Value, mux: &mut Session) -> Result<Call, Failure> {
     let waiting = if request["action"] == "done" { mux.call("tasks", json!({ "action": "list" })).ok() } else { None };
     let (task, shorts) = located.unzip();
     Ok(Call { task, shorts: shorts.unwrap_or_default(), waiting, remote, ..Call::default() })
+}
+
+fn span(seconds: u64) -> String {
+    match seconds {
+        0..60 => format!("{seconds} seconds"),
+        60..120 => "a minute".to_string(),
+        _ => format!("{} minutes", seconds / 60),
+    }
 }
 
 fn holding(t: &Value) -> Option<String> {
@@ -627,7 +639,7 @@ pub fn show(request: &Value, reply: &Value) -> String {
         Some("move") => format!("{} carries on on {}{}", reply["task"].as_str().unwrap_or("?"), reply["to"].as_str().unwrap_or("?"), reply["folder"].as_str().map_or(String::new(), |f| format!(", in {f}"))),
         Some("yield") if reply["after_turn"] == Value::Bool(true) => format!("{} stops when this turn ends and its runner goes to the next task: end your turn now; a message or a pick starts it again", reply["task"].as_str().unwrap_or("?")),
         Some("yield") => format!("stopped {}: its runner goes to the next task; a message or a pick starts it again", reply["task"].as_str().unwrap_or("?")),
-        Some("wait") => format!("{} keeps its runner, waiting for {}: Kanna asks again in {} minutes if another task is waiting", reply["task"].as_str().unwrap_or("?"), reply["for"].as_str().unwrap_or("?"), reply["again"].as_u64().unwrap_or(0) / 60),
+        Some("wait") => format!("{} keeps its runner, waiting for {}: Kanna asks again in {} if another task is waiting", reply["task"].as_str().unwrap_or("?"), reply["for"].as_str().unwrap_or("?"), span(reply["again"].as_u64().unwrap_or(0))),
         Some("stop") if reply["after_turn"] == Value::Bool(true) => format!("{} stops when this turn ends: end your turn now, and its agent quits then", reply["task"].as_str().unwrap_or("?")),
         Some("stop") => format!("stopped {}{}; `kanna task start {}` starts it again", reply["task"].as_str().unwrap_or("?"), place(reply), reply["task"].as_str().unwrap_or("?")),
         Some("pick") => format!(

@@ -73,7 +73,7 @@ pub fn question(processes: &[Process]) -> String {
 }
 
 impl Tasks {
-    pub(super) fn held_by(&self, pane: &str, found: &[Process], now: Instant) {
+    pub(super) fn held_by(&self, pane: &str, found: &[Process], started: bool, now: Instant) {
         let names = |processes: &[Process]| shown(processes).into_iter().map(|(_, n)| n).collect::<Vec<_>>();
         let mut holding = self.holding.borrow_mut();
         let (changed, gone) = if found.is_empty() {
@@ -83,7 +83,7 @@ impl Tasks {
             let held = holding.entry(pane.to_string()).or_insert_with(|| Holding::new(now));
             let before = names(&held.processes);
             held.processes = found.to_vec();
-            (before != names(found), None)
+            (started || before != names(found), None)
         };
         drop(holding);
         if let Some(gone) = gone {
@@ -151,7 +151,7 @@ impl Tasks {
     }
 
     fn holder(&self, args: &Value, what: &str) -> Result<(Entry, String), KmuxError> {
-        let id = string(args, "task").ok_or_else(|| bad(format!("{what} needs a task: run it from the task's terminal")))?;
+        let id = string(args, "task").ok_or_else(|| bad(format!("kanna task {what} is for a Shelf task's own terminal")))?;
         let Some(entry) = self.entries.borrow().iter().find(|e| e.id == id).cloned() else {
             return Err(KmuxError::new("not_on_shelf", format!("{} isn't running on the Shelf, so it holds no runner", self.short(id))));
         };

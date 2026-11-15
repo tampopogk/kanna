@@ -1,6 +1,6 @@
 # Shelf runners
 
-**Status:** built · **Tested:** e2e `shelf_runners`, `shelf_stop_pick`, `task_quit_at_rest`, `real_agent_tasks`, `real_agent_program_status`, `cargo test -p kanna-detect` (turn, background work, quit files), `-p kanna-daemon` (settings, a turn's end), `-p kanna --test machines_shelf` (asks and the machine's total) · **Builds on:** [tasks](tasks.md), [presenting](presenting.md), [blocked tasks](task-dependencies.md), [agent status](agent-status.md), [which agents resume](tasks.md#which-agents-resume)
+**Status:** built · **Tested:** e2e `shelf_runners`, `shelf_runner_ask`, `shelf_stop_pick`, `task_quit_at_rest`, `real_agent_tasks`, `real_agent_program_status`, `cargo test -p kanna-detect` (turn, background work, quit files), `-p kanna-daemon` (settings, a turn's end, asking for a runner back), `-p kanna --test machines_shelf` (asks and the machine's total) · **Builds on:** [tasks](tasks.md), [presenting](presenting.md), [blocked tasks](task-dependencies.md), [agent status](agent-status.md), [which agents resume](tasks.md#which-agents-resume)
 
 Shelf tasks start by themselves, a few at a time, and work until they're blocked or done; then Kanna stops them. By the time you move one to the Desk, it has already done what it could, and it resumes there.
 
@@ -10,7 +10,8 @@ The Shelf looks the same as before: rows show nothing about how far a task got, 
 
 1. [What runs](#1-what-runs)
 2. [How it's built](#2-how-its-built)
-3. [Glossary](#3-glossary)
+3. [Asking for a runner back](#3-asking-for-a-runner-back)
+4. [Glossary](#4-glossary)
 
 ## 1. What runs
 
@@ -26,6 +27,9 @@ stateDiagram-v2
     running --> background: idle with background work running
     background --> running: it reports working
     background --> finished: 10s after the last of it exits
+    background --> yielded: asked while a task waits, it runs kanna task yield
+    yielded --> running: a message, and a runner is free (its turn by age)
+    yielded --> desk: Move to Desk (resumes its session)
     needs_you --> desk: Move to Desk (resumes its session)
     finished --> desk: Move to Desk (resumes its session)
     running --> desk: Move to Desk (as it is)
@@ -41,7 +45,7 @@ stateDiagram-v2
 - **So tasks are written to be done in one go:** the [planning agent](planning-agent.md#2-what-it-is) reads the code, asks you until the outcome, scope, decisions and how to judge it done are settled, writes a first message that says all of it and what to do when stuck, and reads it back to you before it makes the task (the `kanna-planning` skill).
 - **A runner frees when a turn ends:** the agent's [report](agent-status.md#3-the-report-osc-7501) goes from working to idle or done (finished) or to blocked (needs you), and it has no [background work](#background-work) running. Kanna quits the agent, keeps its session, and starts the next.
 - **An agent too old to report isn't run:** Kanna [quits it](agent-status.md#2-kannas-agents) as it starts, stops the task as `too-old`, and runners skip it until you start it yourself.
-- **Nothing shows it:** Shelf rows and `kanna task list` show a runner's status as they do for any running Shelf task ([Shelf row status](shelf-row-status.md)), and the Desk's tasks aren't re-sorted. Why a task stopped (needs you, finished), and what it waited for before it did, is kept in its events (`tasks events`, the socket command), and its row keeps the status it stopped with.
+- **Nothing shows it:** Shelf rows and `kanna task list` show a runner's status as they do for any running Shelf task ([Shelf row status](shelf-row-status.md)), apart from a runner held by background work and a task that yielded its runner ([asking for a runner back](#3-asking-for-a-runner-back)), and the Desk's tasks aren't re-sorted. Why a task stopped (needs you, finished), and what it waited for before it did, is kept in its events (`tasks events`, the socket command), and its row keeps the status it stopped with.
 - **Moved to the Shelf running, a task counts as a runner,** and Kanna stops it when its turn ends, at once if it arrives idle. That can leave more running than `shelf.runners` for a while: Kanna stops none to make room, and starts no more until fewer run.
 - **A message wakes a stopped task:** it runs for it as a runner, taking its turn by age: a message doesn't put it ahead of an older task that hasn't started, so messaging many tasks at once ([task events](task-events.md), say) doesn't hold up new work. A message you typed doesn't queue: the task runs at once, past `shelf.runners`, as `kanna task start` does, unless `shelf.runners` is 0 on the machine or for its repo. A running one with a message waiting gets it instead of being stopped ([agent messaging](agent-messaging.md#3-stopped-tasks)).
 - **A task whose agent ended with the keeper** is started again by a runner, in its turn by age, resuming its session ([agents after the keeper is lost](keeper-loss.md)).
@@ -56,7 +60,7 @@ stateDiagram-v2
 Claude reports idle at the end of its turn while a command it started in the background (`run_in_background`, a Monitor) still runs. Quitting it then kills the command, and the resumed session says `Background shell command didn't finish before the previous session ended`. So a turn isn't over while its agent has background work:
 
 - **Background work is a process under the agent outside its process group:** a live descendant of the agent's process whose group isn't the agent's, such as Claude's shells (each runs in a session of its own) and what they run (a build, a server). The agent's own helpers stay in its group and don't count: MCP servers, `caffeinate`, the `git` it runs to show the branch. A process that left the tree (a daemon that detached and was reparented) doesn't count, nor does one that has exited but isn't reaped yet.
-- **The runner stays taken while it waits,** with no time limit: a command that never ends holds its runner until you stop the task. Its Shelf row shows it idle; the task's events say it waits and for what (`waiting`, with `why: background` and each process's pid and command), and the daemon log names them.
+- **The runner stays taken while it waits,** with no time limit: a real build or test is the load `shelf.runners` caps, so Kanna never takes a runner from an agent, and doesn't guess from the process list which processes matter. When another task waits for the runner, Kanna asks the agent ([asking for a runner back](#3-asking-for-a-runner-back)). Its Shelf row and `kanna task list` say it's idle and what it waits on (`idle, waiting on Google Chrome`); the task's events say it waits and for what (`waiting`, with `why: background` and each process's pid and command), and the daemon log names them.
 - **Then a grace of 10s:** once the last of it exits, Kanna waits 10s before it stops the task, since the command finishing wakes the agent (Claude tells itself the command completed) and it starts a new turn. A working report in the grace cancels the stop; that turn ends as any other.
 - **Asking you waits too:** a turn that ends blocked (needs you) with background work running waits for it the same way.
 - **Only Claude is looked at** (and the mock agent named as it): codex reports working until its background terminals close ([agent status](agent-status.md#2-kannas-agents)), and runs two `app-server-daemon` processes in sessions of their own for as long as it runs, which would hold its runner for ever. Antigravity and opencode aren't measured, so Kanna takes their reports at their word.
@@ -111,11 +115,53 @@ flowchart TD
 - **The quit files are bundled only:** nothing outside Kanna's build can change what Kanna types into an agent.
 - **Tested** by `kanna-detect` tests of `Turn` (work holds the end with no limit, then the grace; a working report in the grace cancels it) and of `program::background` (a table: a child in the agent's group isn't work, one in its own is, with what it runs; a real `bash` agent with a child in its group and one with job control, found until it exits); by `tasks.rs` tests with a fake agent and child (idle with the child running doesn't quit it and logs `waiting` once; it stops as finished only after the child is gone and the grace passes; working within the grace keeps it; `kanna task stop` doesn't wait; a pick whose turn is over when it lands is never stopped and nothing is typed to it; a pick after `/exit` was pasted, and after Enter, gets the agent running on the Desk with its session; so does a pick while `kanna task stop` quits it; a pick after the stop starts it again); by e2e `shelf_stop_pick` (the mock agent as codex lingers 3s after it says its session, `KANNA_MOCK_EXIT_DELAY`; picked in that time, it's resumed on the Desk and still runs there); by e2e `real_agent_program_status` (real claude ends its turn idle with its background shell running, and reports working within the grace once it ends); by `kanna-detect` tests of each agent's `box` against its real screens (`/exit` alone matches; a draft before it, or of several lines, doesn't); by `tasks.rs` tests of each way, with a fake agent that rests on `esc`: idle uses `/exit` and keeps the session; working and needs you (a stop, a runner) get `esc` and then `/exit`; one that doesn't rest gets `esc` each second and its keys at the limit; one with no report gets its keys; a draft is never entered, idle or working, and gets the keys; `/exit` that doesn't work falls back to the keys and then a hang-up; Done and Stop from the agent's own pane answer at once, type nothing until its turn ends and then only `/exit`, bring a turn past the limit to rest, and don't wait for an agent with no report; a Done from elsewhere while one waits quits it at once; by e2e `task_start_stop` (`kanna task stop` quits the mock as claude by `/exit`), `task_quit_at_rest` (the mock agent as claude: its own `kanna task done` mid-turn quits it by `/exit` once its turn ends, with no `esc` or ctrl+c; stopped while working, and while asking, it gets `esc` and then `/exit`) and `real_agent_tasks` (real claude and codex quit by `/exit` with no interruption in their transcripts and resume their session: claude Kanna's, codex the one it said; with a draft they quit by keys and the draft never reaches the model; one that stops and then ends its own task mid-turn quits by `/exit` after its turn each time, with no interruption in its transcript, and resumes its session in between); and by e2e `shelf_runners` with the mock agent as codex: with runners 0 nothing runs; with 3, five tasks run three at a time in order, skipping a blocked one until its blocker is Done; one that asks is stopped as needs you (in its events), its session read from what it said as it quit; Move to Desk resumes it there; moved back to the Shelf idle, it's stopped as finished; one that presents its work keeps its tabs, focus and zoom through the stop ([presenting](presenting.md#3-how-its-built)); with one runner, tasks run by age whether stopped with a message or never started: a newer stopped task with a message waits behind an older new one, and an older one runs before a newer new one. With two repos on one instance, a repo's number can't raise a machine total of 0 or 2, four tasks made in turn run oldest first and two at a time; a repo capped at 1 runs one task at a time while its places go to the other repo's newer tasks, up to a total of 3; and a repo at 0 runs nothing and holds up nothing. `machines_shelf` checks that a machine whose one runner is taken by a task in one repo asks for no task in another until it's free. `tasks.rs` tests check the order of the queue and how the two files combine; with the mock as claude, one idle with a `sleep 4` it started running isn't stopped (its events say it waits for `sleep 4`) until the sleep exits and the grace passes, and one woken by its sleep's end within the grace finishes its new turn before it's stopped.
 
-## 3. Glossary
+## 3. Asking for a runner back
+
+Seen in Kanna Staging, 10 to 14 November 2026: runners held for days by a Playwright Chrome an agent never closed, a `python -m http.server` for a mockup, a hung `eza --icons` shell and a plugin's child `claude`, while new tasks in another repo waited. Kanna can't tell from a process list whether the agent still needs them; the agent can, so Kanna asks it, and the answer is a command, so Kanna reads no prose.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Shelf task, holds a runner)
+    participant K as Kanna (daemon)
+    participant B as Waiting task
+    A->>K: reports idle, background work still running
+    Note over K: runner kept, row says "idle, waiting on Google Chrome"
+    Note over K: 5 minutes later, and only while B waits for a runner
+    K->>A: [message from kanna] You ended your turn with these still running: …
+    alt not waiting on them
+        A->>K: kanna task yield
+        A->>K: ends its turn
+        K->>A: /exit (session kept), terminals hung up
+        K->>B: runner free: B starts
+    else waiting on them
+        A->>K: kanna task wait "WHAT FOR"
+        Note over K: runner kept, row says "idle, waiting for WHAT FOR", asked again after twice as long
+    else no answer, or it just ends its turn
+        Note over K: runner kept, asked again on the same doubling schedule
+    end
+```
+
+- **When:** the task holds a runner, its turn ended at least 5 minutes ago with [background work](#background-work) still running, and another task is waiting for a runner. Nobody waiting, nothing is asked. The 5 minutes is `ASK_AFTER` in `tasks/holding.rs` (`KANNA_ASK_AFTER`, in seconds, overrides it for tests).
+- **Waiting for a runner** means a [candidate](#2-how-its-built) the last fill skipped for the limits, which freeing this task's runner would let start: under the machine's `shelf.runners` once one is freed, and under its repo's cap (a repo at its cap is helped only by a runner of its own). A message you typed starts its task past the limits, so it waits for nothing.
+- **The question** is a message from `kanna` ([agent messaging](agent-messaging.md)) naming what Kanna sees, and what it wants: `You ended your turn with these still running: Google Chrome (pid 4242), python3 -m http.server 52688 (pid 4250). Another task is waiting for your runner. If you're waiting on them, run kanna task wait "WHAT FOR"; if not, run kanna task yield.` Shells are left out when anything else runs, and a program whose name starts with one already named (Chrome's helpers) is left out; a command up to 60 characters is shown with its arguments, a longer one by its program's name.
+- **`kanna task yield`** stops the task as `kanna task stop` from its own pane does: Kanna answers at once, waits for the turn to end (not for its background work), quits the agent keeping its session, and hangs up its terminals, so its leftover processes end with them. The task stops as `yielded` (its row says `yielded its runner`, its events `stopped` with `why: yielded`), the runner is free, and the next candidate starts. It resumes as any stopped task does: for a message, or when you pick it. A question it hadn't read yet is withdrawn, so it doesn't wake the task again.
+- **`kanna task wait TEXT`** keeps the runner. The row and `kanna task list` say `idle, waiting for TEXT`, its events `waits` with `for`, and Kanna asks again after twice as long.
+- **No answer, or the agent just ends its turn again,** keeps the runner as before, and it's asked again on the same schedule. Kanna never stops an agent that hasn't yielded.
+- **The schedule doubles:** asked 5 minutes after its turn ended, then 10, 20, 40… minutes after each ask; a `wait` answer sets the next ask that far from the answer. A due ask that finds no task waiting is made as soon as one is. The schedule lasts while the background work does: once it's gone (the turn then ends and the task stops), the next background work starts at 5 minutes again.
+- **A pick wins:** a pick while a yield quits the agent starts it again on the Desk, resuming its session, as for any stop under way ([the race](#2-how-its-built)).
+- **Only Claude is looked at,** as for background work: codex reports working until its background terminals close, so its turn doesn't end and it's never asked; Antigravity and opencode aren't measured. `kanna task yield` and `kanna task wait` work for any Shelf agent that runs them.
+- **The holding isn't kept through a daemon restart,** like the turn it belongs to: a restarted daemon finds the background work again and starts the schedule at 5 minutes.
+- **Only on the Shelf:** a Desk task holds no runner, and both commands refuse it (`not_on_shelf`).
+- **Built** in `tasks/holding.rs`: `fill` records the candidates it skipped for the limits (`Contended`); `look_for_background` keeps what each quiet agent's tree holds (`Holding`: its processes, the next ask, the wait, the reason, the question's message ID); `tick` asks the due ones while the turn waits, the candidate still waits, and no message waits for the task. `described` gives a Shelf row `holding` (`on`, `for`, `asked`) while its turn waits on background work, which `kanna task list` and the Desk view's row phrase.
+- **Tested** by `tasks.rs` tests with the fake agent and child: asked only once the delay passes while another task waits (and not with nobody waiting); no answer keeps the runner and asks again after twice as long; `wait` keeps it, says what for and doubles; `yield` stops it at its turn's end as `yielded`, its background work still running, withdraws the unread question and the waiting task runs; a pick while a yield quits the agent starts it again on the Desk; a Desk task is refused; `holding.rs` tests of the names and of when a freed runner helps; a `kanna` CLI test of the rows and replies; and e2e `shelf_runner_ask` with the mock agent as claude and one runner (`KANNA_ASK_AFTER=3`): idle with `sleep 120` in the background, its row and `kanna task list` say `waiting on sleep`, it isn't asked with nobody waiting, it's asked once a second task waits, keeps the runner unanswered and is asked again, `kanna task wait` shows the reason, and `kanna task yield` stops it as `yielded` and the waiting task starts.
+
+## 4. Glossary
 
 | Term | Meaning |
 |---|---|
 | **Runner** | One of a machine's `shelf.runners` places, in which Shelf tasks from any of its repos run by themselves |
 | **Turn** | An agent's work from your message (or its first) until it stops to wait for you, with no background work left running |
 | **Background work** | A process under a task's agent outside the agent's own process group, such as a shell it runs a command in the background in |
+| **Held runner** | A runner whose Shelf task is idle with background work running, which Kanna asks about while another task waits |
+| **Yield** | `kanna task yield`: the agent gives its runner up, and its task stops as `yielded` |
 | **Grace** | The 10s Kanna waits after the last background work exits before it stops the task, in case the agent starts a new turn for it |

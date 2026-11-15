@@ -2419,8 +2419,8 @@ impl Tasks {
         let quiet: Vec<String> = self.turns.borrow().iter().filter(|(pane, turn)| turn.quiet(now) && !self.setting_up.borrow().contains_key(*pane)).map(|(pane, _)| pane.clone()).collect();
         for pane in quiet {
             let Some(found) = self.background.borrow().as_ref().and_then(|background| background(&pane)) else { continue };
-            self.held_by(&pane, &found, now);
             let started = self.turns.borrow_mut().get_mut(&pane).is_some_and(|turn| turn.background(!found.is_empty(), now));
+            self.held_by(&pane, &found, started, now);
             if !started {
                 continue;
             }
