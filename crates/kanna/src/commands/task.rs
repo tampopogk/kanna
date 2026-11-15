@@ -48,7 +48,7 @@ pub const COMMAND: Command = Command {
         ("kanna task subscribe main-moved 71af", "task-71af also hears every move of main."),
         ("kanna task events 71af", "What task-71af hears, and every event message it was sent."),
         ("kanna task done agent", "End the task docked as agent: close its agent and tabs."),
-        ("kanna task merge -m \"find is case-insensitive unless the search has a capital\"", "From a task's terminal: hand its branch to the repo's merge queue. Its agent quits and its tabs close; the queue merges it onto main, runs the repo's tests there (merge.test, or .kanna/pipelines/merge-queue.kojo) and moves main to that merge if they pass. If they fail, an agent, the queue's judge, decides whether a failure is the branch's doing: if none is, it still lands; if one is, the task comes back to the Shelf and its agent gets the judge's reasons and the log."),
+        ("kanna task merge -m \"find is case-insensitive unless the search has a capital\"", "From a task's terminal: hand its branch to the repo's merge queue. Its agent quits and its tabs close; the queue merges it onto main, runs the repo's tests there (merge.test, or .kanna/pipelines/merge-queue.kojo) and moves main to that merge if they pass. A branch that conflicts with main is taken too: an agent, the queue's resolver, resolves the conflicts in the queue's worktree, keeping both sides' intent, and the tests run on its resolution; if it can't resolve them, the task comes back to the Shelf with what it found. If the tests fail, an agent, the queue's judge, decides whether a failure is the branch's doing: if none is, it still lands; if one is, the task comes back to the Shelf and its agent gets the judge's reasons and the log."),
         ("kanna task merge --cancel 3f9a", "Take task-3f9a out of the merge queue: it goes back to the Shelf, stopped, and main isn't touched."),
         ("kanna task done 3f9a --keep", "End task-3f9a without running the repo's tasks.teardown, keeping its worktree and branch."),
     ],
@@ -322,6 +322,8 @@ fn queue_row(t: &Value, all: &[Value], now: f64) -> [String; 4] {
     let needs = q["needs"].as_str().filter(|_| q["state"] == "testing");
     let state = match (q["state"].as_str(), q["stage"].as_str()) {
         (Some("testing"), _) if needs.is_some() => "needs you".to_string(),
+        (Some("testing"), Some("merge")) => "merging".to_string(),
+        (Some("testing"), Some("resolve")) => "resolving".to_string(),
         (Some("testing"), Some("judge")) => "judging".to_string(),
         (Some("testing"), Some(stage)) if stage != "test" => format!("testing {stage}"),
         (Some(state), _) => state.to_string(),

@@ -55,7 +55,7 @@ impl Tasks {
         self.label(id)
     }
 
-    pub fn enqueue(self: &Rc<Self>, candidate: Candidate, queue: &str, head: &str, by: Option<String>, settled: impl FnOnce() + 'static) {
+    pub fn enqueue(self: &Rc<Self>, candidate: Candidate, queue: &str, head: &str, by: Option<String>, conflicting: Option<String>, settled: impl FnOnce() + 'static) {
         let id = candidate.entry.id.clone();
         let queued = queue.to_string();
         let change = Change::new("queued").by(by.as_deref()).with("queue", json!(queue));
@@ -68,7 +68,7 @@ impl Tasks {
             true => entry,
             false => self.claim_for_merge(&entry, queue, head, by.as_deref()).unwrap_or(entry),
         };
-        self.tell_planner(&entry, What::Queued, by.as_deref());
+        self.tell_planner_saying(&entry, What::Queued, by.as_deref(), conflicting);
         self.changed();
         self.refill();
         let Some(pane) = candidate.pane.filter(|pane| self.core.upgrade().is_some_and(|core| core.pane(pane).is_some())) else { return settled() };
@@ -145,7 +145,7 @@ impl Tasks {
         if let Err(error) = self.post(id, Some(&entry.repo), queue, text) {
             log!("kanna-daemon: couldn't tell {id} its merge failed: {}", error.message);
         }
-        self.tell_planner(&entry, What::MergeFailed, Some("queue"));
+        self.tell_planner_saying(&entry, What::MergeFailed, Some("queue"), failure.get("why").and_then(Value::as_str).map(String::from));
         self.changed();
         self.refill();
     }

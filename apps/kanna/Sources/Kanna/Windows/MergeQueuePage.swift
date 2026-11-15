@@ -19,6 +19,7 @@ struct QueueEntry: Equatable {
     let needs: String?
     let told: String?
     let judged: Bool
+    let resolved: Bool
     var after: String?
 
     init(_ json: JSON) {
@@ -39,10 +40,15 @@ struct QueueEntry: Equatable {
         stage = doc?["stage"]?.string
         needs = state == "testing" ? doc?["needs"]?.string : nil
         told = doc?["told"]?.string
-        judged = doc?["result"]?["verdict"]?.string != nil
+        judged = doc?["result"]?["verdict"]?.string != nil && (doc?["result"]?["stage"]?.string ?? "judge") == "judge"
+        resolved = doc?["resolved"]?.bool == true
     }
 
     var judging: Bool { state == "testing" && stage == "judge" }
+
+    var resolving: Bool { state == "testing" && stage == "resolve" }
+
+    var doing: String { judging ? "judging a failure" : resolving ? "resolving conflicts" : stage == "merge" ? "merging" : "testing" }
 
     var live: Bool { ["queued", "testing", "landing"].contains(state) }
 
@@ -60,11 +66,11 @@ struct QueueEntry: Equatable {
         case "testing" where needs != nil:
             return ["needs you", needs, Self.clock(from: since)].compactMap { $0 }.joined(separator: " · ")
         case "testing":
-            let on = ["\(judging ? "judging a failure" : "testing") on \(main)", Self.short(base)].compactMap { $0 }.joined(separator: " ")
+            let on = ["\(doing) on \(main)", Self.short(base)].compactMap { $0 }.joined(separator: " ")
             return [on + (branch.map { " + \($0)" } ?? ""), Self.clock(from: since)].compactMap { $0 }.joined(separator: " · ")
         case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
         case "failed": return ["failed", why, DeskTask.ago(endedAt), "back on the Shelf"].compactMap { $0 }.joined(separator: " · ")
-        case "landed": return [Self.short(landed).map { "landed as \($0)" } ?? "landed", DeskTask.ago(endedAt), Self.clock(from: since, to: endedAt).map { "tested in \($0)" }, judged ? "passed by the judge" : nil].compactMap { $0 }.joined(separator: " · ")
+        case "landed": return [Self.short(landed).map { "landed as \($0)" } ?? "landed", DeskTask.ago(endedAt), Self.clock(from: since, to: endedAt).map { "tested in \($0)" }, resolved ? "conflicts resolved by the queue" : nil, judged ? "passed by the judge" : nil].compactMap { $0 }.joined(separator: " · ")
         default: return ([after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"] + [branch].compactMap { $0 }).joined(separator: " · ")
         }
     }
@@ -282,9 +288,9 @@ final class MergeQueuePage: NSView {
                 right = "paused"
                 text = [entry.told ?? entry.needs, "Resume carries it on as it is. To answer it in words, run: kanna run resume \(entry.run ?? "RUN") \"…\"\nTake out sends the task back to the Shelf. The entries behind it wait until one of those."].compactMap { $0 }.joined(separator: "\n\n")
             case "testing", "landing":
-                left = (entry.judging ? "Judge · " : "Tests · ") + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
+                left = (entry.judging ? "Judge · " : entry.resolving ? "Resolver · " : "Tests · ") + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
                 right = entry.state == "landing" ? "landing" : ["running", QueueEntry.clock(from: entry.since)].compactMap { $0 }.joined(separator: " · ")
-                if entry.terminal == nil { wait = entry.state == "landing" ? (entry.why.map { "Its tests are done. It waits to land: \($0)" } ?? "Its tests are done. It's landing.") : entry.judging ? "Its judge is starting, or waits for a command it asked for." : "Its tests are starting." }
+                if entry.terminal == nil { wait = entry.state == "landing" ? (entry.why.map { "Its tests are done. It waits to land: \($0)" } ?? "Its tests are done. It's landing.") : entry.judging ? "Its judge is starting, or waits for a command it asked for." : entry.resolving ? "Its resolver is starting." : "Its tests are starting." }
             case "queued":
                 left = [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
                 right = "waiting"

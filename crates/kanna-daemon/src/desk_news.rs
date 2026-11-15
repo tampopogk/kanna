@@ -35,16 +35,21 @@ pub struct Item {
     pub at: Instant,
     pub by: String,
     pub after: Vec<String>,
+    pub detail: Option<String>,
 }
 
 impl Item {
     pub fn new(repo: &str, task: &str, short: &str, name: Option<&str>, what: What, at: Instant) -> Item {
         let merge = if matches!(what, What::Ended { .. } | What::Landed) { Merge::Pending } else { Merge::Unknown };
-        Item { repo: repo.into(), task: task.into(), short: short.into(), name: name.map(String::from), what, merge, at, by: String::new(), after: vec![] }
+        Item { repo: repo.into(), task: task.into(), short: short.into(), name: name.map(String::from), what, merge, at, by: String::new(), after: vec![], detail: None }
     }
 
     pub fn made(self, by: &str, after: Vec<String>) -> Item {
         Item { by: by.into(), after, ..self }
+    }
+
+    pub fn saying(self, detail: Option<String>) -> Item {
+        Item { detail, ..self }
     }
 
     pub fn line(&self) -> String {
@@ -62,10 +67,19 @@ impl Item {
             (What::Ended { on_desk: true }, _) => format!("{name} ended and left the Desk"),
             (What::Ended { on_desk: false }, Merge::Into(into)) => format!("{name} merged into {into} and left the Shelf"),
             (What::Ended { on_desk: false }, _) => format!("{name} was taken off the Shelf"),
-            (What::Queued, _) => format!("{name} went into the merge queue"),
-            (What::Landed, Merge::Into(into)) => format!("{name} merged into {into} and left the merge queue"),
+            (What::Queued, _) => match &self.detail {
+                Some(conflict) => format!("{name} went into the merge queue, conflicting with {conflict}: the queue's pipeline takes that on first"),
+                None => format!("{name} went into the merge queue"),
+            },
+            (What::Landed, Merge::Into(into)) => match &self.detail {
+                Some(resolved) => format!("{name} merged into {into}, {resolved}, and left the merge queue"),
+                None => format!("{name} merged into {into} and left the merge queue"),
+            },
             (What::Landed, _) => format!("{name} landed and left the merge queue"),
-            (What::MergeFailed, _) => format!("{name} didn't merge: it's back on the Shelf, and its agent has the log"),
+            (What::MergeFailed, _) => match &self.detail {
+                Some(why) => format!("{name} didn't merge ({why}): it's back on the Shelf, and its agent has the reason"),
+                None => format!("{name} didn't merge: it's back on the Shelf, and its agent has the log"),
+            },
         }
     }
 }
@@ -156,6 +170,15 @@ mod tests {
         let after = |n: usize| ["task-c \"C\"", "task-d \"D\"", "task-e"].iter().take(n).map(|s| s.to_string()).collect();
         assert_eq!(item("r", "a", What::Made, now).made("you", after(1)).line(), "task-a \"Task a\" was made on the Shelf by you, waiting for task-c \"C\"");
         assert_eq!(item("r", "a", What::Made, now).made("you", after(3)).line(), "task-a \"Task a\" was made on the Shelf by you, waiting for task-c \"C\", task-d \"D\" and task-e");
+    }
+
+    #[test]
+    fn a_conflict_with_main_is_news_of_the_queue_not_a_refusal() {
+        let now = Instant::now();
+        assert_eq!(item("r", "a", What::Queued, now).saying(Some("main in shared.txt".into())).line(), "task-a \"Task a\" went into the merge queue, conflicting with main in shared.txt: the queue's pipeline takes that on first");
+        let landed = Item { merge: Merge::Into("main".into()), ..item("r", "a", What::Landed, now) }.saying(Some("its conflicts with main resolved by the queue in 0123abcd".into()));
+        assert_eq!(landed.line(), "task-a \"Task a\" merged into main, its conflicts with main resolved by the queue in 0123abcd, and left the merge queue");
+        assert_eq!(item("r", "a", What::MergeFailed, now).saying(Some("shared.txt: both sides rewrite parse".into())).line(), "task-a \"Task a\" didn't merge (shared.txt: both sides rewrite parse): it's back on the Shelf, and its agent has the reason");
     }
 
     #[test]
