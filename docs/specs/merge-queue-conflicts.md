@@ -2,15 +2,15 @@
 
 Status: built in the daemon, the CLI and the app's Merge queue tab and Desk view. Tested by `cargo test -p kanna-daemon queue::` and e2e `merge_queue`. Mockup: [`references/mockups/merge-queue-conflicts.html`](../../references/mockups/merge-queue-conflicts.html). Part of the [merge queue](merge-queue.md); builds on [Kojo](kojo.md) and [runs](software-factory.md#61-sequential-runs-as-built).
 
-The merge queue takes a branch whether or not it conflicts with main. Merging main into the queue's copy of the branch is the first stage of the queue's pipeline, so the repo's pipeline decides what a conflict leads to. Kanna's own pipeline hands a conflict to a fresh agent, the **resolver**, in the queue's worktree. The tests and the judge then run on its resolution, as they run on any merge.
+The merge queue is the mechanism that lines up a repo's tasks and runs each through that repo's merge-queue pipeline, a [Kojo](kojo.md) file. What the pipeline does is the repo's: merging main into the branch is one of its stages, so the pipeline decides what a conflict leads to. A repo without its own pipeline gets a default one, which hands a conflict to a fresh agent, the **resolver**, in the queue's worktree, and runs the tests and the judge on its resolution, as on any merge.
 
 ![The Merge queue tab with an entry resolving conflicts: the resolver reads each side's log for the conflicted file before it edits it](merge-queue-conflicts-resolving.png)
 
 ## Contents
 
 1. [What changed](#1-what-changed)
-2. [The merge stage](#2-the-merge-stage)
-3. [Kanna's pipeline](#3-kannas-pipeline)
+2. [The queue and the pipeline](#2-the-queue-and-the-pipeline)
+3. [The default pipeline](#3-the-default-pipeline)
 4. [The resolver](#4-the-resolver)
 5. [What lands, and who's told](#5-what-lands-and-whos-told)
 6. [A repo's own pipeline](#6-a-repos-own-pipeline)
@@ -24,49 +24,38 @@ The merge queue takes a branch whether or not it conflicts with main. Merging ma
 |---|---|---|
 | `kanna task merge` on a branch that conflicts with main | refused, naming the files | queued like any other, unchecked: the pipeline's merge stage is where a conflict is found |
 | an entry whose turn comes after main moved into a conflict | failed by the daemon (`it conflicts with main in …`) | its pipeline's `merge` stage fails, and the pipeline's arrows decide what happens next |
-| who merges | the daemon, before the run | the run's first stage, a command in the queue's worktree |
+| who merges | the daemon, before the run | the pipeline, as a stage like any other |
 
 Uncommitted changes are still refused, because they aren't a conflict: they wouldn't land at all. `main-conflicts` ([task events](task-events.md)) still tells a ready task early that main moved into a conflict with it. The task can fix the conflict itself, or let the queue resolve it.
 
-These stay in Kanna, not in the pipeline: landing exactly the commit the pipeline finished on, by fast-forward; one entry at a time per repo; and the entry's states on the Shelf and the Merge queue tab.
-
-## 2. The merge stage
+## 2. The queue and the pipeline
 
 ```mermaid
-sequenceDiagram
-    participant Q as queue (daemon)
-    participant W as .kanna-worktrees/merge-queue
-    participant R as the entry's run
-    Q->>W: queue/TASK-N at main's head M0
-    Q->>R: start, with KANNA_MERGE_HEAD and KANNA_MERGE_MESSAGE
-    R->>W: merge = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
-    alt clean
-        W-->>R: exit 0: pass, HEAD is the merge commit
-    else conflict
-        W-->>R: exit 1: fail, the worktree mid-merge, git's CONFLICT lines as feedback
+flowchart LR
+    subgraph Q["the queue (Kanna, the same in every repo)"]
+        E["kanna task merge:<br/>an entry in line"] --> S["its turn: queue/TASK-N at main M0,<br/>KANNA_MERGE_HEAD, KANNA_MERGE_MESSAGE"]
+        L["fast-forward main to the commit<br/>the pipeline ended on"]
+        F["fail: the task back<br/>to the Shelf"]
     end
-    R->>R: the pipeline's arrows from merge
+    subgraph P["the repo's merge-queue.kojo (or the default)"]
+        X["merge, resolve, test, judge, ask …<br/>whatever the repo says"]
+    end
+    S --> X
+    X -->|"done"| L
+    X -->|"no arrow"| F
 ```
 
-The merge stage is a plain `run` stage:
+The queue does only the ends, the same in every repo:
 
-```
-merge = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
-```
+- **Takes** an entry with `kanna task merge`, refusing only uncommitted changes and a task that merges after another.
+- **Lines entries up,** one at a time per repo.
+- **Starts the entry's run** on `queue/TASK-N` at main's head M0, in the queue's worktree, with two variables: `KANNA_MERGE_HEAD`, the commit `kanna task merge` recorded, and `KANNA_MERGE_MESSAGE`, the merge commit's message.
+- **Lands** the commit the pipeline ended on, by fast-forward, if it holds both M0 and the entry's head; otherwise the entry fails.
+- **Shows** the entry's states on the Shelf and the Merge queue tab.
 
-A queue run gets two more variables beside every run's own ([Kojo §2](kojo.md#2-stages)): `KANNA_MERGE_HEAD`, the commit `kanna task merge` recorded, and `KANNA_MERGE_MESSAGE`, the merge commit's message. Its outcome is a run stage's verdict. A clean merge passes. A conflict fails, and leaves the worktree mid-merge, with the conflicted files unmerged and `MERGE_HEAD` set, for the next stage. Its feedback is git's output, whose `CONFLICT (content): Merge conflict in FILE` lines name the files. Any other failure of `git merge` fails the stage the same way, with git's message as its feedback.
+Everything between is the pipeline's: whether and how to merge, what a conflict does, which tests run, who judges a failure, whether to ask you. That's `.kanna/pipelines/merge-queue.kojo` in the repo, so one project's queue can differ from another's ([§6](#6-a-repos-own-pipeline)). With no such file, the queue generates the default pipeline ([§3](#3-the-default-pipeline)).
 
-Between stages a run leaves the worktree as it is, so a half-done merge reaches the next stage untouched. Only a `reset` arrow or a stage that times out resets it. When an entry ends, the queue aborts whatever merge is left in its worktree before the next entry starts.
-
-How the merge is written in a pipeline:
-
-| Option | For | Against |
-|---|---|---|
-| **`run git merge …` (chosen)** | the file says exactly what runs; nothing new in `runs.rs` but a run's own variables; a repo can add flags (`-X`, `--no-verify`) | the command is long, and a repo copies it from Kanna's pipeline |
-| a command Kanna provides (`run kanna queue merge-main`) | short | hides what runs behind a name; one more CLI command and socket action for what one git command does |
-| a stage kind (`merge = merge main`) | reads as a merge | Kojo refuses `merge main` for a reason ([Kojo §2](kojo.md#2-stages)); a new kind needs its own verdict, feedback and placement code in `runs.rs` |
-
-## 3. Kanna's pipeline
+## 3. The default pipeline
 
 With no `.kanna/pipelines/merge-queue.kojo`, the daemon generates this one from `merge.test` and `tasks.agent` (or `claude` when `tasks.agent` is a command):
 
@@ -99,6 +88,36 @@ flowchart LR
 - **A conflicting entry** runs the resolver. The tests run on what it committed, and the judge, if they fail, counts a failure that the resolution causes as the branch's. A bad resolution still has to pass both.
 - **A failing resolver** has no arrow out, which ends a queue run as `failed` ([merge queue §4](merge-queue.md#4-failure)), and the task goes back to the Shelf.
 - **The worst case** is two agent sessions an entry, the resolver and the judge.
+
+### 3.1 The merge stage
+
+```mermaid
+sequenceDiagram
+    participant Q as queue (daemon)
+    participant W as .kanna-worktrees/merge-queue
+    participant R as the entry's run
+    Q->>W: queue/TASK-N at main's head M0
+    Q->>R: start, with KANNA_MERGE_HEAD and KANNA_MERGE_MESSAGE
+    R->>W: merge = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
+    alt clean
+        W-->>R: exit 0: pass, HEAD is the merge commit
+    else conflict
+        W-->>R: exit 1: fail, the worktree mid-merge, git's CONFLICT lines as feedback
+    end
+    R->>R: the pipeline's arrows from merge
+```
+
+The merge stage is a plain `run` stage that uses the queue's two variables, beside every run's own ([Kojo §2](kojo.md#2-stages)). Its outcome is a run stage's verdict. A clean merge passes. A conflict fails, and leaves the worktree mid-merge, with the conflicted files unmerged and `MERGE_HEAD` set, for the next stage. Its feedback is git's output, whose `CONFLICT (content): Merge conflict in FILE` lines name the files. Any other failure of `git merge` fails the stage the same way, with git's message as its feedback.
+
+Between stages a run leaves the worktree as it is, so a half-done merge reaches the next stage untouched. Only a `reset` arrow or a stage that times out resets it. When an entry ends, the queue aborts whatever merge is left in its worktree before the next entry starts.
+
+How a pipeline writes the merge:
+
+| Option | For | Against |
+|---|---|---|
+| **`run git merge …` (chosen)** | the file says exactly what runs; nothing new in `runs.rs` but a run's own variables; a repo can add flags (`-X`, `--no-verify`) | the command is long, and a repo copies it from the default pipeline |
+| a command Kanna provides (`run kanna queue merge-main`) | short | hides what runs behind a name; one more CLI command and socket action for what one git command does |
+| a stage kind (`merge = merge main`) | reads as a merge | Kojo refuses `merge main` for a reason ([Kojo §2](kojo.md#2-stages)); a new kind needs its own verdict, feedback and placement code in `runs.rs` |
 
 ## 4. The resolver
 
@@ -141,7 +160,7 @@ gitGraph
 
 ## 6. A repo's own pipeline
 
-A repo's `.kanna/pipelines/merge-queue.kojo` decides what a conflict does. To merge the branch, it starts with the same `merge` stage. Kanna's `merge-resolve` prompt is offered to it, unless the repo has its own; `merge-judge` needs `merge.test`, so it's offered to Kanna's pipeline only.
+A repo's `.kanna/pipelines/merge-queue.kojo` decides what a conflict does. To merge the branch, it uses the same `merge` stage, or any stage that leaves a commit holding both M0 and the branch. Kanna's `merge-resolve` prompt is offered to it, unless the repo has its own; `merge-judge` needs `merge.test`, so it's offered to the default pipeline only.
 
 **Fail on a conflict, as the queue did before:**
 
@@ -189,7 +208,7 @@ The phone doesn't show the merge queue.
 
 `cargo test -p kanna-daemon queue::` checks:
 
-- Kanna's pipeline: `merge` is its first stage with the command above; a pass goes to `test` with no resolver, a fail to `resolve`; the resolver's pass goes to `test`, its fail has no arrow; at most two agent sessions.
+- The default pipeline: `merge` is its first stage with the command above; a pass goes to `test` with no resolver, a fail to `resolve`; the resolver's pass goes to `test`, its fail has no arrow; at most two agent sessions.
 - The merge command, run with the two variables, merges the head with its message. On a conflict it fails and leaves the worktree mid-merge. `merge_commit` finds the merge that holds the resolution.
 - The resolver's prompt: both sides' logs, only the conflicted files, the commit, failing rather than guessing.
 - Outcomes: a resolver's fail ends the entry with its first line and `result.stage: resolve`; a resolution that passes the tests lands with `resolved` and `resolution`; a repo's pipeline that fails at `merge` fails the entry with `it conflicts with main in FILES`, and the half-done merge is aborted.
