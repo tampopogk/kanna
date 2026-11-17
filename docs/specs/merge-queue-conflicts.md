@@ -22,7 +22,7 @@ The merge queue takes a branch whether or not it conflicts with main. Merging ma
 
 | | Before | Now |
 |---|---|---|
-| `kanna task merge` on a branch that conflicts with main | refused, naming the files | accepted. Its reply names the files and says what the pipeline does with them |
+| `kanna task merge` on a branch that conflicts with main | refused, naming the files | queued like any other, unchecked: the pipeline's merge stage is where a conflict is found |
 | an entry whose turn comes after main moved into a conflict | failed by the daemon (`it conflicts with main in …`) | its pipeline's `merge` stage fails, and the pipeline's arrows decide what happens next |
 | who merges | the daemon, before the run | the run's first stage, a command in the queue's worktree |
 
@@ -134,7 +134,7 @@ gitGraph
 - **What lands** is the commit the pipeline finished on, as before. The queue checks that it holds both M0 and the task's head H, then fast-forwards main to it. A resolution is part of the merge commit X on `queue/TASK-N`, so it's in main's history as that merge, with the queue's message (`Merge branch 'BRANCH': SUMMARY`). A pipeline that ends without the branch merged (the resolver passed without committing, or a repo's pipeline with no merge stage) fails the entry, saying so.
 - **The entry keeps** `merge` (X), `resolved: true` and `resolution` (the resolver's answer) in its doc. The Merge queue tab shows a landed entry as `conflicts resolved by the queue`.
 - **The task** is Done on landing, as before. Its own branch never gets the resolution: it still ends at H, which is in main, so Done removes the worktree and branch as merged. Nothing is written back to them.
-- **The planner** hears it as Desk news: `went into the merge queue, conflicting with main in FILES: the queue's pipeline takes that on first` when it's queued, `merged into main, its conflicts with main resolved by the queue in X, and left the merge queue` when it lands, and `didn't merge (WHY): it's back on the Shelf, and its agent has the reason` when it fails.
+- **The planner** hears it as Desk news: `merged into main, its conflicts with main resolved by the queue in X, and left the merge queue` when it lands, and `didn't merge (WHY): it's back on the Shelf, and its agent has the reason` when it fails.
 - **Tasks stacked on it** hear `base-merged` as before, plus: `It conflicted with main, and the merge queue resolved that in its merge commit X: merge main into your branch, not BASE's branch, to build on the resolution.` Their branch holds H. When they merge, git uses H as the merge base and keeps main's resolution unless they changed the same lines too.
 
 ![A landed entry with its resolution, and the Desk news and base-merged message it sends](merge-queue-conflicts-landed.png)

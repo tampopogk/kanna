@@ -93,7 +93,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Merge queue: a branch that conflicts with main is taken, and the queue's pipeline resolves it</h1>
-    <p><code>kanna task merge</code> takes a branch that conflicts with main and says so. When its turn comes, the pipeline's first stage merges it onto main in the queue's worktree. A clean merge goes straight to the tests. A conflict leaves the worktree mid-merge and goes to the resolver, an agent that resolves only the conflicted files, keeping both sides' intent, and commits the merge; the tests and the judge then run on its resolution. A resolver that isn't sure fails, and the task goes back to the Shelf with what it found. The entry shows <b>resolving</b> beside testing and judging.</p>
+    <p><code>kanna task merge</code> queues a branch without checking it against main. When its turn comes, the pipeline's first stage merges it onto main in the queue's worktree. A clean merge goes straight to the tests. A conflict leaves the worktree mid-merge and goes to the resolver, an agent that resolves only the conflicted files, keeping both sides' intent, and commits the merge; the tests and the judge then run on its resolution. A resolver that isn't sure fails, and the task goes back to the Shelf with what it found. The entry shows <b>resolving</b> beside testing and judging.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button data-scene="resolving" class="on">Resolving, on the tab</button>
@@ -146,7 +146,7 @@ function resolving() {
 <span class="m">●</span> Update(crates/kanna-daemon/src/files.rs)
 <span class="m">●</span> Bash(git add crates/kanna-daemon/src/files.rs &amp;&amp; git commit --no-edit --cleanup=strip)
 <span class="g">✳ Reporting… (esc to interrupt)</span></div>`;
-  return `<div class="content">${planner([`<span class="p">&gt;</span> You are the Kanna planning agent.`, ``, `<span class="m">●</span> <span class="g">[message from desk]</span> task-4f1d "${esc(D.name)}" went into the merge queue, conflicting with main in crates/kanna-daemon/src/files.rs: the queue's pipeline takes that on first`])}${page(rows, "", detail, 2)}</div>`;
+  return `<div class="content">${planner([`<span class="p">&gt;</span> You are the Kanna planning agent.`, ``, `<span class="m">●</span> <span class="g">[message from desk]</span> task-4f1d "${esc(D.name)}" went into the merge queue`])}${page(rows, "", detail, 2)}</div>`;
 }
 
 function landed() {
@@ -172,9 +172,7 @@ function mergeView() {
     `<span class="m">●</span> Bash(kanna task merge -m "find is case-insensitive unless the search has a capital")`,
     `  <span class="g">⎿</span> task-4f1d "${esc(D.name)}" is next in the merge queue:`,
     `    it lands on main once the tests pass. Its agent quits now and its tabs close; if the tests`,
-    `    fail it comes back to the Shelf and its agent gets the log. It conflicts with main now, in`,
-    `    crates/kanna-daemon/src/files.rs: when its turn comes, an agent resolves them in the queue's`,
-    `    worktree, and the tests run on its resolution.`, ``,
+    `    fail it comes back to the Shelf and its agent gets the log.`, ``,
     `<span class="g">──────── still refused ────────</span>`, ``,
     `<span class="c">$</span> kanna task merge`,
     `<span class="bad">error:</span> task-8b31 has uncommitted changes to 2 files (src/a.rs, src/b.rs): commit them first`,

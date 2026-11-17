@@ -58,7 +58,7 @@ These are Kanna's pipeline's stages; a repo's own `merge-queue.kojo` can go othe
 | `merge.test` can't be a pipeline's command: it has a `#` or a line break, or ends in `within N` or `on NAME` | to put it in a script |
 | it's in the queue already, hasn't started, or has nothing that isn't in main | which |
 
-A branch that conflicts with main now (`git merge-tree`, as [stacked tasks](stacked-tasks.md#ready) checks it) isn't refused: the reply names the files and says what the queue does with them ([merge queue conflicts](merge-queue-conflicts.md)).
+A branch that conflicts with main isn't refused, or even checked: `kanna task merge` only queues it, and the pipeline's merge stage finds the conflict when its turn comes ([merge queue conflicts](merge-queue-conflicts.md)).
 
 ![kanna task merge, accepted and refused](merge-queue-merge.png)
 

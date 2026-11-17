@@ -1,6 +1,5 @@
 use crate::db::{Db, QueueRow};
 use crate::runs::{self, Runs, Started};
-use crate::task_events;
 use crate::tasks::{self, git, Tasks};
 use kanna_mux::json::{json, num, opt, string, Map, Value};
 use kanna_mux::{CoreHandle, KmuxError, Responder};
@@ -301,7 +300,6 @@ impl Queue {
         if ahead == 0 {
             return Err(KmuxError::new("nothing", format!("{short} has no commits that aren't in {main}")));
         }
-        let conflicts = task_events::conflicts(&repo, &main_head, &head).unwrap_or_default();
         if pipeline_text(&folder, &repo).is_none() {
             return Err(KmuxError::new("no_tests", "this repo has no tests for the merge queue: set merge.test in .kanna/config.json (kanna config schema), or write .kanna/pipelines/merge-queue.kojo"));
         }
@@ -320,8 +318,7 @@ impl Queue {
         log!("kanna-daemon: {} goes into {}'s merge queue as {id}, at {head}", entry.id, entry.repo);
         let weak = Rc::downgrade(self);
         let settling = id.clone();
-        let conflicting = (!conflicts.is_empty()).then(|| format!("{main} in {}", conflicts.join(", ")));
-        tasks.enqueue(candidate, &id, &head, Some(by), conflicting, move || {
+        tasks.enqueue(candidate, &id, &head, Some(by), move || {
             if let Some(this) = weak.upgrade() {
                 this.settle(&settling);
             }
@@ -329,13 +326,10 @@ impl Queue {
         self.soon.set(true);
         let position = ahead_of.len() + 1;
         let after = ahead_of.last().map(|q| text(&q.doc, "name"));
-        let mut said = match &after {
+        let said = match &after {
             Some(after) => format!("{short} \"{name}\" is {} in the merge queue, after \"{after}\": it lands on {main} once the tests pass on top of it. Its agent quits now and its tabs close; if the tests fail it comes back to the Shelf and its agent gets the log.", ordinal(position)),
             None => format!("{short} \"{name}\" is next in the merge queue: it lands on {main} once the tests pass. Its agent quits now and its tabs close; if the tests fail it comes back to the Shelf and its agent gets the log."),
         };
-        if !conflicts.is_empty() {
-            said.push_str(&format!(" It conflicts with {main} now, in {}: {}", conflicts.join(", "), if own_pipeline(&repo) { "the repo's merge-queue.kojo decides what happens when its turn comes." } else { "when its turn comes, an agent resolves them in the queue's worktree, and the tests run on its resolution." }));
-        }
         Ok(Map::from_iter([("queue".to_string(), json!(id)), ("task".to_string(), json!(entry.id)), ("position".to_string(), json!(position)), ("head".to_string(), json!(head)), ("said".to_string(), json!(said))]))
     }
 

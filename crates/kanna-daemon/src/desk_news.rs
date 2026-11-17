@@ -67,10 +67,7 @@ impl Item {
             (What::Ended { on_desk: true }, _) => format!("{name} ended and left the Desk"),
             (What::Ended { on_desk: false }, Merge::Into(into)) => format!("{name} merged into {into} and left the Shelf"),
             (What::Ended { on_desk: false }, _) => format!("{name} was taken off the Shelf"),
-            (What::Queued, _) => match &self.detail {
-                Some(conflict) => format!("{name} went into the merge queue, conflicting with {conflict}: the queue's pipeline takes that on first"),
-                None => format!("{name} went into the merge queue"),
-            },
+            (What::Queued, _) => format!("{name} went into the merge queue"),
             (What::Landed, Merge::Into(into)) => match &self.detail {
                 Some(resolved) => format!("{name} merged into {into}, {resolved}, and left the merge queue"),
                 None => format!("{name} merged into {into} and left the merge queue"),
@@ -173,9 +170,8 @@ mod tests {
     }
 
     #[test]
-    fn a_conflict_with_main_is_news_of_the_queue_not_a_refusal() {
+    fn a_resolved_landing_and_a_failure_say_how_they_went() {
         let now = Instant::now();
-        assert_eq!(item("r", "a", What::Queued, now).saying(Some("main in shared.txt".into())).line(), "task-a \"Task a\" went into the merge queue, conflicting with main in shared.txt: the queue's pipeline takes that on first");
         let landed = Item { merge: Merge::Into("main".into()), ..item("r", "a", What::Landed, now) }.saying(Some("its conflicts with main resolved by the queue in 0123abcd".into()));
         assert_eq!(landed.line(), "task-a \"Task a\" merged into main, its conflicts with main resolved by the queue in 0123abcd, and left the merge queue");
         assert_eq!(item("r", "a", What::MergeFailed, now).saying(Some("shared.txt: both sides rewrite parse".into())).line(), "task-a \"Task a\" didn't merge (shared.txt: both sides rewrite parse): it's back on the Shelf, and its agent has the reason");
