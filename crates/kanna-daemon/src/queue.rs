@@ -79,7 +79,7 @@ pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     let files = tasks::config_files(repo);
     let agent = tasks::task_agent(&files);
     let agent = if kanna_pipe::AGENTS.contains(&agent.as_str()) { agent } else { tasks::DEFAULT_AGENT.to_string() };
-    Some((kanna_pipeline(&command, &agent), format!("Kanna's {PIPELINE}.kojo (a conflict resolved and a failure judged by {agent})")))
+    Some((kanna_pipeline(&command, &agent), format!("the default {PIPELINE}.kojo (a conflict resolved and a failure judged by {agent})")))
 }
 
 pub fn fits(command: &str) -> bool {
@@ -696,7 +696,7 @@ impl Queue {
             return self.landed(&mut row, &main, &now_main);
         }
         if tested.is_empty() || !is_ancestor(&row.head, &tested) || !is_ancestor(&base, &tested) {
-            return self.fail(&row.id, &format!("its pipeline ended on {}, which doesn't hold both {main} at {} and the branch: the merge wasn't committed, or the repo's merge-queue.kojo doesn't merge the branch (Kanna's starts with merge = run {MERGE_COMMAND})", short(&tested), short(&base)), vec![]);
+            return self.fail(&row.id, &format!("its pipeline ended on {}, which doesn't hold both {main} at {} and the branch: the merge wasn't committed, or the repo's merge-queue.kojo doesn't merge the branch (the default one starts with merge = run {MERGE_COMMAND})", short(&tested), short(&base)), vec![]);
         }
         if now_main != base {
             let attempt = row.doc.get("attempt").and_then(Value::as_u64).unwrap_or(1);
@@ -878,11 +878,10 @@ pub fn own_pipeline(folder: &Path) -> bool {
     folder.join(format!(".kanna/pipelines/{PIPELINE}.kojo")).is_file()
 }
 
+const DEFAULT_PIPELINE: &str = include_str!("merge-queue.kojo");
+
 pub fn kanna_pipeline(command: &str, agent: &str) -> String {
-    format!(
-        "{MERGE} = run {MERGE_COMMAND}\n{RESOLVE} = {agent} prompt {RESOLVE_PROMPT} verdict\n{TEST} = run {}\n{JUDGE} = {agent} prompt {PROMPT} verdict\n{MERGE} -[pass]-> {TEST}\n{MERGE} -[fail]-> {RESOLVE}\n{RESOLVE} -[pass]-> {TEST}\n{TEST} -[pass]-> done\n{TEST} -[fail]-> {JUDGE}\n{JUDGE} -[pass]-> done\n",
-        command.trim()
-    )
+    DEFAULT_PIPELINE.replace("{agent}", agent).replace("{test}", command.trim())
 }
 
 pub fn readable(output: &str) -> String {
@@ -946,7 +945,7 @@ mod tests {
         assert_eq!(pipeline_text(&dir, &dir), None, "no merge.test and no pipeline: nothing to test with");
         fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh"}, "tasks": {"timeout": 60}}"#).unwrap();
         let (text, shown) = pipeline_text(&dir, &dir).unwrap();
-        assert!(shown.starts_with("Kanna's merge-queue.kojo (a conflict resolved and a failure judged by "), "{shown}");
+        assert!(shown.starts_with("the default merge-queue.kojo (a conflict resolved and a failure judged by "), "{shown}");
         let pipeline = kanna_pipe::parse(&text).unwrap();
         assert_eq!(pipeline.start, MERGE, "the merge is the pipeline's first stage");
         let merge = pipeline.stage(MERGE).unwrap();

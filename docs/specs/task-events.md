@@ -23,7 +23,7 @@ Without this, an ordinary task only learned main had moved when a schedule woke 
 |---|---|---|---|
 | `main-conflicts` | yes | every started, unmerged task with a branch, not stacked, whose branch conflicts with main | `main conflicts with your branch in FILES: merge or rebase main, rerun your tests, then carry on with what you were doing.` |
 | `main-moved` | no | every started, unmerged task with a branch that subscribed, stacked ones too | how many commits main has that its branch hasn't, and the latest 20 |
-| `base-merged` | yes | a stacked task whose base landed in main | nothing it builds on is outside main now, so it can merge once it's done; or what it still merges after. When the queue resolved the base's conflicts with main, it also says to merge main, not the base's branch, to build on the resolution ([merge queue conflicts §5](merge-queue-conflicts.md#5-what-lands-and-whos-told)) |
+| `base-merged` | yes | a stacked task whose base landed in main | nothing it builds on is outside main now, so it can merge once it's done; or what it still merges after. When the queue resolved the base's conflicts with main, it also says to merge main, not the base's branch, to build on the resolution ([merge queue §3.5](merge-queue.md#35-what-a-resolution-lands)) |
 | `base-moved` | yes | a stacked task whose base's head isn't in its branch any more, or whose base is claimed again at a new commit | merge it (`git merge COMMIT`), rerun the tests, then `kanna task ready` |
 
 **Main** is the branch the repo's main checkout is on, as for [stacked tasks](stacked-tasks.md). Messages use its real name.
