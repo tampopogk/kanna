@@ -58,7 +58,7 @@ e2e    -> done
 | `NAME = merge STAGE` | joins every instance of a fanned-out STAGE into the run's branch | a clean merge passes | the conflicts |
 
 - **Every agent session is fresh:** a new conversation with the stage's prompt, the request and the feedback. `resume STAGE` continues that stage's last session instead, for the rare case where the context is worth more than a clean start.
-- **There's no `merge main`:** the file is an error there (`` `merge main` isn't a stage``). Landing is yours: the run's end hands the change back to the task's worktree, the gate before main. The merge queue's pipeline is the one exception: it merges main with a plain `run git merge` stage, and the queue lands what it finishes on ([merge queue §3.3](merge-queue.md#33-the-merge-stage)).
+- **There's no `merge main`:** the file is an error there (`` `merge main` isn't a stage``). Landing is yours: the run's end hands the change back to the task's worktree, the gate before main. The merge queue's pipeline is the one exception: it merges main with a plain `run git merge` stage, and the queue lands what it finishes on ([default merge-queue pipeline §2](merge-queue-pipeline.md#2-the-merge-stage)).
 - **A stage with a verdict** is one of `run`, `ask`, `merge` or an agent with `verdict`. Only those may have `pass` or `fail` arrows out of them.
 - **An agent's effort and model** are the agent's own flags (`claude --model`, `codex -c model_reasoning_effort`); `model NAME` names a model when the default isn't wanted.
 

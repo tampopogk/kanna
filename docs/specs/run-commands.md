@@ -1,6 +1,6 @@
 # Run commands
 
-**Status:** built · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `merge_queue` · **Part of:** [software factory](software-factory.md) · **Used by:** the [merge queue's judge](merge-queue.md#32-the-tests-and-the-judge)
+**Status:** built · **Tested:** `cargo test -p kanna-daemon runs::`, e2e `merge_queue` · **Part of:** [software factory](software-factory.md) · **Used by:** the [merge queue's judge](merge-queue-pipeline.md#4-the-tests-and-the-judge)
 
 **A stage's agent asks Kanna to run a command that takes minutes, and Kanna runs it and waits with the agent.** An agent's own shell stops a command after about ten minutes, and whatever the agent leaves running in the background ends when its turn does, because Kanna quits an agent whose turn ends. A build or a whole test suite can outlast both. `kanna run command` hands the command to the daemon, which runs it as it runs a [`run` stage](kojo.md#2-stages), so it depends on neither the agent's shell nor its turn.
 

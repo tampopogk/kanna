@@ -1,8 +1,8 @@
 # Merge queue
 
-Status: built in the daemon, the CLI and the window's [Merge queue tab](merge-queue-tab.md); the phone doesn't show the queue yet. Tested by `cargo test -p kanna-daemon queue::` and e2e `merge_queue`. Mockups: [`references/mockups/merge-queue.html`](../../references/mockups/merge-queue.html), and for a conflict [`references/mockups/merge-queue-conflicts.html`](../../references/mockups/merge-queue-conflicts.html). Builds on the [build store](build-store.md), [runs](software-factory.md#61-sequential-runs-as-built), [run commands](run-commands.md), [Kojo](kojo.md), [tasks](tasks.md), [stacked tasks](stacked-tasks.md) and [task events](task-events.md).
+Status: built in the daemon, the CLI and the window's [Merge queue tab](merge-queue-tab.md); the phone doesn't show the queue yet. Tested by `cargo test -p kanna-daemon queue::` and e2e `merge_queue`. Mockup: [`references/mockups/merge-queue.html`](../../references/mockups/merge-queue.html). What an entry's run does is its repo's pipeline's: the [default merge-queue pipeline](merge-queue-pipeline.md), or the repo's own; this repo's is [Kanna's merge pipeline](kanna-merge-pipeline.md). Builds on the [build store](build-store.md), [runs](software-factory.md#61-sequential-runs-as-built), [run commands](run-commands.md), [Kojo](kojo.md), [tasks](tasks.md), [stacked tasks](stacked-tasks.md) and [task events](task-events.md).
 
-When you tell a ready task's agent to merge, it runs `kanna task merge`. The task leaves the Desk for its repo's merge queue, shown on the window's [Merge queue tab](merge-queue-tab.md), and its agent quits, so you don't wait. The queue takes one entry at a time per repo and runs the repo's merge-queue pipeline on it, then moves main to the commit the pipeline ended on. What the pipeline does is the repo's (`.kanna/pipelines/merge-queue.kojo`); without one, the queue generates a default: it merges the branch onto main as main is now (an agent, the resolver, resolves any conflicts) and runs the repo's tests on that merge. If they pass, main moves to the merge, with no agent and no tokens spent. If they fail, an agent, the judge, reads the log and decides whether the branch caused any failure: if none, the merge still lands; if one, the task goes back to the Shelf and its agent gets the judge's reasons and the log. The next entry is merged on top of whatever landed.
+When you tell a ready task's agent to merge, it runs `kanna task merge`. The task leaves the Desk for its repo's merge queue, shown on the window's [Merge queue tab](merge-queue-tab.md), and its agent quits, so you don't wait. The queue takes one entry at a time per repo and runs the repo's merge-queue pipeline on it, in a worktree of its own, starting from main as it is now. If the pipeline ends on a commit that holds both main and the branch, main fast-forwards to it and the task is Done. If it fails, the task goes back to the Shelf and its agent gets the reason. The next entry starts from whatever landed. What the pipeline does (merge, resolve conflicts, test, judge a failure, ask you) is the repo's: `.kanna/pipelines/merge-queue.kojo`, or the [default pipeline](merge-queue-pipeline.md).
 
 ![The Merge queue tab: one entry's tests running in their terminal and two entries waiting, then the entries that landed or failed lately](merge-queue.png)
 
@@ -10,13 +10,13 @@ When you tell a ready task's agent to merge, it runs `kanna task merge`. The tas
 
 1. [Why](#1-why)
 2. [Merging a task](#2-merging-a-task)
-3. [An entry's run](#3-an-entrys-run), with [the queue's worktree](#31-the-queues-worktree), [the tests and the judge](#32-the-tests-and-the-judge), [the merge stage](#33-the-merge-stage), [the resolver](#34-the-resolver), [what a resolution lands](#35-what-a-resolution-lands) and [a repo's own pipeline](#36-a-repos-own-pipeline)
+3. [An entry's run](#3-an-entrys-run), with [the queue's worktree](#31-the-queues-worktree), [the pipeline interface](#32-the-pipeline-interface) and [landing](#33-landing)
 4. [Failure](#4-failure), and [an entry that needs you](#41-an-entry-that-needs-you)
 5. [Seeing the queue](#5-seeing-the-queue)
 6. [How it's built](#6-how-its-built)
-7. [CLI and settings](#7-cli-and-settings)
+7. [CLI](#7-cli)
 8. [Tests](#8-tests)
-9. [Later, and rejected](#9-later-and-rejected)
+9. [Rejected](#9-rejected)
 
 ## 1. Why
 
@@ -33,20 +33,17 @@ stateDiagram-v2
     direction LR
     Desk --> queued: kanna task merge
     Shelf --> queued: kanna task merge
-    queued --> merging: its turn
-    merging --> testing: a clean merge
-    merging --> resolving: a conflict
-    resolving --> testing: resolved and committed
-    resolving --> Shelf: the resolver fails (merge-failed)
-    testing --> Done: the tests pass, main moves to the merge
-    testing --> judging: a test fails
-    judging --> Done: no failure is the branch's
-    judging --> Shelf: a failure is the branch's (merge-failed)
+    queued --> testing: its turn, the run starts
+    testing --> landing: the run ends done
+    landing --> Done: main fast-forwards to its commit
+    testing --> Shelf: the run fails (merge-failed)
+    testing --> needs_you: the run pauses
+    needs_you --> testing: resumed
     queued --> Shelf: kanna task merge --cancel
     testing --> Shelf: kanna task merge --cancel
 ```
 
-These are the default pipeline's stages; a repo's own `merge-queue.kojo` can go otherwise, such as failing on a conflict ([3.6](#36-a-repos-own-pipeline)). The entry's state stays `testing` from its turn to the run's end, with its stage (`merge`, `resolve`, `test`, `judge`) shown as `merging`, `resolving`, `testing` or `judging`.
+The entry's state is `testing` from its turn to the run's end, whatever the pipeline's stages are; its `stage` names the stage running, which `kanna task list` and the tab show ([5](#5-seeing-the-queue)).
 
 `kanna task merge [TASK] [-m MESSAGE]` runs from the task's terminal, where it means that task, or names a task, as the planner does when you tell it to merge one. It's refused in these cases, and says why:
 
@@ -54,11 +51,10 @@ These are the default pipeline's stages; a repo's own `merge-queue.kojo` can go 
 |---|---|
 | it `merges after` a task whose work isn't in main yet | which task, and that the task hears when it lands ([`base-merged`](task-events.md)) |
 | its worktree has uncommitted changes to tracked files | the files, since they wouldn't land |
-| the repo has no `merge.test` and no `.kanna/pipelines/merge-queue.kojo` | how to set one |
-| `merge.test` can't be a pipeline's command: it has a `#` or a line break, or ends in `within N` or `on NAME` | to put it in a script |
+| the repo has no pipeline: no `.kanna/pipelines/merge-queue.kojo`, and no `merge.test` for the default one, or one that can't be a stage's command ([default pipeline §1](merge-queue-pipeline.md#1-the-pipeline)) | how to set one |
 | it's in the queue already, hasn't started, or has nothing that isn't in main | which |
 
-A branch that conflicts with main isn't refused, or even checked: `kanna task merge` only queues it, and the pipeline's merge stage finds the conflict when its turn comes ([3.3](#33-the-merge-stage)). `main-conflicts` ([task events](task-events.md)) still tells a ready task early that main moved into a conflict with it; the task can fix it itself, or let the queue's pipeline deal with it.
+Nothing else is checked: a branch that conflicts with main is queued like any other, and the pipeline finds the conflict when its turn comes. `main-conflicts` ([task events](task-events.md)) still tells a ready task early that main moved into a conflict with it; the task can fix it itself, or let the queue's pipeline deal with it.
 
 ![kanna task merge, accepted and refused](merge-queue-merge.png)
 
@@ -70,233 +66,85 @@ The merge commit's message is `-m MESSAGE`, or `Merge branch 'BRANCH': NAME` wit
 
 ```mermaid
 flowchart LR
-    subgraph Q["the queue (Kanna, the same in every repo)"]
+    subgraph Q["the queue (the same in every repo)"]
         E["kanna task merge:<br/>an entry in line"] --> S["its turn: queue/TASK-N at main M0,<br/>KANNA_MERGE_HEAD, KANNA_MERGE_MESSAGE"]
         L["fast-forward main to the commit<br/>the pipeline ended on"]
         F["fail: the task back<br/>to the Shelf"]
     end
-    subgraph P["the repo's merge-queue.kojo (or the default)"]
-        X["merge, resolve, test, judge, ask …<br/>whatever the repo says"]
+    subgraph P["the repo's merge-queue pipeline"]
+        X["its stages"]
     end
     S --> X
     X -->|"done"| L
-    X -->|"no arrow"| F
+    X -->|"failed"| F
 ```
 
 The queue is the mechanism that lines a repo's tasks up and runs each through the repo's merge-queue pipeline, a [Kojo](kojo.md) file. It does only the ends, the same in every repo:
 
 - **Takes** an entry with `kanna task merge` ([2](#2-merging-a-task)).
 - **Lines entries up,** one at a time per repo, oldest first.
-- **Starts the entry's run** on a queue branch, `queue/TASK-N`, at main's head M0, in the queue's worktree ([3.1](#31-the-queues-worktree)), with two variables beside every run's own ([Kojo §2](kojo.md#2-stages)): `KANNA_MERGE_HEAD`, the commit `kanna task merge` recorded, and `KANNA_MERGE_MESSAGE`, the merge commit's message.
-- **Lands** the commit X the run ended on, by fast-forward, if X holds both M0 and the entry's head and the last stage didn't fail; otherwise the entry fails ([4](#4-failure)).
+- **Starts the entry's run** on a queue branch, `queue/TASK-N`, at main's head M0, in the queue's worktree ([3.1](#31-the-queues-worktree)), with what the [pipeline interface](#32-the-pipeline-interface) gives it.
+- **Lands** the commit the run ended on, by fast-forward ([3.3](#33-landing)), or fails the entry ([4](#4-failure)).
 - **Shows** the entry's states on the Shelf and the Merge queue tab ([5](#5-seeing-the-queue)).
 
-Everything between is the pipeline's: whether and how to merge, what a conflict does, which tests run, who judges a failure, whether to ask you. The pipeline is the repo's `.kanna/pipelines/merge-queue.kojo` if it has one ([3.6](#36-a-repos-own-pipeline)), so one project's queue can differ from another's. Otherwise it's the default pipeline, [`crates/kanna-daemon/src/merge-queue.kojo`](../../crates/kanna-daemon/src/merge-queue.kojo), with `{test}` filled in from `merge.test` and `{agent}` from `tasks.agent` (or `claude` when `tasks.agent` is a command):
+Everything between is the pipeline's. The pipeline is the repo's `.kanna/pipelines/merge-queue.kojo` if it has one, so one project's queue can differ from another's; otherwise it's the [default merge-queue pipeline](merge-queue-pipeline.md), which merges, resolves a conflict, tests and judges a failure. Main itself moves only when an entry lands, so every entry starts on top of everything that landed before it.
 
-```
-merge   = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
-resolve = {agent} prompt merge-resolve verdict
-test    = run {test}
-judge   = {agent} prompt merge-judge verdict
-merge   -[pass]-> test
-merge   -[fail]-> resolve
-resolve -[pass]-> test
-test    -[pass]-> done
-test    -[fail]-> judge
-judge   -[pass]-> done
-```
+### 3.1 The queue's worktree
+
+Each repo has one worktree for its queue, `.kanna-worktrees/merge-queue`. The daemon makes it the first time the queue runs and uses it for every entry after that. It starts each entry with `git checkout -f -B queue/TASK-N M0` and `git clean -fd`, which keeps ignored files such as a build folder and `.kanna/tmp`. Because the worktree's path never changes, a pipeline's build can stay warm from one entry to the next: for this repo's, see [Kanna's merge pipeline](kanna-merge-pipeline.md).
+
+The queue doesn't run in the task's own worktree, because that build is warm for the task's branch, which may be well behind main, and a merge checked out there would move the task's work. It doesn't use the main checkout either, because that's yours and may be busy.
+
+Between stages a run leaves the worktree as it is, so whatever one stage leaves (a half-done merge, say) reaches the next untouched. When an entry ends, the queue aborts any merge left in its worktree before the next entry starts.
+
+### 3.2 The pipeline interface
 
 ```mermaid
 flowchart LR
-    M["merge"] -->|"pass: clean"| T["test"]
-    M -->|"fail: conflict, or git failed"| R["resolve"]
-    R -->|"pass: merge committed"| T
-    R -->|"fail"| B["back to the Shelf,<br/>merge-failed"]
-    T -->|"pass"| D["lands"]
-    T -->|"fail"| J["judge"]
-    J -->|"pass"| D
-    J -->|"fail"| B
+    Q["queue"] -->|"worktree at M0 on queue/TASK-N<br/>KANNA_MERGE_HEAD, KANNA_MERGE_MESSAGE<br/>prompts merge-resolve, merge-judge"| P["pipeline"]
+    P -->|"done at X, or failed;<br/>stage names, verdicts, answers, logs"| Q
 ```
 
-- **A clean entry** runs `merge` ([3.3](#33-the-merge-stage)) and `test`, two commands, with no agent.
-- **A conflicting entry** runs the resolver ([3.4](#34-the-resolver)). The tests run on what it committed, and the judge ([3.2](#32-the-tests-and-the-judge)), if they fail, counts a failure that the resolution causes as the branch's. A bad resolution still has to pass both.
-- **A failing resolver or judge** has no arrow out, which ends a queue run as `failed` ([4](#4-failure)), and the task goes back to the Shelf.
-- **The worst case** is two agent sessions an entry, the resolver and the judge.
+**What a run gets:**
 
-Main itself moves only when the entry lands. Since the entry before either landed or left main alone, every entry is tested on top of everything that landed before it.
+- **The worktree,** on `queue/TASK-N` at M0, main's head when the entry's turn came.
+- **Two variables** beside every run's own ([Kojo §2](kojo.md#2-stages)): `KANNA_MERGE_HEAD`, the commit `kanna task merge` recorded, and `KANNA_MERGE_MESSAGE`, the merge commit's message (`-m`, or `Merge branch 'BRANCH': NAME`).
+- **Kanna's prompts** for its agent stages, unless the repo has its own in `.kanna/prompts/`: `merge-resolve`, and `merge-judge` for the default pipeline only, since it needs `merge.test` ([default pipeline](merge-queue-pipeline.md)).
+- **No time limit** but a stage's own `within` ([Kojo §3](kojo.md#3-attributes)). A stage that runs out of it ends the entry, whatever `fail` arrow leaves it.
 
-As in any run, a stage has no time limit unless it says `within` ([Kojo §3](kojo.md#3-attributes)). One rule is the queue's own: a stage that runs out of its `within` ends the entry, whatever `fail` arrow leaves it.
+**What the run owes:** it ends `done` on a commit X that holds both M0 and the entry's head, with its last stage not failed. That's how the queue knows the branch was merged; a run that ends anywhere else fails the entry, saying the pipeline didn't merge the branch.
+
+**What the queue reads back,** from the run's stages:
+
+| From | The queue |
+|---|---|
+| the stage running | shows it as the entry's `stage` |
+| the last failed stage, when the run fails | gives the reason: an agent stage's answer's first line (the whole answer goes to the task's agent), `STAGE timed out`, `it conflicts with main in FILES` when the worktree is left mid-merge, or the stage's output |
+| the last `run` stage that isn't `merge` | keeps its log as the entry's tests' log |
+| an agent stage that passed | keeps its answer: as the entry's note for `judge`, as its `resolution` for `resolve` |
+| `ask` stages, and agents that ask or stop without a verdict | pauses the entry as `needs you` ([4.1](#41-an-entry-that-needs-you)) |
+
+The queue knows four stage names, the default pipeline's: `merge`, `resolve`, `test` and `judge`. It shows them as `merging`, `resolving`, `testing` and `judging`, and words a resolver's failure and a resolved landing for them. Any other stage works and shows by its name.
+
+### 3.3 Landing
 
 To land, the queue checks that main is still M0 and runs `git merge --ff-only` in the main checkout, so main and the checkout's files move together. If main moved under the run, because you merged by hand or pulled, the entry runs again from the new main, up to 3 times, and then fails with `main kept moving`. If the main checkout has local changes to files the merge changes, the entry waits as `landing`, names the files, and tries again every 30 seconds and whenever the repo's refs change. The entries behind it wait too.
 
 After landing, the queue deletes `queue/TASK-N` and detaches its worktree. The task is Done, which removes its worktree and branch now that they're in main. The planner hears it as Desk news, and tasks stacked on it, those started while it was in the queue included, hear `base-merged`.
 
-### 3.1 The queue's worktree
-
-```mermaid
-flowchart LR
-    subgraph R["repo"]
-        Q[".kanna-worktrees/merge-queue<br/>(every entry)"]
-    end
-    subgraph V["targets (ROOT)"]
-        F["kanna/merge-queue/<br/>debug/ (warm)"]
-        S["_shared/cargo (seed), sccache, ghostty-vt"]
-    end
-    Q -->|"target (link), by merge-test.sh"| F
-    S -->|"seed clone, the first time"| F
-```
-
-Each repo has one worktree for its queue, `.kanna-worktrees/merge-queue`. The daemon makes it the first time the queue runs and uses it for every entry after that. It starts each entry with `git checkout -f -B queue/TASK-N M0` and `git clean -fd`, which keeps ignored files such as the build folder and `.kanna/tmp`. Because the worktree's path never changes, cargo's fingerprints stay valid, and a run rebuilds only the crates the merge changed.
-
-The queue doesn't test in the task's own worktree, because that build is warm for the task's branch, which may be well behind main, and a merge checked out there would move the task's work. It doesn't use the main checkout either, because that build is yours and may be busy. The queue's build is warm for main as it last landed, which is the closest starting point for the next merge.
-
-One build folder is safe here, though a `CARGO_TARGET_DIR` shared by task worktrees isn't ([build store §7](build-store.md#7-rejected)), because the queue runs one entry at a time and nothing else builds in its worktree.
-
-This repo's `merge.test` is `scripts/merge-test.sh`. It sets up the build the way `build.sh` does: it links `target/` to `ROOT/kanna/merge-queue` on the build volume, links libghostty-vt from the store, starts from main's dependency seed the first time, and uses the compile cache ([build store](build-store.md)). Then it runs `cargo test --workspace --no-fail-fast`. The daemon knows nothing of this; it only keeps the worktree's path the same. The build folder can be [evicted](build-store.md#5-eviction) like any other when the volume runs low, except while a run is using it, and the next run starts it from the seed again.
-
-On this repo, the queue's first build from the seed took 6m08s for 28 crates, and a build after a change to `kanna-daemon` took 12s for one crate.
-
-### 3.2 The tests and the judge
-
-```mermaid
-flowchart TD
-    T["test: the daemon runs merge.test<br/>in the queue's worktree"] -->|"exit 0"| P["lands"]
-    T -->|"fails"| J{"judge: did the branch cause it?<br/>(the log, the diff, the test alone,<br/>the test on main)"}
-    J -->|"no: it fails on main too, or only under load"| P
-    J -->|"yes"| F["back to the Shelf<br/>with the reasons"]
-```
-
-**The tests.** The daemon runs `merge.test` itself, as a [`run` stage](kojo.md#2-stages): in a terminal of its own in the queue's worktree, with your login shell, its output in `.kanna/tmp/stage-1.log` there. The terminal belongs to the keeper, so the tests outlast a daemon restart; if the keeper is lost too, they run again ([keeper loss](keeper-loss.md)). Exit 0 lands the entry. The tests have no time limit: a hung run holds the queue until you take the entry out, and the tab shows how long it has run.
-
-**The judge.** Main can have failing tests, both known failures and tests that fail only under load, so a failing entry is judged on what it breaks. The judge is a new session of `tasks.agent` in the queue's worktree, with the merge checked out; if `tasks.agent` is a command rather than an agent's name, the judge is `claude`. It starts only when the tests fail. Its prompt is Kanna's `merge-judge` prompt, filled in with `merge.test`, main and M0, the branch, the merge X and the queue branch, followed by the end of the tests' output and the log's path. A repo can replace it with its own `.kanna/prompts/merge-judge.md`. It asks the judge to:
-
-1. Decide for each failure whether the branch caused it, changing nothing in the worktree. It can read the branch's diff against M0, run the test again on its own, or check out M0 and run it there. A failure that also happens on main, or that passes when run alone, isn't the branch's. A build the branch breaks is.
-2. Report `pass` if no failure is the branch's, and `fail` if any is.
-3. Write an answer whose first line sums up the outcome, such as `broken_thing fails: the branch removed its fixture`, followed by each failure, whether it's the branch's, and how it knows.
-
-**The verdict is a call.** The judge ends its judgement by running `kanna run done pass` or `kanna run done fail`, with its answer in the file its prompt names, and nothing else ends it: the queue reads no screen, and a turn that ends says nothing about the merge. A turn that ends without the call is carried on once, with a message that the judgement isn't reported and how to report it ([4.1](#41-an-entry-that-needs-you)).
-
-A pass lands the entry, and the queue keeps the judge's answer as the entry's note (`doc.result`, `{"verdict": "pass", "note"}`). A fail ends the entry, with the answer's first line as the reason ([4](#4-failure)). An entry whose tests passed has no note.
-
-**A long command.** The judge's own commands are short: one test, a diff. An agent's shell stops a command after about ten minutes, and what it leaves in the background ends with its turn. When the judge needs something longer, such as a build at M0 or the whole suite on main, it asks Kanna: `kanna run command 'COMMAND'` has the daemon run it in the queue's worktree and waits with the judge, and the judge's turn doesn't end ([run commands](run-commands.md)). The prompt says so, and never says to run something in the background.
-
-A repo's own `merge-queue.kojo` is judged by its arrows instead, and has no judge unless it adds one.
-
-### 3.3 The merge stage
-
-```mermaid
-sequenceDiagram
-    participant Q as queue (daemon)
-    participant W as .kanna-worktrees/merge-queue
-    participant R as the entry's run
-    Q->>W: queue/TASK-N at main's head M0
-    Q->>R: start, with KANNA_MERGE_HEAD and KANNA_MERGE_MESSAGE
-    R->>W: merge = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
-    alt clean
-        W-->>R: exit 0: pass, HEAD is the merge commit
-    else conflict
-        W-->>R: exit 1: fail, the worktree mid-merge, git's CONFLICT lines as feedback
-    end
-    R->>R: the pipeline's arrows from merge
-```
-
-The merge stage is a plain `run` stage that uses the queue's two variables, beside every run's own ([Kojo §2](kojo.md#2-stages)). Its outcome is a run stage's verdict. A clean merge passes. A conflict fails, and leaves the worktree mid-merge, with the conflicted files unmerged and `MERGE_HEAD` set, for the next stage. Its feedback is git's output, whose `CONFLICT (content): Merge conflict in FILE` lines name the files. Any other failure of `git merge` fails the stage the same way, with git's message as its feedback.
-
-Between stages a run leaves the worktree as it is, so a half-done merge reaches the next stage untouched. Only a `reset` arrow or a stage that times out resets it. When an entry ends, the queue aborts whatever merge is left in its worktree before the next entry starts.
-
-How a pipeline writes the merge:
-
-| Option | For | Against |
-|---|---|---|
-| **`run git merge …` (chosen)** | the file says exactly what runs; nothing new in `runs.rs` but a run's own variables; a repo can add flags (`-X`, `--no-verify`) | the command is long, and a repo copies it from the default pipeline |
-| a command Kanna provides (`run kanna queue merge-main`) | short | hides what runs behind a name; one more CLI command and socket action for what one git command does |
-| a stage kind (`merge = merge main`) | reads as a merge | Kojo refuses `merge main` for a reason ([Kojo §2](kojo.md#2-stages)); a new kind needs its own verdict, feedback and placement code in `runs.rs` |
-
-### 3.4 The resolver
-
-The resolver is a fresh session of the repo's default agent, as the judge is, in the queue's worktree, mid-merge. Its prompt is Kanna's `merge-resolve`, filled in with main and M0, the task's name, branch and head, and the queue branch. git's conflict lines come under `Feedback from merge`. A repo replaces it with its own `.kanna/prompts/merge-resolve.md`. The prompt tells it to:
-
-1. **Learn each side's intent** before editing a conflicted file: the branch's log and diff for that file (`git log M0..HEAD -- FILE`, the commits of the task's branch), the commits on main that touch it (`git log HEAD..M0 -- FILE`), and `git log --merge -p` for both at once.
-2. **Resolve only the conflicted files,** keeping both sides' intent, then `git add` them and commit the merge with `git commit --no-edit --cleanup=strip`. That keeps the queue's merge message and drops git's commented list of conflicts.
-3. **Change nothing else:** no other file, no clean-up, no fix for what the tests would catch, no test run (the queue runs the tests next), no push, rebase, abort or new merge.
-4. **Fail rather than guess:** when the two sides want incompatible things, when keeping both needs a change outside the conflicted files, or when it isn't confident it knows what either side meant. It leaves the worktree as it is.
-5. **Answer** with a first line on the outcome (`resolved shared.txt: kept main's rename and the branch's new field`, or `shared.txt: main removed parse_old, which the branch extends`), then, for each file, what each side wanted and what it kept, or why both can't hold.
-
-It reports with `kanna run done pass` or `fail`, like the judge. An ended turn without a verdict is carried on once, then pauses the entry as `needs you` ([4.1](#41-an-entry-that-needs-you)).
-
-When it fails, the entry fails with the answer's first line as the reason. The task's `merge-failed` row shows that line. Its agent's message from the queue gives the whole answer under "It conflicts with main, and the queue's resolver didn't resolve it", and ends with what to do: merge main into the branch, resolve the conflicts as both sides mean them, rerun the tests and commit, then `kanna task merge` again. `mergeFailed` in `kanna task list --json` has `verdict: fail`, the `note`, and `stage: resolve`.
-
-![The task's agent, back from the queue with the resolver's reason](merge-queue-conflicts-failed.png)
-
-### 3.5 What a resolution lands
-
-```mermaid
-gitGraph
-    commit id: "M0"
-    branch find-smart-case
-    commit id: "H (the task's head)"
-    checkout main
-    commit id: "main moves"
-    branch queue/task-4f1d-1
-    merge find-smart-case id: "X: merge + resolution"
-    checkout main
-    merge queue/task-4f1d-1 id: "main = X (fast-forward)"
-```
-
-- **What lands** is the commit the pipeline finished on ([3](#3-an-entrys-run)). The queue checks that it holds both M0 and the task's head H, then fast-forwards main to it. A resolution is part of the merge commit X on `queue/TASK-N`, so it's in main's history as that merge, with the queue's message (`Merge branch 'BRANCH': SUMMARY`). A pipeline that ends without the branch merged (the resolver passed without committing, or a repo's pipeline with no merge stage) fails the entry, saying so.
-- **The entry keeps** `merge` (X), `resolved: true` and `resolution` (the resolver's answer) in its doc. The Merge queue tab shows a landed entry as `conflicts resolved by the queue`.
-- **The task** is Done on landing, as before. Its own branch never gets the resolution: it still ends at H, which is in main, so Done removes the worktree and branch as merged. Nothing is written back to them.
-- **The planner** hears it as Desk news: `merged into main, its conflicts with main resolved by the queue in X, and left the merge queue` when it lands, and `didn't merge (WHY): it's back on the Shelf, and its agent has the reason` when it fails.
-- **Tasks stacked on it** hear `base-merged` as before, plus: `It conflicted with main, and the merge queue resolved that in its merge commit X: merge main into your branch, not BASE's branch, to build on the resolution.` Their branch holds H. When they merge, git uses H as the merge base and keeps main's resolution unless they changed the same lines too.
-
-![A landed entry with its resolution, and the Desk news and base-merged message it sends](merge-queue-conflicts-landed.png)
-
-### 3.6 A repo's own pipeline
-
-A repo's `.kanna/pipelines/merge-queue.kojo` decides what a conflict does. To merge the branch, it uses the same `merge` stage, or any stage that leaves a commit holding both M0 and the branch. Kanna's `merge-resolve` prompt is offered to it, unless the repo has its own; `merge-judge` needs `merge.test`, so it's offered to the default pipeline only.
-
-**Fail on a conflict, as the queue did before:**
-
-```
-merge = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
-test  = run scripts/merge-test.sh
-merge -[pass]-> test
-test  -[pass]-> done
-```
-
-With no arrow for `merge`'s fail, the entry fails. The queue sees the worktree mid-merge and gives the reason as `it conflicts with main in FILES`. The task's message says to merge main, resolve, rerun the tests and merge again, as the old refusal did.
-
-**Ask you before a resolution lands:**
-
-```
-merge   = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
-resolve = claude prompt merge-resolve verdict
-ok      = ask "Land this resolution?"
-test    = run scripts/merge-test.sh
-merge   -[pass]-> test
-merge   -[fail]-> resolve
-resolve -[pass]-> ok
-ok      -[pass]-> test
-test    -[pass]-> done
-```
-
-The `ask` pauses the entry as `needs you`, with a toast and a message to the planner ([4.1](#41-an-entry-that-needs-you)). `git show HEAD` in the queue's worktree shows the resolution. Your yes runs the tests; a no ends the entry.
-
-Anything else Kojo can say works too: a `run` stage that tries `git merge -X ours` first, a resolver on `codex:high`, or a `max 2` loop of resolver and tests. The rule that a stage running out of its `within` ends the entry ([3](#3-an-entrys-run)) applies to the resolver too.
-
 ## 4. Failure
 
-An entry fails when its pipeline's `merge` fails with no arrow left (a repo's pipeline that fails on a conflict: `it conflicts with main in FILES`), when the resolver or the judge reports `fail`, when a stage of a repo's own pipeline times out or fails with no arrow left, when its run is stopped, or when main moves under it 3 times.
+An entry fails when its pipeline fails: a stage fails with no arrow left (an agent stage, such as the default pipeline's resolver or judge, by reporting `fail`), or runs out of its `within`. It also fails when the run ends on a commit that doesn't hold both main and the branch ([3.2](#32-the-pipeline-interface)), when its run is stopped, or when main moves under it 3 times.
 
 The run then ends with the outcome `failed`, not `stuck`, and the queue takes over. A task's own runs still stop as `stuck` when no arrow leaves a stage. Main doesn't move. The queue keeps `queue/TASK-N` for you to look at, detaches its worktree, and starts the next entry, so a failing entry never holds up the queue.
 
-The task goes back to the Shelf, stopped, as `merge-failed`, with the reason, until it's merged again or Done. The ready claim the merge made drops, since the queue has just said the branch isn't ready to land; one its agent made before the merge stays. Tasks waiting for it that hadn't started are blocked again; those that had keep going, and go stale when the fix moves its branch. Its agent gets a message from the queue (`[message from queue-7f3a]`). The message says why the entry failed and on which merge, gives the path of the tests' log, copied to the task's worktree as `.kanna/tmp/QUEUE/test.log`, includes the judge's whole answer, and says what to do next: merge main, fix it, and run `kanna task merge` again. Without a judge's answer (a repo's own pipeline), the message has the failed stage's output tail instead ([Kojo §5](kojo.md#5-inputs-and-outputs)). A stopped Shelf task runs for a message, so a [Shelf runner](shelf-runners.md) resumes the agent and it starts on the fix.
+The task goes back to the Shelf, stopped, as `merge-failed`, with the reason, until it's merged again or Done. The ready claim the merge made drops, since the queue has just said the branch isn't ready to land; one its agent made before the merge stays. Tasks waiting for it that hadn't started are blocked again; those that had keep going, and go stale when the fix moves its branch. Its agent gets a message from the queue (`[message from queue-7f3a]`). The message says why the entry failed and on which merge, gives the path of the tests' log, copied to the task's worktree as `.kanna/tmp/QUEUE/test.log`, includes the whole answer of the agent stage that failed it, if one did, and says what to do next: merge main, fix it, and run `kanna task merge` again. Without an agent's answer, the message has the failed stage's output tail instead ([Kojo §5](kojo.md#5-inputs-and-outputs)). A stopped Shelf task runs for a message, so a [Shelf runner](shelf-runners.md) resumes the agent and it starts on the fix.
 
 ![The failed task's agent, resumed with the queue's message; the tests' log in a tab](merge-queue-failed.png)
 
 ### 4.1 An entry that needs you
 
-A queue run pauses when its judge asks for you (`kanna run need`), when a repo's own pipeline reaches an `ask`, or when the judge's turn ends twice with no verdict. The first such turn doesn't pause it: nobody is watching a queue run, so Kanna starts the judge's session again itself, saying that only `kanna run done pass` or `fail` ends the judgement. A task's run tells the task's agent; a queue run has none, so the queue takes the news.
+A queue run pauses when one of its agent stages asks for you (`kanna run need`), when it reaches an `ask`, or when an agent stage's turn ends twice with no verdict. The first such turn doesn't pause it: nobody is watching a queue run, so Kanna starts the agent's session again itself, saying that only `kanna run done pass` or `fail` ends its stage. The default pipeline's judge is the usual case, drawn here. A task's run tells the task's agent; a queue run has none, so the queue takes the news.
 
 ```mermaid
 sequenceDiagram
@@ -316,9 +164,9 @@ sequenceDiagram
 
 - **What it shows:** the entry stays first in line as `needs you` with the reason (`judge stopped without reporting`), on the [Merge queue tab](merge-queue-tab.md#2-a-picked-entry) and in `kanna task list`. Picked on the tab, it shows what the run said: what happened, the last lines of the judge's screen, and how to carry it on.
 - **Who is told:** the app raises a toast (`“NAME” waits in the merge queue`, with the reason), and the repo's planning agent gets a message from the queue with the same text and both ways out. No task's agent is told: the entry's task has none running.
-- **Ways out:** Resume on the tab, or `kanna run resume RUN "WORDS"`, starts the judge's session again with your words (`Carry on.` from the button). `kanna task merge --cancel` takes the entry out.
+- **Ways out:** Resume on the tab, or `kanna run resume RUN "WORDS"`, starts the agent's session again with your words (`Carry on.` from the button). `kanna task merge --cancel` takes the entry out.
 - **The queue waits:** the entries behind it wait until one of those, since the paused run holds the queue's worktree.
-- **What ended with the judge:** the pause says that anything the judge left running in its own shell ended with it. A command it asked Kanna to run is different: if its turn ends while that runs, nothing pauses, and Kanna carries the judge on with the result when the command ends ([run commands](run-commands.md#3-a-turn-that-ends-first)).
+- **What ended with the agent:** the pause says that anything the agent left running in its own shell ended with it. A command it asked Kanna to run is different: if its turn ends while that runs, nothing pauses, and Kanna carries the agent on with the result when the command ends ([run commands](run-commands.md#3-a-turn-that-ends-first)).
 
 ![The Merge queue tab with an entry that needs you: the reason, Resume and Take out, and what the run said](merge-queue-paused.png)
 
@@ -326,36 +174,27 @@ sequenceDiagram
 
 The app shows the queue on the window's [Merge queue tab](merge-queue-tab.md): the entries in line, the ones that ended lately, and the picked entry's terminal or log. The Desk tab shows no queued task. A task whose merge failed is on the Shelf with a red dot and the reason.
 
-`kanna task list` has a `Merging` section between `Desk` and `Shelf`, with the states `merging`, `resolving`, `testing`, `judging`, `needs you`, `landing` and `queued`, and a failed task on the Shelf as `merge-failed`. With `--json`, a queued task has `"queue": {"position", "state", "stage", "needs", "run", "head", "since"}`, where `state` stays `testing` while the run goes, `stage` is `merge`, `resolve`, `test` or `judge` and `needs` is the reason it waits for you. A failed one has `"mergeFailed": {"why", "run", "log", "at", "verdict", "note"}`, where `verdict` and `note` are the judge's. `kanna run list` lists queue runs with the rest.
+`kanna task list` has a `Merging` section between `Desk` and `Shelf`, with the states `queued`, the running stage (`merging`, `resolving`, `testing` and `judging` for the default pipeline's, or the stage's name), `needs you` and `landing`, and a failed task on the Shelf as `merge-failed`. With `--json`, a queued task has `"queue": {"position", "state", "stage", "needs", "run", "head", "since"}`, where `state` stays `testing` while the run goes, `stage` is the stage running, and `needs` is the reason it waits for you. A failed one has `"mergeFailed": {"why", "run", "log", "at", "verdict", "note", "stage"}`, where `verdict`, `note` and `stage` are the failing agent stage's. `kanna run list` lists queue runs with the rest. How each surface words the default pipeline's stages is in [default pipeline §6](merge-queue-pipeline.md#6-showing-its-stages).
 
 ![kanna task list with the Merging section](merge-queue-list.png)
-
-`resolving` sits beside `testing` and `judging` wherever those show. The entry's `stage` follows its run, and each surface names it:
-
-| Where | `merge` | `resolve` | `test` | `judge` |
-|---|---|---|---|---|
-| `kanna task list`, Merging | merging | resolving | testing | judging |
-| Merge queue tab, the entry's line | merging on main M0 + BRANCH | resolving conflicts on … | testing on … | judging a failure on … |
-| Merge queue tab, the detail's title | Tests · | Resolver · | Tests · | Judge · |
-| Desk view | merging on main + its branch | resolving … | testing … | judging … |
 
 ## 6. How it's built
 
 `queue.rs` in the daemon owns each repo's queue, as `runs.rs` owns runs. It keeps the entries, starts the first entry's run, lands it or fails it, and tells the task. It steps on the same events as runs, on ref changes in the repo, and every 30 seconds while an entry is `landing`.
 
-The entries are in the `merge_queue` table in `kanna.db` ([database](database.md)), ordered by `queued_at`, with the repo, task, head, state, run, attempt, M0, X and a doc for the reason, the log's path, the judge's note, the run's stage and what it needs from you. A daemon restart reloads the live entries, and a `testing` entry's run carries on as any run does. A landing interrupted by a restart runs again safely, since it moves main only from M0.
+The entries are in the `merge_queue` table in `kanna.db` ([database](database.md)), ordered by `queued_at`, with the repo, task, head, state, run, attempt, M0, X and a doc for the reason, the log's path, an agent stage's answer, the run's stage and what it needs from you. A daemon restart reloads the live entries, and a `testing` entry's run carries on as any run does. A landing interrupted by a restart runs again safely, since it moves main only from M0.
 
-An entry's run is an owned run of the repo's pipeline (or the default) in the queue's worktree, with the resolver's and the judge's prompts passed in the run's prompts (`Started.prompts`) and the merge's head and message in the run's own variables (`Started.env`). Each stage's terminal belongs to the keeper, so a daemon restart stops neither the tests nor the judge. When the run ends, the queue reads the stages' verdicts and the judge's answer from `run_stages`, and copies the `test` stage's log to the task's worktree with the terminal's escapes and overwritten progress lines taken out.
+An entry's run is an owned run of the repo's pipeline (or the default) in the queue's worktree, with the interface's prompts passed in the run's prompts (`Started.prompts`) and the merge's head and message in the run's own variables (`Started.env`). Each stage's terminal belongs to the keeper, so a daemon restart stops no stage. When the run ends, the queue reads the stages' verdicts and answers from `run_stages` ([3.2](#32-the-pipeline-interface)), and copies the tests' log to the task's worktree with the terminal's escapes and overwritten progress lines taken out.
 
 A run's doc has an `owner`, which is empty for a task's run and `queue` for the queue's. `Runs::task_closed` stops only a task's runs, so a queue run outlives the task's agent and is stopped only by `--cancel` or its own end. A queue run's messages go to the queue rather than to an agent (`Runs::on_tell`), and each change of its stage or state reaches the queue too (`Runs::on_moved`), which keeps the entry's `stage` and `needs` in step ([4.1](#41-an-entry-that-needs-you)). The queue starts it with `Runs::start_owned`, and when it ends the run calls `Runs::on_end` with the branch's head or the reason. A queue run leaves its worktree in place, since the worktree belongs to the queue. Its terminal is a background terminal in the task's workspace, which is why the workspace stays until the entry lands or fails.
 
 A queued task has `Entry.queued` set to the queue's id. It's held on the Shelf in the database, stopped, and listed under Merging, and runners, `start` and `pick` skip it. `Entry.merge_failed` holds a failure until the next `kanna task merge` or Done. The planner gets `merged` and `merge_failed` Desk news.
 
-The `queue` command's `list` action gives a repo's entries, and with `recent: N` the live ones in order, then the last N that landed or failed, the testing one with its run's terminal. When a run ends, the queue also copies the tests' log to `kanna/merge-queue/QUEUE.log` in the repo's git folder and keeps the newest 30, so the log outlasts the task's worktree, which Done removes. The `log` action returns an entry's judge's answer and the last 256 KB of that copy. The [Merge queue tab](merge-queue-tab.md#4-how-its-built) reads both.
+The `queue` command's `list` action gives a repo's entries, and with `recent: N` the live ones in order, then the last N that landed or failed, the testing one with its run's terminal. When a run ends, the queue also copies the tests' log to `kanna/merge-queue/QUEUE.log` in the repo's git folder and keeps the newest 30, so the log outlasts the task's worktree, which Done removes. The `log` action returns an entry's kept answer and the last 256 KB of that copy. The [Merge queue tab](merge-queue-tab.md#4-how-its-built) reads both.
 
 The `kanna-tasks` skill tells agents that merging means `kanna task merge` with `-m`, never a merge by hand, and what to do when the queue's message comes. The `kanna-planning` skill says that "merge X" means `kanna task merge X` and that queued tasks aren't finished.
 
-## 7. CLI and settings
+## 7. CLI
 
 | Command | Does |
 |---|---|
@@ -364,78 +203,32 @@ The `kanna-tasks` skill tells agents that merging means `kanna task merge` with 
 | `kanna task list` | has the `Merging` section and the `merge-failed` state |
 | `kanna task done TASK` on a queued task | takes it out of the queue, then Done, keeping its unmerged worktree |
 
-An entry's run takes the `kanna run` commands any run does ([software factory §7](software-factory.md#7-cli)). These are the ones the queue relies on:
-
-| Command | Who | Does |
-|---|---|---|
-| `kanna run done pass` | the judge | ends the judgement: no failure is the branch's, so the merge lands, with its answer kept as the entry's note |
-| `kanna run done fail` | the judge | ends the judgement: a failure is the branch's, so the task goes back to the Shelf with its answer |
-| `kanna run command COMMAND`, `--wait` | the judge | has Kanna run a long command in the queue's worktree and waits for it ([run commands](run-commands.md)) |
-| `kanna run need TEXT` | the judge | pauses the entry as `needs you` with what it needs |
-| `kanna run resume RUN [WORDS]` | you, or the planner when you say | carries a paused entry's judge on with your words ([4.1](#41-an-entry-that-needs-you)) |
-| `kanna run show RUN`, `kanna run log RUN` | anyone | the run's stages and verdicts, and its events |
-
-| Setting | Where | Is |
-|---|---|---|
-| `tasks.agent` | either `config.json` | the judge's agent |
-| `merge.test` | the repo's `.kanna/config.json` | the command the daemon runs on each merge; this repo's is `scripts/merge-test.sh` |
+An entry's run takes the `kanna run` commands any run does ([software factory §7](software-factory.md#7-cli)): its agent stages report with `kanna run done pass|fail`, ask with `kanna run need`, and run long commands with `kanna run command` ([run commands](run-commands.md)); you carry a paused entry on with `kanna run resume RUN [WORDS]` ([4.1](#41-an-entry-that-needs-you)). The settings an entry's run reads are its pipeline's: the default one's are in [default pipeline §1](merge-queue-pipeline.md#1-the-pipeline).
 
 ## 8. Tests
 
-The e2e scenario `merge_queue` runs a private instance with a mock agent (`tools/mock-agent`) and a mock repo. The repo's `merge.test` is `sh test.sh`, which runs a mock test binary, `bin/unit`, and its `tasks.timeout` is 5 seconds. `known_broken` fails once main has a `known-broken` file, `broken_thing` fails when the merge has a `broken` file, and `flaky_thing` fails in the full run and passes alone when the merge has a `flaky` file. The script also fails without naming a test when `needs-a.txt` is there without `a.txt`, sleeps 15 seconds once when `slow` is there, and records in `target/builds` whether it found `target/` warm. The repo's `.kanna/prompts/merge-judge.md` has the mock agent run `judge.sh`, a judge written in shell: it reads the failing tests from the log, runs each alone, runs it on main through `kanna run command` with a 1-second wait, and reports as Kanna's prompt asks. When the merge has a `waits` file, it first asks for a 4-second command and ends its turn.
+The e2e scenario `merge_queue` runs a private instance with a mock agent (`tools/mock-agent`) and a mock repo on the default pipeline, whose mock tests, judge and resolver are in [default pipeline §8](merge-queue-pipeline.md#8-tests). For the queue, it checks that:
 
-The scenario checks these things:
-
-1. A branch with uncommitted changes is refused, naming the file.
+1. A branch with uncommitted changes is refused, naming the file. A branch that conflicts with main is taken.
 2. A (`slow`) and then B (`needs-a.txt`) land in order, B tested on top of A, and main's history reads B's merge, A's merge with its `-m` message, then main as it was.
-3. A and B, whose tests pass, land on a merge and a test stage each, both commands, with no agent started.
-4. A's tests, 15 seconds long under a 5-second `tasks.timeout`, run to their end.
-5. A's agent quits when A is merged, and A still lands and is Done, with its queue branch deleted.
-6. The daemon restarts while A's tests run, and A and B both land afterwards.
-7. After main gets `known-broken`, C (`broken`) fails because the judge blames `broken_thing` on the branch. C isn't in main, `kanna task list` shows it as `merge-failed` with `broken_thing fails: the branch broke it`, `--json` has the verdict and the note, its agent gets the judge's answer and the log's path, the log is in its worktree, and its run's outcome is `failed`.
-8. C's judge waited again (`--wait`) for a command that outlasted its first wait.
-9. F (`waits`): its judge's turn ends while its command runs, the command still runs to its end, and the judge is carried on with its exit code. Its turn then ends with no verdict, and it's carried on once more, told that only the call ends its judgement. When that turn ends with no verdict too, F shows `needs you` with the reason in `kanna task list` and on the tab, its entry says what happened, and E stays queued behind it. Resumed with words, the judge passes it and F lands.
-10. E (`flaky`) lands with the note `tests fail, none of them the branch's: known_broken fails on main too, flaky_thing passes alone`, and C's and E's runs each went from `merge` to `test` to `judge`.
-11. Across every entry, the queue's worktree found `target/` cold only once.
-12. D, which conflicts with main in `shared.txt`, is taken, and the reply doesn't mention it. It shows `resolving` in `kanna task list`, runs `merge:fail resolve:pass test:pass`, and lands. Main's `shared.txt` holds both sides, and main's head is D's merge, which the entry keeps with the resolver's answer.
-13. G, whose resolver fails, is merge-failed with the resolver's first line. Its run stops at `resolve`, its agent gets the answer and what to do, and main doesn't have it.
-14. H, under a repo pipeline that fails on a conflict, fails with `it conflicts with main in clash2.txt` after its `merge` stage alone, with no merge left in the queue's worktree.
-15. A, B, C and E, which merge cleanly, run `merge` and then `test` with no resolver.
-
-For the conflicts, the mock repo's `merge-resolve.md` runs `resolve.sh`, a resolver written in shell that keeps both sides of each conflicted file, or fails on `clash.txt`.
+3. A's agent quits when A is merged, and A still lands and is Done, with its queue branch deleted.
+4. The daemon restarts while A's tests run, and A and B both land afterwards.
+5. A failed entry (C) isn't in main; `kanna task list` shows it as `merge-failed` with the reason, `--json` has the verdict and the note, its agent gets the answer and the log's path, the log is in its worktree, and its run's outcome is `failed`.
+6. A paused entry (F) shows `needs you` with the reason in `kanna task list` and on the tab, the entries behind it stay queued, and resumed with words it carries on and lands.
+7. Across every entry, the queue's worktree found `target/` cold only once.
+8. H, under the repo's own `merge-queue.kojo`, runs that pipeline instead of the default.
 
 The same scenario checks the app's tab ([Merge queue tab §5](merge-queue-tab.md#5-tests)).
 
-`cargo test -p kanna-daemon queue::` checks:
-
-- The default pipeline, read from `merge-queue.kojo`: `merge` is its first stage with the command in [3.3](#33-the-merge-stage); a pass goes to `test` with no resolver, a fail to `resolve`; the resolver's pass goes to `test`, its fail has no arrow; a test pass lands and only a fail reaches the judge; at most two agent sessions; no time limit on the tests, whatever `tasks.timeout` is; a repo's own pipeline takes precedence, and a timeout in it ends the entry.
-- The merge command, run with the two variables, merges the head with its message. On a conflict it fails and leaves the worktree mid-merge. `merge_commit` finds the merge that holds the resolution.
-- A `merge.test` a pipeline would cut short, the judge's and the resolver's prompts, the kept log's text, the paused entry's news, and the reuse of the queue's worktree and its build folder.
-- Outcomes: passing tests land with no note; a judge's pass lands with its note, its fail ends the entry with the answer's first line; a resolver's fail ends it with its first line and `result.stage: resolve`; a resolution that passes the tests lands with `resolved` and `resolution`; a repo's pipeline that fails at `merge` fails the entry with `it conflicts with main in FILES`, and the half-done merge is aborted; a timed-out stage of a repo's own pipeline says so; a judge that exits without a verdict fails the entry; a repo's own pipeline fails with its failed stage's output.
-
-`runs::` checks a stage's command and the feedback's log path ([run commands](run-commands.md#5-tests)). `cargo test -p kanna-daemon desk_news` checks the landed and failed news lines.
+`cargo test -p kanna-daemon queue::` checks the queue's side: the repo's own pipeline taking precedence, a timeout ending the entry, the paused entry's news, the kept log's text, the reuse of the queue's worktree, landing only a commit that holds main and the head, and the reasons read back from a failed run (an agent's answer, a timeout, a conflict left mid-merge, a stage's output). `runs::` checks a stage's command and the feedback's log path ([run commands](run-commands.md#5-tests)). The default pipeline's own tests are in [default pipeline §8](merge-queue-pipeline.md#8-tests).
 
 The e2e scenario `merge_claims_ready` checks that B, waiting for A, starts on A's branch while A, never claimed ready, is still testing, from a Shelf runner, and that B hears `base-merged` when A lands. `cargo test -p kanna-daemon merging_a_task_claims_it_ready` and `a_failed_or_cancelled_merge` check the claim the merge makes, a restart, landing, failure, cancel, the agent's own claim kept, and a dependent refused by the queue until its base lands.
 
-`cargo test -p kanna-daemon` checks the `merge` settings in the schema against what the daemon reads.
+## 9. Rejected
 
-## 9. Later, and rejected
+What the default pipeline does instead of other ways to test, judge and resolve is in [default pipeline §9](merge-queue-pipeline.md#9-later-and-rejected).
 
-**Later: the task's own agent as the resolver.** It knows why its changes exist, so it would resolve better than a fresh agent. That means a stage kind that starts the task's own session in the queue's worktree, or hands the conflict to the task's worktree and waits for a new head. Both cut across the queue's rule that a queued task's agent has quit. Today a failing resolver hands the conflict back to that agent anyway, through `merge-failed`.
-
-An agent running the tests, the tester, was how the queue was first built: one agent stage ran `merge.test` and judged the result. On this repo it couldn't finish. Its prompt allowed running the tests in the background and waiting; the agent did, and ended its turn to wait. The run read that as `stopped without reporting`, quit the agent, and the build died with it. A foreground command wasn't a way out either, since an agent's shell stops one after about ten minutes, less than a build after a big merge. It also spent a session on every entry, most of which pass.
-
-A time limit on the tests (`merge.within`) was built and taken out. A build after a big merge is long, and a limit set for the usual case fails the entry that needs the time. Tests that hang hold the queue instead, the tab shows how long they've run, and Take out ends them. A repo that wants a limit writes its own `merge-queue.kojo` with `within` on a stage.
-
-A fresh worktree for each entry would make every run a cold build of every crate, which takes longer than the tests.
-
-A green main as the bar, with known failures skipped by hand in `merge.test`, would block every entry but the one that fixes main, and the skip list goes stale.
-
-Judging each test in the daemon would mean reading libtest's output, keeping main's results for each commit, failing an entry on tests that fail on the merge but not on main, and running each new failure again on its own. That's a lot of machinery for a decision an agent makes at once with the log, the diff and a shell, and it would read only libtest's output. The daemon reads one thing, the command's exit code.
-
-If test results never blocked landing, a branch that breaks the build or a test would land.
-
-Running main's tests in the background whenever main moves needs a terminal outside any task's workspace. The judge runs main's tests itself when a failure calls for it.
+A fresh worktree for each entry would make every run a cold build, which for this repo takes longer than the tests.
 
 Having the task's agent merge main, rebuild and test while you wait costs minutes of your time per merge, repeated each time main moves first.
 
@@ -444,11 +237,6 @@ Testing ready tasks again whenever main moves costs a test run for every ready t
 Making the task Done at `kanna task merge` would mean bringing a Done task back when its merge fails, after its workspace, which holds the run's terminal, is gone.
 
 Keeping the merge in the daemon, ahead of the pipeline, kept a pipeline from landing anything but the merge it tested, but it left the queue no way to deal with a conflict but refuse it. The merge is now a stage, and the rule moved to landing: the queue lands only a commit that holds both main and the entry's head, and only the one the run finished on.
-
-**Refusing at `kanna task merge` and resolving only conflicts that come up in the queue** would treat the same conflict two ways, depending on whether main moved before or after the merge.
-
-**Resolving in the task's worktree** would move the task's branch while its agent has quit, and a resolution that fails the tests would be left on it.
-
 
 Landing by moving the ref alone (`git update-ref`) would leave the main checkout's files out of step with main.
 
