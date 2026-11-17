@@ -102,6 +102,21 @@ pub fn recognise(process: &Process) -> Option<Program> {
     Some(Program { agent: agent.into(), pid: process.pid, executable })
 }
 
+pub fn command_of(program: &Program) -> Vec<String> {
+    match &program.executable {
+        Some(executable) => vec![executable.to_string_lossy().into_owned()],
+        None => agent_command(&process(program.pid).map(|p| p.argv).unwrap_or_default(), &program.agent),
+    }
+}
+
+pub fn agent_command(argv: &[String], agent: &str) -> Vec<String> {
+    let named = |arg: &String| Path::new(arg).file_stem().and_then(|n| n.to_str()).and_then(known_agent) == Some(agent);
+    match argv.iter().position(named) {
+        Some(at) => argv[..=at].to_vec(),
+        None => vec![agent.to_string()],
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Row {
     pub pid: i32,
@@ -280,7 +295,7 @@ fn process(pid: i32) -> Option<Process> {
 }
 
 #[cfg(target_os = "macos")]
-fn environ(pid: i32) -> Vec<String> {
+pub fn environ(pid: i32) -> Vec<String> {
     procargs(&procargs2(pid)).1
 }
 
@@ -363,14 +378,14 @@ fn process(pid: i32) -> Option<Process> {
 }
 
 #[cfg(target_os = "linux")]
-fn environ(pid: i32) -> Vec<String> {
+pub fn environ(pid: i32) -> Vec<String> {
     std::fs::read(format!("/proc/{pid}/environ"))
         .map(|raw| raw.split(|b| *b == 0).filter(|e| !e.is_empty()).map(|e| String::from_utf8_lossy(e).into_owned()).collect())
         .unwrap_or_default()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn environ(_pid: i32) -> Vec<String> {
+pub fn environ(_pid: i32) -> Vec<String> {
     vec![]
 }
 
@@ -410,6 +425,15 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn an_agent_is_run_again_as_it_was_started() {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(agent_command(&argv(&["claude", "--model", "m"]), "claude"), ["claude"]);
+        assert_eq!(agent_command(&argv(&["/usr/bin/python3", "/f/bin/claude", "--session-id", "x"]), "claude"), ["/usr/bin/python3", "/f/bin/claude"], "a script, with its interpreter");
+        assert_eq!(agent_command(&argv(&["node", "--no-warnings", "/n/bin/claude", "-p"]), "claude"), ["node", "--no-warnings", "/n/bin/claude"]);
+        assert_eq!(agent_command(&argv(&[]), "claude"), ["claude"], "a process gone: its name");
     }
 
     #[test]

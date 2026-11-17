@@ -55,6 +55,14 @@ stateDiagram-v2
   - **While the stop is under way** (Kanna has typed `/exit` or its keys): what's typed can't be taken back, so the agent quits, and the pick starts it again on the Desk at once, resuming its session and the tabs the stop hung up. The daemon log says so (`… is on …'s Desk while its agent quits, so it starts again once it has`).
   - **After the stop:** the pick starts the stopped task, as it always does.
 
+### A parked Claude
+
+A claude that moved its conversation into a background job ([agent messaging](agent-messaging.md#6-a-parked-claude)) reports nothing for the job's turns from its terminal, so a runner follows the job:
+
+- **Its turn ends with the job's:** the job's status going from `busy` to `idle` or `waiting` ([agent status](agent-status.md#a-parked-claude)), so a parked Shelf task frees its runner as any other does, instead of holding it until stopped.
+- **The job's background work counts:** the job runs under Claude's daemon, not under the terminal's claude, so its shells are looked for under the job's process as well as the pane's.
+- **Stopping it stops the job first:** `claude stop JOB`, then `/exit` in the pane, keeping the job's session, so the next start resumes the conversation with everything the job did ([which agents resume](tasks.md#a-parked-claude)).
+
 ### Background work
 
 Claude reports idle at the end of its turn while a command it started in the background (`run_in_background`, a Monitor) still runs. Quitting it then kills the command, and the resumed session says `Background shell command didn't finish before the previous session ended`. So a turn isn't over while its agent has background work:
@@ -70,7 +78,7 @@ Claude reports idle at the end of its turn while a command it started in the bac
 
 - **The runners are the daemon's** (`Tasks::fill` in `tasks.rs`, the Shelf's code): every 2s, and whenever a task is made, edited, done or stopped, `Tasks::candidates` lists each repo's tasks with something to do (never started and not blocked, or stopped with a message waiting), `fill` sorts them together by when they were made, and it starts them from the oldest until the machine's `shelf.runners` run, skipping a repo at its cap. Tasks you start on the Shelf, or move there running, count too, in every repo, including one that's off. With several machines, a runner also asks other machines for their waiting tasks in the same project, oldest first with its own, and an ask in flight counts as a running task ([machine tasks §2](machine-tasks.md#2-owners-and-grants)).
 - **A turn's end is the agent's report:** `Turn` (`kanna-detect`) watches a running Shelf task's agent and says its turn is over when its root record goes from working to idle, done or blocked, counted by the terminal as the reports arrive, so a short turn between two looks isn't missed ([agent status](agent-status.md#3-the-report-osc-7501)).
-- **And its background work:** while a turn is quiet, `Tasks::tick` looks at the agent's tree every 0.5s (`program::background`: `proc_listchildpids` and each child's group from `proc_pidinfo` on macOS, `/proc` on Linux) for the agents in `agents::IDLE_WITH_BACKGROUND`, the agent being the program the terminal's status comes from. `Turn` keeps whether work runs or when it ended, and ends the turn only once it's quiet, nothing runs, and `turn::GRACE` (10s) has passed since the work ended.
+- **And its background work:** while a turn is quiet, `Tasks::tick` looks at the agent's tree (and a parked claude's job's) every 0.5s (`program::background`: `proc_listchildpids` and each child's group from `proc_pidinfo` on macOS, `/proc` on Linux) for the agents in `agents::IDLE_WITH_BACKGROUND`, the agent being the program the terminal's status comes from. `Turn` keeps whether work runs or when it ended, and ends the turn only once it's quiet, nothing runs, and `turn::GRACE` (10s) has passed since the work ended.
 - **Each agent says how it quits and where its session is**, in `agent-rules/quit/AGENT.json`: its exit command and what its input box looks like holding only that (`exit`), the key that brings it to rest (`rest`), the keys that quit it (`keys`), and a pattern that finds its session ID in what it prints as it exits (`session`). Checked with the real programs, each exit printing what its keys print:
 
 | Agent | Exit | Rest | Keys | Its session |

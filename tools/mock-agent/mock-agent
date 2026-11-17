@@ -253,37 +253,93 @@ def inbox(fields=None):
     threading.Thread(target=serve, daemon=True).start()
 
 
-JOB = {"process": None}
+JOB = {"process": None, "session": None, "mode": False}
+JOB_STATUS = {"working": "busy", "idle": "idle", "needs-you": "waiting"}
 
 
 def park(words):
-    job = uuid.uuid4().hex[:8]
+    session = str(uuid.uuid4())
+    job = session[:8]
     if words[1:2] != ["nojob"]:
-        child = subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--mock-job", job, *sys.argv[1:]], stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, "KANNA_MOCK_REPORTS": "0"})
-        JOB["process"] = child
-        atexit.register(lambda: child.poll() is None and child.terminate())
+        JOB["session"] = session
+        detach = "import subprocess, sys; subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, start_new_session=True)"
+        status = {"busy": "busy", "waiting": "waiting"}.get(words[1] if len(words) > 1 else "", "idle")
+        subprocess.run([sys.executable, "-c", detach, sys.executable, os.path.abspath(sys.argv[0]), "--mock-job", session, *sys.argv[1:]], env={**os.environ, "KANNA_MOCK_REPORTS": "0", "KANNA_MOCK_JOB_STATUS": status})
+        ENTRY["parkedJobId"] = job
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not os.path.exists(os.path.join(os.path.dirname(registry()), f"{child.pid}.json")):
+        while time.monotonic() < deadline and not job_entry()[0]:
             time.sleep(0.05)
+        JOB["process"] = (job_entry()[1] or {}).get("pid")
     announce(parkedJobId=job)
+    if not silent():
+        out("\x1b]7501;state=clear\x1b\\")
     out(f"PARKED {job}\r\n")
 
 
 def unpark():
-    child = JOB["process"]
-    if child and child.poll() is None:
-        child.terminate()
-        child.wait()
+    pid = JOB["process"]
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and job_entry()[0]:
+            time.sleep(0.05)
     JOB["process"] = None
+    JOB["session"] = None
     announce(parkedJobId=None)
     out("UNPARKED\r\n")
 
 
-def job_main(job):
+def job_main(session):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    inbox({"kind": "bg", "jobId": job, "sessionId": str(uuid.uuid4())})
-    while True:
-        time.sleep(1)
+    JOB["mode"] = True
+    saved(session)
+    inbox({"kind": "bg", "jobId": session[:8], "sessionId": session, "status": os.environ.get("KANNA_MOCK_JOB_STATUS") or "idle"})
+    time.sleep(float(os.environ.get("KANNA_MOCK_JOB_LIFE") or 900))
+
+
+def job_entry():
+    sessions = os.path.dirname(registry())
+    for name in os.listdir(sessions):
+        if name.endswith(".json") and name != f"{os.getpid()}.json":
+            path = os.path.join(sessions, name)
+            try:
+                with open(path) as f:
+                    entry = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if entry.get("jobId") and entry.get("jobId") == ENTRY.get("parkedJobId"):
+                return path, entry
+    return None, None
+
+
+def job_status(status):
+    path, entry = job_entry()
+    if not path:
+        return out("NO JOB\r\n")
+    entry["status"] = status
+    with open(path, "w") as f:
+        json.dump(entry, f)
+    out(f"JOB {status}\r\n")
+
+
+def stop_job(job):
+    home = os.environ.get("KANNA_AGENTS_HOME")
+    sessions = os.path.join(home, ".claude", "sessions") if home else None
+    for name in os.listdir(sessions) if sessions and os.path.isdir(sessions) else []:
+        try:
+            with open(os.path.join(sessions, name)) as f:
+                entry = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if entry.get("kind") == "bg" and entry.get("jobId") == job:
+            os.kill(entry["pid"], signal.SIGTERM)
+            print(f"stopped {job}")
+            return 0
+    print(f"No background session matches {job}", file=sys.stderr)
+    return 1
 
 
 def inbound(text):
@@ -406,6 +462,7 @@ def rpc(conn, turns):
 def bye(id):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     if PROGRAM == "claude":
+        id = JOB["session"] if ENTRY.get("parkedJobId") and JOB["session"] else id
         out(f"\r\nResume this session with:\r\nclaude --model mock-model --dangerously-skip-permissions --resume {id}\r\n")
     else:
         out(f"\r\nTo continue this session, run: {PROGRAM} resume {id}\r\n")
@@ -420,6 +477,8 @@ def main():
         return app_server(sys.argv[1:])
     if sys.argv[1:2] == ["--mock-job"]:
         return job_main(sys.argv[2])
+    if sys.argv[1:2] == ["stop"] and len(sys.argv) > 2:
+        return stop_job(sys.argv[2])
     if os.isatty(sys.stdin.fileno()):
         fd = sys.stdin.fileno()
         saved = termios.tcgetattr(fd)
@@ -437,7 +496,7 @@ def main():
     if refusal:
         print(refusal)
         return 1
-    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], park [nojob], unpark, ask, report STATUS, focus LOG or exit\r\n")
+    out("\x1b]0;mock-agent\x07mock-agent: type turn, work N, run COMMAND, background N [wake S], park [nojob|busy|waiting], unpark, job STATUS, ask, report STATUS, focus LOG or exit\r\n")
     if sys.argv[1:]:
         out("args: " + " ".join(sys.argv[1:]) + "\r\n")
     out(f"{'resumed' if resumed else 'session'} {id}\r\n")
@@ -535,6 +594,10 @@ def silent():
 
 
 def reported(state):
+    if JOB["mode"]:
+        announce(status=JOB_STATUS.get(state, state))
+    elif ENTRY.get("parkedJobId"):
+        return
     if not silent():
         out(f"\x1b]7501;state={state}\x1b\\")
 
@@ -618,6 +681,8 @@ def answering(line):
         park(words)
     elif words[:1] == ["unpark"]:
         unpark()
+    elif words[:1] == ["job"] and len(words) > 1:
+        job_status(words[1])
     elif words[:1] == ["say"]:
         said([{"type": "text", "text": line.strip().split(None, 1)[1]}])
         out("SAID\r\n")

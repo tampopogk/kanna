@@ -58,6 +58,13 @@ pub fn show(_: &Value, reply: &Value) -> String {
         out.push(format!("needs: {needs} or newer"));
     }
     out.push(format!("status: {}", reply["status"].as_str().unwrap_or("none")));
+    let job = &reply["job"];
+    if job["running"] == Value::Bool(true) {
+        let waiting = job["waitingFor"].as_str().map(|w| format!(" ({w})")).unwrap_or_default();
+        out.push(format!("parked: background job {} (pid {}, session {}) runs its conversation: {}{waiting}", job["id"].as_str().unwrap_or_default(), job["pid"], job["session"].as_str().unwrap_or("unknown"), job["state"].as_str().unwrap_or("no status")));
+    } else if let Some(id) = job["id"].as_str() {
+        out.push(format!("parked: background job {id} runs nowhere"));
+    }
     if reply["reported"].is_null() {
         out.push("record: no report yet".into());
     } else {
@@ -79,6 +86,15 @@ mod status_tests {
         let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.296", "executable": "/bin/claude", "needs": "2.1.295", "status": null, "reported": null, "records": [] });
         assert_eq!(show(&json!({ "action": "explain" }), &reply), "p3: claude 2.1.296 (/bin/claude)\nneeds: 2.1.295 or newer\nstatus: none\nrecord: no report yet");
         assert_eq!(show(&json!({ "action": "explain" }), &json!({ "pane": "p4", "agent": null, "status": null })), "p4: not one of Kanna's agents");
+    }
+
+    #[test]
+    fn explain_names_the_job_a_parked_claude_moved_its_conversation_into() {
+        let reply = json!({ "pane": "p3", "agent": "claude", "agentVersion": "2.1.325", "executable": "/bin/claude", "needs": "2.1.295", "status": "needs-you", "reported": null, "records": [],
+            "job": { "id": "c71180f2", "running": true, "pid": 68845, "session": "c71180f2-ffd5", "state": "waiting", "waitingFor": "permission prompt", "status": "needs-you" } });
+        assert_eq!(show(&json!({ "action": "explain" }), &reply), "p3: claude 2.1.325 (/bin/claude)\nneeds: 2.1.295 or newer\nstatus: needs-you\nparked: background job c71180f2 (pid 68845, session c71180f2-ffd5) runs its conversation: waiting (permission prompt)\nrecord: no report yet");
+        let gone = json!({ "pane": "p3", "agent": "claude", "status": "idle", "reported": null, "records": [], "job": { "id": "c71180f2", "running": false } });
+        assert!(show(&json!({ "action": "explain" }), &gone).contains("\nparked: background job c71180f2 runs nowhere\n"));
     }
 
     #[test]
