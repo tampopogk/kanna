@@ -170,7 +170,7 @@ A repo's own pipeline labels its stages the same way; a stage without a label sh
 
 ## 7. Writing your own
 
-A repo that writes its own `.kanna/pipelines/merge-queue.kojo` replaces this pipeline, and decides what a conflict does. Copying [`pipeline.kojo`](../../crates/kanna-daemon/src/merge_queue/pipeline.kojo) there is the place to start: it's valid as it is, and `kanna pipeline check merge-queue` checks it. To merge the branch, it uses the same `merge` stage, or any stage that leaves a commit holding both M0 and the branch. Kanna's `merge-resolve` and `merge-judge` prompts are offered to it, unless the repo has its own. Its tests can be any command; `KANNA_MERGE_TEST` is there when the repo also sets `merge.test`. This repo's own copy is in [Kanna's merge pipeline](kanna-merge-pipeline.md).
+A repo that writes its own `.kanna/pipelines/merge-queue.kojo` replaces this pipeline, and decides what a conflict does. Copying [`pipeline.kojo`](../../crates/kanna-daemon/src/merge_queue/pipeline.kojo) there is the place to start: it's valid as it is, and `kanna pipeline check merge-queue` checks it. To merge the branch, it uses the same `merge` stage, or any stage that leaves a commit holding both M0 and the branch. Kanna's `merge-resolve` and `merge-judge` prompts are offered to it, unless the repo has its own. Its tests can be any command; `KANNA_MERGE_TEST` is there when the repo also sets `merge.test`. This repo's setup is in [Kanna's merge pipeline](kanna-merge-pipeline.md).
 
 **Fail on a conflict, as the queue did before:**
 
