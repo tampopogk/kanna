@@ -233,6 +233,7 @@ pub struct Doc {
     pub pausing: bool,
     pub held: bool,
     pub interventions: BTreeMap<String, u32>,
+    pub env: BTreeMap<String, String>,
 }
 
 impl Doc {
@@ -259,6 +260,7 @@ impl Doc {
             "pausing": self.pausing,
             "held": self.held,
             "interventions": self.interventions,
+            "env": self.env,
         })
     }
 
@@ -289,6 +291,7 @@ impl Doc {
             pausing: value.get("pausing").and_then(Value::as_bool).unwrap_or(false),
             held: value.get("held").and_then(Value::as_bool).unwrap_or(false),
             interventions: value.get("interventions").and_then(Value::as_object).map_or_else(BTreeMap::new, |m| m.iter().map(|(k, v)| (k.clone(), v.as_u64().unwrap_or(0) as u32)).collect()),
+            env: map("env"),
         }
     }
 }
@@ -951,6 +954,7 @@ pub struct Started {
     pub request: String,
     pub prompts: BTreeMap<String, String>,
     pub owner: Option<String>,
+    pub env: BTreeMap<String, String>,
     pub by: String,
     pub agent: bool,
 }
@@ -1149,7 +1153,7 @@ impl Runs {
         };
         let by = string(args, "by").unwrap_or("user").to_string();
         let agent = string(args, "by").and_then(|by| self.tasks.upgrade()?.task_of(by)).is_some_and(|of| of == task.id);
-        let started = Started { task: task.id.clone(), repo: task.repo.clone(), worker: worker.clone(), branch: branch.clone(), base, text, shown, name: name.clone(), request, prompts, owner: None, by, agent };
+        let started = Started { task: task.id.clone(), repo: task.repo.clone(), worker: worker.clone(), branch: branch.clone(), base, text, shown, name: name.clone(), request, prompts, owner: None, env: BTreeMap::new(), by, agent };
         let (id, worst) = self.open_run(started, pipeline)?;
         Ok(Map::from_iter([
             ("run".to_string(), json!(id)),
@@ -1186,9 +1190,9 @@ impl Runs {
     }
 
     fn open_run(&self, started: Started, pipeline: Pipeline) -> Result<(String, u32), KmuxError> {
-        let Started { task, repo, worker, branch, base, text, shown, name, request, prompts, owner, by, agent } = started;
+        let Started { task, repo, worker, branch, base, text, shown, name, request, prompts, owner, env, by, agent } = started;
         let id = self.db.new_run_id().map_err(failed)?;
-        let doc = Doc { request, file: shown.clone(), worker: worker.clone(), base: base.clone(), revision: 1, taken: vec![0; pipeline.arrows.len()], next: Some(pipeline.start.clone()), owner, ..Doc::default() };
+        let doc = Doc { request, file: shown.clone(), worker: worker.clone(), base: base.clone(), revision: 1, taken: vec![0; pipeline.arrows.len()], next: Some(pipeline.start.clone()), owner, env, ..Doc::default() };
         let mut value = doc.to_value();
         value["budget"] = budget_value(&pipeline);
         let row = RunRow { id: id.clone(), task: task.clone(), repo, pipeline: name.clone(), revision_hash: hash(&text), branch: branch.clone(), state: "running".into(), started_at: now(), ended_at: None, outcome: None, doc: value };
@@ -2092,11 +2096,12 @@ impl Runs {
         fs::write(worker.join(&reply), &text).map_err(|e| failed(format!("can't write {reply}: {e}")))?;
         let files = tasks::config_files(Path::new(&run.repo));
         let mut vars = self.vars(&run, &doc, &visit.row, &stage.name);
-        vars.push(("KANNA_ANSWER", worker.join(format!("{SCRATCH}/answer-{n}.md")).to_string_lossy().into_owned()));
-        vars.push(("KANNA_CLI", tasks::cli_path()));
+        vars.push(("KANNA_ANSWER".into(), worker.join(format!("{SCRATCH}/answer-{n}.md")).to_string_lossy().into_owned()));
+        vars.push(("KANNA_CLI".into(), tasks::cli_path()));
         let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
         let session = visit.row.doc["paused"]["session"].as_str().map(String::from);
-        let command = tasks::pipeline_agent(&files, &agent.agent);
+        let name = visit.row.agent.clone().unwrap_or_else(|| tasks::stage_agent_name(&files, &agent.agent));
+        let command = tasks::pipeline_agent(&files, &name);
         let stage_prompt = visit.row.doc["prompt"].as_str().filter(|_| session.is_none()).map(|p| format!("{} ", quote(p))).unwrap_or_default();
         let first = format!("\"$(cat {stage_prompt}{})\"", quote(&reply));
         let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), session.is_some(), &first));
@@ -2364,7 +2369,7 @@ impl Runs {
         self.publish(&id);
     }
 
-    fn vars(&self, row: &RunRow, doc: &Doc, visit: &StageRow, stage: &str) -> Vec<(&'static str, String)> {
+    fn vars(&self, row: &RunRow, doc: &Doc, visit: &StageRow, stage: &str) -> Vec<(String, String)> {
         let task = self.tasks.upgrade().and_then(|t| t.entry(&row.task));
         let mut vars = vec![
             ("KANNA_TASK", row.task.clone()),
@@ -2379,6 +2384,8 @@ impl Runs {
         if let Some(instance) = &visit.instance {
             vars.push(("KANNA_INSTANCE", instance.clone()));
         }
+        let mut vars: Vec<(String, String)> = vars.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        vars.extend(doc.env.iter().map(|(k, v)| (k.clone(), v.clone())));
         vars
     }
 
@@ -2698,29 +2705,30 @@ impl Runs {
                 let answer = format!("{SCRATCH}/answer-{n}.md");
                 let part = item.as_ref().filter(|_| !step.attempts).map(|i| i.text.as_str());
                 let text = prompt(&running, &file, &doc.request, part, doc.feedback.as_ref(), &doc.answers, &answer);
-                vars.push(("KANNA_ANSWER", worker.join(&answer).to_string_lossy().into_owned()));
-                vars.push(("KANNA_CLI", tasks::cli_path()));
+                vars.push(("KANNA_ANSWER".into(), worker.join(&answer).to_string_lossy().into_owned()));
+                vars.push(("KANNA_CLI".into(), tasks::cli_path()));
                 let path = scratch.join(format!("stage-{n}.md"));
                 if let Err(error) = fs::write(&path, &text) {
                     return self.stop(id, "stopped", &format!("can't write {}: {error}", path.display()), Some("daemon"), true);
                 }
-                let session = tasks::names_its_session(&agent.agent).then(uuid).flatten();
+                let name = tasks::stage_agent_name(&files, &agent.agent);
+                let session = tasks::names_its_session(&name).then(uuid).flatten();
                 let first = format!("\"$(cat {})\"", quote(&format!("{SCRATCH}/stage-{n}.md")));
                 let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
-                let command = tasks::pipeline_agent(&files, &agent.agent);
+                let command = tasks::pipeline_agent(&files, &name);
                 let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), false, &first));
                 stage_row.kind = "agent".into();
-                stage_row.agent = Some(agent.agent.clone());
+                stage_row.agent = Some(name.clone());
                 stage_row.session = session;
                 row_doc["prompt"] = json!(path.to_string_lossy());
-                (line, Work::Agent { agent: agent.agent.clone() }, 1)
+                (line, Work::Agent { agent: name }, 1)
             }
             Kind::Run { command } => {
                 let (log, exit, feedback) = (scratch.join(format!("stage-{n}.log")), scratch.join(format!("stage-{n}.exit")), scratch.join(format!("feedback-{n}.txt")));
                 let _ = fs::remove_file(&exit);
                 let previous = doc.feedback.as_ref().map(|f| fs::read_to_string(&f.full).unwrap_or_else(|_| f.text.clone())).unwrap_or_default();
                 let _ = fs::write(&feedback, previous);
-                vars.push(("KANNA_FEEDBACK", feedback.to_string_lossy().into_owned()));
+                vars.push(("KANNA_FEEDBACK".into(), feedback.to_string_lossy().into_owned()));
                 let timeout = command_timeout(running.within);
                 stage_row.kind = if matches!(role, Role::Score(..)) { "score".into() } else { "run".into() };
                 if running.name != step.stage {
@@ -2775,13 +2783,14 @@ impl Runs {
                 let worker = PathBuf::from(stage_row.worktree.clone().unwrap_or_default());
                 let file = running.prompt().and_then(|p| string(&prompts, p).map(String::from)).or_else(|| running.prompt().and_then(|p| fs::read_to_string(worker.join(format!(".kanna/prompts/{p}.md"))).ok())).unwrap_or_default();
                 let feedback = doc.feedback.as_ref().map(|f| Feedback { full: String::new(), ..f.clone() });
+                let name = tasks::stage_agent_name(&tasks::config_files(Path::new(&row.repo)), &agent.agent);
                 spec["kind"] = json!("agent");
-                spec["agent"] = json!(agent.agent);
+                spec["agent"] = json!(name);
                 spec["effort"] = opt(agent.effort.as_deref());
                 spec["model"] = opt(agent.model.as_deref());
                 spec["prompt"] = json!(prompt(running, &file, &doc.request, part.as_deref(), feedback.as_ref(), &doc.answers, &format!("{SCRATCH}/answer-{n}.md")));
                 stage_row.kind = "agent".into();
-                stage_row.agent = Some(agent.agent.clone());
+                stage_row.agent = Some(name);
                 1
             }
             Kind::Run { command } => {

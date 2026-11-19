@@ -171,7 +171,7 @@ function tabs(on) {
 function recentRows() {
   const pick = picked();
   return s.recent.map(e => {
-    const said = e.state === "failed" ? `<span class="bad">failed</span> · ${esc(e.why)} · ${ago(e.at)} ago · back on the Shelf` : `landed as ${e.commit} · ${ago(e.at)} ago · tested in ${clock(e.took)}${e.note ? " · passed by the judge" : ""}`;
+    const said = e.state === "failed" ? `<span class="bad">failed</span> · ${esc(e.why)} · ${ago(e.at)} ago · back on the Shelf` : `landed as ${e.commit} · ${ago(e.at)} ago · tested in ${clock(e.took)}`;
     return `<div class="row past${pick.id === e.id ? " sel" : ""}" data-sel="${e.id}"><span class="dot ${e.state}"></span><div class="t"><div class="n">${esc(e.name)}</div><div class="s">${said}</div></div></div>`;
   }).join("");
 }
@@ -194,7 +194,7 @@ Take out sends the task back to the Shelf. The entries behind it wait until one 
   }
   if (at === 0 && s.scene === "judging") {
     const ran = clock(Date.now() - e.started);
-    return `<div class="head"><span><b>Judge</b> · ${esc(e.name)} · ${esc(e.branch)}</span><span>running · ${ran}</span></div><div class="term"><span class="p">&gt;</span> You judge a merge for main's merge queue: "${esc(e.name)}" (the branch ${esc(e.branch)})
+    return `<div class="head"><span><b>Judging a failure</b> · ${esc(e.name)} · ${esc(e.branch)}</span><span>running · ${ran}</span></div><div class="term"><span class="p">&gt;</span> You judge a merge for main's merge queue: "${esc(e.name)}" (the branch ${esc(e.branch)})
   merged onto main at 68da99de, as commit 3be1f07a. The queue ran the repo's tests on it
   (\`scripts/merge-test.sh\`) and they failed…
 
@@ -215,7 +215,7 @@ Take out sends the task back to the Shelf. The entries behind it wait until one 
   }
   if (at === 0) {
     const ran = clock(Date.now() - e.started);
-    return `<div class="head"><span><b>Tests</b> · ${esc(e.name)} · ${esc(e.branch)}</span><span>running · ${ran}</span></div><div class="term">Running: scripts/merge-test.sh
+    return `<div class="head"><span><b>Testing</b> · ${esc(e.name)} · ${esc(e.branch)}</span><span>running · ${ran}</span></div><div class="term">Running: scripts/merge-test.sh
 
 <span class="ok">   Compiling</span> kanna-daemon v0.9.0
 <span class="ok">   Compiling</span> kanna v0.9.0
@@ -231,7 +231,7 @@ test queue::tests::tests_that_pass_land_it_with_no_judge_and_no_note ... <span c
 <span class="g">▌</span></div>`;
   }
   if (at > 0) return `<div class="head"><span><b>${esc(e.name)}</b> · ${esc(e.branch)}</span><span>${ordinal(at + 1)} in line</span></div><div class="wait"><div>Waiting. Its tests start once “${esc(s.queue[at - 1].name)}” lands or fails,<br>and their terminal shows here.</div></div>`;
-  if (e.state === "failed") return `<div class="head"><span><b>Judge's answer and test.log</b> · ${esc(e.name)} · main 5d02c1e + ${esc(e.branch)} (merge 9a41e7c)</span><span>failed ${ago(e.at)} ago</span></div><div class="log"><span class="bad">${esc(e.why)}</span>
+  if (e.state === "failed") return `<div class="head"><span><b>Answers and test.log</b> · ${esc(e.name)} · main 5d02c1e + ${esc(e.branch)} (merge 9a41e7c)</span><span>failed ${ago(e.at)} ago</span></div><div class="log"><span class="bad">${esc(e.why)}</span>
 - tasks::tests::shelf_row_names_its_machine: <span class="bad">the branch's.</span> It passes on main 5d02c1e and fails here, alone too
   (left: "mbp" right: "mini", tasks.rs:7120, a line the branch changed).
 - app_link::tests::a_stalled_app_acks: not the branch's. It passes when run again alone: it fails only under load.
@@ -248,7 +248,7 @@ test tasks::tests::a_blocked_task_waits_for_tasks ... <span class="bad">FAILED</
 test tasks::tests::shelf_row_names_its_machine ... <span class="bad">FAILED</span>
 <span class="g">…</span>
 <span class="bad">test result: FAILED. 1209 passed; 5 failed; 0 ignored</span></div>`;
-  if (e.state === "landed") return `<div class="head"><span><b>${e.note ? "Judge's answer and test.log" : "test.log"}</b> · ${esc(e.name)} · ${esc(e.branch)}</span><span>landed as ${e.commit} · ${ago(e.at)} ago</span></div><div class="log">${e.note ? `<span class="ok">${esc(e.note)}</span>
+  if (e.state === "landed") return `<div class="head"><span><b>${e.note ? "Answers and test.log" : "test.log"}</b> · ${esc(e.name)} · ${esc(e.branch)}</span><span>landed as ${e.commit} · ${ago(e.at)} ago</span></div><div class="log">${e.note ? `<span class="ok">${esc(e.note)}</span>
 
 ` : ""}<span class="g">──────── test.log ────────</span>
 <span class="g">Running: scripts/merge-test.sh</span>
@@ -351,8 +351,8 @@ function logView() {
     `<span class="p">&gt;</span> <span class="g">[message from queue-7f3a]</span> "Shelf rows say which machine" didn't merge: <span class="bad">shelf_row_names_its_machine</span>`,
     `  <span class="bad">fails: the branch reads the machine before the replica writes it</span>. It was tested on main`,
     `  5d02c1e + shelf-machine (merge commit 9a41e7c). main is unchanged and your branch is as you`,
-    `  left it. The tests' log: .kanna/tmp/queue-7f3a/test.log. The queue's judge says it's the`,
-    `  branch's doing:`, ``,
+    `  left it. The log of testing: .kanna/tmp/queue-7f3a/test.log. It stopped at judging a`,
+    `  failure:`, ``,
     `  <span class="bad">shelf_row_names_its_machine fails: the branch reads the machine before the replica writes it</span>`,
     `  - tasks::tests::shelf_row_names_its_machine: <span class="bad">the branch's.</span> It passes on main 5d02c1e and`,
     `    fails here, alone too (left: "mbp" right: "mini", tasks.rs:7120, a line the branch changed).`,

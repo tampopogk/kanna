@@ -41,7 +41,7 @@ fn comments_end_at_hash_but_not_inside_a_question() {
 #[test]
 fn syntax_errors_name_their_line() {
     only("b = claude\n\nb -> done\nwhat is this\n", Rule::Syntax, "t.kojo:4: expected a stage (`name = …`), a flow (`a -> b`) or the budget (`budget = N sessions, 8h`)");
-    only("b = gemini\nb -> done", Rule::Syntax, "t.kojo:1: unknown agent 'gemini'; use claude, codex, opencode, agy, or run, ask or merge");
+    only("b = gemini\nb -> done", Rule::Syntax, "t.kojo:1: unknown agent 'gemini'; use claude, codex, opencode, agy, agent for the repo's tasks.agent, or run, ask or merge");
     only("b = claude:max\nb -> done", Rule::Syntax, "t.kojo:1: claude takes the efforts low, medium, high, not 'max'");
     only("b = claude\nb -[fail, sometimes]-> done", Rule::Syntax, "t.kojo:2: unknown or repeated arrow option 'sometimes'; use pass or fail, max N, reset and progress, each once");
     only("b = claude\nb -[max 0]-> done", Rule::Syntax, "t.kojo:2: `max 0`: max takes a whole number above 0");
@@ -168,4 +168,24 @@ fn several_errors_come_in_line_order() {
 #[test]
 fn parse_alone_skips_the_checks() {
     assert!(parse("b = claude\nb -> c").is_ok());
+}
+
+#[test]
+fn a_stage_can_end_with_a_label() {
+    let pipeline = load("m = run git merge x label \"merging\"\nr = claude prompt a verdict within 30m label \"resolving conflicts\"\ns = ask \"Land it?\" label \"asking you\"\nt = run make test\nm -[pass]-> s\nm -[fail]-> r\nr -> s\ns -[pass]-> t\nt -> done", &context()).unwrap();
+    let labels: Vec<Option<&str>> = pipeline.stages.iter().map(|s| s.label.as_deref()).collect();
+    assert_eq!(labels, vec![Some("merging"), Some("resolving conflicts"), Some("asking you"), None]);
+    assert_eq!(pipeline.stages[0].kind, kanna_pipe::Kind::Run { command: "git merge x".into() });
+    assert_eq!(pipeline.stages[1].within, Some(std::time::Duration::from_secs(1800)));
+    assert_eq!(pipeline.stages[2].kind, kanna_pipe::Kind::Ask { question: "Land it?".into() });
+    assert!(parse("b = claude label \"\"\nb -> done").is_err(), "an empty label");
+    assert!(parse("b = claude label \"x\" verdict\nb -> done").is_err(), "a label that isn't last");
+}
+
+#[test]
+fn agent_names_the_repo_s_agent() {
+    let pipeline = load("b = agent:high prompt a verdict\nb -> done", &context()).unwrap();
+    let agent = pipeline.stages[0].agent().unwrap();
+    assert_eq!((agent.agent.as_str(), agent.effort.as_deref(), agent.verdict), (kanna_pipe::REPO_AGENT, Some("high"), true));
+    assert!(parse("b = agent:xhigh\nb -> done").is_err(), "only codex takes xhigh, and agent may not be codex");
 }

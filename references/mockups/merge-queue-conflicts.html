@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Merge Queue Conflicts Mockup</title>
+<style>
+:root {
+  --bg: #14161a; --panel: #1b1e24; --panel2: #22262d; --line: #2c313a; --text: #e6e8eb; --muted: #8b93a0;
+  --accent: #7aa2ff; --ok: #5fcf93; --warn: #f0b35a; --bad: #ef6b6b; --machine: #b48cff; --term: #16181c;
+  --page: #0d0e10; --shadow: 0 20px 50px rgba(0,0,0,.5);
+  --mono: "SF Mono", ui-monospace, Menlo, monospace; --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --panel: #f4f5f7; --panel2: #eaecf0; --line: #d8dce2; --text: #1d2026; --muted: #6b7280;
+  --accent: #2f63d8; --ok: #1f9d5c; --warn: #b7791f; --bad: #cf3f3f; --machine: #7c4dcc; --term: #fbfbfc;
+  --page: #dfe2e7; --shadow: 0 20px 50px rgba(0,0,0,.18);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.45 var(--sans); }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+body.picture main { padding: 0; max-width: none; }
+body.picture .intro { display: none; }
+.intro h1 { font-size: 15px; margin: 0 0 4px; }
+.intro p { color: var(--muted); margin: 0 0 12px; max-width: 920px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button { font: 12px var(--sans); color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { border-color: var(--accent); color: var(--accent); }
+
+.window { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid #000; box-shadow: var(--shadow); background: var(--bg); height: 860px; display: flex; flex-direction: column; }
+body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 100vh; }
+.bar { height: 36px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 12px; background: var(--bg); }
+.lights { display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); display: block; }
+.where { color: var(--muted); font-size: 12px; }
+.where b { color: var(--text); font-weight: 600; }
+
+.content { flex: 1; display: flex; min-height: 0; }
+.agent { flex: 0 0 38%; min-width: 0; display: flex; flex-direction: column; }
+.agent .head { flex: none; height: 34px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.term { flex: 1; min-height: 0; background: var(--term); font: 12px/1.6 var(--mono); padding: 10px 12px; white-space: pre-wrap; overflow: hidden; color: var(--text); }
+.term .c { color: var(--accent); } .term .p { color: var(--warn); } .term .g { color: var(--muted); } .term .m { color: var(--machine); }
+.term .ok { color: var(--ok); } .term .bad { color: var(--bad); } .term .warn { color: var(--warn); }
+
+.docs { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
+.dtabs { height: 34px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.dtab { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; color: var(--muted); white-space: nowrap; font-weight: 500; border-radius: 6px; cursor: pointer; }
+.dtab.on { color: var(--text); background: var(--panel); }
+.dtab .count { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 0 5px; line-height: 14px; }
+.qpage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.qlist { flex: 0 1 auto; max-height: 56%; overflow: auto; padding: 22px 32px 6px; }
+.qlist .group { max-width: none; margin-bottom: 16px; }
+.row.sel, .row.sel:hover { background: var(--panel2); }
+.row.past { padding: 5px 10px; }
+.row.past .t { display: flex; gap: 10px; align-items: baseline; white-space: nowrap; overflow: hidden; }
+.row.past .t .n { font-weight: 500; flex: none; }
+.row.past .t .s { overflow: hidden; text-overflow: ellipsis; }
+.dot.landed { background: var(--ok); }
+.detail { flex: 1; min-height: 140px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.detail .head { flex: none; height: 30px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.detail .head b { color: var(--text); font-weight: 600; }
+.detail .wait { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted); padding: 20px 60px; }
+.empty { flex: 1; overflow: auto; padding: 40px 48px; }
+.empty .sub { color: var(--muted); margin: 0 0 22px; }
+.group { margin-bottom: 22px; max-width: 760px; }
+.group .gh { padding: 0 0 6px; color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.group .gh b { color: var(--text); }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 0 -10px; border-radius: 8px; cursor: default; }
+.row:hover { background: var(--panel); }
+.row .t { flex: 1; min-width: 0; }
+.row .t .n { font-weight: 600; }
+.row .t .s { color: var(--muted); font-size: 12px; }
+.row .go { color: var(--muted); white-space: nowrap; font-size: 12px; }
+.row .go a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.row.waiting .t .n { font-weight: 500; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.working { background: var(--accent); }
+.dot.idle { background: var(--ok); }
+.dot.needs { background: var(--warn); }
+.dot.stopped { background: transparent; border: 1.5px solid var(--muted); width: 9px; height: 9px; }
+.dot.queued { background: transparent; border: 1.5px solid var(--accent); width: 9px; height: 9px; }
+.dot.failed { background: var(--bad); }
+.s .bad { color: var(--bad); } .s .warn { color: var(--warn); } .s .ok { color: var(--ok); }
+.n .pos { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; margin-right: 6px; }
+.progress { height: 3px; border-radius: 2px; background: var(--panel2); margin-top: 5px; overflow: hidden; max-width: 320px; }
+.progress i { display: block; height: 100%; background: var(--accent); }
+.log { flex: 1; overflow: auto; background: var(--term); font: 12px/1.6 var(--mono); padding: 12px 16px; white-space: pre-wrap; }
+.log .bad { color: var(--bad); } .log .g { color: var(--muted); } .log .ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Merge queue: a branch that conflicts with main is taken, and the queue's pipeline resolves it</h1>
+    <p><code>kanna task merge</code> queues a branch without checking it against main. When its turn comes, the pipeline's first stage merges it onto main in the queue's worktree. A clean merge goes straight to the tests. A conflict leaves the worktree mid-merge and goes to the resolver, an agent that resolves only the conflicted files, keeping both sides' intent, and commits the merge; the tests and the judge then run on its resolution. A resolver that isn't sure fails, and the task goes back to the Shelf with what it found. While a stage runs, the entry shows the label the pipeline gives it: <b>resolving conflicts</b>, beside merging, testing and judging a failure.</p>
+    <div class="controls">
+      <button id="theme">Light / dark</button>
+      <button data-scene="resolving" class="on">Resolving, on the tab</button>
+      <button data-scene="landed">Landed with a resolution</button>
+      <button data-scene="merge">kanna task merge</button>
+      <button data-scene="list">kanna task list</button>
+      <button data-scene="failed">A resolver that fails</button>
+    </div>
+  </div>
+  <div id="stage"></div>
+</main>
+<script>
+const s = { scene: "resolving", main: "68da99de" };
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const D = { id: "task-4f1d", name: "Code find is case-sensitive when the search has a capital", branch: "find-smart-case" };
+const E = { id: "task-77b0", name: "Agents always quit by /exit", branch: "agent-quit-by-exit" };
+
+function tabs(n) {
+  return `<div class="dtabs">${["Desk", "Machines", "Builds", "Stats", "Schedules", "Merge queue"].map(t => `<div class="dtab${t === "Merge queue" ? " on" : ""}">${t}${t === "Merge queue" && n ? `<span class="count">${n}</span>` : ""}</div>`).join("")}</div>`;
+}
+function planner(lines) {
+  return `<div class="agent"><div class="head">Planning · ~/work/kanna-v4 · main ${s.main}</div><div class="term">${lines.join("\n")}</div></div>`;
+}
+function page(rows, recent, detail, n) {
+  return `<div class="docs">${tabs(n)}<div class="qpage"><div class="qlist">
+    <div class="group"><div class="gh"><span><b>Merging</b> into main ${s.main}</span><span>${n ? n + " in line" : ""}</span></div>${rows || `<div class="s" style="color:var(--muted)">Nothing waiting to merge.</div>`}</div>
+    ${recent ? `<div class="group"><div class="gh"><span><b>Recent</b></span><span>landed or failed</span></div>${recent}</div>` : ""}
+  </div><div class="detail">${detail}</div></div></div>`;
+}
+
+function resolving() {
+  const rows = `<div class="row sel"><span class="dot working" title="resolving"></span><div class="t"><div class="n">${esc(D.name)}</div><div class="s">resolving conflicts on main ${s.main} + ${D.branch} · 0m48s</div><div class="progress"><i style="width:22%"></i></div></div><span class="go"><a>Take out</a></span></div>
+    <div class="row waiting"><span class="dot queued"></span><div class="t"><div class="n">${esc(E.name)}</div><div class="s">waiting · tested on top of ${esc(D.name)} · ${E.branch}</div></div><span class="go"><a>Take out</a></span></div>`;
+  const detail = `<div class="head"><span><b>Resolving conflicts</b> · ${esc(D.name)} · ${D.branch}</span><span>running · 0m48s</span></div><div class="term"><span class="p">&gt;</span> You resolve a merge for main's merge queue: "${esc(D.name)}" (the branch ${D.branch},
+  at 3be1f07a) is being merged onto main at ${s.main}, in this worktree, the queue's own…
+
+<span class="m">●</span> Bash(git diff --name-only --diff-filter=U)
+  <span class="g">⎿</span>  crates/kanna-daemon/src/files.rs
+
+<span class="m">●</span> Bash(git log --format='%h %s%n%n%b' 3be1f07a..${s.main} -- crates/kanna-daemon/src/files.rs)
+  <span class="g">⎿</span>  a91c02e find skips binary files
+<span class="g">       The find bar stops at a NUL byte in the first 8 KB.</span>
+
+<span class="m">●</span> Bash(git log --format='%h %s%n%n%b' ${s.main}..3be1f07a -- crates/kanna-daemon/src/files.rs)
+  <span class="g">⎿</span>  3be1f07a find is case-insensitive unless the search has a capital
+
+<span class="m">●</span> Main added a binary check to the loop the branch made smart-case. Both hold:
+  keeping the skip, and matching with the branch's case rule inside it.
+
+<span class="m">●</span> Update(crates/kanna-daemon/src/files.rs)
+<span class="m">●</span> Bash(git add crates/kanna-daemon/src/files.rs &amp;&amp; git commit --no-edit --cleanup=strip)
+<span class="g">✳ Reporting… (esc to interrupt)</span></div>`;
+  return `<div class="content">${planner([`<span class="p">&gt;</span> You are the Kanna planning agent.`, ``, `<span class="m">●</span> <span class="g">[message from desk]</span> task-4f1d "${esc(D.name)}" went into the merge queue`])}${page(rows, "", detail, 2)}</div>`;
+}
+
+function landed() {
+  const recent = `<div class="row past sel"><span class="dot landed"></span><div class="t"><div class="n">${esc(D.name)}</div><div class="s">landed as 7c40e2b1 · 2m ago · tested in 4m31s · conflicts resolved by the queue</div></div></div>
+    <div class="row past"><span class="dot landed"></span><div class="t"><div class="n">Toasts stack from the bottom</div><div class="s">landed as 68da99de · 31m ago · tested in 2m54s</div></div></div>`;
+  const detail = `<div class="head"><span><b>Answers and test.log</b> · ${esc(D.name)} · ${D.branch}</span><span>landed as 7c40e2b1 · 2m ago</span></div><div class="log"><span class="ok">resolved crates/kanna-daemon/src/files.rs: kept main's binary skip and the branch's smart-case match</span>
+- files.rs: main (a91c02e) stops find at a NUL byte; the branch (3be1f07a) chooses case-sensitivity from the
+  search. The skip stays first in the loop, and the match inside it uses the branch's rule.
+
+<span class="g">──────── test.log ────────</span>
+<span class="g">Running: scripts/merge-test.sh</span>
+   Compiling kanna-daemon v0.9.0
+    Finished test profile in 14.1s
+running 1214 tests
+<span class="g">…</span>
+test result: <span class="ok">ok. 1214 passed; 0 failed</span></div>`;
+  return `<div class="content">${planner([`<span class="p">&gt;</span> You are the Kanna planning agent.`, ``, `<span class="m">●</span> <span class="g">[message from desk]</span> task-4f1d "${esc(D.name)}" merged into main, its conflicts with main resolved by the queue in 7c40e2b1, and left the merge queue`, ``, `<span class="m">●</span> <span class="g">[message from kanna → task-9e02]</span> task-4f1d's work is in main now. It conflicted with main,`, `  and the merge queue resolved that in its merge commit 7c40e2b1: merge main into your branch,`, `  not task-4f1d's branch, to build on the resolution.`])}${page("", recent, detail, 0)}</div>`;
+}
+
+function mergeView() {
+  const lines = [
+    `<span class="p">&gt;</span> merge`, ``,
+    `<span class="m">●</span> Bash(kanna task merge -m "find is case-insensitive unless the search has a capital")`,
+    `  <span class="g">⎿</span> task-4f1d "${esc(D.name)}" is next in the merge queue:`,
+    `    it lands on main once the tests pass. Its agent quits now and its tabs close; if the tests`,
+    `    fail it comes back to the Shelf and its agent gets the log.`, ``,
+    `<span class="g">──────── still refused ────────</span>`, ``,
+    `<span class="c">$</span> kanna task merge`,
+    `<span class="bad">error:</span> task-8b31 has uncommitted changes to 2 files (src/a.rs, src/b.rs): commit them first`,
+  ];
+  return `<div class="content"><div class="agent" style="flex:1"><div class="head">.kanna-worktrees/task-4f1d · ${D.branch}</div><div class="term">${lines.join("\n")}</div></div></div>`;
+}
+
+function listView() {
+  const w = 52;
+  const line = (id, name, state, tail, tone) => `${id}  ${esc(name.slice(0, w).padEnd(w))}  <span class="${tone || ""}">${state.padEnd(12)}</span>  ${esc(tail)}`;
+  const lines = [
+    `<span class="c">~/work/kanna-v4</span> <span class="p">❯</span> kanna task list`,
+    `Desk`, line("task-a3c1", "Pane titles follow cwd", "working", ""), ``,
+    `Merging`, line(D.id, D.name, "resolving conflicts", "1st · 0m48s", "c"), line(E.id, E.name, "queued", `2nd · after "Code find is case-sensi…"`, "g"), ``,
+    `Shelf`, line("task-2d6e", "Shelf rows say which machine", "merge-failed", "tasks.rs: main removed shelf_row, which the branch extends", "bad"),
+  ];
+  return `<div class="content"><div class="docs" style="border:0"><div class="dtabs"><div class="dtab on">Terminal</div></div><div class="term">${lines.join("\n")}</div></div></div>`;
+}
+
+function failed() {
+  const lines = [
+    `<span class="p">&gt;</span> <span class="g">[message from queue-7f3a]</span> "Shelf rows say which machine" didn't merge: <span class="bad">tasks.rs: main</span>`,
+    `  <span class="bad">removed shelf_row, which the branch extends</span>. It was tested on main 5d02c1e + shelf-machine.`,
+    `  main is unchanged and your branch is as you left it. It conflicts with main in tasks.rs. It`,
+    `  stopped at resolving conflicts:`, ``,
+    `  <span class="bad">tasks.rs: main removed shelf_row, which the branch extends</span>`,
+    `  - crates/kanna-daemon/src/tasks.rs: main (e01d7a2 "Shelf rows come from the replica") deletes`,
+    `    shelf_row and builds rows in replica.rs; the branch adds the machine's name to shelf_row.`,
+    `    Keeping both needs the name moved into replica.rs, outside the conflicted file.`, ``,
+    `  Merge main into your branch, resolve the conflicts as both sides mean them, rerun your tests`,
+    `  and commit, then kanna task merge again.`, ``,
+    `<span class="m">●</span> Main moved row building into the replica. Merging main and putting the machine's`,
+    `  name there…`,
+  ];
+  return `<div class="content"><div class="agent" style="flex:1"><div class="head">.kanna-worktrees/task-2d6e · shelf-machine</div><div class="term">${lines.join("\n")}</div></div></div>`;
+}
+
+function render() {
+  document.querySelectorAll("[data-scene]").forEach(b => b.classList.toggle("on", b.dataset.scene === s.scene));
+  const body = { resolving, landed, merge: mergeView, list: listView, failed }[s.scene]();
+  const where = { merge: D.name, failed: "Shelf rows say which machine", list: "Terminal" }[s.scene] || "Desk";
+  document.getElementById("stage").innerHTML = `<div class="window"><div class="bar"><span class="lights"><i></i><i></i><i></i></span><span class="where"><b>${esc(where)}</b></span></div><div style="flex:1;display:flex;flex-direction:column;min-height:0">${body}</div></div>`;
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-scene]");
+  if (b) { s.scene = b.dataset.scene; render(); }
+});
+document.getElementById("theme").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "light" ? "" : "light"; };
+const hash = location.hash;
+if (hash.includes("picture")) document.body.classList.add("picture");
+if (hash.includes("light")) document.documentElement.dataset.theme = "light";
+for (const scene of ["resolving", "landed", "merge", "list", "failed"]) if (hash.includes(scene)) s.scene = scene;
+render();
+</script>
+</body>
+</html>

@@ -215,7 +215,7 @@ impl Task {
     }
 }
 
-pub fn stage_command(vars: &[(&str, String)], command: &str, timeout: u64, log: &Path, exit: &Path) -> String {
+pub fn stage_command<K: std::fmt::Display>(vars: &[(K, String)], command: &str, timeout: u64, log: &Path, exit: &Path) -> String {
     let vars: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
     let exit = exit.to_string_lossy();
     format!(

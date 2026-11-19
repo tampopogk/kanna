@@ -29,6 +29,7 @@ impl Tasks {
             "position": ahead + 1,
             "state": q.state,
             "stage": q.doc.get("stage").cloned().unwrap_or(Value::Null),
+            "label": q.doc.get("label").cloned().unwrap_or(Value::Null),
             "run": opt(q.run.as_deref()),
             "head": q.head,
             "merge": q.doc.get("merge").cloned().unwrap_or(Value::Null),
@@ -145,7 +146,7 @@ impl Tasks {
         if let Err(error) = self.post(id, Some(&entry.repo), queue, text) {
             log!("kanna-daemon: couldn't tell {id} its merge failed: {}", error.message);
         }
-        self.tell_planner(&entry, What::MergeFailed, Some("queue"));
+        self.tell_planner_saying(&entry, What::MergeFailed, Some("queue"), failure.get("why").and_then(Value::as_str).map(String::from));
         self.changed();
         self.refill();
     }

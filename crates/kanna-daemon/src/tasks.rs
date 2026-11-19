@@ -278,6 +278,14 @@ pub fn task_agent(files: &[PathBuf]) -> String {
         .unwrap_or_else(|| DEFAULT_AGENT.into())
 }
 
+pub fn stage_agent_name(files: &[PathBuf], agent: &str) -> String {
+    if agent != kanna_pipe::REPO_AGENT {
+        return agent.into();
+    }
+    let named = task_agent(files);
+    if kanna_pipe::AGENTS.contains(&named.as_str()) { named } else { DEFAULT_AGENT.into() }
+}
+
 pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     let Some((mine, repos)) = files.split_last() else { return agent.into() };
     for file in repos {
@@ -4187,7 +4195,8 @@ impl Tasks {
         if let Err(error) = self.store(&entry, Place::Done, None, Some(Change::new("done").moved(Place::Shelf, Place::Done).by(by.as_deref()).with("branch", opt(entry.folder.as_deref().and_then(branch_of).as_deref())))) {
             return responder.reply(Err(error));
         }
-        self.tell_planner(&entry, if entry.queued.is_some() { What::Landed } else { What::Ended { on_desk: false } }, by.as_deref());
+        let resolved = entry.queued.as_ref().and_then(|_| self.resolved_landing(&entry.id)).map(|merge| format!("its conflicts with main resolved by the queue{}", if merge.is_empty() { String::new() } else { format!(" in {}", &merge[..merge.len().min(8)]) }));
+        self.tell_planner_saying(&entry, if entry.queued.is_some() { What::Landed } else { What::Ended { on_desk: false } }, by.as_deref(), resolved);
         let short = self.short(&entry.id);
         self.take(&entry.id);
         if let Some(pane) = &entry.held {
@@ -4868,9 +4877,19 @@ impl Tasks {
     }
 
     fn tell_planner(&self, entry: &Entry, what: What, by: Option<&str>) {
+        self.tell_planner_saying(entry, what, by, None);
+    }
+
+    pub(crate) fn tell_planner_saying(&self, entry: &Entry, what: What, by: Option<&str>, detail: Option<String>) {
         if let Some(item) = self.news_for(entry, what, by) {
-            self.news.borrow_mut().add(item);
+            self.news.borrow_mut().add(item.saying(detail));
         }
+    }
+
+    pub(crate) fn resolved_landing(&self, task: &str) -> Option<String> {
+        let rows = self.db.queued(false).ok()?;
+        let row = rows.iter().rev().find(|q| q.task == task && q.state == "landed")?;
+        (row.doc.get("resolved") == Some(&Value::Bool(true))).then(|| row.doc.get("merge").and_then(Value::as_str).unwrap_or("").to_string())
     }
 
     fn tell_made(&self, entry: &Entry) {
@@ -5725,7 +5744,8 @@ impl Tasks {
                         true => format!(" Nothing you build on is outside {main} now: you can merge into {main} once you're done."),
                         false => format!(" You still merge after {}.", left.bases.iter().map(|b| self.label(&b.id)).collect::<Vec<_>>().join(", ")),
                     };
-                    self.emit(&id, TaskEvent::BaseMerged, format!("{}'s work is in {main} now.{rest}", self.label(&base)), None);
+                    let resolved = self.resolved_landing(&base).map(|merge| format!(" It conflicted with {main}, and the merge queue resolved that in its merge commit{}: merge {main} into your branch, not {}'s branch, to build on the resolution.", if merge.is_empty() { String::new() } else { format!(" {}", &merge[..merge.len().min(8)]) }, self.label(&base))).unwrap_or_default();
+                    self.emit(&id, TaskEvent::BaseMerged, format!("{}'s work is in {main} now.{resolved}{rest}", self.label(&base)), None);
                 }
                 Step::Stale { id, behind, new } => {
                     log!("kanna-daemon: {id} is stale: behind {behind:?}");

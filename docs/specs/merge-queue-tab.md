@@ -20,10 +20,10 @@
 - **Fixed tab:** Merge queue comes after Schedules, with no close button, in Next and Previous Tab's order. Only the Desk view has it.
 - **Count:** the tab's title counts the entries in line, whichever tab shows.
 - **Repo:** the queue shown is the repo's that the window's Desk is on.
-- **Merging:** the entries in queue order. The running one says `testing`, or `judging a failure` once its judge has started, the merge it's on and how long it has run. A waiting one says which entry it'll be tested on top of. A `landing` one that waits says why.
+- **Merging:** the entries in queue order. The running one says the running stage's label from its pipeline (`testing`, `judging a failure`; its name without one), the merge it's on and how long it has run. A waiting one says which entry it'll be tested on top of. A `landing` one that waits says why.
 - **Needs you:** an entry whose run is paused says `needs you` and why, and has Resume beside Take out ([merge queue §4.1](merge-queue.md#41-an-entry-that-needs-you)). Resume runs `kanna run resume` on its run.
 - **Take out:** runs `kanna task merge --cancel` on that entry's task.
-- **Recent:** the last 8 entries that landed or failed, newest first. One the judge let through says `passed by the judge`.
+- **Recent:** the last 8 entries that landed or failed, newest first. One whose branch conflicted with main says `conflicts resolved by the queue`.
 - **Motion:** entries arriving, leaving or changing place move briefly: [task row animation](task-row-animation.md).
 
 ## 2. A picked entry
@@ -32,12 +32,11 @@ Clicking an entry picks it, and the lower part of the tab shows it. The first en
 
 | The picked entry is | The tab shows |
 |---|---|
-| testing | the tests' terminal, live: `merge.test` running. You can type in it, as in any terminal |
-| judging | the judge's terminal, live; while the judge waits on a command it asked Kanna for with its turn ended, that command's terminal |
+| running a stage | the stage's terminal, live, titled with its label: the tests' with `merge.test` running, say, where you can type as in any terminal. While an agent stage waits on a command it asked Kanna for with its turn ended, that command's terminal |
 | needs you | what the run said: what happened, the last lines of the judge's screen, and how to resume it or take it out |
 | waiting | which entry it waits for |
-| landing | that its tests are done, and what it waits for |
-| failed or landed | the judge's answer if it had a judge, then the tests' log |
+| landing | that its pipeline is done, and what it waits for |
+| failed or landed | the answers of its agent stages, if any answered, then the log of its last `run` stage |
 
 ![The Merge queue tab with an entry whose tests failed: the judge at work in its terminal, waiting on a command it asked Kanna to run](merge-queue-judging.png)
 

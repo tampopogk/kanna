@@ -52,19 +52,19 @@ e2e    -> done
 
 | Form | Runs | Verdict | Feedback it leaves |
 |---|---|---|---|
-| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `opencode`, `agy`; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, the one it reports: `kanna run done pass` or `kanna run done fail` | the answer it reports with `kanna run done` |
+| `NAME = AGENT[:EFFORT] [attrs]` | a fresh session of that agent (`claude`, `codex`, `opencode`, `agy`, or `agent` for the repo's `tasks.agent`, `claude` when that's a command; `:low`, `:medium`, `:high` as the agent takes it) in a worker: the run's worktree and a terminal nothing shows unless you watch it, with the stage's prompt as its first message | with `verdict`, the one it reports: `kanna run done pass` or `kanna run done fail` | the answer it reports with `kanna run done` |
 | `NAME = run COMMAND…` | the command in the run's worker with your login shell, as [task scripts](task-scripts.md) run, with the same variables plus `KANNA_RUN`, `KANNA_STAGE` and `KANNA_FEEDBACK` (a file holding the previous feedback) | exit 0 passes | its output's tail, lines matching the repo's failure pattern first |
 | `NAME = ask "QUESTION"` | nothing: the task's agent is told and asks you in its chat, the Run tab shows a card, and the task shows needs you until one of you answers (`ok = ask "Is the plan right?"` after `plan`) | yes passes, no fails | your note, after either answer |
 | `NAME = merge STAGE` | joins every instance of a fanned-out STAGE into the run's branch | a clean merge passes | the conflicts |
 
 - **Every agent session is fresh:** a new conversation with the stage's prompt, the request and the feedback. `resume STAGE` continues that stage's last session instead, for the rare case where the context is worth more than a clean start.
-- **There's no `merge main`:** the file is an error there (`` `merge main` isn't a stage``). Landing is yours: the run's end hands the change back to the task's worktree, the gate before main.
+- **There's no `merge main`:** the file is an error there (`` `merge main` isn't a stage``). Landing is yours: the run's end hands the change back to the task's worktree, the gate before main. The merge queue's pipeline is the one exception: it merges main with a plain `run git merge` stage, and the queue lands what it finishes on ([default merge-queue pipeline §2](merge-queue-pipeline.md#2-the-merge-stage)).
 - **A stage with a verdict** is one of `run`, `ask`, `merge` or an agent with `verdict`. Only those may have `pass` or `fail` arrows out of them.
 - **An agent's effort and model** are the agent's own flags (`claude --model`, `codex -c model_reasoning_effort`); `model NAME` names a model when the default isn't wanted.
 
 ## 3. Attributes
 
-Any order at the end of a stage line. `on` and `within` apply to every kind; the others to agent stages.
+Any order at the end of a stage line, but `label` last. `on`, `within` and `label` apply to every kind; the others to agent stages.
 
 | Attribute | Does |
 |---|---|
@@ -77,6 +77,7 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 | `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a worker of the run; its result comes back ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)). A machine declares roles in its own settings (`machine.roles`), beside `mac` or `linux` from its system; a placement none of your machines answers to refuses the run with `no such machine` ([remote stages](remote-stages.md)) |
 | `within DURATION` | without it a stage of any kind has no time limit. With it, the stage is abandoned after that long: an agent is stopped and its worktree reset to the stage's start, a command killed; the stage's verdict is fail with `timed out` as feedback |
 | `resume STAGE` | continue STAGE's last session rather than starting fresh |
+| `label "TEXT"` | what a surface shows while the stage runs, in place of its name: `label "resolving conflicts"`. The [merge queue](merge-queue.md#32-the-pipeline-interface) shows it for an entry's running stage and in its messages; it goes last, after a `run` stage's command too |
 
 ## 4. Arrows
 
