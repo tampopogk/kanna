@@ -13,7 +13,7 @@ pub const COMMAND: Command = Command {
     summary: "Check a pipeline of the software factory, or list the repo's, with each one's worst case.",
     usage: "kanna pipeline list\n       kanna pipeline check NAME|FILE",
     options: &[],
-    notes: "A pipeline is .kanna/pipelines/NAME.kojo in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/kojo.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it, and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
+    notes: "A pipeline is .kanna/pipelines/NAME.kojo in your repo: stages (an agent session, run COMMAND, ask \"QUESTION\", merge main or merge STAGE) joined by arrows, with a budget (docs/specs/kojo.md). check reads one, by its name in the repo you're in or by its file, with the prompts in .kanna/prompts beside it (and, for merge-queue, the merge queue's merge-resolve and merge-judge), and prints each error as FILE:LINE: message, or `valid:` with its stages and its worst case: the most agent sessions any sequence of verdicts could take, against the budget. A fan-out (each STAGE.KEY) counts as 2 parts until a run knows the list. list checks every pipeline in the repo and prints one line each.\nAn `on MACHINE` that isn't this machine or one of your machines (kanna machine list) is a warning here and an error when a run starts. Needs no Kanna.app; it asks the daemon for your machines when one is running.",
     examples: &[
         ("kanna pipeline check feature", "Check .kanna/pipelines/feature.kojo of this repo."),
         ("kanna pipeline check ~/work/app/.kanna/pipelines/bugfix.kojo --json", "Check a file; its errors, warnings and worst case as JSON."),
@@ -105,11 +105,21 @@ fn list(json_output: bool, places: &Context) -> Result<(), Failure> {
     Ok(())
 }
 
+const MERGE_QUEUE: &str = "merge-queue";
+
+const MERGE_QUEUE_PROMPTS: [&str; 2] = ["merge-resolve", "merge-judge"];
+
 pub fn check_file(path: &Path, places: &Context) -> Result<Checked, Failure> {
     let file = shown(&path.to_string_lossy());
     let text = std::fs::read_to_string(path).map_err(|e| fail(exit::NOT_FOUND, format!("pipeline: can't read {file}: {e}")))?;
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let context = Context { prompts: prompts(path), ..places.clone() };
+    let mut prompts = prompts(path);
+    if name == MERGE_QUEUE {
+        for offered in MERGE_QUEUE_PROMPTS {
+            prompts.entry(offered.to_string()).or_default();
+        }
+    }
+    let context = Context { prompts, ..places.clone() };
     let (pipeline, found) = match kanna_pipe::parse(&text) {
         Err(errors) => (None, errors),
         Ok(pipeline) => {

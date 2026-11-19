@@ -1,4 +1,4 @@
-use crate::{Agent, Arrow, Attempts, Budget, Error, Kind, Output, Pipeline, Rule, Stage, Verdict, AGENTS, DONE};
+use crate::{Agent, Arrow, Attempts, Budget, Error, Kind, Output, Pipeline, Rule, Stage, Verdict, AGENTS, DONE, REPO_AGENT};
 use std::time::Duration;
 
 pub(crate) enum Line {
@@ -325,8 +325,8 @@ fn agent(stage: &mut Stage, all: &[(usize, &str)]) -> Result<Agent, String> {
         Some((tool, effort)) => (tool, Some(effort)),
         None => (all[0].1, None),
     };
-    if !AGENTS.contains(&tool) {
-        return Err(format!("unknown agent '{tool}'; use {}, or run, ask or merge", AGENTS.join(", ")));
+    if !AGENTS.contains(&tool) && tool != REPO_AGENT {
+        return Err(format!("unknown agent '{tool}'; use {}, {REPO_AGENT} for the repo's tasks.agent, or run, ask or merge", AGENTS.join(", ")));
     }
     let efforts: &[&str] = if tool == "codex" { &["low", "medium", "high", "xhigh"] } else { &["low", "medium", "high"] };
     if let Some(effort) = effort.filter(|e| !efforts.contains(e)) {

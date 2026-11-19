@@ -2100,7 +2100,8 @@ impl Runs {
         vars.push(("KANNA_CLI".into(), tasks::cli_path()));
         let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
         let session = visit.row.doc["paused"]["session"].as_str().map(String::from);
-        let command = tasks::pipeline_agent(&files, &agent.agent);
+        let name = visit.row.agent.clone().unwrap_or_else(|| tasks::stage_agent_name(&files, &agent.agent));
+        let command = tasks::pipeline_agent(&files, &name);
         let stage_prompt = visit.row.doc["prompt"].as_str().filter(|_| session.is_none()).map(|p| format!("{} ", quote(p))).unwrap_or_default();
         let first = format!("\"$(cat {stage_prompt}{})\"", quote(&reply));
         let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), session.is_some(), &first));
@@ -2710,16 +2711,17 @@ impl Runs {
                 if let Err(error) = fs::write(&path, &text) {
                     return self.stop(id, "stopped", &format!("can't write {}: {error}", path.display()), Some("daemon"), true);
                 }
-                let session = tasks::names_its_session(&agent.agent).then(uuid).flatten();
+                let name = tasks::stage_agent_name(&files, &agent.agent);
+                let session = tasks::names_its_session(&name).then(uuid).flatten();
                 let first = format!("\"$(cat {})\"", quote(&format!("{SCRATCH}/stage-{n}.md")));
                 let exports: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", quote(v))).collect();
-                let command = tasks::pipeline_agent(&files, &agent.agent);
+                let command = tasks::pipeline_agent(&files, &name);
                 let line = format!("export {}; {}", exports.join(" "), tasks::stage_agent(&command, agent.effort.as_deref(), agent.model.as_deref(), tasks::prompts(&files), session.as_deref(), false, &first));
                 stage_row.kind = "agent".into();
-                stage_row.agent = Some(agent.agent.clone());
+                stage_row.agent = Some(name.clone());
                 stage_row.session = session;
                 row_doc["prompt"] = json!(path.to_string_lossy());
-                (line, Work::Agent { agent: agent.agent.clone() }, 1)
+                (line, Work::Agent { agent: name }, 1)
             }
             Kind::Run { command } => {
                 let (log, exit, feedback) = (scratch.join(format!("stage-{n}.log")), scratch.join(format!("stage-{n}.exit")), scratch.join(format!("feedback-{n}.txt")));
@@ -2781,13 +2783,14 @@ impl Runs {
                 let worker = PathBuf::from(stage_row.worktree.clone().unwrap_or_default());
                 let file = running.prompt().and_then(|p| string(&prompts, p).map(String::from)).or_else(|| running.prompt().and_then(|p| fs::read_to_string(worker.join(format!(".kanna/prompts/{p}.md"))).ok())).unwrap_or_default();
                 let feedback = doc.feedback.as_ref().map(|f| Feedback { full: String::new(), ..f.clone() });
+                let name = tasks::stage_agent_name(&tasks::config_files(Path::new(&row.repo)), &agent.agent);
                 spec["kind"] = json!("agent");
-                spec["agent"] = json!(agent.agent);
+                spec["agent"] = json!(name);
                 spec["effort"] = opt(agent.effort.as_deref());
                 spec["model"] = opt(agent.model.as_deref());
                 spec["prompt"] = json!(prompt(running, &file, &doc.request, part.as_deref(), feedback.as_ref(), &doc.answers, &format!("{SCRATCH}/answer-{n}.md")));
                 stage_row.kind = "agent".into();
-                stage_row.agent = Some(agent.agent.clone());
+                stage_row.agent = Some(name);
                 1
             }
             Kind::Run { command } => {

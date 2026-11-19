@@ -276,6 +276,14 @@ pub fn task_agent(files: &[PathBuf]) -> String {
         .unwrap_or_else(|| DEFAULT_AGENT.into())
 }
 
+pub fn stage_agent_name(files: &[PathBuf], agent: &str) -> String {
+    if agent != kanna_pipe::REPO_AGENT {
+        return agent.into();
+    }
+    let named = task_agent(files);
+    if kanna_pipe::AGENTS.contains(&named.as_str()) { named } else { DEFAULT_AGENT.into() }
+}
+
 pub fn pipeline_agent(files: &[PathBuf], agent: &str) -> String {
     let Some((mine, repos)) = files.split_last() else { return agent.into() };
     for file in repos {

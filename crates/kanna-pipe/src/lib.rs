@@ -15,6 +15,7 @@ use std::time::Duration;
 
 pub const DONE: &str = "done";
 pub const AGENTS: &[&str] = &["claude", "codex", "opencode", "agy"];
+pub const REPO_AGENT: &str = "agent";
 pub const ASSUMED_PARTS: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq)]

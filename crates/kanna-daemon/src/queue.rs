@@ -34,6 +34,8 @@ pub const HEAD_VAR: &str = "KANNA_MERGE_HEAD";
 
 pub const MESSAGE_VAR: &str = "KANNA_MERGE_MESSAGE";
 
+pub const TEST_VAR: &str = "KANNA_MERGE_TEST";
+
 pub const MERGE_COMMAND: &str = "git merge --no-ff -m \"$KANNA_MERGE_MESSAGE\" \"$KANNA_MERGE_HEAD\"";
 
 fn now() -> f64 {
@@ -67,22 +69,11 @@ pub fn pipeline_text(folder: &Path, repo: &Path) -> Option<(String, String)> {
     if let Ok(text) = fs::read_to_string(&own) {
         return Some((text, own.display().to_string()));
     }
-    let command = test_command(repo)?;
-    let files = tasks::config_files(repo);
-    let agent = tasks::task_agent(&files);
-    let agent = if kanna_pipe::AGENTS.contains(&agent.as_str()) { agent } else { tasks::DEFAULT_AGENT.to_string() };
-    Some((kanna_pipeline(&command, &agent), format!("the default {PIPELINE}.kojo (a conflict resolved and a failure judged by {agent})")))
+    test_command(repo)?;
+    Some((DEFAULT_PIPELINE.to_string(), format!("the default {PIPELINE}.kojo")))
 }
-
-pub fn fits(command: &str) -> bool {
-    let text = kanna_pipeline(command, tasks::DEFAULT_AGENT);
-    kanna_pipe::parse(&text).is_ok_and(|p| p.stages.iter().any(|s| matches!(&s.kind, kanna_pipe::Kind::Run { command: read } if read == command.trim())))
-}
-
-const UNFIT: &str = "merge.test can't be written as a pipeline's command (it has a #, a line break, or ends in `within N` or `on NAME`): put it in a script and name the script";
 
 pub struct Tested<'a> {
-    pub command: &'a str,
     pub name: &'a str,
     pub branch: &'a str,
     pub main: &'a str,
@@ -96,7 +87,7 @@ const RESOLVE_TEXT: &str = include_str!("merge_queue/resolve.md");
 const JUDGE_TEXT: &str = include_str!("merge_queue/judge.md");
 
 fn fill(template: &str, t: &Tested) -> String {
-    [("{main}", t.main), ("{name}", t.name), ("{branch}", t.branch), ("{queue}", t.queue_branch), ("{command}", t.command), ("{base}", short(t.base)), ("{head}", short(t.head))].iter().fold(template.to_string(), |text, (key, value)| text.replace(key, value))
+    [("{main}", t.main), ("{name}", t.name), ("{branch}", t.branch), ("{queue}", t.queue_branch), ("{base}", short(t.base)), ("{head}", short(t.head))].iter().fold(template.to_string(), |text, (key, value)| text.replace(key, value))
 }
 
 pub fn resolve_prompt(t: &Tested) -> String {
@@ -239,9 +230,6 @@ impl Queue {
         }
         if pipeline_text(&folder, &repo).is_none() {
             return Err(KmuxError::new("no_tests", "this repo has no tests for the merge queue: set merge.test in .kanna/config.json (kanna config schema), or write .kanna/pipelines/merge-queue.kojo"));
-        }
-        if !own_pipeline(&folder) && !test_command(&repo).is_some_and(|c| fits(&c)) {
-            return Err(KmuxError::new("no_tests", UNFIT));
         }
         let branch = git(&folder, &["branch", "--show-current"]).unwrap_or_default();
         let name = entry.name.clone().unwrap_or_else(|| short.clone());
@@ -467,17 +455,13 @@ impl Queue {
         };
         patch(&mut row.doc, json!({ "since": now(), "attempt": attempt, "labels": labels(&pipeline) }));
         let mut prompts = prompts(worktree);
-        let command = test_command(&repo).unwrap_or_default();
-        let tested = Tested { command: &command, name: &text(&row.doc, "name"), branch: &text(&row.doc, "branch"), main: &main, base: &base, head: &row.head, queue_branch: &branch };
+        let tested = Tested { name: &text(&row.doc, "name"), branch: &text(&row.doc, "branch"), main: &main, base: &base, head: &row.head, queue_branch: &branch };
         prompts.entry(RESOLVE_PROMPT.to_string()).or_insert_with(|| resolve_prompt(&tested));
-        if !own {
-            if !fits(&command) {
-                self.save(&row);
-                return self.fail(&row.id, UNFIT, vec![]);
-            }
-            prompts.entry(PROMPT.to_string()).or_insert_with(|| judge_prompt(&tested));
+        prompts.entry(PROMPT.to_string()).or_insert_with(|| judge_prompt(&tested));
+        let mut env = BTreeMap::from([(HEAD_VAR.to_string(), row.head.clone()), (MESSAGE_VAR.to_string(), message.clone())]);
+        if let Some(command) = test_command(&repo) {
+            env.insert(TEST_VAR.to_string(), command);
         }
-        let env = BTreeMap::from([(HEAD_VAR.to_string(), row.head.clone()), (MESSAGE_VAR.to_string(), message.clone())]);
         match self.start_run(&mut row, pipeline, shown, &base, message.clone(), prompts, env) {
             Ok(run) => log!("kanna-daemon: {} tests {} on {main} {} as {run}", row.id, row.task, short(&base)),
             Err(error) => {
@@ -835,9 +819,6 @@ fn labels(text: &str) -> Value {
     kanna_pipe::parse(text).map_or(Value::Null, |p| Value::Object(p.stages.iter().filter_map(|s| Some((s.name.clone(), json!(s.label.clone()?)))).collect()))
 }
 
-pub fn kanna_pipeline(command: &str, agent: &str) -> String {
-    DEFAULT_PIPELINE.replace("{agent}", agent).replace("{test}", command.trim())
-}
 
 pub fn readable(output: &str) -> String {
     let text = runs::plain(&output.replace("\r\n", "\n").replace('\r', "\u{1}"));
@@ -900,22 +881,22 @@ mod tests {
         assert_eq!(pipeline_text(&dir, &dir), None, "no merge.test and no pipeline: nothing to test with");
         fs::write(dir.join(".kanna/config.json"), r#"{"version": 1, "merge": {"test": "sh test.sh"}, "tasks": {"timeout": 60}}"#).unwrap();
         let (text, shown) = pipeline_text(&dir, &dir).unwrap();
-        assert!(shown.starts_with("the default merge-queue.kojo (a conflict resolved and a failure judged by "), "{shown}");
+        assert_eq!((text.as_str(), shown.as_str()), (DEFAULT_PIPELINE, "the default merge-queue.kojo"), "the default pipeline is a plain Kojo file, with nothing filled in");
         let pipeline = kanna_pipe::parse(&text).unwrap();
         assert_eq!(pipeline.start, "merge", "the merge is the pipeline's first stage");
         assert_eq!(labels(&text), json!({ "merge": "merging", "resolve": "resolving conflicts", "test": "testing", "judge": "judging a failure" }), "the pipeline names what each stage shows while it runs");
         let merge = pipeline.stage("merge").unwrap();
         assert!(matches!(&merge.kind, kanna_pipe::Kind::Run { command } if command == MERGE_COMMAND), "{text}");
         let resolve = pipeline.stage("resolve").unwrap();
-        assert!(resolve.agent().is_some_and(|a| a.verdict && kanna_pipe::AGENTS.contains(&a.agent.as_str())), "{text}");
+        assert!(resolve.agent().is_some_and(|a| a.verdict && a.agent == kanna_pipe::REPO_AGENT), "{text}");
         assert_eq!((resolve.prompt(), resolve.within), (Some(RESOLVE_PROMPT), None));
         let test = pipeline.stage("test").unwrap();
-        assert!(matches!(&test.kind, kanna_pipe::Kind::Run { command } if command == "sh test.sh"), "{text}");
+        assert!(matches!(&test.kind, kanna_pipe::Kind::Run { command } if command == "sh -c \"$KANNA_MERGE_TEST\""), "{text}");
         assert_eq!(test.within, None, "the tests have no time limit");
         assert_eq!(runs::command_timeout(test.within), 0, "whatever tasks.timeout is");
         assert_eq!(runs::command_timeout(Some(Duration::from_secs(900))), 900, "a repo's own pipeline can still set within");
         let judge = pipeline.stage("judge").unwrap();
-        assert!(judge.agent().is_some_and(|a| a.verdict && kanna_pipe::AGENTS.contains(&a.agent.as_str())), "{text}");
+        assert!(judge.agent().is_some_and(|a| a.verdict && a.agent == kanna_pipe::REPO_AGENT), "{text}");
         assert_eq!((judge.prompt(), judge.within), (Some(PROMPT), None));
         assert_eq!(pipeline.max_sessions(&kanna_pipe::Sizes::new()), 2, "at most a resolver and a judge an entry");
         let fresh = || runs::Doc { taken: vec![0; pipeline.arrows.len()], ..runs::Doc::default() };
@@ -944,26 +925,42 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_test_that_a_pipeline_would_cut_short_is_refused() {
-        for fit in ["scripts/merge-test.sh", "cargo test --workspace -- --test-threads 4", "sh -c 'make check && make e2e'"] {
-            assert!(fits(fit), "{fit}");
-        }
-        for unfit in ["make test # the lot", "make test within 5m", "make test on mini", "make a\nmake b"] {
-            assert!(!fits(unfit), "{unfit}");
-        }
+    fn agent_in_a_pipeline_is_the_repo_s_tasks_agent() {
+        let dir = std::env::temp_dir().join(format!("kanna-repo-agent-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (repo, mine) = (dir.join("repo.json"), dir.join("mine.json"));
+        fs::write(&repo, r#"{"version": 1, "tasks": {"agent": "codex"}}"#).unwrap();
+        fs::write(&mine, r#"{"version": 1}"#).unwrap();
+        assert_eq!(tasks::stage_agent_name(&[repo.clone(), mine.clone()], kanna_pipe::REPO_AGENT), "codex");
+        assert_eq!(tasks::stage_agent_name(&[repo, mine.clone()], "claude"), "claude", "a named agent stays");
+        fs::write(&mine, r#"{"version": 1, "tasks": {"agent": "my-wrapper --fast"}}"#).unwrap();
+        assert_eq!(tasks::stage_agent_name(&[mine], kanna_pipe::REPO_AGENT), tasks::DEFAULT_AGENT, "a command isn't an agent a stage can name");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn any_merge_test_runs_whole_as_the_test_stage_s_command() {
+        let pipeline = kanna_pipe::parse(DEFAULT_PIPELINE).unwrap();
+        let Some(kanna_pipe::Kind::Run { command }) = pipeline.stage("test").map(|s| s.kind.clone()) else { panic!("no test stage") };
+        let dir = std::env::temp_dir().join(format!("kanna-merge-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let merge_test = "echo a # not a comment to the pipeline\necho 'b within 5m' on mini";
+        let out = std::process::Command::new("sh").args(["-c", &command]).current_dir(&dir).env(TEST_VAR, merge_test).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "a\nb within 5m on mini\n");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_judge_s_prompt_names_main_the_merge_and_how_to_run_a_long_command() {
-        let tested = Tested { command: "scripts/merge-test.sh", name: "Add a", branch: "add-a", main: "main", base: "0123456789abcdef", head: "fedcba9876543210", queue_branch: "queue/task-1-1" };
+        let tested = Tested { name: "Add a", branch: "add-a", main: "main", base: "0123456789abcdef", head: "fedcba9876543210", queue_branch: "queue/task-1-1" };
         let said = judge_prompt(&tested);
-        assert!(said.contains("merged onto main at 01234567, as this worktree's HEAD. The queue ran the repo's tests on it (`scripts/merge-test.sh`) and they failed."), "{said}");
+        assert!(said.contains("merged onto main at 01234567, as this worktree's HEAD. The pipeline ran the repo's tests on it and they failed."), "{said}");
         assert!(said.contains("the resolution is part of the branch: a failure it causes is the branch's"), "{said}");
         assert!(said.contains("under \"Feedback from test\" below"), "{said}");
         assert!(said.contains("`git checkout -q --detach 01234567`, and `git checkout -q -f queue/task-1-1` to come back"), "{said}");
         assert!(said.contains("    \"$KANNA_CLI\" run command 'COMMAND'\n") && said.contains("Don't end your turn to wait for it."), "{said}");
         assert!(!said.contains("in the background and wait"), "{said}");
-        let pipeline = kanna_pipe::parse(&kanna_pipeline("sh test.sh", "claude")).unwrap();
+        let pipeline = kanna_pipe::parse(DEFAULT_PIPELINE).unwrap();
         let feedback = runs::Feedback { stage: "test".into(), text: "FAILED a".into(), full: "/w/.kanna/tmp/stage-1.log".into() };
         let whole = runs::prompt(pipeline.stage("judge").unwrap(), &said, "Merge branch 'add-a': Add a", None, Some(&feedback), &BTreeMap::new(), ".kanna/tmp/answer-2.md");
         assert!(whole.contains("# Feedback from test\n\nFAILED a\n\nAll of its output is in `/w/.kanna/tmp/stage-1.log`.\n"), "{whole}");
@@ -971,7 +968,7 @@ mod tests {
 
     #[test]
     fn the_resolver_s_prompt_says_to_learn_both_sides_resolve_only_the_conflicts_commit_and_fail_rather_than_guess() {
-        let tested = Tested { command: "sh test.sh", name: "Add a", branch: "add-a", main: "main", base: "0123456789abcdef", head: "fedcba9876543210", queue_branch: "queue/task-1-1" };
+        let tested = Tested { name: "Add a", branch: "add-a", main: "main", base: "0123456789abcdef", head: "fedcba9876543210", queue_branch: "queue/task-1-1" };
         let said = resolve_prompt(&tested);
         assert!(said.contains("\"Add a\" (the branch add-a, at fedcba98) is being merged onto main at 01234567, in this worktree, the queue's own, on queue/task-1-1."), "{said}");
         assert!(said.contains("`git log --format='%h %s%n%n%b' 01234567..fedcba98 -- FILE`"), "the branch's log: {said}");
@@ -1087,7 +1084,7 @@ mod tests {
         fs::create_dir_all(dir.join("state")).unwrap();
         let db = Rc::new(Db::open(&dir.join("state")).unwrap());
         let queue = Rc::new(Queue::open(db, Weak::new(), Weak::new()));
-        let row = QueueRow { id: "queue-1".into(), repo: repo.to_string_lossy().into_owned(), task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": own, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "branch": "a", "stage": "test", "needs": "judge stopped without reporting", "told": "x", "labels": labels(&kanna_pipeline("cargo test", "claude")) }) };
+        let row = QueueRow { id: "queue-1".into(), repo: repo.to_string_lossy().into_owned(), task: "task-1".into(), head: "h".into(), state: "testing".into(), queued_at: 1.0, ended_at: None, run: Some("run-1".into()), doc: json!({ "own": own, "base": "base0", "merge": "merge0", "name": "A", "main": "main", "branch": "a", "stage": "test", "needs": "judge stopped without reporting", "told": "x", "labels": labels(DEFAULT_PIPELINE) }) };
         queue.db.put_queued(&row).unwrap();
         let run = crate::db::RunRow { id: "run-1".into(), task: "task-1".into(), repo: row.repo.clone(), pipeline: PIPELINE.into(), revision_hash: "r".into(), branch: "queue/task-1-1".into(), state: "stopped".into(), started_at: 1.0, ended_at: Some(2.0), outcome: Some("failed".into()), doc: json!({}) };
         queue.db.put_run(&run, None).unwrap();

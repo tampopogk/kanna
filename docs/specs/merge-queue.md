@@ -51,7 +51,7 @@ The entry's state is `testing` from its turn to the run's end, whatever the pipe
 |---|---|
 | it `merges after` a task whose work isn't in main yet | which task, and that the task hears when it lands ([`base-merged`](task-events.md)) |
 | its worktree has uncommitted changes to tracked files | the files, since they wouldn't land |
-| the repo has no pipeline: no `.kanna/pipelines/merge-queue.kojo`, and no `merge.test` for the default one, or one that can't be a stage's command ([default pipeline §1](merge-queue-pipeline.md#1-the-pipeline)) | how to set one |
+| the repo has no pipeline: no `.kanna/pipelines/merge-queue.kojo`, and no `merge.test` for the default one ([default pipeline §1](merge-queue-pipeline.md#1-the-pipeline)) | how to set one |
 | it's in the queue already, hasn't started, or has nothing that isn't in main | which |
 
 Nothing else is checked: a branch that conflicts with main is queued like any other, and the pipeline finds the conflict when its turn comes. `main-conflicts` ([task events](task-events.md)) still tells a ready task early that main moved into a conflict with it; the task can fix it itself, or let the queue's pipeline deal with it.
@@ -101,15 +101,15 @@ Between stages a run leaves the worktree as it is, so whatever one stage leaves 
 
 ```mermaid
 flowchart LR
-    Q["queue"] -->|"worktree at M0 on queue/TASK-N<br/>KANNA_MERGE_HEAD, KANNA_MERGE_MESSAGE<br/>prompts merge-resolve, merge-judge"| P["pipeline"]
+    Q["queue"] -->|"worktree at M0 on queue/TASK-N<br/>KANNA_MERGE_HEAD, _MESSAGE, _TEST<br/>prompts merge-resolve, merge-judge"| P["pipeline"]
     P -->|"done at X, or failed;<br/>stages' labels, verdicts, answers, logs"| Q
 ```
 
 **What a run gets:**
 
 - **The worktree,** on `queue/TASK-N` at M0, main's head when the entry's turn came.
-- **Two variables** beside every run's own ([Kojo §2](kojo.md#2-stages)): `KANNA_MERGE_HEAD`, the commit `kanna task merge` recorded, and `KANNA_MERGE_MESSAGE`, the merge commit's message (`-m`, or `Merge branch 'BRANCH': NAME`).
-- **Kanna's prompts** for its agent stages, unless the repo has its own in `.kanna/prompts/`: `merge-resolve`, and `merge-judge` for the default pipeline only, since it needs `merge.test` ([default pipeline](merge-queue-pipeline.md)).
+- **Variables** beside every run's own ([Kojo §2](kojo.md#2-stages)): `KANNA_MERGE_HEAD`, the commit `kanna task merge` recorded, `KANNA_MERGE_MESSAGE`, the merge commit's message (`-m`, or `Merge branch 'BRANCH': NAME`), and `KANNA_MERGE_TEST`, the repo's `merge.test` when it has one.
+- **Kanna's prompts** for its agent stages, unless the repo has its own in `.kanna/prompts/`: `merge-resolve` and `merge-judge` ([default pipeline](merge-queue-pipeline.md)). `kanna pipeline check merge-queue` counts them as there.
 - **No time limit** but a stage's own `within` ([Kojo §3](kojo.md#3-attributes)). A stage that runs out of it ends the entry, whatever `fail` arrow leaves it.
 
 **What the run owes:** it ends `done` on a commit X that holds both M0 and the entry's head, with its last stage not failed. That's how the queue knows the branch was merged; a run that ends anywhere else fails the entry, saying the pipeline didn't merge the branch.
