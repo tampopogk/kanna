@@ -153,6 +153,7 @@ struct QueueSpot: Equatable {
     let position: Int
     let state: String
     var stage: String? = nil
+    var label: String? = nil
     var since: Double? = nil
     var after: String? = nil
     var main: String? = nil
@@ -165,6 +166,7 @@ struct QueueSpot: Equatable {
         position = Int(entry["position"]?.number ?? 0)
         self.state = state
         stage = entry["stage"]?.string
+        label = entry["label"]?.string
         since = entry["since"]?.number
         after = entry["afterName"]?.string ?? entry["after"]?.string
         main = entry["main"]?.string
@@ -177,7 +179,7 @@ struct QueueSpot: Equatable {
         let main = self.main ?? "main"
         switch state {
         case "testing":
-            let stage = ["merge": "merging", "resolve": "resolving", "judge": "judging"][self.stage ?? ""] ?? self.stage.flatMap { $0 == "test" ? nil : $0 } ?? "testing"
+            let stage = label ?? self.stage ?? "testing"
             return "\(stage) on \(main) + its branch · \(DeskTask.ago(since).replacingOccurrences(of: "now", with: "just started"))"
         case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
         default: return after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"

@@ -93,7 +93,7 @@ body.picture .window { border-radius: 0; border: 0; box-shadow: none; height: 10
 <main>
   <div class="intro">
     <h1>Merge queue: a branch that conflicts with main is taken, and the queue's pipeline resolves it</h1>
-    <p><code>kanna task merge</code> queues a branch without checking it against main. When its turn comes, the pipeline's first stage merges it onto main in the queue's worktree. A clean merge goes straight to the tests. A conflict leaves the worktree mid-merge and goes to the resolver, an agent that resolves only the conflicted files, keeping both sides' intent, and commits the merge; the tests and the judge then run on its resolution. A resolver that isn't sure fails, and the task goes back to the Shelf with what it found. The entry shows <b>resolving</b> beside testing and judging.</p>
+    <p><code>kanna task merge</code> queues a branch without checking it against main. When its turn comes, the pipeline's first stage merges it onto main in the queue's worktree. A clean merge goes straight to the tests. A conflict leaves the worktree mid-merge and goes to the resolver, an agent that resolves only the conflicted files, keeping both sides' intent, and commits the merge; the tests and the judge then run on its resolution. A resolver that isn't sure fails, and the task goes back to the Shelf with what it found. While a stage runs, the entry shows the label the pipeline gives it: <b>resolving conflicts</b>, beside merging, testing and judging a failure.</p>
     <div class="controls">
       <button id="theme">Light / dark</button>
       <button data-scene="resolving" class="on">Resolving, on the tab</button>
@@ -127,7 +127,7 @@ function page(rows, recent, detail, n) {
 function resolving() {
   const rows = `<div class="row sel"><span class="dot working" title="resolving"></span><div class="t"><div class="n">${esc(D.name)}</div><div class="s">resolving conflicts on main ${s.main} + ${D.branch} · 0m48s</div><div class="progress"><i style="width:22%"></i></div></div><span class="go"><a>Take out</a></span></div>
     <div class="row waiting"><span class="dot queued"></span><div class="t"><div class="n">${esc(E.name)}</div><div class="s">waiting · tested on top of ${esc(D.name)} · ${E.branch}</div></div><span class="go"><a>Take out</a></span></div>`;
-  const detail = `<div class="head"><span><b>Resolver</b> · ${esc(D.name)} · ${D.branch}</span><span>running · 0m48s</span></div><div class="term"><span class="p">&gt;</span> You resolve a merge for main's merge queue: "${esc(D.name)}" (the branch ${D.branch},
+  const detail = `<div class="head"><span><b>Resolving conflicts</b> · ${esc(D.name)} · ${D.branch}</span><span>running · 0m48s</span></div><div class="term"><span class="p">&gt;</span> You resolve a merge for main's merge queue: "${esc(D.name)}" (the branch ${D.branch},
   at 3be1f07a) is being merged onto main at ${s.main}, in this worktree, the queue's own…
 
 <span class="m">●</span> Bash(git diff --name-only --diff-filter=U)
@@ -152,7 +152,7 @@ function resolving() {
 function landed() {
   const recent = `<div class="row past sel"><span class="dot landed"></span><div class="t"><div class="n">${esc(D.name)}</div><div class="s">landed as 7c40e2b1 · 2m ago · tested in 4m31s · conflicts resolved by the queue</div></div></div>
     <div class="row past"><span class="dot landed"></span><div class="t"><div class="n">Toasts stack from the bottom</div><div class="s">landed as 68da99de · 31m ago · tested in 2m54s</div></div></div>`;
-  const detail = `<div class="head"><span><b>Resolution and test.log</b> · ${esc(D.name)} · ${D.branch}</span><span>landed as 7c40e2b1 · 2m ago</span></div><div class="log"><span class="ok">resolved crates/kanna-daemon/src/files.rs: kept main's binary skip and the branch's smart-case match</span>
+  const detail = `<div class="head"><span><b>Answers and test.log</b> · ${esc(D.name)} · ${D.branch}</span><span>landed as 7c40e2b1 · 2m ago</span></div><div class="log"><span class="ok">resolved crates/kanna-daemon/src/files.rs: kept main's binary skip and the branch's smart-case match</span>
 - files.rs: main (a91c02e) stops find at a NUL byte; the branch (3be1f07a) chooses case-sensitivity from the
   search. The skip stays first in the loop, and the match inside it uses the branch's rule.
 
@@ -186,7 +186,7 @@ function listView() {
   const lines = [
     `<span class="c">~/work/kanna-v4</span> <span class="p">❯</span> kanna task list`,
     `Desk`, line("task-a3c1", "Pane titles follow cwd", "working", ""), ``,
-    `Merging`, line(D.id, D.name, "resolving", "1st · 0m48s", "c"), line(E.id, E.name, "queued", `2nd · after "Code find is case-sensi…"`, "g"), ``,
+    `Merging`, line(D.id, D.name, "resolving conflicts", "1st · 0m48s", "c"), line(E.id, E.name, "queued", `2nd · after "Code find is case-sensi…"`, "g"), ``,
     `Shelf`, line("task-2d6e", "Shelf rows say which machine", "merge-failed", "tasks.rs: main removed shelf_row, which the branch extends", "bad"),
   ];
   return `<div class="content"><div class="docs" style="border:0"><div class="dtabs"><div class="dtab on">Terminal</div></div><div class="term">${lines.join("\n")}</div></div></div>`;
@@ -196,8 +196,8 @@ function failed() {
   const lines = [
     `<span class="p">&gt;</span> <span class="g">[message from queue-7f3a]</span> "Shelf rows say which machine" didn't merge: <span class="bad">tasks.rs: main</span>`,
     `  <span class="bad">removed shelf_row, which the branch extends</span>. It was tested on main 5d02c1e + shelf-machine.`,
-    `  main is unchanged and your branch is as you left it. It conflicts with main, and the queue's`,
-    `  resolver didn't resolve it:`, ``,
+    `  main is unchanged and your branch is as you left it. It conflicts with main in tasks.rs. It`,
+    `  stopped at resolving conflicts:`, ``,
     `  <span class="bad">tasks.rs: main removed shelf_row, which the branch extends</span>`,
     `  - crates/kanna-daemon/src/tasks.rs: main (e01d7a2 "Shelf rows come from the replica") deletes`,
     `    shelf_row and builds rows in replica.rs; the branch adds the machine's name to shelf_row.`,

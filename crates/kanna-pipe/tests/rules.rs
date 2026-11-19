@@ -169,3 +169,15 @@ fn several_errors_come_in_line_order() {
 fn parse_alone_skips_the_checks() {
     assert!(parse("b = claude\nb -> c").is_ok());
 }
+
+#[test]
+fn a_stage_can_end_with_a_label() {
+    let pipeline = load("m = run git merge x label \"merging\"\nr = claude prompt a verdict within 30m label \"resolving conflicts\"\ns = ask \"Land it?\" label \"asking you\"\nt = run make test\nm -[pass]-> s\nm -[fail]-> r\nr -> s\ns -[pass]-> t\nt -> done", &context()).unwrap();
+    let labels: Vec<Option<&str>> = pipeline.stages.iter().map(|s| s.label.as_deref()).collect();
+    assert_eq!(labels, vec![Some("merging"), Some("resolving conflicts"), Some("asking you"), None]);
+    assert_eq!(pipeline.stages[0].kind, kanna_pipe::Kind::Run { command: "git merge x".into() });
+    assert_eq!(pipeline.stages[1].within, Some(std::time::Duration::from_secs(1800)));
+    assert_eq!(pipeline.stages[2].kind, kanna_pipe::Kind::Ask { question: "Land it?".into() });
+    assert!(parse("b = claude label \"\"\nb -> done").is_err(), "an empty label");
+    assert!(parse("b = claude label \"x\" verdict\nb -> done").is_err(), "a label that isn't last");
+}

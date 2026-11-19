@@ -320,12 +320,9 @@ fn queue_row(t: &Value, all: &[Value], now: f64) -> [String; 4] {
     let q = &t["queue"];
     let position = q["position"].as_u64().unwrap_or(0) as usize;
     let needs = q["needs"].as_str().filter(|_| q["state"] == "testing");
-    let state = match (q["state"].as_str(), q["stage"].as_str()) {
+    let state = match (q["state"].as_str(), q["label"].as_str().or(q["stage"].as_str())) {
         (Some("testing"), _) if needs.is_some() => "needs you".to_string(),
-        (Some("testing"), Some("merge")) => "merging".to_string(),
-        (Some("testing"), Some("resolve")) => "resolving".to_string(),
-        (Some("testing"), Some("judge")) => "judging".to_string(),
-        (Some("testing"), Some(stage)) if stage != "test" => format!("testing {stage}"),
+        (Some("testing"), Some(shown)) => shown.to_string(),
         (Some(state), _) => state.to_string(),
         _ => "queued".to_string(),
     };

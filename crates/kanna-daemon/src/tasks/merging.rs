@@ -29,6 +29,7 @@ impl Tasks {
             "position": ahead + 1,
             "state": q.state,
             "stage": q.doc.get("stage").cloned().unwrap_or(Value::Null),
+            "label": q.doc.get("label").cloned().unwrap_or(Value::Null),
             "run": opt(q.run.as_deref()),
             "head": q.head,
             "merge": q.doc.get("merge").cloned().unwrap_or(Value::Null),

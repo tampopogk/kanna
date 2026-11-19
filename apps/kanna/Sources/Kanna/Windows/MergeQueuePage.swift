@@ -16,9 +16,11 @@ struct QueueEntry: Equatable {
     let terminal: String?
     let run: String?
     let stage: String?
+    let label: String?
+    let logOf: String?
     let needs: String?
     let told: String?
-    let judged: Bool
+    let answered: Bool
     let resolved: Bool
     var after: String?
 
@@ -38,17 +40,17 @@ struct QueueEntry: Equatable {
         terminal = json["terminal"]?.string
         run = json["run"]?.string
         stage = doc?["stage"]?.string
+        label = doc?["label"]?.string
+        logOf = doc?["logOf"]?.string
         needs = state == "testing" ? doc?["needs"]?.string : nil
         told = doc?["told"]?.string
-        judged = doc?["result"]?["verdict"]?.string != nil && (doc?["result"]?["stage"]?.string ?? "judge") == "judge"
+        answered = doc?["result"]?["note"]?.string != nil || !(doc?["answers"]?.array?.isEmpty ?? true)
         resolved = doc?["resolved"]?.bool == true
     }
 
-    var judging: Bool { state == "testing" && stage == "judge" }
+    var doing: String { label ?? stage ?? "testing" }
 
-    var resolving: Bool { state == "testing" && stage == "resolve" }
-
-    var doing: String { judging ? "judging a failure" : resolving ? "resolving conflicts" : stage == "merge" ? "merging" : "testing" }
+    var log: String { "\(logOf ?? "its").log" }
 
     var live: Bool { ["queued", "testing", "landing"].contains(state) }
 
@@ -70,7 +72,7 @@ struct QueueEntry: Equatable {
             return [on + (branch.map { " + \($0)" } ?? ""), Self.clock(from: since)].compactMap { $0 }.joined(separator: " · ")
         case "landing": return why.map { "landing · waits: \($0)" } ?? "landing on \(main)"
         case "failed": return ["failed", why, DeskTask.ago(endedAt), "back on the Shelf"].compactMap { $0 }.joined(separator: " · ")
-        case "landed": return [Self.short(landed).map { "landed as \($0)" } ?? "landed", DeskTask.ago(endedAt), Self.clock(from: since, to: endedAt).map { "tested in \($0)" }, resolved ? "conflicts resolved by the queue" : nil, judged ? "passed by the judge" : nil].compactMap { $0 }.joined(separator: " · ")
+        case "landed": return [Self.short(landed).map { "landed as \($0)" } ?? "landed", DeskTask.ago(endedAt), Self.clock(from: since, to: endedAt).map { "tested in \($0)" }, resolved ? "conflicts resolved by the queue" : nil].compactMap { $0 }.joined(separator: " · ")
         default: return ([after.map { "waiting · tested on top of \u{201C}\($0)\u{201D}" } ?? "waiting"] + [branch].compactMap { $0 }).joined(separator: " · ")
         }
     }
@@ -288,18 +290,18 @@ final class MergeQueuePage: NSView {
                 right = "paused"
                 text = [entry.told ?? entry.needs, "Resume carries it on as it is. To answer it in words, run: kanna run resume \(entry.run ?? "RUN") \"…\"\nTake out sends the task back to the Shelf. The entries behind it wait until one of those."].compactMap { $0 }.joined(separator: "\n\n")
             case "testing", "landing":
-                left = (entry.judging ? "Judge · " : entry.resolving ? "Resolver · " : "Tests · ") + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
+                left = ([entry.state == "landing" ? "Landing" : entry.doing.prefix(1).uppercased() + entry.doing.dropFirst()] + [entry.name, entry.branch].compactMap { $0 }).joined(separator: " · ")
                 right = entry.state == "landing" ? "landing" : ["running", QueueEntry.clock(from: entry.since)].compactMap { $0 }.joined(separator: " · ")
-                if entry.terminal == nil { wait = entry.state == "landing" ? (entry.why.map { "Its tests are done. It waits to land: \($0)" } ?? "Its tests are done. It's landing.") : entry.judging ? "Its judge is starting, or waits for a command it asked for." : entry.resolving ? "Its resolver is starting." : "Its tests are starting." }
+                if entry.terminal == nil { wait = entry.state == "landing" ? (entry.why.map { "Its pipeline is done. It waits to land: \($0)" } ?? "Its pipeline is done. It's landing.") : "Its terminal shows here once \(entry.doing) starts, or when it runs a command it asked for." }
             case "queued":
                 left = [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
                 right = "waiting"
-                wait = entry.after.map { "Waiting. Its tests start once \u{201C}\($0)\u{201D} lands or fails, and their terminal shows here." } ?? "Waiting. Its tests start next, and their terminal shows here."
+                wait = entry.after.map { "Waiting. Its pipeline starts once \u{201C}\($0)\u{201D} lands or fails, and its terminal shows here." } ?? "Waiting. Its pipeline starts next, and its terminal shows here."
             default:
-                left = (entry.judged ? "Judge's answer and test.log · " : "test.log · ") + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · ")
+                left = ((entry.answered ? "Answers and \(entry.log) · " : "\(entry.log) · ") + [entry.name, entry.branch].compactMap { $0 }.joined(separator: " · "))
                 right = entry.state == "failed" ? "failed \(DeskTask.ago(entry.endedAt))" : "landed \(DeskTask.ago(entry.endedAt))"
                 if log?.id == entry.id {
-                    let parts = [log?.note ?? (entry.state == "failed" ? entry.why : nil), log?.text.map { "──────── test.log ────────\n\($0)" }].compactMap { $0 }
+                    let parts = [log?.note ?? (entry.state == "failed" ? entry.why : nil), log?.text.map { "──────── \(entry.log) ────────\n\($0)" }].compactMap { $0 }
                     text = parts.isEmpty ? "It kept no answer and no log." : parts.joined(separator: "\n\n")
                 } else {
                     wait = "Loading its log…"

@@ -1,6 +1,6 @@
 # The default merge-queue pipeline
 
-Status: built. The file is [`crates/kanna-daemon/src/merge-queue.kojo`](../../crates/kanna-daemon/src/merge-queue.kojo). Tested by `cargo test -p kanna-daemon queue::` and e2e `merge_queue`. Mockup: [`references/mockups/merge-queue-conflicts.html`](../../references/mockups/merge-queue-conflicts.html). Runs in the [merge queue](merge-queue.md), through its [pipeline interface](merge-queue.md#32-the-pipeline-interface); written in [Kojo](kojo.md).
+Status: built. The file is [`crates/kanna-daemon/src/merge_queue/pipeline.kojo`](../../crates/kanna-daemon/src/merge_queue/pipeline.kojo), with its prompts `resolve.md` and `judge.md` beside it. Tested by `cargo test -p kanna-daemon queue::` and e2e `merge_queue`. Mockup: [`references/mockups/merge-queue-conflicts.html`](../../references/mockups/merge-queue-conflicts.html). Runs in the [merge queue](merge-queue.md), through its [pipeline interface](merge-queue.md#32-the-pipeline-interface); written in [Kojo](kojo.md).
 
 The [merge queue](merge-queue.md) runs each entry through its repo's merge-queue pipeline. A repo without its own `.kanna/pipelines/merge-queue.kojo` gets this one: it merges the branch onto main, resolves any conflict with an agent, runs the repo's `merge.test`, and has an agent judge a failure. A clean entry whose tests pass spends no agent session. This repo's own setup of it is in [Kanna's merge pipeline](kanna-merge-pipeline.md).
 
@@ -20,13 +20,13 @@ The [merge queue](merge-queue.md) runs each entry through its repo's merge-queue
 
 ## 1. The pipeline
 
-The daemon reads `merge-queue.kojo`, fills in `{test}` from the repo's `merge.test` and `{agent}` from `tasks.agent` (or `claude` when `tasks.agent` is a command), and starts it as the entry's run:
+The daemon reads `pipeline.kojo`, fills in `{test}` from the repo's `merge.test` and `{agent}` from `tasks.agent` (or `claude` when `tasks.agent` is a command), and starts it as the entry's run:
 
 ```
-merge   = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD"
-resolve = {agent} prompt merge-resolve verdict
-test    = run {test}
-judge   = {agent} prompt merge-judge verdict
+merge   = run git merge --no-ff -m "$KANNA_MERGE_MESSAGE" "$KANNA_MERGE_HEAD" label "merging"
+resolve = {agent} prompt merge-resolve verdict label "resolving conflicts"
+test    = run {test} label "testing"
+judge   = {agent} prompt merge-judge verdict label "judging a failure"
 merge   -[pass]-> test
 merge   -[fail]-> resolve
 resolve -[pass]-> test
@@ -101,7 +101,7 @@ The resolver is a fresh session of the repo's default agent, as the judge is, in
 
 It reports with `kanna run done pass` or `fail`, like the judge. An ended turn without a verdict is carried on once, then pauses the entry as `needs you` ([merge queue §4.1](merge-queue.md#41-an-entry-that-needs-you)).
 
-When it fails, the entry fails with the answer's first line as the reason. The task's `merge-failed` row shows that line. Its agent's message from the queue gives the whole answer under "It conflicts with main, and the queue's resolver didn't resolve it", and ends with what to do: merge main into the branch, resolve the conflicts as both sides mean them, rerun the tests and commit, then `kanna task merge` again. `mergeFailed` in `kanna task list --json` has `verdict: fail`, the `note`, and `stage: resolve`.
+When it fails, the entry fails with the answer's first line as the reason. The task's `merge-failed` row shows that line. Its agent's message from the queue says `It conflicts with main in FILES`, gives the whole answer under `It stopped at resolving conflicts:`, and ends with what to do: merge main into the branch, resolve the conflicts as both sides mean them, rerun the tests and commit, then `kanna task merge` again. `mergeFailed` in `kanna task list --json` has `verdict: fail`, the `note`, and `stage: resolve`.
 
 ![The task's agent, back from the queue with the resolver's reason](merge-queue-conflicts-failed.png)
 
@@ -125,7 +125,7 @@ flowchart TD
 
 **The verdict is a call.** The judge ends its judgement by running `kanna run done pass` or `kanna run done fail`, with its answer in the file its prompt names, and nothing else ends it: the queue reads no screen, and a turn that ends says nothing about the merge. A turn that ends without the call is carried on once, with a message that the judgement isn't reported and how to report it ([merge queue §4.1](merge-queue.md#41-an-entry-that-needs-you)).
 
-A pass lands the entry, and the queue keeps the judge's answer as the entry's note (`doc.result`, `{"verdict": "pass", "note"}`). A fail ends the entry, with the answer's first line as the reason ([merge queue §4](merge-queue.md#4-failure)). An entry whose tests passed has no note.
+A pass lands the entry, and the queue keeps the judge's answer in the entry's `answers`, as it keeps every agent stage's. A fail ends the entry, with the answer's first line as the reason ([merge queue §4](merge-queue.md#4-failure)). An entry whose tests passed has no answers.
 
 **A long command.** The judge's own commands are short: one test, a diff. An agent's shell stops a command after about ten minutes, and what it leaves in the background ends with its turn. When the judge needs something longer, such as a build at M0 or the whole suite on main, it asks Kanna: `kanna run command 'COMMAND'` has the daemon run it in the queue's worktree and waits with the judge, and the judge's turn doesn't end ([run commands](run-commands.md)). The prompt says so, and never says to run something in the background.
 
@@ -147,7 +147,7 @@ gitGraph
 ```
 
 - **What lands** is the commit the pipeline finished on ([merge queue §3](merge-queue.md#3-an-entrys-run)). The queue checks that it holds both M0 and the task's head H, then fast-forwards main to it. A resolution is part of the merge commit X on `queue/TASK-N`, so it's in main's history as that merge, with the queue's message (`Merge branch 'BRANCH': SUMMARY`). A pipeline that ends without the branch merged (the resolver passed without committing, or a repo's pipeline with no merge stage) fails the entry, saying so.
-- **The entry keeps** `merge` (X), `resolved: true` and `resolution` (the resolver's answer) in its doc. The Merge queue tab shows a landed entry as `conflicts resolved by the queue`.
+- **The entry keeps** `merge` (X), `resolved: true` (git, not the pipeline, says the branch conflicted with M0) and the resolver's answer in `answers`. The Merge queue tab shows a landed entry as `conflicts resolved by the queue`.
 - **The task** is Done on landing, as before. Its own branch never gets the resolution: it still ends at H, which is in main, so Done removes the worktree and branch as merged. Nothing is written back to them.
 - **The planner** hears it as Desk news: `merged into main, its conflicts with main resolved by the queue in X, and left the merge queue` when it lands, and `didn't merge (WHY): it's back on the Shelf, and its agent has the reason` when it fails.
 - **Tasks stacked on it** hear `base-merged` as before, plus: `It conflicted with main, and the merge queue resolved that in its merge commit X: merge main into your branch, not BASE's branch, to build on the resolution.` Their branch holds H. When they merge, git uses H as the merge base and keeps main's resolution unless they changed the same lines too.
@@ -156,20 +156,21 @@ gitGraph
 
 ## 6. Showing its stages
 
-The queue knows these four stage names ([merge queue §3.2](merge-queue.md#32-the-pipeline-interface)), and each surface names them:
+Each stage's `label` is what the queue shows while it runs ([merge queue §3.2](merge-queue.md#32-the-pipeline-interface)): the file names them, and no surface knows a stage by its name.
 
-| Where | `merge` | `resolve` | `test` | `judge` |
-|---|---|---|---|---|
-| `kanna task list`, Merging | merging | resolving | testing | judging |
-| Merge queue tab, the entry's line | merging on main M0 + BRANCH | resolving conflicts on … | testing on … | judging a failure on … |
-| Merge queue tab, the detail's title | Tests · | Resolver · | Tests · | Judge · |
-| Desk view | merging on main + its branch | resolving … | testing … | judging … |
+| Where | Shows | `resolve`, say |
+|---|---|---|
+| `kanna task list`, Merging | the label | resolving conflicts |
+| Merge queue tab, the entry's line | LABEL on main M0 + BRANCH | resolving conflicts on main 3c1d9e2a + BRANCH |
+| Merge queue tab, the detail's title | Label · NAME · BRANCH | Resolving conflicts · NAME · BRANCH |
+| Desk view | LABEL on main + its branch | resolving conflicts on main + its branch |
+| the failed task's message | It stopped at LABEL: ANSWER | It stopped at resolving conflicts: … |
 
-A repo's own pipeline's other stages show by their names.
+A repo's own pipeline labels its stages the same way; a stage without a label shows by its name.
 
 ## 7. Writing your own
 
-A repo that writes its own `.kanna/pipelines/merge-queue.kojo` replaces this pipeline, and decides what a conflict does. [`merge-queue.kojo`](../../crates/kanna-daemon/src/merge-queue.kojo) is the place to start from. To merge the branch, it uses the same `merge` stage, or any stage that leaves a commit holding both M0 and the branch. Kanna's `merge-resolve` prompt is offered to it, unless the repo has its own; `merge-judge` needs `merge.test`, so it's offered to the default pipeline only.
+A repo that writes its own `.kanna/pipelines/merge-queue.kojo` replaces this pipeline, and decides what a conflict does. [`pipeline.kojo`](../../crates/kanna-daemon/src/merge_queue/pipeline.kojo) is the place to start from. To merge the branch, it uses the same `merge` stage, or any stage that leaves a commit holding both M0 and the branch. Kanna's `merge-resolve` prompt is offered to it, unless the repo has its own; `merge-judge` needs `merge.test`, so it's offered to the default pipeline only.
 
 **Fail on a conflict, as the queue did before:**
 
@@ -202,12 +203,12 @@ Anything else Kojo can say works too: a `run` stage that tries `git merge -X our
 
 ## 8. Tests
 
-`cargo test -p kanna-daemon queue::` checks:
+`cargo test -p kanna-pipe` checks that a stage of any kind can end with `label "TEXT"`, and that an empty label or one that isn't last is refused. `cargo test -p kanna-daemon queue::` checks:
 
-- The default pipeline, read from `merge-queue.kojo`: `merge` is its first stage with the command in [2](#2-the-merge-stage); a pass goes to `test` with no resolver, a fail to `resolve`; the resolver's pass goes to `test`, its fail has no arrow; a test pass lands and only a fail reaches the judge; at most two agent sessions; no time limit on the tests, whatever `tasks.timeout` is; a repo's own pipeline takes precedence, and a timeout in it ends the entry.
+- The default pipeline, read from `pipeline.kojo`: each stage's label; `merge` is its first stage with the command in [2](#2-the-merge-stage); a pass goes to `test` with no resolver, a fail to `resolve`; the resolver's pass goes to `test`, its fail has no arrow; a test pass lands and only a fail reaches the judge; at most two agent sessions; no time limit on the tests, whatever `tasks.timeout` is; a repo's own pipeline takes precedence, and a timeout in it ends the entry.
 - The merge command, run with the two variables, merges the head with its message. On a conflict it fails and leaves the worktree mid-merge. `merge_commit` finds the merge that holds the resolution.
 - A `merge.test` a pipeline would cut short, the judge's and the resolver's prompts, the kept log's text, the paused entry's news, and the reuse of the queue's worktree and its build folder.
-- Outcomes: passing tests land with no note; a judge's pass lands with its note, its fail ends the entry with the answer's first line; a resolver's fail ends it with its first line and `result.stage: resolve`; a resolution that passes the tests lands with `resolved` and `resolution`; a repo's pipeline that fails at `merge` fails the entry with `it conflicts with main in FILES`, and the half-done merge is aborted; a timed-out stage of a repo's own pipeline says so; a judge that exits without a verdict fails the entry; a repo's own pipeline fails with its failed stage's output.
+- Outcomes: passing tests land with no answers; a judge's pass lands with its answer and label in `answers`, its fail ends the entry with the answer's first line; a resolver's fail ends it with its first line, `result.stage: resolve` and its label; a resolution that passes the tests lands with `resolved`, which git's `merge-tree` says on a real repo, and the resolver's answer; a repo's pipeline that fails at `merge` fails the entry with `it conflicts with main in FILES`, and the half-done merge is aborted; a timed-out stage of a repo's own pipeline says so; a judge that exits without a verdict fails the entry; a repo's own pipeline fails with its failed stage's output.
 
 `cargo test -p kanna-daemon desk_news` checks the landed and failed news lines.
 
@@ -216,8 +217,8 @@ The e2e scenario `merge_queue` ([merge queue §8](merge-queue.md#8-tests)) runs 
 1. A and B, whose tests pass, land on `merge:run:pass test:run:pass` each, both commands, with no agent started, and A's tests, 15 seconds long under a 5-second `tasks.timeout`, run to their end.
 2. After main gets `known-broken`, C (`broken`) fails because the judge blames `broken_thing` on the branch, with `broken_thing fails: the branch broke it`; its agent gets the judge's answer and the log's path, and the log is in its worktree. C's judge waited again (`--wait`) for a command that outlasted its first wait.
 3. F (`waits`): its judge's turn ends while its command runs, the command still runs to its end, and the judge is carried on with its exit code. A turn with no verdict is carried on once; the second pauses F as `needs you`, and resumed with words, the judge passes it and F lands.
-4. E (`flaky`) lands with the note `tests fail, none of them the branch's: known_broken fails on main too, flaky_thing passes alone`, and C's and E's runs each went from `merge` to `test` to `judge`.
-5. D, which conflicts with main in `shared.txt`, is taken, and the reply doesn't mention it. It shows `resolving` in `kanna task list`, runs `merge:fail resolve:pass test:pass`, and lands. Main's `shared.txt` holds both sides, and main's head is D's merge, which the entry keeps with the resolver's answer.
+4. E (`flaky`) lands with the judge's answer `tests fail, none of them the branch's: known_broken fails on main too, flaky_thing passes alone`, and C's and E's runs each went from `merge` to `test` to `judge`.
+5. D, which conflicts with main in `shared.txt`, is taken, and the reply doesn't mention it. It shows its label, `resolving conflicts`, in `kanna task list`, runs `merge:fail resolve:pass test:pass`, and lands. Main's `shared.txt` holds both sides, and main's head is D's merge, which the entry keeps, `resolved`, with the resolver's answer and label.
 6. G, whose resolver fails, is merge-failed with the resolver's first line. Its run stops at `resolve`, its agent gets the answer and what to do, and main doesn't have it.
 7. H, under a repo pipeline that fails on a conflict, fails with `it conflicts with main in clash2.txt` after its `merge` stage alone, with no merge left in the queue's worktree.
 

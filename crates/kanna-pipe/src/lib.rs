@@ -33,6 +33,7 @@ pub struct Stage {
     pub kind: Kind,
     pub on: Option<String>,
     pub within: Option<Duration>,
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

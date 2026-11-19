@@ -64,7 +64,7 @@ e2e    -> done
 
 ## 3. Attributes
 
-Any order at the end of a stage line. `on` and `within` apply to every kind; the others to agent stages.
+Any order at the end of a stage line, but `label` last. `on`, `within` and `label` apply to every kind; the others to agent stages.
 
 | Attribute | Does |
 |---|---|
@@ -77,6 +77,7 @@ Any order at the end of a stage line. `on` and `within` apply to every kind; the
 | `on PLACEMENT` | where the stage runs: a machine's name (`mini`), a role your machines declare (`mac`, `linux`, `e2e`), `any` (whichever has a free slot) or `here`, the run's machine, the default. The stage runs there as a worker of the run; its result comes back ([software factory §3](software-factory.md#3-workers-fan-out-join-and-other-machines)). A machine declares roles in its own settings (`machine.roles`), beside `mac` or `linux` from its system; a placement none of your machines answers to refuses the run with `no such machine` ([remote stages](remote-stages.md)) |
 | `within DURATION` | without it a stage of any kind has no time limit. With it, the stage is abandoned after that long: an agent is stopped and its worktree reset to the stage's start, a command killed; the stage's verdict is fail with `timed out` as feedback |
 | `resume STAGE` | continue STAGE's last session rather than starting fresh |
+| `label "TEXT"` | what a surface shows while the stage runs, in place of its name: `label "resolving conflicts"`. The [merge queue](merge-queue.md#32-the-pipeline-interface) shows it for an entry's running stage and in its messages; it goes last, after a `run` stage's command too |
 
 ## 4. Arrows
 
